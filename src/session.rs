@@ -1298,7 +1298,7 @@ impl Session {
 
     /// Whether a client is in copy mode on pane `pane`: keys typed there
     /// go to copy mode, not the program.
-    fn copying(&self, pane: PaneId) -> bool {
+    pub(crate) fn copying(&self, pane: PaneId) -> bool {
         self.views
             .values()
             .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
@@ -2423,6 +2423,41 @@ impl Session {
                 };
             }
             Command::Wait { targets, wait } => (targets, wait, None),
+            // From a command line: read once the pane settles, said with
+            // its state.
+            Command::CapturePane {
+                target,
+                history,
+                view,
+                json,
+                settle: Some(limit),
+            } => {
+                let wait = crate::command::Wait {
+                    until: vec![crate::command::Until::Settled],
+                    timeout: limit,
+                    print: false,
+                    after: false,
+                    echo: Vec::new(),
+                    marks: false,
+                    lines: 0,
+                    all: false,
+                };
+                let here = match self.here(origin) {
+                    Ok(here) => here,
+                    Err(error) => return self.failed(error, origin),
+                };
+                let pane = match self.pane(target, here) {
+                    Ok(pane) => pane,
+                    Err(error) => return self.failed(error, origin),
+                };
+                let now = Instant::now();
+                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+                waiting.capture = Some((history, view, json));
+                return match waiting.answer(self, now) {
+                    Some(outcome) => Begun::Done(outcome),
+                    None => Begun::Waiting(Box::new(waiting)),
+                };
+            }
             command @ (Command::Ls { .. }
             | Command::KillServer { .. }
             | Command::NewWorkspace { .. }
@@ -3294,6 +3329,7 @@ impl Session {
                 history,
                 view,
                 json,
+                ..
             } => {
                 let pane = self.pane(target, here)?;
                 let copying = self.copying(pane.id);
@@ -4220,6 +4256,7 @@ pub(crate) mod testing {
             keymap: Some(&mut keymap),
             last_bound: None,
             out: &mut out,
+            settle: false,
         };
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
@@ -4359,6 +4396,7 @@ pub(crate) mod testing {
             keymap: None,
             last_bound: None,
             out: &mut out,
+            settle: false,
         };
         let mut recorder = Recorder(InProcess(s), Vec::new());
         crate::script::run(&mut machine, &mut host, &mut recorder).map_err(|e| e.to_string())?;

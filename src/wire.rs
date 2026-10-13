@@ -671,6 +671,7 @@ impl Wire for Until {
             Until::Exit => tag(out, 4),
             Until::Done => tag(out, 5),
             Until::Bell => tag(out, 6),
+            Until::Settled => tag(out, 7),
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -682,6 +683,7 @@ impl Wire for Until {
             4 => Ok(Until::Exit),
             5 => Ok(Until::Done),
             6 => Ok(Until::Bell),
+            7 => Ok(Until::Settled),
             other => Err(Error::Tag("condition", other)),
         }
     }
@@ -1036,12 +1038,14 @@ impl Wire for Command {
                 history,
                 view,
                 json,
+                settle,
             } => {
                 tag(out, 25);
                 target.put(out);
                 history.put(out);
                 view.put(out);
                 json.put(out);
+                settle.put(out);
             }
             Command::Reorder { subject, toward } => {
                 tag(out, 26);
@@ -1216,6 +1220,7 @@ impl Wire for Command {
                 history: Option::get(r)?,
                 view: CaptureView::get(r)?,
                 json: bool::get(r)?,
+                settle: Option::get(r)?,
             },
             26 => Command::Reorder {
                 subject: Subject::get(r)?,

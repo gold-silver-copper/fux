@@ -27,8 +27,15 @@ pub const GONE: u8 = 4;
 pub const UNCHANGED: u8 = 5;
 /// Input given `--if-revision` found the screen changed, and sent nothing.
 pub const CHANGED: u8 = 6;
+/// The program reads its terminal, and the text waited for has not come:
+/// it cannot before the agent types.
+pub const STOPPED: u8 = 7;
 /// As `timeout(1)`.
 pub const TIMED_OUT: u8 = 124;
+
+/// How often a wait that asks what a pane's program is blocked in looks
+/// again: that changes with nothing on the screen to wake the server.
+const PROBE: std::time::Duration = std::time::Duration::from_millis(30);
 
 /// How long a shell back at its prompt, fewer commands ended than lines
 /// typed, shows no change before `--done` takes it as done.
@@ -51,6 +58,19 @@ pub struct Waiting {
     pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
     /// What each pane said, for a wait on each of several (`Wait::all`).
     answers: Vec<Option<Outcome>>,
+    /// A capture to give once the pane settles (`capture` from a command
+    /// line): its history, view and whether as JSON.
+    pub capture: Option<(Option<usize>, CaptureView, bool)>,
+}
+
+/// What a wait's answer tells of a pane against how it was as the wait
+/// began: where the cursor was (what came since is said), the commands that
+/// had ended, the screen's revision.
+#[derive(Clone, Copy)]
+struct Since {
+    cursor: Option<fux_vt::RowId>,
+    finished: u64,
+    revision: u64,
 }
 
 /// One pane a wait watches, and what it found as it began.
@@ -85,17 +105,29 @@ struct Watch {
     /// The program's start (`Pane::starts`) the wait watches.
     starts: u64,
     alerts: u64,
+    /// The row the cursor was on as the wait began: what is written from
+    /// it on is what the action brought.
+    cursor: Option<fux_vt::RowId>,
 }
 
 /// What a wait found.
 enum Found {
-    Text { text: String, line: String },
+    Text {
+        text: String,
+        line: String,
+    },
     Gone(String),
-    Idle { changed: bool },
+    Idle {
+        changed: bool,
+    },
     Change(u64),
     Exit(Ended),
     Done(Option<i32>),
     Bell(Option<String>),
+    /// The pane settled, so.
+    Settled(crate::ready::State),
+    /// The program reads its terminal; the text waited for has not come.
+    Stopped(crate::ready::State),
 }
 
 impl Waiting {
@@ -141,6 +173,10 @@ impl Waiting {
                         .saturating_add(typed),
                     starts: pane.starts,
                     alerts: pane.alerts.count(),
+                    cursor: screen
+                        .window()
+                        .row(screen.cursor_position().0)
+                        .map(|row| row.id()),
                 }
             })
             .collect();
@@ -153,6 +189,7 @@ impl Waiting {
             lead: String::new(),
             made: Vec::new(),
             fresh: false,
+            capture: None,
         }
     }
 
@@ -169,8 +206,14 @@ impl Waiting {
             | Until::Change(_)
             | Until::Exit
             | Until::Done
-            | Until::Bell => None,
+            | Until::Bell
+            | Until::Settled => None,
         });
+        // Whether the program settled, or stopped to read before the text
+        // came, shows in what it is blocked in: asked again soon.
+        let probe = (self.wait.until.iter())
+            .any(|u| matches!(u, Until::Settled | Until::Text(_)))
+            .then(|| crate::after(now, PROBE));
         let quiet = idle.and_then(|idle| {
             self.watches
                 .iter()
@@ -187,7 +230,7 @@ impl Waiting {
                 .filter(|at| *at > now)
                 .min()
         });
-        [quiet, settle.flatten()]
+        [quiet, settle.flatten(), probe]
             .into_iter()
             .flatten()
             .fold(self.deadline, Instant::min)
@@ -197,9 +240,27 @@ impl Waiting {
     /// its panes, a pane's program exited first, a pane went, or its time is
     /// up.
     pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
-        let outcome = self.look(session, now)?;
+        let mut outcome = self.look(session, now)?;
+        // A capture asked to settle first: its state line, then the capture.
+        if let (Some((history, view, json)), Some(watch)) = (self.capture, self.watches.first())
+            && let Some(pane) = session.panes.get(&watch.pane)
+        {
+            let read = crate::capture::pane(pane, history, view, json, session.copying(pane.id));
+            outcome.stdout = if json {
+                read
+            } else {
+                let line = outcome.stdout.lines().next().unwrap_or_default();
+                format!("{line}\n{read}")
+            };
+        }
+        // An answer that starts with the pane's state names the pane itself.
+        let lead = if self.wait.until.contains(&Until::Settled) && self.capture.is_none() {
+            ""
+        } else {
+            self.lead.as_str()
+        };
         Some(Outcome {
-            stdout: format!("{}{}", self.lead, outcome.stdout),
+            stdout: format!("{lead}{}", outcome.stdout),
             ids: self.made.clone(),
             ..outcome
         })
@@ -229,10 +290,15 @@ impl Waiting {
             {
                 let status = found.status(self.wait.after);
                 let id = watch.pane;
-                return Some(
-                    self.wait
-                        .told(id, Some(pane), status, Told::Found(found), several),
-                );
+                let since = Some(watch.since());
+                return Some(self.wait.told(
+                    id,
+                    Some(pane),
+                    status,
+                    Told::Found(found),
+                    several,
+                    since,
+                ));
             }
             match pane.process.exit_status() {
                 Some(status) => {
@@ -248,7 +314,7 @@ impl Waiting {
             };
             return Some(
                 self.wait
-                    .told(id, session.panes.get(&id), status, told, several),
+                    .told(id, session.panes.get(&id), status, told, several, None),
             );
         }
         if now >= self.deadline {
@@ -260,10 +326,11 @@ impl Waiting {
                 .or(self.watches.first());
             let pane = first.and_then(|w| session.panes.get(&w.pane));
             let hint = first.zip(pane).and_then(|(w, p)| w.hint(p, &self.wait));
+            let since = first.map(Watch::since);
             let first = first.map(|w| w.pane);
             return first.map(|id| {
                 self.wait
-                    .told(id, pane, TIMED_OUT, Told::TimedOut(hint), several)
+                    .told(id, pane, TIMED_OUT, Told::TimedOut(hint), several, since)
             });
         }
         None
@@ -282,9 +349,10 @@ impl Waiting {
             }
             let id = watch.pane;
             let Some(pane) = session.panes.get(&id) else {
-                *answer = Some(self.wait.told(id, None, GONE, Told::Gone, true));
+                *answer = Some(self.wait.told(id, None, GONE, Told::Gone, true, None));
                 continue;
             };
+            let since = Some(watch.since());
             let told = if pane.starts != watch.starts {
                 Some((EXITED, Told::Replaced))
             } else if let Some(found) = watch.look(pane, &self.wait, texts, window, self.fresh) {
@@ -295,7 +363,7 @@ impl Waiting {
                     .map(|ended| (EXITED, Told::Exited(ended, watch.echo_hint())))
             };
             if let Some((status, told)) = told {
-                *answer = Some(self.wait.told(id, Some(pane), status, told, true));
+                *answer = Some(self.wait.told(id, Some(pane), status, told, true, since));
             }
         }
         if now >= self.deadline {
@@ -304,7 +372,11 @@ impl Waiting {
                     let pane = session.panes.get(&watch.pane);
                     let hint = pane.and_then(|p| watch.hint(p, &self.wait));
                     let told = Told::TimedOut(hint);
-                    *answer = Some(self.wait.told(watch.pane, pane, TIMED_OUT, told, true));
+                    let since = Some(watch.since());
+                    *answer = Some(
+                        self.wait
+                            .told(watch.pane, pane, TIMED_OUT, told, true, since),
+                    );
                 }
             }
         }
@@ -341,12 +413,14 @@ impl Found {
             Found::Exit(ended) => {
                 u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
             }
+            Found::Stopped(_) => STOPPED,
             Found::Text { .. }
             | Found::Gone(_)
             | Found::Idle { .. }
             | Found::Change(_)
             | Found::Done(_)
-            | Found::Bell(_) => 0,
+            | Found::Bell(_)
+            | Found::Settled(_) => 0,
         }
     }
 }
@@ -372,12 +446,68 @@ impl Wait {
         status: u8,
         told: Told,
         several: bool,
+        since: Option<Since>,
     ) -> Outcome {
         let prefix = if several {
             format!("{id} ")
         } else {
             String::new()
         };
+        // A settling action, or a wait the program stopped short of: its
+        // state, then what came since it began.
+        let settles = self.until.contains(&Until::Settled);
+        // `0 timeout`: at once, as it is, and no failure.
+        let at_once = settles && self.timeout.is_zero();
+        let (state, status) = match (&told, pane) {
+            (Told::Found(Found::Settled(state) | Found::Stopped(state)), _) => {
+                (Some(*state), status)
+            }
+            (Told::TimedOut(_), Some(pane)) if at_once => {
+                (Some(crate::ready::state(pane, Instant::now())), 0)
+            }
+            (Told::TimedOut(_), _) if settles => (Some(crate::ready::State::Busy), status),
+            (
+                Told::Found(_) | Told::Exited(..) | Told::Replaced | Told::Gone | Told::TimedOut(_),
+                _,
+            ) => (None, status),
+        };
+        if let (Some(state), Some(pane)) = (state, pane) {
+            let line = self.state_line(id, pane, state, since);
+            // A text that cannot come: the screen, to act on what is there.
+            let body = match told {
+                Told::Found(Found::Stopped(_)) => text(pane, self.marks),
+                Told::Found(_)
+                | Told::Exited(..)
+                | Told::Replaced
+                | Told::Gone
+                | Told::TimedOut(_)
+                    if self.print =>
+                {
+                    since_text(pane, since.and_then(|s| s.cursor), self.marks)
+                }
+                Told::Found(_)
+                | Told::Exited(..)
+                | Told::Replaced
+                | Told::Gone
+                | Told::TimedOut(_) => String::new(),
+            };
+            // Said on stdout, with its status: still busy (124), stopped
+            // short of the text (7). Not a failure: the answer is the screen.
+            let stderr = String::new();
+            let json = Json::Object(vec![
+                ("pane", Json::str(id.to_string())),
+                ("state", Json::str(state.word())),
+                ("status", Json::Number(i64::from(status))),
+                ("output", Json::str(body.clone())),
+            ]);
+            return Outcome {
+                status,
+                stdout: format!("{line}\n{body}"),
+                stderr,
+                json: format!("{}\n", json.render()),
+                ..Outcome::default()
+            };
+        }
         let screen = pane.filter(|_| self.print).map(|p| text(p, self.marks));
         let (said, problem, json) = match told {
             Told::Found(found) => {
@@ -486,6 +616,39 @@ impl Wait {
 }
 
 impl Wait {
+    /// A settled pane's first line: its id and state, then what else is
+    /// known: a shell command that ended, keys read that drew nothing, keys
+    /// not read yet.
+    fn state_line(
+        &self,
+        id: PaneId,
+        pane: &Pane,
+        state: crate::ready::State,
+        since: Option<Since>,
+    ) -> String {
+        let mut line = format!("{id} {}", state.word());
+        let commands = pane.screen().commands();
+        if let Some(since) = since {
+            if commands.finished > since.finished {
+                match commands.last_status {
+                    Some(status) => line.push_str(&format!(" · done {status}")),
+                    None => line.push_str(" · done"),
+                }
+            }
+            if self.after
+                && pane.revision == since.revision
+                && state == crate::ready::State::Reading
+            {
+                line.push_str(" · no change");
+            }
+        }
+        let queued = pane.input_queued();
+        if queued > 0 {
+            line.push_str(&format!(" · {queued} bytes unread"));
+        }
+        line
+    }
+
     /// Its conditions, as an error says what did not come.
     fn describe(&self) -> String {
         (self.until.iter())
@@ -527,6 +690,7 @@ impl Until {
             Until::Exit => "the program to exit".into(),
             Until::Done => "a command to end".into(),
             Until::Bell => "a bell".into(),
+            Until::Settled => "the pane to settle".into(),
         }
     }
 }
@@ -576,6 +740,13 @@ impl Found {
                         "exit",
                         status.map_or(Json::Null, |s| Json::Number(i64::from(s))),
                     ),
+                ],
+            ),
+            Found::Settled(state) | Found::Stopped(state) => (
+                state.word(),
+                vec![
+                    ("met", Json::str("settled")),
+                    ("state", Json::str(state.word())),
                 ],
             ),
             Found::Bell(notification) => (
@@ -754,6 +925,10 @@ impl Watch {
                         && (commands.finished >= self.done_at || settled))
                         .then_some(Found::Done(commands.last_status))
                 }
+                Until::Settled => {
+                    let state = crate::ready::state(pane, now);
+                    state.settled().then_some(Found::Settled(state))
+                }
                 Until::Bell => (pane.alerts.count() > self.alerts).then(|| {
                     Found::Bell(
                         pane.alerts
@@ -767,7 +942,22 @@ impl Watch {
                 return found;
             }
         }
+        // A text that cannot come: the program reads its terminal, having
+        // had a moment to print after what began the wait.
+        let settles = wait.until.contains(&Until::Settled);
+        let after_moment = now >= crate::after(began, crate::ready::SETTLE.saturating_mul(2));
+        if !texts.is_empty() && !settles && after_moment && crate::ready::reading(pane, now) {
+            return Some(Found::Stopped(crate::ready::State::Reading));
+        }
         None
+    }
+
+    fn since(&self) -> Since {
+        Since {
+            cursor: self.cursor,
+            finished: self.finished,
+            revision: self.revision,
+        }
     }
 
     /// Reads the history rows written since the wait began and not read
@@ -823,7 +1013,8 @@ fn texts(wait: &Wait) -> Vec<String> {
             | Until::Change(_)
             | Until::Exit
             | Until::Done
-            | Until::Bell => None,
+            | Until::Bell
+            | Until::Settled => None,
         })
         .collect()
 }
@@ -932,4 +1123,29 @@ fn text(pane: &Pane, marks: bool) -> String {
         return crate::capture::pane(pane, None, alt, false, false);
     }
     shown
+}
+
+/// What a pane shows from the row `cursor` was on to its last line with
+/// text: what came since an action began. A full-screen program's whole
+/// screen; all of it if that row is gone.
+fn since_text(pane: &Pane, cursor: Option<fux_vt::RowId>, marks: bool) -> String {
+    let screen = pane.screen();
+    let from = cursor
+        .filter(|_| !screen.mode(fux_vt::Mode::AlternateScreen))
+        .and_then(|row| screen.row_index(row));
+    let Some(from) = from else {
+        return text(pane, marks);
+    };
+    let found = lines(screen.rows().skip(from), None);
+    let texts: Vec<&str> = found.iter().map(|l| l.text.trim_end()).collect();
+    let end = texts
+        .iter()
+        .rposition(|t| !t.is_empty())
+        .map_or(0, |i| i.saturating_add(1));
+    texts
+        .get(..end)
+        .unwrap_or_default()
+        .iter()
+        .map(|t| format!("{t}\n"))
+        .collect()
 }

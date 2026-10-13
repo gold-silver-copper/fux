@@ -67,7 +67,8 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     if !pane.input_written() {
         return State::Busy;
     }
-    let quiet = now.saturating_duration_since(pane.changed_at);
+    // Quiet since the screen last changed and input last went in.
+    let quiet = now.saturating_duration_since(pane.changed_at.max(pane.written_at));
     let activity = fuxix::terminal::foreground_group(&child.master)
         .zip(child.master.slave_path())
         .map_or(Activity::Unknown, |(group, tty)| {

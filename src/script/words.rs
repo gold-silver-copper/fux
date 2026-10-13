@@ -310,6 +310,9 @@ fn count<T: TryFrom<i64>>(word: &str, value: &Value<Fux>) -> Result<T, Failure> 
 fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
     match value {
         Value::App(Fux::Pane(p)) => Ok(*p),
+        Value::App(Fux::Answer(answer)) if answer.pane.is_some() => {
+            answer.pane.ok_or_else(|| wrong(word, "a pane", value))
+        }
         other @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -333,6 +336,10 @@ fn client(word: &str, value: &Value<Fux>) -> Result<crate::id::ClientId, Failure
 fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef<WsId>, Failure> {
     match value {
         Value::App(Fux::Pane(p)) => Ok(AnyRef::Pane(*p)),
+        Value::App(Fux::Answer(answer)) if answer.pane.is_some() => answer
+            .pane
+            .map(AnyRef::Pane)
+            .ok_or_else(|| wrong(word, "a pane", value)),
         Value::App(Fux::Tab(t)) => Ok(AnyRef::Tab(*t)),
         Value::App(Fux::Workspace(w)) => Ok(AnyRef::Workspace(*w)),
         other @ (Value::Int(_)
@@ -441,19 +448,32 @@ fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failu
 }
 
 /// A wait as the server takes it, armed after an action when `after`.
-fn wait(waits: &Waits, after: bool) -> Option<Box<Wait>> {
-    (!waits.until.is_empty()).then(|| {
-        Box::new(Wait {
-            until: waits.until.clone(),
-            timeout: waits.timeout.unwrap_or(WAIT_TIMEOUT),
-            print: waits.print,
-            after,
-            echo: Vec::new(),
-            marks: waits.marks,
-            lines: 0,
-            all: true,
-        })
-    })
+/// How long an action waits for its pane to settle when it names nothing.
+pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The wait an action makes: what it names; or, from a command line
+/// (`settle`), for the pane to settle, said with what came.
+fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
+    let until = match (waits.until.is_empty(), settle) {
+        (false, _) => waits.until.clone(),
+        (true, true) => vec![Until::Settled],
+        (true, false) => return None,
+    };
+    let settles = until == [Until::Settled];
+    Some(Box::new(Wait {
+        until,
+        timeout: waits.timeout.unwrap_or(if settles {
+            SETTLE_TIMEOUT
+        } else {
+            WAIT_TIMEOUT
+        }),
+        print: waits.print || settles,
+        after,
+        echo: Vec::new(),
+        marks: waits.marks,
+        lines: 0,
+        all: true,
+    }))
 }
 
 fn ask(command: Command, then: Then) -> Ask {
@@ -731,7 +751,7 @@ impl fuxth::Host for Host<'_> {
                             json: false,
                             log: built.log,
                             ids: built.ids,
-                            then: wait(&built.waits, false),
+                            then: wait(&built.waits, false, self.settle),
                         }
                     }
                     "new-tab" => Command::NewTab {
@@ -791,7 +811,7 @@ impl fuxth::Host for Host<'_> {
                         kill: built.kill,
                         env: built.env,
                         argv: built.argv,
-                        then: wait(&built.waits, false),
+                        then: wait(&built.waits, false, self.settle),
                     },
                     Then::Handle(Kind::Pane),
                 ))
@@ -852,10 +872,10 @@ impl fuxth::Host for Host<'_> {
                 let p = target(name, &next()?)?.map(WsRef::Id);
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
-                let Some(mut wait) = wait(&built.waits, false) else {
+                let Some(mut wait) = wait(&built.waits, false, true) else {
                     return Err(fail(
                         "no_condition",
-                        "wait needs a condition: wait-text, wait-idle, wait-exit, wait-done, …",
+                        "wait needs a condition: wait-text, wait-exit, …",
                     ));
                 };
                 wait.all = false;
@@ -916,7 +936,7 @@ impl fuxth::Host for Host<'_> {
                 if built.inputs.is_empty() {
                     return Err(fail("no_keys", "send-keys needs keys: keys str hello text"));
                 }
-                let mut then = wait(&built.waits, true);
+                let mut then = wait(&built.waits, true, self.settle);
                 if let Some(wait) = &mut then {
                     let (echo, lines) = crate::command::typed_lines(&built.inputs, built.repeat);
                     wait.echo = echo;
@@ -1000,7 +1020,7 @@ impl fuxth::Host for Host<'_> {
                         return Err(wrong(name, "a mouse event (from mouse)", &other));
                     }
                 };
-                let then = wait(&m.waits, true);
+                let then = wait(&m.waits, true, self.settle);
                 let waited = then.is_some();
                 later(ask(
                     Command::SendMouse {
@@ -1054,12 +1074,17 @@ impl fuxth::Host for Host<'_> {
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
                 let then = if built.json { Then::Text } else { Then::Answer };
+                // From a command line, read once the pane settles.
+                let settle = self
+                    .settle
+                    .then(|| built.waits.timeout.unwrap_or(SETTLE_TIMEOUT));
                 later(ask(
                     Command::CapturePane {
                         target: Some(p),
                         history: built.history,
                         view: built.view,
                         json: built.json,
+                        settle,
                     },
                     then,
                 ))
@@ -1751,6 +1776,7 @@ fn as_json(query: Command) -> Command {
             history,
             view,
             json: true,
+            settle: None,
         },
         Command::Client {
             client,

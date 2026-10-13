@@ -226,6 +226,10 @@ pub enum Until {
     Done,
     /// The program rings the bell or sends a desktop notification.
     Bell,
+    /// The pane settles: its program reads its terminal, waits quiet on
+    /// something else, or exits (`crate::ready`). What an action waits for
+    /// when it names nothing.
+    Settled,
 }
 
 /// A wait: for any of its conditions, in any of its panes, how long at
@@ -453,6 +457,9 @@ pub enum Command {
         history: Option<usize>,
         view: CaptureView,
         json: bool,
+        /// Read once the pane settles, waiting this long at most, and said
+        /// with its state; at once, as it is, without.
+        settle: Option<Duration>,
     },
     Reorder {
         subject: Subject,

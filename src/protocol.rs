@@ -17,7 +17,7 @@ use crate::wire::Wire;
 use std::num::NonZeroU16;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.

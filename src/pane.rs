@@ -488,6 +488,9 @@ pub struct Pane {
     /// has: a program that redraws the same screen has not changed it.
     shown: u64,
     pub changed_at: Instant,
+    /// When input last went to the program: it is busy with it at first,
+    /// even while still blocked reading (the kernel has yet to wake it).
+    pub written_at: Instant,
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,
@@ -596,6 +599,7 @@ impl Pane {
             paced: Paced::default(),
             shown: 0,
             changed_at: Instant::now(),
+            written_at: Instant::now(),
             revision: 0,
             starts: 0,
             mouse_held: None,
@@ -710,7 +714,10 @@ impl Pane {
         while let Some(bytes) = self.input.front() {
             match fuxix::io::write(&child.master, bytes) {
                 Ok(0) => break,
-                Ok(n) => self.input.advance(n),
+                Ok(n) => {
+                    self.input.advance(n);
+                    self.written_at = Instant::now();
+                }
                 Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
             }

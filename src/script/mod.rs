@@ -141,6 +141,8 @@ pub struct Answer {
     pub text: String,
     pub json: Option<String>,
     pub query: Option<Command>,
+    /// The pane an action's answer is of: a word that wants a pane takes it.
+    pub pane: Option<crate::id::PaneId>,
 }
 
 /// What an application word asks while the program waits.
@@ -209,6 +211,10 @@ pub struct Host<'a> {
     /// whether it is bound without the prefix.
     pub last_bound: Option<(Vec<crate::keys::KeyPress>, bool)>,
     pub out: &'a mut dyn Write,
+    /// A command line an agent or a person runs: an action waits for its
+    /// pane to settle unless it names what to wait for. Bindings, configs
+    /// and restores act at once.
+    pub settle: bool,
 }
 
 /// How a run ended: its status, and why it failed, if it did.
@@ -707,6 +713,15 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
     Ok(match then {
         Then::Nothing => Vec::new(),
         Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
+            // A pane an action settled: its answer, which is its pane too.
+            Some(crate::command::AnyRef::Pane(p)) if text.starts_with(&format!("{p} ")) => {
+                vec![Value::App(Fux::Answer(Box::new(Answer {
+                    text,
+                    json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
+                    query: None,
+                    pane: Some(*p),
+                })))]
+            }
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed {
@@ -720,6 +735,7 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
             text,
             json: None,
             query: Some(query),
+            pane: None,
         })))],
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
@@ -732,6 +748,7 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
                 json: Some(text.clone()),
                 text,
                 query: None,
+                pane: None,
             }))),
         }],
         Then::Outcome { waited: false } => Vec::new(),
@@ -739,6 +756,7 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
             text,
             json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
             query: None,
+            pane: None,
         })))],
     })
 }
@@ -838,6 +856,7 @@ fn answer(text: String, json: String) -> Value<Fux> {
         text: text.trim_end().to_owned(),
         json: Some(json.trim_end().to_owned()),
         query: None,
+        pane: None,
     })))
 }
 
@@ -908,6 +927,7 @@ fn run_file(
         keymap: Some(keymap),
         last_bound: None,
         out: &mut out,
+        settle: false,
     };
     run_capped(
         &mut machine,
@@ -985,6 +1005,7 @@ pub fn restore(
         keymap: None,
         last_bound: None,
         out: &mut out,
+        settle: false,
     };
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
     run_capped(
@@ -1095,6 +1116,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         keymap: None,
         last_bound: None,
         out: &mut out,
+        settle: true,
     };
     let ended = run(&mut machine, &mut host, &mut Cli::default())?;
     for value in &ended.stack {

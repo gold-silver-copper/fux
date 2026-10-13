@@ -898,6 +898,7 @@ fn run_job(
             keymap: Some(&mut changed),
             last_bound: None,
             out: &mut out,
+            settle: false,
         };
         crate::script::run_capped(
             &mut machine,

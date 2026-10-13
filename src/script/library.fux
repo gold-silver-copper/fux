@@ -5,8 +5,8 @@
 define type keys swap text send-keys end
 # pane name -- : press a key in a pane: Enter, C-c, Up; it prints nothing
 define press keys swap key send-keys end
-# pane text -- outcome : in a shell: type a line, press Enter, wait for its command to end (a program: type, press, then wait-text)
-define line keys swap text str Enter key wait-done send-keys end
+# pane text -- answer : in a shell: type a line and press Enter; answers once the shell reads again, `· done STATUS`, with the command's output
+define line keys swap text str Enter key send-keys end
 # pane -- capture : the pane's screen as it is now
 define screen opts capture end
 # path -- pane : start a program in a tab of its own
