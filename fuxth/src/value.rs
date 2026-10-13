@@ -135,18 +135,6 @@ impl std::ops::Deref for Text {
     }
 }
 
-impl PartialEq<str> for Text {
-    fn eq(&self, other: &str) -> bool {
-        *self.text == *other
-    }
-}
-
-impl AsRef<str> for Text {
-    fn as_ref(&self) -> &str {
-        &self.text
-    }
-}
-
 impl std::fmt::Display for Text {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.text)

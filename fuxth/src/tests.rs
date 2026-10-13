@@ -869,3 +869,38 @@ fn a_list_held_many_times_is_counted_whole() {
     let fine = "list 1 2 end let x 0 begin list x x end let x 1 add dup 10 eq until x x eq";
     assert_eq!(code(run(fine)), None);
 }
+
+/// Cases mutation testing showed no test held: string order, a non-ASCII
+/// string grown and then indexed, copies of shared strings charged, and a
+/// list's depth after `put` makes it shallower.
+#[test]
+fn what_mutation_testing_found() -> Result<(), Error> {
+    assert_eq!(
+        run("str a str b lt str b str a lt str ab str a lt")?,
+        [Value::Bool(true), Value::Bool(false), Value::Bool(false)]
+    );
+    assert_eq!(
+        run("str é str ab push dup 2 at swap 0 at")?,
+        [Value::str("b"), Value::str("é")]
+    );
+    let shared = "str x 1000 copies let s 0 begin s str y push drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    let shared = "str x 1000 copies let s 0 begin s 0 str y put drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    let shared = "0 1000 range let s 0 begin s 7 push drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    let shared = "0 1000 range let s 0 begin s 0 7 put drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    // Held nowhere else, a list is put into in place, free of copies.
+    let alone = "0 1000 range 0 begin swap 0 7 put swap 1 add dup 17000 eq until drop len";
+    assert_eq!(run(alone)?, ints(&[1000]));
+    // A string put may make a string exactly as long as one may be.
+    assert_eq!(
+        run("str x 1000000 copies 0 str y put len")?,
+        ints(&[1_000_000])
+    );
+    let shallower = "list list list 1 end end end 0 5 put let x \
+        0 begin list x end let x 1 add dup 63 eq until drop x len";
+    assert_eq!(run(shallower)?, ints(&[1]));
+    Ok(())
+}
