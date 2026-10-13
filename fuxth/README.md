@@ -30,12 +30,17 @@ line, the deepest first; `print` prints a value at once.
   stack surely holds, or a value of a kind it never takes (`str a 1 add`,
   `str a not`: for a word of the library or your own, kinds on which every
   way through it fails, checked again at each call with the kinds it is
-  given). It follows depths and kinds, not values (`1 0 div` fails as it
-  runs), nor list elements' kinds, nor top-level names read inside a
-  definition. It follows depths as ranges and kinds as sets through
-  branches, loops, `list` and `each`, definitions (each summed up by what it
-  uses, leaves, and which kinds of input it always fails on) and recursion;
-  what it can't know is never an error.
+  given; a way ending at `fail` counts as failing, unless every way does).
+  A number written just before `pick` or `roll` is part of the step, and
+  checked as a depth. It follows depths and kinds, not values (`1 0 div`
+  fails as it runs), nor list elements' kinds, nor top-level names read
+  inside a definition, nor the kinds a word calling itself leaves, nor kinds
+  under a varying number of values or deeper than the top 32. It follows
+  depths as ranges and kinds as sets through branches, loops, `list` and
+  `each`, and definitions (each summed up by what it uses and leaves, and
+  checked again at each call with the kinds of its top 8 values); what it
+  can't know is never an error. Steps no run reaches (after `fail`, or a
+  call that never returns) aren't checked.
 - **Recursion in last place loops**: a call that is a definition's last step
   replaces its caller's frame.
 - **Pauses for its host.** An application word can suspend the run while the
@@ -47,7 +52,8 @@ line, the deepest first; `print` prints a value at once.
   list built holds at most 1,000,000 elements, a run builds at most
   16,000,000 in all, and a list holds at most 16,000,000 in all, counting
   through the lists and strings in it; long steps cost a step per 64
-  elements. String literals are not built, so they are exempt.
+  elements; `push` and `put` grow a string or list in place when nothing
+  else holds it. String literals are not built, so they are exempt.
 - **Errors** carry a stable code, a message, and the file, line and word.
 
 ## The core
@@ -56,7 +62,7 @@ line, the deepest first; `print` prints a value at once.
 |---|---|
 | `str WORD` | WORD as a string, whatever it looks like: `str 12`, `str 'two words'`, `str ''` |
 | `define NAME … end` | a word of your own; it may call itself; at the top level only |
-| `VALUE let NAME` | NAME pushes VALUE from then on: inside a definition, for that call; at the top level, for the rest of the program (definitions written after it may read it). A later `let NAME` sets it again. |
+| `VALUE let NAME` | NAME pushes VALUE from there on in the text: inside a definition, for that call; at the top level, for the rest of the program (definitions written after it may read it). A later `let NAME` sets it again. |
 | `FLAG if … then`, `FLAG if … else … then` | one branch |
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |

@@ -39,13 +39,13 @@ pub enum Value<A> {
 /// all ASCII: then a character is found by its byte, at once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Text {
-    text: Box<str>,
+    text: String,
     chars: usize,
     ascii: bool,
 }
 
 impl Text {
-    pub fn new(text: impl Into<Box<str>>) -> Text {
+    pub fn new(text: impl Into<String>) -> Text {
         let text = text.into();
         let ascii = text.is_ascii();
         let chars = if ascii {
@@ -54,6 +54,13 @@ impl Text {
             text.chars().count()
         };
         Text { text, chars, ascii }
+    }
+
+    /// `other` added at the end.
+    pub fn append(&mut self, other: &Text) {
+        self.text.push_str(&other.text);
+        self.chars = self.chars.saturating_add(other.chars);
+        self.ascii &= other.ascii;
     }
 
     /// How many characters it has.
@@ -253,7 +260,7 @@ impl<A: AppValue> Value<A> {
 }
 
 impl<A> Value<A> {
-    pub fn str(text: impl Into<Box<str>>) -> Value<A> {
+    pub fn str(text: impl Into<String>) -> Value<A> {
         Value::Str(Rc::new(Text::new(text)))
     }
 

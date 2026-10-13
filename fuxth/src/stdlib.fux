@@ -103,12 +103,8 @@ end
 define chars let s list s unpack end end
 # from to -- list : from, from+1, …, to-1 (empty when to is at most from)
 define range
-  let to let from
-  list
-    from to lt if
-      from begin dup 1 add dup to eq until drop
-    then
-  end
+  let to
+  empty swap begin dup to lt if tuck push swap 1 add false else true then until drop
 end
 # n e -- n^e : n to the power e, e at least 0
 define pow
@@ -247,7 +243,10 @@ define upper let s list str '' s each let c c is-lower if c code 32 sub char els
 # s -- s : A-Z made a-z
 define lower let s list str '' s each let c c is-upper if c code 32 add char else c then end end concat end
 # s n -- s : s n times over
-define copies let n let s list str '' 0 n range each drop s end end concat end
+define copies
+  let n let s
+  str '' n begin dup 0 gt if swap s push swap 1 sub false else true then until drop
+end
 # x width fill -- s : x's text, with fill (a non-empty string) put before it, cut to fit, until it is width long
 define pad
   let fill let width string let s

@@ -201,6 +201,22 @@ enum Failing {
     Type(String),
 }
 
+/// How the ways through a code that don't come back ended: the least any
+/// had used of the entry's values, and whether any went on without
+/// failing (a call that never returns, a loop gone round).
+#[derive(Clone, Copy, Debug, Default)]
+struct Ends {
+    used: Option<i64>,
+    diverges: bool,
+}
+
+impl Ends {
+    fn end(&mut self, used: i64, diverges: bool) {
+        self.used = Some(self.used.map_or(used, |u| u.min(used)));
+        self.diverges |= diverges;
+    }
+}
+
 /// Whether a run can go on past a step.
 enum Flow {
     Go,
@@ -511,10 +527,15 @@ impl<'a, A> Unit<'a, A> {
     /// way that would go round ends there, its use kept as if it ended):
     /// every run goes that far.
     fn states(&self, forward: bool) -> Option<(Blocks, Option<i64>)> {
+        self.ends(forward).map(|(blocks, ends)| (blocks, ends.used))
+    }
+
+    /// As `states`, with how the ways that don't come back ended.
+    fn ends(&self, forward: bool) -> Option<(Blocks, Ends)> {
         let first = (self.start.clone(), 0);
         let mut states = std::collections::BTreeMap::from([(0, first)]);
         let mut todo = BTreeSet::from([0usize]);
-        let mut diverged: Option<i64> = None;
+        let mut diverged = Ends::default();
         // A block's state changes a bounded number of times: widened twice,
         // its kept values shrinking, their kinds growing.
         let mut left = self.starts.len().saturating_add(1).saturating_mul(1024);
@@ -526,7 +547,7 @@ impl<'a, A> Unit<'a, A> {
             for (to, next) in self.block(start, state, &mut |_, _| {}, &mut diverged) {
                 if forward && to <= start {
                     let used = next.outer.first().map_or(next.used, |o| o.used);
-                    diverged = Some(diverged.map_or(used, |d| d.min(used)));
+                    diverged.end(used, true);
                     continue;
                 }
                 let merged = match states.get(&to) {
@@ -610,21 +631,24 @@ impl<'a, A> Unit<'a, A> {
             self.specials,
             Some(id),
         );
-        let special = match unit.states(false) {
+        let special = match unit.ends(false) {
             None => Special::Unknown,
-            Some((mut states, diverged)) => {
+            Some((mut states, ends)) => {
                 let end = code.ops.len();
                 let exit = states.remove(&end).map(|(state, _)| state);
                 let scrambled = states.values().any(|(s, _)| s.scrambled);
-                match (exit, diverged) {
-                    (None, None) => match unit.first_error() {
+                // Every way fails: by a mistake the checker is sure of, or
+                // at a `fail` (with one mistake at least: a word that only
+                // ever calls `fail` is called to fail).
+                match (exit, ends.used, ends.diverges) {
+                    (None, None, _) | (None, Some(_), false) => match unit.first_error() {
                         Some(e) => Special::Fails(match e.word {
                             Some(word) => format!("{word}: {}", e.message),
                             None => e.message,
                         }),
                         None => Special::Unknown,
                     },
-                    (exit, _) => Special::Does(Summary {
+                    (exit, _, _) => Special::Does(Summary {
                         need: 0,
                         exit,
                         scrambled,
@@ -647,7 +671,7 @@ impl<'a, A> Unit<'a, A> {
                     first = Some((at, error));
                 }
             };
-            self.block(start, state, &mut failed, &mut None);
+            self.block(start, state, &mut failed, &mut Ends::default());
         }
         first.map(|(_, error)| error)
     }
@@ -661,7 +685,7 @@ impl<'a, A> Unit<'a, A> {
         start: usize,
         mut state: State,
         failed: &mut dyn FnMut(usize, Error),
-        diverged: &mut Option<i64>,
+        diverged: &mut Ends,
     ) -> Vec<(usize, State)> {
         let mut at = start;
         loop {
@@ -685,9 +709,9 @@ impl<'a, A> Unit<'a, A> {
                 // A way that never returns, or stops on purpose (`fail`),
                 // used what it had: counted as an end, at the definition's
                 // own depth (not a `list` body's).
-                Ok(Flow::Diverge | Flow::Stop) => {
+                Ok(flow @ (Flow::Diverge | Flow::Stop)) => {
                     let used = state.outer.first().map_or(state.used, |o| o.used);
-                    *diverged = Some(diverged.map_or(used, |d| d.min(used)));
+                    diverged.end(used, matches!(flow, Flow::Diverge));
                     return Vec::new();
                 }
                 Ok(Flow::Go) => {}

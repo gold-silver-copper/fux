@@ -343,7 +343,7 @@ impl<A: AppValue> Machine<A> {
                     if returns_from(&code.ops, frame.step) {
                         via = Some(frame.via.unwrap_or((frame.code, frame.step)));
                         self.leave();
-                    } else if self.frames.len() >= self.limits.calls {
+                    } else if self.frames.len() > self.limits.calls {
                         let message =
                             format!("calls nest past {}: recursion too deep", self.limits.calls);
                         return Err(self.fail(ErrorCode::CallDepth, message, None));
@@ -792,7 +792,9 @@ impl<A: AppValue> Machine<A> {
                 // between a list's values): checked before it is made.
                 let most = usize::try_from(x.weight().saturating_mul(2)).unwrap_or(usize::MAX);
                 if most > LONGEST.saturating_mul(2) {
-                    self.build(most)?;
+                    return Err(self.too_long(format!(
+                        "the text would be longer than a string may be ({LONGEST})"
+                    )));
                 }
                 let text = crate::value::Text::new(x.text());
                 self.build(text.chars_len())?;
@@ -891,13 +893,22 @@ impl<A: AppValue> Machine<A> {
                     None => Err(self.nested()),
                 }
             }
-            (Value::Str(s), Value::Str(x)) => {
+            (Value::Str(mut s), Value::Str(x)) => {
                 let n = s.chars_len().saturating_add(x.chars_len());
-                self.build(n)?;
-                let mut text = String::with_capacity(s.len().saturating_add(x.len()));
-                text.push_str(&s);
-                text.push_str(&x);
-                Ok(Value::str(text))
+                if n > LONGEST {
+                    return Err(
+                        self.too_long(format!("a string holds at most {LONGEST} characters"))
+                    );
+                }
+                // Held elsewhere too, it is copied first, as a list is.
+                let copied = if Rc::strong_count(&s) > 1 {
+                    s.chars_len()
+                } else {
+                    0
+                };
+                self.build(copied.saturating_add(x.chars_len()))?;
+                Rc::make_mut(&mut s).append(&x);
+                Ok(Value::Str(s))
             }
             (Value::Str(_), x) => Err(self.type_error(format!(
                 "push onto a string takes a string, not {}",

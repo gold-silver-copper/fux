@@ -764,6 +764,36 @@ fn what_qa_found() -> Result<(), Error> {
     );
     assert_eq!(run("-9223372036854775808 -1 mod 7 -1 mod")?, ints(&[0, 0]));
     assert_eq!(run("str x 5 str ab pad len")?, ints(&[5]));
+    // A way ending at `fail` counts as failing, unless every way does.
+    assert_eq!(
+        refused("str m print 5 str , split-on").as_deref(),
+        Some("type")
+    );
+    assert_eq!(
+        refused("define f if str boom fail else 1 add then end str a true f").as_deref(),
+        Some("type")
+    );
+    assert_eq!(
+        refused("define die str x fail end false if die then 1"),
+        None
+    );
+    // All the calls allowed (100 here) may nest, the top level aside.
+    let deep = "define f dup 0 eq if else 1 sub f 0 drop then end";
+    assert_eq!(run(&format!("{deep} 99 f 0"))?, ints(&[0, 0]));
+    assert_eq!(code(run(&format!("{deep} 100 f 0"))), Some("call_depth"));
+    // Built to the longest a value may be, not held on the stack first;
+    // a string pushed onto, held nowhere else, grows in place.
+    assert_eq!(
+        run("0 1000000 range len str a 1000000 copies len")?,
+        ints(&[1_000_000, 1_000_000])
+    );
+    assert_eq!(
+        run("str ab let s s str c push s")?,
+        [Value::str("abc"), Value::str("ab")]
+    );
+    // Too long a text is refused with how long a string may be.
+    let wide = run("list 0 600000 range end string");
+    assert!(wide.is_err_and(|e| e.message.contains("1000000") && !e.message.contains("2000000")));
     Ok(())
 }
 
