@@ -246,6 +246,8 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     );
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
+        // reading, waiting, busy, exited 0, …: whether to look now.
+        ("state", Json::str(crate::ready::state(pane, now).word())),
         ("paused", Json::Bool(paused)),
         (
             "exited",

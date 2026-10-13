@@ -493,3 +493,200 @@ mod tests {
         Ok(())
     }
 }
+
+/// What the programs in a terminal's foreground group are doing, as far as
+/// the system says: whether they wait for the terminal, which is when an
+/// agent driving them should look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity {
+    /// Blocked reading the terminal, or waiting on it with no time limit.
+    Reading,
+    /// Waiting on the terminal with a time limit: a program that polls for
+    /// keys and may draw again on its own.
+    Polling,
+    /// Blocked on something else: the network, a pipe, another program.
+    Waiting,
+    /// Running, sleeping on a timer, or starting.
+    Busy,
+    /// The system does not say.
+    Unknown,
+}
+
+/// What a blocked thread waits in, by its system call.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Blocked {
+    /// read and its kind, on this descriptor.
+    Read(u64),
+    /// poll and its kind, with no time limit (`true`) or with one.
+    Poll(bool),
+    /// A sleep on a timer.
+    Sleep,
+    /// A wait for a child.
+    Child,
+    /// A futex: a thread parked; what the others do decides.
+    Futex,
+    Other,
+}
+
+/// The system call numbers this machine uses, by what they wait for.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    target_arch = "x86_64"
+))]
+fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
+    let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+    let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
+    match nr {
+        0 | 17 | 19 | 295 => Blocked::Read(arg(0)),
+        7 => Blocked::Poll(forever(arg(2))),
+        23 | 270 => Blocked::Poll(arg(4) == 0),
+        271 => Blocked::Poll(arg(2) == 0),
+        232 | 281 => Blocked::Poll(forever(arg(3))),
+        441 => Blocked::Poll(arg(3) == 0),
+        35 | 230 => Blocked::Sleep,
+        61 | 247 => Blocked::Child,
+        202 => Blocked::Futex,
+        _ => Blocked::Other,
+    }
+}
+
+/// The system call numbers this machine uses, by what they wait for.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    target_arch = "aarch64"
+))]
+fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
+    let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+    let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
+    match nr {
+        63 | 65 | 67 | 69 => Blocked::Read(arg(0)),
+        72 => Blocked::Poll(arg(4) == 0),
+        73 => Blocked::Poll(arg(2) == 0),
+        22 => Blocked::Poll(forever(arg(3))),
+        441 => Blocked::Poll(arg(3) == 0),
+        101 | 115 => Blocked::Sleep,
+        260 | 95 => Blocked::Child,
+        98 => Blocked::Futex,
+        _ => Blocked::Other,
+    }
+}
+
+/// Another machine: nothing is known of its system call numbers.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    not(any(target_arch = "x86_64", target_arch = "aarch64"))
+))]
+fn blocked_in(_nr: u64, _args: &[u64]) -> Blocked {
+    Blocked::Other
+}
+
+/// What thread `tid` of `pid` is blocked in; `None` while it runs.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
+    let state = stat.rsplit_once(')')?.1.split_whitespace().next()?;
+    if state != "S" {
+        return None;
+    }
+    let call = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")).ok()?;
+    let mut words = call.split_whitespace();
+    let nr = words.next()?;
+    let nr: u64 = nr.parse().ok()?;
+    let args: Vec<u64> = words
+        .take(6)
+        .filter_map(|w| u64::from_str_radix(w.trim_start_matches("0x"), 16).ok())
+        .collect();
+    Some(blocked_in(nr, &args))
+}
+
+/// Whether `pid`'s descriptor `fd` is the terminal at `tty` (or its own
+/// controlling terminal, as `/dev/tty`).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
+        .is_ok_and(|target| target == tty || target == std::path::Path::new("/dev/tty"))
+}
+
+/// What one process of the group does, by its main thread, or by its other
+/// threads when the main thread waits for them or for a child.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
+    let on_terminal = |blocked: Blocked| match blocked {
+        Blocked::Read(fd) if is_terminal(pid, fd, tty) => Some(Activity::Reading),
+        Blocked::Poll(forever) if is_terminal(pid, 0, tty) => Some(if forever {
+            Activity::Reading
+        } else {
+            Activity::Polling
+        }),
+        Blocked::Read(_) | Blocked::Poll(_) | Blocked::Other => Some(Activity::Waiting),
+        Blocked::Sleep => Some(Activity::Busy),
+        Blocked::Child | Blocked::Futex => None,
+    };
+    let main = pid.to_string();
+    let Some(blocked) = thread_blocked(pid, &main) else {
+        return Some(Activity::Busy);
+    };
+    if let Some(activity) = on_terminal(blocked) {
+        return Some(activity);
+    }
+    if blocked == Blocked::Child {
+        return None;
+    }
+    // The main thread is parked: a thread waiting on the terminal says.
+    let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
+    let mut seen = Activity::Waiting;
+    for task in tasks.filter_map(|t| t.ok()) {
+        let Some(tid) = task.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        match thread_blocked(pid, &tid).map(on_terminal) {
+            Some(Some(Activity::Reading)) => return Some(Activity::Reading),
+            Some(Some(Activity::Polling)) => seen = Activity::Polling,
+            Some(Some(Activity::Waiting | Activity::Busy | Activity::Unknown) | None) => {}
+            None => return Some(Activity::Busy),
+        }
+    }
+    Some(seen)
+}
+
+/// What the programs in foreground group `group` of the terminal at `tty`
+/// do: busy if one is; else reading if one waits for the terminal, polling
+/// if one polls it, waiting if they wait on something else.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn activity(group: Pid, tty: &std::path::Path) -> Activity {
+    let in_group = |pid: &Pid| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse::<i32>().ok())
+                == Some(group.as_raw())
+        })
+    };
+    let members: Vec<Pid> = processes().into_iter().filter(in_group).collect();
+    if members.is_empty() {
+        return Activity::Unknown;
+    }
+    let mut seen: Vec<Activity> = members
+        .iter()
+        .filter_map(|p| process_activity(*p, tty))
+        .collect();
+    if seen.is_empty() {
+        // Every one waits for a child of another group: still at work.
+        seen.push(Activity::Busy);
+    }
+    [
+        Activity::Busy,
+        Activity::Reading,
+        Activity::Polling,
+        Activity::Waiting,
+    ]
+    .into_iter()
+    .find(|a| seen.contains(a))
+    .unwrap_or(Activity::Unknown)
+}
+
+/// macOS keeps what a thread is blocked in to itself: not known.
+#[cfg(target_os = "macos")]
+pub fn activity(_group: Pid, _tty: &std::path::Path) -> Activity {
+    Activity::Unknown
+}

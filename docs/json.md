@@ -20,6 +20,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
 | `program` | what runs in its foreground, `null` if unknown |
+| `state` | what it is doing: `reading` (blocked on its terminal, every key read), `waiting` (on something else, quiet 1s), `busy`, `settled` (quiet; nothing else known), `exited N`, `killed SIG`, or `empty` |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `exited` | the status its program exited with (a pane `run` started), else `null` |
 | `signal` | the signal that killed it (its number), else `null` |

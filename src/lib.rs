@@ -23,6 +23,7 @@ pub mod overlay;
 pub mod pane;
 pub mod process;
 pub mod protocol;
+pub mod ready;
 pub mod render;
 pub mod screens;
 pub mod script;

@@ -50,6 +50,14 @@ pub struct Master(OwnedFd);
 #[derive(Debug)]
 pub struct Slave(OwnedFd);
 
+impl Master {
+    /// The path of its slave (`/dev/pts/N`), as programs on it see their
+    /// terminal.
+    pub fn slave_path(&self) -> Option<PathBuf> {
+        slave_name(&self.0).ok()
+    }
+}
+
 impl AsFd for Master {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
