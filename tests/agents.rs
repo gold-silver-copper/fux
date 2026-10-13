@@ -1215,6 +1215,47 @@ fn screens_and_shells_hold_up_under_stress() -> Outcome {
     Ok(())
 }
 
+/// A bash that reads no file of fux's (`--norc`) keeps `PIPESTATUS`, which
+/// bash 5.3 empties for good once it imports a PROMPT_COMMAND, and shows its
+/// own prompt with nothing of fux's left in its variables.
+#[test]
+fn a_bare_bash_keeps_its_pipestatus_and_prompt() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&run(
+        &[
+            "str",
+            "n",
+            "name",
+            "str",
+            "PS1",
+            "str",
+            "mine> ",
+            "env",
+            "300",
+            "wait-idle",
+        ],
+        &["bash", "--norc", "-i"],
+    ))?;
+    server.ok(&typed(
+        "n",
+        "false | true; echo \"<${PIPESTATUS[*]}>\"",
+        &["wait-done"],
+    ))?;
+    assert_eq!(last_output(&server, "n")?, "<1 0>\n");
+    server.ok(&typed(
+        "n",
+        "echo \"[${__fux_pc-}${__fux_ps1-}]\"",
+        &["wait-done"],
+    ))?;
+    assert_eq!(last_output(&server, "n")?, "[]\n");
+    let screen = server.ok(&["str", "n", "pane", "opts", "capture"])?;
+    assert!(
+        screen.contains("mine> ") && !screen.contains("PROMPT_COMMAND"),
+        "{screen}"
+    );
+    Ok(())
+}
+
 /// What the agents' rechecks found: wait-done after Ctrl-C, with fewer
 /// command ends than lines; a prompt waited for after typing is not its
 /// echo; a command typed while another runs waits for its own end;

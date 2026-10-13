@@ -1199,11 +1199,13 @@ impl Session {
         let child = match &self.launch {
             Some(launcher) => {
                 let socket = &launcher.socket;
-                let (argv, marks) = with_marks(&self.config, socket, &launch.argv, &launch.env);
-                vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
-                let unset = unset(&self.starting, &launch.env);
+                let marks = with_marks(&self.config, socket, &launch.argv, &launch.env);
+                vars.extend(marks.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
+                vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
+                let mut unset = unset(&self.starting, &launch.env);
+                unset.extend(marks.unset.iter().cloned());
                 Some(crate::process::spawn(
-                    &argv,
+                    &marks.argv,
                     &launch.cwd,
                     (&vars, &unset),
                     size,
@@ -3907,7 +3909,7 @@ fn closed(origin: &Origin, ids: &[String]) -> String {
     }
 }
 
-/// `argv` as it is started, and variables to add: a shell fux knows
+/// `argv` as it is started, and variables to add and remove: a shell fux knows
 /// started so that it marks its commands, unless `set shell-marks off`. Its
 /// startup files go beside the server's socket.
 fn with_marks(
@@ -3915,7 +3917,7 @@ fn with_marks(
     socket: &Path,
     argv: &[String],
     env: &[(String, String)],
-) -> (Vec<String>, Vec<(String, String)>) {
+) -> crate::marks::Marked {
     let mut dir = socket.as_os_str().to_owned();
     dir.push(".shell");
     match config
@@ -3923,8 +3925,12 @@ fn with_marks(
         .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
         .flatten()
     {
-        Some(marked) => (marked.argv, marked.env),
-        None => (argv.to_vec(), Vec::new()),
+        Some(marked) => marked,
+        None => crate::marks::Marked {
+            argv: argv.to_vec(),
+            env: Vec::new(),
+            unset: Vec::new(),
+        },
     }
 }
 
@@ -4017,10 +4023,12 @@ fn new_pane(
         let mut vars = launcher.vars(id, fresh.socket.as_deref()).to_vec();
         vars.extend(fresh.set.iter().map(|(k, v)| (k.as_str(), v.clone())));
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        let (argv, marks) = with_marks(config, &launcher.socket, argv, env);
-        vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        let unset = unset(fresh, env);
-        let child = crate::process::spawn(&argv, cwd, (&vars, &unset), size)?;
+        let marks = with_marks(config, &launcher.socket, argv, env);
+        vars.extend(marks.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
+        vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
+        let mut unset = unset(fresh, env);
+        unset.extend(marks.unset.iter().cloned());
+        let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)?;
         pane.process = Process::Reading(child);
     }
     if let Some(typed) = typed {
