@@ -119,8 +119,6 @@ pub struct Opts {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Keys {
     pub inputs: Vec<Input>,
-    pub repeat: u16,
-    pub if_revision: Option<u64>,
     pub waits: Waits,
 }
 
@@ -130,7 +128,6 @@ pub struct MouseEvent {
     pub mouse: Mouse,
     pub row: u16,
     pub col: u16,
-    pub if_revision: Option<u64>,
     pub waits: Waits,
 }
 
@@ -696,8 +693,7 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
             match reply.status {
                 3 => "exited",
                 4 => "closed",
-                5 => "unchanged",
-                6 => "changed",
+                7 => "stopped",
                 124 => "timeout",
                 _ => "failed",
             }

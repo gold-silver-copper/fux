@@ -23,16 +23,18 @@ before it left. A number is a value; `%2`, `@2`, `+1` alone are a pane, a tab,
 a workspace; `str WORD` pushes WORD as text, however it looks; any other bare
 word runs. What is left at the end is printed, a value a line. A failure
 prints `fux: CODE: MESSAGE` on stderr, with how the word is used; a wait's
-status is the exit status (3 exited, 4 closed, 5 unchanged, 6 changed, 124
-timeout), any other failure 1. Each `fux` is a fresh program.
+status is the exit status (3 exited, 4 closed, 7 the program reads and the
+text has not come, 124 still busy), any other failure 1. Each `fux` is a
+fresh program.
 
 Most steps have one of these shapes (UPPER = what you fill in):
 
-  fux opts OPTIONS run                  start a program; prints its pane, %2
-  fux %2 keys INPUT [WAIT] send-keys    type: str T text, str Enter key, …
-  fux %2 opts WAIT wait                 wait: str T wait-text, 300 wait-idle, …
-  fux %2 opts READ capture              read: 100 history, marks, json, …
-  fux %2 str FIELD get                  one value: exited, pid, revision, …
+  fux opts OPTIONS run                  start a program; answers once it settles: %2 reading, then its output
+  fux %2 keys INPUT send-keys           type: str T text, str Enter key, …; answers as run does
+  fux %3 str 'make test' line           a shell command: answers `%3 reading · done 0` and its output
+  fux %2 opts [WAIT] wait               settle, or wait for str T wait-text, wait-exit, …
+  fux %2 opts READ capture              read once settled: 100 history, marks, json, …
+  fux %2 str FIELD get                  one value: state, exited, pid, …
 
   fux opts str 'htop -d 5' command run  start htop
   fux %2 str Load await                 wait until it shows Load
@@ -150,17 +152,12 @@ pub fn explain(name: &str) -> Option<String> {
 
 /// The words that build what a word takes: its options, or its input.
 fn options(name: &str) -> Option<&'static [&'static str]> {
-    const WAITS: [&str; 10] = [
+    const WAITS: [&str; 5] = [
         "wait-text",
         "wait-gone",
-        "wait-idle",
-        "wait-change",
         "wait-exit",
-        "wait-done",
         "wait-bell",
         "timeout",
-        "with-screen",
-        "marks",
     ];
     Some(match name {
         "run" => &[
@@ -175,7 +172,6 @@ fn options(name: &str) -> Option<&'static [&'static str]> {
             "log-to",
             "id",
             "wait-text",
-            "wait-idle",
             "wait-exit",
             "timeout",
         ],
@@ -214,6 +210,7 @@ fn options(name: &str) -> Option<&'static [&'static str]> {
             "rows",
             "cols",
             "json",
+            "timeout",
         ],
         "wait" => &WAITS,
         "send-keys" => &[
@@ -222,22 +219,11 @@ fn options(name: &str) -> Option<&'static [&'static str]> {
             "paste",
             "paste-file",
             "times",
-            "if-revision",
             "wait-text",
-            "wait-idle",
-            "wait-done",
-            "wait-change",
+            "wait-exit",
             "timeout",
-            "with-screen",
-            "marks",
         ],
-        "send-mouse" => &[
-            "wait-text",
-            "wait-idle",
-            "wait-change",
-            "timeout",
-            "with-screen",
-        ],
+        "send-mouse" => &["wait-text", "wait-exit", "timeout"],
         _ => return None,
     })
 }
@@ -248,12 +234,13 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "run" => "fux opts str app name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 opts vertical split",
         "command" => "fux opts str 'python3 -I app.py --fast' command run",
-        "new-tab" => "fux opts str logs name new-tab",
+        "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 opts kill-first respawn",
-        "wait-text" | "wait" => "fux %3 opts str ready wait-text 30 timeout wait",
-        "wait-idle" => "fux %3 opts 500 wait-idle wait",
-        "wait-done" => "fux %3 keys str make text str Enter key wait-done send-keys",
+        "wait" => "fux %3 opts wait",
+        "wait-text" => "fux %3 opts str ready wait-text 30 timeout wait",
+        "times" => "fux %3 keys str Down key 2 times str Enter key send-keys",
+        "line" => "fux %3 str 'make test' line",
         "send-keys" => "fux %3 keys str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 keys str C-c key send-keys",
         "capture" => "fux %3 opts 100 history capture",
@@ -273,7 +260,6 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "server" => "fux str test server start opts str ./app program run",
         "headless" => "fux 100 30 headless",
         "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",
-        "if-revision" => "fux %3 keys 42 if-revision str y text send-keys",
         _ => return None,
     })
 }

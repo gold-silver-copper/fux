@@ -22,11 +22,6 @@ use std::time::Instant;
 /// and the 1 and 2 of any command.
 pub const EXITED: u8 = 3;
 pub const GONE: u8 = 4;
-/// Keys sent changed nothing on the screen, and the wait was for it to
-/// settle (send-keys --wait-idle): they may not have reached the program.
-pub const UNCHANGED: u8 = 5;
-/// Input given `--if-revision` found the screen changed, and sent nothing.
-pub const CHANGED: u8 = 6;
 /// The program reads its terminal, and the text waited for has not come:
 /// it cannot before the agent types.
 pub const STOPPED: u8 = 7;
@@ -36,11 +31,6 @@ pub const TIMED_OUT: u8 = 124;
 /// How often a wait that asks what a pane's program is blocked in looks
 /// again: that changes with nothing on the screen to wake the server.
 const PROBE: std::time::Duration = std::time::Duration::from_millis(30);
-
-/// How long a shell back at its prompt, fewer commands ended than lines
-/// typed, shows no change before `--done` takes it as done.
-/// Longer than a slow prompt (git status, starship) takes to draw.
-const DONE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// A wait under way.
 pub struct Waiting {
@@ -99,9 +89,8 @@ struct Watch {
     /// A line held the text but was taken as the echo of what was typed.
     echo_skipped: bool,
     revision: u64,
-    /// Commands ended as the wait began, and the count `--done` waits for.
+    /// Commands ended as the wait began: one that ends since is said.
     finished: u64,
-    done_at: u64,
     /// The program's start (`Pane::starts`) the wait watches.
     starts: u64,
     alerts: u64,
@@ -119,12 +108,7 @@ enum Found {
         line: String,
     },
     Gone(String),
-    Idle {
-        changed: bool,
-    },
-    Change(u64),
     Exit(Ended),
-    Done(Option<i32>),
     Bell(Option<String>),
     /// The pane settled, so.
     Settled(crate::ready::State),
@@ -140,15 +124,6 @@ impl Waiting {
             .map(|pane| {
                 let screen = pane.screen();
                 let commands = screen.commands();
-                // Keys typed while a command runs wait for it, then run: a
-                // wait for their end waits for that one's first.
-                let ahead = u64::from(wait.after && commands.running);
-                // The command lines typed, each a command's end to wait for.
-                let typed = if wait.after {
-                    u64::from(wait.lines.max(1))
-                } else {
-                    1
-                };
                 let was = if wait.after {
                     (lines(screen.rows().skip(screen.history_len()), None).into_iter())
                         .map(|l| (l.first, l.text))
@@ -184,10 +159,6 @@ impl Waiting {
                     echo_skipped: false,
                     revision: pane.revision,
                     finished: commands.finished,
-                    done_at: commands
-                        .finished
-                        .saturating_add(ahead)
-                        .saturating_add(typed),
                     starts: pane.starts,
                     alerts: pane.alerts.count(),
                     cursor: screen
@@ -211,47 +182,15 @@ impl Waiting {
         }
     }
 
-    /// When to ask it again at the latest, whatever happens before: when a
-    /// pane will have been quiet long enough, or its time is up. A pane
-    /// quiet already, its input still going in, is asked again as that
-    /// input goes, which wakes the server itself.
-    pub fn due(&self, session: &Session) -> Instant {
+    /// When to ask it again at the latest, whatever happens before: soon,
+    /// while it asks what a pane's program is blocked in (that changes with
+    /// nothing on the screen to wake the server), else when its time is up.
+    pub fn due(&self, _session: &Session) -> Instant {
         let now = Instant::now();
-        let idle = self.wait.until.iter().find_map(|u| match u {
-            Until::Idle(idle) => Some(*idle),
-            Until::Text(_)
-            | Until::Gone(_)
-            | Until::Change(_)
-            | Until::Exit
-            | Until::Done
-            | Until::Bell
-            | Until::Settled => None,
-        });
-        // Whether the program settled, or stopped to read before the text
-        // came, shows in what it is blocked in: asked again soon.
         let probe = (self.wait.until.iter())
             .any(|u| matches!(u, Until::Settled | Until::Text(_)))
             .then(|| crate::after(now, PROBE));
-        let quiet = idle.and_then(|idle| {
-            self.watches
-                .iter()
-                .filter_map(|w| session.panes.get(&w.pane))
-                .map(|pane| crate::after(pane.changed_at.max(self.began), idle))
-                .filter(|at| *at > now)
-                .min()
-        });
-        // A wait for a command's end looks again once the screen settles.
-        let settle = self.wait.until.contains(&Until::Done).then(|| {
-            (self.watches.iter())
-                .filter_map(|w| session.panes.get(&w.pane))
-                .map(|pane| crate::after(pane.changed_at, DONE_SETTLE))
-                .filter(|at| *at > now)
-                .min()
-        });
-        [quiet, settle.flatten(), probe]
-            .into_iter()
-            .flatten()
-            .fold(self.deadline, Instant::min)
+        probe.map_or(self.deadline, |at| at.min(self.deadline))
     }
 
     /// Its answer, if it has one at `now`: what it waited for came in one of
@@ -306,7 +245,7 @@ impl Waiting {
             }
             if let Some(found) = watch.look(pane, &self.wait, &texts, (self.began, now), self.fresh)
             {
-                let status = found.status(self.wait.after);
+                let status = found.status();
                 let id = watch.pane;
                 let since = Some(watch.since());
                 return Some(self.wait.told(
@@ -374,7 +313,7 @@ impl Waiting {
             let told = if pane.starts != watch.starts {
                 Some((EXITED, Told::Replaced))
             } else if let Some(found) = watch.look(pane, &self.wait, texts, window, self.fresh) {
-                Some((found.status(self.wait.after), Told::Found(found)))
+                Some((found.status(), Told::Found(found)))
             } else {
                 pane.process
                     .exit_status()
@@ -424,21 +363,14 @@ impl Waiting {
 
 impl Found {
     /// The status a wait that found it ends with.
-    fn status(&self, after: bool) -> u8 {
+    fn status(&self) -> u8 {
         match self {
-            Found::Idle { changed: false } if after => UNCHANGED,
             // As timeout(1): the program's own status, once it exits.
             Found::Exit(ended) => {
                 u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
             }
             Found::Stopped(_) => STOPPED,
-            Found::Text { .. }
-            | Found::Gone(_)
-            | Found::Idle { .. }
-            | Found::Change(_)
-            | Found::Done(_)
-            | Found::Bell(_)
-            | Found::Settled(_) => 0,
+            Found::Text { .. } | Found::Gone(_) | Found::Bell(_) | Found::Settled(_) => 0,
         }
     }
 }
@@ -530,9 +462,7 @@ impl Wait {
         let (said, problem, json) = match told {
             Told::Found(found) => {
                 let (said, json) = found.said();
-                let problem = (self.after && matches!(found, Found::Idle { changed: false }))
-                    .then(|| format!("{id}: the screen did not change after the keys"));
-                (said, problem, json)
+                (said, None, json)
             }
             Told::Exited(ended, hint) => {
                 let what = self.describe();
@@ -703,10 +633,7 @@ impl Until {
         match self {
             Until::Text(text) => format!("{text:?} to show"),
             Until::Gone(text) => format!("{text:?} to go"),
-            Until::Idle(idle) => format!("the screen to settle for {}ms", idle.as_millis()),
-            Until::Change(_) => "a change".into(),
             Until::Exit => "the program to exit".into(),
-            Until::Done => "a command to end".into(),
             Until::Bell => "a bell".into(),
             Until::Settled => "the pane to settle".into(),
         }
@@ -732,34 +659,7 @@ impl Found {
                     ("text", Json::str(text.clone())),
                 ],
             ),
-            Found::Idle { changed } => (
-                String::new(),
-                vec![
-                    ("met", Json::str("idle")),
-                    ("changed", Json::Bool(*changed)),
-                ],
-            ),
-            Found::Change(revision) => (
-                String::new(),
-                vec![
-                    ("met", Json::str("change")),
-                    (
-                        "revision",
-                        Json::Number(i64::try_from(*revision).unwrap_or(i64::MAX)),
-                    ),
-                ],
-            ),
             Found::Exit(ended) => (crate::process::told(*ended), ended_json("exit", *ended)),
-            Found::Done(status) => (
-                status.map_or_else(|| "done".to_owned(), |s| format!("done {s}")),
-                vec![
-                    ("met", Json::str("done")),
-                    (
-                        "exit",
-                        status.map_or(Json::Null, |s| Json::Number(i64::from(s))),
-                    ),
-                ],
-            ),
             Found::Settled(state) | Found::Stopped(state) => (
                 state.word(),
                 vec![
@@ -798,32 +698,10 @@ fn ended_json(met: &'static str, ended: Ended) -> Vec<(&'static str, Json<'stati
 }
 
 impl Watch {
-    /// Why a wait that timed out may never have been met: a command's end
-    /// awaited in a pane whose shell marks none, a text taken as the echo of
-    /// what was typed, or one that was on the screen already and did not
-    /// appear anew.
+    /// Why a wait that timed out may never have been met: a text taken as
+    /// the echo of what was typed, or one that was on the screen already
+    /// and did not appear anew.
     fn hint(&self, pane: &Pane, wait: &Wait) -> Option<&'static str> {
-        let commands = pane.screen().commands();
-        if wait.until.contains(&Until::Done) {
-            if commands.finished == 0 && !commands.running {
-                return Some(
-                    "no command has been marked in this pane: wait-done needs a shell that \
-                     marks its commands (bash, zsh and fish started by fux, unless \
-                     `str shell-marks str off set`); for a program, wait for its text, or wait-idle",
-                );
-            }
-            if commands.running {
-                return Some(
-                    "a command is still running, as the shell's marks say; if it ended, \
-                     the shell has stopped marking its commands (exec, or PROMPT_COMMAND \
-                     replaced)",
-                );
-            }
-            return Some(
-                "the shell is at its prompt with no command running: wait-done waits for a \
-                 command to end after the wait begins",
-            );
-        }
         // Shown, on a line that reads as it did when the wait began.
         let texts = texts(wait);
         let shown = lines(pane.screen().rows().skip(pane.screen().history_len()), None);
@@ -919,31 +797,7 @@ impl Watch {
                     let had = !fresh || self.appeared.contains(text);
                     (!present && had).then(|| Found::Gone(text.clone()))
                 }
-                Until::Idle(idle) => {
-                    let quiet = crate::after(pane.changed_at.max(began), *idle);
-                    (pane.input_written() && now >= quiet).then_some(Found::Idle {
-                        changed: pane.revision != self.revision,
-                    })
-                }
-                Until::Change(since) => {
-                    let past = since.unwrap_or(self.revision);
-                    (pane.revision > past).then_some(Found::Change(pane.revision))
-                }
                 Until::Exit => pane.process.exit_status().map(Found::Exit),
-                // A command ended since, the shell is back at its prompt and
-                // everything typed has gone in; and either as many commands
-                // ended as lines were typed, or nothing has changed for a
-                // moment (a line read by the running command, a loop over
-                // several lines, Ctrl-C: fewer ends than lines).
-                Until::Done => {
-                    let commands = screen.commands();
-                    let settled = now >= crate::after(pane.changed_at, DONE_SETTLE);
-                    (commands.finished > self.finished
-                        && !commands.running
-                        && pane.input_written()
-                        && (commands.finished >= self.done_at || settled))
-                        .then_some(Found::Done(commands.last_status))
-                }
                 Until::Settled => {
                     let state = crate::ready::state(pane, now);
                     state.settled().then_some(Found::Settled(state))
@@ -1027,13 +881,7 @@ fn texts(wait: &Wait) -> Vec<String> {
         .iter()
         .filter_map(|u| match u {
             Until::Text(text) => Some(text.clone()),
-            Until::Gone(_)
-            | Until::Idle(_)
-            | Until::Change(_)
-            | Until::Exit
-            | Until::Done
-            | Until::Bell
-            | Until::Settled => None,
+            Until::Gone(_) | Until::Exit | Until::Bell | Until::Settled => None,
         })
         .collect()
 }

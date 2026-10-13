@@ -660,16 +660,7 @@ impl Wire for Until {
                 tag(out, 1);
                 t.put(out);
             }
-            Until::Idle(d) => {
-                tag(out, 2);
-                d.put(out);
-            }
-            Until::Change(n) => {
-                tag(out, 3);
-                n.put(out);
-            }
             Until::Exit => tag(out, 4),
-            Until::Done => tag(out, 5),
             Until::Bell => tag(out, 6),
             Until::Settled => tag(out, 7),
         }
@@ -678,10 +669,7 @@ impl Wire for Until {
         match u8::get(r)? {
             0 => String::get(r).map(Until::Text),
             1 => String::get(r).map(Until::Gone),
-            2 => Duration::get(r).map(Until::Idle),
-            3 => Option::get(r).map(Until::Change),
             4 => Ok(Until::Exit),
-            5 => Ok(Until::Done),
             6 => Ok(Until::Bell),
             7 => Ok(Until::Settled),
             other => Err(Error::Tag("condition", other)),
@@ -933,7 +921,6 @@ impl Wire for Command {
             }
             Command::SendMouse {
                 target,
-                if_revision,
                 mouse,
                 row,
                 col,
@@ -941,7 +928,6 @@ impl Wire for Command {
             } => {
                 tag(out, 10);
                 target.put(out);
-                if_revision.put(out);
                 mouse.put(out);
                 row.put(out);
                 col.put(out);
@@ -992,17 +978,13 @@ impl Wire for Command {
             Command::SendKeys {
                 targets,
                 client,
-                if_revision,
                 inputs,
-                repeat,
                 then,
             } => {
                 tag(out, 19);
                 targets.put(out);
                 client.put(out);
-                if_revision.put(out);
                 inputs.put(out);
-                repeat.put(out);
                 then.put(out);
             }
             Command::Events { targets, json } => {
@@ -1152,7 +1134,6 @@ impl Wire for Command {
             },
             10 => Command::SendMouse {
                 target: Option::get(r)?,
-                if_revision: Option::get(r)?,
                 mouse: Mouse::get(r)?,
                 row: u16::get(r)?,
                 col: u16::get(r)?,
@@ -1191,9 +1172,7 @@ impl Wire for Command {
             19 => Command::SendKeys {
                 targets: Vec::get(r)?,
                 client: Option::get(r)?,
-                if_revision: Option::get(r)?,
                 inputs: Vec::get(r)?,
-                repeat: u16::get(r)?,
                 then: Option::get(r)?,
             },
             20 => Command::Events {

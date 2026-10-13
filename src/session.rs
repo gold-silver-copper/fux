@@ -190,12 +190,6 @@ pub enum Error {
         field: String,
         fields: String,
     },
-    /// The screen changed since the revision input was meant for.
-    Changed {
-        pane: PaneId,
-        revision: u64,
-        now: u64,
-    },
     /// `kill-server` from the CLI, run in one of the server's own panes.
     OwnServer(Option<PaneId>),
     /// `kill-server` from the CLI, with people's terminals attached.
@@ -319,7 +313,6 @@ impl Error {
             | Error::NoClientGiven
             | Error::KillNeedsTarget(_) => "no_target",
             Error::StrayPane(_) => "stray_pane",
-            Error::Changed { .. } => "changed",
             Error::NoField { .. } => "no_field",
             Error::OutOfScope { .. } | Error::NotGranted { .. } | Error::Revoked => "not_granted",
             Error::NotNamed(_) => "no_target",
@@ -410,15 +403,6 @@ impl std::fmt::Display for Error {
             Error::NotGranted { what, scope } => write!(
                 f,
                 "this socket reaches workspace {scope} alone (grant), not {what}"
-            ),
-            Error::Changed {
-                pane,
-                revision,
-                now,
-            } => write!(
-                f,
-                "{pane}: the screen is at revision {now}, not {revision}; nothing was sent: \
-                 read it again"
             ),
             Error::OwnServer(Some(pane)) => write!(
                 f,
@@ -588,7 +572,6 @@ impl std::error::Error for Error {
             | Error::NoTab(_)
             | Error::NoWorkspaceGiven
             | Error::StrayPane(_)
-            | Error::Changed { .. }
             | Error::NoField { .. }
             | Error::NotNamed(_)
             | Error::Revoked
@@ -1500,25 +1483,8 @@ impl Session {
         Ok(out)
     }
 
-    /// Whether pane `id`'s screen is still at `revision`, if one is given:
-    /// input meant for what was read there goes in only then.
-    fn unchanged(&self, id: PaneId, revision: Option<u64>) -> Result<(), Error> {
-        let Some(revision) = revision else {
-            return Ok(());
-        };
-        let pane = self.panes.get(&id).ok_or(Error::NoPane(id))?;
-        match pane.revision == revision {
-            true => Ok(()),
-            false => Err(Error::Changed {
-                pane: id,
-                revision,
-                now: pane.revision,
-            }),
-        }
-    }
-
-    /// Sends `inputs`, `repeat` times, to pane `id`'s program.
-    fn send_inputs(&mut self, id: PaneId, inputs: &[Input], repeat: u16) -> Result<(), Error> {
+    /// Sends `inputs` to pane `id`'s program.
+    fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
         let p = self.panes.get_mut(&id).ok_or(Error::NoPane(id))?;
         let screen = p.screen();
         let cursor = (screen.window())
@@ -1542,7 +1508,7 @@ impl Session {
         }
         let mut pieces: Vec<Vec<u8>> = Vec::new();
         let mut last = Kind::Alone;
-        for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+        for input in inputs {
             let mut bytes = Vec::new();
             let kind = match input {
                 Input::Key(key) => {
@@ -2766,9 +2732,7 @@ impl Session {
             Err(error) => {
                 let error = stray(error, origin);
                 self.last_error = Some(error.code());
-                let status = if matches!(error, Error::Changed { .. }) {
-                    crate::wait::CHANGED
-                } else if matches!(error, Error::Usage(_)) {
+                let status = if matches!(error, Error::Usage(_)) {
                     2
                 } else {
                     1
@@ -3061,14 +3025,12 @@ impl Session {
             }
             &Command::SendMouse {
                 target,
-                if_revision,
                 mouse,
                 row,
                 col,
                 ..
             } => {
                 let id = self.live_pane_mut(target, here)?.id;
-                self.unchanged(id, if_revision)?;
                 let p = self.live_pane_mut(Some(id), here)?;
                 let size = p.size();
                 if row >= size.rows() || col >= size.cols() {
@@ -3292,7 +3254,6 @@ impl Session {
             &Command::SendKeys {
                 client: Some(client),
                 ref inputs,
-                repeat,
                 ..
             } => {
                 if !self.views.contains_key(&client) {
@@ -3300,32 +3261,22 @@ impl Session {
                 }
                 // The client takes them as typed at its terminal: its
                 // bindings see them.
-                let typed = std::iter::repeat_n(inputs, usize::from(repeat)).flatten();
-                self.outbox
-                    .push(Outgoing::Keys(client, typed.cloned().collect()));
+                self.outbox.push(Outgoing::Keys(client, inputs.clone()));
                 Ok(String::new())
             }
             &Command::SendKeys {
                 ref targets,
                 ref inputs,
-                repeat,
                 client: None,
-                if_revision,
                 ..
             } => {
                 let panes = self.panes_of(targets, here)?;
-                if if_revision.is_some() && panes.len() != 1 {
-                    return Err(Error::Usage(command::Usage::Needs(
-                        "if-revision is for keys to one pane: a revision is one screen's",
-                    )));
-                }
                 // Every pane must take them, or none is sent them.
                 for &id in &panes {
                     self.live_pane_mut(Some(id), here)?;
-                    self.unchanged(id, if_revision)?;
                 }
                 for id in panes {
-                    self.send_inputs(id, inputs, repeat)?;
+                    self.send_inputs(id, inputs)?;
                 }
                 Ok(String::new())
             }

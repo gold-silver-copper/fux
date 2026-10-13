@@ -87,22 +87,17 @@ pub const WORDS: &[Word] = &[
     // Waiting
     word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew (options, keys or a mouse event)"),
     word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown"),
-    word("Waiting", "wait-idle", 2, "x ms -- x", "wait until the screen shows no change for ms"),
-    word("Waiting", "wait-change", 1, "x -- x", "wait until the screen changes"),
     word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
-    word("Waiting", "wait-done", 1, "x -- x", "wait until the shell's command ends"),
     word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "timeout", 2, "x secs -- x", "how long a wait lasts at most (60)"),
-    word("Waiting", "with-screen", 1, "x -- x", "the screen as the wait ends, after what it says"),
-    word("Waiting", "wait", 2, "x opts -- outcome", "wait as the options say, in a pane, or in any pane of a tab or workspace"),
+    word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most: an action or capture settles within 10, a wait 60; 0 answers at once"),
+    word("Waiting", "wait", 2, "x opts -- answer", "wait for the pane to settle, or as the options say, in a pane, or each pane of a tab or workspace"),
     // Input
     word("Input", "keys", 0, "-- keys", "empty input, for send-keys"),
     word("Input", "text", 2, "keys text -- keys", "text, typed"),
     word("Input", "key", 2, "keys name -- keys", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", 2, "keys text -- keys", "text as a paste"),
     word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste"),
-    word("Input", "times", 2, "keys n -- keys", "all of it n times"),
-    word("Input", "if-revision", 2, "keys n -- keys", "sent only if the screen is still at revision n"),
+    word("Input", "times", 2, "keys n -- keys", "the input just before it, n times: str Down key 2 times"),
     word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", 2, "pane mouse -- [outcome]", "send a mouse event"),
@@ -606,13 +601,7 @@ impl fuxth::Host for Host<'_> {
             }
             // ---------------------------------------------------- starting
             "opts" => now(out, Value::App(Fux::Opts(Box::default()))),
-            "keys" => now(
-                out,
-                Value::App(Fux::Keys(Box::new(Keys {
-                    repeat: 1,
-                    ..Keys::default()
-                }))),
-            ),
+            "keys" => now(out, Value::App(Fux::Keys(Box::default()))),
             "command" => {
                 let mut o = next()?;
                 let line = string(name, &next()?)?;
@@ -838,32 +827,26 @@ impl fuxth::Host for Host<'_> {
                     })?,
                 )
             }
-            "wait-idle" | "timeout" => {
+            "timeout" => {
                 let x = next()?;
                 let n = count::<u64>(name, &next()?)?;
                 now(
                     out,
                     with(name, x, |w| {
-                        match name {
-                            "wait-idle" => w.until.push(Until::Idle(Duration::from_millis(n))),
-                            _ => w.timeout = Some(Duration::from_secs(n)),
-                        }
+                        w.timeout = Some(Duration::from_secs(n));
                         Ok(())
                     })?,
                 )
             }
-            "wait-change" | "wait-exit" | "wait-done" | "wait-bell" | "with-screen" => {
+            "wait-exit" | "wait-bell" => {
                 let x = next()?;
                 now(
                     out,
                     with(name, x, |w| {
-                        match name {
-                            "wait-change" => w.until.push(Until::Change(None)),
-                            "wait-exit" => w.until.push(Until::Exit),
-                            "wait-done" => w.until.push(Until::Done),
-                            "wait-bell" => w.until.push(Until::Bell),
-                            _ => w.print = true,
-                        }
+                        w.until.push(match name {
+                            "wait-exit" => Until::Exit,
+                            _ => Until::Bell,
+                        });
                         Ok(())
                     })?,
                 )
@@ -888,7 +871,7 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             // ------------------------------------------------------- input
-            "text" | "key" | "paste" | "paste-file" | "times" | "if-revision" => {
+            "text" | "key" | "paste" | "paste-file" | "times" => {
                 let mut k = next()?;
                 let v = next()?;
                 let built = keys(name, &mut k)?;
@@ -919,13 +902,22 @@ impl fuxth::Host for Host<'_> {
                             .map_err(|_| fail("paste", format!("{path}: not UTF-8 text")))?;
                         built.inputs.push(Input::Paste(text));
                     }
-                    "times" => {
-                        built.repeat = count(name, &v)
+                    // The input just before it, n times in all.
+                    _ => {
+                        let n: usize = count(name, &v)
                             .ok()
-                            .filter(|n| *n > 0)
-                            .ok_or_else(|| fail("range", "a count from 1"))?
+                            .filter(|n| *n > 0 && *n <= 1000)
+                            .ok_or_else(|| fail("range", "a count from 1 to 1000"))?;
+                        let Some(last) = built.inputs.last().cloned() else {
+                            return Err(fail(
+                                "no_keys",
+                                "times repeats the input before it: str Down key 3 times",
+                            ));
+                        };
+                        built
+                            .inputs
+                            .extend(std::iter::repeat_n(last, n.saturating_sub(1)));
                     }
-                    _ => built.if_revision = Some(count(name, &v)?),
                 }
                 now(out, k)
             }
@@ -938,7 +930,7 @@ impl fuxth::Host for Host<'_> {
                 }
                 let mut then = wait(&built.waits, true, self.settle);
                 if let Some(wait) = &mut then {
-                    let (echo, lines) = crate::command::typed_lines(&built.inputs, built.repeat);
+                    let (echo, lines) = crate::command::typed_lines(&built.inputs);
                     wait.echo = echo;
                     wait.lines = lines;
                 }
@@ -946,11 +938,10 @@ impl fuxth::Host for Host<'_> {
                 let (targets, to_client) = match &to {
                     // Typed at its terminal: whatever pane they reach is the
                     // client's to choose, so there is none to wait on here.
-                    Value::App(Fux::Client(_)) if waited || built.if_revision.is_some() => {
+                    Value::App(Fux::Client(_)) if waited && !self.settle => {
                         return Err(fail(
                             "unused",
-                            "send-keys to a client takes no wait or if-revision: \
-                             wait on the pane after (PANE opts … wait)",
+                            "send-keys to a client takes no wait: wait on the pane after (PANE opts … wait)",
                         ));
                     }
                     Value::App(Fux::Client(c)) => (Vec::new(), Some(*c)),
@@ -968,9 +959,7 @@ impl fuxth::Host for Host<'_> {
                     Command::SendKeys {
                         targets,
                         client: to_client,
-                        if_revision: built.if_revision,
                         inputs: built.inputs,
-                        repeat: built.repeat,
                         then,
                     },
                     Then::Outcome { waited },
@@ -1003,7 +992,6 @@ impl fuxth::Host for Host<'_> {
                         mouse,
                         row,
                         col,
-                        if_revision: None,
                         waits: Waits::default(),
                     }))),
                 )
@@ -1025,7 +1013,6 @@ impl fuxth::Host for Host<'_> {
                 later(ask(
                     Command::SendMouse {
                         target: Some(p),
-                        if_revision: m.if_revision,
                         mouse: m.mouse,
                         row: m.row,
                         col: m.col,

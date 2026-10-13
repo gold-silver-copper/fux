@@ -214,16 +214,8 @@ pub enum Until {
     Text(String),
     /// The text is no longer on the screen.
     Gone(String),
-    /// The screen has shown no change for this long: the same screen
-    /// drawn again is none.
-    Idle(Duration),
-    /// The screen changes: past the revision given (`--since N`), or the
-    /// one it had as the wait began.
-    Change(Option<u64>),
     /// The program exits.
     Exit,
-    /// A shell command ends (shell integration's OSC 133 `D`).
-    Done,
     /// The program rings the bell or sends a desktop notification.
     Bell,
     /// The pane settles: its program reads its terminal, waits quiet on
@@ -365,8 +357,6 @@ pub enum Command {
     },
     SendMouse {
         target: Option<PaneId>,
-        /// Sent only if the pane's screen is still at this revision.
-        if_revision: Option<u64>,
         mouse: Mouse,
         row: u16,
         col: u16,
@@ -413,11 +403,7 @@ pub enum Command {
         /// A client to send them to instead, as typed at its terminal: its
         /// bindings, overlays and prompts take them as a person's keys.
         client: Option<ClientId>,
-        /// Sent only if the pane's screen is still at this revision.
-        if_revision: Option<u64>,
         inputs: Vec<Input>,
-        /// How many times to send them all.
-        repeat: u16,
         /// A wait for the program to go quiet once they are sent.
         then: Option<Box<Wait>>,
     },
@@ -658,7 +644,7 @@ fn one_off(a: &str, b: &str) -> bool {
 /// The lines send-keys types, as a shell or an input box would echo them
 /// (Space joins words, BSpace takes the last character back, pasted text is
 /// shown too), and how many it ends (Enter, or a newline in text).
-pub fn typed_lines(inputs: &[Input], repeat: u16) -> (Vec<String>, u32) {
+pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, u32) {
     let mut lines: Vec<String> = vec![String::new()];
     let mut ended = 0u32;
     let add = |text: &str, lines: &mut Vec<String>, counts: bool, ended: &mut u32| {
@@ -674,7 +660,7 @@ pub fn typed_lines(inputs: &[Input], repeat: u16) -> (Vec<String>, u32) {
             }
         }
     };
-    for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+    for input in inputs {
         match input {
             Input::Text(text) => add(text, &mut lines, true, &mut ended),
             Input::Paste(text) => add(text, &mut lines, false, &mut ended),
