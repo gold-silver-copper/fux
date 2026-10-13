@@ -201,33 +201,25 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
         Err(error) => return Err(error.into()),
         Ok(()) => {}
     }
-    match UnixStream::connect(socket.path()) {
-        Ok(stream) => {
-            // Its server is this user's, whoever made the path's directories.
-            let euid = fuxix::process::geteuid();
-            match fuxix::socket::peer_uid(&stream) {
-                Ok(uid) if uid == euid => Link::socket(stream).map_err(|source| Error::Connect {
-                    path: socket.path().to_owned(),
-                    source,
-                }),
-                Ok(uid) => Err(Error::Connect {
-                    path: socket.path().to_owned(),
-                    source: std::io::Error::other(format!(
-                        "its server runs as uid {uid}, not this user's ({euid})"
-                    )),
-                }),
-                Err(source) => Err(Error::Connect {
-                    path: socket.path().to_owned(),
-                    source: source.into(),
-                }),
-            }
-        }
-        Err(e) if e.kind() == ErrorKind::PermissionDenied && door.exists() => by_door(),
-        Err(source) => Err(Error::Connect {
-            path: socket.path().to_owned(),
-            source,
-        }),
+    let failed = |source| Error::Connect {
+        path: socket.path().to_owned(),
+        source,
+    };
+    let stream = match UnixStream::connect(socket.path()) {
+        Ok(stream) => stream,
+        Err(e) if e.kind() == ErrorKind::PermissionDenied && door.exists() => return by_door(),
+        Err(source) => return Err(failed(source)),
+    };
+    // Its server is this user's, whoever made the path's directories.
+    let euid = fuxix::process::geteuid();
+    match fuxix::socket::peer_uid(&stream) {
+        Ok(uid) if uid == euid => Link::socket(stream),
+        Ok(uid) => Err(std::io::Error::other(format!(
+            "its server runs as uid {uid}, not this user's ({euid})"
+        ))),
+        Err(errno) => Err(errno.into()),
     }
+    .map_err(failed)
 }
 
 fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder), Error> {
@@ -466,11 +458,13 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
     }
     let mut stream = match open(socket) {
         Ok(stream) => stream,
-        // A socket left by a server that is gone.
-        Err(Error::Connect { source, .. }) if source.kind() == ErrorKind::ConnectionRefused => {
-            return Ok(Probe::Left);
-        }
-        Err(Error::Connect { source, .. }) if source.kind() == ErrorKind::TimedOut => {
+        // A socket or a door left by a server that is gone.
+        Err(Error::Connect { source, .. })
+            if matches!(
+                source.kind(),
+                ErrorKind::ConnectionRefused | ErrorKind::TimedOut
+            ) =>
+        {
             return Ok(Probe::Left);
         }
         Err(error) => return Err(error),

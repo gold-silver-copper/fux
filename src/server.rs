@@ -678,7 +678,7 @@ impl Saved {
     /// Saves the layout as it is, if it changed and no restore is under
     /// way.
     fn save(&mut self, session: &Session) {
-        if self.restoring.load(std::sync::atomic::Ordering::SeqCst) {
+        if self.restoring() {
             self.pending = true;
             return;
         }
@@ -717,22 +717,19 @@ impl Saved {
         std::fs::rename(&temporary, &self.path)
     }
 
-    /// The layout is not to be brought back: the server was stopped on
-    /// purpose, or its last pane closed.
-    fn forget(&mut self) {
-        self.pending = false;
-        self.done = true;
-        self.forget_file();
-    }
-
     /// Whether a restore is under way.
     fn restoring(&self) -> bool {
         self.restoring.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Saves nothing more: the server stops, and what it saved last, as it
-    /// was before its panes ended, is what the next brings back.
-    fn freeze(&mut self) {
+    /// Saves nothing more: the server stops. With `keep`, the layout as it
+    /// is, before its panes end, is what the next brings back; else none
+    /// is (the server was stopped on purpose, or its last pane closed).
+    fn stop(&mut self, session: &Session, keep: bool) {
+        match keep {
+            true => self.save(session),
+            false => self.forget_file(),
+        }
         self.pending = false;
         self.done = true;
     }
@@ -913,12 +910,11 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
 /// with `get_mut`, as the lints ask.
 #[derive(Clone, Copy)]
 enum Slot {
-    Listener,
-    /// The door beside the socket, or with an index beside that grant's:
-    /// knocks waiting.
+    /// The server's socket, or with an index into `grants` one `fux grant`
+    /// made.
+    Listener(Option<usize>),
+    /// The door beside it: knocks waiting.
     Door(Option<usize>),
-    /// A socket `fux grant` made, by its index into `grants`.
-    Grant(usize),
     Children,
     Stops,
     Conn(usize),
@@ -970,9 +966,8 @@ impl Server {
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
                 match slot {
-                    Slot::Listener => self.accept(None),
+                    Slot::Listener(grant) => self.accept(grant),
                     Slot::Door(grant) => self.open_door(grant),
-                    Slot::Grant(i) => self.accept(Some(i)),
                     Slot::Children => {
                         crate::drain(&self.children);
                         self.reap();
@@ -1206,22 +1201,15 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            if let Some(listener) = &listening.listener {
-                fds.push(PollFd::new(listener, PollFlags::IN));
-                slots.push(Slot::Listener);
-            }
-            if let Some(door) = &listening.door {
-                fds.push(PollFd::new(door.fd(), PollFlags::IN));
-                slots.push(Slot::Door(None));
-            }
-            for (i, grant) in self.grants.iter().enumerate() {
-                if let Some(listener) = &grant.listening.listener {
+            let grants = (self.grants.iter().enumerate()).map(|(i, g)| (Some(i), &g.listening));
+            for (grant, listening) in std::iter::once((None, listening)).chain(grants) {
+                if let Some(listener) = &listening.listener {
                     fds.push(PollFd::new(listener, PollFlags::IN));
-                    slots.push(Slot::Grant(i));
+                    slots.push(Slot::Listener(grant));
                 }
-                if let Some(door) = &grant.listening.door {
+                if let Some(door) = &listening.door {
                     fds.push(PollFd::new(door.fd(), PollFlags::IN));
-                    slots.push(Slot::Door(Some(i)));
+                    slots.push(Slot::Door(grant));
                 }
             }
         }
@@ -1285,14 +1273,7 @@ impl Server {
         }
         log(&reason);
         if let Some(saved) = &mut self.saved {
-            match keep {
-                // As it is, before its panes end, and nothing after.
-                true => {
-                    saved.save(&self.session);
-                    saved.freeze();
-                }
-                false => saved.forget(),
-            }
+            saved.stop(&self.session, keep);
         }
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
@@ -1440,6 +1421,19 @@ impl Server {
         }
     }
 
+    /// What the server listens on while it serves, or with `grant` what
+    /// that grant does, and the grant's socket, which its connections
+    /// reach through.
+    fn listening(&mut self, grant: Option<usize>) -> Option<(&mut Listening, Option<PathBuf>)> {
+        let Phase::Serving { listening, .. } = &mut self.phase else {
+            return None;
+        };
+        match grant {
+            Some(i) => (self.grants.get_mut(i)).map(|g| (&mut g.listening, Some(g.socket.clone()))),
+            None => Some((listening, None)),
+        }
+    }
+
     /// Accepts the connections waiting on the server's socket, or with
     /// `grant` on that socket `fux grant` made.
     fn accept(&mut self, grant: Option<usize>) {
@@ -1448,15 +1442,14 @@ impl Server {
             // The spare makes room for this accept, and is taken back after
             // it: if it cannot be, the connection took the last descriptor.
             self.spare = None;
-            let Phase::Serving { listening, .. } = &self.phase else {
-                return;
-            };
-            let (listener, through) = match grant.and_then(|i| self.grants.get(i)) {
-                Some(grant) => (&grant.listening.listener, Some(grant.socket.clone())),
-                None if grant.is_some() => return,
-                None => (&listening.listener, None),
-            };
-            let Some(listener) = listener else {
+            let Some((
+                Listening {
+                    listener: Some(listener),
+                    ..
+                },
+                through,
+            )) = self.listening(grant)
+            else {
                 return;
             };
             let accepted = listener.accept();
@@ -1541,15 +1534,13 @@ impl Server {
     /// checked, as the socket's peer check does. With `grant`, the door
     /// beside that grant's socket.
     fn open_door(&mut self, grant: Option<usize>) {
-        let Phase::Serving { listening, .. } = &mut self.phase else {
-            return;
-        };
-        let (door, through) = match grant.map(|i| self.grants.get_mut(i)) {
-            Some(Some(grant)) => (&mut grant.listening.door, Some(grant.socket.clone())),
-            Some(None) => return,
-            None => (&mut listening.door, None),
-        };
-        let Some(door) = door else {
+        let Some((
+            Listening {
+                door: Some(door), ..
+            },
+            through,
+        )) = self.listening(grant)
+        else {
             return;
         };
         for stream in door.knocks() {

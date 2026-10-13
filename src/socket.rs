@@ -60,7 +60,7 @@ pub enum Error {
         value: String,
         limit: usize,
     },
-    /// A directory above the socket's that another user could change.
+    /// The socket's directory is a symbolic link.
     Symlink(PathBuf),
     /// The socket's directory, not a directory of ours with mode 0700.
     NotPrivate {

@@ -57,14 +57,8 @@ impl Door {
             Err(e) if e.kind() == io::ErrorKind::NotFound => fuxix::file::make_fifo(&path, 0o600)?,
             Err(e) => return Err(e),
         }
-        let knocks = OpenOptions::new()
-            .read(true)
-            .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW)
-            .open(&path)?;
-        let held = OpenOptions::new()
-            .write(true)
-            .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW)
-            .open(&path)?;
+        let knocks = open_fifo(&path, true, false)?;
+        let held = open_fifo(&path, false, true)?;
         if !ours_fifo(&knocks.metadata()?) {
             return Err(io::Error::other("the door changed as it was opened"));
         }
@@ -109,20 +103,12 @@ impl Door {
             .map_or(0, |end| end.saturating_add(1));
         let rest = self.partial.get(whole..).unwrap_or_default().to_vec();
         let lines = std::mem::replace(&mut self.partial, rest);
-        let mut streams = Vec::new();
-        for line in lines
+        (lines
             .get(..whole)
             .unwrap_or_default()
-            .split(|b| *b == b'\n')
-        {
-            let name = String::from_utf8_lossy(line);
-            if let Some(dir) = self.path.parent()
-                && let Ok(stream) = answer(dir, &name)
-            {
-                streams.push(stream);
-            }
-        }
-        streams
+            .split(|b| *b == b'\n'))
+        .filter_map(|line| answer(self.path.parent()?, &String::from_utf8_lossy(line)).ok())
+        .collect()
     }
 }
 
@@ -148,31 +134,48 @@ fn knock_name(name: &str) -> Option<&str> {
     (hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(name)
 }
 
+/// Opens the FIFO at `path` without waiting for its other end, a symbolic
+/// link refused.
+fn open_fifo(path: &Path, read: bool, write: bool) -> io::Result<File> {
+    OpenOptions::new()
+        .read(read)
+        .write(write)
+        .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW)
+        .open(path)
+}
+
+/// A knock's FIFOs in `dir`: what the client writes goes up, what the
+/// server writes down.
+fn fifos(dir: &Path, name: &str) -> [PathBuf; 2] {
+    [
+        dir.join(format!("{name}.up")),
+        dir.join(format!("{name}.down")),
+    ]
+}
+
+fn remove(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Opens the FIFOs a knock names, in `dir`, and starts relaying them: the
 /// server's end of the pair.
 fn answer(dir: &Path, name: &str) -> io::Result<UnixStream> {
     let name = knock_name(name).ok_or_else(|| io::Error::other("not a knock"))?;
-    let up_path = dir.join(format!("{name}.up"));
-    let down_path = dir.join(format!("{name}.down"));
-    for path in [&up_path, &down_path] {
+    let paths = fifos(dir, name);
+    let [up_path, down_path] = &paths;
+    for path in &paths {
         if !ours_fifo(&std::fs::symlink_metadata(path)?) {
             return Err(io::Error::other("not a FIFO of this user's"));
         }
     }
-    let flags = fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW;
-    let up = OpenOptions::new()
-        .read(true)
-        .custom_flags(flags)
-        .open(&up_path)?;
-    let mut down = OpenOptions::new()
-        .write(true)
-        .custom_flags(flags)
-        .open(&down_path)?;
+    let up = open_fifo(up_path, true, false)?;
+    let mut down = open_fifo(down_path, false, true)?;
     if !ours_fifo(&up.metadata()?) || !ours_fifo(&down.metadata()?) {
         return Err(io::Error::other("a FIFO changed as it was opened"));
     }
-    let _ = std::fs::remove_file(&up_path);
-    let _ = std::fs::remove_file(&down_path);
+    remove(&paths);
     fuxix::io::set_nonblocking(&up, false)?;
     fuxix::io::set_nonblocking(&down, false)?;
     down.write_all(b"+")?;
@@ -212,14 +215,10 @@ fn copy(mut from: impl Read, mut into: impl Write) {
 /// One no server reads, left by a server that stopped, is refused as a
 /// socket left so is.
 fn open_door(socket: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .write(true)
-        .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW)
-        .open(path(socket))
-        .map_err(|e| match fuxix::Errno::from_io_error(&e) {
-            Some(fuxix::Errno::NXIO) => io::ErrorKind::ConnectionRefused.into(),
-            _ => e,
-        })
+    open_fifo(&path(socket), false, true).map_err(|e| match fuxix::Errno::from_io_error(&e) {
+        Some(fuxix::Errno::NXIO) => io::ErrorKind::ConnectionRefused.into(),
+        _ => e,
+    })
 }
 
 /// Whether a server holds the door beside `socket` open.
@@ -239,30 +238,14 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let name = format!("c-{hex}");
-    let up_path = dir.join(format!("{name}.up"));
-    let down_path = dir.join(format!("{name}.down"));
-    fuxix::file::make_fifo(&up_path, 0o600)?;
-    let made = fuxix::file::make_fifo(&down_path, 0o600);
-    let clean = || {
-        let _ = std::fs::remove_file(&up_path);
-        let _ = std::fs::remove_file(&down_path);
-    };
-    if let Err(e) = made {
-        clean();
-        return Err(e);
-    }
+    let paths = fifos(dir, &name);
+    let [up_path, down_path] = &paths;
+    fuxix::file::make_fifo(up_path, 0o600)?;
     let opened = (|| {
-        let flags = fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW;
-        let down = OpenOptions::new()
-            .read(true)
-            .custom_flags(flags)
-            .open(&down_path)?;
+        fuxix::file::make_fifo(down_path, 0o600)?;
+        let down = open_fifo(down_path, true, false)?;
         // Read and write: open at once, whether or not the server reads yet.
-        let up = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(flags)
-            .open(&up_path)?;
+        let up = open_fifo(up_path, true, true)?;
         knocked.write_all(format!("{name}\n").as_bytes())?;
         // The server's byte: it has opened both.
         let mut down = Link::door(down, up)?;
@@ -278,7 +261,7 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
             Err(e) => Err(e),
         }
     })();
-    clean();
+    remove(&paths);
     opened
 }
 
