@@ -809,10 +809,11 @@ impl fuxth::Host for Host<'_> {
             "wait-text" | "wait-gone" => {
                 let x = next()?;
                 let t = string(name, &next()?)?;
-                if t.is_empty() || t.contains(['\n', '\t']) {
+                let bare = t.trim_start_matches('^').trim_end_matches('$').trim();
+                if bare.is_empty() || t.contains(['\n', '\t']) {
                     return Err(fail(
                         "bad_value",
-                        "a text of one line, not empty, with no tab",
+                        "a text of one line, not empty (^ and $ alone hold nothing), with no tab",
                     ));
                 }
                 now(

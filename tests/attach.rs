@@ -628,8 +628,10 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     let pane = pane.trim();
     let mut fields = Vec::new();
     eventually("the program's report", || {
-        let screen = server.ok(&["str", pane, "pane", "opts", "capture"])?;
-        let mut lines = screen.lines().skip_while(|l| l.trim().is_empty());
+        // It sleeps, so it never settles: `0 timeout` looks at once. The
+        // answer's first line is the pane's state.
+        let screen = server.ok(&["str", pane, "pane", "opts", "0", "timeout", "capture"])?;
+        let mut lines = (screen.lines().skip(1)).skip_while(|l| l.trim().is_empty());
         fields = lines
             .next()
             .unwrap_or_default()

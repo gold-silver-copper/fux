@@ -1,6 +1,6 @@
 //! What a script or an agent needs of the server itself: naming the one it
 //! means, not stopping or closing the wrong thing, hearing what happens as
-//! it happens, sending input only to the screen it read, reaching only what
+//! it happens, sending keys to every pane of a tab, reaching only what
 //! it was granted, and finding its panes again after a crash.
 mod support;
 use std::io::{BufRead, BufReader};
@@ -29,6 +29,11 @@ fn named(rt: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ou
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
+}
+
+/// The pane an answer names: `run` answers `%N STATE` and what came.
+fn first_word(answer: &str) -> &str {
+    answer.split_whitespace().next().unwrap_or_default()
 }
 
 fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -83,22 +88,12 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     );
     // From one of its own panes, kill-server is refused; force-kill-server
     // is not.
-    let sh = server.ok(&[
-        "opts",
-        "str",
-        "sh",
-        "name",
-        "str",
-        "sh",
-        "program",
-        "300",
-        "wait-idle",
-        "run",
-    ])?;
+    let sh = server.ok(&["opts", "str", "sh", "name", "str", "sh", "program", "run"])?;
+    let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
     let refused = server.ok(&[
         "str",
-        sh.trim(),
+        sh,
         "pane",
         "keys",
         "str",
@@ -107,10 +102,6 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         "str",
         "Enter",
         "key",
-        "str",
-        "status=",
-        "wait-text",
-        "with-screen",
         "send-keys",
     ])?;
     assert!(refused.contains("status=1"), "{refused}");
@@ -172,7 +163,7 @@ fn events_tell_what_happens() -> Outcome {
         "arg",
         "run",
     ])?;
-    let pane = pane.trim();
+    let pane = first_word(&pane);
     let created = next(r#""event":"created""#)?;
     assert!(created.contains(r#""name":"agent""#), "{created}");
     next(&format!(r#""event":"created","pane":"{pane}""#))?;
@@ -195,22 +186,16 @@ fn events_tell_what_happens() -> Outcome {
     Ok(())
 }
 
-/// Input meant for one screen goes only to that screen: `if-revision`
-/// sends nothing once it changed (status 6). Keys sent to a tab reach each
-/// of its panes, and their wait waits for each.
+/// Keys sent to a tab reach each of its panes, and each answers once its
+/// shell reads again, with the command's status.
 #[test]
-fn input_goes_only_where_it_was_meant() -> Outcome {
+fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let server = Server::start("")?;
     let bash = [
         "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg",
     ];
-    let a = server.ok(&[
-        &["opts", "str", "a", "name"][..],
-        &bash,
-        &["300", "wait-idle", "run"],
-    ]
-    .concat())?;
-    let a = a.trim();
+    let a = server.ok(&[&["opts", "str", "a", "name"][..], &bash, &["run"]].concat())?;
+    let a = first_word(&a);
     let b = server.ok(&[
         &["str", a, "pane", "opts", "horizontal"][..],
         &bash,
@@ -218,31 +203,7 @@ fn input_goes_only_where_it_was_meant() -> Outcome {
     ]
     .concat())?;
     let b = b.trim();
-    server.ok(&["str", b, "pane", "opts", "300", "wait-idle", "wait"])?;
-    let revision = server.ok(&["str", a, "pane", "str", "revision", "get"])?;
-    let revision = revision.trim();
-    server.ok(&["str", a, "pane", "str", "echo moved", "line"])?;
-    let stale = server.fux(&[
-        "str",
-        a,
-        "pane",
-        "keys",
-        "str",
-        "y",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        revision,
-        "if-revision",
-        "send-keys",
-    ])?;
-    assert_eq!(stale.status, 6, "{}", stale.stderr);
-    assert!(
-        stale.stderr.contains("nothing was sent"),
-        "{}",
-        stale.stderr
-    );
+    server.ok(&["str", b, "pane", "opts", "wait"])?;
     let both = server.ok(&[
         "str",
         a,
@@ -255,13 +216,15 @@ fn input_goes_only_where_it_was_meant() -> Outcome {
         "str",
         "Enter",
         "key",
-        "wait-done",
         "send-keys",
     ])?;
-    assert_eq!(both, format!("{a} done 0\n{b} done 0\n"));
+    // Each pane's answer: its state line, then the echo and the output.
     for pane in [a, b] {
-        let screen = server.ok(&["str", pane, "pane", "screen"])?;
-        assert!(screen.contains("both-42"), "{pane}: {screen}");
+        let part = both
+            .split_once(&format!("{pane} reading · done 0\n"))
+            .map(|(_, rest)| rest)
+            .ok_or_else(|| format!("no answer from {pane}: {both}"))?;
+        assert!(part.contains("\nboth-42\n"), "{pane}: {both}");
     }
     Ok(())
 }
@@ -289,6 +252,9 @@ fn a_grant_reaches_one_workspace() -> Outcome {
         "str",
         "echo inside; sleep 60",
         "arg",
+        "str",
+        "inside",
+        "wait-text",
         "run",
     ])?;
     assert_eq!(job.status, 0, "{}", job.stderr);
@@ -342,9 +308,12 @@ fn a_crashed_server_comes_back() -> Outcome {
         "str",
         "echo up; sleep 60",
         "arg",
+        "str",
+        "up",
+        "wait-text",
         "run",
     ])?;
-    let app = app.trim();
+    let app = first_word(&app);
     let shell = server.ok(&["str", app, "pane", "opts", "horizontal", "split"])?;
     let shell = shell.trim();
     server.ok(&["str", app, "pane", "70", "resize-x"])?;

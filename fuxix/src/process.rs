@@ -538,7 +538,8 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
     let arg = |i: usize| args.get(i).copied().unwrap_or(0);
     let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
     match nr {
-        0 | 17 | 19 | 295 => Blocked::Read(arg(0)),
+        // read, pread64, readv, preadv, splice (`cat` from a terminal).
+        0 | 17 | 19 | 295 | 275 => Blocked::Read(arg(0)),
         7 => Blocked::Poll(forever(arg(2))),
         23 | 270 => Blocked::Poll(arg(4) == 0),
         271 => Blocked::Poll(arg(2) == 0),
@@ -560,7 +561,8 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
     let arg = |i: usize| args.get(i).copied().unwrap_or(0);
     let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
     match nr {
-        63 | 65 | 67 | 69 => Blocked::Read(arg(0)),
+        // read, readv, pread64, preadv, splice (`cat` from a terminal).
+        63 | 65 | 67 | 69 | 76 => Blocked::Read(arg(0)),
         72 => Blocked::Poll(arg(4) == 0),
         73 => Blocked::Poll(arg(2) == 0),
         22 => Blocked::Poll(forever(arg(3))),

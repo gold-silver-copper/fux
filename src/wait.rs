@@ -421,6 +421,24 @@ impl Wait {
                 _,
             ) => (None, status),
         };
+        // A settling action whose pane closed (a shell that exited): said,
+        // with status 4, not a failure.
+        if settles && matches!(told, Told::Gone) {
+            return Outcome {
+                status: GONE,
+                stdout: format!("{id} closed\n"),
+                json: format!(
+                    "{}\n",
+                    Json::Object(vec![
+                        ("pane", Json::str(id.to_string())),
+                        ("state", Json::str("closed")),
+                        ("status", Json::Number(i64::from(GONE))),
+                    ])
+                    .render()
+                ),
+                ..Outcome::default()
+            };
+        }
         if let (Some(state), Some(pane)) = (state, pane) {
             let line = self.state_line(id, pane, state, since);
             // A text that cannot come: the screen, to act on what is there.
@@ -940,7 +958,10 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::M
 /// shell or prompt shows the command there, and its output comes below. A
 /// field edited in place (no Enter) shows its value, which counts.
 fn echoed(line: &Line, wait: &Wait, cursor: Option<fux_vt::RowId>) -> bool {
-    wait.after && wait.lines > 0 && cursor == Some(line.first)
+    // Still showing what was typed: output that cleared the row and wrote
+    // over it (`clear; echo READY`) is not the echo.
+    let typed = |t: &String| !t.trim().is_empty() && line.text.contains(t.trim());
+    wait.after && wait.lines > 0 && cursor == Some(line.first) && wait.echo.iter().any(typed)
 }
 
 /// A text as a wait compares it: case ignored, runs of blanks as one. A

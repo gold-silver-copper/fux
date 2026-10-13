@@ -24,8 +24,9 @@ pub enum State {
     /// It waits for input: blocked reading its terminal, every key sent
     /// read.
     Reading,
-    /// It waits for something else (the network, another program, a
-    /// timer) and has been quiet a while.
+    /// It waits for something else (the network, a pipe, another program)
+    /// and has been quiet a while. A program asleep on a timer is busy: it
+    /// is waited for, up to the limit.
     Waiting,
     /// The system does not say; the screen has been quiet a while.
     Settled,
@@ -64,16 +65,20 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         Process::HungUp(_) => return State::Busy,
         Process::Reading(child) => child,
     };
-    if !pane.input_written() {
+    // Keys not yet written, or output written that fux has not read: at
+    // work still.
+    if !pane.input_written() || fuxix::io::unread(&child.master).unwrap_or(0) > 0 {
         return State::Busy;
     }
     // Quiet since the screen last changed and input last went in.
     let quiet = now.saturating_duration_since(pane.changed_at.max(pane.written_at));
-    let activity = fuxix::terminal::foreground_group(&child.master)
-        .zip(child.master.slave_path())
-        .map_or(Activity::Unknown, |(group, tty)| {
-            fuxix::process::activity(group, &tty)
-        });
+    // No foreground group: its program is gone, its end not yet heard.
+    let Some(group) = fuxix::terminal::foreground_group(&child.master) else {
+        return State::Busy;
+    };
+    let activity = child.master.slave_path().map_or(Activity::Unknown, |tty| {
+        fuxix::process::activity(group, &tty)
+    });
     match activity {
         Activity::Reading if quiet >= SETTLE => State::Reading,
         Activity::Polling if quiet >= QUIET => State::Reading,

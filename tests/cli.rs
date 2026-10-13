@@ -201,7 +201,22 @@ fn send_keys_signal_and_buffers() -> Outcome {
         "{}",
         idle.stderr
     );
-    server.type_line("%1", "sleep 600; echo after-sleep")?;
+    // The sleep never settles: `0 timeout` answers at once.
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "keys",
+        "str",
+        "sleep 600; echo after-sleep",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
     eventually("sleep in the foreground", || {
         Ok(server
             .fux(&["str", "%1", "pane", "str", "TERM", "signal"])?
@@ -232,10 +247,33 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         unknown.stderr
     );
-    let timed_out = server.fux(&[
+    // A text wait on a program reading its terminal ends at once: the text
+    // cannot come before more input.
+    let reading = server.fux(&[
         "str",
         "%1",
         "pane",
+        "opts",
+        "str",
+        "never-shown",
+        "wait-text",
+        "wait",
+    ])?;
+    assert_eq!(reading.status, 7, "{}", reading.stderr);
+    assert!(
+        reading.stdout.starts_with("%1 reading\n"),
+        "{}",
+        reading.stdout
+    );
+    // On one that sleeps, it waits until its time is up.
+    let timed_out = server.fux(&[
+        "opts",
+        "str",
+        "sleep 30",
+        "command",
+        "0",
+        "timeout",
+        "run",
         "opts",
         "str",
         "never-shown",
@@ -254,18 +292,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;
     assert_eq!(left, "3\na b\n%1\n@1\n");
-    let outcome = server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "opts",
-        "100",
-        "wait-idle",
-        "wait",
-        "json",
-    ])?;
+    let outcome = server.ok(&["str", "%1", "pane", "opts", "wait", "json"])?;
     assert!(
-        outcome.starts_with(r#"{"pane":"%1","met":"idle""#),
+        outcome.starts_with(r#"{"pane":"%1","state":"reading""#),
         "{outcome}"
     );
     let record = server.ok(&["str", "%1", "pane", "info", "json"])?;

@@ -24,6 +24,15 @@ pub fn write(fd: impl AsFd, bytes: &[u8]) -> Result<usize> {
     check_size(count)
 }
 
+/// How many bytes wait to be read from `fd` (FIONREAD): output a program
+/// wrote to its terminal that its reader has not read yet.
+pub fn unread(fd: impl AsFd) -> Result<usize> {
+    let mut count: libc::c_int = 0;
+    // SAFETY: FIONREAD writes one c_int, and `count` is one.
+    check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::FIONREAD, &mut count) })?;
+    Ok(usize::try_from(count).unwrap_or(0))
+}
+
 /// Makes reads and writes on `fd` return `AGAIN` rather than wait.
 pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> Result<()> {
     let raw = fd.as_fd().as_raw_fd();
