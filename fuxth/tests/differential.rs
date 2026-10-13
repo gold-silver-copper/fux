@@ -43,17 +43,10 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
                 seen.refused = seen.refused.saturating_add(1);
                 // Refused only if reaching that step surely fails: there,
                 // as it says, or (a call) somewhere in what it calls.
-                let either = ["type", "stack_underflow"];
-                let failed_so = match naive {
-                    // At the step itself, too few values or the wrong kind,
-                    // as the depth it is called at has it.
-                    Ended::Failed(c, at) => {
-                        at != line
-                            || c == code
-                            || (either.contains(&&**c) && either.contains(&&**code))
-                    }
-                    Ended::Left(..) | Ended::Refused(..) | Ended::Endless => false,
-                };
+                // A refusal promises the step fails, not with which code:
+                // the run may meet another mistake there first (an index
+                // past the end before the element's kind).
+                let failed_so = matches!(naive, Ended::Failed(..));
                 if reached.contains(line) && !failed_so {
                     wrong.push(format!(
                         "seed {seed}: refused {code} at line {line}, which ran: {naive:?}\n{text}"

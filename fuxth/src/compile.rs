@@ -366,11 +366,13 @@ pub struct Compiler<A> {
 impl<A: Clone> Compiler<A> {
     pub fn new(vocabulary: Vocabulary) -> Compiler<A> {
         let mut names = HashMap::new();
-        for builtin in Builtin::ALL {
-            names.insert(Rc::from(builtin.name()), Entry::Builtin(builtin));
-        }
         for (id, (name, _, _)) in vocabulary.words.iter().enumerate() {
             names.insert(Rc::from(name.as_str()), Entry::App(id));
+        }
+        // The core's words are the core's: an application's word of the
+        // same name is never reached.
+        for builtin in Builtin::ALL {
+            names.insert(Rc::from(builtin.name()), Entry::Builtin(builtin));
         }
         Compiler {
             vocabulary,
@@ -436,7 +438,7 @@ impl<A: Clone> Compiler<A> {
                         let out = self.code().len();
                         self.code().patch(head, out);
                     }
-                    Some(other) => return Err(unclosed(&other)),
+                    Some(other) => return Err(mismatched(token, &other)),
                     None => return Err(unmatched(token, "no define, list or each is open")),
                 },
                 "let" => {
@@ -590,7 +592,11 @@ impl<A: Clone> Compiler<A> {
             None => {
                 return Err(Error {
                     code: Code::UnknownWord,
-                    message: "no such word".to_owned(),
+                    message: if text.is_empty() {
+                        "no such word: an empty one (str '' pushes an empty string)".to_owned()
+                    } else {
+                        "no such word".to_owned()
+                    },
                     place: Some(token.place.clone()),
                     word: Some(Rc::clone(&token.text)),
                 });

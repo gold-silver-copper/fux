@@ -50,7 +50,7 @@ define max 2dup lt if swap then drop end
 
 # ---- Integers
 # n m -- r : the remainder of n div m, with the sign of n
-define mod dup -1 eq if 2drop 0 else 2dup div mul sub then end
+define mod let m let n m -1 eq if n 0 mul else n n m div m mul sub then end
 # n -- -n : n negated
 define negate 0 swap sub end
 # n -- |n| : n without its sign

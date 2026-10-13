@@ -45,7 +45,7 @@ pub use compile::{Builtin, Compiler, PARSING, Program, Vocabulary};
 pub use error::{Code, Error, Failure};
 pub use machine::{Args, BUILT, Done, Host, LONGEST, Limits, Machine, Outcome};
 pub use token::{Place, Token};
-pub use value::{AppValue, List, NESTING, Text, Value};
+pub use value::{AppValue, List, NESTING, TOTAL, Text, Value};
 
 /// fuxth's standard library, written in fuxth: every word beyond the core
 /// (`dup swap over rot`, booleans, comparing, sequences, text …). An

@@ -28,9 +28,11 @@ line, the deepest first; `print` prints a value at once.
   word or an unclosed block is an error before anything happens; so is a step
   that every run reaching it would fail: a word given fewer values than the
   stack surely holds, or a value of a kind it never takes (`str a 1 add`,
-  `str a not`: for a word of the library or your own, a kind on which every
-  way through it fails). It follows depths and kinds, not values: `1 0 div`
-  fails as it runs. The checker follows depths as ranges and kinds as sets through
+  `str a not`: for a word of the library or your own, kinds on which every
+  way through it fails, checked again at each call with the kinds it is
+  given). It follows depths and kinds, not values (`1 0 div` fails as it
+  runs), nor list elements' kinds, nor top-level names read inside a
+  definition. It follows depths as ranges and kinds as sets through
   branches, loops, `list` and `each`, definitions (each summed up by what it
   uses, leaves, and which kinds of input it always fails on) and recursion;
   what it can't know is never an error.
@@ -42,8 +44,10 @@ line, the deepest first; `print` prints a value at once.
   recursion in running a program, and dropping it stops it. A budget of steps
   lets the host check for Ctrl-C in a loop that never pauses.
 - **Bounded.** 1,000,000 values on the stack, 10,000 nested calls; a string or
-  list built holds at most 1,000,000 elements, and a run builds at most
-  16,000,000 in all; long steps cost a step per 64 elements.
+  list built holds at most 1,000,000 elements, a run builds at most
+  16,000,000 in all, and a list holds at most 16,000,000 in all, counting
+  through the lists and strings in it; long steps cost a step per 64
+  elements. String literals are not built, so they are exempt.
 - **Errors** carry a stable code, a message, and the file, line and word.
 
 ## The core

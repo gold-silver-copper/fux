@@ -567,11 +567,12 @@ pub fn run_capped(
             });
         }
         if let Some(steps) = steps.filter(|steps| taken > *steps) {
-            return Err(Failed {
+            let failed = Failed {
                 status: 1,
-                code: "too_long".to_owned(),
+                code: "steps".to_owned(),
                 message: format!("ran more than {steps} steps"),
-            });
+            };
+            return Err(placed(machine, failed));
         }
         taken = taken.saturating_add(SLICE);
         match machine

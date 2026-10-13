@@ -4,7 +4,7 @@ use crate::*;
 
 /// A host with one value of its own, a ticket, and five words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
-/// for the host to answer; `fail`, which fails; `maybe` (n -- [n]), which
+/// for the host to answer; `nope`, which fails; `maybe` (n -- [n]), which
 /// gives n back only above 0; and `liar`, which says it gives a value and
 /// gives none.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,7 +74,7 @@ fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
     words.add("ticket", 0, 1..=1);
     words.add("ask", 1, 1..=1);
-    words.add("fail", 0, 0..=0);
+    words.add("nope", 0, 0..=0);
     words.add("maybe", 1, 0..=1);
     words.add("liar", 0, 1..=1);
     words
@@ -709,4 +709,72 @@ fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error
     let swapped = "define f each drop drop 1 end end str a list 0 end f 1 add";
     assert_eq!(run(swapped)?, ints(&[2]));
     Ok(())
+}
+
+/// What the Codex QA runs found, each a test that failed before its fix.
+#[test]
+fn what_qa_found() -> Result<(), Error> {
+    let refused = |text: &str| -> Option<String> {
+        let mut compiler = with_stdlib();
+        let compiled = token::source("t", text)
+            .and_then(|tokens| compiler.add(&tokens))
+            .and_then(|()| compiler.finish().map(|_| ()));
+        compiled.err().map(|e| e.code.name().to_owned())
+    };
+    // Refused before anything runs: kinds through library calls, pairs of
+    // kinds, push and put of a non-string into a string, `mod` by -1.
+    for text in [
+        "str m print 1 sum",
+        "str m print 42 last",
+        "str m print 5 sort",
+        "str m print str x 0 gt",
+        "str m print str a str 3 copies",
+        "str m print str a 1 push",
+        "str m print str a 0 1 put",
+        "str m print str x -1 mod",
+        "str m print true negate",
+        "define id let x x end str m print str a id 1 add",
+    ] {
+        assert_eq!(refused(text).as_deref(), Some("type"), "{text}");
+    }
+    // A definition every way through which ends in `fail` still needs its
+    // values; one way of several ending in `fail` doesn't make it need more.
+    assert_eq!(
+        refused("define f fail end str m print f").as_deref(),
+        Some("stack_underflow")
+    );
+    assert_eq!(
+        refused("define f if str x fail else drop drop then end true f"),
+        None
+    );
+    // A loop that grows the stack still needs its first round's values.
+    assert_eq!(
+        refused("define f begin dup true until end str m print f").as_deref(),
+        Some("stack_underflow")
+    );
+    // A call to itself inside list … end needs what the definition needs.
+    assert_eq!(
+        refused("define d dup drop list d end end str m print d").as_deref(),
+        Some("stack_underflow")
+    );
+    // Right answers: eq after put, a list's depth after put, mod by -1.
+    assert_eq!(
+        run("list list 0 end end 0 7 put list 7 end eq")?,
+        [Value::Bool(true)]
+    );
+    assert_eq!(run("-9223372036854775808 -1 mod 7 -1 mod")?, ints(&[0, 0]));
+    assert_eq!(run("str x 5 str ab pad len")?, ints(&[5]));
+    Ok(())
+}
+
+/// A list held many times over is as big as all its copies: past the
+/// total allowed, it is refused as it is built, so no walk over it (eq,
+/// lt, string) can run long within a step.
+#[test]
+fn a_list_held_many_times_is_counted_whole() {
+    let doubling =
+        "list 1 2 3 4 5 6 7 8 end let x 0 begin list x x end let x 1 add dup 40 eq until";
+    assert_eq!(code(run(doubling)), Some("too_long"));
+    let fine = "list 1 2 end let x 0 begin list x x end let x 1 add dup 10 eq until x x eq";
+    assert_eq!(code(run(fine)), None);
 }

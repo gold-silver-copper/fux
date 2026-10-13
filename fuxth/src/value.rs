@@ -123,41 +123,79 @@ impl std::fmt::Display for Text {
     }
 }
 
-/// A list's values, and how deep it nests (1 for a list of no lists).
-#[derive(Clone, Debug, PartialEq)]
+/// The most a list may hold in all, counting through the lists and strings
+/// in it (a list held twice counts twice): what bounds every walk over a
+/// value, comparing or printing it.
+pub const TOTAL: u64 = 16_000_000;
+
+/// A list's values, how deep it nests (1 for a list of no lists), and how
+/// much it holds in all ([`Value::weight`]).
+#[derive(Clone, Debug)]
 pub struct List<A> {
     pub items: Vec<Value<A>>,
     depth: u8,
+    weight: u64,
+}
+
+/// Two lists are equal when their values are.
+impl<A: PartialEq> PartialEq for List<A> {
+    fn eq(&self, other: &List<A>) -> bool {
+        self.items == other.items
+    }
 }
 
 impl<A> List<A> {
-    /// A list of `items`; `None` if it would nest deeper than [`NESTING`].
+    /// A list of `items`; `None` if it would nest deeper than [`NESTING`]
+    /// or hold more than [`TOTAL`] in all.
     pub fn new(items: Vec<Value<A>>) -> Option<List<A>> {
         let inner = items.iter().map(Value::depth).max().unwrap_or(0);
         let depth = inner.checked_add(1).filter(|d| *d <= NESTING)?;
-        Some(List { items, depth })
+        let weight = items
+            .iter()
+            .try_fold(0u64, |all, item| all.checked_add(item.weight()))?;
+        let weight = weight.checked_add(1).filter(|w| *w <= TOTAL)?;
+        Some(List {
+            items,
+            depth,
+            weight,
+        })
     }
 
     pub fn depth(&self) -> u8 {
         self.depth
     }
 
-    /// `value` added at the end; `None` past the nesting limit.
+    /// `value` added at the end; `None` past the limits.
     pub fn push(&mut self, value: Value<A>) -> Option<()> {
         let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
+        let weight = self
+            .weight
+            .checked_add(value.weight())
+            .filter(|w| *w <= TOTAL)?;
         self.depth = self.depth.max(depth);
+        self.weight = weight;
         self.items.push(value);
         Some(())
     }
 
-    /// Item `at` replaced by `value`; `None` past the nesting limit or the
-    /// end. The depth may stay higher than it now is: it bounds, it isn't
-    /// exact.
+    /// Item `at` replaced by `value`; `None` past the limits or the end.
     pub fn put(&mut self, at: usize, value: Value<A>) -> Option<()> {
         let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
+        let old = self.items.get(at)?;
+        let (old_depth, old_weight) = (old.depth(), old.weight());
+        let weight = (self.weight.saturating_sub(old_weight))
+            .checked_add(value.weight())
+            .filter(|w| *w <= TOTAL)?;
         let slot = self.items.get_mut(at)?;
         *slot = value;
-        self.depth = self.depth.max(depth);
+        self.weight = weight;
+        // The deepest item may be the one replaced: then look again.
+        self.depth = if old_depth.saturating_add(1) >= self.depth && depth < self.depth {
+            let inner = self.items.iter().map(Value::depth).max().unwrap_or(0);
+            inner.saturating_add(1)
+        } else {
+            self.depth.max(depth)
+        };
         Some(())
     }
 }
@@ -217,6 +255,17 @@ impl<A: AppValue> Value<A> {
 impl<A> Value<A> {
     pub fn str(text: impl Into<Box<str>>) -> Value<A> {
         Value::Str(Rc::new(Text::new(text)))
+    }
+
+    /// How much it holds in all: a list counts its values' weights and
+    /// itself, a string its characters, anything else 1. A walk over the
+    /// value goes through about this many things.
+    pub fn weight(&self) -> u64 {
+        match self {
+            Value::List(list) => list.weight,
+            Value::Str(s) => u64::try_from(s.chars_len()).unwrap_or(u64::MAX).max(1),
+            Value::Int(_) | Value::Bool(_) | Value::App(_) => 1,
+        }
     }
 
     /// How deep it nests: 0 for anything but a list.

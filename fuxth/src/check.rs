@@ -34,7 +34,7 @@ const WIDEN_AFTER: u32 = 3;
 const RECURSION_ROUNDS: u32 = 8;
 
 /// The kinds a value may be: a set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Kinds(u8);
 
 const INT: Kinds = Kinds(1);
@@ -71,6 +71,9 @@ impl Kinds {
 
     /// As an error says it: "an integer or a string".
     fn describe(self) -> String {
+        if self == ANY {
+            return "any value".to_owned();
+        }
         let names = [
             (INT, "an integer"),
             (BOOL, "a boolean"),
@@ -150,16 +153,25 @@ struct Summary {
     exit: Option<State>,
     /// Whether it may move its caller's values (a `roll` of unknown depth).
     scrambled: bool,
-    /// For each of its top inputs (the top first), the kinds every way
-    /// through it fails on, each with why: a call given one is refused.
-    refuses: Vec<Vec<(Kinds, String)>>,
 }
 
-/// How many of a definition's top inputs have the kinds they take found.
-const INPUTS: usize = 4;
+/// How many of a definition's inputs a call's known kinds are given to it
+/// with, to check it again for that call.
+const GIVEN: usize = 8;
 
-/// The kinds a definition's input may be tried as, one by one.
-const EACH_KIND: [Kinds; 5] = [INT, BOOL, STR, LIST, APP];
+/// A definition checked again with the kinds a call gives it.
+#[derive(Clone, Debug)]
+enum Special {
+    /// What it does given them.
+    Does(Summary),
+    /// Every way through it fails given them: why.
+    Fails(String),
+    /// Nothing more is known than its summary says.
+    Unknown,
+}
+
+/// The definitions checked again, by definition and the kinds given.
+type Specials = std::cell::RefCell<std::collections::HashMap<(usize, Vec<Kinds>), Special>>;
 
 impl Summary {
     /// What a definition might do, for one the checker can't follow.
@@ -171,7 +183,6 @@ impl Summary {
             need: 0,
             exit: Some(exit),
             scrambled: true,
-            refuses: Vec::new(),
         }
     }
 }
@@ -181,7 +192,7 @@ enum Failing {
     /// It takes `takes`, and the stack has from `lo` to `hi`; `inside`
     /// a `list` body.
     Underflow {
-        takes: i64,
+        takes: u64,
         lo: i64,
         hi: i64,
         inside: bool,
@@ -250,7 +261,7 @@ impl State {
         if self.bounded && self.hi.saturating_sub(missing) < 0 {
             let (lo, hi) = self.depth();
             return Err(Failing::Underflow {
-                takes: i64::try_from(n).unwrap_or(BIG),
+                takes: u64::try_from(n).unwrap_or(u64::MAX),
                 lo,
                 hi,
                 inside: !self.outer.is_empty(),
@@ -336,8 +347,13 @@ fn len(top: &[Kinds]) -> i64 {
 /// Checks `program`: the first step that surely fails, if one does.
 pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Error> {
     definitions(program, &mut known);
-    let Known { summaries, first } = known;
-    let error = Unit::new(program, &program.main, State::start(true), &summaries).first_error();
+    let Known {
+        summaries,
+        first,
+        specials,
+    } = known;
+    let main = State::start(true);
+    let error = Unit::new(program, &program.main, main, &summaries, &specials, None).first_error();
     match earliest(first, error) {
         Some(error) => Err(error),
         None => Ok(()),
@@ -351,19 +367,32 @@ pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Err
 pub(crate) struct Known {
     summaries: Vec<Option<Summary>>,
     first: Option<Error>,
+    specials: Specials,
 }
 
 /// Works out what each of `program`'s definitions does, from the first
 /// `known` doesn't know yet.
 pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
-    let Known { summaries, first } = known;
+    let Known {
+        summaries,
+        first,
+        specials,
+    } = known;
     let from = summaries.len();
     for (id, code) in program.words.iter().enumerate().skip(from) {
         summaries.push(None);
         // Recursion: gone over until its summary stays the same, starting
         // from knowing nothing of what a call to itself does.
         for round in 0..=RECURSION_ROUNDS {
-            let new = Unit::new(program, code, State::start(false), summaries).run();
+            let unit = Unit::new(
+                program,
+                code,
+                State::start(false),
+                summaries,
+                specials,
+                Some(id),
+            );
+            let new = unit.run();
             let current = summaries.get(id).cloned().flatten();
             let next = match (&current, new) {
                 (_, None) => current.clone(),
@@ -377,7 +406,6 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
                         (None, new) => new,
                     },
                     scrambled: old.scrambled || new.scrambled,
-                    refuses: Vec::new(),
                 }),
             };
             if next == current {
@@ -387,56 +415,17 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
                 *slot = next;
             }
         }
-        let refuses = refusals(program, code, summaries, id);
-        if let Some(Some(summary)) = summaries.get_mut(id) {
-            summary.refuses = refuses;
-        }
-        let error = Unit::new(program, code, State::start(false), summaries).first_error();
+        let unit = Unit::new(
+            program,
+            code,
+            State::start(false),
+            summaries,
+            specials,
+            Some(id),
+        );
+        let error = unit.first_error();
         *first = earliest(first.take(), error);
     }
-}
-
-/// For each of definition `id`'s top inputs, the kinds every way through
-/// it fails on, and why: it is gone over with that input taken as each
-/// kind in turn.
-fn refusals<A>(
-    program: &Program<A>,
-    code: &Steps<A>,
-    summaries: &[Option<Summary>],
-    id: usize,
-) -> Vec<Vec<(Kinds, String)>> {
-    let need = match summaries.get(id) {
-        Some(Some(summary)) => usize::try_from(summary.need).unwrap_or(0),
-        Some(None) | None => 0,
-    };
-    let inputs = need.min(INPUTS);
-    (0..inputs)
-        .map(|slot| {
-            EACH_KIND
-                .iter()
-                .filter_map(|kind| {
-                    let mut start = State::start(false);
-                    let depth = i64::try_from(need).unwrap_or(BIG);
-                    start.lo = depth.saturating_neg();
-                    start.hi = start.lo;
-                    start.top = vec![ANY; need];
-                    let at = need.saturating_sub(1).saturating_sub(slot);
-                    if let Some(input) = start.top.get_mut(at) {
-                        *input = *kind;
-                    }
-                    let unit = Unit::new(program, code, start, summaries);
-                    if unit.run().is_some() {
-                        return None;
-                    }
-                    let why = unit.first_error().map(|e| match e.word {
-                        Some(word) => format!("{word}: {}", e.message),
-                        None => e.message,
-                    });
-                    Some((*kind, why.unwrap_or_else(|| "it stops".to_owned())))
-                })
-                .collect()
-        })
-        .collect()
 }
 
 /// The error written first in the source.
@@ -472,6 +461,9 @@ struct Unit<'a, A> {
     /// Whether it is the top level, whose `let` names it follows.
     top: bool,
     summaries: &'a [Option<Summary>],
+    specials: &'a Specials,
+    /// The definition it is, if one: a call to itself uses its summary.
+    own: Option<usize>,
     /// The steps where a block starts: the first, every jump's target, and
     /// each step after a jump.
     starts: BTreeSet<usize>,
@@ -483,6 +475,8 @@ impl<'a, A> Unit<'a, A> {
         code: &'a Steps<A>,
         start: State,
         summaries: &'a [Option<Summary>],
+        specials: &'a Specials,
+        own: Option<usize>,
     ) -> Unit<'a, A> {
         let mut starts = BTreeSet::from([0]);
         for (at, op) in code.ops.iter().enumerate() {
@@ -498,6 +492,8 @@ impl<'a, A> Unit<'a, A> {
             start,
             top,
             summaries,
+            specials,
+            own,
             starts,
         }
     }
@@ -510,7 +506,11 @@ impl<'a, A> Unit<'a, A> {
     ///
     /// With them, the least of what the ways that never return (a call to a
     /// definition that doesn't) had used of the entry's values.
-    fn states(&self) -> Option<(Blocks, Option<i64>)> {
+    ///
+    /// `forward`: only the way through once, no loop gone round again (a
+    /// way that would go round ends there, its use kept as if it ended):
+    /// every run goes that far.
+    fn states(&self, forward: bool) -> Option<(Blocks, Option<i64>)> {
         let first = (self.start.clone(), 0);
         let mut states = std::collections::BTreeMap::from([(0, first)]);
         let mut todo = BTreeSet::from([0usize]);
@@ -524,6 +524,11 @@ impl<'a, A> Unit<'a, A> {
                 continue;
             };
             for (to, next) in self.block(start, state, &mut |_, _| {}, &mut diverged) {
+                if forward && to <= start {
+                    let used = next.outer.first().map_or(next.used, |o| o.used);
+                    diverged = Some(diverged.map_or(used, |d| d.min(used)));
+                    continue;
+                }
                 let merged = match states.get(&to) {
                     None => Some((next, 0)),
                     Some((old, seen)) => {
@@ -550,28 +555,92 @@ impl<'a, A> Unit<'a, A> {
     /// yet); anything at all, if the code goes unchecked.
     fn run(&self) -> Option<Summary> {
         let end = self.code.ops.len();
-        let Some((mut states, diverged)) = self.states() else {
+        let Some((mut states, diverged)) = self.states(false) else {
             return Some(Summary::anything());
         };
         let scrambled = states.values().any(|(s, _)| s.scrambled);
         let exit = states.remove(&end).map(|(state, _)| state);
-        let need = match (&exit, diverged) {
-            (Some(exit), Some(diverged)) => exit.used.min(diverged),
-            (Some(exit), None) => exit.used,
-            (None, Some(diverged)) => diverged,
-            (None, None) => return None,
+        let need = |exit: Option<&State>, diverged: Option<i64>| match (exit, diverged) {
+            (Some(exit), Some(diverged)) => Some(exit.used.min(diverged)),
+            (Some(exit), None) => Some(exit.used),
+            (None, Some(diverged)) => Some(diverged),
+            (None, None) => None,
+        };
+        let all = need(exit.as_ref(), diverged)?;
+        // Every run goes once through, before any loop goes round again: what
+        // that much uses, every way uses. Joining a loop's rounds can hide it.
+        let once = match self.states(true) {
+            Some((mut states, diverged)) => {
+                let exit = states.remove(&end).map(|(state, _)| state);
+                need(exit.as_ref(), diverged).unwrap_or(all)
+            }
+            None => all,
         };
         Some(Summary {
-            need,
+            need: all.max(once),
             exit,
             scrambled,
-            refuses: Vec::new(),
         })
+    }
+
+    /// Definition `id` checked again, given `kinds` for its inputs (the
+    /// deepest first): whether every way through it fails, and what it
+    /// leaves.
+    fn special(&self, id: usize, kinds: Vec<Kinds>) -> Special {
+        let key = (id, kinds);
+        if let Ok(specials) = self.specials.try_borrow()
+            && let Some(known) = specials.get(&key)
+        {
+            return known.clone();
+        }
+        let Some(code) = self.program.words.get(id) else {
+            return Special::Unknown;
+        };
+        let mut start = State::start(false);
+        let given = len(&key.1);
+        start.lo = given.saturating_neg();
+        start.hi = start.lo;
+        start.reached = start.lo;
+        start.top = key.1.clone();
+        let unit = Unit::new(
+            self.program,
+            code,
+            start,
+            self.summaries,
+            self.specials,
+            Some(id),
+        );
+        let special = match unit.states(false) {
+            None => Special::Unknown,
+            Some((mut states, diverged)) => {
+                let end = code.ops.len();
+                let exit = states.remove(&end).map(|(state, _)| state);
+                let scrambled = states.values().any(|(s, _)| s.scrambled);
+                match (exit, diverged) {
+                    (None, None) => match unit.first_error() {
+                        Some(e) => Special::Fails(match e.word {
+                            Some(word) => format!("{word}: {}", e.message),
+                            None => e.message,
+                        }),
+                        None => Special::Unknown,
+                    },
+                    (exit, _) => Special::Does(Summary {
+                        need: 0,
+                        exit,
+                        scrambled,
+                    }),
+                }
+            }
+        };
+        if let Ok(mut specials) = self.specials.try_borrow_mut() {
+            specials.insert(key, special.clone());
+        }
+        special
     }
 
     fn first_error(&self) -> Option<Error> {
         let mut first: Option<(usize, Error)> = None;
-        let (states, _) = self.states()?;
+        let (states, _) = self.states(false)?;
         for (start, (state, _)) in states {
             let mut failed = |at, error| {
                 if first.as_ref().is_none_or(|(seen, _)| at < *seen) {
@@ -613,11 +682,14 @@ impl<'a, A> Unit<'a, A> {
                     failed(at, self.error(at, op, failing));
                     return Vec::new();
                 }
-                Ok(Flow::Diverge) => {
-                    *diverged = Some(diverged.map_or(state.used, |d| d.min(state.used)));
+                // A way that never returns, or stops on purpose (`fail`),
+                // used what it had: counted as an end, at the definition's
+                // own depth (not a `list` body's).
+                Ok(Flow::Diverge | Flow::Stop) => {
+                    let used = state.outer.first().map_or(state.used, |o| o.used);
+                    *diverged = Some(diverged.map_or(used, |d| d.min(used)));
                     return Vec::new();
                 }
-                Ok(Flow::Stop) => return Vec::new(),
                 Ok(Flow::Go) => {}
             }
             match op {
@@ -688,39 +760,49 @@ impl<'a, A> Unit<'a, A> {
                     // time through.
                     return Ok(Flow::Diverge);
                 };
-                let given: Vec<Kinds> = state.top.iter().rev().copied().collect();
-                for (slot, refused) in summary.refuses.iter().enumerate() {
-                    let Some(kinds) = given.get(slot) else {
-                        break;
-                    };
-                    let fails = refused.iter().fold(Kinds(0), |all, (k, _)| all.union(*k));
-                    if kinds.and(fails) == *kinds && kinds.0 != 0 {
-                        let why = refused.iter().find(|(k, _)| kinds.may_be(*k));
-                        let why = why.map_or("it stops", |(_, why)| why.as_str());
-                        let place = if slot == 0 {
-                            "on top".to_owned()
-                        } else {
-                            format!("{slot} under the top")
-                        };
-                        return Err(Failing::Type(format!(
-                            "every way through it fails given {} {place}: {why}",
-                            kinds.describe()
-                        )));
+                // Checked again with the kinds this call gives it, where
+                // any are known (not for a call to itself).
+                let slots = usize::try_from(summary.need).unwrap_or(0).min(GIVEN);
+                let skip = state.top.len().saturating_sub(slots);
+                let known = state.top.len().saturating_sub(skip);
+                let mut given = vec![ANY; slots.saturating_sub(known)];
+                given.extend(state.top.iter().skip(skip).copied());
+                let mut special = None;
+                if self.own != Some(*id) && given.iter().any(|k| *k != ANY) {
+                    match self.special(*id, given.clone()) {
+                        Special::Fails(why) => {
+                            let said: Vec<String> = (given.iter().rev().enumerate())
+                                .filter(|(_, k)| **k != ANY)
+                                .map(|(i, k)| match i {
+                                    0 => format!("{} on top", k.describe()),
+                                    i => format!("{} {i} under the top", k.describe()),
+                                })
+                                .collect();
+                            return Err(Failing::Type(format!(
+                                "every way through it fails given {}: {why}",
+                                said.join(" and ")
+                            )));
+                        }
+                        Special::Does(does) => special = Some(does),
+                        Special::Unknown => {}
                     }
                 }
                 state.pop(usize::try_from(summary.need).unwrap_or(0))?;
+                let (exit, scrambled) = match &special {
+                    Some(does) => (does.exit.as_ref(), does.scrambled || summary.scrambled),
+                    None => (summary.exit.as_ref(), summary.scrambled),
+                };
                 // A way that went deeper than every way surely does may
                 // have replaced the caller's values down to there.
-                let deeper = (summary.exit.as_ref())
-                    .is_some_and(|exit| exit.reached.saturating_add(summary.need) < 0);
+                let deeper = exit.is_some_and(|exit| exit.reached.saturating_add(summary.need) < 0);
                 if deeper {
                     state.forget(0, 0);
                 }
-                if summary.scrambled {
+                if scrambled {
                     state.forget(0, 0);
                     state.scrambled = true;
                 }
-                let Some(exit) = &summary.exit else {
+                let Some(exit) = exit else {
                     return Ok(Flow::Diverge);
                 };
                 let lo = exit.lo.saturating_add(summary.need);
@@ -963,11 +1045,23 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
         }
         Builtin::Push => {
             let s = seq(name, at(0))?;
+            if s == STR && !at(1).may_be(STR) {
+                return Err(Failing::Type(format!(
+                    "push onto a string takes a string, not {}",
+                    at(1).describe()
+                )));
+            }
             state.push(s);
         }
         Builtin::Put => {
             let s = seq(name, at(0))?;
             int(name, at(1))?;
+            if s == STR && !at(2).may_be(STR) {
+                return Err(Failing::Type(format!(
+                    "put into a string takes a string, not {}",
+                    at(2).describe()
+                )));
+            }
             state.push(s);
         }
         Builtin::Code => {

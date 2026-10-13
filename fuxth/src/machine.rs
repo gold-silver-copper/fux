@@ -568,7 +568,17 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn nested(&self) -> Error {
-        self.too_long(format!("lists nest at most {} deep", crate::value::NESTING))
+        self.too_long(format!(
+            "lists nest at most {} deep, and hold at most {} in all, through the lists and strings in them",
+            crate::value::NESTING,
+            crate::value::TOTAL
+        ))
+    }
+
+    /// Charges a step that walks a value through for its weight.
+    fn walk(&mut self, value: &Value<A>) {
+        let n = usize::try_from(value.weight()).unwrap_or(usize::MAX);
+        self.cost(n);
     }
 
     fn pick(&mut self, n: usize) -> Result<(), Error> {
@@ -642,7 +652,7 @@ impl<A: AppValue> Machine<A> {
             }
             Builtin::Lt => {
                 let (a, b) = self.pop2()?;
-                self.cost(a.size().min(b.size()));
+                self.walk(if a.weight() < b.weight() { &a } else { &b });
                 match compare(&a, &b) {
                     Some(order) => self.push(Value::Bool(order == Ordering::Less)),
                     None => Err(self.type_error(unordered(&a, &b))),
@@ -650,7 +660,7 @@ impl<A: AppValue> Machine<A> {
             }
             Builtin::Eq => {
                 let (a, b) = self.pop2()?;
-                self.cost(a.size().min(b.size()));
+                self.walk(if a.weight() < b.weight() { &a } else { &b });
                 self.push(Value::Bool(a == b))
             }
             Builtin::Len => {
@@ -771,14 +781,20 @@ impl<A: AppValue> Machine<A> {
             }
             Builtin::String => {
                 let x = self.pop()?;
-                let text = x.text();
-                self.build(text.len())?;
-                self.push(Value::str(text))
+                // Its weight bounds the text's length (with the spaces
+                // between a list's values): checked before it is made.
+                let most = usize::try_from(x.weight().saturating_mul(2)).unwrap_or(usize::MAX);
+                if most > LONGEST.saturating_mul(2) {
+                    self.build(most)?;
+                }
+                let text = crate::value::Text::new(x.text());
+                self.build(text.chars_len())?;
+                self.push(Value::Str(Rc::new(text)))
             }
             Builtin::Print => {
                 let x = self.pop()?;
+                self.walk(&x);
                 let text = x.text();
-                self.cost(text.len());
                 host.print(&text)
                     .map_err(|f| self.fail(ErrorCode::Host(f.code), f.message, None))
             }

@@ -64,7 +64,9 @@ fn run(path: &str) -> Result<Vec<String>, String> {
     match machine.run(&mut Bare, STEPS) {
         Ok(Outcome::Finished) => Ok(machine.stack().iter().map(shown).collect()),
         Ok(Outcome::Paused | Outcome::Suspended(())) => {
-            Err(format!("steps: ran more than {STEPS} steps"))
+            let at = machine.at();
+            let place = at.map_or_else(String::new, |t| format!("{}: {}: ", t.place, t.text));
+            Err(format!("steps: {place}ran more than {STEPS} steps"))
         }
         Err(e) => Err(e.to_string()),
     }
