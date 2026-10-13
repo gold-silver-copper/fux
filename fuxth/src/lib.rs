@@ -17,8 +17,8 @@
 //! ```
 //!
 //! An application embeds it: it gives a [`Vocabulary`] of its own words,
-//! each with how many values it takes, and its own kind of value; it
-//! compiles a program ([`Compiler`]) and runs it ([`Machine::run`]) as its
+//! each with how many values it takes and gives, and its own kind of value;
+//! it compiles a program ([`Compiler`]) and runs it ([`Machine::run`]) as its
 //! [`Host`]. A word that needs the application to do something first (ask
 //! a server, say) suspends the run, and the application runs it again once
 //! it has the answer. Nothing blocks, nothing runs on its own thread, and
@@ -26,8 +26,12 @@
 //!
 //! The whole program is compiled before any of it runs: a word no one
 //! defines, a block left open or a stray `end` is an error before the
-//! program does anything. Every error has a stable code, a message, and
-//! the file, line and word it was at.
+//! program does anything, and so is a step that every run reaching it would
+//! fail, for too few values or a value of the wrong kind. Every error has a
+//! stable code, a message, and the file, line and word it was at.
+//!
+//! A call that is a definition's last step replaces its caller's frame, so
+//! recursion in last place is a loop.
 mod check;
 mod compile;
 mod error;

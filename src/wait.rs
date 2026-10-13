@@ -236,7 +236,7 @@ impl Waiting {
             }
             match pane.process.exit_status() {
                 Some(status) => {
-                    ended.get_or_insert((watch.pane, Told::Exited(status)));
+                    ended.get_or_insert((watch.pane, Told::Exited(status, watch.echo_hint())));
                 }
                 None => live = true,
             }
@@ -244,7 +244,7 @@ impl Waiting {
         if !live && let Some((id, told)) = ended {
             let status = match told {
                 Told::Gone => GONE,
-                Told::Found(_) | Told::Exited(_) | Told::Replaced | Told::TimedOut(_) => EXITED,
+                Told::Found(_) | Told::Exited(..) | Told::Replaced | Told::TimedOut(_) => EXITED,
             };
             return Some(
                 self.wait
@@ -292,7 +292,7 @@ impl Waiting {
             } else {
                 pane.process
                     .exit_status()
-                    .map(|ended| (EXITED, Told::Exited(ended)))
+                    .map(|ended| (EXITED, Told::Exited(ended, watch.echo_hint())))
             };
             if let Some((status, told)) = told {
                 *answer = Some(self.wait.told(id, Some(pane), status, told, true));
@@ -354,7 +354,8 @@ impl Found {
 /// How a wait ended, to be told.
 enum Told {
     Found(Found),
-    Exited(Ended),
+    /// With why the text it waited for may have gone unseen, if it may.
+    Exited(Ended, Option<&'static str>),
     /// The program was started again (`respawn`) before.
     Replaced,
     Gone,
@@ -385,7 +386,7 @@ impl Wait {
                     .then(|| format!("{id}: the screen did not change after the keys"));
                 (said, problem, json)
             }
-            Told::Exited(ended) => {
+            Told::Exited(ended, hint) => {
                 let what = self.describe();
                 // Its last words, which an agent would otherwise ask for next:
                 // a crash says why.
@@ -396,6 +397,9 @@ impl Wait {
                 );
                 for line in &last {
                     message.push_str(&format!("\n  {line}"));
+                }
+                if let Some(hint) = hint {
+                    message.push_str(&format!("\n({hint})"));
                 }
                 let mut json = ended_json("exited", ended);
                 json.push((
@@ -645,6 +649,12 @@ impl Watch {
                  wait-text wait` takes what is shown",
             );
         }
+        self.echo_hint()
+    }
+
+    /// Why a text that showed went unseen: the line it was on held what was
+    /// typed too.
+    fn echo_hint(&self) -> Option<&'static str> {
         self.echo_skipped.then_some(
             "a line held the text along with what was typed, and was taken as its echo; \
              wait for text only the output has, or use `PANE opts str T wait-text wait`",

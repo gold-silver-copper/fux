@@ -1,0 +1,13 @@
+# A program that asks a question: wait for it, answer, and wait for what
+# the answer brings, all in one send-keys.
+# expect: name? fuxth
+# expect: got 5 letters
+
+opts str ask name 60 10 size
+str 'sh -c "printf \"name? \"; read n; echo got \${#n} letters; sleep 30"' command
+run constant ASK
+
+ASK str 'name?' await drop
+ASK keys str fuxth text str Enter key str letters wait-text send-keys drop
+ASK opts capture
+ASK kill

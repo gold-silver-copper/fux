@@ -1,0 +1,96 @@
+#![allow(dead_code, reason = "each target uses its own part")]
+//! What the fuxth targets share: a host of two words and a run to the end.
+//! `ask` (n -- n*10) suspends for its answer, as a server's does; `maybe`
+//! (n -- [n]) gives n back only above 0, a value given only sometimes.
+use fuxth::{
+    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, Place, Value,
+    Vocabulary, token,
+};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nothing;
+
+impl AppValue for Nothing {
+    fn kind(&self) -> &'static str {
+        "nothing"
+    }
+}
+
+pub struct Toy;
+
+impl Host for Toy {
+    type Value = Nothing;
+    type Request = i64;
+    fn call(
+        &mut self,
+        word: usize,
+        args: Args<'_, Nothing>,
+        out: &mut Vec<Value<Nothing>>,
+    ) -> Result<Done<i64>, Failure> {
+        let args: Vec<_> = args.collect();
+        match (word, args.as_slice()) {
+            (0, [Value::Int(n)]) => Ok(Done::Later(*n)),
+            (1, [Value::Int(n)]) => {
+                if *n > 0 {
+                    out.push(Value::Int(*n));
+                }
+                Ok(Done::Now)
+            }
+            _ => Err(Failure::new("not_a_number", "takes an integer")),
+        }
+    }
+}
+
+/// Small limits, so a fuzzed program meets them quickly.
+pub const LIMITS: Limits = Limits {
+    stack: 1000,
+    calls: 100,
+};
+
+/// Steps a run may take in all.
+pub const STEPS: u64 = 100_000;
+
+/// `text` compiled after the prelude.
+pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
+    let mut words = Vocabulary::default();
+    words.add("ask", 1, 1..=1);
+    words.add("maybe", 1, 0..=1);
+    let mut compiler = Compiler::new(words);
+    compiler.add(&token::source("prelude.fux", fuxth::PRELUDE)?)?;
+    compiler.add(&token::source("fuzz", text)?)?;
+    compiler.finish()
+}
+
+/// How a run ended: what it left, or its error; `None` past `STEPS`.
+pub fn run(program: fuxth::Program<Nothing>, budget: u64) -> Option<Result<Vec<Value<Nothing>>, Error>> {
+    let mut machine = Machine::new(program, LIMITS);
+    let budget = budget.clamp(1, STEPS);
+    let mut taken = 0u64;
+    while taken < STEPS {
+        taken = taken.saturating_add(budget);
+        match machine.run(&mut Toy, budget) {
+            Ok(Outcome::Finished) => return Some(Ok(machine.stack().to_vec())),
+            Ok(Outcome::Paused) => {}
+            Ok(Outcome::Suspended(n)) => {
+                if let Err(e) = machine.push(Value::Int(n.saturating_mul(10))) {
+                    return Some(Err(e));
+                }
+            }
+            Err(e) => return Some(Err(e)),
+        }
+    }
+    None
+}
+
+/// Whether an error's place is a line of its source, or of the prelude.
+pub fn placed(error: &Error, text: &str) -> bool {
+    let lines = |t: &str| u32::try_from(t.split('\n').count()).unwrap_or(u32::MAX);
+    match &error.place {
+        Some(Place::Line { source, line }) => {
+            let most = if &**source == "fuzz" { lines(text) } else { lines(fuxth::PRELUDE) };
+            *line >= 1 && *line <= most
+        }
+        Some(Place::Argument(_)) => false,
+        None => true,
+    }
+}
