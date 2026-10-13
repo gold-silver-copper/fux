@@ -762,7 +762,14 @@ impl<'a, A> Unit<'a, A> {
                 };
                 // Checked again with the kinds this call gives it, where
                 // any are known (not for a call to itself).
-                let slots = usize::try_from(summary.need).unwrap_or(0).min(GIVEN);
+                // As deep as any way through it reaches, not only as deep as
+                // every way does.
+                let deepest = summary
+                    .exit
+                    .as_ref()
+                    .map_or(0, |exit| exit.reached.saturating_neg());
+                let reach = deepest.max(summary.need);
+                let slots = usize::try_from(reach).unwrap_or(0).min(GIVEN);
                 let skip = state.top.len().saturating_sub(slots);
                 let known = state.top.len().saturating_sub(skip);
                 let mut given = vec![ANY; slots.saturating_sub(known)];

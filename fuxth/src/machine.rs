@@ -223,10 +223,17 @@ impl<A: AppValue> Machine<A> {
             .collect()
     }
 
+    /// The step taken last: in a frame at its first step (a call just
+    /// begun, a loop just gone back), the call that began it, else the step
+    /// about to be taken.
     fn token(&self) -> Option<Token> {
+        let at = |code: Option<usize>, step: usize| {
+            self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
+        };
         let frame = self.frames.last()?;
-        let code = self.code(frame.code)?;
-        code.tokens.get(frame.step.checked_sub(1)?).cloned()
+        at(frame.code, frame.step)
+            .or_else(|| frame.via.and_then(|(code, step)| at(code, step)))
+            .or_else(|| self.code(frame.code)?.tokens.get(frame.step).cloned())
     }
 
     fn code(&self, code: Option<usize>) -> Option<&Steps<A>> {
@@ -871,7 +878,13 @@ impl<A: AppValue> Machine<A> {
                 if list.items.len() >= LONGEST {
                     return Err(self.too_long(format!("a list holds at most {LONGEST} elements")));
                 }
-                self.build(1)?;
+                // Held elsewhere too, it is copied first: that is built.
+                let copied = if Rc::strong_count(&list) > 1 {
+                    list.items.len()
+                } else {
+                    0
+                };
+                self.build(copied.saturating_add(1))?;
                 // In place when nothing else holds the list.
                 match Rc::make_mut(&mut list).push(x) {
                     Some(()) => Ok(Value::List(list)),
@@ -898,10 +911,16 @@ impl<A: AppValue> Machine<A> {
 
     fn put(&mut self, seq: Value<A>, i: usize, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
-            (Value::List(mut list), x) => match Rc::make_mut(&mut list).put(i, x) {
-                Some(()) => Ok(Value::List(list)),
-                None => Err(self.nested()),
-            },
+            (Value::List(mut list), x) => {
+                // Held elsewhere too, it is copied first: that is built.
+                if Rc::strong_count(&list) > 1 {
+                    self.build(list.items.len())?;
+                }
+                match Rc::make_mut(&mut list).put(i, x) {
+                    Some(()) => Ok(Value::List(list)),
+                    None => Err(self.nested()),
+                }
+            }
             (Value::Str(s), Value::Str(x)) => {
                 // One character replaced by x's.
                 let n = s
