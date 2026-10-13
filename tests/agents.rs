@@ -991,7 +991,7 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
         "wait-text",
         "wait",
     ])?;
-    let screen = server.ok(&["str", &new, "pane", "opts", "capture"])?;
+    let screen = server.ok(&["str", &new, "pane", "opts", "joined", "capture"])?;
     assert!(body(&screen).contains(&sub_arg), "{screen}");
     // A program just started has drawn nothing: its text goes only once it
     // has come.
@@ -1561,6 +1561,24 @@ fn escape_alone_full_screens_and_waits_on_many() -> Outcome {
         "wait",
     ])?;
     assert!(sealed.ends_with("SEALED\n"), "{sealed}");
+    Ok(())
+}
+
+/// A pane that may go on alone (`waiting`: a pause that polls for keys)
+/// is waited on by a later `wait` until something comes: its prompt here.
+#[test]
+fn a_later_wait_outlasts_a_pause() -> Outcome {
+    let server = Server::start("")?;
+    let pause = "import select, sys, time, tty\n\
+                 tty.setcbreak(0); print('loading', flush=True); end = time.time() + 2.5\n\
+                 while time.time() < end:\n\
+                 \x20   if select.select([0], [], [], 0.1)[0]: sys.exit('early input')\n\
+                 print('PROMPT>', flush=True); sys.stdin.read(1)\n";
+    let started = server.ok(&run(&[], &["python3", "-c", pause]))?;
+    let pane = id(&started);
+    assert!(started.starts_with(&format!("{pane} waiting")), "{started}");
+    let later = server.ok(&["str", &pane, "pane", "opts", "wait"])?;
+    assert_eq!(later, format!("{pane} reading\nloading\nPROMPT>\n"));
     Ok(())
 }
 

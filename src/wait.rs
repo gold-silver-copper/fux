@@ -482,7 +482,11 @@ impl Wait {
             (Told::TimedOut(_), Some(pane)) if at_once => {
                 (Some(crate::ready::state(pane, Instant::now())), 0)
             }
-            (Told::TimedOut(_), _) if settles => (Some(crate::ready::State::Busy), status),
+            // At the limit: as it is, busy or waiting still.
+            (Told::TimedOut(_), Some(pane)) if settles => {
+                (Some(crate::ready::state(pane, Instant::now())), status)
+            }
+            (Told::TimedOut(_), None) if settles => (Some(crate::ready::State::Busy), status),
             (
                 Told::Found(_) | Told::Exited(..) | Told::Replaced | Told::Gone | Told::TimedOut(_),
                 _,
@@ -891,7 +895,15 @@ impl Watch {
                     // Settled on two looks a probe apart, the screen as it
                     // was: output still in the terminal's buffers, which
                     // the kernel has yet to hand fux, is in by then.
-                    if !state.settled() {
+                    // A wait of its own on a pane that may go on alone
+                    // (`waiting`, or quiet with nothing known) waits for
+                    // something new: what it waits on, or a change.
+                    let maybe = matches!(
+                        state,
+                        crate::ready::State::Waiting | crate::ready::State::Settled
+                    );
+                    if !state.settled() || (!wait.after && maybe && pane.revision == self.revision)
+                    {
                         self.settled_since = None;
                         None
                     } else if let crate::ready::State::Exited(_) = state {
