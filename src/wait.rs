@@ -4,16 +4,16 @@
 //! connection meanwhile and asks it again whenever a pane may have changed,
 //! or its time comes (`Waiting::due`).
 //!
-//! Text is looked for in every line written since the wait began, history
-//! included, not only on the screen: a match that a flood scrolls away at
-//! once is still found. History rows do not change, so each is read once.
-//! For send-keys and the other waits armed before an action, a match counts
-//! only on a line that changed since the wait began (it "appears anew"),
-//! and not on a line holding the text typed (its echo).
+//! Text is looked for in every line written since the wait's start (the
+//! action it was armed before; else the last input to the pane, or its
+//! program's start), history included, not only on the screen: a match
+//! that a flood scrolls away at once is still found. History rows do not
+//! change, so each is read once. A match counts only on a line that changed
+//! since (it "appears anew"), and never within the echo of what was typed.
 use crate::command::{AnyRef, CaptureView, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
-use crate::pane::Pane;
+use crate::pane::{InputFrom, Pane};
 use crate::process::Ended;
 use crate::session::{Outcome, Session};
 use std::time::Instant;
@@ -40,6 +40,8 @@ const PROBE: std::time::Duration = std::time::Duration::from_millis(30);
 pub struct Waiting {
     watches: Vec<Watch>,
     pub(crate) wait: Wait,
+    /// The texts it looks for (`wait-text`), in order.
+    texts: Vec<String>,
     /// When it began: a pane is quiet from then at the soonest.
     began: Instant,
     deadline: Instant,
@@ -61,8 +63,8 @@ pub struct Waiting {
 }
 
 /// What a wait's answer tells of a pane against how it was as the wait
-/// began: where the cursor was (what came since is said), the commands that
-/// had ended, the screen's revision.
+/// began: where what came since starts, the commands that had ended, the
+/// screen's revision.
 #[derive(Clone, Copy)]
 struct Since {
     cursor: Option<fux_vt::RowId>,
@@ -77,24 +79,29 @@ struct Since {
 /// One pane a wait watches, and what it found as it began.
 struct Watch {
     pane: PaneId,
-    /// The screen's top row as the wait began: lines from it on count.
+    /// Where what it counts begins: as the wait began, for one armed
+    /// before an action; else the last input to the pane, or its program's
+    /// start. What came since is said from its cursor's row.
+    from: InputFrom,
+    /// The last input to the pane, to tell its echo from what the program
+    /// wrote: the action's, for a wait armed before one (`Waiting::typed`).
+    typed: InputFrom,
+    /// The row lines count from: the screen's top as a wait armed before an
+    /// action began, else `from`'s cursor row.
     anchor: Option<fux_vt::RowId>,
-    /// The screen as the wait began: a row changed since may be new; and
-    /// its lines then, by first row, for a wait armed before an action: a
-    /// line that reads as it did (a redraw, a reflow on resize) is not.
-    mark: fux_vt::Mark,
+    /// For a wait armed before an action, the screen's lines as it began,
+    /// by first row: a line that reads as it did (a redraw, a reflow on
+    /// resize) is not new.
     was: std::collections::HashMap<fux_vt::RowId, String>,
     /// Lines whose text has read otherwise than as the wait began, at
     /// some look since: one erased and written again the same is new.
     touched: std::collections::HashSet<fux_vt::RowId>,
     /// The last history row read, and the last row let go read
-    /// (`Departed::seq`); for each text, the first line found holding it in
-    /// the rows read so, which do not change, with its place among them.
+    /// (`Departed::seq`); the first line found among them holding a text,
+    /// and which: they do not change.
     read: Option<fux_vt::RowId>,
     departed: Option<u64>,
-    in_history: Vec<Option<(u64, String)>>,
-    /// How many of those lines were read.
-    order: u64,
+    scrolled: Option<(String, String)>,
     /// The wait began on the main screen: while a program holds the full
     /// screen, what the main screen got since (from the anchor) counts
     /// too, so a line printed just before it took the screen is seen.
@@ -103,25 +110,15 @@ struct Watch {
     appeared: Vec<String>,
     /// A line held the text but was taken as the echo of what was typed.
     echo_skipped: bool,
-    revision: u64,
-    /// Commands ended as the wait began: one that ends since is said.
-    finished: u64,
-    /// The program's start (`Pane::starts`) the wait watches.
-    starts: u64,
-    alerts: u64,
-    /// The row the cursor was on as the wait began: what is written from
-    /// it on is what the action brought.
-    cursor: Option<fux_vt::RowId>,
-
-    /// Since when its program has been seen reading its terminal, probe
-    /// after probe: a text it stops short of is said only once that holds.
-    reading_since: Option<Instant>,
-    /// The last input to the pane, to tell its echo from what the program
-    /// wrote: these keys', for a wait armed before them.
-    typed: crate::pane::InputFrom,
     /// Rows written since it began were let go past history's limit
     /// before it read them: a text may have come unseen.
     dropped: bool,
+    revision: u64,
+    /// The program's start (`Pane::starts`) the wait watches.
+    starts: u64,
+    /// Since when its program has been seen reading its terminal, probe
+    /// after probe: a text it stops short of is said only once that holds.
+    reading_since: Option<Instant>,
     /// Since when, and at which revision, its pane has looked settled.
     settled_since: Option<(Instant, u64)>,
 }
@@ -138,77 +135,21 @@ enum Found {
     /// The pane settled, so.
     Settled(crate::ready::State),
     /// The program reads its terminal; the text waited for has not come.
-    Stopped(crate::ready::State),
+    Stopped,
 }
 
 impl Waiting {
     pub fn new(panes: &[&Pane], wait: Wait, now: Instant) -> Waiting {
-        let texts = texts(&wait);
-        let watches = panes
-            .iter()
-            .map(|pane| {
-                let screen = pane.screen();
-                let commands = screen.commands();
-                let was = if wait.after {
-                    (lines(screen.rows().skip(screen.history_len()), None).into_iter())
-                        .map(|l| (l.first, l.text))
-                        .collect()
-                } else {
-                    std::collections::HashMap::new()
-                };
-                // A wait of its own counts what came since the last input
-                // to the pane, or since its program started.
-                let cursor = screen
-                    .window()
-                    .row(screen.cursor_position().0)
-                    .map(|row| row.id());
-                let from = &pane.input_from;
-                let (anchor, mark, cursor, finished, alerts) = match wait.after {
-                    true => (
-                        screen.window().row(0).map(|row| row.id()),
-                        screen.mark(),
-                        cursor,
-                        commands.finished,
-                        pane.alerts.count(),
-                    ),
-                    false => (
-                        from.cursor,
-                        from.mark,
-                        from.cursor,
-                        from.finished,
-                        from.alerts,
-                    ),
-                };
-                Watch {
-                    pane: pane.id,
-                    // A wait armed before keys learns them once they went
-                    // in (`Waiting::typed`).
-                    typed: from.clone(),
-                    dropped: false,
-                    anchor,
-                    mark,
-                    was,
-                    touched: std::collections::HashSet::new(),
-                    read: None,
-                    departed: screen.departed().last().map(|d| d.seq),
-                    in_history: vec![None; texts.len()],
-                    order: 0,
-                    on_main: !screen.mode(fux_vt::Mode::AlternateScreen),
-                    appeared: Vec::new(),
-                    echo_skipped: false,
-                    revision: pane.revision,
-                    finished,
-                    starts: pane.starts,
-                    alerts,
-                    cursor,
-                    reading_since: None,
-                    settled_since: None,
-                }
+        let texts = (wait.until.iter())
+            .filter_map(|u| match u {
+                Until::Text(text) => Some(text.clone()),
+                Until::Gone(_) | Until::Exit | Until::Bell | Until::Settled => None,
             })
             .collect();
         Waiting {
             answers: vec![None; panes.len()],
-            watches,
+            watches: panes.iter().map(|p| Watch::new(p, wait.after)).collect(),
+            texts,
             deadline: crate::after(now, wait.timeout),
             wait,
             began: now,
@@ -233,18 +174,18 @@ impl Waiting {
     /// The panes whose rows let go it reads (`fux_vt::Screen::keep_departed`):
     /// all it watches, if it waits for a text.
     pub fn tapped(&self) -> impl Iterator<Item = PaneId> + '_ {
-        let texts = (self.wait.until.iter()).any(|u| matches!(u, Until::Text(_)));
-        (self.watches.iter()).filter(move |_| texts).map(|w| w.pane)
+        (self.watches.iter())
+            .filter(|_| !self.texts.is_empty())
+            .map(|w| w.pane)
     }
 
     /// When to ask it again at the latest, whatever happens before: soon,
     /// while it asks what a pane's program is blocked in (that changes with
     /// nothing on the screen to wake the server), else when its time is up.
-    pub fn due(&self, _session: &Session) -> Instant {
-        let now = Instant::now();
+    pub fn due(&self) -> Instant {
         let probe = (self.wait.until.iter())
             .any(|u| matches!(u, Until::Settled | Until::Text(_)))
-            .then(|| crate::after(now, PROBE));
+            .then(|| crate::after(Instant::now(), PROBE));
         probe.map_or(self.deadline, |at| at.min(self.deadline))
     }
 
@@ -283,185 +224,90 @@ impl Waiting {
         })
     }
 
+    /// Over several panes, a wait for any (`fux wait`): a pane that met it
+    /// answers; one that stopped short of the text, or can no longer meet
+    /// it (its program exited or was started again, or the pane went), only
+    /// once none is left that could, a stopped one first. A wait on each
+    /// (`Wait::all`): each answers on its own, as a lone pane's wait would,
+    /// and the wait once every one has, a line from each, in order, with
+    /// the first failing status. At the limit, any is said of a pane at
+    /// work, each of every pane yet to answer.
     fn look(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
-        let texts = texts(&self.wait);
         let several = self.watches.len() > 1;
-        if self.wait.all && several {
-            return self.look_each(session, now, &texts);
-        }
-        // A pane that met it answers; one that can no longer (its program
-        // exited or was started again, or the pane went) ends the wait only
-        // once none is left that could.
-        let mut ended: Option<(PaneId, Told)> = None;
-        // A pane that stopped short of the text (reading its terminal)
-        // ends the wait only once no other pane could still show it.
-        let mut stopped: Option<(PaneId, Found, Since)> = None;
-        let mut live = false;
-        for watch in &mut self.watches {
-            let Some(pane) = session.panes.get(&watch.pane) else {
-                ended.get_or_insert((watch.pane, Told::Gone));
-                continue;
-            };
-            if pane.starts != watch.starts {
-                ended.get_or_insert((watch.pane, Told::Replaced));
-                continue;
-            }
-            if let Some(found) = watch.look(
-                pane,
-                &self.wait,
-                &texts,
-                (self.began, now),
-                (self.fresh, self.more),
-            ) {
-                let id = watch.pane;
-                if several && matches!(found, Found::Stopped(_)) {
-                    stopped.get_or_insert((id, found, watch.since(Some(pane))));
-                    continue;
-                }
-                let status = found.status();
-                let since = Some(watch.since(Some(pane)));
-                return Some(self.wait.told(
-                    id,
-                    Some(pane),
-                    status,
-                    Told::Found(found),
-                    several,
-                    since,
-                ));
-            }
-            match pane.process.exit_status() {
-                Some(status) => {
-                    ended.get_or_insert((watch.pane, Told::Exited(status, watch.unseen())));
-                }
-                None => live = true,
-            }
-        }
-        if !live && let Some((id, found, since)) = stopped {
-            return Some(self.wait.told(
-                id,
-                session.panes.get(&id),
-                found.status(),
-                Told::Found(found),
-                several,
-                Some(since),
-            ));
-        }
-        if !live && let Some((id, told)) = ended {
-            let status = match told {
-                Told::Gone => GONE,
-                Told::Found(_) | Told::Exited(..) | Told::Replaced | Told::TimedOut(_) => EXITED,
-            };
-            return Some(
-                self.wait
-                    .told(id, session.panes.get(&id), status, told, several, None),
-            );
-        }
-        if now >= self.deadline {
-            // Said of a pane at work, if one is, else of one still running:
-            // what it is doing. One reading its terminal waits for keys.
-            let running = |w: &&Watch, busy: bool| {
-                (session.panes.get(&w.pane)).is_some_and(|p| {
-                    p.process.exit_status().is_none() && (!busy || !crate::ready::reading(p, now))
-                })
-            };
-            let first = (self.watches.iter())
-                .find(|w| running(w, true))
-                .or_else(|| self.watches.iter().find(|w| running(w, false)))
-                .or(self.watches.first());
-            let pane = first.and_then(|w| session.panes.get(&w.pane));
-            let hint = first.zip(pane).and_then(|(w, p)| w.hint(p, &self.wait));
-            let since = first.map(|w| w.since(pane));
-            let first = first.map(|w| w.pane);
-            return first.map(|id| {
-                self.wait
-                    .told(id, pane, TIMED_OUT, Told::TimedOut(hint), several, since)
-            });
-        }
-        None
-    }
-}
-
-impl Waiting {
-    /// A wait on each of several panes: each answers on its own, as a
-    /// lone pane's wait would, and the wait once every one has, or its time
-    /// is up; a line from each, in order, and the first failing status.
-    fn look_each(&mut self, session: &Session, now: Instant, texts: &[String]) -> Option<Outcome> {
-        let window = (self.began, now);
-        for (watch, answer) in self.watches.iter_mut().zip(self.answers.iter_mut()) {
-            if answer.is_some() {
-                continue;
-            }
-            let id = watch.pane;
-            let Some(pane) = session.panes.get(&id) else {
-                *answer = Some(self.wait.told(id, None, GONE, Told::Gone, true, None));
-                continue;
-            };
-            let since = Some(watch.since(Some(pane)));
-            let told = if pane.starts != watch.starts {
-                Some((EXITED, Told::Replaced))
-            } else if let Some(found) =
-                watch.look(pane, &self.wait, texts, window, (self.fresh, self.more))
+        let (wait, texts) = (&self.wait, self.texts.as_slice());
+        let (window, mode) = ((self.began, now), (self.fresh, self.more));
+        let verdicts: Vec<Option<(Told, Since)>> = (self.watches.iter_mut())
+            .zip(&self.answers)
+            .map(|(watch, answer)| {
+                let pane = session.panes.get(&watch.pane);
+                answer
+                    .is_none()
+                    .then(|| watch.verdict(pane, wait, texts, window, mode))?
+            })
+            .collect();
+        let tell = |id: PaneId, (told, since): (Told, Since)| {
+            wait.told(id, session.panes.get(&id), told, several, since)
+        };
+        let late = now >= self.deadline;
+        if wait.all && several {
+            for ((watch, answer), verdict) in
+                (self.watches.iter().zip(&mut self.answers)).zip(verdicts)
             {
-                Some((found.status(), Told::Found(found)))
-            } else {
-                pane.process
-                    .exit_status()
-                    .map(|ended| (EXITED, Told::Exited(ended, watch.unseen())))
-            };
-            if let Some((status, told)) = told {
-                *answer = Some(self.wait.told(id, Some(pane), status, told, true, since));
-            }
-        }
-        if now >= self.deadline {
-            for (watch, answer) in self.watches.iter().zip(self.answers.iter_mut()) {
-                if answer.is_none() {
-                    let pane = session.panes.get(&watch.pane);
-                    let hint = pane.and_then(|p| watch.hint(p, &self.wait));
-                    let told = Told::TimedOut(hint);
-                    let since = Some(watch.since(pane));
-                    *answer = Some(
-                        self.wait
-                            .told(watch.pane, pane, TIMED_OUT, told, true, since),
-                    );
+                if let Some(verdict) = verdict {
+                    *answer = Some(tell(watch.pane, verdict));
+                } else if late && answer.is_none() {
+                    *answer = Some(watch.timed_out(session, wait, texts, several));
                 }
             }
-        }
-        if self.answers.iter().any(Option::is_none) {
-            return None;
-        }
-        let answers: Vec<Outcome> = self.answers.iter().flatten().cloned().collect();
-        let status = (answers.iter().map(|a| a.status))
-            .find(|s| *s != 0)
-            .unwrap_or(0);
-        let mut stderr = String::new();
-        for answer in &answers {
-            if !answer.stderr.is_empty() {
+            let answers: Vec<&Outcome> = self
+                .answers
+                .iter()
+                .map(Option::as_ref)
+                .collect::<Option<_>>()?;
+            let mut stderr = String::new();
+            for answer in answers.iter().filter(|a| !a.stderr.is_empty()) {
                 stderr.push_str(answer.stderr.trim_end());
                 stderr.push('\n');
             }
+            return Some(Outcome {
+                status: (answers.iter().map(|a| a.status))
+                    .find(|s| *s != 0)
+                    .unwrap_or(0),
+                stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
+                stderr,
+                json: answers.iter().map(|a| a.json.as_str()).collect(),
+                ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
+                ..Outcome::default()
+            });
         }
-        Some(Outcome {
-            status,
-            stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
-            stderr,
-            json: answers.iter().map(|a| a.json.as_str()).collect(),
-            ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
-            ..Outcome::default()
-        })
-    }
-}
-
-impl Found {
-    /// The status a wait that found it ends with.
-    fn status(&self) -> u8 {
-        match self {
-            // As timeout(1): the program's own status, once it exits.
-            Found::Exit(ended) => {
-                u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
-            }
-            Found::Stopped(_) => STOPPED,
-            Found::Text { .. } | Found::Gone(_) | Found::Bell(_) | Found::Settled(_) => 0,
+        let stopped =
+            |v: &Option<(Told, Since)>| matches!(v, Some((Told::Found(Found::Stopped), _)));
+        let met = (verdicts.iter())
+            .position(|v| matches!(v, Some((Told::Found(f), _)) if !matches!(f, Found::Stopped)));
+        let ended = || {
+            (verdicts.iter().all(Option::is_some))
+                .then(|| verdicts.iter().position(stopped).unwrap_or(0))
+        };
+        if let Some(at) = met.or_else(ended) {
+            let id = self.watches.get(at)?.pane;
+            return Some(tell(id, verdicts.into_iter().nth(at).flatten()?));
         }
+        if !late {
+            return None;
+        }
+        // One at work if one is, else one still running: one reading its
+        // terminal waits for keys.
+        let running = |w: &&Watch, busy: bool| {
+            (session.panes.get(&w.pane)).is_some_and(|p| {
+                let reading = crate::ready::state(p, now) == crate::ready::State::Reading;
+                p.process.exit_status().is_none() && !(busy && reading)
+            })
+        };
+        let first = (self.watches.iter())
+            .find(|w| running(w, true))
+            .or_else(|| self.watches.iter().find(|w| running(w, false)))
+            .or(self.watches.first())?;
+        Some(first.timed_out(session, wait, texts, several))
     }
 }
 
@@ -477,16 +323,34 @@ enum Told {
     TimedOut(Option<&'static str>),
 }
 
+impl Told {
+    /// The status a wait that ended so ends with.
+    fn status(&self) -> u8 {
+        match self {
+            // As timeout(1): the program's own status, once it exits.
+            Told::Found(Found::Exit(ended)) => {
+                u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
+            }
+            Told::Found(Found::Stopped) => STOPPED,
+            Told::Found(
+                Found::Text { .. } | Found::Gone(_) | Found::Bell(_) | Found::Settled(_),
+            ) => 0,
+            Told::Exited(..) | Told::Replaced => EXITED,
+            Told::Gone => GONE,
+            Told::TimedOut(_) => TIMED_OUT,
+        }
+    }
+}
+
 impl Wait {
     /// The outcome of a wait that ended so in pane `id`.
     fn told(
         &self,
         id: PaneId,
         pane: Option<&Pane>,
-        status: u8,
         told: Told,
         several: bool,
-        since: Option<Since>,
+        since: Since,
     ) -> Outcome {
         let prefix = if several {
             format!("{id} ")
@@ -496,31 +360,28 @@ impl Wait {
         // A settling action, or a wait the program stopped short of: its
         // state, then what came since it began.
         let settles = self.until.contains(&Until::Settled);
-        let (state, status) = match (&told, pane) {
-            (Told::Found(Found::Settled(state) | Found::Stopped(state)), _) => {
-                (Some(*state), status)
-            }
+        let now = Instant::now();
+        let state = match (&told, pane) {
+            (Told::Found(Found::Settled(state)), _) => Some(*state),
+            (Told::Found(Found::Stopped), _) => Some(crate::ready::State::Reading),
             // An exit waited for is a state too: said as one, with what
             // came before it.
-            (Told::Found(Found::Exit(ended)), _) => {
-                (Some(crate::ready::State::Exited(*ended)), status)
-            }
-            // A text gone leaves the pane as it is: said with its state.
-            (Told::Found(Found::Gone(_)), Some(pane)) => {
-                (Some(crate::ready::state(pane, Instant::now())), status)
-            }
-            // At the limit: as it is, a failure (124) only while busy;
-            // `0 timeout` answers at once, as it is, and never fails.
-            (Told::TimedOut(_), Some(pane)) if settles => {
-                let state = crate::ready::state(pane, Instant::now());
-                let busy = state == crate::ready::State::Busy && !self.timeout.is_zero();
-                (Some(state), if busy { status } else { 0 })
-            }
-            (Told::TimedOut(_), None) if settles => (Some(crate::ready::State::Busy), status),
+            (Told::Found(Found::Exit(ended)), _) => Some(crate::ready::State::Exited(*ended)),
+            // A text gone, or a settling wait's limit, leaves the pane as
+            // it is: said with its state.
+            (Told::Found(Found::Gone(_)), Some(pane)) => Some(crate::ready::state(pane, now)),
+            (Told::TimedOut(_), Some(pane)) if settles => Some(crate::ready::state(pane, now)),
             (
                 Told::Found(_) | Told::Exited(..) | Told::Replaced | Told::Gone | Told::TimedOut(_),
                 _,
-            ) => (None, status),
+            ) => None,
+        };
+        // At its limit a settling wait fails (124) only while busy; `0
+        // timeout` answers at once, as it is, and never fails.
+        let calm = self.timeout.is_zero() || state.is_some_and(|s| s != crate::ready::State::Busy);
+        let status = match settles && calm && matches!(told, Told::TimedOut(_)) {
+            true => 0,
+            false => told.status(),
         };
         // A settling action whose pane closed (a shell that exited): said,
         // with status 4, not a failure.
@@ -544,34 +405,18 @@ impl Wait {
         if let (Some(state), Some(pane)) = (state, pane) {
             let (line, notes) = self.state_line(id, pane, state, since);
             // A text that cannot come: the screen, to act on what is there.
-            let body = match told {
-                Told::Found(Found::Stopped(_)) => {
-                    let cut = if since.is_some_and(|s| s.cut) {
-                        CUT
-                    } else {
-                        ""
-                    };
-                    format!("{cut}{}", text(pane, self.marks))
-                }
-                Told::Found(Found::Exit(_) | Found::Gone(_)) => since_text(pane, since, self.marks),
-                Told::Found(_)
-                | Told::Exited(..)
-                | Told::Replaced
-                | Told::Gone
-                | Told::TimedOut(_)
-                    if self.print =>
-                {
-                    since_text(pane, since, self.marks)
-                }
-                Told::Found(_)
-                | Told::Exited(..)
-                | Told::Replaced
-                | Told::Gone
-                | Told::TimedOut(_) => String::new(),
+            // Else what came, if asked or of an exit or a text gone.
+            let came = self.print || matches!(told, Told::Found(Found::Exit(_) | Found::Gone(_)));
+            let body = if matches!(told, Told::Found(Found::Stopped)) {
+                let cut = if since.cut { CUT } else { "" };
+                format!("{cut}{}", text(pane, self.marks, false))
+            } else if came {
+                since_text(pane, since, self.marks)
+            } else {
+                String::new()
             };
             // Said on stdout, with its status: still busy (124), stopped
             // short of the text (7). Not a failure: the answer is the screen.
-            let stderr = String::new();
             let mut fields = vec![
                 ("pane", Json::str(id.to_string())),
                 ("state", Json::str(state.word())),
@@ -583,13 +428,14 @@ impl Wait {
             return Outcome {
                 status,
                 stdout: format!("{line}\n{body}"),
-                stderr,
                 json: format!("{}\n", json.render()),
                 ids: vec![AnyRef::Pane(id)],
                 ..Outcome::default()
             };
         }
-        let screen = pane.filter(|_| self.print).map(|p| text(p, self.marks));
+        let screen = pane
+            .filter(|_| self.print)
+            .map(|p| text(p, self.marks, false));
         let (said, problem, json) = match told {
             Told::Found(found) => {
                 let (said, json) = found.said();
@@ -704,30 +550,23 @@ impl Wait {
         id: PaneId,
         pane: &Pane,
         state: crate::ready::State,
-        since: Option<Since>,
+        since: Since,
     ) -> (String, Vec<(&'static str, Json<'static>)>) {
         let mut line = format!("{id} {}", state.word());
         let mut fields = Vec::new();
         let commands = pane.screen().commands();
-        if let Some(since) = since {
-            if commands.finished > since.finished {
-                let status = commands.last_status;
-                match status {
-                    Some(status) => line.push_str(&format!(" · done {status}")),
-                    None => line.push_str(" · done"),
-                }
-                fields.push((
-                    "done",
-                    status.map_or(Json::Null, |s| Json::Number(i64::from(s))),
-                ));
+        if commands.finished > since.finished {
+            let status = commands.last_status;
+            match status {
+                Some(status) => line.push_str(&format!(" · done {status}")),
+                None => line.push_str(" · done"),
             }
-            if self.after
-                && pane.revision == since.revision
-                && state == crate::ready::State::Reading
-            {
-                line.push_str(" · no change");
-                fields.push(("no_change", Json::Bool(true)));
-            }
+            let status = status.map_or(Json::Null, |s| Json::Number(i64::from(s)));
+            fields.push(("done", status));
+        }
+        if self.after && pane.revision == since.revision && state == crate::ready::State::Reading {
+            line.push_str(" · no change");
+            fields.push(("no_change", Json::Bool(true)));
         }
         let queued = pane.input_queued();
         if queued > 0 {
@@ -786,6 +625,13 @@ impl Until {
 impl Found {
     /// What the wait prints, and its fields as JSON.
     fn said(&self) -> (String, Vec<(&'static str, Json<'static>)>) {
+        let settled = |state: crate::ready::State| {
+            let fields = vec![
+                ("met", Json::str("settled")),
+                ("state", Json::str(state.word())),
+            ];
+            (state.word(), fields)
+        };
         match self {
             Found::Text { text, line } => (
                 line.clone(),
@@ -803,13 +649,8 @@ impl Found {
                 ],
             ),
             Found::Exit(ended) => (crate::process::told(*ended), ended_json("exit", *ended)),
-            Found::Settled(state) | Found::Stopped(state) => (
-                state.word(),
-                vec![
-                    ("met", Json::str("settled")),
-                    ("state", Json::str(state.word())),
-                ],
-            ),
+            Found::Settled(state) => settled(*state),
+            Found::Stopped => settled(crate::ready::State::Reading),
             Found::Bell(notification) => (
                 notification
                     .as_ref()
@@ -841,18 +682,100 @@ fn ended_json(met: &'static str, ended: Ended) -> Vec<(&'static str, Json<'stati
 }
 
 impl Watch {
-    /// Why a wait that timed out may never have been met: a text taken as
-    /// the echo of what was typed, or one that was on the screen already
-    /// and did not appear anew.
-    fn hint(&self, pane: &Pane, wait: &Wait) -> Option<&'static str> {
-        // Shown, on a line that reads as it did when the wait began.
-        let texts = texts(wait);
-        let shown = lines(pane.screen().rows().skip(pane.screen().history_len()), None);
-        let unchanged = shown.iter().any(|l| {
-            self.was.get(&l.first) == Some(&l.text)
-                && texts.iter().any(|t| found_in(&l.text, t) > 0)
-        });
-        if wait.after && unchanged {
+    /// How `pane` stands as a wait begins: one armed before an action
+    /// (`after`) counts from now, any other from the last input to the
+    /// pane, or its program's start.
+    fn new(pane: &Pane, after: bool) -> Watch {
+        let screen = pane.screen();
+        let (from, anchor, was) = if after {
+            let shown = lines(screen.rows().skip(screen.history_len()), None);
+            (
+                InputFrom::new(screen, &[], pane.alerts.count()),
+                screen.window().row(0).map(|row| row.id()),
+                shown.into_iter().map(|l| (l.first, l.text)).collect(),
+            )
+        } else {
+            let from = pane.input_from.clone();
+            let anchor = from.cursor;
+            (from, anchor, std::collections::HashMap::new())
+        };
+        Watch {
+            pane: pane.id,
+            from,
+            typed: pane.input_from.clone(),
+            anchor,
+            was,
+            touched: std::collections::HashSet::new(),
+            read: None,
+            departed: screen.departed().last().map(|d| d.seq),
+            scrolled: None,
+            on_main: !screen.mode(fux_vt::Mode::AlternateScreen),
+            appeared: Vec::new(),
+            echo_skipped: false,
+            dropped: false,
+            revision: pane.revision,
+            starts: pane.starts,
+            reading_since: None,
+            settled_since: None,
+        }
+    }
+
+    /// What the wait has come to in this pane, if anything: what it waited
+    /// for, or why that can no longer come; and what came since it began.
+    fn verdict(
+        &mut self,
+        pane: Option<&Pane>,
+        wait: &Wait,
+        texts: &[String],
+        window: (Instant, Instant),
+        mode: (bool, bool),
+    ) -> Option<(Told, Since)> {
+        let Some(pane) = pane else {
+            return Some((Told::Gone, self.since(None)));
+        };
+        let told = if pane.starts != self.starts {
+            Told::Replaced
+        } else {
+            match self.look(pane, wait, texts, window, mode) {
+                Some(found) => Told::Found(found),
+                None => Told::Exited(pane.process.exit_status()?, self.unseen()),
+            }
+        };
+        Some((told, self.since(Some(pane))))
+    }
+
+    /// The wait's answer at its limit: what the pane is doing, and why
+    /// the wait may never be met, if a reason shows.
+    fn timed_out(
+        &self,
+        session: &Session,
+        wait: &Wait,
+        texts: &[String],
+        several: bool,
+    ) -> Outcome {
+        let pane = session.panes.get(&self.pane);
+        let hint = pane.and_then(|p| self.hint(p, wait, texts));
+        wait.told(
+            self.pane,
+            pane,
+            Told::TimedOut(hint),
+            several,
+            self.since(pane),
+        )
+    }
+
+    /// Why a wait that timed out may never have been met: a text on a line
+    /// that reads as it did when the wait began, or one that came unseen.
+    fn hint(&self, pane: &Pane, wait: &Wait, texts: &[String]) -> Option<&'static str> {
+        let screen = pane.screen();
+        let unchanged = wait.after
+            && lines(screen.rows().skip(screen.history_len()), None)
+                .iter()
+                .any(|l| {
+                    self.was.get(&l.first) == Some(&l.text)
+                        && texts.iter().any(|t| found_in(&l.text, t) > 0)
+                });
+        if unchanged {
             return Some(
                 "the text is on the screen, but on a line that reads as it did when the \
                  wait began (drawn again the same, it brings nothing new); read it with \
@@ -889,16 +812,11 @@ impl Watch {
         (fresh, more): (bool, bool),
     ) -> Option<Found> {
         let screen = pane.screen();
-        // Only lines changed since it began (send-keys), or since the last
-        // input to the pane (a wait of its own).
-        let mark = Some(self.mark);
+        // Only lines changed since it began.
+        let mark = Some(self.from.mark);
         let shown = lines(screen.rows().skip(screen.history_len()), mark);
         for line in &shown {
-            if self
-                .was
-                .get(&line.first)
-                .is_some_and(|was| *was != line.text)
-            {
+            if (self.was.get(&line.first)).is_some_and(|was| *was != line.text) {
                 self.touched.insert(line.first);
             }
         }
@@ -908,8 +826,7 @@ impl Watch {
         // While a program holds the full screen, the main screen's lines
         // from where the wait began: what was printed just before it.
         let behind = if self.on_main && screen.mode(fux_vt::Mode::AlternateScreen) {
-            let from = self
-                .anchor
+            let from = (self.anchor)
                 .and_then(|a| screen.main_row_index(a))
                 .unwrap_or(0);
             lines(screen.main_rows().skip(from), mark)
@@ -923,7 +840,18 @@ impl Watch {
                 Until::Text(_) if texts_looked => None,
                 Until::Text(_) => {
                     texts_looked = true;
-                    self.first_text(screen, texts, behind.iter().chain(shown.iter()))
+                    // Of the lines scrolled away, the first; else the first
+                    // behind the screen or on it, where it came.
+                    let scrolled = self.scrolled.clone();
+                    scrolled
+                        .or_else(|| {
+                            (behind.iter().chain(&shown))
+                                .filter(|l| is_new(l, &self.was, &self.touched))
+                                .find_map(|l| {
+                                    holds(screen, &self.typed, l, texts, &mut self.echo_skipped)
+                                })
+                        })
+                        .map(|(text, line)| Found::Text { text, line })
                 }
                 Until::Gone(text) => {
                     let present = shown.iter().any(|l| found_in(&l.text, text) > 0);
@@ -952,24 +880,16 @@ impl Watch {
                     } else if let crate::ready::State::Exited(_) = state {
                         Some(Found::Settled(state))
                     } else {
-                        let since = match self.settled_since {
-                            Some(since) if since.1 == pane.revision => since,
-                            _ => {
-                                let since = (now, pane.revision);
-                                self.settled_since = Some(since);
-                                since
-                            }
-                        };
+                        let since = (self.settled_since)
+                            .filter(|since| since.1 == pane.revision)
+                            .unwrap_or((now, pane.revision));
+                        self.settled_since = Some(since);
                         (now >= crate::after(since.0, PROBE)).then_some(Found::Settled(state))
                     }
                 }
-                Until::Bell => (pane.alerts.count() > self.alerts).then(|| {
-                    Found::Bell(
-                        pane.alerts
-                            .last
-                            .clone()
-                            .filter(|_| pane.alerts.notifications > 0),
-                    )
+                Until::Bell => (pane.alerts.count() > self.from.alerts).then(|| {
+                    let notification = pane.alerts.last.clone();
+                    Found::Bell(notification.filter(|_| pane.alerts.notifications > 0))
                 }),
             };
             if found.is_some() {
@@ -977,32 +897,27 @@ impl Watch {
             }
         }
         // A text that cannot come: the program reads its terminal, having
-        // had a moment to print after what began the wait.
-        let settles = wait.until.contains(&Until::Settled);
-        if texts.is_empty() || settles {
+        // had a moment to print after what began the wait, seen so on more
+        // than one probe, never on one look alone.
+        if texts.is_empty() || wait.until.contains(&Until::Settled) {
             return None;
         }
-        let after_moment = now >= crate::after(began, crate::ready::SETTLE.saturating_mul(2));
-        let since = if crate::ready::reading(pane, now) {
-            *self.reading_since.get_or_insert(now)
-        } else {
+        if crate::ready::state(pane, now) != crate::ready::State::Reading {
             self.reading_since = None;
             return None;
-        };
-        // Seen so on more than one probe: never on one look alone.
-        let held = now >= crate::after(since, crate::ready::SETTLE.saturating_mul(2));
-        if after_moment && held {
-            return Some(Found::Stopped(crate::ready::State::Reading));
         }
-        None
+        let since = *self.reading_since.get_or_insert(now);
+        let moment = crate::ready::SETTLE.saturating_mul(2);
+        let held = now >= crate::after(began, moment) && now >= crate::after(since, moment);
+        held.then_some(Found::Stopped)
     }
 
     fn since(&self, pane: Option<&Pane>) -> Since {
         Since {
-            cursor: pane.and_then(|p| self.top_changed(p)).or(self.cursor),
-            finished: self.finished,
+            cursor: pane.and_then(|p| self.top_changed(p)).or(self.from.cursor),
+            finished: self.from.finished,
             revision: self.revision,
-            mark: self.mark,
+            mark: self.from.mark,
             cut: self.dropped,
         }
     }
@@ -1016,54 +931,20 @@ impl Watch {
             return None;
         }
         let screen = pane.screen();
-        let at = self.cursor.and_then(|row| screen.row_index(row))?;
+        let at = self.from.cursor.and_then(|row| screen.row_index(row))?;
         lines(screen.rows().skip(at.min(screen.history_len())), None)
             .into_iter()
             .find(|l| self.was.get(&l.first).map(String::as_str) != Some(l.text.as_str()))
             .map(|l| l.first)
     }
 
-    /// The first line to hold any of the texts, and which: of those seen
-    /// as they scrolled away, which came first of all, the first seen; else
-    /// the first of `lines`, behind the screen or on it, where it came, not
-    /// a later line that holds one too.
-    fn first_text<'a>(
-        &mut self,
-        screen: &fux_vt::Screen,
-        texts: &[String],
-        lines: impl Iterator<Item = &'a Line>,
-    ) -> Option<Found> {
-        let scrolled = (self.in_history.iter().zip(texts))
-            .filter_map(|(found, text)| Some((found.as_ref()?, text)))
-            .min_by_key(|((order, _), _)| *order);
-        if let Some(((_, line), text)) = scrolled {
-            return Some(Found::Text {
-                text: text.clone(),
-                line: line.clone(),
-            });
-        }
-        for line in lines.filter(|l| is_new(l, &self.was, &self.touched)) {
-            for text in texts.iter().filter(|t| found_in(&line.text, t) > 0) {
-                if echoed(screen, &self.typed, line, text) {
-                    self.echo_skipped = true;
-                } else {
-                    return Some(Found::Text {
-                        text: text.clone(),
-                        line: line.text.clone(),
-                    });
-                }
-            }
-        }
-        None
-    }
-
     /// Reads the rows let go since the last look (scrolled off the
     /// alternate screen or a region, or out of history past its limit),
     /// then the history rows written since the wait began and not read
-    /// yet, from the anchor, or the last row read, to the screen: for each
-    /// text, the first line holding it, if none was found before.
+    /// yet, from the anchor, or the last row read, to the screen: the
+    /// first line holding a text, if none was found before.
     fn read_history(&mut self, screen: &fux_vt::Screen, texts: &[String]) {
-        let mark = Some(self.mark);
+        let mark = Some(self.from.mark);
         let seen = self.departed;
         let departed = (screen.departed().iter()).filter(|d| seen.is_none_or(|s| d.seq > s));
         let mut read = departed_lines(departed, mark);
@@ -1091,31 +972,30 @@ impl Watch {
             }
             read.extend(lines(rows.into_iter(), mark));
         }
-        for line in read.iter().filter(|l| is_new(l, &self.was, &self.touched)) {
-            self.order = self.order.saturating_add(1);
-            for (found, text) in self.in_history.iter_mut().zip(texts) {
-                if found.is_some() || found_in(&line.text, text) == 0 {
-                    continue;
-                }
-                if echoed(screen, &self.typed, line, text) {
-                    self.echo_skipped = true;
-                } else {
-                    *found = Some((self.order, line.text.clone()));
-                }
-            }
+        if self.scrolled.is_none() {
+            self.scrolled = (read.iter())
+                .filter(|l| is_new(l, &self.was, &self.touched))
+                .find_map(|l| holds(screen, &self.typed, l, texts, &mut self.echo_skipped));
         }
     }
 }
 
-/// The texts a wait looks for, `--text` conditions', in order.
-fn texts(wait: &Wait) -> Vec<String> {
-    wait.until
-        .iter()
-        .filter_map(|u| match u {
-            Until::Text(text) => Some(text.clone()),
-            Until::Gone(_) | Until::Exit | Until::Bell | Until::Settled => None,
-        })
-        .collect()
+/// The first of `texts` that `line` holds outside the echo of what was
+/// `typed`, and the line; `skipped` if one was in the echo.
+fn holds(
+    screen: &fux_vt::Screen,
+    typed: &InputFrom,
+    line: &Line,
+    texts: &[String],
+    skipped: &mut bool,
+) -> Option<(String, String)> {
+    for text in texts.iter().filter(|t| found_in(&line.text, t) > 0) {
+        if !echoed(screen, typed, line, text) {
+            return Some((text.clone(), line.text.clone()));
+        }
+        *skipped = true;
+    }
+    None
 }
 
 /// A line of text, its soft-wrapped rows joined, and whether any of them
@@ -1298,18 +1178,6 @@ fn found_in(line: &str, text: &str) -> usize {
         .count()
 }
 
-/// The full screen a program last drew, if it drew one.
-fn last_full_screen(pane: &Pane, marks: bool) -> Option<String> {
-    let alt = CaptureView {
-        join: true,
-        marks,
-        alt: true,
-        ..CaptureView::default()
-    };
-    let last = crate::capture::pane(pane, None, alt, false, false);
-    (!last.trim().is_empty()).then_some(last)
-}
-
 /// `text` without the control key's echo it ends with (`^C`, lowercased
 /// as a wait compares: `^c`), if it ends with one.
 fn control_echo(text: &str) -> Option<&str> {
@@ -1321,38 +1189,35 @@ fn control_echo(text: &str) -> Option<&str> {
 }
 
 /// A pane's screen as a wait prints it: trimmed, soft-wrapped rows joined;
-/// a full-screen program's last screen if it has left a blank one.
-fn text(pane: &Pane, marks: bool) -> String {
-    let view = CaptureView {
+/// once blank (a full-screen program that left its screen, or exited, often
+/// leaves the shell's so), the screen the program last drew. `alt`: that
+/// last full screen first.
+fn text(pane: &Pane, marks: bool, alt: bool) -> String {
+    let view = |alt| CaptureView {
         join: true,
         marks,
+        alt,
         ..CaptureView::default()
     };
-    let shown = crate::capture::pane(pane, None, view, false, false);
-    // A full-screen program that has left its screen, or exited, leaves the
-    // shell's, often blank: its last screen is what it said.
-    if shown.trim().is_empty() {
-        let alt = CaptureView { alt: true, ..view };
-        return crate::capture::pane(pane, None, alt, false, false);
+    let first = crate::capture::pane(pane, None, view(alt), false, false);
+    if first.trim().is_empty() {
+        return crate::capture::pane(pane, None, view(!alt), false, false);
     }
-    shown
+    first
 }
 
 /// What a pane shows from the row `cursor` was on to its last line with
 /// text: what came since an action began. A full-screen program's whole
 /// screen.
-fn since_text(pane: &Pane, since: Option<Since>, marks: bool) -> String {
+fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
     let screen = pane.screen();
     let on_full = screen.mode(fux_vt::Mode::AlternateScreen);
-    let Some((since, cursor)) = since
-        .and_then(|s| Some((s, s.cursor?)))
-        .filter(|_| !on_full)
-    else {
-        return text(pane, marks);
+    let Some(cursor) = since.cursor.filter(|_| !on_full) else {
+        return text(pane, marks, false);
     };
     let changed = since.revision != pane.revision;
     let drew_full = || screen.alternate_rows().any(|r| r.changed_since(since.mark));
-    let full = || last_full_screen(pane, marks).unwrap_or_else(|| text(pane, marks));
+    let full = || text(pane, marks, true);
     let mut cut = false;
     let from = match screen.row_index(cursor) {
         Some(from) => from,
@@ -1363,7 +1228,7 @@ fn since_text(pane: &Pane, since: Option<Since>, marks: bool) -> String {
             match screen.rows().position(|r| r.changed_since(since.mark)) {
                 Some(from) => from,
                 None if changed => return full(),
-                None => return text(pane, marks),
+                None => return text(pane, marks, false),
             }
         }
         // Its row let go past history's limit: what is kept, said so.
@@ -1388,7 +1253,7 @@ fn since_text(pane: &Pane, since: Option<Since>, marks: bool) -> String {
             .any(|r| r.changed_since(since.mark));
         return match (changed && drew_full(), changed && above) {
             (true, _) => full(),
-            (false, true) => text(pane, marks),
+            (false, true) => text(pane, marks, false),
             (false, false) => String::new(),
         };
     };

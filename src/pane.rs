@@ -479,7 +479,11 @@ pub struct InputFrom {
 
 impl InputFrom {
     /// How `screen` stands as `inputs` go in, `alerts` heard by then.
-    fn new(screen: &fux_vt::Screen, inputs: &[crate::command::Input], alerts: u64) -> InputFrom {
+    pub(crate) fn new(
+        screen: &fux_vt::Screen,
+        inputs: &[crate::command::Input],
+        alerts: u64,
+    ) -> InputFrom {
         let row = screen.window().row(screen.cursor_position().0);
         let (echo, lines) = crate::command::typed_lines(inputs);
         InputFrom {

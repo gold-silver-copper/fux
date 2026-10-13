@@ -479,50 +479,41 @@ fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failu
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
 
-/// A wait as the server takes it, armed after an action when `after`.
 /// How long an action waits for its pane to settle when it names nothing.
 pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The wait an action makes: what it names; or, from a command line
-/// (`settle`), for the pane to settle, said with what came.
+/// The wait an action makes, armed before it when `after`: what it names;
+/// or, from a command line (`settle`), for each pane to settle.
 fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
-    let until = match (waits.until.is_empty(), settle) {
-        (false, _) => waits.until.clone(),
-        (true, true) => vec![Until::Settled],
-        (true, false) => return None,
-    };
-    let settles = until == [Until::Settled];
-    Some(Box::new(Wait {
-        until,
-        timeout: waits.timeout.unwrap_or(if settles {
-            SETTLE_TIMEOUT
+    let named = !waits.until.is_empty();
+    (named || settle).then(|| Box::new(waited(waits, after, SETTLE_TIMEOUT)))
+}
+
+/// The wait the `wait` word makes, with a wait's time either way: settling
+/// a tab or workspace waits for each of its panes; a condition, for
+/// whichever pane meets it first.
+fn own_wait(waits: &Waits) -> Wait {
+    Wait {
+        all: waits.until.is_empty(),
+        ..waited(waits, false, WAIT_TIMEOUT)
+    }
+}
+
+/// A wait for what `waits` names, else for the pane to settle (within
+/// `settle`, unless it says), said with what came.
+fn waited(waits: &Waits, after: bool, settle: Duration) -> Wait {
+    let settles = waits.until.is_empty();
+    Wait {
+        until: if settles {
+            vec![Until::Settled]
         } else {
-            WAIT_TIMEOUT
-        }),
+            waits.until.clone()
+        },
+        timeout: (waits.timeout).unwrap_or(if settles { settle } else { WAIT_TIMEOUT }),
         print: waits.print || settles,
         after,
         marks: waits.marks,
         all: true,
-    }))
-}
-
-/// The wait the `wait` word makes: for what it names, else for the pane
-/// to settle, with a wait's time either way. Settling a tab or workspace
-/// waits for each of its panes; a condition, for whichever pane meets it
-/// first.
-fn own_wait(waits: &Waits) -> Wait {
-    let until = match waits.until.is_empty() {
-        true => vec![Until::Settled],
-        false => waits.until.clone(),
-    };
-    let settles = until == [Until::Settled];
-    Wait {
-        until,
-        timeout: waits.timeout.unwrap_or(WAIT_TIMEOUT),
-        print: waits.print || settles,
-        after: false,
-        marks: waits.marks,
-        all: settles,
     }
 }
 

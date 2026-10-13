@@ -1005,7 +1005,7 @@ impl Server {
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| match &conn.stage {
-            Stage::Waiting(waiting) => Some((waiting.due(&self.session), Wake::Answer)),
+            Stage::Waiting(waiting) => Some((waiting.due(), Wake::Answer)),
             Stage::Hello(_)
             | Stage::Attaching(..)
             | Stage::Attached(_)

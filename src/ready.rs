@@ -141,9 +141,3 @@ fn keys_unread(tty: Option<&std::path::Path>) -> bool {
     .and_then(|terminal| fuxix::io::unread(&terminal).ok())
     .is_some_and(|n| n > 0)
 }
-
-/// Whether the program is surely blocked reading its terminal: a text it
-/// prints only after more input cannot come before the agent types.
-pub fn reading(pane: &Pane, now: Instant) -> bool {
-    state(pane, now) == State::Reading
-}
