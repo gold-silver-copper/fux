@@ -460,6 +460,16 @@ impl Alerts {
     }
 }
 
+/// How a pane stood when input last went in.
+#[derive(Clone, Copy, Debug)]
+pub struct InputFrom {
+    /// The row the cursor was on: what came since is said from there.
+    pub cursor: Option<fux_vt::RowId>,
+    pub mark: fux_vt::Mark,
+    /// How many shell commands had ended.
+    pub finished: u64,
+}
+
 pub struct Pane {
     pub id: PaneId,
     pub name: String,
@@ -491,10 +501,10 @@ pub struct Pane {
     /// When input last went to the program: it is busy with it at first,
     /// even while still blocked reading (the kernel has yet to wake it).
     pub written_at: Instant,
-    /// Where the cursor was and how the screen stood when input last went
-    /// in: a wait counts what changed since, so it never starts too late
-    /// nor takes what was already there. None: since the program started.
-    pub input_from: Option<(Option<fux_vt::RowId>, fux_vt::Mark)>,
+    /// How the pane stood when input last went in: a wait counts what
+    /// changed since, so it never starts too late nor takes what was
+    /// already there. None: since the program started.
+    pub input_from: Option<InputFrom>,
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,

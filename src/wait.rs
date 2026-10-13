@@ -133,18 +133,26 @@ impl Waiting {
                 };
                 // A wait of its own counts what came since the last input
                 // to the pane, or since its program started.
-                let (anchor, mark, all_new) = match (wait.after, pane.input_from) {
+                let cursor = screen
+                    .window()
+                    .row(screen.cursor_position().0)
+                    .map(|row| row.id());
+                let (anchor, mark, all_new, cursor, finished) = match (wait.after, pane.input_from)
+                {
                     (true, _) => (
                         screen.window().row(0).map(|row| row.id()),
                         screen.mark(),
                         false,
+                        cursor,
+                        commands.finished,
                     ),
-                    (false, Some((cursor, mark))) => (cursor, mark, false),
-                    (false, None) => (
-                        screen.rows().next().map(|row| row.id()),
-                        screen.mark(),
-                        true,
-                    ),
+                    (false, Some(from)) => {
+                        (from.cursor, from.mark, false, from.cursor, from.finished)
+                    }
+                    (false, None) => {
+                        let first = screen.rows().next().map(|row| row.id());
+                        (first, screen.mark(), true, first, 0)
+                    }
                 };
                 Watch {
                     pane: pane.id,
@@ -158,13 +166,10 @@ impl Waiting {
                     appeared: Vec::new(),
                     echo_skipped: false,
                     revision: pane.revision,
-                    finished: commands.finished,
+                    finished,
                     starts: pane.starts,
                     alerts: pane.alerts.count(),
-                    cursor: screen
-                        .window()
-                        .row(screen.cursor_position().0)
-                        .map(|row| row.id()),
+                    cursor,
                     all_new,
                 }
             })

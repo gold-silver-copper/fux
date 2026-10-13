@@ -1490,7 +1490,11 @@ impl Session {
         let cursor = (screen.window())
             .row(screen.cursor_position().0)
             .map(|row| row.id());
-        p.input_from = Some((cursor, screen.mark()));
+        p.input_from = Some(crate::pane::InputFrom {
+            cursor,
+            mark: screen.mark(),
+            finished: screen.commands().finished,
+        });
         let (mode, bracketed) = (
             p.screen().key_mode(),
             p.screen().mode(fux_vt::Mode::BracketedPaste),

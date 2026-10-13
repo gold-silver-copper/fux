@@ -322,7 +322,10 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         inside.starts_with("fux: type: argument 3: type: inside type, send-keys: "),
         "{inside}"
     );
-    assert!(inside.ends_with("(use: PANE TEXT type)\n"), "{inside}");
+    assert!(
+        inside.ends_with("(use: PANE TEXT type, which leaves [answer])\n"),
+        "{inside}"
+    );
     // Refused before `run` starts anything.
     let before = said(&[
         "opts", "str", "sh", "program", "run", "str", "a", "1", "add",

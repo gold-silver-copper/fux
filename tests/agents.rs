@@ -113,7 +113,11 @@ fn wait_answers_as_the_pane_shows_or_settles() -> Outcome {
     );
     server.ok(&[&p[..], &["str", "never shown", "wait-gone", "wait"]].concat())?;
     let quiet = server.ok(&[&p[..], &["wait"]].concat())?;
-    assert_eq!(quiet, format!("{pane} reading\n"), "nothing came since");
+    assert_eq!(
+        quiet,
+        format!("{pane} reading\none\ntwo\n"),
+        "what came since it started: no keys went in"
+    );
     let start = std::time::Instant::now();
     let never = server.fux(&[&p[..], &["str", "never", "wait-text", "wait"]].concat())?;
     assert_eq!(
@@ -541,7 +545,8 @@ fn answers_say_what_the_program_does() -> Outcome {
     let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
     assert_eq!(
         (now.status, now.stdout.as_str()),
-        (0, format!("{pane} busy\n").as_str())
+        (0, format!("{pane} busy\nlater\n").as_str()),
+        "what came since the keys"
     );
     assert_eq!(
         server.ok(&["str", &pane, "pane", "str", "state", "get"])?,

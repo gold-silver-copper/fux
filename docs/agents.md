@@ -33,7 +33,7 @@ screen of a full-screen program (an editor, a menu, a form):
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
-%2 waiting                     it waits on something else (network, another pane), quiet 1s
+%2 waiting                     quiet 1s, but it may go on alone (network, a timer, a poll)
 %2 busy · 12 bytes unread      still running or printing at the time limit (status 124)
 %2 exited 3                    the program ended; its last output follows
 ```

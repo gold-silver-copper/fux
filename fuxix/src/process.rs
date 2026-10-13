@@ -664,9 +664,15 @@ pub fn activity(group: Pid, tty: &std::path::Path) -> Activity {
                 == Some(group.as_raw())
         })
     };
-    let members: Vec<Pid> = processes().into_iter().filter(in_group).collect();
-    if members.is_empty() {
+    let all = processes();
+    if all.is_empty() {
         return Activity::Unknown;
+    }
+    // None in the group: it is changing hands (a program starting or
+    // ending), so at work.
+    let members: Vec<Pid> = all.into_iter().filter(in_group).collect();
+    if members.is_empty() {
+        return Activity::Busy;
     }
     let mut seen: Vec<Activity> = members
         .iter()

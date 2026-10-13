@@ -24,8 +24,8 @@ pub enum State {
     /// It waits for input: blocked reading its terminal, every key sent
     /// read.
     Reading,
-    /// It waits for something else (the network, a pipe, another program)
-    /// and has been quiet a while. A program asleep on a timer is busy: it
+    /// It waits for something else (the network, a pipe, another program,
+    /// keys with a time limit) and has been quiet a while. A program asleep on a timer is busy: it
     /// is waited for, up to the limit.
     Waiting,
     /// The system does not say; the screen has been quiet a while.
@@ -79,10 +79,16 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     let activity = child.master.slave_path().map_or(Activity::Unknown, |tty| {
         fuxix::process::activity(group, &tty)
     });
+    // A shell command still runs a program that is not full-screen and
+    // does not read: it is at work until it ends or asks.
+    let screen = pane.screen();
+    let command = screen.commands().running && !screen.mode(fux_vt::Mode::AlternateScreen);
     match activity {
         Activity::Reading if quiet >= SETTLE => State::Reading,
-        Activity::Polling if quiet >= QUIET => State::Reading,
-        Activity::Waiting if quiet >= QUIET => State::Waiting,
+        Activity::Polling | Activity::Waiting if command => State::Busy,
+        // Polling for keys with a time limit: it may draw again on its own
+        // (a pause, a clock), so never surely waiting for the agent.
+        Activity::Polling | Activity::Waiting if quiet >= QUIET => State::Waiting,
         Activity::Unknown if quiet >= GUESS => State::Settled,
         Activity::Reading
         | Activity::Polling
