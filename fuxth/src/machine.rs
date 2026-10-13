@@ -788,15 +788,13 @@ impl<A: AppValue> Machine<A> {
             }
             Builtin::String => {
                 let x = self.pop()?;
-                // Its weight bounds the text's length (with the spaces
-                // between a list's values): checked before it is made.
-                let most = usize::try_from(x.weight().saturating_mul(2)).unwrap_or(usize::MAX);
-                if most > LONGEST.saturating_mul(2) {
+                self.walk(&x);
+                // Made only as far as a string may be long.
+                let Some(text) = x.text_upto(LONGEST) else {
                     return Err(self.too_long(format!(
-                        "the text would be longer than a string may be ({LONGEST})"
+                        "the text is longer than a string may be ({LONGEST})"
                     )));
-                }
-                let text = crate::value::Text::new(x.text());
+                };
                 self.build(text.chars_len())?;
                 self.push(Value::Str(Rc::new(text)))
             }

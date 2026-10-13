@@ -3,10 +3,10 @@
 # c n -- c : a letter moved n places, wrapping within its case
 define shift-char
   let n let c
-  c is-lower if c code 97 sub n add 26 mod 97 add char
-  else c is-upper if c code 65 sub n add 26 mod 65 add char else c then then
+  c is-lower if c code 97 sub n add 26 mod 26 add 26 mod 97 add char
+  else c is-upper if c code 65 sub n add 26 mod 26 add 26 mod 65 add char else c then then
 end
 # s n -- s
 define caesar let n let s list str '' s each n shift-char end end concat end
 str 'The quick brown fox!' 3 caesar dup print
-23 caesar
+-3 caesar

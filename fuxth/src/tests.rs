@@ -738,14 +738,32 @@ fn what_qa_found() -> Result<(), Error> {
         assert_eq!(refused(text).as_deref(), Some("type"), "{text}");
     }
     // A definition every way through which ends in `fail` still needs its
-    // values; one way of several ending in `fail` doesn't make it need more.
+    // values; a way ending in `fail` counts as failing, so what the ways
+    // that go on need is needed.
     assert_eq!(
         refused("define f fail end str m print f").as_deref(),
         Some("stack_underflow")
     );
     assert_eq!(
-        refused("define f if str x fail else drop drop then end true f"),
+        refused("define f if str x fail else drop drop then end true f").as_deref(),
+        Some("stack_underflow")
+    );
+    assert_eq!(
+        refused("define f if str x fail else drop drop then end 1 2 true f"),
         None
+    );
+    // A call to a word that only fails is as `fail`; too few values are
+    // named before a kind.
+    assert_eq!(
+        refused("define stop str s fail end define f if stop else 1 add then end str a true f")
+            .as_deref(),
+        Some("type")
+    );
+    assert_eq!(refused("str x 5 pad").as_deref(), Some("stack_underflow"));
+    // A text that fits is made, however its value is nested.
+    assert_eq!(
+        run("str x 1000 copies 1000 copies let s list s end string len")?,
+        ints(&[1_000_000])
     );
     // A loop that grows the stack still needs its first round's values.
     assert_eq!(

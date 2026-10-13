@@ -30,11 +30,13 @@ line, the deepest first; `print` prints a value at once.
   stack surely holds, or a value of a kind it never takes (`str a 1 add`,
   `str a not`: for a word of the library or your own, kinds on which every
   way through it fails, checked again at each call with the kinds it is
-  given; a way ending at `fail` counts as failing, unless every way does).
+  given; a way ending at `fail`, or at a call to a word that only fails, counts as
+  failing, unless every way does).
   A number written just before `pick` or `roll` is part of the step, and
   checked as a depth. It follows depths and kinds, not values (`1 0 div`
   fails as it runs), nor list elements' kinds, nor top-level names read
-  inside a definition, nor the kinds a word calling itself leaves, nor kinds
+  inside a definition, nor a word's call to itself (taken as one that may
+  succeed, leaving values of any kind), nor kinds
   under a varying number of values or deeper than the top 32. It follows
   depths as ranges and kinds as sets through branches, loops, `list` and
   `each`, and definitions (each summed up by what it uses and leaves, and

@@ -153,6 +153,9 @@ struct Summary {
     exit: Option<State>,
     /// Whether it may move its caller's values (a `roll` of unknown depth).
     scrambled: bool,
+    /// Whether every way through it stops at `fail`: a call to it is as
+    /// `fail` is.
+    stops: bool,
 }
 
 /// How many of a definition's inputs a call's known kinds are given to it
@@ -183,6 +186,7 @@ impl Summary {
             need: 0,
             exit: Some(exit),
             scrambled: true,
+            stops: false,
         }
     }
 }
@@ -202,18 +206,34 @@ enum Failing {
 }
 
 /// How the ways through a code that don't come back ended: the least any
-/// had used of the entry's values, and whether any went on without
-/// failing (a call that never returns, a loop gone round).
+/// had used of the entry's values, of those that went on without failing
+/// (a call that never returns, a loop gone round) and of those that
+/// stopped at `fail`.
 #[derive(Clone, Copy, Debug, Default)]
 struct Ends {
-    used: Option<i64>,
-    diverges: bool,
+    diverged: Option<i64>,
+    stopped: Option<i64>,
 }
 
 impl Ends {
     fn end(&mut self, used: i64, diverges: bool) {
-        self.used = Some(self.used.map_or(used, |u| u.min(used)));
-        self.diverges |= diverges;
+        let least = if diverges {
+            &mut self.diverged
+        } else {
+            &mut self.stopped
+        };
+        *least = Some(least.map_or(used, |u| u.min(used)));
+    }
+
+    /// How many of the entry's values every way through uses, with `exit`
+    /// where the ways that return end: a way stopping at `fail` counts
+    /// only if no way goes on, as a way that fails.
+    fn need(&self, exit: Option<&State>) -> Option<i64> {
+        let going = match (exit.map(|e| e.used), self.diverged) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        going.or(self.stopped)
     }
 }
 
@@ -422,6 +442,7 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
                         (None, new) => new,
                     },
                     scrambled: old.scrambled || new.scrambled,
+                    stops: old.stops && new.stops,
                 }),
             };
             if next == current {
@@ -526,11 +547,6 @@ impl<'a, A> Unit<'a, A> {
     /// `forward`: only the way through once, no loop gone round again (a
     /// way that would go round ends there, its use kept as if it ended):
     /// every run goes that far.
-    fn states(&self, forward: bool) -> Option<(Blocks, Option<i64>)> {
-        self.ends(forward).map(|(blocks, ends)| (blocks, ends.used))
-    }
-
-    /// As `states`, with how the ways that don't come back ended.
     fn ends(&self, forward: bool) -> Option<(Blocks, Ends)> {
         let first = (self.start.clone(), 0);
         let mut states = std::collections::BTreeMap::from([(0, first)]);
@@ -576,24 +592,19 @@ impl<'a, A> Unit<'a, A> {
     /// yet); anything at all, if the code goes unchecked.
     fn run(&self) -> Option<Summary> {
         let end = self.code.ops.len();
-        let Some((mut states, diverged)) = self.states(false) else {
+        let Some((mut states, ends)) = self.ends(false) else {
             return Some(Summary::anything());
         };
         let scrambled = states.values().any(|(s, _)| s.scrambled);
         let exit = states.remove(&end).map(|(state, _)| state);
-        let need = |exit: Option<&State>, diverged: Option<i64>| match (exit, diverged) {
-            (Some(exit), Some(diverged)) => Some(exit.used.min(diverged)),
-            (Some(exit), None) => Some(exit.used),
-            (None, Some(diverged)) => Some(diverged),
-            (None, None) => None,
-        };
-        let all = need(exit.as_ref(), diverged)?;
+        let all = ends.need(exit.as_ref())?;
+        let stops = exit.is_none() && ends.diverged.is_none();
         // Every run goes once through, before any loop goes round again: what
         // that much uses, every way uses. Joining a loop's rounds can hide it.
-        let once = match self.states(true) {
-            Some((mut states, diverged)) => {
+        let once = match self.ends(true) {
+            Some((mut states, ends)) => {
                 let exit = states.remove(&end).map(|(state, _)| state);
-                need(exit.as_ref(), diverged).unwrap_or(all)
+                ends.need(exit.as_ref()).unwrap_or(all)
             }
             None => all,
         };
@@ -601,6 +612,7 @@ impl<'a, A> Unit<'a, A> {
             need: all.max(once),
             exit,
             scrambled,
+            stops,
         })
     }
 
@@ -640,18 +652,19 @@ impl<'a, A> Unit<'a, A> {
                 // Every way fails: by a mistake the checker is sure of, or
                 // at a `fail` (with one mistake at least: a word that only
                 // ever calls `fail` is called to fail).
-                match (exit, ends.used, ends.diverges) {
-                    (None, None, _) | (None, Some(_), false) => match unit.first_error() {
+                match (exit, ends.diverged) {
+                    (None, None) => match unit.first_error() {
                         Some(e) => Special::Fails(match e.word {
                             Some(word) => format!("{word}: {}", e.message),
                             None => e.message,
                         }),
                         None => Special::Unknown,
                     },
-                    (exit, _, _) => Special::Does(Summary {
+                    (exit, _) => Special::Does(Summary {
                         need: 0,
                         exit,
                         scrambled,
+                        stops: false,
                     }),
                 }
             }
@@ -664,7 +677,7 @@ impl<'a, A> Unit<'a, A> {
 
     fn first_error(&self) -> Option<Error> {
         let mut first: Option<(usize, Error)> = None;
-        let (states, _) = self.states(false)?;
+        let (states, _) = self.ends(false)?;
         for (start, (state, _)) in states {
             let mut failed = |at, error| {
                 if first.as_ref().is_none_or(|(seen, _)| at < *seen) {
@@ -784,6 +797,10 @@ impl<'a, A> Unit<'a, A> {
                     // time through.
                     return Ok(Flow::Diverge);
                 };
+                // Too few values fail it before any kind could.
+                state
+                    .clone()
+                    .pop(usize::try_from(summary.need).unwrap_or(0))?;
                 // Checked again with the kinds this call gives it, where
                 // any are known (not for a call to itself).
                 // As deep as any way through it reaches, not only as deep as
@@ -806,7 +823,8 @@ impl<'a, A> Unit<'a, A> {
                                 .filter(|(_, k)| **k != ANY)
                                 .map(|(i, k)| match i {
                                     0 => format!("{} on top", k.describe()),
-                                    i => format!("{} {i} under the top", k.describe()),
+                                    1 => format!("{} next under it", k.describe()),
+                                    i => format!("{} {i} places under the top", k.describe()),
                                 })
                                 .collect();
                             return Err(Failing::Type(format!(
@@ -834,7 +852,11 @@ impl<'a, A> Unit<'a, A> {
                     state.scrambled = true;
                 }
                 let Some(exit) = exit else {
-                    return Ok(Flow::Diverge);
+                    return Ok(if summary.stops {
+                        Flow::Stop
+                    } else {
+                        Flow::Diverge
+                    });
                 };
                 let lo = exit.lo.saturating_add(summary.need);
                 let hi = exit.hi.saturating_add(summary.need);

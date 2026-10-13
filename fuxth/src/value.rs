@@ -236,11 +236,22 @@ impl<A: AppValue> Value<A> {
     /// between, the application's text.
     pub fn text(&self) -> String {
         let mut out = String::new();
-        self.write_text(&mut out);
+        self.write_text(&mut out, usize::MAX);
         out
     }
 
-    fn write_text(&self, out: &mut String) {
+    /// The text, if it is at most `most` characters long.
+    pub fn text_upto(&self, most: usize) -> Option<Text> {
+        let mut out = String::new();
+        // A character is at most 4 bytes: past that many, it is too long.
+        let bytes = most.saturating_mul(4);
+        let text = self.write_text(&mut out, bytes).then(|| Text::new(out))?;
+        (text.chars_len() <= most).then_some(text)
+    }
+
+    /// Writes the text, stopping once `out` is past `bytes` long: whether
+    /// it wasn't.
+    fn write_text(&self, out: &mut String, bytes: usize) -> bool {
         match self {
             Value::Int(n) => out.push_str(&n.to_string()),
             Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -251,11 +262,14 @@ impl<A: AppValue> Value<A> {
                     if i > 0 {
                         out.push(' ');
                     }
-                    item.write_text(out);
+                    if !item.write_text(out, bytes) {
+                        return false;
+                    }
                 }
             }
             Value::App(a) => out.push_str(&a.text()),
         }
+        out.len() <= bytes
     }
 }
 
