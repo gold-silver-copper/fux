@@ -11,12 +11,13 @@ ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fu
   -dict=fuzz/session.dict -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
 ```
 
-- `TARGET` is `protocol`, `paint`, `layout`, `config` or `session`. The
+- `TARGET` is `protocol`, `paint`, `layout`, `config`, `session`,
+  `fuxth_tokens`, `fuxth_run` or `fuxth_pause`. The
   terminal-input decoder's target, `keys`, is fux-vt's (`fux-vt/fuzz`).
 - `-timeout=25` makes a hang fail within the run (libFuzzer's default is
   1200 s).
 - `config` and `session` take a dictionary: `-dict=fuzz/config.dict`,
-  `-dict=fuzz/session.dict`.
+  `-dict=fuzz/session.dict`; the fuxth targets take `-dict=fuzz/fuxth.dict`.
 - `session` needs `ASAN_OPTIONS=quarantine_size_mb=16`: it frees millions
   of small allocations, and with the default 256 MB quarantine RSS passes
   1 GB within minutes. A smaller quarantine only shortens how long a freed
@@ -121,6 +122,25 @@ the outbox, takes queued pane input), then checks:
 - a second session given every byte one at a time ends with the same `ls`,
   modes, notices, screens, configuration, paste buffers, keymap and
   clients' keys and screens.
+
+**`fuxth_tokens`**: fuxth source, any bytes, split into tokens.
+- Splitting never panics; every token's line, and an error's, is a line of
+  the source, and tokens come in the order of their lines.
+- Each token, single-quoted, reads back as itself.
+
+**`fuxth_run`**: fuxth source, compiled after the prelude with two host
+words (`fuzz_targets/fuxth_host.rs`: `ask` suspends for its answer, `maybe`
+gives a value only sometimes), and run to its end within its limits.
+- Compiling and running never panic, and every error is at a line of the
+  source or the prelude.
+- A program the checker lets through never sees its host give more or fewer
+  values than the vocabulary says (`contract`).
+
+**`fuxth_pause`**: a byte picking a budget of steps, then source as
+`fuxth_run` takes it.
+- Run in one go, and run that many steps at a time (resumed after each pause
+  and each suspension), it ends the same: the same values, or the same error
+  at the same place.
 
 ## Corpus
 

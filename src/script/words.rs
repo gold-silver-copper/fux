@@ -1770,9 +1770,17 @@ mod tests {
     fn every_effect_matches_its_word() {
         for word in WORDS {
             let (before, _) = word.effect.split_once("--").unwrap_or_default();
-            assert_eq!(before.split_whitespace().count(), word.takes, "{}", word.name);
+            assert_eq!(
+                before.split_whitespace().count(),
+                word.takes,
+                "{}",
+                word.name
+            );
         }
-        let send = WORDS.iter().find(|w| w.name == "send-keys").map(Word::gives);
+        let send = WORDS
+            .iter()
+            .find(|w| w.name == "send-keys")
+            .map(Word::gives);
         assert_eq!(send, Some(0..=1), "an outcome only with a wait");
     }
 

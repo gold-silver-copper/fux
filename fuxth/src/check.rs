@@ -302,11 +302,18 @@ impl<'a, A> Unit<'a, A> {
     }
 
     /// The state at each block's start, once nothing changes. Only blocks'
-    /// starts are kept, so a long program without jumps keeps one.
-    fn states(&self) -> std::collections::BTreeMap<usize, (State, u32)> {
+    /// starts are kept, so a long program without jumps keeps one. `None`
+    /// if it goes on past what any program needs, which only a mistake in
+    /// the checker would make it do: then the code goes unchecked, and a
+    /// program is never kept from running by it.
+    fn states(&self) -> Option<std::collections::BTreeMap<usize, (State, u32)>> {
         let mut states = std::collections::BTreeMap::from([(0, (State::start(), 0))]);
         let mut todo = BTreeSet::from([0usize]);
+        // A block's state changes a bounded number of times: widened twice,
+        // its kept values shrinking, their kinds growing.
+        let mut left = self.starts.len().saturating_add(1).saturating_mul(1024);
         while let Some(start) = todo.pop_first() {
+            left = left.checked_sub(1)?;
             let Some((state, _)) = states.get(&start).cloned() else {
                 continue;
             };
@@ -329,18 +336,25 @@ impl<'a, A> Unit<'a, A> {
                 }
             }
         }
-        states
+        Some(states)
     }
 
-    /// The state where the code ends, if it can end.
+    /// The state where the code ends, if it can end: anything at all, if
+    /// the code goes unchecked.
     fn run(&self) -> Option<State> {
         let end = self.code.ops.len();
-        self.states().remove(&end).map(|(state, _)| state)
+        let Some(mut states) = self.states() else {
+            let mut anything = State::start();
+            anything.forget(BIG.saturating_neg(), BIG, Entry::Unknown);
+            anything.used = 0;
+            return Some(anything);
+        };
+        states.remove(&end).map(|(state, _)| state)
     }
 
     fn first_error(&self) -> Option<Error> {
         let mut first: Option<(usize, Error)> = None;
-        for (start, (state, _)) in self.states() {
+        for (start, (state, _)) in self.states()? {
             self.block(start, state, &mut |at, error| {
                 if first.as_ref().is_none_or(|(seen, _)| at < *seen) {
                     first = Some((at, error));
