@@ -1356,6 +1356,34 @@ fn output_after_a_clear_is_not_the_echo() -> Outcome {
     Ok(())
 }
 
+/// A program that echoes nothing writes its answer on the row the keys
+/// were typed on: that is its output, not their echo; so is a line it
+/// writes over the echo, and the next line after keys alone.
+#[test]
+fn a_program_that_echoes_nothing_is_heard() -> Outcome {
+    let server = Server::start("")?;
+    let quiet = "stty -echo; echo 'reply now'; read l; echo 'CLOSED cleanly'; \
+                 read l; echo NEXT; exec cat";
+    server.ok(&run(
+        &["str", "q", "name", "str", "reply now", "wait-text"],
+        &["sh", "-c", quiet],
+    ))?;
+    let closed = server.ok(&typed("q", "shutdown x", &["str", "CLOSED", "wait-text"]))?;
+    assert_eq!(closed, "CLOSED cleanly\n");
+    let keys = ["str", "q", "pane", "keys", "str", "Enter", "key"];
+    let next = server.ok(&[&keys[..], &["str", "NEXT", "wait-text", "send-keys"]].concat())?;
+    assert_eq!(next, "NEXT\n");
+    let over =
+        "stty -onlcr; echo 'WATCH READY'; read l; printf '\\r\\033[2KPARKED t-1\\r\\n'; exec cat";
+    server.ok(&run(
+        &["str", "o", "name", "str", "WATCH READY", "wait-text"],
+        &["sh", "-c", over],
+    ))?;
+    let parked = server.ok(&typed("o", "park t-1", &["str", "PARKED", "wait-text"]))?;
+    assert_eq!(parked, "PARKED t-1\n");
+    Ok(())
+}
+
 /// A signal that ends the program answers how it ended, even after the
 /// pane has been quiet a while.
 #[test]

@@ -394,11 +394,14 @@ class Fux(Driver):
 
     def checked(self, out):
         """A wait's output, or why it failed: the program exited first (3),
-        or anything else, a timeout."""
+        stopped short of the text (7), or anything else, a timeout."""
         if out.returncode == 3 and out.stderr.strip():
             raise Exited(out.stderr.strip())
         if out.returncode != 0 and out.stderr.strip():
             raise Timeout(out.stderr.strip())
+        # Stopped (7): the program reads its terminal and the text never came.
+        if out.returncode == 7:
+            raise Timeout("stopped short of the text: " + out.stdout.strip()[:200])
         return out.stdout
 
     def spawn(self, argv, size=None, name=None):

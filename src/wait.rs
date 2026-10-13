@@ -995,7 +995,27 @@ fn echoed(
     // keys' echo after it): output that cleared the row and wrote over it
     // (`clear; echo READY`) is not the echo.
     let before = was.get(&line.first).map_or("", |t| t.trim_end());
-    wait.after && wait.lines > 0 && cursor == Some(line.first) && line.text.starts_with(before)
+    if !(wait.after && wait.lines > 0 && cursor == Some(line.first)) {
+        return false;
+    }
+    let Some(rest) = line.text.strip_prefix(before) else {
+        return false;
+    };
+    // And then shows what was typed, its first word: a program that
+    // echoes nothing (a password, a raw-mode reader), or writes over the
+    // echo, puts its own output on that row.
+    let mut typed = wait.echo.iter().filter_map(|t| t.split_whitespace().next());
+    let first = typed.next();
+    match first {
+        // Its echo, or the echo still being drawn (`2` of `2**10`).
+        Some(word) => rest
+            .split_whitespace()
+            .next()
+            .is_none_or(|shown| word.starts_with(shown) || shown.starts_with(word)),
+        // Keys alone (Up, Enter: a command recalled): only a row that held
+        // a prompt shows one; an empty row takes the program's output.
+        None => !before.is_empty(),
+    }
 }
 
 /// A text as a wait compares it: case ignored, runs of blanks as one. A
