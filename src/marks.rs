@@ -143,7 +143,7 @@ const FISH: &str = "function __fux_preexec --on-event fish_preexec; printf '\\e]
      function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s\\a\\e]133;A\\a' $status >&2; end";
 
 /// How a shell is started so that it marks its commands: its words, and
-/// variables to add.
+/// variables to add and remove.
 #[derive(Debug, Default)]
 pub struct Marked {
     pub argv: Vec<String>,
@@ -162,6 +162,12 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
         .to_str()?;
     // Only an interactive shell: no script or command, startup files read.
     let flags_only = |allowed: &[&str]| args.iter().all(|a| allowed.contains(&a.as_str()));
+    // A variable as the shell would be given it.
+    let theirs = |key: &str| {
+        (env.iter().rev())
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
     match name {
         // Without fux's startup file (`--norc`, or a login shell) bash
         // takes the marks from its variables, around the caller's own.
@@ -169,11 +175,6 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
             if flags_only(&["-i", "--norc", "--noprofile"])
                 && args.iter().any(|a| a == "--norc") =>
         {
-            let theirs = |key: &str| {
-                (env.iter().rev())
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v.clone())
-            };
             let (new, old) = ends();
             let (new, old) = match theirs("PROMPT_COMMAND") {
                 Some(own) => (format!("{new}\n{own}"), format!("{old}\n{own}\n{ARM}")),
@@ -229,24 +230,20 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
             );
             Some(Marked {
                 argv,
-                env: Vec::new(),
-                unset: Vec::new(),
+                ..Marked::default()
             })
         }
         "zsh" if flags_only(&["-i", "-l", "--login"]) => {
             write(&dir.join("zsh"), ".zshenv", ZSHENV)?;
             let shim = dir.join("zsh").to_string_lossy().into_owned();
             // The user's own ZDOTDIR, from what the shell would be given.
-            let theirs = (env.iter().rev())
-                .find(|(k, _)| k == "ZDOTDIR")
-                .map(|(_, v)| v.clone())
-                .or_else(|| std::env::var("ZDOTDIR").ok());
+            let theirs = theirs("ZDOTDIR").or_else(|| std::env::var("ZDOTDIR").ok());
             let mut vars = vec![("ZDOTDIR".to_owned(), shim)];
             vars.extend(theirs.map(|v| ("FUX_ZDOTDIR".to_owned(), v)));
             Some(Marked {
                 argv: argv.to_vec(),
                 env: vars,
-                unset: Vec::new(),
+                ..Marked::default()
             })
         }
         "fish" if flags_only(&["-i", "-l", "--login"]) => {
@@ -254,8 +251,7 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
             argv.extend(["--init-command".to_owned(), FISH.to_owned()]);
             Some(Marked {
                 argv,
-                env: Vec::new(),
-                unset: Vec::new(),
+                ..Marked::default()
             })
         }
         _ => None,

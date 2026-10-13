@@ -595,6 +595,22 @@ impl Command {
         }
         None
     }
+
+    /// Takes the wait `run`, `split` or `respawn` does once it has started
+    /// its program: the command then says only its pane, which the wait
+    /// answers of (as JSON too, if asked).
+    pub fn take_start_wait(&mut self) -> Option<Box<Wait>> {
+        if let Command::Run { json, then, .. } | Command::Split { json, then, .. } = self
+            && then.is_some()
+        {
+            *json = false;
+            return then.take();
+        }
+        if let Command::Respawn { then, .. } = self {
+            return then.take();
+        }
+        None
+    }
 }
 
 /// Whether a word that is no key name looks like one mistyped, as a person

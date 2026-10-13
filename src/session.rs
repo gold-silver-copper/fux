@@ -1169,32 +1169,14 @@ impl Session {
             launch.env.push((key.clone(), value.clone()));
         }
         let size = pane.size();
-        let mut vars = Vec::new();
-        if let Some(launcher) = &self.launch {
-            vars.extend(launcher.vars(id, self.starting.socket.as_deref()));
-        }
-        vars.extend(
-            self.starting
-                .set
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.clone())),
-        );
-        vars.extend(launch.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
         let child = match &self.launch {
-            Some(launcher) => {
-                let socket = &launcher.socket;
-                let marks = with_marks(&self.config, socket, &launch.argv, &launch.env);
-                vars.extend(marks.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-                vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
-                let mut unset = unset(&self.starting, &launch.env);
-                unset.extend(marks.unset.iter().cloned());
-                Some(crate::process::spawn(
-                    &marks.argv,
-                    &launch.cwd,
-                    (&vars, &unset),
-                    size,
-                )?)
-            }
+            Some(launcher) => Some(launcher.spawn(
+                (&self.config, &self.starting),
+                id,
+                (&launch.argv, &launch.env),
+                &launch.cwd,
+                size,
+            )?),
             None => None,
         };
         let history = self.config.history_lines;
@@ -2492,72 +2474,13 @@ impl Session {
                 (targets, wait, Some(command))
             }
             // Started, then waited for from its first output on.
-            Command::Run {
-                workspace,
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                log,
-                ids,
-                then: Some(wait),
-                ..
-            } => {
-                // The pane's id, to wait on; --json is the wait's.
-                let run = Command::Run {
-                    workspace,
-                    name,
-                    size,
-                    cwd,
-                    env,
-                    argv,
-                    json: false,
-                    log,
-                    ids,
-                    then: None,
+            mut command @ (Command::Run { then: Some(_), .. }
+            | Command::Split { then: Some(_), .. }
+            | Command::Respawn { then: Some(_), .. }) => {
+                return match command.take_start_wait() {
+                    Some(wait) => self.start_waiting(&command, *wait, origin),
+                    None => Begun::Done(self.run_command(&command, origin)),
                 };
-                return self.start_waiting(&run, *wait, origin);
-            }
-            Command::Split {
-                axis,
-                target,
-                cmd,
-                cwd,
-                env,
-                run,
-                ids,
-                then: Some(wait),
-                ..
-            } => {
-                let split = Command::Split {
-                    axis,
-                    target,
-                    cmd,
-                    cwd,
-                    env,
-                    run,
-                    ids,
-                    json: false,
-                    then: None,
-                };
-                return self.start_waiting(&split, *wait, origin);
-            }
-            Command::Respawn {
-                target,
-                kill,
-                env,
-                argv,
-                then: Some(wait),
-            } => {
-                let respawn = Command::Respawn {
-                    target,
-                    kill,
-                    env,
-                    argv,
-                    then: None,
-                };
-                return self.start_waiting(&respawn, *wait, origin);
             }
             command @ (Command::Ls { .. }
             | Command::KillServer { .. }
@@ -3965,40 +3888,6 @@ fn closed(origin: &Origin, ids: &[String]) -> String {
     }
 }
 
-/// `argv` as it is started, and variables to add and remove: a shell fux knows
-/// started so that it marks its commands, unless `set shell-marks off`. Its
-/// startup files go beside the server's socket.
-fn with_marks(
-    config: &Config,
-    socket: &Path,
-    argv: &[String],
-    env: &[(String, String)],
-) -> crate::marks::Marked {
-    let mut dir = socket.as_os_str().to_owned();
-    dir.push(".shell");
-    match config
-        .shell_marks
-        .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
-        .flatten()
-    {
-        Some(marked) => marked,
-        None => crate::marks::Marked {
-            argv: argv.to_vec(),
-            env: Vec::new(),
-            unset: Vec::new(),
-        },
-    }
-}
-
-/// The variables a pane started with `env` is not given: those its starter
-/// had not, unless `env` sets them.
-fn unset(fresh: &Starting, env: &[(String, String)]) -> Vec<String> {
-    (fresh.unset.iter())
-        .filter(|name| !env.iter().any(|(k, _)| k == *name))
-        .cloned()
-        .collect()
-}
-
 /// What a started pane is told of its server: the socket to reach it by,
 /// and which run of it this is.
 #[derive(Clone, Debug)]
@@ -4017,6 +3906,45 @@ impl Launcher {
             ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
             ("FUX_SERVER", self.server.clone()),
         ]
+    }
+
+    /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`:
+    /// told of its server, given its starter's variables (`fresh`), and not
+    /// those its starter had not, unless `env` sets them. A shell fux knows
+    /// is started so that it marks its commands, unless `set shell-marks
+    /// off`; its startup files go beside the server's socket.
+    fn spawn(
+        &self,
+        (config, fresh): (&Config, &Starting),
+        id: PaneId,
+        (argv, env): (&[String], &[(String, String)]),
+        cwd: &Path,
+        size: fux_vt::Size,
+    ) -> Result<crate::process::Child, Error> {
+        let mut dir = self.socket.as_os_str().to_owned();
+        dir.push(".shell");
+        let marks = (config.shell_marks)
+            .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
+            .flatten()
+            .unwrap_or_else(|| crate::marks::Marked {
+                argv: argv.to_vec(),
+                ..crate::marks::Marked::default()
+            });
+        let mut vars = self.vars(id, fresh.socket.as_deref()).to_vec();
+        let given = (fresh.set.iter()).chain(env).chain(&marks.env);
+        vars.extend(given.map(|(k, v)| (k.as_str(), v.clone())));
+        vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
+        let mut unset: Vec<String> = (fresh.unset.iter())
+            .filter(|name| !env.iter().any(|(k, _)| k == *name))
+            .cloned()
+            .collect();
+        unset.extend(marks.unset.iter().cloned());
+        Ok(crate::process::spawn(
+            &marks.argv,
+            cwd,
+            (&vars, &unset),
+            size,
+        )?)
     }
 }
 
@@ -4076,15 +4004,7 @@ fn new_pane(
     // A program brought back by a restore waits for `respawn`.
     let paused = fresh.paused && matches!(start, Start::Program(..));
     if let Some(launcher) = launch.filter(|_| !paused) {
-        let mut vars = launcher.vars(id, fresh.socket.as_deref()).to_vec();
-        vars.extend(fresh.set.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        let marks = with_marks(config, &launcher.socket, argv, env);
-        vars.extend(marks.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
-        let mut unset = unset(fresh, env);
-        unset.extend(marks.unset.iter().cloned());
-        let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)?;
+        let child = launcher.spawn((config, fresh), id, (argv, env), cwd, size)?;
         pane.process = Process::Reading(child);
     }
     if let Some(typed) = typed {
