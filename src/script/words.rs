@@ -101,7 +101,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", 2, "pane mouse -- [outcome]", "send a mouse event"),
-    word("Input", "signal", 2, "pane name -- ", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH, to the pane's foreground"),
+    word("Input", "signal", 2, "pane name -- [answer]", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH, to the pane's foreground; answers once it exits or settles"),
     // Reading
     word("Reading", "capture", 2, "pane opts -- capture", "the screen, as the options say"),
     word("Reading", "history", 2, "opts lines -- opts", "capture: lines of history first"),
@@ -1046,13 +1046,16 @@ impl fuxth::Host for Host<'_> {
                         ));
                     }
                 };
+                // From a command line: answers once the program exited or settled.
+                let then = wait(&Waits::default(), true, self.settle);
+                let waited = then.is_some();
                 later(ask(
                     Command::Signal {
                         target: Some(p),
                         signal,
-                        then: None,
+                        then,
                     },
-                    Then::Nothing,
+                    Then::Outcome { waited },
                 ))
             }
             // ----------------------------------------------------- reading
