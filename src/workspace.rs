@@ -131,8 +131,11 @@ impl Workspace {
         let Some(tab) = tab.filter(|id| self.tabs.iter().any(|t| t.id == *id)) else {
             return;
         };
+        let viewed = self.viewers.contains(&client);
         for t in &mut self.tabs {
             if let Some(seat) = t.seats.get_mut(&client) {
+                // The tab it leaves goes back to its own fit.
+                t.changed |= viewed && seat.shown && t.id != tab;
                 seat.shown = t.id == tab;
             }
             if let Some(pane) = pane.filter(|_| t.id == tab) {
@@ -191,13 +194,19 @@ impl Workspace {
         }
     }
 
-    /// A client detaches: nothing here names it.
-    pub(crate) fn forget(&mut self, client: ClientId) {
+    /// `client` no longer looks here: the tab it showed is laid out again
+    /// on its own fit (its `size`), not left at the client's.
+    pub(crate) fn hide(&mut self, client: ClientId) {
         let viewed = self.viewers.remove(&client);
         for tab in &mut self.tabs {
-            // A tab the client showed is laid out again on its own fit (its
-            // `--size`), not left at the client's.
             tab.changed |= viewed && tab.shown_to(client);
+        }
+    }
+
+    /// A client detaches: nothing here names it.
+    pub(crate) fn forget(&mut self, client: ClientId) {
+        self.hide(client);
+        for tab in &mut self.tabs {
             tab.seats.remove(&client);
             tab.typist = tab.typist.filter(|t| *t != client);
         }

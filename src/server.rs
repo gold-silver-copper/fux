@@ -555,11 +555,30 @@ struct Saved {
     at: Instant,
     /// Something happened since it was last saved.
     pending: bool,
+    /// The workspaces, tabs and panes it was last saved with.
+    shape: Shape,
     /// A restore is under way: what there is is not saved over the file.
     restoring: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// One was started, and its end is yet to be seen to
     /// (`Server::after_restore`).
     restored: bool,
+}
+
+/// Which workspaces, tabs and panes there are.
+#[derive(Default, PartialEq)]
+struct Shape(Vec<crate::id::WsId>, Vec<crate::id::TabId>, Vec<PaneId>);
+
+impl Shape {
+    fn of(session: &Session) -> Shape {
+        let workspaces = &session.workspaces;
+        Shape(
+            workspaces.iter().map(|w| w.id).collect(),
+            (workspaces.iter())
+                .flat_map(|w| w.tabs().iter().map(|t| t.id))
+                .collect(),
+            session.panes.keys().copied().collect(),
+        )
+    }
 }
 
 impl Saved {
@@ -582,6 +601,7 @@ impl Saved {
             written: String::new(),
             at: Instant::now(),
             pending: false,
+            shape: Shape::default(),
             restoring: std::sync::Arc::default(),
             restored: false,
         })
@@ -636,13 +656,16 @@ impl Saved {
     }
 
     /// Saves the layout if it changed and `SAVE_EVERY` has passed since it
-    /// was last saved; else it is saved then.
+    /// was last saved; else it is saved then. A workspace, tab or pane made
+    /// or closed is saved at once: a crash must not lose a pane.
     fn save_by(&mut self, session: &Session, now: Instant) {
-        if now < self.at {
+        let shape = Shape::of(session);
+        if now < self.at && shape == self.shape {
             self.pending = true;
             return;
         }
         self.save(session);
+        self.shape = shape;
         self.at = crate::after(now, SAVE_EVERY);
     }
 

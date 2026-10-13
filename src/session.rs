@@ -1856,8 +1856,9 @@ impl Session {
     /// in it pane `pane`, each if given and there.
     fn show(&mut self, client: ClientId, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
         for w in &mut self.workspaces {
-            w.viewers.remove(&client);
-            if w.id == ws {
+            if w.id != ws {
+                w.hide(client);
+            } else {
                 w.viewers.insert(client);
                 w.show(client, tab, pane);
             }

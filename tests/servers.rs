@@ -394,6 +394,39 @@ fn a_crashed_server_comes_back() -> Outcome {
     })
 }
 
+/// A pane made just before a crash comes back: a pane, tab or workspace
+/// made or closed is saved at once, not within the second the rest waits.
+#[test]
+fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
+    let server = Server::start("")?;
+    let run = [
+        "opts", "str", "late", "name", "str", "sleep 60", "command", "0", "timeout", "run",
+    ];
+    let late = server.ok(&run)?;
+    let late = first_word(&late);
+    let pid = server.pid().ok_or("the server's pid")?;
+    let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
+    fuxix::process::kill(pid, fuxix::process::Signal::Kill).map_err(e)?;
+    eventually("the server gone", || Ok(!alive(pid.as_raw())))?;
+    let socket = server.socket.to_string_lossy().into_owned();
+    let again = Command::new(FUX)
+        .args(["str", &socket, "socket", "start"])
+        .env("XDG_STATE_HOME", server.dir.join("state"))
+        .env("HOME", &server.dir)
+        .env("SHELL", "/bin/sh")
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SOCKET")
+        .output()
+        .map_err(e)?;
+    assert!(again.status.success());
+    eventually("the late pane back", || {
+        let ls = server.ok(&["ls"])?;
+        Ok(ls.contains(&format!("{late} sleep")))
+    })?;
+    server.ok(&["force-kill-server"])?;
+    Ok(())
+}
+
 /// `dump-of` writes a workspace as a program, and running that program
 /// makes it again.
 #[test]
