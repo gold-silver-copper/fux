@@ -86,6 +86,10 @@ impl Session {
             line.extend(asked(&tab.id.to_string()));
         }
         self.pane_words(first, ids, &mut line);
+        // Started at once: a dump makes the layout, it waits for nothing.
+        if program.is_some() {
+            line.extend(["0".to_owned(), "timeout".to_owned()]);
+        }
         line.push(match (program.is_some(), makes) {
             (true, _) => "run".to_owned(),
             (false, true) => "new-workspace".to_owned(),
@@ -158,7 +162,8 @@ impl Session {
         for (before, pane) in firsts.iter().zip(firsts.iter().skip(1)) {
             let mut line = vec![pane_name(*before), "opts".into(), way.into()];
             self.pane_words(*pane, ids, &mut line);
-            line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
+            line.extend(["0", "timeout", "split", "let"].map(str::to_owned));
+            line.push(pane_name(*pane));
             push(out, &line);
         }
         for child in split.children() {

@@ -29,7 +29,7 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    assert_eq!(pane.trim(), "%2");
+    assert!(pane.starts_with("%2 reading\n"), "{pane}");
     shows(&server, "%2", "[a b]")?;
     shows(&server, "%2", "[it's]")?;
     shows(&server, "%2", "[$HOME]")?;
@@ -90,8 +90,8 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let env = [("FUX_PANE", "%2")];
     let out = server.fux_env(&["here", "opts", "vertical", "split"], &env)?;
     assert_eq!(
-        (out.status, out.stdout.as_str()),
-        (0, "%3\n"),
+        (out.status, out.stdout.lines().next()),
+        (0, Some("%3 reading")),
         "{}",
         out.stderr
     );

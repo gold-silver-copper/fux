@@ -59,7 +59,7 @@ fn settings_reach_the_server() -> Outcome {
     let server = Server::start("str history-lines 3 set")?;
     // History lines apply to new panes.
     let pane = server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
-    let pane = pane.trim();
+    let pane = pane.split_whitespace().next().unwrap_or_default();
     server.type_line(
         pane,
         "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do echo h$i; done",
@@ -82,7 +82,12 @@ fn settings_reach_the_server() -> Outcome {
     let custom = server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
     eventually("the custom prompt", || {
         Ok(server
-            .ok(&["str", custom.trim(), "pane", "screen"])?
+            .ok(&[
+                "str",
+                custom.split_whitespace().next().unwrap_or_default(),
+                "pane",
+                "screen",
+            ])?
             .contains("custom$"))
     })?;
     // Bad values are refused; keys are a client's, never the server's.

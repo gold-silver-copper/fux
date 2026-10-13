@@ -202,7 +202,7 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         &["split"],
     ]
     .concat())?;
-    let b = b.trim();
+    let b = first_word(&b);
     server.ok(&["str", b, "pane", "opts", "wait"])?;
     let both = server.ok(&[
         "str",
@@ -315,7 +315,7 @@ fn a_crashed_server_comes_back() -> Outcome {
     ])?;
     let app = first_word(&app);
     let shell = server.ok(&["str", app, "pane", "opts", "horizontal", "split"])?;
-    let shell = shell.trim();
+    let shell = first_word(&shell);
     server.ok(&["str", app, "pane", "70", "resize-x"])?;
     let before = server.ok(&["ls"])?;
     // Saved within a second of the last change.
@@ -415,9 +415,18 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "str",
         "echo built; sleep 60",
         "arg",
+        "0",
+        "timeout",
         "split",
     ])?;
-    server.ok(&["str", worker.trim(), "pane", "str", "worker", "rename"])?;
+    server.ok(&[
+        "str",
+        first_word(&worker),
+        "pane",
+        "str",
+        "worker",
+        "rename",
+    ])?;
     let dump = server.ok(&["str", "build", "workspace", "dump-of"])?;
     server.ok(&["str", "build", "workspace", "kill"])?;
     assert!(!server.ok(&["ls"])?.contains("build"));
