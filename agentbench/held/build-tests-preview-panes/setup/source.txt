@@ -1,0 +1,2 @@
+widget=quartz
+version=4
