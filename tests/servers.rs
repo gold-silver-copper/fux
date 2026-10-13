@@ -221,7 +221,7 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     // Each pane's answer: its state line, then the echo and the output.
     for pane in [a, b] {
         let part = both
-            .split_once(&format!("{pane} reading · done 0\n"))
+            .split_once(&format!("{pane} {READING} · done 0\n"))
             .map(|(_, rest)| rest)
             .ok_or_else(|| format!("no answer from {pane}: {both}"))?;
         assert!(part.contains("\nboth-42\n"), "{pane}: {both}");
@@ -519,7 +519,7 @@ fn a_client_reaches_the_server_through_its_door() -> Outcome {
         "run",
     ])?;
     assert!(
-        answer.contains("reading") && answer.contains("through-the-door"),
+        answer.contains(READING) && answer.contains("through-the-door"),
         "{answer}"
     );
     Ok(())

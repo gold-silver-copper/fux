@@ -19,6 +19,26 @@ use std::time::{Duration, Instant};
 
 pub type Outcome = Result<(), String>;
 
+/// Whether fux is told what a pane's program is blocked in (Linux).
+/// Elsewhere a screen quiet for 300ms is taken as settled, a guess, and
+/// said so (`settled`): a program reading its terminal is not told from
+/// one asleep or polling, keys that drew nothing are not said to, and a
+/// text that cannot come is waited for to the limit.
+pub const PROBED: bool = cfg!(target_os = "linux");
+/// The state of a program that reads its terminal, waiting for keys.
+pub const READING: &str = if PROBED { "reading" } else { "settled" };
+/// The state after keys a program read and drew nothing for.
+pub const UNCHANGED: &str = if PROBED {
+    "reading · no change"
+} else {
+    "settled"
+};
+/// The state of a program asleep, or still at work, once quiet.
+pub const ASLEEP: &str = if PROBED { "busy" } else { "settled" };
+/// The status of a text wait on a program that reads its terminal, the
+/// text not come: told at once (7), else at the wait's limit (124).
+pub const CANNOT_COME: i32 = if PROBED { 7 } else { 124 };
+
 /// A size a frame carries: never zero.
 pub fn nonzero(n: u16) -> Result<NonZeroU16, String> {
     NonZeroU16::new(n).ok_or_else(|| "a size of zero".to_owned())

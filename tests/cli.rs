@@ -29,7 +29,7 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    assert!(pane.starts_with("%2 reading\n"), "{pane}");
+    assert!(pane.starts_with(&format!("%2 {READING}\n")), "{pane}");
     shows(&server, "%2", "[a b]")?;
     shows(&server, "%2", "[it's]")?;
     shows(&server, "%2", "[$HOME]")?;
@@ -91,7 +91,7 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let out = server.fux_env(&["here", "opts", "vertical", "split"], &env)?;
     assert_eq!(
         (out.status, out.stdout.lines().next()),
-        (0, Some("%3 reading")),
+        (0, Some(format!("%3 {READING}").as_str())),
         "{}",
         out.stderr
     );
@@ -262,7 +262,8 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         separator.stderr
     );
     // A text wait on a program reading its terminal ends at once: the text
-    // cannot come before more input.
+    // cannot come before more input. Where fux is not told so (not Linux),
+    // it is waited for to the limit.
     let reading = server.fux(&[
         "str",
         "%1",
@@ -271,11 +272,13 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "str",
         "never-shown",
         "wait-text",
+        "2",
+        "timeout",
         "wait",
     ])?;
-    assert_eq!(reading.status, 7, "{}", reading.stderr);
+    assert_eq!(reading.status, CANNOT_COME, "{}", reading.stderr);
     assert!(
-        reading.stdout.starts_with("%1 reading\n"),
+        reading.stdout.starts_with("%1 reading\n") || !PROBED,
         "{}",
         reading.stdout
     );
@@ -331,7 +334,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     assert_eq!(left, "3\na b\n%1\n@1\n");
     let outcome = server.ok(&["str", "%1", "pane", "opts", "wait", "json"])?;
     assert!(
-        outcome.starts_with(r#"{"pane":"%1","state":"reading""#),
+        outcome.starts_with(&format!(r#"{{"pane":"%1","state":"{READING}""#)),
         "{outcome}"
     );
     let record = server.ok(&["str", "%1", "pane", "info", "json"])?;
