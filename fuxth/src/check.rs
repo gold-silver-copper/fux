@@ -294,6 +294,10 @@ fn earliest(a: Option<Error>, b: Option<Error>) -> Option<Error> {
     }
 }
 
+/// Each block's state, by the step it starts at, with how often it has
+/// changed.
+type Blocks = std::collections::BTreeMap<usize, (State, u32)>;
+
 /// One code's check: the top level, or a definition.
 struct Unit<'a, A> {
     program: &'a Program<A>,
@@ -336,7 +340,7 @@ impl<'a, A> Unit<'a, A> {
     ///
     /// With them, the least of what the ways that never return (a call to a
     /// definition that doesn't) had used of the entry's values.
-    fn states(&self) -> Option<(std::collections::BTreeMap<usize, (State, u32)>, Option<i64>)> {
+    fn states(&self) -> Option<(Blocks, Option<i64>)> {
         let mut states = std::collections::BTreeMap::from([(0, (State::start(), 0))]);
         let mut todo = BTreeSet::from([0usize]);
         let mut diverged: Option<i64> = None;
