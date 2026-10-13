@@ -40,7 +40,10 @@ const PROGRAMS: [(&str, &str); 4] = [
         "define deep dup 0 eq if else 1 sub deep 1 add then end
          0 begin 9000 deep drop 1 add dup 200 eq until",
     ),
-    ("a million host words", "0 begin tick add dup 1000000 eq until"),
+    (
+        "a million host words",
+        "0 begin tick add dup 1000000 eq until",
+    ),
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,7 +60,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             best = best.min(started.elapsed());
         }
         let ms = best.as_secs_f64() * 1000.0;
-        std::io::Write::write_fmt(&mut std::io::stdout(), format_args!("{name:28} {ms:8.1} ms\n"))?;
+        std::io::Write::write_fmt(
+            &mut std::io::stdout(),
+            format_args!("{name:28} {ms:8.1} ms\n"),
+        )?;
     }
     Ok(())
 }

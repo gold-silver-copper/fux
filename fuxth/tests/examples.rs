@@ -3,8 +3,8 @@
 //! (`# fails: CODE`), or the error that refuses it before it runs
 //! (`# refused: CODE at LINE`).
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, PRELUDE,
-    Place, Value, Vocabulary, token,
+    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, PRELUDE, Place,
+    Value, Vocabulary, token,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,7 +106,10 @@ fn every_example_ends_as_its_header_says() -> std::io::Result<()> {
     let mut wrong = Vec::new();
     for path in &names {
         let text = std::fs::read_to_string(path)?;
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let Some(expected) = expected(&text) else {
             wrong.push(format!("{name}: no expect, fails or refused line"));
             continue;

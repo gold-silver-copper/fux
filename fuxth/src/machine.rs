@@ -325,9 +325,9 @@ impl<A: AppValue> Machine<A> {
 
     fn pop(&mut self) -> Result<Value<A>, Error> {
         self.depth(1)?;
-        self.stack.pop().ok_or_else(|| {
-            self.fail(ErrorCode::StackUnderflow, "takes 1 value".into(), None)
-        })
+        self.stack
+            .pop()
+            .ok_or_else(|| self.fail(ErrorCode::StackUnderflow, "takes 1 value".into(), None))
     }
 
     /// The top two values, the deeper first.

@@ -239,6 +239,7 @@ pub fn vocabulary() -> fuxth::Vocabulary {
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
     let mut compiler = Compiler::new(vocabulary());
+    compiler.add(&fuxth::token::source("prelude.fux", fuxth::PRELUDE)?)?;
     compiler.add(&fuxth::token::source("library.fux", LIBRARY)?)?;
     compiler.add(&handles(tokens))?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))

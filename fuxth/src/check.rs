@@ -501,7 +501,9 @@ fn builtin_step(builtin: Builtin, state: &mut State, entry: Entry) -> Result<(),
             [_, _] | [] | [_] | [_, _, _, ..] => return Ok(()),
         };
         let name = builtin.name();
-        Err(Failing::Type(format!("{name} takes two integers, {message}")))
+        Err(Failing::Type(format!(
+            "{name} takes two integers, {message}"
+        )))
     };
     match (builtin, taken.as_slice()) {
         (Builtin::Dup, [a]) => {
@@ -538,8 +540,7 @@ fn builtin_step(builtin: Builtin, state: &mut State, entry: Entry) -> Result<(),
             )));
         }
         (Builtin::Not, _) => state.push(BOOL),
-        (Builtin::Drop, _)
-        | (Builtin::Dup | Builtin::Swap | Builtin::Over | Builtin::Rot, _) => {}
+        (Builtin::Drop, _) | (Builtin::Dup | Builtin::Swap | Builtin::Over | Builtin::Rot, _) => {}
     }
     Ok(())
 }

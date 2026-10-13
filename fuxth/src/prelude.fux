@@ -1,31 +1,32 @@
 # fuxth's prelude: words written in fuxth, for every program an
-# application compiles after it. Each line says what it does to the stack.
+# application compiles after it. Each comment says what the word does to
+# the stack, then what it is for.
 
-# -- true
+# -- true : the boolean true
 define true 0 0 eq end
-# -- false
+# -- false : the boolean false
 define false 0 1 eq end
-# a b -- b
+# a b -- b : the second value dropped
 define nip swap drop end
-# a b -- b a b
+# a b -- b a b : a copy of the top tucked under the second
 define tuck swap over end
-# a b c -- c a b
+# a b c -- c a b : the top value moved under the other two
 define -rot rot rot end
-# a b -- a b a b
+# a b -- a b a b : copies of the top two
 define 2dup over over end
-# a b --
+# a b -- : the top two dropped
 define 2drop drop drop end
-# n -- -n
+# n -- -n : the integer negated
 define negate 0 swap sub end
-# n -- |n|
+# n -- |n| : the integer's size, whatever its sign
 define abs dup 0 lt if negate then end
-# n m -- the smaller
+# n m -- min : the smaller integer
 define min 2dup gt if swap then drop end
-# n m -- the larger
+# n m -- max : the larger integer
 define max 2dup lt if swap then drop end
-# a b -- a≠b
+# a b -- bool : whether they differ
 define ne eq not end
-# n m -- n≤m
+# n m -- bool : whether n is at most m
 define le gt not end
-# n m -- n≥m
+# n m -- bool : whether n is at least m
 define ge lt not end
