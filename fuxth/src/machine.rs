@@ -104,9 +104,11 @@ pub struct Limits {
 }
 
 impl Default for Limits {
+    /// As many values on the stack as one list may hold, so `list … end`
+    /// can gather any list there may be.
     fn default() -> Limits {
         Limits {
-            stack: 100_000,
+            stack: LONGEST,
             calls: 10_000,
         }
     }
@@ -658,9 +660,6 @@ impl<A: AppValue> Machine<A> {
             Builtin::Len => {
                 let seq = self.pop()?;
                 let n = self.seq_len(&seq, "len")?;
-                if matches!(seq, Value::Str(_)) {
-                    self.cost(n);
-                }
                 self.push(Value::Int(i64::try_from(n).unwrap_or(i64::MAX)))
             }
             Builtin::At => {
@@ -668,7 +667,9 @@ impl<A: AppValue> Machine<A> {
                 let seq = self.pop()?;
                 let len = self.seq_len(&seq, "at")?;
                 let i = self.index(&i, len, "at")?;
-                if matches!(seq, Value::Str(_)) {
+                if let Value::Str(s) = &seq
+                    && !s.is_ascii()
+                {
                     self.cost(i);
                 }
                 match element(&seq, i) {
@@ -699,7 +700,7 @@ impl<A: AppValue> Machine<A> {
                 let part = match &seq {
                     Value::Str(s) => {
                         self.build(n)?;
-                        Value::str(s.chars().skip(from).take(n).collect::<String>())
+                        Value::str(s.part(from, to))
                     }
                     Value::List(list) => {
                         let items = list.items.iter().skip(from).take(n).cloned().collect();
@@ -844,8 +845,9 @@ impl<A: AppValue> Machine<A> {
             }
         }
         if strings {
-            self.build(text.chars().count())?;
-            Ok(Value::str(text))
+            let text = crate::value::Text::new(text);
+            self.build(text.chars_len())?;
+            Ok(Value::Str(Rc::new(text)))
         } else {
             self.list(items)
         }
@@ -865,7 +867,7 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             (Value::Str(s), Value::Str(x)) => {
-                let n = s.chars().count().saturating_add(x.chars().count());
+                let n = s.chars_len().saturating_add(x.chars_len());
                 self.build(n)?;
                 let mut text = String::with_capacity(s.len().saturating_add(x.len()));
                 text.push_str(&s);
@@ -889,7 +891,7 @@ impl<A: AppValue> Machine<A> {
                 None => Err(self.nested()),
             },
             (Value::Str(s), Value::Str(x)) => {
-                self.build(s.chars().count().saturating_add(x.chars().count()))?;
+                self.build(s.chars_len().saturating_add(x.chars_len()))?;
                 let mut text = String::with_capacity(s.len().saturating_add(x.len()));
                 for (at, c) in s.chars().enumerate() {
                     if at == i {
@@ -914,7 +916,7 @@ impl<A: AppValue> Machine<A> {
 /// Element `i` of a string (a one-character string) or a list.
 fn element<A: Clone>(seq: &Value<A>, i: usize) -> Option<Value<A>> {
     match seq {
-        Value::Str(s) => s.chars().nth(i).map(|c| Value::str(c.to_string())),
+        Value::Str(s) => s.char_at(i).map(|c| Value::str(c.to_string())),
         Value::List(list) => list.items.get(i).cloned(),
         Value::Int(_) | Value::Bool(_) | Value::App(_) => None,
     }

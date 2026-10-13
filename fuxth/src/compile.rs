@@ -404,8 +404,7 @@ impl<A: Clone> Compiler<A> {
             match text {
                 "str" => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
-                    self.code()
-                        .push(Op::Push(Value::Str(Rc::clone(&next.text))), token);
+                    self.code().push(Op::Push(Value::str(&*next.text)), token);
                 }
                 "define" => {
                     self.top_level(token)?;

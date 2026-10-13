@@ -1266,8 +1266,8 @@ impl fuxth::Host for Host<'_> {
                 let to = match next()? {
                     Value::App(Fux::Tab(t)) => MoveTo::Tab(t),
                     Value::App(Fux::Workspace(w)) => MoveTo::Workspace(WsRef::Id(w)),
-                    Value::Str(s) if &*s == "new-tab" => MoveTo::NewTab,
-                    Value::Str(s) if &*s == "new-workspace" => MoveTo::NewWorkspace,
+                    Value::Str(s) if **s == *"new-tab" => MoveTo::NewTab,
+                    Value::Str(s) if **s == *"new-workspace" => MoveTo::NewWorkspace,
                     other @ (Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)

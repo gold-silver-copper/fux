@@ -39,7 +39,7 @@ line, the deepest first; `print` prints a value at once.
   answer. All of a run's state is data: no threads, no blocking, no Rust
   recursion in running a program, and dropping it stops it. A budget of steps
   lets the host check for Ctrl-C in a loop that never pauses.
-- **Bounded.** 100,000 values on the stack, 10,000 nested calls; a string or
+- **Bounded.** 1,000,000 values on the stack, 10,000 nested calls; a string or
   list built holds at most 1,000,000 elements, and a run builds at most
   16,000,000 in all; long steps cost a step per 64 elements.
 - **Errors** carry a stable code, a message, and the file, line and word.

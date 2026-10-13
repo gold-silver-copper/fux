@@ -30,9 +30,97 @@ pub trait AppValue: Clone + PartialEq {
 pub enum Value<A> {
     Int(i64),
     Bool(bool),
-    Str(Rc<str>),
+    Str(Rc<Text>),
     List(Rc<List<A>>),
     App(A),
+}
+
+/// A string's text, with how many characters it has and whether they are
+/// all ASCII: then a character is found by its byte, at once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Text {
+    text: Box<str>,
+    chars: usize,
+    ascii: bool,
+}
+
+impl Text {
+    pub fn new(text: impl Into<Box<str>>) -> Text {
+        let text = text.into();
+        let ascii = text.is_ascii();
+        let chars = if ascii {
+            text.len()
+        } else {
+            text.chars().count()
+        };
+        Text { text, chars, ascii }
+    }
+
+    /// How many characters it has.
+    pub fn chars_len(&self) -> usize {
+        self.chars
+    }
+
+    /// Whether every character is ASCII.
+    pub fn is_ascii(&self) -> bool {
+        self.ascii
+    }
+
+    /// Character `i`, from 0.
+    pub fn char_at(&self, i: usize) -> Option<char> {
+        if self.ascii {
+            self.text.as_bytes().get(i).map(|b| char::from(*b))
+        } else {
+            self.text.chars().nth(i)
+        }
+    }
+
+    /// The characters from `from` up to before `to`.
+    pub fn part(&self, from: usize, to: usize) -> &str {
+        if self.ascii {
+            self.text.get(from..to).unwrap_or_default()
+        } else {
+            let mut at = self
+                .text
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain([self.text.len()]);
+            let start = at.nth(from).unwrap_or(self.text.len());
+            let end = self
+                .text
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain([self.text.len()])
+                .nth(to)
+                .unwrap_or(self.text.len());
+            self.text.get(start..end).unwrap_or_default()
+        }
+    }
+}
+
+impl std::ops::Deref for Text {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl PartialEq<str> for Text {
+    fn eq(&self, other: &str) -> bool {
+        *self.text == *other
+    }
+}
+
+impl AsRef<str> for Text {
+    fn as_ref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl std::fmt::Display for Text {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
 }
 
 /// A list's values, and how deep it nests (1 for a list of no lists).
@@ -127,8 +215,8 @@ impl<A: AppValue> Value<A> {
 }
 
 impl<A> Value<A> {
-    pub fn str(text: impl Into<Rc<str>>) -> Value<A> {
-        Value::Str(text.into())
+    pub fn str(text: impl Into<Box<str>>) -> Value<A> {
+        Value::Str(Rc::new(Text::new(text)))
     }
 
     /// How deep it nests: 0 for anything but a list.
@@ -142,7 +230,7 @@ impl<A> Value<A> {
     /// How many elements a string or list has; 0 for anything else.
     pub fn size(&self) -> usize {
         match self {
-            Value::Str(s) => s.chars().count(),
+            Value::Str(s) => s.chars_len(),
             Value::List(list) => list.items.len(),
             Value::Int(_) | Value::Bool(_) | Value::App(_) => 0,
         }
