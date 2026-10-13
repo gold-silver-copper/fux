@@ -9,12 +9,16 @@ The drivers never reach the user's own sessions: every command runs in the
 benchmark's environment (`env.sh`: no inherited socket, a runtime directory and
 sockets of its own), which `run.py` checks before anything starts.
 """
+import fcntl
 import json
 import os
+import pty
 import re
 import select
 import shlex
+import struct
 import subprocess
+import termios
 import time
 
 POLL = 0.1
@@ -122,6 +126,7 @@ class Driver:
         self.sleep_s = 0.0
         self.polls = 0
         self.log = []
+        self.commands = 0
 
     # ------------------------------------------------------------ plumbing
 
@@ -270,6 +275,66 @@ class Driver:
     def done(self, pane, timeout=10):
         """The next shell command's end and status (OSC 133)."""
         raise Unsupported("command completion")
+
+    def run_command(self, pane, cmd, timeout=15):
+        """Runs a command in a shell; its output and status. With no way to
+        know a command's end, markers around it, numbered so that an earlier
+        command's do not count, and split by quotes so that the command's
+        echo does not read as them."""
+        self.commands += 1
+        n = self.commands
+        self.text(pane, f"echo __BE''GIN{n}; {cmd}; echo __DO''NE{n} $?")
+        self.keys(pane, "Enter")
+        done = re.compile(rf"^__DONE{n} (\d+)$", re.M)
+        self.poll(lambda: done.search(self.screen(pane, history=True)), timeout)
+        rows = [l.rstrip() for l in self.screen(pane, history=True).split("\n")]
+        end = max(i for i, l in enumerate(rows) if done.match(l))
+        begin = max(i for i, l in enumerate(rows[:end]) if l == f"__BEGIN{n}")
+        return "\n".join(rows[begin + 1:end]), rows[end].split()[1]
+
+    def find_title(self, title):
+        """The pane whose program set this title."""
+        raise Unsupported("find a pane by its title")
+
+    def attach_argv(self):
+        """How a person attaches a terminal client to the server."""
+        raise Unsupported("attach a client")
+
+    def reattach(self, timeout=10):
+        """A terminal client attaches, as a person's would, then detaches
+        with the prefix then d; the programs run on without it."""
+        argv = self.attach_argv()
+        self.calls += 1
+        self.log.append(" ".join(shlex.quote(a) for a in argv) + "  # attached on a pty, then C-b d")
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        client = subprocess.Popen(argv, env={**self.env, "TERM": "xterm-256color"}, cwd=self.work,
+                                  stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        os.close(slave)
+        end = time.time() + timeout
+        try:
+            # Attached once it has drawn with its terminal raw: the prefix
+            # then reaches it, not the terminal's line editing.
+            drawn = False
+            while not (drawn and not termios.tcgetattr(master)[3] & termios.ICANON):
+                if client.poll() is not None or time.time() > end:
+                    raise Timeout("the client did not attach")
+                if select.select([master], [], [], POLL)[0]:
+                    drawn = bool(os.read(master, 65536)) or drawn
+            os.write(master, b"\x02d")
+            while client.poll() is None and time.time() < end:
+                if select.select([master], [], [], POLL)[0]:
+                    try:
+                        os.read(master, 65536)
+                    except OSError:
+                        break
+            if client.wait(max(0.1, end - time.time())) != 0:
+                raise RuntimeError(f"the client exited {client.returncode}")
+        finally:
+            if client.poll() is None:
+                client.kill()
+                client.wait()
+            os.close(master)
 
 
 # ---------------------------------------------------------------------- fux
@@ -458,8 +523,11 @@ class Fux(Driver):
         return self.checked(out).strip()
 
     def run_command(self, pane, cmd, timeout=15):
-        out = self.fux(*self.pane(pane), "keys", "str", cmd, "text", "str", "Enter", "key",
-                       str(timeout), "timeout", "send-keys", check=False, timeout=timeout + 10)
+        out = self.fux(*self.pane(pane), "str", cmd, "line", check=False, timeout=timeout + 10)
+        if out.returncode == 124:
+            # Longer than an action settles in: wait on.
+            out = self.fux(*self.pane(pane), "opts", str(timeout), "timeout", "wait",
+                           check=False, timeout=timeout + 10)
         # `%3 reading · done 0`: the command's status.
         first = self.checked(out).split("\n", 1)[0]
         status = first.split("done ", 1)[1].split()[0] if "done " in first else None
@@ -515,6 +583,14 @@ class Fux(Driver):
 
     def find(self, name):
         return self.fux("str", name, "pane").stdout.strip()
+
+    def find_title(self, title):
+        # Every pane `run` starts is in workspace agent.
+        tabs = json.loads(self.fux("str", "agent", "workspace", "str", "tabs", "get").stdout)
+        return next(p["id"] for t in tabs for p in t["panes"] if p["title"] == title)
+
+    def attach_argv(self):
+        return [self.bin]
 
 
 #: Keys by name, as fux (and tmux) call them: the rest is text.
@@ -629,6 +705,13 @@ class Tmux(Driver):
 
     def cursor_hidden(self, pane):
         return self.fmt(pane, "#{cursor_flag}") == "0"
+
+    def find_title(self, title):
+        rows = self.tmux("list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}").stdout.splitlines()
+        return next(r.split("\t")[0] for r in rows if r.split("\t", 1)[1:] == [title])
+
+    def attach_argv(self):
+        return ["tmux", "-L", self.sock, "attach"]
 
 
 # -------------------------------------------------------------------- zellij

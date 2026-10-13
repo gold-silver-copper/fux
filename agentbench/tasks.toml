@@ -5,7 +5,8 @@
 #   check        how the result is judged: a file the program wrote, or the
 #                answer written to answer.txt
 # `{fx}` in a goal or args is the fixtures program; programs run in the
-# task's work directory, where their files go.
+# task's work directory, where their files go. A held task (`held = "<slug>"`,
+# at the end) has no recipe or check: held/<slug>/ brings them.
 
 # ------------------------------------------------ start and supervise (12)
 
@@ -830,3 +831,33 @@ goal = "Run `sh -c 'echo bye; exit 9'`. Some time after it exited, write its exi
 recipe = "exit_status_argv"
 args = { argv = ["sh", "-c", "echo bye; exit 9"] }
 check = { answer = "9" }
+
+# ------------------------------------------------------------- held tasks
+# Each brings its own programs and checker, in held/<slug>/: fixtures/ (copied
+# beside the work directory; `{fixtures}` in the goal), setup/ (files the work
+# directory starts with), check.py (`check(work) -> (ok, why)`) and solve.py
+# (`solve(d, work, fixtures)`, the scripted recipe). `{work}` is the work directory.
+
+[[task]]
+id = "shell-status-across-commands"
+cat = "shell"
+goal = "Run each program exactly once (each mode or worker ID is a separate program). Use one persistent interactive Bash shell for this entire task. In it, run `python3 -I {fixtures}/batch_cli.py {work} begin`. After it exits successfully, set and export BATCH_LABEL to the exact string `morning shift`, change the shell's working directory to `{work}/queue stage`, and run `python3 -I {fixtures}/batch_cli.py {work} calculate`. Wait for that command to finish, preserving its actual exit status before running anything else. In the same shell and directory, run `python3 -I {fixtures}/batch_cli.py {work} finalize STATUS`, passing the preserved status. Wait for successful finalization. Write `{work}/answer.txt` with exactly `sum=VALUE`, `exit=STATUS`, and `receipt=RECEIPT`, each on its own line, from the calculation and finalization results. Do not treat text resembling a shell prompt as command completion. The answer has exactly three lines, each ending with a newline; no marker lines are included. There are no input deadlines; wait for each prompt before responding."
+held = "shell-status-across-commands"
+
+[[task]]
+id = "secure-console-paste"
+cat = "input"
+goal = "Run each program exactly once. Run python3 -I {fixtures}/secure_console.py {work} in a terminal. Select staging with the arrow keys and press Enter. At the shortcut prompt press Alt-v, then F2 when requested. Enter the displayed password at the hidden password prompt; you may clear or correct input before submitting. Paste the exact contents of {work}/release-note.txt, preserving its blank line, quotes and final newline. CR or LF line endings and optional bracketed-paste markers are accepted. When the console asks to submit, press Ctrl-D. Wait for acceptance and exit. Write exactly two lines to {work}/answer.txt: note=accepted, then bytes=<observed accepted byte count>. Each line ends with a newline; no output marker lines are included. Prompts wait for input without a deadline."
+held = "secure-console-paste"
+
+[[task]]
+id = "reattach-ledger"
+cat = "sessions"
+goal = "Run each program exactly once; a restart invalidates the task. Run python3 -I {fixtures}/ledger_watch.py {work} and locate it using its printed title drift-ledger. When OPENING CHECKPOINT appears, enter mark <opening token>. Leave the program running while you disconnect your terminal client; reconnect and find the same running process again. It must not be restarted. After SETTLED CHECKPOINT appears, enter mark <settled token>, then wait for MARKS VERIFIED. Leave this same process running at the end. Write {work}/answer.txt with exactly two lines: opening=<opening token> and settled=<settled token>, each followed by a newline. Do not inspect or change {work}/.fx; it is reserved for fixture records. Include no prompt or completion marker lines in the answer."
+held = "reattach-ledger"
+
+[[task]]
+id = "sixteen-shards-merge"
+cat = "many"
+goal = "Run each program exactly once; each specified mode, subcommand, or shard index counts as a separate program. Every program must have terminal stdin and stdout. Wait for each prompt before responding; input prompts have no deadline. Start all sixteen shard programs python3 -I {fixtures}/shard.py {work} <index>, with each integer index 0 through 15 exactly once, plus python3 -I {fixtures}/merge.py {work}. Keep all seventeen running concurrently before acknowledging any completed shard. For each shard, wait for its READY challenge, send run <that challenge>, and wait for its real RESULT line (ignore DONE dry-run). Send accept <its real result> and wait for SHARD ACCEPTED and exit. Feed each accepted result to the merge program in index order 00 through 15, as shard-<two-digit index> <result>, waiting for the corresponding collect prompt. After all sixteen, wait for the merge's verification key and send confirm <that key>. Let every program exit. Write {work}/answer.txt as exactly two newline-terminated lines: count=<observed merged shard count> and merge=<the final merge receipt>. Include only the specified answer lines, in the listed order, each ending with a newline; do not include terminal marker lines."
+held = "sixteen-shards-merge"

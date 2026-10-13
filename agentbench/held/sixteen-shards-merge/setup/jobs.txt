@@ -1,0 +1,16 @@
+partition-00|rows=97|salt=cedar-31
+partition-01|rows=110|salt=cedar-32
+partition-02|rows=123|salt=cedar-35
+partition-03|rows=136|salt=cedar-40
+partition-04|rows=149|salt=cedar-47
+partition-05|rows=162|salt=cedar-56
+partition-06|rows=175|salt=cedar-67
+partition-07|rows=188|salt=cedar-80
+partition-08|rows=201|salt=cedar-95
+partition-09|rows=214|salt=cedar-112
+partition-10|rows=227|salt=cedar-131
+partition-11|rows=240|salt=cedar-152
+partition-12|rows=253|salt=cedar-175
+partition-13|rows=266|salt=cedar-200
+partition-14|rows=279|salt=cedar-227
+partition-15|rows=292|salt=cedar-256

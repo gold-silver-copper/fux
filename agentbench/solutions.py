@@ -116,26 +116,12 @@ def _shell(d, a):
 
 
 def _sh_result(d, a):
-    """Runs the task's command with a marker after it, waits for the marker,
-    and gives the output between."""
+    """Runs the task's command in a shell: the pane, its output and status."""
     p = d.shell()
     d.wait_idle(p, 300)
-    if hasattr(d, "run_command"):
-        if a.get("before"):
-            d.run_command(p, a["before"])
-        return (p, *d.run_command(p, a["cmd"]))
     if a.get("before"):
-        d.text(p, a["before"])
-        d.keys(p, "Enter")
-    # Markers around the output, split by quotes so that the command's echo
-    # does not read as them.
-    d.text(p, f"echo __BE''GIN; {a['cmd']}; echo __DO''NE $?")
-    d.keys(p, "Enter")
-    d.poll(lambda: re.search(r"^__DONE \d+$", d.screen(p, history=True), re.M), 15)
-    rows = [l.rstrip() for l in d.screen(p, history=True).split("\n")]
-    end = max(i for i, l in enumerate(rows) if re.match(r"^__DONE \d+$", l))
-    begin = max(i for i, l in enumerate(rows[:end]) if l == "__BEGIN")
-    return p, "\n".join(rows[begin + 1:end]), rows[end].split()[1]
+        d.run_command(p, a["before"])
+    return (p, *d.run_command(p, a["cmd"]))
 
 
 def sh_status(d, a, fx):
