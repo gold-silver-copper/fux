@@ -1455,6 +1455,42 @@ fn a_menu_redrawn_above_is_answered() -> Outcome {
     Ok(())
 }
 
+/// A wait of its own after a separate input knows that input's echo: it
+/// answers the program's line, not the typed command that holds the text.
+#[test]
+fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
+    let start = [
+        "str",
+        "sh",
+        "pane",
+        "keys",
+        "str",
+        "sleep 0.5; echo READY",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ];
+    server.ok(&start)?;
+    let ready = server.ok(&[
+        "str",
+        "sh",
+        "pane",
+        "opts",
+        "str",
+        "READY",
+        "wait-text",
+        "wait",
+    ])?;
+    assert_eq!(ready, "READY\n");
+    Ok(())
+}
+
 /// A signal that ends the program answers how it ended, even after the
 /// pane has been quiet a while.
 #[test]

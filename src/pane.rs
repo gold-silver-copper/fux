@@ -461,13 +461,18 @@ impl Alerts {
 }
 
 /// How a pane stood when input last went in.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct InputFrom {
     /// The row the cursor was on: what came since is said from there.
     pub cursor: Option<fux_vt::RowId>,
     pub mark: fux_vt::Mark,
     /// How many shell commands had ended.
     pub finished: u64,
+    /// What was typed, line by line, and how many lines it ended; the
+    /// cursor's row as it read before: a wait after it knows its echo.
+    pub echo: Vec<String>,
+    pub lines: u32,
+    pub before: String,
 }
 
 pub struct Pane {

@@ -63,6 +63,17 @@ struct Since {
     revision: u64,
 }
 
+/// What was typed before a wait, to tell its echo.
+struct Typed {
+    /// The row the cursor was on as the keys went in.
+    cursor: Option<fux_vt::RowId>,
+    /// How many lines the keys ended (Enter).
+    lines: u32,
+    echo: Vec<String>,
+    /// That row's text before the keys: the prompt.
+    before: String,
+}
+
 /// One pane a wait watches, and what it found as it began.
 struct Watch {
     pane: PaneId,
@@ -102,6 +113,8 @@ struct Watch {
     /// Since when its program has been seen reading its terminal, probe
     /// after probe: a text it stops short of is said only once that holds.
     reading_since: Option<Instant>,
+    /// What was typed, to tell its echo from what the program wrote.
+    typed: Option<Typed>,
     /// Since when, and at which revision, its pane has looked settled.
     settled_since: Option<(Instant, u64)>,
 }
@@ -142,7 +155,7 @@ impl Waiting {
                     .window()
                     .row(screen.cursor_position().0)
                     .map(|row| row.id());
-                let (anchor, mark, all_new, cursor, finished) = match (wait.after, pane.input_from)
+                let (anchor, mark, all_new, cursor, finished) = match (wait.after, &pane.input_from)
                 {
                     (true, _) => (
                         screen.window().row(0).map(|row| row.id()),
@@ -159,8 +172,28 @@ impl Waiting {
                         (first, screen.mark(), true, first, 0)
                     }
                 };
+                // What was typed, to tell its echo: these keys', or for a
+                // wait of its own, the last input's.
+                let typed = match (wait.after, &pane.input_from) {
+                    (true, _) => Some(Typed {
+                        cursor,
+                        lines: wait.lines,
+                        echo: wait.echo.clone(),
+                        before: cursor
+                            .and_then(|c| was.get(&c).cloned())
+                            .unwrap_or_default(),
+                    }),
+                    (false, Some(from)) => Some(Typed {
+                        cursor: from.cursor,
+                        lines: from.lines,
+                        echo: from.echo.clone(),
+                        before: from.before.clone(),
+                    }),
+                    (false, None) => None,
+                };
                 Watch {
                     pane: pane.id,
+                    typed,
                     anchor,
                     mark,
                     was,
@@ -788,7 +821,7 @@ impl Watch {
             }
         }
         if !texts.is_empty() {
-            self.read_history(screen, texts, wait);
+            self.read_history(screen, texts);
         }
         // While a program holds the full screen, the main screen's lines
         // from where the wait began: what was printed just before it.
@@ -807,14 +840,14 @@ impl Watch {
                     let i = texts.iter().position(|t| t == text).unwrap_or(0);
                     let scrolled = self.in_history.get(i).cloned().flatten();
                     let mut skipped = false;
-                    let (was, touched, cursor) = (&self.was, &self.touched, self.cursor);
+                    let (was, touched, typed) = (&self.was, &self.touched, self.typed.as_ref());
                     // The first line to hold it, behind the screen or on it:
                     // where it came, not a later line that holds it too.
                     let line = (behind.iter())
                         .chain(shown.iter())
                         .filter(|l| is_new(l, was, touched) && found_in(&l.text, text) > 0)
                         .find(|l| {
-                            let echo = echoed(l, wait, cursor, was);
+                            let echo = echoed(l, typed);
                             skipped |= echo;
                             !echo
                         })
@@ -919,7 +952,7 @@ impl Watch {
     /// Reads the history rows written since the wait began and not read
     /// yet, from the anchor, or the last row read, to the screen: for each
     /// text, the first line holding it, if none was found before.
-    fn read_history(&mut self, screen: &fux_vt::Screen, texts: &[String], wait: &Wait) {
+    fn read_history(&mut self, screen: &fux_vt::Screen, texts: &[String]) {
         let history = screen.history_len();
         let from = match (self.read, self.anchor) {
             (Some(read), _) => screen.row_index(read).map(|i| i.saturating_add(1)),
@@ -947,7 +980,7 @@ impl Watch {
                 *found = (read.iter())
                     .filter(|l| is_new(l, &self.was, &self.touched) && found_in(&l.text, text) > 0)
                     .find(|l| {
-                        let echo = echoed(l, wait, self.cursor, &self.was);
+                        let echo = echoed(l, self.typed.as_ref());
                         skipped |= echo;
                         !echo
                     })
@@ -1022,27 +1055,24 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::M
 /// was on as the keys went in, and only when they ended a line (Enter): a
 /// shell or prompt shows the command there, and its output comes below. A
 /// field edited in place (no Enter) shows its value, which counts.
-fn echoed(
-    line: &Line,
-    wait: &Wait,
-    cursor: Option<fux_vt::RowId>,
-    was: &std::collections::HashMap<fux_vt::RowId, String>,
-) -> bool {
+fn echoed(line: &Line, typed: Option<&Typed>) -> bool {
+    let Some(typed) = typed else {
+        return false;
+    };
+    if typed.lines == 0 || typed.cursor != Some(line.first) {
+        return false;
+    }
     // While it still starts as it read before the keys (the prompt, the
     // keys' echo after it): output that cleared the row and wrote over it
     // (`clear; echo READY`) is not the echo.
-    let before = was.get(&line.first).map_or("", |t| t.trim_end());
-    if !(wait.after && wait.lines > 0 && cursor == Some(line.first)) {
-        return false;
-    }
+    let before = typed.before.trim_end();
     let Some(rest) = line.text.strip_prefix(before) else {
         return false;
     };
     // And then shows what was typed, its first word: a program that
     // echoes nothing (a password, a raw-mode reader), or writes over the
     // echo, puts its own output on that row.
-    let mut typed = wait.echo.iter().filter_map(|t| t.split_whitespace().next());
-    let first = typed.next();
+    let first = typed.echo.iter().find_map(|t| t.split_whitespace().next());
     match first {
         // Its echo, or the echo still being drawn (`2` of `2**10`).
         Some(word) => rest

@@ -1490,10 +1490,18 @@ impl Session {
         let cursor = (screen.window())
             .row(screen.cursor_position().0)
             .map(|row| row.id());
+        let (echo, lines) = crate::command::typed_lines(inputs);
+        let before = (screen.window())
+            .row(screen.cursor_position().0)
+            .map(crate::capture::row_text)
+            .unwrap_or_default();
         p.input_from = Some(crate::pane::InputFrom {
             cursor,
             mark: screen.mark(),
             finished: screen.commands().finished,
+            echo,
+            lines,
+            before,
         });
         let (mode, bracketed) = (
             p.screen().key_mode(),
