@@ -909,3 +909,51 @@ id = "maintenance-outcomes"
 cat = "wait"
 goal = "Run each program exactly once. Start both python3 -I {fixtures}/maintenance.py {work} index and python3 -I {fixtures}/maintenance.py {work} cache in separate terminals before answering either. For each program, wait for its first definitive READY or FATAL outcome; lines marked diagnostic or tentative are not outcomes. Reply to READY with accept <its token>, or to FATAL with ack <its code>, as instructed on screen. Wait for both programs to exit, including any delayed final footer. Write {work}/answer.txt as exactly two lines in this order: index <final receipt> <actual exit status>, then cache <final receipt> <actual exit status>, each ending with a newline. Include only these answer lines, with no extra marker lines. Input prompts wait indefinitely; there is no response deadline."
 held = "maintenance-outcomes"
+
+[[task]]
+id = "archived-ledger-footer"
+cat = "read"
+goal = "Run `python3 -I {fixtures}/ledger.py {work}` in a terminal 72 columns wide and at least 24 rows tall. It prints a long coloured archive whose logical rows can wrap. From the terminal output, recover the complete `AUDIT ANCHOR` at archive row 0047. At the live `Archive request>` prompt, send `show tail`. Wait for the changing footer to reach `FINAL`, then enter `accept VALUE`, using its final value, at `Footer receipt>`. After exit, write exactly three lines to `{work}/answer.txt`: the anchor value (everything after `AUDIT ANCHOR: `, rejoining wraps), the final footer value alone, and the last three `TAIL` values joined with commas in displayed order. Preserve punctuation and spaces; omit colour escapes and labels; end with a newline. Every answer line must end with a newline; include no marker lines. Input prompts wait indefinitely. Earlier failed launches are allowed; the completed runs must satisfy the protocol."
+held = "archived-ledger-footer"
+
+[[task]]
+id = "scoped-assistant-approvals"
+cat = "agents"
+goal = "Run python3 -I {fixtures}/assistant.py {work}. Supervise its prompts to regenerate index.json while preserving archive.txt byte for byte. Approve only its initial read-only scan. When it proposes deleting the archive, revise the plan using revise: preserve archive; regenerate index. Approve the revised plan only for write:index.json, using its live plan token. If it stalls waiting for metadata, read {work}/metadata.json and provide the project and revision in the format it requests. Review its displayed diff and confirm using the live apply token. After COMPLETE, close the assistant with exit and wait for successful termination. Leave the assistant-created {work}/index.json and write {work}/answer.txt as index=<its final digest>, followed by a newline. Do not grant blanket permission or approve archive deletion. The answer file contains exactly one line, ending with a newline; include only the specified value lines, with no terminal marker lines."
+held = "scoped-assistant-approvals"
+
+[[task]]
+id = "migration-manifest-paste"
+cat = "input"
+goal = "Run `python3 -I {fixtures}/migration.py {work}`. At its hidden passphrase prompt, enter the exact first line of `{work}/credentials.txt`. In the operation selector choose Apply using arrow keys and Enter. At `PASTE MANIFEST`, paste the contents of `{work}/payload.txt` (with or without bracketed-paste markers), preserving its blank line, tabs, Unicode, and final newline. When the command editor appears with `apply --unsafe` prefilled, edit it (for example, clear it with Ctrl-U) and submit `apply --safe`. At the final `EOF TO COMMIT` prompt, send Ctrl-D on the empty input. Let the migration exit successfully; its program-generated `.fx/migration.json` receipt is the requested final artifact (exactly one newline-terminated JSON line, without terminal marker lines), so no answer file is needed. Do not type before a prompt. Run each program exactly once (each distinct mode, role, or index counts as a separate program); an early or rejected response invalidates the run. Every program must run with both stdin and stdout attached to a terminal."
+held = "migration-manifest-paste"
+
+[[task]]
+id = "eight-workers-recovery"
+cat = "scripting"
+goal = "Launch `python3 -I {fixtures}/worker.py {work} INDEX` once for each INDEX 0 through 7, in separate terminals; all eight must be running before you authorize any one of them. Supervise every worker: if it reports RETRY REQUIRED, issue its displayed retry command; otherwise proceed directly to its AUTHORIZE prompt. At each AUTHORIZE prompt send that worker's displayed commit command. Ignore planning lines containing `DONE?`; wait for each actual `DONE index=... result=...` line and successful exit. Write `{work}/answer.txt` with exactly eight newline-terminated lines, sorted by index 0 through 7, each formatted `<index> <result>`. Use a loop or equivalent conditional automation across the workers. Include no prompt, receipt-prefix, or other marker lines beyond the specified answer lines."
+held = "eight-workers-recovery"
+
+[[task]]
+id = "release-board-review"
+cat = "tui"
+goal = "Run python3 -I {fixtures}/release_board.py {work}. In the full-screen board select beta with the Down arrow and Enter. In its details pager use PageDown to read the authorization code on page 2, then q to return to the release form. Replace staging with production using Ctrl-U, Tab to the audit checkbox and enable it with Space, then Tab and Enter to open the review modal. Its initial selection is Cancel: select Confirm with Right, then Enter. Enter the authorization code from page 2 at the final prompt. Wait for the board to leave the full-screen display and print its release receipt. Write that receipt followed by a newline to {work}/answer.txt. The beta release must be in production with audit enabled and confirmed. Input prompts wait without deadlines. The answer has exactly one line, ending with a newline: <observed release receipt>. Omit the RELEASED prefix and all other output marker lines."
+held = "release-board-review"
+
+[[task]]
+id = "wrapped-archive-balance"
+cat = "read"
+goal = "Run each program exactly once; a restart invalidates the task. Run python3 -I {fixtures}/archive_reader.py {work} in a terminal exactly 64 columns wide and 18 rows high. Read archive row 0147 from the scrollback after the long listing; recover its archive reference and checksum even though that line wraps. Wait for BALANCE FINAL, ignoring older overwritten balances. At the export prompt send export <archive reference> <checksum> <final balance>. Write {work}/answer.txt with exactly six lines: archive=<reference>, checksum=<checksum>, balance=<final balance>, then the last three footer lines in their displayed order, each on its own newline-terminated line. Let the reader exit. Do not inspect or change {work}/.fx; it is reserved for fixture records. Include the three footer lines, but no prompt or completion marker lines."
+held = "wrapped-archive-balance"
+
+[[task]]
+id = "archive-watch-return"
+cat = "sessions"
+goal = "Start python3 -I {fixtures}/archive.py {work} watch as a persistent terminal job named archive-watch. At WATCH READY, send \"park TICKET\" with the displayed ticket. Leave it running and stop observing that terminal. In another terminal run python3 -I {fixtures}/archive.py {work} maintain and wait for its completion. Locate archive-watch again by its name or the program it runs; the original process must still be alive. At RESUME AVAILABLE send \"resume CODE\" using the displayed code. After RESUMED and STOP PROMPT, send \"stop TICKET\" using the original ticket and wait for exit. Write {work}/answer.txt as ticket=TICKET, maintenance=RECEIPT, resume=CODE on exactly three newline-terminated lines. Use terminal output and interaction; do not read fixture source code or .fx records. Include only the specified answer lines; do not include terminal marker or prompt lines."
+held = "archive-watch-return"
+
+[[task]]
+id = "interrupt-loader-drain-relay"
+cat = "signals"
+goal = "Run python3 -I {fixtures}/service.py {work} loader in an interactive terminal. Wait for CANCELLATION WINDOW OPEN, then send Ctrl-C once and capture its actual shell exit status. Next run python3 -I {fixtures}/service.py {work} relay. Wait for RELAY READY, then send Ctrl-C once. It ignores the interrupt; keep it running and wait for its DRAIN prompt. Enter drain followed by the displayed token, then wait for the drain to finish and capture the relay’s actual shell exit status. Write {work}/answer.txt with exactly four lines in this order: loader=<observed loader exit status>, relay=<observed relay exit status>, ignored=<observed ignored interrupt count>, and drained=<observed drained record count>. Every answer line must end with a newline; include no extra lines. Do not include terminal prompt, completion, or shell status marker lines. Input prompts and coordination waits have no response deadline."
+held = "interrupt-loader-drain-relay"
