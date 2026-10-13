@@ -378,6 +378,7 @@ def d_styled(d, p):
 def menu(d, a, fx):
     p = d.spawn(argv(fx, a["prog"]))
     d.wait_text(p, "Choose")
+    d.wait_idle(p)  # the items, drawn after the header
     for _ in range(12):
         sel = _selected(d, p)
         if sel == a["target"]:

@@ -40,6 +40,10 @@ const MORE: std::time::Duration = std::time::Duration::from_secs(5);
 /// How often a wait that asks what a pane's program is blocked in looks
 /// again: that changes with nothing on the screen to wake the server.
 const PROBE: std::time::Duration = std::time::Duration::from_millis(30);
+/// How long a pane must look settled, the screen as it was, to be taken as
+/// settled: output its program wrote just before is in fux's hands by then
+/// (the kernel hands it on within a millisecond or two).
+const HOLD: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// A wait under way.
 pub struct Waiting {
@@ -190,10 +194,19 @@ impl Waiting {
     /// while it asks what a pane's program is blocked in (that changes with
     /// nothing on the screen to wake the server), else when its time is up.
     pub fn due(&self) -> Instant {
+        let now = Instant::now();
         let probe = (self.wait.until.iter())
             .any(|u| matches!(u, Until::Settled | Until::Text(_)))
-            .then(|| crate::after(Instant::now(), PROBE));
-        probe.map_or(self.deadline, |at| at.min(self.deadline))
+            .then(|| crate::after(now, PROBE));
+        // A pane seen settled is looked at again once its hold is up.
+        let held = (self.watches.iter())
+            .filter_map(|w| w.settled_since)
+            .map(|(since, _)| crate::after(since, HOLD).max(now))
+            .min();
+        [probe, held]
+            .into_iter()
+            .flatten()
+            .fold(self.deadline, Instant::min)
     }
 
     /// Its answer, if it has one at `now`: what it waited for came in one of
@@ -861,7 +874,7 @@ impl Watch {
                 Until::Exit => pane.process.exit_status().map(Found::Exit),
                 Until::Settled => {
                     let state = crate::ready::state(pane, now);
-                    // Settled on two looks a probe apart, the screen as it
+                    // Settled on two looks a hold apart, the screen as it
                     // was: output still in the terminal's buffers, which
                     // the kernel has yet to hand fux, is in by then.
                     // A bare `wait` on a pane that may go on alone
@@ -883,7 +896,7 @@ impl Watch {
                             .filter(|since| since.1 == pane.revision)
                             .unwrap_or((now, pane.revision));
                         self.settled_since = Some(since);
-                        (now >= crate::after(since.0, PROBE)).then_some(Found::Settled(state))
+                        (now >= crate::after(since.0, HOLD)).then_some(Found::Settled(state))
                     }
                 }
                 Until::Bell => (pane.alerts.count() > self.from.alerts).then(|| {

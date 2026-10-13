@@ -102,17 +102,19 @@ pub fn state(pane: &Pane, now: Instant) -> State {
 /// heard).
 fn activity(child: &crate::process::Child, tty: Option<&Path>) -> Option<Activity> {
     let group = fuxix::terminal::foreground_group(&child.master)?;
-    Some(match tty.map(|tty| fuxix::process::activity(group, tty)) {
-        // A read with a time limit is a poll: the program goes on alone
-        // when it runs out.
-        Some(Activity::Reading)
-            if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
-        {
-            Activity::Polling
-        }
-        Some(activity) => activity,
-        None => Activity::Unknown,
-    })
+    Some(
+        match tty.map(|tty| fuxix::process::activity(group, tty, child.leader.pid())) {
+            // A read with a time limit is a poll: the program goes on alone
+            // when it runs out.
+            Some(Activity::Reading)
+                if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
+            {
+                Activity::Polling
+            }
+            Some(activity) => activity,
+            None => Activity::Unknown,
+        },
+    )
 }
 
 /// Whether the program has read every key and waits for more, with no time

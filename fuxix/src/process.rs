@@ -738,7 +738,7 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
 /// do: busy if one is; else reading if one waits for the terminal, polling
 /// if one polls it, waiting if they wait on something else.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn activity(group: Pid, tty: &std::path::Path) -> Activity {
+pub fn activity(group: Pid, tty: &std::path::Path, root: Pid) -> Activity {
     let in_group = |pid: &Pid| {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
@@ -746,11 +746,17 @@ pub fn activity(group: Pid, tty: &std::path::Path) -> Activity {
                 == Some(group.as_raw())
         })
     };
-    let all = processes();
-    if all.is_empty() {
-        return Activity::Unknown;
+    // The group's processes among `root`'s own (a few files read), else
+    // among all (one that left its parent: a few hundred).
+    let mut members: Vec<Pid> = descendants(root).into_iter().filter(in_group).collect();
+    if members.is_empty() {
+        let all = processes();
+        if all.is_empty() {
+            return Activity::Unknown;
+        }
+        members = all.into_iter().filter(in_group).collect();
     }
-    let seen: Vec<Activity> = (all.into_iter().filter(in_group))
+    let seen: Vec<Activity> = (members.into_iter())
         .filter_map(|p| process_activity(p, tty))
         .collect();
     // None in the group (it is changing hands: a program starting or
@@ -769,8 +775,35 @@ pub fn activity(group: Pid, tty: &std::path::Path) -> Activity {
     .unwrap_or(Activity::Unknown)
 }
 
+/// `root` and the processes under it, by each thread's children.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn descendants(root: Pid) -> Vec<Pid> {
+    let mut found = vec![root];
+    let mut next = 0;
+    while let Some(pid) = found.get(next).copied() {
+        next = next.saturating_add(1);
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            continue;
+        };
+        for task in tasks.filter_map(|t| t.ok()) {
+            let children =
+                std::fs::read_to_string(task.path().join("children")).unwrap_or_default();
+            found.extend(
+                (children.split_whitespace())
+                    .filter_map(|c| c.parse::<i32>().ok())
+                    .filter_map(Pid::from_raw),
+            );
+        }
+        // A runaway tree is cut short: the full scan is the fallback.
+        if found.len() > 4096 {
+            break;
+        }
+    }
+    found
+}
+
 /// macOS keeps what a thread is blocked in to itself: not known.
 #[cfg(target_os = "macos")]
-pub fn activity(_group: Pid, _tty: &std::path::Path) -> Activity {
+pub fn activity(_group: Pid, _tty: &std::path::Path, _root: Pid) -> Activity {
     Activity::Unknown
 }
