@@ -417,6 +417,11 @@ impl Wait {
             (Told::Found(Found::Settled(state) | Found::Stopped(state)), _) => {
                 (Some(*state), status)
             }
+            // An exit waited for is a state too: said as one, with what
+            // came before it.
+            (Told::Found(Found::Exit(ended)), _) => {
+                (Some(crate::ready::State::Exited(*ended)), status)
+            }
             (Told::TimedOut(_), Some(pane)) if at_once => {
                 (Some(crate::ready::state(pane, Instant::now())), 0)
             }
@@ -449,6 +454,9 @@ impl Wait {
             // A text that cannot come: the screen, to act on what is there.
             let body = match told {
                 Told::Found(Found::Stopped(_)) => text(pane, self.marks),
+                Told::Found(Found::Exit(_)) => {
+                    since_text(pane, since.and_then(|s| s.cursor), self.marks)
+                }
                 Told::Found(_)
                 | Told::Exited(..)
                 | Told::Replaced

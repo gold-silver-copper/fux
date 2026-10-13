@@ -76,15 +76,16 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     let Some(group) = fuxix::terminal::foreground_group(&child.master) else {
         return State::Busy;
     };
-    let activity = child.master.slave_path().map_or(Activity::Unknown, |tty| {
-        fuxix::process::activity(group, &tty)
+    let tty = child.master.slave_path();
+    let activity = tty.as_ref().map_or(Activity::Unknown, |tty| {
+        fuxix::process::activity(group, tty)
     });
     // A shell command still runs a program that is not full-screen and
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();
     let command = screen.commands().running && !screen.mode(fux_vt::Mode::AlternateScreen);
     match activity {
-        Activity::Reading if quiet >= SETTLE => State::Reading,
+        Activity::Reading if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Reading,
         Activity::Polling | Activity::Waiting if command => State::Busy,
         // Polling for keys with a time limit: it may draw again on its own
         // (a pause, a clock), so never surely waiting for the agent.
@@ -96,6 +97,23 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         | Activity::Unknown
         | Activity::Busy => State::Busy,
     }
+}
+
+/// Whether keys wait in the terminal for its program to read: blocked in a
+/// read still, it has yet to be woken (a busy machine) to read them. The
+/// terminal is opened only to ask, so that its program's end still closes
+/// it.
+fn keys_unread(tty: Option<&std::path::Path>) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    tty.and_then(|tty| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(fuxix::file::NOCTTY | fuxix::file::NONBLOCK)
+            .open(tty)
+            .ok()
+    })
+    .and_then(|terminal| fuxix::io::unread(&terminal).ok())
+    .is_some_and(|n| n > 0)
 }
 
 /// Whether the program is surely blocked reading its terminal: a text it

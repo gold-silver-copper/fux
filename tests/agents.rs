@@ -58,7 +58,11 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     );
     // As timeout(1), a wait for the exit exits with the program's status.
     let ended = server.fux(&["str", &pane, "pane", "opts", "wait-exit", "wait"])?;
-    assert_eq!((ended.status, ended.stdout.as_str()), (3, "exited 3\n"));
+    assert_eq!(
+        (ended.status, ended.stdout.as_str()),
+        (3, format!("{pane} exited 3\n10 40\nstarted\n").as_str()),
+        "its state, and what came since it started"
+    );
     let screen = server.ok(&["str", &pane, "pane", "opts", "capture"])?;
     assert_eq!(
         screen,
@@ -302,8 +306,11 @@ fn input_reaches_the_program_as_a_person_sends_it() -> Outcome {
         "send-keys",
     ])?;
     assert_eq!(
-        server.ok(&["str", &pane, "pane", "opts", "wait-exit", "wait"])?,
-        "exited 0\n"
+        server
+            .ok(&["str", &pane, "pane", "opts", "wait-exit", "wait"])?
+            .lines()
+            .next(),
+        Some(format!("{pane} exited 0").as_str())
     );
     Ok(())
 }
@@ -481,7 +488,12 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     assert_eq!(ended.status, 3, "{}", ended.stderr);
     assert!(ended.stderr.contains("exited 2"), "{}", ended.stderr);
     let ended = server.fux(&["str", &pane, "pane", "opts", "wait-exit", "wait"])?;
-    assert_eq!((ended.status, ended.stdout.as_str()), (2, "exited 2\n"));
+    assert_eq!(ended.status, 2);
+    assert!(
+        ended.stdout.starts_with(&format!("{pane} exited 2\n")),
+        "{}",
+        ended.stdout
+    );
     // run waits from the program's first output: a flood cannot outrun it.
     let flood = "echo 'a needle'; seq 300; exec cat";
     let started = server.ok(&run(&["str", "needle", "wait-text"], &["sh", "-c", flood]))?;
@@ -930,8 +942,8 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     server.ok(&["str", "stub", "pane", "str", "KILL", "signal"])?;
     let kill = server.fux(&["str", "stub", "pane", "opts", "wait-exit", "wait"])?;
     assert_eq!(
-        (kill.status, kill.stdout.as_str()),
-        (137, "killed by SIGKILL\n")
+        (kill.status, kill.stdout.lines().next()),
+        (137, Some("%4 killed by SIGKILL"))
     );
     // A program that exits first: its last words come with the error.
     let crash = server.fux(&run(

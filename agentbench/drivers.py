@@ -410,7 +410,7 @@ class Fux(Driver):
         """The program's status: the wait says it, and the run exits with it."""
         out = self.fux(*self.pane(pane), "opts", "wait-exit", str(timeout), "timeout", "wait",
                        check=False, timeout=timeout + 10)
-        words = out.stdout.split()
+        words = out.stdout.split()[1:]
         if words[:1] == ["exited"]:
             return int(words[1])
         if words[:2] == ["killed", "by"]:

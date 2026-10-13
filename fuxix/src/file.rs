@@ -5,6 +5,8 @@
 pub const NOFOLLOW: i32 = libc::O_NOFOLLOW;
 /// Opens without waiting: a FIFO opened so returns at once.
 pub const NONBLOCK: i32 = libc::O_NONBLOCK;
+/// Opening a terminal does not make it the caller's controlling terminal.
+pub const NOCTTY: i32 = libc::O_NOCTTY;
 
 /// Makes a FIFO at `path` with `mode` (the umask still applies).
 pub fn make_fifo(path: &std::path::Path, mode: u32) -> std::io::Result<()> {

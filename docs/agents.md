@@ -61,7 +61,8 @@ screen of a full-screen program (an editor, a menu, a form):
   (or since the program started), scrolled away too: it never starts too
   late. **Status 7:** the program reads its terminal and the text has not
   come: it cannot before you type; the answer is the screen. Status 3: the
-  program exited first.
+  program exited first. `wait-exit` answers `%2 exited 0` and what came,
+  with the program's status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output), `joined`, `marks`, `styles`,
