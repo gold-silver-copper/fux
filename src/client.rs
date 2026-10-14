@@ -368,25 +368,6 @@ impl Requests {
         Ok(None)
     }
 
-    /// Reads what the server sent, without waiting: whether it is still
-    /// there.
-    pub fn read_some(&mut self) -> Result<bool, Error> {
-        let _ = self.stream.set_nonblocking(true);
-        let read = self.stream.read(&mut self.buffer);
-        let _ = self.stream.set_nonblocking(false);
-        match read {
-            Ok(0) => Ok(false),
-            Ok(n) => {
-                self.decoder.push(self.buffer.get(..n).unwrap_or_default());
-                Ok(true)
-            }
-            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
-                Ok(true)
-            }
-            Err(e) => Err(Error::Read(e)),
-        }
-    }
-
     /// A copy of its socket, to shut down from another thread.
     pub fn socket_copy(&self) -> Option<UnixStream> {
         self.stream.socket_copy()

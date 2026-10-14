@@ -678,6 +678,12 @@ mod tests {
                 .to_string()
                 .ends_with("`fux str /x/y/absent.sock socket start` starts one")
         );
+        // A path with a blank is quoted, so the command can be pasted.
+        assert!(
+            Error::NoServer(PathBuf::from("/x/my dir/absent.sock"))
+                .to_string()
+                .ends_with("`fux str '/x/my dir/absent.sock' socket start` starts one")
+        );
     }
 
     #[test]
@@ -722,6 +728,10 @@ mod tests {
             exists(&path),
             "another program's socket survives our cleanup"
         );
+        // A socket something listens on, though it holds no lock, is never
+        // taken over.
+        assert!(matches!(bind(&path), Err(Error::Listening(_))));
+        assert!(exists(&path), "the live socket is kept");
         drop(replacement);
         let _ = fs::remove_dir_all(&root);
         Ok(())

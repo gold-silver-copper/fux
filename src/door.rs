@@ -311,10 +311,6 @@ impl Link {
         self.timeout = timeout;
     }
 
-    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-        Ok(fuxix::io::set_nonblocking(&self.file, nonblocking)?)
-    }
-
     /// What is written to: a terminal can go with it over a socket.
     pub fn output(&self) -> &File {
         &self.file
@@ -360,5 +356,78 @@ impl AsFd for Link {
     /// What is polled to read.
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.file.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A knock's two FIFOs made in `dir` with `mode`, opened as a client
+    /// holds them: down to read, up to read and write.
+    fn fifos_of(dir: &Path, name: &str, mode: u32) -> io::Result<[File; 2]> {
+        let [up, down] = fifos(dir, name);
+        for path in [&up, &down] {
+            fuxix::file::make_fifo(path, 0o600)?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        }
+        Ok([open_fifo(&down, true, false)?, open_fifo(&up, true, true)?])
+    }
+
+    /// Knocks are whole lines, a part line waiting for the rest; a long
+    /// line of noise is dropped without the knock after it, and what is
+    /// kept of a part line is bounded. A knock is answered only for a
+    /// client's name and FIFOs of the user's that others cannot reach; the
+    /// door itself must be such a FIFO.
+    #[test]
+    fn knocks_are_whole_lines_naming_fifos_fit_to_open() -> io::Result<()> {
+        let dir = fuxix::file::scratch()?.join(format!("fux-door-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        let socket = dir.join("s.sock");
+        let mut door = Door::open(&socket)?;
+        let mut knock = open_fifo(&path(&socket), false, true)?;
+        let answered = |down: &File| {
+            let mut byte = [0u8; 1];
+            (&*down)
+                .read(&mut byte)
+                .is_ok_and(|n| n == 1 && byte == *b"+")
+        };
+
+        let [down, _up] = fifos_of(&dir, "c-0123456789abcdef", 0o600)?;
+        knock.write_all(b"c-0123456789")?;
+        assert!(door.knocks().is_empty(), "a part line waits");
+        knock.write_all(b"abcdef\n")?;
+        assert_eq!(door.knocks().len(), 1);
+        assert!(answered(&down));
+
+        let [down, _up] = fifos_of(&dir, "c-00000000000000aa", 0o600)?;
+        let mut noise = vec![b'x'; 3000];
+        noise.extend_from_slice(b"\nc-00000000000000aa\n");
+        knock.write_all(&noise)?;
+        assert_eq!(door.knocks().len(), 1, "the knock after the noise");
+        assert!(answered(&down));
+
+        let _open = fifos_of(&dir, "c-00000000000000bb", 0o660)?;
+        let _short = fifos_of(&dir, "c-abc", 0o600)?;
+        knock.write_all(b"c-00000000000000bb\nc-abc\n")?;
+        assert!(door.knocks().is_empty(), "others may reach it; not a name");
+
+        for _ in 0..20 {
+            knock.write_all(&[b'y'; 4000])?;
+            assert!(door.knocks().is_empty());
+            assert!(door.partial.len() <= 64 * 1024, "{}", door.partial.len());
+        }
+
+        let file = dir.join("f.sock");
+        let regular = path(&file);
+        std::fs::write(&regular, "")?;
+        std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600))?;
+        assert!(Door::open(&file).is_err(), "a file is no door");
+        drop(door);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

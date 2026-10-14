@@ -2036,6 +2036,35 @@ mod tests {
         Ok((session, conn, peer, far))
     }
 
+    /// Something not a door where the door goes (a file left there): the
+    /// server serves on its socket all the same, with no door.
+    #[test]
+    fn a_door_that_cannot_open_leaves_the_socket_serving() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let e = |e: &dyn std::fmt::Display| e.to_string();
+        let dir = (fuxix::file::scratch().map_err(|x| e(&x))?)
+            .join(format!("fux-listening-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("fux")).map_err(|x| e(&x))?;
+        for private in [dir.clone(), dir.join("fux")] {
+            std::fs::set_permissions(private, std::fs::Permissions::from_mode(0o700))
+                .map_err(|x| e(&x))?;
+        }
+        let path = dir.join("fux").join("s.sock");
+        std::fs::write(crate::door::path(&path), "").map_err(|x| e(&x))?;
+        let socket = crate::socket::socket_path(crate::socket::Choice::Path(
+            &path.to_string_lossy(),
+            "test",
+        ))
+        .map_err(|x| e(&x))?;
+        let listening = Listening::open(&socket).map_err(|x| e(&x))?;
+        assert!(listening.listener.is_some(), "the socket serves");
+        assert!(listening.door.is_none(), "with no door");
+        drop(listening);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
     /// The frames waiting for the client: what is painted in them, and the
     /// `Exit`'s reason.
     fn sent(conn: &Conn) -> (Vec<u8>, Option<String>) {

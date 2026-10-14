@@ -132,3 +132,41 @@ fn a_bad_config_is_reported() -> Outcome {
     assert!(server.ok(&["str", &path, "check"])?.ends_with(": ok\n"));
     Ok(())
 }
+
+/// `update-environment` names what a new pane takes from the client that
+/// made it: one the client has is passed on; one it lacks is removed, even
+/// though the server has it (here `ENV`, which the test server is given).
+#[test]
+fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
+    let server = Server::start("str update-environment str 'ENV FUXT_GIVEN' set")?;
+    let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"";
+    let out = std::process::Command::new(FUX)
+        .args([
+            "opts",
+            "str",
+            "sh",
+            "program",
+            "str",
+            "-c",
+            "arg",
+            "str",
+            shown,
+            "arg",
+            "str",
+            "FUXT_OTHER",
+            "str",
+            "x",
+            "env",
+            "run",
+        ])
+        .env("FUX_SOCKET", &server.socket)
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env_remove("FUX_PANE")
+        .env_remove("ENV")
+        .env("FUXT_GIVEN", "yes")
+        .output()
+        .map_err(e)?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[unset] [yes]"), "{stdout}");
+    Ok(())
+}

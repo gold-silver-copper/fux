@@ -86,11 +86,16 @@ pub const MAX_BUFFERS: usize = 1000;
 /// (a service, a sandbox, a cleared environment): bash or zsh there marks
 /// its commands, where `/bin/sh` would not.
 fn login_shell() -> Option<String> {
-    let euid = fuxix::process::geteuid().to_string();
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    shell_of(&passwd, fuxix::process::geteuid())
+}
+
+/// The shell of user `uid` in `passwd`, the text of `/etc/passwd`.
+fn shell_of(passwd: &str, uid: u32) -> Option<String> {
+    let uid = uid.to_string();
     passwd.lines().find_map(|line| {
         let fields: Vec<&str> = line.split(':').collect();
-        (fields.get(2) == Some(&euid.as_str()))
+        (fields.get(2) == Some(&uid.as_str()))
             .then(|| fields.get(6).map(|s| s.trim().to_owned()))
             .flatten()
             .filter(|s| !s.is_empty())
@@ -215,5 +220,18 @@ mod tests {
         assert!(config.set("buffers", "0").is_err());
         assert!(config.set("nonsense", "1").is_err());
         assert!(config.set("update-environment", "OK BAD-NAME").is_err());
+    }
+
+    /// With `SHELL` unset, the shell is the user's own line's in
+    /// `/etc/passwd`, not the first line's.
+    #[test]
+    fn the_login_shell_is_the_users_own() {
+        let passwd = "root:x:0:0::/root:/bin/bash\n\
+                      me:x:1001:1001::/home/me:/usr/bin/zsh\n\
+                      bare:x:1002:1002::/home/bare:\n";
+        assert_eq!(shell_of(passwd, 1001).as_deref(), Some("/usr/bin/zsh"));
+        assert_eq!(shell_of(passwd, 0).as_deref(), Some("/bin/bash"));
+        assert_eq!(shell_of(passwd, 1002), None);
+        assert_eq!(shell_of(passwd, 7), None);
     }
 }
