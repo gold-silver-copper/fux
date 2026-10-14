@@ -49,7 +49,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   and the program: `str 'prog -x a' command` (split as a shell splits), or
   `str PROG program` and `str A arg` per argument. The answer's first word is
   the pane: use it. Each `fux` is a fresh program (a `let` name lasts only
-  within one). The pane stays after the program ends.
+  within one). The pane stays after the program ends. A word refuses options it would not use (`capture` a wait): `unused`.
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; no keypad keys; a typo
   is refused). Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T
@@ -69,12 +69,14 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   the pane's state; after `run` or `respawn` a text must show before it
   can go), never what you typed, Enter or not, nor the prompt
   before it, on each row it went on (with the keys, or for a later wait your
-  last input; a line typed over several sends, as BSpace, C-w and C-u
-  left it), nor that row drawn again with another prompt to end with it,
-  nor a row below so drawn for keys typed while the program was busy
-  (before a shell's prompt); what the program writes after it on that row
-  counts, as does another row it writes that ends with it (`You said:
-  NEEDLE`). A wait
+  last input; a line typed over several sends, as BSpace, C-w, C-u and the
+  cursor keys left it: Left, Right, Home, End, C-a, C-e, C-b, C-f; a
+  bracketed paste's marks as the terminal echoes them, `^[[200~`), nor that
+  row drawn again with another prompt to end with it, nor a row below so
+  drawn for keys typed while the program was busy (a prompt's row: one the
+  shell marks so, or that starts with the prompt your keys before went in
+  at); what the program writes after it on that row counts, as does
+  another row it writes that ends with it (`You said: NEEDLE`). A wait
   counts what came since your last input to the pane (or since the program
   started), scrolled away too: it never starts too late. But it reads
   screens, not every byte: text drawn over in place before fux reads the

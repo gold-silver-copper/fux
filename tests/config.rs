@@ -133,6 +133,26 @@ fn a_bad_config_is_reported() -> Outcome {
     Ok(())
 }
 
+/// The examples of the words a config uses check as a config: none binds
+/// after a key bound by default.
+#[test]
+fn the_config_words_examples_check() -> Outcome {
+    let server = Server::start("")?;
+    let config = server.dir.join("config.fux");
+    let path = config.to_string_lossy().into_owned();
+    for word in ["bind", "bind-root", "prefix"] {
+        let explained = server.ok(&["str", word, "explain"])?;
+        let example = (explained.lines())
+            .find_map(|line| line.split_once("; e.g. "))
+            .map(|(_, example)| example)
+            .ok_or(format!("no example: {explained}"))?;
+        std::fs::write(&config, example).map_err(e)?;
+        let checked = server.fux(&["str", &path, "check"])?;
+        assert_eq!(checked.status, 0, "{example}: {}", checked.stderr);
+    }
+    Ok(())
+}
+
 /// `update-environment` names what a new pane takes from the client that
 /// made it: one the client has is passed on; one it lacks is removed, even
 /// though the server has it (here `ENV`, which the test server is given).

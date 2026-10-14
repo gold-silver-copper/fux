@@ -2,9 +2,9 @@
 
 (`fux help-json`.) `json` turns the value on top of the stack into JSON:
 what a word left, as below; a string as a JSON string; a number or boolean
-as itself; a list as an array of these, an action's answer in it as its
-object (one of several panes as an array of their objects; a capture or
-listing in it as its text). Every shape below is part of fux's interface: a field is added,
+as itself; a list as an array of these, each answer in it as `json` gives
+it alone (a capture's, a listing's or an action's object; one of several
+panes an array of their objects). Every shape below is part of fux's interface: a field is added,
 never renamed or dropped without a release saying so. Rows and
 columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 `"@2"`, `"+1"`, `"c1"`).
@@ -125,7 +125,9 @@ fails (the program exited first or was started again, 3; the pane closed,
 program with that status and says why on stderr, `fux: CODE: MESSAGE`: it
 leaves no answer to print, but what `run`, `split` or `respawn` started
 is printed first, its pane alone (`%2`, as text, `json` or not), and so are the
-answers of the words before it.
+answers of the words before it. A wait on a tab's or a workspace's panes
+that fails in one prints first the answers of those that met it, a line each
+as text, `json` or not (`%3 READY`).
 
 ## `events-json`, `X events-of-json`
 

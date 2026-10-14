@@ -287,8 +287,8 @@ fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
 }
 
 /// A value as JSON: a list as an array of its values', an answer as its
-/// JSON, as alone (an action's object; of several panes, an array of
-/// theirs), anything else of fux's as its text.
+/// JSON, as alone (a capture's, a listing's or an action's object; of
+/// several panes, an array of theirs), anything else of fux's as its text.
 fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
     use crate::json::Json;
     match value {
@@ -444,12 +444,45 @@ fn sibling(word: &str, value: &Value<Fux>) -> Result<Sibling, Failure> {
 
 /// Options a word would leave unused, refused rather than ignored: a
 /// program for words that start a shell, a typed line for `run`, a tab's
-/// name, size or log for `split`, a wait for words that do not wait.
+/// name, size or log for `split`, a wait for words that do not wait, what
+/// starts a program for words that start none, a view of the screen for
+/// `wait`.
 fn ignored(word: &str, built: &Opts) -> Result<(), Failure> {
     let refuse = |what: &str, instead: &str| {
         Err(fail("unused", format!("{word} takes no {what}: {instead}")))
     };
+    let starts = built.name.is_some()
+        || built.size.is_some()
+        || built.cwd.is_some()
+        || !built.env.is_empty()
+        || !built.argv.is_empty()
+        || built.typed.is_some()
+        || built.axis.is_some()
+        || built.place.is_some()
+        || !built.ids.is_empty()
+        || built.log.is_some()
+        || built.kill;
+    // `marks` goes on what a wait prints too.
+    let viewed = built.history.is_some()
+        || built.json
+        || built.view
+            != (crate::command::CaptureView {
+                marks: built.view.marks,
+                ..Default::default()
+            });
     match word {
+        "capture" if !built.waits.until.is_empty() => refuse(
+            "wait",
+            "it reads at once; PANE opts … wait, then PANE opts capture",
+        ),
+        "capture" | "wait" if starts => refuse(
+            "program, name, size, place or the like",
+            "they go on what starts a pane: run, split, new-tab, respawn",
+        ),
+        "wait" if viewed => refuse(
+            "capture view",
+            "a wait prints the screen as it is; PANE opts … capture reads a view, and json goes after wait",
+        ),
         "new-tab" | "new-workspace" if !built.argv.is_empty() => refuse(
             "program",
             "it starts a shell; run starts a program, or `str LINE typed` types one",
@@ -950,6 +983,7 @@ impl fuxth::Host for Host<'_> {
                 let p = target(name, &next()?)?.map(WsRef::Id);
                 let mut o = next()?;
                 let built = opts(name, &mut o)?;
+                ignored(name, built)?;
                 later(ask(
                     Command::Wait {
                         targets: vec![p],
@@ -1169,8 +1203,9 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
+                ignored(name, &built)?;
                 let then = if built.json {
-                    Then::Text
+                    Then::Json("a capture")
                 } else {
                     Then::Answer("a capture")
                 };

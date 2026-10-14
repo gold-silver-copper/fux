@@ -167,6 +167,9 @@ pub enum Then {
     /// Its text, as an answer `json` can show as JSON: what it is, as
     /// [`Answer::kind`].
     Answer(&'static str),
+    /// Its text, which is JSON: an answer as [`Then::Answer`] makes, that
+    /// prints it and that `json` gives as it is.
+    Json(&'static str),
     /// Its text, as a string.
     Text,
     /// A field's value.
@@ -779,6 +782,12 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
         Then::Answer(kind) => vec![Value::App(Fux::Answer(Box::new(Answer {
             text,
             json,
+            kind,
+            pane: None,
+        })))],
+        Then::Json(kind) => vec![Value::App(Fux::Answer(Box::new(Answer {
+            json: Some(text.clone()),
+            text,
             kind,
             pane: None,
         })))],

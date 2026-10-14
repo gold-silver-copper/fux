@@ -651,19 +651,21 @@ fn one_off(a: &str, b: &str) -> bool {
 }
 
 /// The lines send-keys types, as a terminal shows them after its line
-/// editing (Space joins words, BSpace or DEL takes the last character back,
-/// C-w the last word, C-u the line; Tab is a blank, and another control
-/// character in text shows as `^A`; pasted text is shown too), and whether
-/// a line was ended (Enter, or a line end in text) after a key whose echo
-/// is not known (Up, C-r: a command recalled).
+/// editing (Space joins words, BSpace or DEL takes back the character
+/// before the cursor, C-w the word before it, C-u the line before it; Left,
+/// Right, Home, End, C-b, C-f, C-a and C-e move the cursor, and what is
+/// typed goes in at it; Tab is a blank, and another control character in
+/// text shows as `^A`; pasted text is shown too), and whether a line was
+/// ended (Enter, or a line end in text) after a key whose echo is not known
+/// (Up, C-r: a command recalled).
 pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, bool) {
-    use fux_vt::keys::{Key, Modifiers};
-    let mut lines: Vec<String> = vec![String::new()];
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = Line::default();
     let (mut unknown, mut recalled) = (false, false);
     // A line broken: ended for the program (Enter) or not (a paste's line
     // end), after a key whose echo is known or not.
-    let mut end = |lines: &mut Vec<String>, ends: bool, known: bool| {
-        lines.push(String::new());
+    let mut end = |lines: &mut Vec<String>, line: &mut Line, ends: bool, known: bool| {
+        lines.push(std::mem::take(line).text());
         recalled |= ends && unknown;
         unknown |= !known;
     };
@@ -672,35 +674,30 @@ pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, bool) {
             Input::Text(text) => {
                 for c in text.chars() {
                     match c {
-                        '\n' | '\r' => end(&mut lines, true, true),
-                        c => type_char(&mut lines, c),
+                        '\n' | '\r' => end(&mut lines, &mut line, true, true),
+                        c => line.type_char(c),
                     }
                 }
             }
             Input::Paste(text) => {
                 for (i, part) in text.split('\n').enumerate() {
                     if i > 0 {
-                        end(&mut lines, false, true);
+                        end(&mut lines, &mut line, false, true);
                     }
-                    if let Some(last) = lines.last_mut() {
-                        last.push_str(part);
-                    }
+                    line.left.push_str(part);
                 }
             }
-            Input::Key(key) => match (key.key, key.mods) {
-                (Key::Char(c), Modifiers::NONE) => type_char(&mut lines, c),
-                (Key::Char(c @ ('h' | 'u' | 'w')), Modifiers::CTRL) => {
-                    type_char(&mut lines, char::from(u8::try_from(c).unwrap_or(0) & 0x1f));
-                }
-                (Key::Backspace, Modifiers::NONE) => type_char(&mut lines, '\x7f'),
-                (Key::Tab, Modifiers::NONE) => type_char(&mut lines, '\t'),
-                (Key::Enter, _) => end(&mut lines, true, true),
-                // Another key (an arrow, a control key) leaves the line as
-                // the program makes it: its echo is not known.
-                _ => end(&mut lines, false, false),
+            Input::Key(key) => match edit(*key) {
+                Some(Edit::Type(c)) => line.type_char(c),
+                Some(Edit::Move(to)) => line.move_to(to),
+                Some(Edit::End) => end(&mut lines, &mut line, true, true),
+                // Another key (Up, a control key) leaves the line as the
+                // program makes it: its echo is not known.
+                None => end(&mut lines, &mut line, false, false),
             },
         }
     }
+    lines.push(line.text());
     lines.retain(|l| !l.trim().is_empty());
     (lines, recalled)
 }
@@ -708,40 +705,110 @@ pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, bool) {
 /// Whether `inputs` leave the line they type on open, as `typed_lines`
 /// reads them: none ends it, and each one's echo is known.
 pub fn line_open(inputs: &[Input]) -> bool {
-    use fux_vt::keys::{Key, Modifiers};
     inputs.iter().all(|input| match input {
         Input::Text(text) | Input::Paste(text) => !text.contains(['\n', '\r']),
-        Input::Key(key) => matches!(
-            (key.key, key.mods),
-            (Key::Char(_) | Key::Backspace | Key::Tab, Modifiers::NONE)
-                | (Key::Char('h' | 'u' | 'w'), Modifiers::CTRL)
-        ),
+        Input::Key(key) => matches!(edit(*key), Some(Edit::Type(_) | Edit::Move(_))),
     })
 }
 
-/// Types `c` on the last of `lines`, as a terminal's line editing shows it.
-fn type_char(lines: &mut [String], c: char) {
-    let Some(line) = lines.last_mut() else {
-        return;
-    };
-    match c {
-        '\x7f' | '\x08' => {
-            line.pop();
+/// What a key does to the line it is typed on, as line editing takes it.
+#[derive(Clone, Copy)]
+enum Edit {
+    /// Types a character (BSpace, C-w and C-u as theirs).
+    Type(char),
+    /// Moves the cursor.
+    Move(Move),
+    /// Ends the line (Enter).
+    End,
+}
+
+#[derive(Clone, Copy)]
+enum Move {
+    Left,
+    Right,
+    Home,
+    End,
+}
+
+/// What `key` does to the line, if its echo is known.
+fn edit(key: KeyPress) -> Option<Edit> {
+    use fux_vt::keys::{Key, Modifiers};
+    Some(match (key.key, key.mods) {
+        (Key::Char(c), Modifiers::NONE) => Edit::Type(c),
+        (Key::Char(c @ ('h' | 'u' | 'w')), Modifiers::CTRL) => {
+            Edit::Type(char::from(u8::try_from(c).ok()? & 0x1f))
         }
-        '\x15' => line.clear(),
-        '\x17' => {
-            let kept = line.trim_end();
-            let word = (kept.char_indices().rev())
-                .find(|(_, c)| c.is_whitespace())
-                .map_or(0, |(at, c)| at.saturating_add(c.len_utf8()));
-            *line = kept.get(..word).unwrap_or_default().to_owned();
+        (Key::Char('b'), Modifiers::CTRL) | (Key::Arrow(Direction::Left), Modifiers::NONE) => {
+            Edit::Move(Move::Left)
         }
-        '\t' => line.push('\t'),
-        c if c.is_ascii_control() => {
-            line.push('^');
-            line.push(char::from(u8::try_from(c).unwrap_or(0) ^ 0x40));
+        (Key::Char('f'), Modifiers::CTRL) | (Key::Arrow(Direction::Right), Modifiers::NONE) => {
+            Edit::Move(Move::Right)
         }
-        c => line.push(c),
+        (Key::Char('a'), Modifiers::CTRL) | (Key::Home, Modifiers::NONE) => Edit::Move(Move::Home),
+        (Key::Char('e'), Modifiers::CTRL) | (Key::End, Modifiers::NONE) => Edit::Move(Move::End),
+        (Key::Backspace, Modifiers::NONE) => Edit::Type('\x7f'),
+        (Key::Tab, Modifiers::NONE) => Edit::Type('\t'),
+        (Key::Enter, _) => Edit::End,
+        _ => return None,
+    })
+}
+
+/// A line being typed: what is left of the cursor, and right of it.
+#[derive(Default)]
+struct Line {
+    left: String,
+    right: String,
+}
+
+impl Line {
+    fn text(self) -> String {
+        self.left + &self.right
+    }
+
+    fn move_to(&mut self, to: Move) {
+        match to {
+            Move::Left => {
+                if let Some(c) = self.left.pop() {
+                    self.right = format!("{c}{}", self.right);
+                }
+            }
+            Move::Right => {
+                let mut chars = self.right.chars();
+                if let Some(c) = chars.next() {
+                    self.left.push(c);
+                    self.right = chars.as_str().to_owned();
+                }
+            }
+            Move::Home => self.right = std::mem::take(&mut self.left) + &self.right,
+            Move::End => {
+                self.left.push_str(&self.right);
+                self.right.clear();
+            }
+        }
+    }
+
+    /// Types `c` at the cursor, as a terminal's line editing shows it.
+    fn type_char(&mut self, c: char) {
+        let line = &mut self.left;
+        match c {
+            '\x7f' | '\x08' => {
+                line.pop();
+            }
+            '\x15' => line.clear(),
+            '\x17' => {
+                let kept = line.trim_end();
+                let word = (kept.char_indices().rev())
+                    .find(|(_, c)| c.is_whitespace())
+                    .map_or(0, |(at, c)| at.saturating_add(c.len_utf8()));
+                *line = kept.get(..word).unwrap_or_default().to_owned();
+            }
+            '\t' => line.push('\t'),
+            c if c.is_ascii_control() => {
+                line.push('^');
+                line.push(char::from(u8::try_from(c).unwrap_or(0) ^ 0x40));
+            }
+            c => line.push(c),
+        }
     }
 }
 

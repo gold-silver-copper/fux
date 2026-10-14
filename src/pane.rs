@@ -501,6 +501,11 @@ pub struct InputFrom {
     /// line it draws again to end with them (a shell's prompt and line,
     /// after the terminal's echo) is their echo too.
     pub ahead: bool,
+    /// The cursor's line as it read when keys last went in while the
+    /// program read them, to its row: the prompt they were typed at, which
+    /// a line drawn again for keys typed ahead starts with. Empty while no
+    /// keys went in so.
+    pub prompt: String,
     /// The screen's lines then, by first row: one redrawn the same since
     /// brings nothing new; and the line above each, by first rows: one
     /// that follows another since moved (lines deleted or put in above it).
@@ -537,6 +542,7 @@ impl InputFrom {
                 Vec::new()
             },
             ahead: false,
+            prompt: String::new(),
             shown,
             above,
             styles,
@@ -931,7 +937,15 @@ impl Pane {
             }
             from.before.clone_from(&old.before);
         }
-        self.input_from = InputFrom { ahead, ..from };
+        let prompt = match ahead {
+            true => std::mem::take(&mut self.input_from.prompt),
+            false => from.before.trim_end().to_owned(),
+        };
+        self.input_from = InputFrom {
+            ahead,
+            prompt,
+            ..from
+        };
     }
 
     /// The name the bar shows: the program's title, else the pane's name.

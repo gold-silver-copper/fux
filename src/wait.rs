@@ -1193,7 +1193,7 @@ fn joined(rows: impl Iterator<Item = (fux_vt::RowId, bool, String, bool)>) -> Ve
 /// output: what the program writes past the echo, or in its place. A line
 /// at the keys' row or below drawn again, to end with a line typed, is its
 /// echo whole: keys typed ahead of the program's read, which the terminal
-/// echoes and a shell draws again after its prompt; or the keys' own row,
+/// echoes and a shell draws again on a prompt's row; or the keys' own row,
 /// its prompt gone, drawn with another.
 fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line) -> usize {
     let Some(cursor) = typed.cursor else {
@@ -1207,7 +1207,16 @@ fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line
     let below = (screen.row_index(line.first))
         .zip(screen.row_index(cursor))
         .is_some_and(|(at, from)| at >= from);
-    let again = typed.ahead || (own && !kept);
+    // Keys typed ahead are drawn again on a prompt's row: one the shell
+    // marks so, or one that starts with the prompt keys were typed at
+    // before (any, before keys ever were).
+    let prompt = || {
+        line.text.starts_with(&typed.prompt)
+            || screen
+                .row_by_id(line.first)
+                .is_some_and(|row| row.starts_prompt())
+    };
+    let again = (typed.ahead && prompt()) || (own && !kept);
     if below
         && again
         && let Some(whole) = redrawn(&line.text, typed.echo.iter().map(|t| t.trim()))
@@ -1261,7 +1270,8 @@ fn redrawn<'a>(text: &str, typed: impl IntoIterator<Item = &'a str>) -> Option<u
 /// the prompt (`before`: the row the keys went in on must still start with
 /// it, as output that cleared the row and wrote over it does not; a line
 /// below may), the blanks after it, and as many characters as were typed,
-/// a run of blanks typed as the run shown (a Tab goes to a tab stop).
+/// a run of blanks typed as the run shown (a Tab goes to a tab stop), and
+/// a bracketed paste's marks as the terminal echoes them.
 /// Only while the line shows them, their first word or its start (`2` of
 /// `2**10`, still being drawn; case kept: a reply that starts with the
 /// word typed, in capitals, is the program's),
@@ -1276,12 +1286,28 @@ fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize
     let shown = rest.trim_start();
     let word = keys.split_whitespace().next().unwrap_or_default();
     let shows = match shown.split_whitespace().next() {
-        Some(first) => word.starts_with(first) || first.starts_with(word),
+        Some(first) => {
+            let first = first.strip_prefix(PASTE_ECHO[0]).unwrap_or(first);
+            word.starts_with(first) || first.starts_with(word)
+        }
         None => own_row,
     };
     let (mut on, mut typed) = (shown.char_indices().peekable(), keys.chars().peekable());
+    // The marks a bracketed paste is sent between, as a terminal echoes
+    // them to a program that reads lines: part of the paste's echo.
+    let marks = |on: &mut std::iter::Peekable<std::str::CharIndices<'_>>| {
+        while let Some(mark) = (on.peek())
+            .and_then(|(at, _)| shown.get(*at..))
+            .and_then(|rest| PASTE_ECHO.iter().find(|mark| rest.starts_with(**mark)))
+        {
+            for _ in 0..mark.len() {
+                on.next();
+            }
+        }
+    };
     let blank = |c: &char| c.is_whitespace();
     while let Some(c) = typed.next() {
+        marks(&mut on);
         if !c.is_whitespace() {
             on.next();
             continue;
@@ -1300,9 +1326,14 @@ fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize
             }
         }
     }
+    marks(&mut on);
     let end = on.peek().map_or(shown.len(), |(at, _)| *at);
     shows.then(|| text.len().saturating_sub(shown.len()).saturating_add(end))
 }
+
+/// How a terminal that reads lines echoes the marks a bracketed paste is
+/// sent between.
+const PASTE_ECHO: [&str; 2] = ["^[[200~", "^[[201~"];
 
 /// A text as a wait compares it: case ignored, runs of blanks as one, and
 /// none at its ends.

@@ -29,9 +29,10 @@ pub fn pane(
     // A soft-wrapped row goes on in the next, joined with `-J`.
     let mut wraps = false;
     let read = rows_of(screen, history, view);
-    // The cursor's row and column, if it shows on the screen captured.
+    // The cursor's row and column, if it shows on the screen captured: the
+    // last output is read from the screen shown, whatever else is asked.
     let alt = screen.mode(Mode::AlternateScreen);
-    let live = if view.main { !alt } else { !view.alt || alt };
+    let live = view.last_output || if view.main { !alt } else { !view.alt || alt };
     let (cursor_row, cursor_col) = screen.cursor_position();
     let cursor_id = (live && screen.mode(Mode::ShowCursor))
         .then(|| screen.window().row(cursor_row).map(|row| row.id()))

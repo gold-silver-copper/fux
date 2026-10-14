@@ -2570,6 +2570,51 @@ fn a_refused_reading_is_named() -> Outcome {
     Ok(())
 }
 
+/// In a list, an answer is as `json` gives it alone: a capture, one asked
+/// as JSON too, and a listing are their objects.
+#[test]
+fn an_answer_in_a_list_is_its_object() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x"]))?);
+    let capture = ["str", &pane, "pane", "opts"];
+    let json = server.ok(&[
+        &["list"][..],
+        &capture,
+        &["capture"],
+        &capture,
+        &["json", "capture", "ls", "end", "json"],
+    ]
+    .concat())?;
+    let pane_object = format!("{{\"pane\":\"{pane}\",");
+    assert!(
+        json.starts_with(&format!("[{pane_object}"))
+            && json.contains(&format!("}},{pane_object}"))
+            && json.contains(",{\"workspaces\":"),
+        "{json}"
+    );
+    Ok(())
+}
+
+/// `capture` and `wait` refuse options they would not use, as `split`
+/// does: a capture waits for nothing, a wait starts and views nothing.
+#[test]
+fn capture_and_wait_refuse_options_they_do_not_use() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x"]))?);
+    let opts = ["str", &pane, "pane", "opts"];
+    for (unused, word) in [
+        (&["str", "x", "wait-text"][..], "capture"),
+        (&["100", "40", "size"][..], "capture"),
+        (&["str", "x", "name"][..], "wait"),
+        (&["10", "history"][..], "wait"),
+    ] {
+        let refused = server.fux(&[&opts[..], unused, &[word]].concat())?;
+        assert_eq!(refused.status, 1, "{unused:?} {word}: {}", refused.stdout);
+        assert!(refused.stderr.contains("unused"), "{}", refused.stderr);
+    }
+    Ok(())
+}
+
 /// A `run` whose wait fails still prints the pane it started, then says
 /// why it failed.
 #[test]
@@ -3062,6 +3107,28 @@ fn last_output_holds_a_parse_error_and_whole_rows() -> Outcome {
     Ok(())
 }
 
+/// The last output of a full-screen command, read with `main-screen` too,
+/// is its screen: the cursor is said where it is on it.
+#[test]
+fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&["20", "6", "size"], &["bash", "--norc", "-i"]))?);
+    let draw = "printf 'before\\n\\033[?1049h\\033[Habc\\ndef\\nxy%s\\033[2;2H' z; read x";
+    server.ok(&typed(&shell, draw, &["str", "xyz", "wait-text"]))?;
+    let json = server.ok(&[
+        "str",
+        &shell,
+        "pane",
+        "opts",
+        "main-screen",
+        "last-output",
+        "json",
+        "capture",
+    ])?;
+    assert!(json.contains("\"cursor\":[1,1]"), "{json}");
+    Ok(())
+}
+
 /// While a command runs, its output so far is the last output, not the
 /// command's before.
 #[test]
@@ -3270,6 +3337,104 @@ fn a_typed_line_taller_than_the_screen_is_echo() -> Outcome {
         .collect();
     let wait = ["str", "TOKEN", "wait-text", "3", "timeout"];
     let keys = server.fux(&typed(&pane, &long, &wait))?;
+    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
+    Ok(())
+}
+
+/// A line edited with the cursor keys (here Left, then BSpace) is the echo
+/// of the line as edited, not output.
+#[test]
+fn a_line_edited_with_cursor_keys_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let read = "read -e -p 'Prompt> ' v; echo \"VALUE=$v\"; read x";
+    let pane = id(&server.ok(&run(
+        &["str", "Prompt>", "wait-text"],
+        &["bash", "--norc", "-c", read],
+    ))?);
+    let keys = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "NEEzzzDLE",
+        "text",
+        "str",
+        "Left",
+        "key",
+        "3",
+        "times",
+        "str",
+        "BSpace",
+        "key",
+        "3",
+        "times",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "3",
+        "timeout",
+        "send-keys",
+    ])?;
+    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
+    Ok(())
+}
+
+/// Keys typed while a shell command runs are echoed on a prompt's row only:
+/// a row the command writes that ends with them is its output.
+#[test]
+fn output_that_ends_with_keys_typed_ahead_is_output() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
+    let script = "printf 'BEG''IN\\n'; sleep 1; printf '\\nYou said: NEE''DLE\\n'";
+    server.ok(&typed(&shell, script, &["str", "^BEGIN", "wait-text"]))?;
+    let keys = [
+        "str",
+        &shell,
+        "pane",
+        "keys",
+        "str",
+        "NEEDLE",
+        "text",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "5",
+        "timeout",
+        "send-keys",
+    ];
+    let said = server.fux(&keys)?;
+    assert_eq!(said.status, 0, "{}{}", said.stdout, said.stderr);
+    assert!(said.stdout.contains("You said: NEEDLE"), "{}", said.stdout);
+    Ok(())
+}
+
+/// A program that reads lines and asked for bracketed paste has the
+/// paste's marks echoed by the terminal (`^[[200~`): they are its echo.
+#[test]
+fn a_paste_echoed_with_its_marks_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let read = "import os, sys\nos.write(1, b'\\x1b[?2004hPrompt> ')\n\
+                sys.stdin.readline(); sys.stdin.read()\n";
+    let pane = id(&server.ok(&run(
+        &["str", "Prompt>", "wait-text"],
+        &["python3", "-c", read],
+    ))?);
+    let keys = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "NEEDLE",
+        "paste",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "3",
+        "timeout",
+        "send-keys",
+    ])?;
     assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
     Ok(())
 }

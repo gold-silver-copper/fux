@@ -283,7 +283,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "resize-x" => "fux %3 30 percent resize-x",
         "move-to" => "fux %3 str new-tab move-to",
         "focus" => "fux str c1 client str left focus",
-        "bind" => "str 'v h' str 'me focused opts horizontal split drop' bind",
+        "bind" => "str 'g v' str 'me focused opts horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",
         "set" => "fux str history-lines 50000 set",
