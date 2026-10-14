@@ -2714,7 +2714,10 @@ fn a_deleted_line_is_answered() -> Outcome {
                   w('\\x1b[H\\x1b[2JTITLE\\r\\nROW1\\r\\nROW2\\r\\nROW3'); sys.stdout.flush()\n\
                   sys.stdin.read(1); w('\\x1b[2;1H\\x1b[M'); sys.stdout.flush()\n\
                   sys.stdin.read(1)\n";
-    let pane = id(&server.ok(&run(&["40", "10", "size"], &["python3", "-c", delete]))?);
+    // Drawn first: where nothing says it reads (macOS), a slow start is
+    // otherwise taken as settled before the screen is.
+    let size = ["40", "10", "size", "str", "ROW3", "wait-text"];
+    let pane = id(&server.ok(&run(&size, &["python3", "-c", delete]))?);
     let answer = server.ok(&["str", &pane, "pane", "str", "x", "type"])?;
     assert_eq!(body(&answer), "ROW2\nROW3\n", "{answer}");
     Ok(())
