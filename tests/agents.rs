@@ -2950,6 +2950,38 @@ fn keys_typed_before_the_prompt_are_echo_twice() -> Outcome {
     );
     Ok(())
 }
+/// A program that echoes nothing and replies with the word typed, in
+/// capitals, wrote it: the echo keeps its case.
+#[test]
+fn a_reply_that_starts_with_the_word_typed_is_output() -> Outcome {
+    let server = Server::start("")?;
+    let reply = "import os, tty, time\ntty.setraw(0); os.write(1, b'command: snapshot\\r\\n')\n\
+                 os.read(0, 9); time.sleep(0.3); os.write(1, b'SNAPSHOT ticket=S-1\\r\\n')\n\
+                 os.read(0, 1)\n";
+    let pane = id(&server.ok(&run(
+        &["str", "command:", "wait-text"],
+        &["python3", "-c", reply],
+    ))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "snapshot",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "SNAPSHOT ticket=",
+        "wait-text",
+        "send-keys",
+    ];
+    let answer = server.ok(&keys)?;
+    assert!(answer.contains("SNAPSHOT ticket=S-1"), "{answer}");
+    Ok(())
+}
 
 /// The keys' row cleared and drawn again with another prompt still shows
 /// their echo, not output.
@@ -2970,36 +3002,6 @@ fn a_typed_row_drawn_with_another_prompt_is_echo() -> Outcome {
         "keys",
         "str",
         "SECRET",
-        "text",
-        "str",
-        "SECRET",
-        "wait-text",
-        "2",
-        "timeout",
-        "send-keys",
-    ])?;
-    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
-    Ok(())
-}
-
-/// An echo in another case than the keys (a terminal or program that
-/// upper-cases it) is their echo: a wait ignores case either way.
-#[test]
-fn an_echo_in_another_case_is_echo() -> Outcome {
-    let server = Server::start("")?;
-    let upper = "import os, tty\ntty.setraw(0); os.write(1, b'Input> ')\n\
-                 os.write(1, os.read(0, 6).upper()); os.read(0, 1)\n";
-    let pane = id(&server.ok(&run(
-        &["str", "Input>", "wait-text"],
-        &["python3", "-c", upper],
-    ))?);
-    let keys = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "keys",
-        "str",
-        "secret",
         "text",
         "str",
         "SECRET",

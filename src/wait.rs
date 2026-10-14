@@ -1176,7 +1176,8 @@ fn redrawn<'a>(text: &str, typed: impl IntoIterator<Item = &'a str>) -> Option<u
 /// below may), the blanks after it, and as many characters as were typed,
 /// a run of blanks typed as the run shown (a Tab goes to a tab stop).
 /// Only while the line shows them, their first word or its start (`2` of
-/// `2**10`, still being drawn; case ignored, as a terminal may change it),
+/// `2**10`, still being drawn; case kept: a reply that starts with the
+/// word typed, in capitals, is the program's),
 /// or on the keys' own row nothing yet: a program that echoes nothing, or
 /// writes over the echo, puts its own output there.
 fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize> {
@@ -1186,13 +1187,9 @@ fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize
         None => text,
     };
     let shown = rest.trim_start();
-    let word = keys
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_lowercase();
-    let shows = match shown.split_whitespace().next().map(str::to_lowercase) {
-        Some(first) => word.starts_with(&first) || first.starts_with(&word),
+    let word = keys.split_whitespace().next().unwrap_or_default();
+    let shows = match shown.split_whitespace().next() {
+        Some(first) => word.starts_with(first) || first.starts_with(word),
         None => own_row,
     };
     let (mut on, mut typed) = (shown.char_indices().peekable(), keys.chars().peekable());

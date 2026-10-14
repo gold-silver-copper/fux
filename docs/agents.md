@@ -64,7 +64,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   the pane's state; after `run` or `respawn` a text must show before it
   can go), never what you typed, Enter or not, nor the prompt
   before it, on each row it went on (with the keys, or for a later wait your
-  last input), in any case, nor that row drawn again to end with it (with
+  last input), nor that row drawn again to end with it (with
   another prompt; keys typed before a shell's prompt, after it); what the
   program writes after it on that row counts. A wait
   counts what came since your last input to the pane (or since the program
