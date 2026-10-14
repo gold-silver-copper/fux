@@ -22,8 +22,8 @@ use std::time::Instant;
 /// and the 1 and 2 of any command.
 pub const EXITED: u8 = 3;
 pub const GONE: u8 = 4;
-/// The program reads its terminal, and the text waited for has not come:
-/// it cannot before the agent types.
+/// The program reads its terminal, and the text waited for has not come
+/// (or gone): fux judges it cannot before the agent types.
 pub const STOPPED: u8 = 7;
 /// As `timeout(1)`.
 pub const TIMED_OUT: u8 = 124;
@@ -145,7 +145,8 @@ enum Found {
     Bell(Option<String>),
     /// The pane settled, so.
     Settled(crate::ready::State),
-    /// The program reads its terminal; the text waited for has not come.
+    /// The program reads its terminal; the text waited for has not come
+    /// (or gone).
     Stopped,
 }
 
@@ -196,7 +197,7 @@ impl Waiting {
     pub fn due(&self) -> Instant {
         let now = Instant::now();
         let probe = (self.wait.until.iter())
-            .any(|u| matches!(u, Until::Settled | Until::Text(_)))
+            .any(|u| matches!(u, Until::Settled | Until::Text(_) | Until::Gone(_)))
             .then(|| crate::after(now, PROBE));
         // A pane seen settled is looked at again once its hold is up.
         let held = (self.watches.iter())
@@ -910,10 +911,11 @@ impl Watch {
                 return found;
             }
         }
-        // A text that cannot come: the program reads its terminal, having
-        // had a moment to print after what began the wait, seen so on more
-        // than one probe, never on one look alone.
-        if texts.is_empty() || wait.until.contains(&Until::Settled) {
+        // A text that cannot come, or go: the program reads its terminal,
+        // having had a moment to print after what began the wait, seen so
+        // on more than one probe, never on one look alone.
+        let shown = (wait.until.iter()).any(|u| matches!(u, Until::Text(_) | Until::Gone(_)));
+        if !shown || wait.until.contains(&Until::Settled) {
             return None;
         }
         if crate::ready::state(pane, now) != crate::ready::State::Reading {
@@ -1155,10 +1157,11 @@ fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line
     let mut keys = typed.echo.iter().map(|t| t.trim());
     let first = keys.next();
     if line.first == cursor {
-        // The prompt the line held, while it starts with it still, is never
-        // new. Keys alone (Up, Enter: a command recalled) on it show one
-        // whole; an empty row, or one written over, takes the program's
-        // output.
+        // The row as it read before the keys, while it starts with it
+        // still, is never new. A command recalled (Up, then Enter) shows
+        // one whole; Enter alone types nothing, so what follows the row as
+        // it was is output, and an empty row, or one written over, takes
+        // the program's output.
         let prompt = if !before.is_empty() && line.text.starts_with(before) {
             before.len()
         } else {
@@ -1166,7 +1169,7 @@ fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line
         };
         return match first {
             Some(first) => echo_end(&line.text, before, first, true).unwrap_or(prompt),
-            None if typed.lines > 0 && prompt > 0 => line.text.len(),
+            None if typed.recalled && prompt > 0 => line.text.len(),
             None => prompt,
         };
     }

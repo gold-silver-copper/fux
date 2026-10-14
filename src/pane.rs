@@ -474,11 +474,11 @@ pub struct InputFrom {
     pub mark: fux_vt::Mark,
     /// How many shell commands had ended.
     pub finished: u64,
-    /// What was typed, line by line, and how many lines it ended; the
-    /// cursor's line as it read before, to its row: a wait after it knows
-    /// its echo.
+    /// What was typed, line by line, and whether a line it ended was
+    /// recalled (Up, then Enter: its echo is not known); the cursor's line
+    /// as it read before, to its row: a wait after it knows its echo.
     pub echo: Vec<String>,
-    pub lines: u32,
+    pub recalled: bool,
     pub before: String,
     /// The screen's lines then, by first row: one redrawn the same since
     /// brings nothing new; and the line above each, by first rows: one
@@ -498,14 +498,14 @@ impl InputFrom {
     ) -> InputFrom {
         let row = screen.window().row(screen.cursor_position().0);
         let (cursor, before) = row.map(crate::wait::line_to).unwrap_or_default();
-        let (echo, lines) = crate::command::typed_lines(inputs);
+        let (echo, recalled) = crate::command::typed_lines(inputs);
         let (shown, above) = crate::wait::shown(screen);
         InputFrom {
             cursor,
             mark: screen.mark(),
             finished: screen.commands().finished,
             echo,
-            lines,
+            recalled,
             before,
             shown,
             above,
@@ -914,11 +914,17 @@ impl Pane {
             }
         })?;
         self.parser = parser;
-        self.name = launch.argv.first().map_or_else(String::new, |p| {
-            std::path::Path::new(p)
-                .file_name()
-                .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
-        });
+        // Named after its program, unless renamed.
+        let named = |launch: &Launch| {
+            launch.argv.first().map_or_else(String::new, |p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
+            })
+        };
+        if matches!(&self.runs, Runs::Program(old) if named(old) == self.name) {
+            self.name = named(&launch);
+        }
         self.title = Title::default();
         self.input = InputQueue::default();
         self.frame = None;

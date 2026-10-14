@@ -217,12 +217,14 @@ fn rows_of(
             .enumerate()
             .filter_map(|(i, row)| {
                 let from = if i == 0 { usize::from(start.col) } else { 0 };
-                let to = if i.saturating_add(1) == count {
-                    usize::from(end.col)
-                } else {
-                    usize::MAX
+                // The end mark at a line's start ends the output before it;
+                // past it, the row is the command's whole (the prompt goes on
+                // a row of its own), what it wrote right of the cursor too.
+                let to = match (i.saturating_add(1) == count, end.col) {
+                    (true, 0) => 0,
+                    (true, col) if i == 0 && start.col >= col => 0,
+                    _ => usize::MAX,
                 };
-                // The end mark at a line's start ends the output before it.
                 (from < to).then_some((row, from..to))
             })
             .collect();

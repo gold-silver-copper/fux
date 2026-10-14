@@ -26,9 +26,9 @@ fux str agent workspace kill                            # at the end: everything
 ```
 
 The answer's first line is the pane and its **state**; then what came since
-you acted, from the line typed on (its prompt and your echo too), or the
-whole screen of a full-screen program (an editor, a menu, a form); one that
-redraws in place on the main screen answers from the top row it changed:
+you acted, from the line typed on (its prompt and your echo too; after a lone Enter,
+from the first line that changed), or the whole screen of a full-screen program (an
+editor, a menu, a form); one that redraws in place on the main screen answers from the top row it changed:
 
 ```
 %2 reading                     it waits for you: blocked reading its terminal, every key read
@@ -39,10 +39,10 @@ redraws in place on the main screen answers from the top row it changed:
 %2 exited 3                    the program ended; its last output follows
 ```
 
-- **Time:** an action or `capture` settles within 10s, a `wait` within 60s;
-  `SECS timeout` changes it. `0 timeout` acts and answers at once, the
-  state as it is (start many programs with it, then one `wait` on their tab
-  or workspace: it settles each pane). Busy at the limit: status 124; `PANE opts wait` waits on.
+- **Time:** an action or `capture` settles within 10s; a `wait`, or an action
+  given a wait (`wait-text` …), within 60s; `SECS timeout` changes it. `0 timeout`
+  acts and answers at once, the state as it is (start many programs with it, then
+  one `wait` on their tab or workspace: it settles each pane). Busy at the limit: status 124; `PANE opts wait` waits on.
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
   workspace `agent`. OPTIONS: `str app name` (the tab's; one in use is
   refused), `100 30 size`, `str "$PWD" cwd` (a real path), `str K str V env`,
@@ -53,9 +53,9 @@ redraws in place on the main screen answers from the top row it changed:
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; no keypad keys; a typo
   is refused). Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T
-  paste` (one bracketed paste, an end-of-paste mark in T dropped), `str FILE paste-file`;
-  900 KiB at most in all, repeats too. `N times` (1 to 1000) repeats only the
-  input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
+  paste` (bracketed if the program turned that on, an end-of-paste mark in T
+  then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too.
+  `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
   `wait-bell`; several: whichever first. A text: case ignored, blanks as
   one, from a word's start (`READY` is not in `NOT_READY`); `^T` a line's
@@ -66,15 +66,18 @@ redraws in place on the main screen answers from the top row it changed:
   before it, on each row it went on (with the keys, or for a later wait your
   last input); what the program writes after it on that row counts. A wait
   counts what came since your last input to the pane (or since the program
-  started), scrolled away too: it never starts too late; but a later wait
-  does not see a line overwritten in place before it began. **Status 7:**
-  the program reads its terminal and the text has not come: it cannot before
-  you type. fux judges by what the terminal's foreground program is blocked
-  in: one woken by a timer (`alarm`) or by another descriptor it waits on
-  with the terminal may still go on, and one left running in the background
-  may still write it. The answer is the screen (it starts `… earlier lines not kept`
-  if lines since were let go past history-lines before the wait read them:
-  the text may have passed unseen). Status 3: the program exited first.
+  started), scrolled away too: it never starts too late. But it reads
+  screens, not every byte: text drawn over in place before fux reads the
+  screen (`printf 'READY\rxxxxx'` in one write) is never seen, by any wait,
+  and a later wait does not see a line overwritten in place before it
+  began; `log-to` keeps every byte. **Status 7:** the terminal's foreground
+  program is blocked reading it, and the text has not come (`wait-gone`:
+  not gone). This is fux's judgement from what the program is blocked in:
+  one also woken by a timer (`alarm`) or another descriptor gets 7 too,
+  though it may go on alone, as may a program left in the background (look
+  again later, or use `wait-exit`). The answer is the screen (it starts `…
+  earlier lines not kept` if lines since were let go past history-lines
+  before the wait read them: the text may have passed unseen). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
@@ -95,9 +98,9 @@ redraws in place on the main screen answers from the top row it changed:
 
 0 done (settled, or the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr,
 one line (a line end in it shown as `\n`), with how the word is used when
-it was given too few values or the wrong kind; 3 the program exited before the wait;
-4 the pane closed; 7 the program reads its terminal and the text has not
-come; 124 still busy at the time limit (with `0 timeout`, a wait for a text
+one of fux's own words was given too few values or the wrong kind; 3 the program exited before the wait;
+4 the pane closed; 7 the program is blocked reading its terminal and the
+text has not come (or gone); 124 still busy at the time limit (with `0 timeout`, a wait for a text
 or the exit not met at once). A wait for the exit (`wait-exit`)
 answers with the program's own status instead, which may be any of these:
 its state line (`exited 3`) tells them apart. Words before a failing one
@@ -139,8 +142,9 @@ the shell reads again, `last-output` reads a command's output alone, and
 command longer than the limit answers `busy` (124): `wait` on. A command
 that prompts (`read`, `sudo`) answers `reading`, its prompt shown.
 Output with no line end of its own is followed by the prompt on a row of
-its own. bash marks from `PROMPT_COMMAND` and `PS1`: one set anew in the
-running shell has `last-output` take what its hooks print too; with both
+its own. bash marks from `PROMPT_COMMAND` and `PS1`: a `PROMPT_COMMAND` set anew in
+the running shell has `last-output` take what it prints too (a new `PS1`
+changes nothing); with both
 replaced, or made readonly in a startup file (before fux sets them), a
 command never ends: `line` answers `reading` with no `done`, and
 `command_running` stays true; made readonly later, they keep fux's marks.
@@ -181,7 +185,9 @@ checks that the server runs as you.
   (`PANE str FILE start-log` from any time). `PANE str TEXT notify` shows a
   notice to people watching.
 - `dump` prints what there is as a fuxth program that makes it again; run it
-  with `fux FILE`. A crashed server's next run brings its panes back,
+  with `fux FILE`. It adds to what the server has: on a new server, its own
+  `main` tab stays beside the dump's, which then takes the next name
+  (`tab-2`); kill the tab you do not want. A crashed server's next run brings its panes back,
   programs waiting for `respawn`.
 - `100 30 headless` is a client with no terminal (it prints its id, `c2`,
   and runs until stopped: start it in the background); `str c2 client keys

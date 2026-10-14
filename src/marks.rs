@@ -19,19 +19,25 @@ use std::path::{Path, PathBuf};
 /// bash: the user's own startup, then the marks, set by `__fux_marks`, a
 /// function defined first. A function inherits no DEBUG or RETURN trap
 /// (unless `set -T`), so a trap the user's startup set sees one command of
-/// fux's: its call. The marks run no command of the shell's own either, so
+/// fux's: its call. With `set -T` it sees what the function runs too, but
+/// what it prints goes nowhere (the function's output, and END's, go to
+/// /dev/null; marks are written to stderr), and nothing of fux's reads it
+/// (no command substitution, from bash 4.4). The marks run no command of
+/// the shell's own either, so
 /// the user's DEBUG, ERR and RETURN traps see nothing of them, and `$?` and
 /// `PIPESTATUS` stay the command's:
 ///
-/// - `END`, first in `PROMPT_COMMAND`, so before the user's own hooks
-///   print: subshells, which inherit no DEBUG trap, the first exiting with
+/// - `END`, first in `PROMPT_COMMAND` (its first element, an array's
+///   too, so that setting it anew replaces the user's hooks, as without
+///   fux), so before the user's own hooks print: subshells, which inherit no DEBUG trap, the first exiting with
 ///   the command's status (its `&&` keeps the ERR trap from it), print
 ///   `D;STATUS` and `A`. The status and the state (`__fux_w`, a prompt
 ///   shown and no command started since; `__fux_h`, the next history
 ///   number then) are kept in the arithmetic of a redirection of its own,
 ///   as no subshell can keep them: a line run with no start mark (one bash
 ///   could not parse, or a comment: the history number moved) gets one as
-///   it ends.
+///   it ends, `C;late`, which starts its output after the prompt's line, so
+///   bash's complaint is its output.
 /// - `PS1` ends a command too, in case `PROMPT_COMMAND` is set anew while
 ///   the shell runs (a `D` that ends no command does nothing); its hooks
 ///   then print before that end.
@@ -45,7 +51,7 @@ use std::path::{Path, PathBuf};
 ///   nothing a function sets outlasts its call there.
 ///
 /// A variable the user made readonly is left as it is, unmarked (told from
-/// `declare -p`: an assignment tried in a subshell leaves bash 3.2's
+/// its attributes, before bash 4.4 `declare -p`: an assignment tried in a subshell leaves bash 3.2's
 /// subshell reading the terminal in the shell's place). Marks go to
 /// stderr, as the prompt does; fux's PROMPT_COMMAND is not exported, so
 /// shells started from this one do not inherit it.
@@ -63,7 +69,7 @@ unset __fux_f
 
 /// A command's end, `{H}` the next history number (see `BASHRC`). No
 /// single quotes: the startup file quotes it with them.
-const END: &str = r#"{ ([ "$__fux_m" = 1 ] && printf "\033]133;C\007" >&2; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&2; exit "$__fux_s") && (:); } 2>&$((__fux_s = $?, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2))"#;
+const END: &str = r#"{ ([ "$__fux_m" = 1 ] && printf "\033]133;C;late\007" >&2; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&2; exit "$__fux_s") && (:); } >/dev/null 2>&$((__fux_s = $?, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2))"#;
 const HISTORY_NEW: &str = "${HISTCMD-0}";
 const HISTORY_OLD: &str = r#"$(__fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; echo "${__fux_n%%[!0-9]*}") + 1"#;
 /// Before bash 4.4: the DEBUG trap, as a `printf` format of the user's own
@@ -94,14 +100,11 @@ fn bash_rc(startup: &str) -> String {
         r#"# fux: OSC 133 shell marks, after your own startup. Off: `str shell-marks str off set`.
 __fux_marks() {{
   unset -f __fux_marks
-  __fux_free() {{ local d; d=$(declare -p "$1" 2>/dev/null); d=${{d#declare -}}; case ${{d%% *}} in *r*) return 1 ;; esac; }}
+  __fux_free() {{ local d; if [ $__fux_new = 1 ]; then d=${{!1@a}}; else d=$(declare -p "$1" 2>/dev/null); d=${{d#declare -}}; d=${{d%% *}}; fi; case $d in *r*) return 1 ;; esac; }}
   local __fux_new=0 __fux_end
   if [ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]; then __fux_new=1; __fux_end='{new}'; else __fux_end='{old}'; fi
   if __fux_free PROMPT_COMMAND; then
-    case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
-      "declare -a"*) PROMPT_COMMAND=("$__fux_end" "${{PROMPT_COMMAND[@]}}") ;;
-      *) PROMPT_COMMAND="$__fux_end${{PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}}" ;;
-    esac
+    PROMPT_COMMAND="$__fux_end${{PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}}"
     if [ $__fux_new = 0 ]; then PROMPT_COMMAND="$PROMPT_COMMAND"$'\n''{ARM}'; fi
     export -n PROMPT_COMMAND
   fi
@@ -111,9 +114,9 @@ __fux_marks() {{
   fi
   if __fux_free PS1; then PS1='{PS1_END}'"${{PS1-}}"; fi
   unset -f __fux_free
-}}
+}} >/dev/null 2>&1
 {startup}__fux_marks
-([ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]) || trap -- "$(eval "set -- $(trap -p DEBUG)"; printf '{START}' "${{3-}}" "${{3-}}")" DEBUG
+([ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]) >/dev/null || trap -- "$(eval "set -- $(trap -p DEBUG)"; printf '{START}' "${{3-}}" "${{3-}}")" DEBUG
 "#,
     )
 }

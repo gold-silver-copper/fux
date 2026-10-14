@@ -419,6 +419,11 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         let wrong = said(words)?;
         assert!(wrong.ends_with(&format!("{usage}\n")), "{wrong}");
     }
+    // `help WORD` of no word says so, as help.
+    assert_eq!(
+        said(&["help", "no-such-word"])?,
+        "fux: unknown_word: help: no word \"no-such-word\" (`fux help` lists every word)\n"
+    );
     let named = said(&["1", "let", "+7"])?;
     assert!(
         named.contains("+7: cannot be defined: it names a workspace"),

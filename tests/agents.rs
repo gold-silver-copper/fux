@@ -2720,8 +2720,11 @@ fn a_deleted_line_is_answered() -> Outcome {
     Ok(())
 }
 
-/// A text a program `run` just started never showed has not gone: its
-/// `wait-gone` runs to the limit, which says what the pane does.
+/// A text a program `run` just started never showed has not gone, and a
+/// text shown stays: on a program reading its terminal neither can change
+/// before you type, so `wait-gone` ends at once (status 7) with the screen;
+/// where fux is not told the program reads (not Linux), at the limit, which
+/// says what the pane does.
 #[test]
 fn a_new_programs_text_goes_once_shown() -> Outcome {
     let server = Server::start("")?;
@@ -2729,12 +2732,176 @@ fn a_new_programs_text_goes_once_shown() -> Outcome {
         &["str", "ABSENT", "wait-gone", "2", "timeout"],
         &["sh", "-c", "echo ready; read x"],
     ))?;
-    assert_eq!(out.status, 124, "{}{}", out.stdout, out.stderr);
+    assert_eq!(out.status, CANNOT_COME, "{}{}", out.stdout, out.stderr);
     let pane = id(&out.stdout);
-    assert!(
-        out.stderr.contains(&format!("; {pane} {READING}, ")),
-        "{}",
-        out.stderr
+    if PROBED {
+        assert_eq!(out.stdout, format!("{pane} {READING}\nready\n"));
+    } else {
+        assert!(
+            out.stderr.contains(&format!("; {pane} {READING}, ")),
+            "{}",
+            out.stderr
+        );
+    }
+    let shown = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "ready",
+        "wait-gone",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(
+        shown.status, CANNOT_COME,
+        "{}{}",
+        shown.stdout, shown.stderr
     );
+    Ok(())
+}
+
+/// Enter alone types nothing: a program that echoes nothing and answers on
+/// the prompt's row (`Password: ACCEPTED`) wrote output there, for the
+/// keys' own wait and a later one.
+#[test]
+fn enter_alone_leaves_the_prompts_row_to_the_program() -> Outcome {
+    let server = Server::start("")?;
+    let quiet = "import sys, termios
+a = termios.tcgetattr(0)
+a[3] &= ~termios.ECHO
+\
+                 termios.tcsetattr(0, termios.TCSANOW, a)
+\
+                 print('Password: ', end='', flush=True); sys.stdin.readline()
+\
+                 print('ACCEPTED', flush=True); sys.stdin.readline()
+";
+    let pane = id(&server.ok(&run(
+        &["str", "Password", "wait-text"],
+        &["python3", "-c", quiet],
+    ))?);
+    let keys = |input: &[&str]| -> Result<Output, String> {
+        server.fux(&[&["str", &pane, "pane", "keys"][..], input, &["send-keys"]].concat())
+    };
+    keys(&["str", "TOKEN", "text"])?;
+    let enter = keys(&[
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "ACCEPTED",
+        "wait-text",
+        "2",
+        "timeout",
+    ])?;
+    assert_eq!(enter.status, 0, "{}{}", enter.stdout, enter.stderr);
+    assert_eq!(enter.stdout, "Password: ACCEPTED\n");
+    let later = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "ACCEPTED",
+        "wait-text",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(later.status, 0, "{}{}", later.stdout, later.stderr);
+    Ok(())
+}
+
+/// A home whose `.bashrc` holds `rc`, for a bash started with it.
+fn bash_home(server: &Server, name: &str, rc: &str) -> Result<String, String> {
+    let home = server.dir.join(name);
+    std::fs::create_dir_all(&home).map_err(e)?;
+    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
+    Ok(home.to_string_lossy().into_owned())
+}
+
+/// With `set -T`, functions inherit the user's DEBUG trap: fux's setup
+/// still marks the shell, and the trap's output shows none of it but the
+/// call, nor anything of fux's at a prompt.
+#[test]
+fn bash_marks_hold_under_a_traced_debug_trap() -> Outcome {
+    // Before bash 4.4 (macOS's 3.2) fux's marks need a DEBUG trap of their
+    // own.
+    if old_bash()? {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let rc = "set -T\ntrap 'printf \"DBG %s\\n\" \"$BASH_COMMAND\"' DEBUG\n";
+    let home = bash_home(&server, "home", rc)?;
+    server.ok(&run(
+        &["str", "t", "name", "str", "HOME", "str", &home, "env"],
+        &["bash"],
+    ))?;
+    assert_eq!(done(&line(&server, "t", "false")?), Some("done 1"));
+    line(&server, "t", "echo hi")?;
+    assert_eq!(last_output(&server, "t")?, "DBG echo hi\nhi\n");
+    let screen = server.ok(&["str", "t", "pane", "opts", "capture"])?;
+    let fuxs: Vec<&str> = (screen.lines())
+        .filter(|l| l.starts_with("DBG") && l.contains("fux"))
+        .collect();
+    assert!(fuxs.iter().all(|l| *l == "DBG __fux_marks"), "{screen}");
+    Ok(())
+}
+
+/// A `PROMPT_COMMAND` the user's startup set (an array, as some system
+/// files make it) is replaced by one set in the running shell, as without
+/// fux.
+#[test]
+fn a_prompt_command_set_anew_replaces_the_startup_one() -> Outcome {
+    let server = Server::start("")?;
+    let home = bash_home(&server, "home", "PROMPT_COMMAND=('echo STARTUP-HOOK')\n")?;
+    server.ok(&run(
+        &["str", "p", "name", "str", "HOME", "str", &home, "env"],
+        &["bash"],
+    ))?;
+    assert!(line(&server, "p", "true")?.contains("STARTUP-HOOK"));
+    line(&server, "p", "PROMPT_COMMAND='echo NEW-HOOK'")?;
+    let after = line(&server, "p", "echo x")?;
+    assert!(
+        after.contains("NEW-HOOK") && !after.contains("STARTUP-HOOK"),
+        "{after}"
+    );
+    Ok(())
+}
+
+/// A line bash cannot parse never runs, yet its complaint is its output;
+/// and a command's output is its rows whole, what it wrote right of where
+/// it left the cursor too.
+#[test]
+fn last_output_holds_a_parse_error_and_whole_rows() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&run(&["str", "b", "name"], &["bash", "--norc", "-i"]))?;
+    line(&server, "b", "printf 'ABCDE\\rXY'")?;
+    assert_eq!(last_output(&server, "b")?, "XYCDE\n");
+    let status = line(&server, "b", "if ; then")?;
+    assert!(
+        [Some("done 2"), Some("done 258")].contains(&done(&status)),
+        "{status}"
+    );
+    let error = last_output(&server, "b")?;
+    assert!(
+        error.contains("syntax error") && !error.contains("if ; then"),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// A pane renamed keeps its name when its program is started again.
+#[test]
+fn respawn_keeps_a_rename() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "exit 0"]))?);
+    server.ok(&["str", &pane, "pane", "str", "keepme", "rename"])?;
+    server.ok(&["str", &pane, "pane", "opts", "respawn"])?;
+    let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
+    assert_eq!(name, "keepme\n");
     Ok(())
 }

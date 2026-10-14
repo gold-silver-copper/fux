@@ -656,24 +656,26 @@ fn one_off(a: &str, b: &str) -> bool {
 /// The lines send-keys types, as a terminal shows them after its line
 /// editing (Space joins words, BSpace or DEL takes the last character back,
 /// C-w the last word, C-u the line; Tab is a blank, and another control
-/// character in text shows as `^A`; pasted text is shown too), and how many
-/// it ends (Enter, or a line end in text).
-pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, u32) {
+/// character in text shows as `^A`; pasted text is shown too), and whether
+/// a line was ended (Enter, or a line end in text) after a key whose echo
+/// is not known (Up, C-r: a command recalled).
+pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, bool) {
     use fux_vt::keys::{Key, Modifiers};
     let mut lines: Vec<String> = vec![String::new()];
-    let mut ended = 0u32;
-    let mut end = |lines: &mut Vec<String>, counts: bool| {
+    let (mut unknown, mut recalled) = (false, false);
+    // A line broken: ended for the program (Enter) or not (a paste's line
+    // end), after a key whose echo is known or not.
+    let mut end = |lines: &mut Vec<String>, ends: bool, known: bool| {
         lines.push(String::new());
-        if counts {
-            ended = ended.saturating_add(1);
-        }
+        recalled |= ends && unknown;
+        unknown |= !known;
     };
     for input in inputs {
         match input {
             Input::Text(text) => {
                 for c in text.chars() {
                     match c {
-                        '\n' | '\r' => end(&mut lines, true),
+                        '\n' | '\r' => end(&mut lines, true, true),
                         c => type_char(&mut lines, c),
                     }
                 }
@@ -681,7 +683,7 @@ pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, u32) {
             Input::Paste(text) => {
                 for (i, part) in text.split('\n').enumerate() {
                     if i > 0 {
-                        end(&mut lines, false);
+                        end(&mut lines, false, true);
                     }
                     if let Some(last) = lines.last_mut() {
                         last.push_str(part);
@@ -695,15 +697,15 @@ pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, u32) {
                 }
                 (Key::Backspace, Modifiers::NONE) => type_char(&mut lines, '\x7f'),
                 (Key::Tab, Modifiers::NONE) => type_char(&mut lines, '\t'),
-                (Key::Enter, _) => end(&mut lines, true),
+                (Key::Enter, _) => end(&mut lines, true, true),
                 // Another key (an arrow, a control key) leaves the line as
                 // the program makes it: its echo is not known.
-                _ => end(&mut lines, false),
+                _ => end(&mut lines, false, false),
             },
         }
     }
     lines.retain(|l| !l.trim().is_empty());
-    (lines, ended)
+    (lines, recalled)
 }
 
 /// Types `c` on the last of `lines`, as a terminal's line editing shows it.
@@ -753,7 +755,16 @@ mod tests {
         ];
         assert_eq!(
             typed_lines(&inputs),
-            (vec!["abcd".to_owned(), "e".to_owned(), "gh".to_owned()], 1)
+            (
+                vec!["abcd".to_owned(), "e".to_owned(), "gh".to_owned()],
+                false
+            )
         );
+        // Enter after Up runs a line recalled, whose echo is not known.
+        let recalled = [
+            key(Key::Arrow(fux_vt::keys::Direction::Up)),
+            key(Key::Enter),
+        ];
+        assert_eq!(typed_lines(&recalled), (Vec::new(), true));
     }
 }

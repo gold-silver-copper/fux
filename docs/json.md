@@ -84,8 +84,8 @@ word that wants a pane takes it as one.
 
 `json` of an action's answer (`run`, `send-keys`, `send-mouse`, `signal`,
 a bare `wait` …): one object, or a line each for keys sent to several panes. A
-pane that settled, still busy at the limit (124), that reads its terminal
-before the waited text came (7), or whose exit was waited for (`wait-exit`,
+pane that settled, still busy at the limit (124), blocked reading its
+terminal before the waited text came or went (7), or whose exit was waited for (`wait-exit`,
 its own status):
 
 ```json
@@ -97,7 +97,8 @@ its own status):
 `wait` whose pane closed answers `{"pane":"%3","state":"closed","status":4}`,
 with no `output` and nothing on stderr. `output` is what came since the
 input, from the line the keys went in on (its prompt too, so a
-`no_change` answer holds that prompt), or the screen of a full-screen program (one the keys made leave
+`no_change` answer holds that prompt; after a lone Enter, from the first
+line that changed), or the screen of a full-screen program (one the keys made leave
 it: what it printed after, else that full screen if they changed it, else
 the screen), or the screen for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
 line's notes are fields, each only when said: `done` (a shell command
