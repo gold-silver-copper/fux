@@ -949,6 +949,8 @@ mod tests {
             ("C-M-[", LEGACY, "\x1b\x1b"),
             ("C-M-3", LEGACY, "\x1b\x1b"),
             ("M-Delete", LEGACY, "\x1b[3;3~"),
+            ("Tab", LEGACY, "\t"),
+            ("M-Tab", LEGACY, "\x1b\t"),
             ("BTab", LEGACY, "\x1b[Z"),
             ("M-BTab", LEGACY, "\x1b[1;4Z"),
             ("C-S-Tab", LEGACY, "\x1b[1;6Z"),

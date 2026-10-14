@@ -506,6 +506,28 @@ fn rows_let_go_are_kept_while_asked() -> Result<(), Error> {
     parser.keep_departed(false);
     parser.process(b"\r\nu\r\n")?;
     assert!(parser.screen().departed().is_empty());
+    // Rows scrolled out of a scroll region's top go to no history either.
+    let mut parser = Parser::new(Size::of(4, 10), 100)?;
+    parser.keep_departed(true);
+    parser.process(b"\x1b[1;2ra\r\nb\r\nc\r\n")?;
+    assert_eq!(gone(&parser), ["a", "b"]);
+    Ok(())
+}
+
+/// A row let go says whether it changed since a mark, as a kept row does:
+/// not the row written last before it, but one written after.
+#[test]
+fn rows_let_go_tell_whether_they_changed_since_a_mark() -> Result<(), Error> {
+    let mut parser = Parser::new(Size::of(3, 10), 0)?;
+    parser.keep_departed(true);
+    parser.process(b"x\r\nb\r\nc\x1b[Ha")?;
+    let mark = parser.screen().mark();
+    parser.process(b"\x1b[3H\n")?;
+    parser.process(b"\x1b[Hq\x1b[3H\n")?;
+    let changed: Vec<(String, bool)> = (parser.screen().departed().iter())
+        .map(|d| (d.text.trim_end().to_owned(), d.changed_since(mark)))
+        .collect();
+    assert_eq!(changed, [("a".to_owned(), false), ("q".to_owned(), true)]);
     Ok(())
 }
 

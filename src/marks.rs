@@ -323,6 +323,21 @@ mod tests {
         }
         let argv = marked(&words("bash"), &[], &dir).unwrap_or_default().argv;
         assert_eq!(argv.get(1).map(String::as_str), Some("--rcfile"));
+        // The rc file reads what bash would have read; a login shell takes
+        // no rc file, so its flag goes, the others stay.
+        for (shell, rc, rest) in [
+            ("bash -i", "bashrc", "-i"),
+            ("bash -l", "bash_login", ""),
+            ("bash --login -i", "bash_login", "-i"),
+            ("bash -l --noprofile", "bash_bare", "--noprofile"),
+        ] {
+            let argv = marked(&words(shell), &[], &dir).unwrap_or_default().argv;
+            assert!(
+                argv.get(2).is_some_and(|f| f.ends_with(rc)),
+                "{shell}: {argv:?}"
+            );
+            assert_eq!(argv.get(3..), Some(&words(rest)[..]), "{shell}");
+        }
         // bash --norc stays so (Debian's would read /etc/bash.bashrc given
         // an rc file), its marks from its variables, the caller's own
         // PROMPT_COMMAND along; on macOS (bash 3.2) it reads an rc file of

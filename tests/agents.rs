@@ -1618,7 +1618,7 @@ fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
 }
 
 /// Joined, a row range takes each line it touches whole; a column range
-/// cuts a wide glyph to a blank.
+/// cuts a wide glyph to a blank, and reaches the last column.
 #[test]
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
@@ -1631,7 +1631,7 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     // A column range cuts a wide glyph to a blank, a column a cell.
     let wide = id(&server.ok(&run(
         &["20", "6", "size"],
-        &["sh", "-c", "printf 'A界BC'; exec cat"],
+        &["sh", "-c", "printf 'A界BC              Z'; exec cat"],
     ))?);
     let cut = |first: &str, last: &str| {
         let opts = [
@@ -1641,12 +1641,16 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     };
     assert_eq!(cut("2", "4")?, " BC\n");
     assert_eq!(cut("0", "1")?, "A\n");
+    assert_eq!(cut("19", "19")?, "Z\n");
+    // The cursor, on the empty row after the last line, is on none printed.
+    let json = server.ok(&["str", &pane, "pane", "opts", "json", "capture"])?;
+    assert!(json.contains(r#""cursor":null,"#), "{json}");
     Ok(())
 }
 
 /// The key after a lone Escape waits until the program has taken the
-/// Escape alone (here after 120ms), so it is not read as Alt and that key;
-/// a text wait on several panes outlasts one that reads without it; a
+/// Escape alone (here after 120ms), so it is not read as Alt and that key,
+/// or a second at most; a text wait on several panes outlasts one that reads without it; a
 /// program that leaves its full screen and exits answers with that screen.
 #[test]
 fn escape_alone_full_screens_and_waits_on_many() -> Outcome {
@@ -1678,6 +1682,34 @@ fn escape_alone_full_screens_and_waits_on_many() -> Outcome {
         "send-keys",
     ])?;
     assert!(keys.contains("ESC alone\nCTRL-S\n"), "{keys}");
+    // One that only polls for keys never waits for them with no limit: the
+    // key after the Escape goes in once the Escape's second is up.
+    let polls = "import os, select, tty\n\
+                 tty.setraw(0); os.write(1, b'ready\\r\\n')\n\
+                 while True:\n\
+                 \x20   if select.select([0], [], [], 0.05)[0] and os.read(0, 1) == b'x':\n\
+                 \x20       os.write(1, b'GOT X\\r\\n')\n";
+    let polling = id(&server.ok(&run(
+        &["str", "ready", "wait-text"],
+        &["python3", "-c", polls],
+    ))?);
+    let got = server.ok(&[
+        "str",
+        &polling,
+        "pane",
+        "keys",
+        "str",
+        "Escape",
+        "key",
+        "str",
+        "x",
+        "text",
+        "str",
+        "GOT X",
+        "wait-text",
+        "send-keys",
+    ])?;
+    assert!(got.ends_with("GOT X\n"), "{got}");
     let full = "printf '\\033[?1049hEDIT> '; read x; echo saved; sleep 0.2; printf '\\033[?1049l'";
     let editor = id(&server.ok(&run(&["str", "EDIT>", "wait-text"], &["sh", "-c", full]))?);
     // Waited to its exit: where a quiet screen is taken as settled (not
