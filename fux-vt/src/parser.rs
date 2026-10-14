@@ -339,8 +339,9 @@ impl Phase {
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// The most OSC payload bytes retained with [`Feature::PromptMarks`] alone:
-/// enough to tell a prompt mark, `133;A`, or a prompt's kind, `133;P;k=i`.
-const OSC_PREFIX: usize = 16;
+/// enough to tell a prompt mark, `133;A`, a prompt's kind, `133;P;k=i`, or
+/// a status and a nonce, `133;D;-2147483648;nonce=` and 32 bytes of it.
+const OSC_PREFIX: usize = 64;
 
 /// The most bytes of a DECRQSS request kept: xterm's longest are two
 /// (` q`, `$|`, `"p`). A longer request is no setting fux-vt knows.
@@ -733,6 +734,36 @@ impl Parser {
     /// Forgets the rows let go so far ([`Screen::forget_departed`]).
     pub fn forget_departed(&mut self) {
         self.screen.forget_departed();
+    }
+    /// A new number, after every one processing has taken so far
+    /// ([`Screen::version`]): for something the host records between
+    /// pieces of output, which the next piece's number follows.
+    pub fn tick(&mut self) -> u64 {
+        self.screen.begin();
+        self.screen.version()
+    }
+    /// Starts recording what is printed, or stops and forgets it
+    /// ([`Parser::take_prints`]).
+    pub fn record_prints(&mut self, on: bool) {
+        self.screen.record_prints(on);
+    }
+    /// What was printed since the last call, while recording: each run
+    /// of text that changed cells, though drawn over since.
+    pub fn take_prints(&mut self) -> Vec<crate::Print> {
+        self.screen.take_prints()
+    }
+    /// Makes shell marks (OSC 133) count only if they carry
+    /// `nonce=NONCE` among their options; `None`, every one. A mark
+    /// without it is ignored: printed by a program, not by the shell
+    /// that was given the nonce.
+    pub fn require_mark_nonce(&mut self, nonce: Option<&[u8]>) {
+        self.screen.require_mark_nonce(nonce);
+    }
+    /// Notes that the host submitted a line with the cursor where it is:
+    /// a late `C` (`133;C;late`, a line the shell could not run) starts
+    /// the output on the row after that line.
+    pub fn note_submit(&mut self) {
+        self.screen.note_submit();
     }
     /// Tells the parser what the host's terminal shows for palette entries
     /// 0 to 15, the ones themes change (`None`: the host does not know

@@ -294,6 +294,19 @@ impl Departed {
     }
 }
 
+/// Text printed on a row, as recorded while the host records
+/// ([`Parser::record_prints`]): what changed cells, in the order printed,
+/// though later drawn over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Print {
+    /// The row it was printed on.
+    pub row: RowId,
+    /// The columns it took.
+    pub cols: std::ops::Range<u16>,
+    /// What was printed there.
+    pub text: String,
+}
+
 /// Input/resource errors. Failing size changes leave the old screen intact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]

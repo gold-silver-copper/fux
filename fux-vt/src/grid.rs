@@ -648,7 +648,7 @@ impl Grid {
                 return Written::Before(0);
             }
             if cell.is_ascii(*byte, style) {
-                return Written::All;
+                return Written::Same;
             }
             *cell = Compact::ascii(*byte, style);
             self.changed(slot, start.saturating_add(1), version);
@@ -669,7 +669,7 @@ impl Grid {
         // it was. New text differs at the first cell.
         let first = dst.first().zip(run.first());
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
-            return Written::All;
+            return Written::Same;
         }
         if run.len() < LONG_RUN {
             for (cell, byte) in dst.iter_mut().zip(run) {
@@ -2003,6 +2003,8 @@ fn set_link(
 pub(crate) enum Written {
     /// It wrote all of it.
     All,
+    /// The cells were already the run: nothing changed.
+    Same,
     /// It wrote none of it, as it meets half of a wide glyph, which the
     /// general path repairs, after this many bytes: those it would write.
     Before(usize),

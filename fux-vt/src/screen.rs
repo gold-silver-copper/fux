@@ -369,6 +369,16 @@ pub struct Screen {
     /// them (`keep_departed`), and how many it has been given.
     departed: Option<Vec<crate::Departed>>,
     departures: u64,
+    /// What was printed since the host last took it, while it records
+    /// (`record_prints`): text drawn and drawn over before it reads the
+    /// screen is there still.
+    prints: Option<Vec<crate::Print>>,
+    /// The nonce a shell mark must carry to count (`require_mark_nonce`):
+    /// one without it is a program's output, not its shell's.
+    mark_nonce: Option<Box<[u8]>>,
+    /// Where the cursor was as the host last said a line was submitted
+    /// (`note_submit`): a late `C` starts the output after that line.
+    submitted: Option<CommandMark>,
 }
 
 mod pictures;
@@ -479,6 +489,9 @@ impl Screen {
             colours: None,
             departed: None,
             departures: 0,
+            prints: None,
+            mark_nonce: None,
+            submitted: None,
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -815,6 +828,12 @@ impl Screen {
     /// other commands (`B`, `C`, `D`, `P` and the rest) change nothing.
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
+        // Printed by a program, not its shell: no mark.
+        if let Some(nonce) = &self.mark_nonce
+            && !(payload.split(|b| *b == b';')).any(|o| o.strip_prefix(b"nonce=") == Some(nonce))
+        {
+            return Ok(());
+        }
         let command = parts.next().unwrap_or_default();
         if matches!(command, b"C" | b"D") {
             self.command_mark(command, parts.next());
@@ -829,6 +848,7 @@ impl Screen {
             if kind.is_none_or(|k| k == b"i") {
                 let row = self.grid().cursor.row();
                 self.grid_mut().mark_prompt(row);
+                self.prompted();
             }
             return Ok(());
         }
@@ -845,6 +865,7 @@ impl Screen {
         if command != b"L" {
             let row = self.grid().cursor.row();
             self.grid_mut().mark_prompt(row);
+            self.prompted();
         }
         Ok(())
     }
@@ -908,6 +929,49 @@ impl Screen {
     /// A mark of the screen as it is now, to ask later what changed.
     pub fn mark(&self) -> Mark {
         Mark(self.version)
+    }
+    /// The number of the last processing (or `Parser::tick`): each row
+    /// keeps the number of the one that last changed it (`Row::version`).
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    /// Records what is printed from now on, or stops and forgets it.
+    pub(crate) fn record_prints(&mut self, on: bool) {
+        self.prints = on.then(Vec::new);
+    }
+    /// What was printed since the last call, while recording.
+    pub(crate) fn take_prints(&mut self) -> Vec<crate::Print> {
+        self.prints.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+    /// Notes that `text` was printed at live row `row`, column `col`, if
+    /// recording.
+    fn printed(&mut self, row: u16, cols: std::ops::Range<u16>, text: &str) {
+        let Some(id) = self.grid().live_row(row).map(|r| r.id()) else {
+            return;
+        };
+        if let Some(prints) = &mut self.prints {
+            match prints.last_mut() {
+                // The run goes on where the last left off, on its row.
+                Some(last) if last.row == id && last.cols.end == cols.start => {
+                    last.text.push_str(text);
+                    last.cols.end = cols.end;
+                }
+                _ => prints.push(crate::Print {
+                    row: id,
+                    cols,
+                    text: text.to_owned(),
+                }),
+            }
+        }
+    }
+    /// Makes shell marks count only with `nonce=NONCE` among their
+    /// options, or with none (`None`) every one.
+    pub(crate) fn require_mark_nonce(&mut self, nonce: Option<&[u8]>) {
+        self.mark_nonce = nonce.map(Box::from);
+    }
+    /// Notes that a line was submitted with the cursor where it is.
+    pub(crate) fn note_submit(&mut self) {
+        self.submitted = self.cursor_mark();
     }
     /// Whether the screen may have changed since `mark`: true after any
     /// processing at all, as the README says; false, nothing changed.
@@ -1287,6 +1351,7 @@ impl Screen {
         let split = self.links_seen
             && width == 1
             && self.grid().stored(row, col).is_some_and(Compact::is_wide);
+        let mut changed = false;
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
@@ -1325,6 +1390,7 @@ impl Screen {
                 {
                     *cell = Compact::continuation();
                 }
+                changed = true;
                 true
             });
             // Past the glyph; in the last column it waits there to wrap.
@@ -1340,6 +1406,13 @@ impl Screen {
             }
         }
         self.last_print = Some(Printed::new((row, col), c));
+        if changed && self.prints.is_some() {
+            self.printed(
+                row,
+                col..col.saturating_add(width),
+                c.encode_utf8(&mut [0; 4]),
+            );
+        }
         Ok(())
     }
 
@@ -1530,7 +1603,15 @@ impl Screen {
             // repairs, is written up to it, and the glyph there printed.
             let written = loop {
                 match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
-                    Written::All => break true,
+                    Written::All => {
+                        if self.prints.is_some() {
+                            let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
+                            let text = std::str::from_utf8(run).unwrap_or_default();
+                            self.printed(row, col..end, text);
+                        }
+                        break true;
+                    }
+                    Written::Same => break true,
                     Written::Before(n) => match run.get(..n) {
                         Some(before) if !before.is_empty() && n < run.len() => run = before,
                         Some(_) | None => break false,
