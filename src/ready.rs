@@ -87,18 +87,15 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     // A shell back at its prompt, reading, its last command ended: what
     // else runs in its group is a job it left there (job control off, or
     // fish's disowned start-up work), not the agent's command.
-    let activity = match activity {
+    let left = matches!(
+        activity,
         Activity::Busy | Activity::Polling | Activity::Waiting
-            if !commands.running
-                && commands.finished > 0
-                && tty
-                    .as_deref()
-                    .is_some_and(|tty| fuxix::process::reads_terminal(child.leader.pid(), tty)) =>
-        {
-            Activity::Reading
-        }
-        activity => activity,
-    };
+    ) && !commands.running
+        && commands.finished > 0
+        && tty
+            .as_deref()
+            .is_some_and(|tty| fuxix::process::reads_terminal(child.leader.pid(), tty));
+    let activity = if left { Activity::Reading } else { activity };
     match activity {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Reading,
         Activity::Polling | Activity::Waiting if command => State::Busy,

@@ -1545,26 +1545,23 @@ fn every_pane_and_every_start_is_waited_for() -> Outcome {
         "split",
     ])?;
     // Not told the program sleeps (not Linux), fux takes 300ms of quiet as
-    // settled, which the sleep outlasts: a wait for its text holds there.
-    let split = match PROBED {
-        true => split,
-        false => server.ok(&[
+    // settled, which the sleep outlasts: there a wait for its text follows.
+    if PROBED {
+        assert!(split.ends_with(" reading\nSPLIT\n"), "{split}");
+    } else {
+        let pane = id(&split);
+        let wait = [
             "str",
-            &id(&split),
+            &pane,
             "pane",
             "opts",
             "str",
             "SPLIT",
             "wait-text",
             "wait",
-        ])?,
-    };
-    let want = if PROBED {
-        " reading\nSPLIT\n"
-    } else {
-        "\nSPLIT\n"
-    };
-    assert!(split.ends_with(want), "{split}");
+        ];
+        assert_eq!(server.ok(&wait)?, "SPLIT\n");
+    }
     Ok(())
 }
 

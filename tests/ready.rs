@@ -39,12 +39,7 @@ fn a_program_at_its_prompt_reads_and_one_asleep_is_busy() -> Outcome {
         .next()
         .unwrap_or_default()
         .to_owned();
-    let expected = if cfg!(target_os = "linux") {
-        "reading"
-    } else {
-        "settled"
-    };
-    assert_eq!(becomes(&server, &pane, &[expected])?, expected);
+    assert_eq!(becomes(&server, &pane, &[READING])?, READING);
     server.ok(&[
         "str",
         &pane,
@@ -60,7 +55,7 @@ fn a_program_at_its_prompt_reads_and_one_asleep_is_busy() -> Outcome {
         "timeout",
         "send-keys",
     ])?;
-    if cfg!(target_os = "linux") {
+    if PROBED {
         assert_eq!(becomes(&server, &pane, &["busy"])?, "busy");
     }
     let done = server
@@ -78,7 +73,7 @@ fn a_program_at_its_prompt_reads_and_one_asleep_is_busy() -> Outcome {
 /// with the quiet before them.
 #[test]
 fn a_shell_command_that_polls_is_answered_when_it_ends() -> Outcome {
-    if !cfg!(target_os = "linux") {
+    if !PROBED {
         return Ok(());
     }
     let server = Server::start("")?;
@@ -120,7 +115,7 @@ fn started(server: &Server, code: &str) -> Result<(String, String), String> {
 /// prints next is waited for.
 #[test]
 fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
-    if !cfg!(target_os = "linux") {
+    if !PROBED {
         return Ok(());
     }
     let server = Server::start("")?;
@@ -212,7 +207,7 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
 /// answers the state with status 0, as only a busy pane fails (124).
 #[test]
 fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
-    if !cfg!(target_os = "linux") {
+    if !PROBED {
         return Ok(());
     }
     let server = Server::start("")?;
@@ -252,7 +247,7 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
 /// agent's command.
 #[test]
 fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
-    if !cfg!(target_os = "linux") {
+    if !PROBED {
         return Ok(());
     }
     let server = Server::start("")?;

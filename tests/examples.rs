@@ -24,7 +24,10 @@ fn every_example_prints_what_its_header_says() -> Outcome {
                 .filter_map(|l| l.strip_prefix(&format!("# {key}: ")).map(str::to_owned))
                 .collect()
         };
-        let expected: String = header("expect").iter().map(|l| format!("{l}\n")).collect();
+        // A state line's `reading` is `settled` where fux is not told.
+        let expected: String = (header("expect").iter())
+            .map(|l| format!("{l}\n").replace(" reading\n", &format!(" {READING}\n")))
+            .collect();
         let status: i32 = header("status")
             .first()
             .and_then(|s| s.parse().ok())

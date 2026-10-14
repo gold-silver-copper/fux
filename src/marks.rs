@@ -195,7 +195,6 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
             Some(Marked {
                 argv: argv.to_vec(),
                 env: vars,
-                ..Marked::default()
             })
         }
         "fish" if flags_only(&["-i", "-l", "--login"]) => {
