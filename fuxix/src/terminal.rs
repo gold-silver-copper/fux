@@ -201,10 +201,18 @@ mod tests {
             !timed.timed_reads(later),
             "and waits with no limit once it passed"
         );
+        let run_out = std::time::Duration::from_millis(200);
+        assert!(!timed.timed_reads(run_out), "as it has at VTIME's end");
         if let Some(m) = timed.0.c_cc.get_mut(libc::VMIN) {
             *m = 0;
         }
         assert!(timed.timed_reads(later));
+        // VMIN 0 and VTIME 0: a read that never waits, so never on a timer.
+        let mut at_once = timed.clone();
+        if let Some(t) = at_once.0.c_cc.get_mut(libc::VTIME) {
+            *t = 0;
+        }
+        assert!(!at_once.timed_reads(now));
         // The master reads the modes the program set on its side.
         let seen = attributes(&master).map_err(|e| e.to_string())?;
         assert!(!seen.echoes() && !seen.line_mode());

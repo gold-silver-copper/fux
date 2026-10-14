@@ -144,8 +144,10 @@ mod tests {
     fn bytes_go_through_a_pipe_and_flags_stick() -> std::result::Result<(), String> {
         let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
         assert_eq!(write(&writer, b"hello"), Ok(5));
+        assert_eq!(unread(&reader), Ok(5));
         let mut buffer = [0u8; 16];
         assert_eq!(read(&reader, &mut buffer), Ok(5));
+        assert_eq!(unread(&reader), Ok(0));
         assert_eq!(buffer.get(..5), Some(&b"hello"[..]));
         set_nonblocking(&reader, true).map_err(|e| e.to_string())?;
         assert_eq!(read(&reader, &mut buffer), Err(Errno::AGAIN));

@@ -109,10 +109,13 @@ fn started(server: &Server, code: &str) -> Result<(String, String), String> {
 /// epoll that watches its terminal with no time limit is `reading`, and a
 /// text it has not printed cannot come (status 7): so does a raw read whose
 /// timer runs only once a key came (VMIN 1, VTIME 10), no key sent, and one
-/// whose child ended unreaped (a zombie). One that watches a pipe alone may
-/// go on alone: `waiting`, never 7. Nor is a program whose main thread
-/// reads its terminal while another sleeps on a timer: what that thread
-/// prints next is waited for.
+/// whose child ended unreaped (a zombie), one whose main thread waits for
+/// another that reads, and one whose grandchild reads. One that reads or
+/// watches a pipe alone, or watches its terminal for no input, may go on
+/// alone: `waiting`, never 7. Nor is a program whose main thread reads its
+/// terminal while another thread, or a child, sleeps on a timer: what that
+/// one prints next is waited for. Nor, with what it may not be traced, is
+/// one still printing.
 #[test]
 fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
     if !PROBED {
@@ -151,6 +154,36 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
             "reading",
             7,
         ),
+        (
+            "import select\ne = select.epoll(); e.register(0, select.EPOLLPRI)\n\
+             print('ready', flush=True); e.poll()\n",
+            "waiting",
+            124,
+        ),
+        (
+            "import os\nr, w = os.pipe()\nprint('ready', flush=True); os.read(r, 1)\n",
+            "waiting",
+            124,
+        ),
+        (
+            "import threading\nt = threading.Thread(target=input)\n\
+             print('ready', flush=True); t.start(); t.join()\n",
+            "reading",
+            7,
+        ),
+        (
+            "import os, threading\nr, w = os.pipe()\n\
+             t = threading.Thread(target=os.read, args=(r, 1))\n\
+             print('ready', flush=True); t.start(); t.join()\n",
+            "waiting",
+            124,
+        ),
+        (
+            "import subprocess\nprint('ready', flush=True)\n\
+             subprocess.run(['sh', '-c', 'cat; :'])\n",
+            "reading",
+            7,
+        ),
     ];
     for (code, state, status) in programs {
         let (pane, now) = started(&server, code)?;
@@ -176,29 +209,40 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
     let thread = "import threading, time\n\
                   def later(): time.sleep(0.8); print('LATER', flush=True)\n\
                   threading.Thread(target=later).start(); input()\n";
-    let later = server.fux(&[
-        "opts",
-        "str",
-        "python3",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        thread,
-        "arg",
-        "str",
-        "LATER",
-        "wait-text",
-        "run",
-    ])?;
-    assert_eq!(later.status, 0, "{}{}", later.stdout, later.stderr);
-    assert!(later.stdout.ends_with("\nLATER\n"), "{}", later.stdout);
+    let child = "import subprocess\n\
+                 subprocess.Popen(['sh', '-c', 'sleep 0.8; echo LATER']); input()\n";
+    for code in [thread, child] {
+        let later = server.fux(&[
+            "opts",
+            "str",
+            "python3",
+            "program",
+            "str",
+            "-c",
+            "arg",
+            "str",
+            code,
+            "arg",
+            "str",
+            "LATER",
+            "wait-text",
+            "run",
+        ])?;
+        assert_eq!(later.status, 0, "{code}: {}{}", later.stdout, later.stderr);
+        assert!(later.stdout.ends_with("\nLATER\n"), "{}", later.stdout);
+    }
     // A program that may not be traced (non-dumpable) hides what it is
-    // blocked in: its quiet screen is taken as settled, not busy.
-    let hidden = "import ctypes\nctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n\
+    // blocked in: its quiet screen is taken as settled, not busy, and not
+    // before it is quiet.
+    let hidden = "import ctypes, time\nctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n\
+                  for i in range(15): print(i, flush=True); time.sleep(0.05)\n\
                   print('ready', flush=True); input()\n";
-    assert_eq!(started(&server, hidden)?.1, "settled");
+    let answer = server.ok(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", hidden, "arg", "run",
+    ])?;
+    let state = answer.lines().next().unwrap_or_default();
+    assert!(state.ends_with(" settled"), "{answer}");
+    assert!(answer.ends_with("\nready\n"), "{answer}");
     Ok(())
 }
 
@@ -266,5 +310,12 @@ fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
         answer.starts_with(&format!("{pane} reading · done 0\n")),
         "{answer}"
     );
+    // A prompt's own hook, run after the command ended, is not left behind:
+    // the shell reads again only once it is done.
+    let hook = "PROMPT_COMMAND+=$'\\n''sleep 1; echo HOOKED'";
+    server.ok(&[&p[..], &["str", hook, "line"]].concat())?;
+    server.ok(&[&p[..], &["str", "clear", "line"]].concat())?;
+    let screen = server.ok(&[&p[..], &["opts", "0", "timeout", "capture"]].concat())?;
+    assert!(screen.contains("\nHOOKED\n"), "{screen}");
     Ok(())
 }

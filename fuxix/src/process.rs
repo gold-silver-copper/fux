@@ -831,3 +831,182 @@ pub fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
 pub fn activity(_group: Pid, _tty: &std::path::Path, _root: Pid) -> Activity {
     Activity::Unknown
 }
+
+/// The probe's pure parts: which system calls wait for what, and which
+/// descriptors a poll watches, read back from this process's own memory.
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+mod probe {
+    use super::*;
+
+    const NEVER: u64 = u64::MAX;
+
+    /// Each kind of wait, by its system call and the arguments that say
+    /// whether it has a time limit.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_64_system_calls_are_told_by_what_they_wait_for() {
+        for read in [0, 17, 19, 295, 275] {
+            assert_eq!(blocked_in(read, &[5]), Blocked::Read(5), "{read}");
+        }
+        let fds = Watched::Fds(9, 2);
+        assert_eq!(blocked_in(7, &[9, 2, NEVER]), Blocked::Poll(true, fds));
+        let int_never = u64::from(u32::MAX);
+        assert_eq!(blocked_in(7, &[9, 2, int_never]), Blocked::Poll(true, fds));
+        assert_eq!(blocked_in(7, &[9, 2, 100]), Blocked::Poll(false, fds));
+        let set = Watched::Set(4, 9);
+        for select in [23, 270] {
+            assert_eq!(
+                blocked_in(select, &[4, 9, 0, 0, 0]),
+                Blocked::Poll(true, set)
+            );
+            assert_eq!(
+                blocked_in(select, &[4, 9, 0, 0, 7]),
+                Blocked::Poll(false, set)
+            );
+        }
+        assert_eq!(blocked_in(271, &[9, 2, 0]), Blocked::Poll(true, fds));
+        assert_eq!(blocked_in(271, &[9, 2, 7]), Blocked::Poll(false, fds));
+        let epoll = Watched::Epoll(3);
+        for epoll_wait in [232, 281] {
+            assert_eq!(
+                blocked_in(epoll_wait, &[3, 9, 1, NEVER]),
+                Blocked::Poll(true, epoll)
+            );
+            assert_eq!(
+                blocked_in(epoll_wait, &[3, 9, 1, 100]),
+                Blocked::Poll(false, epoll)
+            );
+        }
+        assert_eq!(blocked_in(441, &[3, 9, 1, 0]), Blocked::Poll(true, epoll));
+        assert_eq!(blocked_in(441, &[3, 9, 1, 7]), Blocked::Poll(false, epoll));
+        for (nr, kind) in [
+            (35, Blocked::Sleep),
+            (230, Blocked::Sleep),
+            (61, Blocked::Child),
+            (247, Blocked::Child),
+            (202, Blocked::Futex),
+            (1, Blocked::Other),
+        ] {
+            assert_eq!(blocked_in(nr, &[]), kind, "{nr}");
+        }
+    }
+
+    /// aarch64's numbers, which share few with x86_64's.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_system_calls_are_told_by_what_they_wait_for() {
+        for read in [63, 65, 67, 69, 76] {
+            assert_eq!(blocked_in(read, &[5]), Blocked::Read(5), "{read}");
+        }
+        let set = Watched::Set(4, 9);
+        assert_eq!(blocked_in(72, &[4, 9, 0, 0, 0]), Blocked::Poll(true, set));
+        assert_eq!(blocked_in(72, &[4, 9, 0, 0, 7]), Blocked::Poll(false, set));
+        let fds = Watched::Fds(9, 2);
+        assert_eq!(blocked_in(73, &[9, 2, 0]), Blocked::Poll(true, fds));
+        assert_eq!(blocked_in(73, &[9, 2, 7]), Blocked::Poll(false, fds));
+        let epoll = Watched::Epoll(3);
+        assert_eq!(
+            blocked_in(22, &[3, 9, 1, NEVER]),
+            Blocked::Poll(true, epoll)
+        );
+        assert_eq!(blocked_in(22, &[3, 9, 1, 100]), Blocked::Poll(false, epoll));
+        assert_eq!(blocked_in(441, &[3, 9, 1, 0]), Blocked::Poll(true, epoll));
+        assert_eq!(blocked_in(441, &[3, 9, 1, 7]), Blocked::Poll(false, epoll));
+        for (nr, kind) in [
+            (101, Blocked::Sleep),
+            (115, Blocked::Sleep),
+            (260, Blocked::Child),
+            (95, Blocked::Child),
+            (98, Blocked::Futex),
+            (64, Blocked::Other),
+        ] {
+            assert_eq!(blocked_in(nr, &[]), kind, "{nr}");
+        }
+    }
+
+    /// This process, a descriptor of it that stands for its terminal (its
+    /// own program, held open while it is used), and that file's path.
+    fn own() -> std::result::Result<(Pid, std::fs::File, u64, std::path::PathBuf), String> {
+        use std::os::fd::AsRawFd;
+        let pid = i32::try_from(std::process::id())
+            .ok()
+            .and_then(Pid::from_raw);
+        let path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let fd = u64::try_from(file.as_raw_fd()).map_err(|e| e.to_string())?;
+        Ok((pid.ok_or("no pid")?, file, fd, path))
+    }
+
+    /// Where `bytes` are in this process's memory.
+    fn address(bytes: &[u8]) -> u64 {
+        u64::try_from(bytes.as_ptr().addr()).unwrap_or(0)
+    }
+
+    /// A poll's `pollfd` array counts a descriptor it asks `POLLIN` of.
+    #[test]
+    fn a_poll_watches_the_descriptors_it_asks_input_of() -> std::result::Result<(), String> {
+        let (pid, _held, fd, path) = own()?;
+        let tty = path.as_path();
+        let pollfd = |events: i16| -> Vec<u8> {
+            let fd = i32::try_from(fd).unwrap_or(-1).to_ne_bytes();
+            [&fd[..], &events.to_ne_bytes()[..], &[0, 0][..]].concat()
+        };
+        let asks = pollfd(libc::POLLIN);
+        assert!(watches_terminal(pid, Watched::Fds(address(&asks), 1), tty));
+        let other = pollfd(libc::POLLPRI);
+        assert!(!watches_terminal(
+            pid,
+            Watched::Fds(address(&other), 1),
+            tty
+        ));
+        let elsewhere = std::path::Path::new("/nowhere");
+        assert!(!watches_terminal(
+            pid,
+            Watched::Fds(address(&asks), 1),
+            elsewhere
+        ));
+        assert!(!watches_terminal(pid, Watched::Fds(0, 1), tty));
+        Ok(())
+    }
+
+    /// A select's set counts a descriptor by its bit, below its count.
+    #[test]
+    fn a_select_watches_the_descriptors_whose_bits_it_sets() -> std::result::Result<(), String> {
+        let (pid, _held, fd, path) = own()?;
+        let tty = path.as_path();
+        let n = fd.saturating_add(1);
+        let set = |bits: &[u64]| -> Vec<u8> {
+            let mut words = vec![0u64; usize::try_from(n.div_ceil(64)).unwrap_or(0)];
+            for bit in bits {
+                if let Some(w) = usize::try_from(bit / 64)
+                    .ok()
+                    .and_then(|i| words.get_mut(i))
+                {
+                    *w |= 1 << (bit % 64);
+                }
+            }
+            words.iter().flat_map(|w| w.to_ne_bytes()).collect()
+        };
+        let watched = set(&[fd]);
+        assert!(watches_terminal(
+            pid,
+            Watched::Set(n, address(&watched)),
+            tty
+        ));
+        let others = set(&[0]);
+        assert!(!watches_terminal(
+            pid,
+            Watched::Set(n, address(&others)),
+            tty
+        ));
+        let none = set(&[]);
+        assert!(!watches_terminal(pid, Watched::Set(n, address(&none)), tty));
+        // Below its count only.
+        assert!(!watches_terminal(
+            pid,
+            Watched::Set(fd, address(&watched)),
+            tty
+        ));
+        Ok(())
+    }
+}
