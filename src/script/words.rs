@@ -112,7 +112,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys or a mouse event)"),
     word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far"),
+    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor, over main-screen and alt-screen)"),
     word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0; joined, each line they touch whole"),
     word("Reading", "cols", 3, "opts from to -- opts", "capture: those columns only, from 0"),
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
@@ -1169,7 +1169,11 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
-                let then = if built.json { Then::Text } else { Then::Answer };
+                let then = if built.json {
+                    Then::Text
+                } else {
+                    Then::Answer("a capture")
+                };
                 // From a command line, read once the pane settles.
                 let settle = self
                     .settle
@@ -1191,7 +1195,7 @@ impl fuxth::Host for Host<'_> {
                     target: None,
                     get: None,
                 },
-                Then::Answer,
+                Then::Answer("a listing"),
             )),
             "info" => {
                 let t = target(name, &next()?)?;
@@ -1201,7 +1205,7 @@ impl fuxth::Host for Host<'_> {
                         target: Some(t.map(WsRef::Id)),
                         get: None,
                     },
-                    Then::Answer,
+                    Then::Answer("a listing"),
                 ))
             }
             "get" => {
@@ -1223,10 +1227,9 @@ impl fuxth::Host for Host<'_> {
                     opts.json = true;
                     now(out, Value::App(Fux::Opts(opts)))
                 }
-                Value::App(Fux::Answer(answer)) => match (&answer.json, &answer.query) {
-                    (Some(json), _) => now(out, Value::str(json.clone())),
-                    (None, Some(query)) => later(ask(as_json(query.clone()), Then::Text)),
-                    (None, None) => now(
+                Value::App(Fux::Answer(answer)) => match &answer.json {
+                    Some(json) => now(out, Value::str(json.clone())),
+                    None => now(
                         out,
                         Value::str(crate::json::Json::str(answer.text.clone()).render()),
                     ),
@@ -1634,7 +1637,7 @@ impl fuxth::Host for Host<'_> {
                         client: Some(c),
                         action: ClientAction::Capture { json: false },
                     },
-                    Then::Answer,
+                    Then::Answer("a capture"),
                 ))
             }
             // ------------------------------------------------------ server
@@ -1857,67 +1860,6 @@ impl Host<'_> {
     }
 }
 
-/// The same query, its answer as JSON.
-fn as_json(query: Command) -> Command {
-    match query {
-        Command::Ls { target, get, .. } => Command::Ls {
-            json: true,
-            target,
-            get,
-        },
-        Command::CapturePane {
-            target,
-            history,
-            view,
-            ..
-        } => Command::CapturePane {
-            target,
-            history,
-            view,
-            json: true,
-            settle: None,
-        },
-        Command::Client {
-            client,
-            action: ClientAction::Capture { .. },
-        } => Command::Client {
-            client,
-            action: ClientAction::Capture { json: true },
-        },
-        other @ (Command::KillServer { .. }
-        | Command::NewWorkspace { .. }
-        | Command::NewTab { .. }
-        | Command::Split { .. }
-        | Command::Run { .. }
-        | Command::Respawn { .. }
-        | Command::Notify { .. }
-        | Command::Resize { .. }
-        | Command::Wait { .. }
-        | Command::SendMouse { .. }
-        | Command::KillPane { .. }
-        | Command::Signal { .. }
-        | Command::KillTab { .. }
-        | Command::KillWorkspace { .. }
-        | Command::Rename { .. }
-        | Command::MovePane { .. }
-        | Command::SwapPane { .. }
-        | Command::ResizePane { .. }
-        | Command::SendKeys { .. }
-        | Command::Events { .. }
-        | Command::DumpLayout { .. }
-        | Command::Grant { .. }
-        | Command::Log { .. }
-        | Command::ClearHistory { .. }
-        | Command::Reorder { .. }
-        | Command::Set { .. }
-        | Command::Resolve { .. }
-        | Command::ListBuffers
-        | Command::ShowBuffer { .. }
-        | Command::PasteBuffer { .. }
-        | Command::Client { .. }) => other,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1989,7 +1931,7 @@ mod tests {
             json_of(&Value::App(Fux::Answer(Box::new(super::super::Answer {
                 text: String::new(),
                 json: Some(json.to_owned()),
-                query: None,
+                kind: "an answer of several panes",
                 pane: None,
             }))))
             .render()

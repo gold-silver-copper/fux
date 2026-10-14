@@ -33,7 +33,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, `width` by `height` pixels |
 | `cursor_visible` | the cursor shows |
-| `history_lines` | lines of history it holds |
+| `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |
 | `revision` | grows with every change to the screen |
 | `command_running` | a shell command runs (OSC 133 marks) |

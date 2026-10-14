@@ -2514,6 +2514,62 @@ fn json_answers_carry_the_state_notes() -> Outcome {
     Ok(())
 }
 
+/// `json` on a saved capture converts what was captured: never a later
+/// read of the pane, which may have moved on or closed.
+#[test]
+fn json_of_a_saved_capture_is_that_capture() -> Outcome {
+    let server = Server::start("")?;
+    let script = "echo BEFORE; read x; echo LA\"\"TER; read y";
+    let pane = id(&server.ok(&run(&["str", "BEFORE", "wait-text"], &["sh", "-c", script]))?);
+    let json = server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "let",
+        "P",
+        "P",
+        "screen",
+        "let",
+        "C",
+        "P",
+        "keys",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "LATER",
+        "wait-text",
+        "send-keys",
+        "drop",
+        "P",
+        "kill",
+        "C",
+        "json",
+    ])?;
+    assert!(json.contains("BEFORE") && !json.contains("LATER"), "{json}");
+    Ok(())
+}
+
+/// A word refusing a capture or a listing names it: an action's answer is
+/// a pane, so "an answer" alone would mislead.
+#[test]
+fn a_refused_reading_is_named() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x"]))?);
+    let capture = ["str", &pane, "pane", "screen"];
+    for (reading, kind) in [(&capture[..], "a capture"), (&["ls"][..], "a listing")] {
+        let refused =
+            server.fux(&[reading, &["keys", "str", "x", "text", "send-keys"]].concat())?;
+        assert_ne!(refused.status, 0, "{reading:?}");
+        assert!(
+            refused.stderr.contains(&format!("not {kind}")),
+            "{}",
+            refused.stderr
+        );
+    }
+    Ok(())
+}
+
 /// A `run` whose wait fails still prints the pane it started, then says
 /// why it failed.
 #[test]
@@ -2697,6 +2753,28 @@ fn an_answer_after_a_line_taller_than_the_screen_is_what_came() -> Outcome {
         body(&next).starts_with("QA> printf 'NEXT\\n'\nNEXT\n"),
         "{next}"
     );
+    Ok(())
+}
+
+/// A scroll that cuts a wrapped line, pushing its first row into history,
+/// moves no line under it: an answer starts at the line typed.
+#[test]
+fn a_wrapped_line_cut_by_a_scroll_moves_no_line() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(
+        &["20", "8", "size", "str", "PS1", "str", "QA> ", "env"],
+        &["bash", "--norc", "-i"],
+    ))?);
+    line(
+        &server,
+        &shell,
+        "a(){ printf '%s\\n' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ M1 M2 M3 M4; }; \
+         b(){ printf 'FR''ESH\\n'; }; clear",
+    )?;
+    // The prompt ends on the last row, the wrapped line from the second.
+    line(&server, &shell, "a")?;
+    let next = line(&server, &shell, "b")?;
+    assert!(body(&next).starts_with("QA> b\nFRESH\n"), "{next}");
     Ok(())
 }
 

@@ -219,10 +219,13 @@ impl Waiting {
         if let (Some((history, view, json)), Some(watch)) = (self.capture, self.watches.first())
             && let Some(pane) = session.panes.get(&watch.pane)
         {
-            let read = crate::capture::pane(pane, history, view, json, session.copying(pane.id));
+            let copying = session.copying(pane.id);
+            let read = crate::capture::pane(pane, history, view, json, copying);
             outcome.stdout = if json {
                 read
             } else {
+                // Its JSON, read at the same moment, for `json` to give.
+                outcome.json = crate::capture::pane(pane, history, view, true, copying);
                 let line = outcome.stdout.lines().next().unwrap_or_default();
                 format!("{line}\n{read}")
             };
@@ -943,7 +946,7 @@ impl Watch {
         // begun above it, which each scroll reads from another row.
         let mut up: Option<fux_vt::RowId> = None;
         lines(
-            screen.rows().skip(at.min(screen.history_len())),
+            screen.rows().skip(screen_top(screen).min(at)),
             Some(self.from.mark),
         )
         .into_iter()

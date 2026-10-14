@@ -976,6 +976,50 @@ pub fn json_failure(mut outcome: Outcome, code: Option<&str>) -> Outcome {
     outcome
 }
 
+/// A reading given as text (`capture`, `ls`, `info`, `capture-client`),
+/// asked as JSON.
+fn json_form(command: &Command) -> Option<Command> {
+    if let Command::Ls {
+        json: false,
+        target,
+        get: None,
+    } = command
+    {
+        return Some(Command::Ls {
+            json: true,
+            target: target.clone(),
+            get: None,
+        });
+    }
+    if let &Command::CapturePane {
+        target,
+        history,
+        view,
+        json: false,
+        ..
+    } = command
+    {
+        return Some(Command::CapturePane {
+            target,
+            history,
+            view,
+            json: true,
+            settle: None,
+        });
+    }
+    if let &Command::Client {
+        client,
+        action: ClientAction::Capture { json: false },
+    } = command
+    {
+        return Some(Command::Client {
+            client,
+            action: ClientAction::Capture { json: true },
+        });
+    }
+    None
+}
+
 /// A command that needed its caller's pane, tab or workspace, from a caller
 /// whose `FUX_PANE` is another server's pane: why it got none.
 fn stray(error: Error, origin: &Origin) -> Error {
@@ -2751,11 +2795,20 @@ impl Session {
         self.made.clear();
         self.value = None;
         let executed = self.execute(command, origin);
+        let ids = std::mem::take(&mut self.made);
+        // A reading given as text keeps its JSON, read at the same moment:
+        // `json` converts what was read, never a later read.
+        let json = match (&executed, json_form(command)) {
+            (Ok(_), Some(form)) => self.execute(&form, origin).unwrap_or_default(),
+            (Ok(_) | Err(_), _) => String::new(),
+        };
+        self.made.clear();
         self.ids.unwant();
         let outcome = match executed {
             Ok(stdout) => Outcome {
                 stdout,
-                ids: std::mem::take(&mut self.made),
+                json,
+                ids,
                 value: self.value.take(),
                 ..Outcome::default()
             },

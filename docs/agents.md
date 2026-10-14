@@ -85,8 +85,11 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   not gone). This is fux's judgement from what the program is blocked in:
   one also woken by a timer (`alarm`) or another descriptor gets 7 too,
   though it may go on alone, as may a program left in the background (look
-  again later, or use `wait-exit`); one with another thread at work or
-  asleep is busy, and the wait runs on. A read with the terminal's own time
+  again later, or use `wait-exit`); one with another thread at work is
+  busy, and the wait runs on. One reading the terminal or a pipe while
+  another thread sleeps is `waiting` (it may go on alone): a settling
+  action answers status 0 after 1s, and a text wait runs to its limit
+  (124), never 7. A read with the terminal's own time
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
   returns alone, so a text wait runs to its limit (124). The answer is the screen (it starts `…
   earlier lines not kept` if lines since were let go past history-lines
@@ -95,7 +98,9 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
-  `last-output` (a shell command's output; while one runs, its output so far), `joined` (with `rows`, a
+  `last-output` (a shell command's output; while one runs, its output so far:
+  a full-screen one's is its screen up to the cursor, whatever
+  `main-screen` or `alt-screen` say), `joined` (with `rows`, a
   wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after (in

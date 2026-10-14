@@ -53,7 +53,7 @@ impl AppValue for Fux {
             Fux::Keys(_) => "keys (from keys)",
             Fux::Mouse(_) => "a mouse event (from mouse)",
             Fux::Extent(_) => "a size (from percent)",
-            Fux::Answer(_) => "an answer",
+            Fux::Answer(answer) => answer.kind,
         }
     }
 
@@ -131,13 +131,14 @@ pub struct MouseEvent {
     pub waits: Waits,
 }
 
-/// What the server answered, to print as text, or as JSON (asked again
-/// for, by `query`, if it was not given).
+/// What the server answered, to print as text, or as JSON: the JSON the
+/// server gave with it, read at the same moment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Answer {
     pub text: String,
     pub json: Option<String>,
-    pub query: Option<Command>,
+    /// What it is, said where it is refused: `a capture`, `a listing`.
+    pub kind: &'static str,
     /// The pane an action's answer is of: a word that wants a pane takes it.
     pub pane: Option<crate::id::PaneId>,
 }
@@ -163,8 +164,9 @@ pub enum Then {
     Nothing,
     /// The pane, tab or workspace it made or found, of `Kind`.
     Handle(Kind),
-    /// Its text, as an answer `json` can show as JSON.
-    Answer,
+    /// Its text, as an answer `json` can show as JSON: what it is, as
+    /// [`Answer::kind`].
+    Answer(&'static str),
     /// Its text, as a string.
     Text,
     /// A field's value.
@@ -622,7 +624,6 @@ pub fn run_capped(
                 if client.is_some() {
                     context.client = client;
                 }
-                let query = command.clone();
                 let reply = asks
                     .ask(&Request { command, context }, host.out)
                     .map_err(|f| placed(machine, f))?;
@@ -635,7 +636,7 @@ pub fn run_capped(
                 if reply.status != 0 && answer {
                     machine.push(Value::str(reply.text.trim_end()))?;
                 }
-                for value in answered(reply, then, query).map_err(|f| placed(machine, f))? {
+                for value in answered(reply, then).map_err(|f| placed(machine, f))? {
                     machine.push(value)?;
                 }
             }
@@ -712,7 +713,7 @@ fn met(reply: &Reply) -> bool {
 
 /// What a reply puts on the stack, `then` saying what it is; a failure,
 /// with its status, if it failed: why, else what it answered.
-pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fux>>, Failed> {
+pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
     if reply.status != 0 && !met(&reply) {
         let message = match (reply.message.trim_end(), reply.text.trim_end()) {
             ("", text) => text,
@@ -752,7 +753,10 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
         Value::App(Fux::Answer(Box::new(Answer {
             text,
             json,
-            query: None,
+            kind: match pane {
+                Some(_) => "an action's answer",
+                None => "an answer of several panes",
+            },
             pane,
         })))
     };
@@ -772,10 +776,10 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
                 });
             }
         },
-        Then::Answer => vec![Value::App(Fux::Answer(Box::new(Answer {
+        Then::Answer(kind) => vec![Value::App(Fux::Answer(Box::new(Answer {
             text,
-            json: None,
-            query: Some(query),
+            json,
+            kind,
             pane: None,
         })))],
         Then::Text => vec![Value::str(text)],
@@ -788,7 +792,7 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
             Some(Scalar::Null) | None => Value::App(Fux::Answer(Box::new(Answer {
                 json: Some(text.clone()),
                 text,
-                query: None,
+                kind: "a JSON value",
                 pane: None,
             }))),
         }],
@@ -874,24 +878,24 @@ fn local(
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
             let (text, _) = crate::status(&socket, &probe, false);
             let (json, _) = crate::status(&socket, &probe, true);
-            return Ok(vec![answer(text, json)]);
+            return Ok(vec![answer(text, json, "a status")]);
         }
         Local::Servers => {
             let fail = |e: crate::socket::Error| client_failed(e.into());
             let text = crate::servers(false).map_err(fail)?;
             let json = crate::servers(true).map_err(fail)?;
-            return Ok(vec![answer(text, json)]);
+            return Ok(vec![answer(text, json, "a listing of servers")]);
         }
     }
     Ok(Vec::new())
 }
 
 /// An answer the client made itself, as text and JSON.
-fn answer(text: String, json: String) -> Value<Fux> {
+fn answer(text: String, json: String, kind: &'static str) -> Value<Fux> {
     Value::App(Fux::Answer(Box::new(Answer {
         text: text.trim_end().to_owned(),
         json: Some(json.trim_end().to_owned()),
-        query: None,
+        kind,
         pane: None,
     })))
 }
