@@ -314,12 +314,13 @@ pub fn start_hint(path: &Path) -> String {
     let name = (path.parent().zip(directory().ok()))
         .filter(|(parent, directory)| parent == directory)
         .and_then(|_| path.file_name()?.to_str()?.strip_suffix(".sock"));
+    // Quoted for a shell, as the hint is a command to run.
     let words = match name {
-        Some(name) => format!("str {name} server"),
-        None if path.to_string_lossy().contains(char::is_whitespace) => {
-            format!("str '{}' socket", path.display())
-        }
-        None => format!("str {} socket", path.display()),
+        Some(name) => format!("str {} server", crate::words::quote(name)),
+        None => format!(
+            "str {} socket",
+            crate::words::quote(&path.to_string_lossy())
+        ),
     };
     format!("`fux {words} start` starts one")
 }
@@ -683,6 +684,12 @@ mod tests {
             Error::NoServer(PathBuf::from("/x/my dir/absent.sock"))
                 .to_string()
                 .ends_with("`fux str '/x/my dir/absent.sock' socket start` starts one")
+        );
+        // As is one a shell would read otherwise: `;`, a quote.
+        assert!(
+            Error::NoServer(PathBuf::from("/x/a;b'c.sock"))
+                .to_string()
+                .ends_with(r"`fux str '/x/a;b'\''c.sock' socket start` starts one")
         );
     }
 

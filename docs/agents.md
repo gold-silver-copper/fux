@@ -28,7 +28,7 @@ fux str agent workspace kill                            # at the end: everything
 The answer's first line is the pane and its **state**; then what came since
 you acted, from the line typed on if it changed (its prompt and your echo too;
 else, as after a lone Enter or keys not echoed, from the first line that changed),
-or the whole screen of a full-screen program (an editor, a menu, a form); one that redraws in place on the main screen answers from the top row it changed:
+or the whole screen of a full-screen program (an editor, a menu, a form); one that redraws in place on the main screen answers from the top row it changed (its text or colours):
 
 ```
 %2 reading                     it waits for you: blocked reading its terminal, every key read
@@ -44,8 +44,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   at once, the state as it is (start many programs so, then one `wait` on their tab or
   workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on.
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
-  workspace `agent`. OPTIONS: `str app name` (the tab's; one in use is
-  refused), `100 30 size`, `str "$PWD" cwd` (a real path), `str K str V env`,
+  workspace `agent`. OPTIONS: `str app name` (the tab's; one given already
+  is refused, one fux gave, `tab-2`, is taken), `100 30 size`, `str "$PWD" cwd` (a real path), `str K str V env`,
   and the program: `str 'prog -x a' command` (split as a shell splits), or
   `str PROG program` and `str A arg` per argument. The answer's first word is
   the pane: use it. Each `fux` is a fresh program (a `let` name lasts only
@@ -54,21 +54,27 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; no keypad keys; a typo
   is refused). Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T
   paste` (bracketed if the program turned that on, an end-of-paste mark in T
-  then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too.
-  `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
+  then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too
+  (text its bytes, a key its name's, each input after the first 5 more). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
   `wait-bell`; several: whichever came first, in any order given (a text
-  printed before the exit or the bell, though the wait began after both). A text: case ignored, blanks as
+  printed before the exit or the bell, though the wait began after both).
+  fux keeps no time of each character: a wait that begins after several
+  texts came takes the line nearest the top (history first), on one line
+  the text furthest left; and a text before the bell if its line held it
+  as the first bell since your input rang. A text: case ignored, blanks as
   one, from a word's start (`READY` is not in `NOT_READY`); `^T` a line's
   first word, indented or not, `T$` its last. Met, it answers the first new
   line that holds the text (`run`: the pane, then that line; `wait-gone`,
   the pane's state; after `run` or `respawn` a text must show before it
   can go), never what you typed, Enter or not, nor the prompt
   before it, on each row it went on (with the keys, or for a later wait your
-  last input), nor that row or one below drawn again to end with it (with
-  another prompt; keys typed while the program was busy, before a shell's
-  prompt, after it); what the
-  program writes after it on that row counts. A wait
+  last input; a line typed over several sends, as BSpace, C-w and C-u
+  left it), nor that row drawn again with another prompt to end with it,
+  nor a row below so drawn for keys typed while the program was busy
+  (before a shell's prompt); what the program writes after it on that row
+  counts, as does another row it writes that ends with it (`You said:
+  NEEDLE`). A wait
   counts what came since your last input to the pane (or since the program
   started), scrolled away too: it never starts too late. But it reads
   screens, not every byte: text drawn over in place before fux reads the
@@ -79,7 +85,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   not gone). This is fux's judgement from what the program is blocked in:
   one also woken by a timer (`alarm`) or another descriptor gets 7 too,
   though it may go on alone, as may a program left in the background (look
-  again later, or use `wait-exit`). A read with the terminal's own time
+  again later, or use `wait-exit`); one with another thread at work or
+  asleep is busy, and the wait runs on. A read with the terminal's own time
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
   returns alone, so a text wait runs to its limit (124). The answer is the screen (it starts `…
   earlier lines not kept` if lines since were let go past history-lines
@@ -88,7 +95,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
-  `last-output` (a shell command's output), `joined` (with `rows`, a
+  `last-output` (a shell command's output; while one runs, its output so far), `joined` (with `rows`, a
   wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after (in
@@ -194,7 +201,8 @@ checks that the server runs as you.
   with `fux FILE`. A shell pane comes back as a new shell in its directory:
   what was typed into it, its `typed` line too, is not typed again. It adds to what the server has: on a new server, its own
   `main` tab stays beside the dump's, which then takes the next name
-  (`tab-2`); kill the tab you do not want. A crashed server's next run brings its panes back,
+  (`tab-2`; a name the dump gives takes one fux gave, which is named anew);
+  kill the tab you do not want. A crashed server's next run brings its panes back,
   programs waiting for `respawn`.
 - `100 30 headless` is a client with no terminal (it prints its id, `c2`,
   and runs until stopped: start it in the background); `str c2 client keys

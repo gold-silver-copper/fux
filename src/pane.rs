@@ -455,9 +455,20 @@ pub struct Alerts {
     pub notifications: u64,
     pub last: Option<String>,
     pub last_notified: bool,
-    /// The screen as the output that held the last one was read: a line
-    /// not changed since came before it.
-    pub at: Option<fux_vt::Mark>,
+    /// The first since the last input, or the program's start, if one
+    /// came: where it came in the output.
+    pub at: Option<Rung>,
+}
+
+/// Where an alert came: its number (as `Alerts::count` counts it), and
+/// the screen as the output was read up to it, a mark and its lines by
+/// first row. A line not changed since, or holding a text then, came
+/// before it.
+#[derive(Clone, Debug)]
+pub struct Rung {
+    pub count: u64,
+    pub mark: fux_vt::Mark,
+    pub lines: std::collections::HashMap<fux_vt::RowId, String>,
 }
 
 impl Alerts {
@@ -483,6 +494,9 @@ pub struct InputFrom {
     pub echo: Vec<String>,
     pub recalled: bool,
     pub before: String,
+    /// What was typed on the line, keys before too, while no key ended it
+    /// (`line_open`; else nothing): keys after, on its row, edit it.
+    pub typed: Vec<crate::command::Input>,
     /// The keys went in while the program was at work, before it read: a
     /// line it draws again to end with them (a shell's prompt and line,
     /// after the terminal's echo) is their echo too.
@@ -492,6 +506,9 @@ pub struct InputFrom {
     /// that follows another since moved (lines deleted or put in above it).
     pub shown: std::collections::HashMap<fux_vt::RowId, String>,
     pub above: std::collections::HashMap<fux_vt::RowId, fux_vt::RowId>,
+    /// Each line's colours then, by first row: a menu's highlight moved
+    /// changes what reads the same.
+    pub styles: std::collections::HashMap<fux_vt::RowId, u64>,
     /// The bells and notifications heard by then.
     pub alerts: u64,
 }
@@ -506,7 +523,7 @@ impl InputFrom {
         let row = screen.window().row(screen.cursor_position().0);
         let (cursor, before) = row.map(crate::wait::line_to).unwrap_or_default();
         let (echo, recalled) = crate::command::typed_lines(inputs);
-        let (shown, above) = crate::wait::shown(screen);
+        let (shown, above, styles) = crate::wait::shown(screen);
         InputFrom {
             cursor,
             mark: screen.mark(),
@@ -514,9 +531,15 @@ impl InputFrom {
             echo,
             recalled,
             before,
+            typed: if crate::command::line_open(inputs) {
+                inputs.to_vec()
+            } else {
+                Vec::new()
+            },
             ahead: false,
             shown,
             above,
+            styles,
             alerts,
         }
     }
@@ -749,9 +772,45 @@ impl Pane {
     }
 
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`.
-    /// Returns how many bytes were read if it stopped.
+    /// Returns how many bytes were read if it stopped. Until an alert since
+    /// the last input is placed (`Alerts::at`), they are read up to each
+    /// byte that may end one (BEL, ST's `\`) at a time, so that the screen
+    /// as it was then places it.
     fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
-        let alerts = self.alerts.count();
+        let mut done = 0usize;
+        let begun = loop {
+            let rest = bytes.get(done..).unwrap_or_default();
+            let ends = |at: usize, b: &u8| {
+                *b == 0x07
+                    || (*b == b'\\' && at.checked_sub(1).and_then(|i| rest.get(i)) == Some(&0x1b))
+            };
+            let piece = match self.alerts.at {
+                Some(_) => rest.len(),
+                None => (rest.iter().enumerate())
+                    .position(|(at, b)| ends(at, b))
+                    .map_or(rest.len(), |at| at.saturating_add(1)),
+            };
+            let alerts = self.alerts.count();
+            let begun = self.parse(rest.get(..piece).unwrap_or_default(), until_frame);
+            if self.alerts.count() != alerts && self.alerts.at.is_none() {
+                let screen = self.parser.screen();
+                self.alerts.at = Some(Rung {
+                    count: alerts.saturating_add(1),
+                    mark: screen.mark(),
+                    lines: crate::wait::shown(screen).0,
+                });
+            }
+            done = done.saturating_add(piece);
+            if begun.is_some() || done >= bytes.len() {
+                break begun.map(|taken| done.saturating_sub(piece).saturating_add(taken));
+            }
+        };
+        self.input.heard(Instant::now);
+        begun
+    }
+
+    /// Gives `bytes` to the screen, as `feed` does, alerts aside.
+    fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
         let mut sink = Sink {
             replies: Vec::new(),
             title: &mut self.title,
@@ -776,13 +835,9 @@ impl Pane {
             rest = rest.get(taken..).unwrap_or_default();
         }
         let replies = sink.replies;
-        if self.alerts.count() != alerts {
-            self.alerts.at = Some(self.parser.screen().mark());
-        }
         if !replies.is_empty() {
             self.input.reply(&replies);
         }
-        self.input.heard(Instant::now);
         begun
     }
 
@@ -791,6 +846,12 @@ impl Pane {
     pub fn since_key(&self, now: Instant) -> Duration {
         self.written_at
             .map_or(Duration::MAX, |at| now.saturating_duration_since(at))
+    }
+
+    /// Whether the screen changed after the last key went in: the program
+    /// answered it.
+    pub fn answered(&self) -> bool {
+        self.written_at.is_some_and(|at| self.changed_at > at)
     }
 
     /// Writes the waiting input, as far as the program's terminal takes it.
@@ -851,10 +912,26 @@ impl Pane {
     /// after them counts what comes since, and knows their echo.
     pub fn note_input(&mut self, inputs: &[crate::command::Input]) {
         let ahead = crate::ready::state(self, Instant::now()) == crate::ready::State::Busy;
-        self.input_from = InputFrom {
-            ahead,
-            ..InputFrom::new(self.screen(), inputs, self.alerts.count())
-        };
+        let mut from = InputFrom::new(self.screen(), inputs, self.alerts.count());
+        self.alerts.at = None;
+        // Keys that go on with a line typed before on its row, not ended:
+        // their echo is that line as they edit it (BSpace, C-w, C-u too),
+        // after the prompt it had then.
+        let old = &self.input_from;
+        if !inputs.is_empty()
+            && !old.typed.is_empty()
+            && old.cursor == from.cursor
+            && from.before.starts_with(&old.before)
+        {
+            let typed: Vec<crate::command::Input> =
+                old.typed.iter().chain(inputs).cloned().collect();
+            (from.echo, from.recalled) = crate::command::typed_lines(&typed);
+            if crate::command::line_open(&typed) {
+                from.typed = typed;
+            }
+            from.before.clone_from(&old.before);
+        }
+        self.input_from = InputFrom { ahead, ..from };
     }
 
     /// The name the bar shows: the program's title, else the pane's name.
@@ -892,7 +969,9 @@ impl Pane {
             && !self.paced.waiting.is_empty()
         {
             let took = match &self.process {
-                Process::Reading(child) => crate::ready::took_keys(child, self.since_key(now)),
+                Process::Reading(child) => {
+                    crate::ready::took_keys(child, self.since_key(now), self.answered())
+                }
                 Process::Absent | Process::HungUp(_) | Process::Exited(_) => true,
             };
             if !took && now < by {

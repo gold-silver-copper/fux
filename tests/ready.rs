@@ -257,6 +257,39 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
     Ok(())
 }
 
+/// A raw read whose timer runs once a key came (VMIN 3, VTIME 30) returned
+/// with the keys typed: the read the program is in next has taken none,
+/// so it waits for keys with no limit, `reading`, not on the last one's
+/// timer.
+#[test]
+fn a_timed_read_that_returned_is_not_timed_after() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let code = "import os, termios, tty\n\
+                tty.setraw(0); m = termios.tcgetattr(0)\n\
+                m[6][termios.VMIN] = 3; m[6][termios.VTIME] = 30\n\
+                termios.tcsetattr(0, termios.TCSANOW, m)\n\
+                os.write(1, b'ready\\r\\n'); got = os.read(0, 3)\n\
+                os.write(1, b'got ' + got + b'\\r\\n'); os.read(0, 3)\n";
+    let (pane, state) = started(&server, code)?;
+    assert_eq!(state, "reading");
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "abc",
+        "text",
+        "send-keys",
+    ];
+    let typed = server.ok(&keys)?;
+    assert_eq!(typed, format!("{pane} reading\ngot abc\n"));
+    Ok(())
+}
+
 /// A pane `waiting` is answered as it is: a capture settles at once, as an
 /// action does; a bare `wait` waits for something new, and at its limit
 /// answers the state with status 0, as only a busy pane fails (124).

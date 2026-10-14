@@ -112,7 +112,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys or a mouse event)"),
     word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output"),
+    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far"),
     word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0; joined, each line they touch whole"),
     word("Reading", "cols", 3, "opts from to -- opts", "capture: those columns only, from 0"),
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
@@ -1019,17 +1019,23 @@ impl fuxth::Host for Host<'_> {
                 if built.inputs.is_empty() {
                     return Err(fail("no_keys", "send-keys needs keys: keys str hello text"));
                 }
+                // As the request carries them, which must fit in one frame:
+                // text and pastes their bytes, keys their names' (`C-M-F12`
+                // 7), and each input after the first 5 bytes more.
                 let typed: usize = (built.inputs.iter())
                     .map(|input| match input {
                         Input::Text(text) | Input::Paste(text) => text.len(),
-                        Input::Key(_) => 1,
+                        Input::Key(key) => key.to_string().len(),
                     })
-                    .sum();
+                    .fold(0usize, |sum, n| sum.saturating_add(n))
+                    .saturating_add(built.inputs.len().saturating_sub(1).saturating_mul(5));
                 if typed > INPUT_MAX {
                     return Err(fail(
                         "too_long",
                         format!(
-                            "send-keys: {typed} bytes, more than 900 KiB, the most it sends at once"
+                            "send-keys: {typed} bytes, more than 900 KiB, the most it sends at once \
+                             (text and pastes count their bytes, keys their names', each input \
+                             after the first 5 more)"
                         ),
                     ));
                 }

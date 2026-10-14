@@ -181,7 +181,8 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
 
 /// The rows a capture reads, each with the columns of it it reads: the
 /// screen and `history` rows above it (of the main screen with `--main`), or
-/// the last command's output between its marks.
+/// the last command's output between its marks: while one runs, its output
+/// so far, to the cursor.
 fn rows_of(
     screen: &fux_vt::Screen,
     history: Option<usize>,
@@ -189,7 +190,11 @@ fn rows_of(
 ) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
     let all = 0..usize::MAX;
     if view.last_output {
-        let Some((start, end)) = screen.commands().last_output else {
+        let commands = screen.commands();
+        let (row, col) = screen.cursor_position();
+        let cursor = (screen.window().row(row)).map(|r| fux_vt::CommandMark { row: r.id(), col });
+        let running = (commands.output_start.filter(|_| commands.running)).zip(cursor);
+        let Some((start, end)) = running.or(commands.last_output) else {
             return Vec::new();
         };
         let Some(last) = screen.row_index(end.row) else {

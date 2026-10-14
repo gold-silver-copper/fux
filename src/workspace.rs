@@ -21,6 +21,9 @@ pub struct Workspace {
 pub struct Tab {
     pub id: TabId,
     pub name: String,
+    /// Its name was given (`name`, `rename`), not fux's (`main`, `tab-N`, a
+    /// program's): a name given is the only one, and takes fux's.
+    pub given: bool,
     root: Option<Tree>,
     /// Its layout changed since its panes were sized for it: one no client
     /// shows is then laid out again (`Session::size_panes`).
@@ -227,6 +230,7 @@ impl Tab {
         let mut tab = Tab {
             id,
             name,
+            given: false,
             root,
             changed: true,
             fit,

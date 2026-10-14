@@ -30,7 +30,7 @@ pub struct Commands {
     /// Where the last command's output began and ended.
     pub last_output: Option<(Mark, Mark)>,
     /// Where the running command's output began.
-    output_start: Option<Mark>,
+    pub output_start: Option<Mark>,
 }
 
 impl Screen {

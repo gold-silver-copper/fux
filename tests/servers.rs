@@ -509,6 +509,30 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     Ok(())
 }
 
+/// A dump run on a new server, whose own `main` tab makes the dump's first
+/// tab `tab-2`, gives a tab it names `tab-2` that name all the same: a
+/// name given takes the one fux gave, which it names anew.
+#[test]
+fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
+    let source = Server::start("")?;
+    source.ok(&[
+        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "0",
+        "timeout", "run",
+    ])?;
+    let dump = source.ok(&["dump"])?;
+    let server = Server::start("")?;
+    let file = server.dir.join("source.fux");
+    std::fs::write(&file, &dump).map_err(e)?;
+    server.ok(&[&file.to_string_lossy()])?;
+    let named = server.ok(&["str", "tab-2", "pane", "opts", "0", "timeout", "wait"])?;
+    let ls = server.ok(&["ls"])?;
+    assert!(
+        ls.contains(&format!("{} sleep ", first_word(&named))),
+        "{named}\n{ls}\nfrom\n{dump}"
+    );
+    Ok(())
+}
+
 /// A workspace whose first tab is empty, its pane moved to a new tab, is
 /// made again from its dump: the first tab written opens it.
 #[test]

@@ -72,7 +72,7 @@ impl Session {
             (false, true) => line.extend([workspace(ws.id), "in".to_owned()]),
             (false, false) => line.extend(string(&ws.name).chain(["in".to_owned()])),
         }
-        let named = tab.name != default_name;
+        let named = tab.given || tab.name != default_name;
         if named && !makes {
             line.extend(string(&tab.name).chain(["name".to_owned()]));
         }

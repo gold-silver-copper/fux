@@ -1239,7 +1239,7 @@ impl Session {
         }
         let taken: Vec<TabId> = (self.workspaces.iter())
             .flat_map(Workspace::tabs)
-            .filter(|t| t.name == name && Some(t.id) != except)
+            .filter(|t| t.given && t.name == name && Some(t.id) != except)
             .map(|t| t.id)
             .collect();
         if taken.is_empty() {
@@ -1250,6 +1250,35 @@ impl Session {
             self.panes_of_tabs(&taken),
         ];
         Err(Error::TabNameTaken(name.to_owned(), ids.concat().join(" ")))
+    }
+
+    /// Gives tab `id` the name `name`, checked. It takes it from each other
+    /// tab fux named so (`tab-2`, made before a dump's line names one so):
+    /// that one is named anew as fux names tabs, by its place, the next
+    /// number free.
+    fn give_tab_name(&mut self, id: TabId, name: String) -> Result<(), Error> {
+        let tab = self.tab_mut(id).ok_or(Error::NoTab(id))?;
+        tab.name.clone_from(&name);
+        tab.given = true;
+        let mut taken: std::collections::HashSet<String> = (self.workspaces.iter())
+            .flat_map(|ws| std::iter::once(&ws.name).chain(ws.tabs().iter().map(|t| &t.name)))
+            .cloned()
+            .collect();
+        for ws in &mut self.workspaces {
+            for (place, tab) in (1usize..).zip(ws.tabs_mut().iter_mut()) {
+                if tab.given || tab.name != name {
+                    continue;
+                }
+                let free = (place..)
+                    .map(|n| format!("tab-{n}"))
+                    .find(|n| !taken.contains(n));
+                if let Some(free) = free {
+                    taken.insert(free.clone());
+                    tab.name = free;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The panes of `tabs`, as ids, in their order.
@@ -2848,18 +2877,17 @@ impl Session {
                 // makes one, its first tab this one.
                 let (ws, tab, pane) = match (self.ws_target(target.as_ref(), here), target) {
                     (Ok(ws), _) => {
-                        let (tab, pane) = self.create_tab(ws, name.clone(), start, place)?;
+                        let (tab, pane) = self.create_tab(ws, None, start, place)?;
                         (ws, tab, pane)
                     }
                     (Err(_), Some(WsRef::Name(ws_name))) => {
-                        let made = self.create_workspace(Some(ws_name.clone()), start, place)?;
-                        if let (Some(name), Some(tab)) = (name, self.tab_mut(made.1)) {
-                            tab.name = name.clone();
-                        }
-                        made
+                        self.create_workspace(Some(ws_name.clone()), start, place)?
                     }
                     (Err(error), _) => return Err(error),
                 };
+                if let Some(name) = name {
+                    self.give_tab_name(tab, name.clone())?;
+                }
                 self.follow(here, ws, Some(tab), None);
                 Ok(self.made_ids((ws, tab, pane), &[tab.to_string(), pane.to_string()], *json))
             }
@@ -2900,6 +2928,7 @@ impl Session {
                     .first()
                     .map(|p| basename(p))
                     .filter(|n| check_name(n).is_ok());
+                let given = name.clone();
                 let name = name.clone().or(derived);
                 let start = (Start::Program(argv, env), cwd.as_path());
                 let workspace = workspace
@@ -2922,6 +2951,9 @@ impl Session {
                     }
                     (Err(error), WsRef::Id(_)) => return Err(error),
                 };
+                if let Some(given) = given {
+                    self.give_tab_name(made.1, given)?;
+                }
                 // Before any of its output is read: it all goes there.
                 if let Some(pane) = self.panes.get_mut(&made.2) {
                     pane.log = log;
@@ -3435,8 +3467,7 @@ impl Session {
             }
             AnyRef::Tab(t) => {
                 self.check_tab_name(&name, Some(t))?;
-                let tab = tabs_mut(&mut self.workspaces).find(|tab| tab.id == t);
-                tab.ok_or(Error::NoTab(t))?.name = name;
+                self.give_tab_name(t, name)?;
             }
             AnyRef::Workspace(id) => {
                 // The one named, and the others, whose names it cannot take.
@@ -4080,7 +4111,7 @@ fn check_workspace_name<'a>(
     // A tab's name too: the workspace's would hide it from `-t NAME`.
     let tabs: Vec<String> = (others.iter())
         .flat_map(|ws| ws.tabs())
-        .filter(|t| t.name == name)
+        .filter(|t| t.given && t.name == name)
         .map(|t| t.id.to_string())
         .collect();
     if !tabs.is_empty() {

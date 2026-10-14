@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// (unless `set -T`), so a trap the user's startup set sees one command of
 /// fux's: its call. With `set -T` it sees what the function runs too, but
 /// what it prints goes nowhere (the function's output, and END's, go to
-/// /dev/null; marks are written to stderr), and nothing of fux's reads it
+/// /dev/null; END writes its marks to a copy of stderr), and nothing of fux's reads it
 /// (no command substitution, from bash 4.4). The marks run no command of
 /// the shell's own either, so
 /// the user's DEBUG, ERR and RETURN traps see nothing of them, and `$?` and
@@ -38,7 +38,8 @@ use std::path::{Path, PathBuf};
 ///   as no subshell can keep them: a line run with no start mark (one bash
 ///   could not parse, or a comment: the history number moved) gets one as
 ///   it ends, `C;late`, which starts its output after the prompt's line, so
-///   bash's complaint is its output.
+///   bash's complaint is its output. Its stderr is /dev/null, so that
+///   `set -x` traces none of it; the marks go to fd 3, stderr's copy.
 /// - `PS1` ends a command too, in case `PROMPT_COMMAND` is set anew while
 ///   the shell runs (a `D` that ends no command does nothing); its hooks
 ///   then print before that end.
@@ -71,7 +72,7 @@ unset __fux_f
 /// A command's end, `{H}` the next history number, `{K}` keeping the
 /// command's `PIPESTATUS` and `{P}` making it again (see `BASHRC`). No
 /// single quotes: the startup file quotes it with them.
-const END: &str = r#"{ if ([ "$__fux_m" = 1 ] && printf "\033]133;C;late\007" >&2; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&2; exit $((__fux_c != 1))); then {P}; fi; } >/dev/null 2>&$((__fux_s = $?, {K}__fux_c = ${#PIPESTATUS[@]}, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2))"#;
+const END: &str = r#"{ if ([ "$__fux_m" = 1 ] && printf "\033]133;C;late\007" >&3; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&3; exit $((__fux_c != 1))); then {P}; fi; } >/dev/null 3>&$((__fux_s = $?, {K}__fux_c = ${#PIPESTATUS[@]}, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2)) 2>/dev/null"#;
 /// The longest pipeline whose statuses `END` gives the user's hooks in
 /// `PIPESTATUS`; of a longer one they see its status alone.
 const PIPES: usize = 8;

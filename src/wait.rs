@@ -846,9 +846,15 @@ impl Watch {
                 }
             }
         }
-        // A text on a line written after the bell came after it.
+        // A text on a line written after the bell, that did not hold it
+        // then, came after it: the first bell since the last input, which
+        // a wait from there counts first.
+        let rung = (pane.alerts.at.as_ref()).filter(|rung| rung.count > self.from.alerts);
         let after_bell = |found: &(String, String, fux_vt::RowId)| {
-            (pane.alerts.at).is_some_and(|at| changed_after(screen, found.2, at))
+            rung.is_some_and(|rung| {
+                let held = (rung.lines.get(&found.2)).is_some_and(|l| found_in(l, &found.0) > 0);
+                !held && changed_after(screen, found.2, rung.mark)
+            })
         };
         let text = match text {
             Some(found) if bell.is_some() && after_bell(&found) => None,
@@ -948,7 +954,10 @@ impl Watch {
             });
             up = Some(l.first);
             let reads = self.was.get(&l.first).map(String::as_str) == Some(l.text.as_str());
-            moved || (l.new && !reads)
+            // Its colours changed alone: a menu's highlight moved.
+            let restyled =
+                (self.from.styles.get(&l.first)).is_some_and(|was| *was != styles(screen, l.first));
+            moved || (l.new && (!reads || restyled))
         })
         .map(|l| l.first)
     }
@@ -1000,7 +1009,7 @@ impl Watch {
     }
 }
 
-/// The first of `texts` that `line` holds past the echo of what was
+/// The one of `texts` that `line` holds first past the echo of what was
 /// `typed`, the line and its first row; `skipped` if one was in the echo
 /// alone.
 fn holds(
@@ -1011,22 +1020,25 @@ fn holds(
     skipped: &mut bool,
 ) -> Option<(String, String, fux_vt::RowId)> {
     let mut echo = None;
+    // Of several, the one furthest left: printed first, as a line is.
+    let mut first: Option<(usize, &String)> = None;
     for text in texts {
         let found = found_at(&line.text, text);
-        let Some(last) = found.last() else {
+        if found.is_empty() {
             continue;
-        };
+        }
         // Where the echo ends, as `found_at` counts in the line.
         let end = *echo.get_or_insert_with(|| {
             let end = echo_len(screen, typed, line);
             normal(line.text.get(..end).unwrap_or(&line.text)).len()
         });
-        if *last >= end {
-            return Some((text.clone(), line.text.clone(), line.first));
+        match found.into_iter().find(|at| *at >= end) {
+            Some(at) if first.is_none_or(|(left, _)| at < left) => first = Some((at, text)),
+            Some(_) => {}
+            None => *skipped = true,
         }
-        *skipped = true;
     }
-    None
+    first.map(|(_, text)| (text.clone(), line.text.clone(), line.first))
 }
 
 /// Whether a row of the line that starts at `first` changed since `mark`.
@@ -1062,23 +1074,42 @@ fn is_new(
     line.new && (was.get(&line.first) != Some(&line.text) || touched.contains(&line.first))
 }
 
-/// The screen's lines as they read now, by first row; and the line above
-/// each, by first rows.
+/// The screen's lines as they read now, by first row; the line above
+/// each, by first rows; and each one's colours (`styles`).
 pub(crate) fn shown(
     screen: &fux_vt::Screen,
 ) -> (
     std::collections::HashMap<fux_vt::RowId, String>,
     std::collections::HashMap<fux_vt::RowId, fux_vt::RowId>,
+    std::collections::HashMap<fux_vt::RowId, u64>,
 ) {
     let shown = lines(screen.rows().skip(screen_top(screen)), None);
     let above = (shown.iter().skip(1))
         .zip(&shown)
         .map(|(line, up)| (line.first, up.first))
         .collect();
+    let colours = (shown.iter())
+        .map(|l| (l.first, styles(screen, l.first)))
+        .collect();
     (
         shown.into_iter().map(|l| (l.first, l.text)).collect(),
         above,
+        colours,
     )
+}
+
+/// A digest of the colours and rendition of the line that starts at
+/// `first`, its soft-wrapped rows with it.
+fn styles(screen: &fux_vt::Screen, first: fux_vt::RowId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    let mut row = screen.row_by_id(first);
+    while let Some(at) = row {
+        at.cells()
+            .for_each(|cell| cell.attributes().hash(&mut hasher));
+        row = at.below().filter(|_| at.wrapped());
+    }
+    hasher.finish()
 }
 
 /// Where the screen's lines start among the rows kept: at its top row, or

@@ -2279,6 +2279,61 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let refused = server.fux(&many)?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
+    // Keys count as the request carries them, their names and more: so
+    // many that the request could not be sent are too long too.
+    let mut keys = vec!["str", &sink, "pane", "keys"];
+    for _ in 0..90 {
+        keys.extend(["str", "C-M-F12", "key", "1000", "times"]);
+    }
+    keys.push("send-keys");
+    let refused = server.fux(&keys)?;
+    assert_eq!(refused.status, 1);
+    assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
+    Ok(())
+}
+
+/// A menu on the main screen that marks its choice by colour alone: what a
+/// key that moves it brought starts at the first row whose colours
+/// changed, though it reads as it did.
+#[test]
+fn a_highlight_moved_is_what_came() -> Outcome {
+    let server = Server::start("")?;
+    let menu = r"import os, tty
+tty.setraw(0)
+sel = 0
+def draw():
+    os.write(1, b'\x1b[H')
+    for i, label in enumerate(['Alpha', 'Beta', 'Gamma']):
+        style = '\x1b[7m' if i == sel else ''
+        os.write(1, ('\x1b[2K' + style + label + '\x1b[0m\r\n').encode())
+    os.write(1, b'\x1b[2KINPUT: arrows')
+os.write(1, b'\x1b[2J')
+draw()
+while True:
+    if os.read(0, 3) == b'\x1b[B':
+        sel += 1
+    draw()
+";
+    let pane = id(&server.ok(&run(
+        &["str", "INPUT:", "wait-text"],
+        &["python3", "-c", menu],
+    ))?);
+    let down = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "Down",
+        "key",
+        "send-keys",
+    ];
+    let moved = server.ok(&down)?;
+    assert_eq!(
+        body(&moved),
+        "Alpha\nBeta\nGamma\nINPUT: arrows\n",
+        "{moved}"
+    );
     Ok(())
 }
 
@@ -2868,6 +2923,24 @@ fn bash_marks_hold_under_a_traced_debug_trap() -> Outcome {
     Ok(())
 }
 
+/// Under `set -x` fux's hook at each prompt traces nothing: a command's
+/// output holds its own trace alone, and no line of fux's shows.
+#[test]
+fn set_x_traces_nothing_of_the_marks() -> Outcome {
+    // Before bash 4.4 the marks' own DEBUG trap is traced.
+    if old_bash()? {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    server.ok(&run(&["str", "x", "name"], &["bash", "--norc", "-i"]))?;
+    line(&server, "x", "set -x; false | true")?;
+    line(&server, "x", "echo hi")?;
+    assert_eq!(last_output(&server, "x")?, "+ echo hi\nhi\n");
+    let screen = server.ok(&["str", "x", "pane", "opts", "capture"])?;
+    assert!(!screen.contains("++"), "{screen}");
+    Ok(())
+}
+
 /// A `PROMPT_COMMAND` the user's startup set (an array, as some system
 /// files make it) is replaced by one set in the running shell, as without
 /// fux.
@@ -2908,6 +2981,19 @@ fn last_output_holds_a_parse_error_and_whole_rows() -> Outcome {
         error.contains("syntax error") && !error.contains("if ; then"),
         "{error}"
     );
+    Ok(())
+}
+
+/// While a command runs, its output so far is the last output, not the
+/// command's before.
+#[test]
+fn last_output_of_a_running_command_is_its_output_so_far() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&run(&["str", "r", "name"], &["bash", "--norc", "-i"]))?;
+    line(&server, "r", "echo BEFORE")?;
+    let asks = "echo CURRENT; read -r answer";
+    server.ok(&typed("r", asks, &["str", "^CURRENT", "wait-text"]))?;
+    assert_eq!(last_output(&server, "r")?, "CURRENT\n");
     Ok(())
 }
 
@@ -2988,6 +3074,41 @@ fn a_reply_that_starts_with_the_word_typed_is_output() -> Outcome {
     ];
     let answer = server.ok(&keys)?;
     assert!(answer.contains("SNAPSHOT ticket=S-1"), "{answer}");
+    Ok(())
+}
+
+/// A line typed in one send-keys and edited in the next (BSpace, then
+/// Enter) is the echo of the line as edited, not output.
+#[test]
+fn a_line_edited_in_a_later_send_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let read = "import sys\nsys.stdout.write('Input> '); sys.stdout.flush()\n\
+                sys.stdin.readline(); sys.stdin.read()\n";
+    let pane = id(&server.ok(&run(
+        &["str", "Input>", "wait-text"],
+        &["python3", "-c", read],
+    ))?);
+    let keys = ["str", &pane, "pane", "keys", "str", "NEEDLEX", "text"];
+    server.ok(&[&keys[..], &["send-keys"]].concat())?;
+    let edit = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "BSpace",
+        "key",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "3",
+        "timeout",
+        "send-keys",
+    ])?;
+    assert_eq!(edit.status, CANNOT_COME, "{}{}", edit.stdout, edit.stderr);
     Ok(())
 }
 
@@ -3099,5 +3220,48 @@ fn the_condition_met_first_answers() -> Outcome {
     assert_eq!((text.status, text.stdout.as_str()), (0, "READY\n"));
     let bell = wait(&rings, &["str", "DONE", "wait-text", "wait-bell"])?;
     assert_eq!((bell.status, bell.stdout.as_str()), (0, "bell\n"));
+    Ok(())
+}
+
+/// A wait that begins after a text and a bell on one line takes the text
+/// as before the bell if it was there as the bell rang, the line written
+/// on after; and of two texts on one line, the one further left, printed
+/// first, whatever their order given.
+#[test]
+fn a_late_wait_orders_what_shares_a_line_by_where_it_is() -> Outcome {
+    let server = Server::start("")?;
+    let script = "printf FIRST; sleep 0.2; printf '\\a'; sleep 0.2; echo ' SECOND'; read x";
+    let pane = id(&server.ok(&run(&["str", "SECOND", "wait-text"], &["sh", "-c", script]))?);
+    let wait = |conditions: &[&str]| -> Result<String, String> {
+        let words = [
+            &["str", &pane, "pane", "opts"][..],
+            conditions,
+            &["wait", "json"],
+        ]
+        .concat();
+        server.ok(&words)
+    };
+    let text = wait(&["wait-bell", "str", "FIRST", "wait-text"])?;
+    assert!(text.contains(r#""met":"text""#), "{text}");
+    let first = wait(&["str", "SECOND", "wait-text", "str", "FIRST", "wait-text"])?;
+    assert!(first.contains(r#""text":"FIRST""#), "{first}");
+    Ok(())
+}
+
+/// A bell and a text in one write: the text came after the bell, so a
+/// wait for either answers the bell.
+#[test]
+fn a_bell_before_a_text_in_one_write_answers_first() -> Outcome {
+    let server = Server::start("")?;
+    let code = "import os, sys\nos.write(1, b'\\aSECOND-TEXT\\n'); sys.stdin.read()\n";
+    let rang = server.ok(&[
+        &run(
+            &["str", "SECOND-TEXT", "wait-text", "wait-bell"],
+            &["python3", "-c", code],
+        )[..],
+        &["json"],
+    ]
+    .concat())?;
+    assert!(rang.contains(r#""met":"bell""#), "{rang}");
     Ok(())
 }

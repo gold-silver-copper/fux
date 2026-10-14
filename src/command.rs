@@ -705,6 +705,20 @@ pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, bool) {
     (lines, recalled)
 }
 
+/// Whether `inputs` leave the line they type on open, as `typed_lines`
+/// reads them: none ends it, and each one's echo is known.
+pub fn line_open(inputs: &[Input]) -> bool {
+    use fux_vt::keys::{Key, Modifiers};
+    inputs.iter().all(|input| match input {
+        Input::Text(text) | Input::Paste(text) => !text.contains(['\n', '\r']),
+        Input::Key(key) => matches!(
+            (key.key, key.mods),
+            (Key::Char(_) | Key::Backspace | Key::Tab, Modifiers::NONE)
+                | (Key::Char('h' | 'u' | 'w'), Modifiers::CTRL)
+        ),
+    })
+}
+
 /// Types `c` on the last of `lines`, as a terminal's line editing shows it.
 fn type_char(lines: &mut [String], c: char) {
     let Some(line) = lines.last_mut() else {
