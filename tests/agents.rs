@@ -2590,7 +2590,11 @@ fn a_wrapped_prompt_is_never_new() -> Outcome {
     assert_eq!(typed.status, CANNOT_COME, "{}", typed.stdout);
     let enter = keys(&["str", "Enter", "key"])?;
     assert_eq!(enter.status, CANNOT_COME, "{}", enter.stdout);
-    assert!(enter.stdout.contains("RESULT OK"), "{}", enter.stdout);
+    // Status 7 answers with the screen; a time limit (not Linux) answers on
+    // stderr alone.
+    if PROBED {
+        assert!(enter.stdout.contains("RESULT OK"), "{}", enter.stdout);
+    }
     let later = server.fux(&[
         "str",
         &pane,
