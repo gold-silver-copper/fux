@@ -506,9 +506,11 @@ impl Wait {
                     "{id}: timed out after {seconds}s waiting for {}",
                     self.describe()
                 );
-                if let Some(idle) = idle {
+                // What it does: reading its terminal, waiting, busy…
+                if let (Some(idle), Some(pane)) = (idle, pane) {
                     message.push_str(&format!(
-                        "; its program runs, the screen unchanged for {}s",
+                        "; {id} {}, the screen unchanged for {}s",
+                        crate::ready::state(pane, Instant::now()).word(),
                         idle.as_secs()
                     ));
                 }
@@ -946,19 +948,25 @@ impl Watch {
         let at = self.from.cursor.and_then(|row| screen.row_index(row))?;
         // A line that reads as it did changed too if it moved (lines
         // deleted or put in above it): it no longer follows the line it
-        // followed, or that line is gone.
+        // followed, or that line is gone. One that reads otherwise changed
+        // only if a row of it did: the screen's top row may go on a line
+        // begun above it, which each scroll reads from another row.
         let mut up: Option<fux_vt::RowId> = None;
-        lines(screen.rows().skip(at.min(screen.history_len())), None)
-            .into_iter()
-            .find(|l| {
-                let moved = (self.from.above.get(&l.first)).is_some_and(|was| match up {
-                    Some(up) => up != *was,
-                    None => screen.row_index(*was).is_none(),
-                });
-                up = Some(l.first);
-                moved || self.was.get(&l.first).map(String::as_str) != Some(l.text.as_str())
-            })
-            .map(|l| l.first)
+        lines(
+            screen.rows().skip(at.min(screen.history_len())),
+            Some(self.from.mark),
+        )
+        .into_iter()
+        .find(|l| {
+            let moved = (self.from.above.get(&l.first)).is_some_and(|was| match up {
+                Some(up) => up != *was,
+                None => screen.row_index(*was).is_none(),
+            });
+            up = Some(l.first);
+            let reads = self.was.get(&l.first).map(String::as_str) == Some(l.text.as_str());
+            moved || (l.new && !reads)
+        })
+        .map(|l| l.first)
     }
 
     /// Reads the rows let go since the last look (scrolled off the
@@ -980,9 +988,13 @@ impl Watch {
             (None, Some(anchor)) => screen.row_index(anchor),
             (None, None) => Some(history),
         };
-        // An anchor gone past the history's limit before the first read:
-        // what is kept is read, and the rest may have held a text.
-        self.dropped |= self.read.is_none() && self.anchor.is_some() && from.is_none();
+        // An anchor gone past the history's limit before the first read
+        // (not one kept on the screen not in use, main or alternate): what
+        // is kept is read, and the rest may have held a text.
+        let kept = |a: fux_vt::RowId| {
+            screen.main_row_index(a).is_some() || screen.alternate_rows().any(|r| r.id() == a)
+        };
+        self.dropped |= self.read.is_none() && from.is_none() && !self.anchor.is_none_or(kept);
         let from = from.unwrap_or(0);
         if from < history {
             let rows: Vec<fux_vt::Row<'_>> = screen
@@ -1003,8 +1015,8 @@ impl Watch {
     }
 }
 
-/// The first of `texts` that `line` holds outside the echo of what was
-/// `typed`, and the line; `skipped` if one was in the echo.
+/// The first of `texts` that `line` holds past the echo of what was
+/// `typed`, and the line; `skipped` if one was in the echo alone.
 fn holds(
     screen: &fux_vt::Screen,
     typed: &InputFrom,
@@ -1012,8 +1024,18 @@ fn holds(
     texts: &[String],
     skipped: &mut bool,
 ) -> Option<(String, String)> {
-    for text in texts.iter().filter(|t| found_in(&line.text, t) > 0) {
-        if !echoed(screen, typed, line, text) {
+    let mut echo = None;
+    for text in texts {
+        let found = found_at(&line.text, text);
+        let Some(last) = found.last() else {
+            continue;
+        };
+        // Where the echo ends, as `found_at` counts in the line.
+        let end = *echo.get_or_insert_with(|| {
+            let end = echo_len(screen, typed, line);
+            normal(line.text.get(..end).unwrap_or(&line.text)).len()
+        });
+        if *last >= end {
             return Some((text.clone(), line.text.clone()));
         }
         *skipped = true;
@@ -1061,6 +1083,22 @@ pub(crate) fn shown(
     )
 }
 
+/// The line `row` is on, from its first row (a line wider than the screen
+/// wraps from rows above) to `row`: that first row, and its text.
+pub(crate) fn line_to(row: fux_vt::Row<'_>) -> (Option<fux_vt::RowId>, String) {
+    let mut rows = vec![row];
+    let mut top = row;
+    while let Some(up) = top.above().filter(fux_vt::Row::wrapped) {
+        rows.push(up);
+        top = up;
+    }
+    let text = lines(rows.into_iter().rev(), None)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    (Some(top.id()), text)
+}
+
 /// Rows as lines: soft-wrapped rows joined into the lines they wrap.
 fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::Mark>) -> Vec<Line> {
     joined(rows.map(|row| {
@@ -1104,55 +1142,51 @@ fn joined(rows: impl Iterator<Item = (fux_vt::RowId, bool, String, bool)>) -> Ve
     out
 }
 
-/// Whether `text` on `line` is in the echo of what was typed: on the row
-/// the cursor was on as the keys went in, the prompt and the first line
-/// typed; below it, each line typed after, on the first line from there on
-/// that shows it, in order. What the program writes past the echo, or in
-/// its place, is output.
-fn echoed(
-    screen: &fux_vt::Screen,
-    typed: &crate::pane::InputFrom,
-    line: &Line,
-    text: &str,
-) -> bool {
+/// How much of `line` is the echo of what was `typed`, from its start: on
+/// the line the cursor was on as the keys went in, the prompt and the
+/// first line typed; below it, each line typed after, on the first line
+/// from there on that shows it, in order. A text found from there on is
+/// output: what the program writes past the echo, or in its place.
+fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line) -> usize {
     let Some(cursor) = typed.cursor else {
-        return false;
+        return 0;
     };
     let before = typed.before.trim_end();
     let mut keys = typed.echo.iter().map(|t| t.trim());
-    let within = |end: Option<usize>| {
-        end.is_some_and(|end| found_in(line.text.get(..end).unwrap_or(&line.text), text) > 0)
-    };
     let first = keys.next();
     if line.first == cursor {
-        // The prompt the row held, while it starts with it still, is never
+        // The prompt the line held, while it starts with it still, is never
         // new. Keys alone (Up, Enter: a command recalled) on it show one
         // whole; an empty row, or one written over, takes the program's
         // output.
-        let prompt = (!before.is_empty() && line.text.starts_with(before)).then_some(before.len());
+        let prompt = if !before.is_empty() && line.text.starts_with(before) {
+            before.len()
+        } else {
+            0
+        };
         return match first {
-            Some(first) => within(echo_end(&line.text, before, first, true).or(prompt)),
-            None if typed.lines > 0 => prompt.is_some(),
-            None => within(prompt),
+            Some(first) => echo_end(&line.text, before, first, true).unwrap_or(prompt),
+            None if typed.lines > 0 && prompt > 0 => line.text.len(),
+            None => prompt,
         };
     }
     let Some(from) = screen.row_index(cursor) else {
-        return false;
+        return 0;
     };
     let mut next = keys.next();
     for shown in lines(screen.rows().skip(from), None).iter().skip(1) {
         let Some(keys_now) = next else {
-            return false;
+            return 0;
         };
         let end = echo_end(&shown.text, before, keys_now, false);
         if shown.first == line.first {
-            return within(end);
+            return end.unwrap_or(0);
         }
         if end.is_some() {
             next = keys.next();
         }
     }
-    false
+    0
 }
 
 /// Where the echo of a line typed, `keys`, ends on a line of `text`: after
@@ -1214,6 +1248,12 @@ fn normal(text: &str) -> String {
 /// starting where a word does (`READY` is not in `NOT_READY`), `^` and `$`
 /// holding it to the line's start and end.
 fn found_in(line: &str, text: &str) -> usize {
+    found_at(line, text).len()
+}
+
+/// Where a line shows TEXT, as `found_in` finds it: each place in the line
+/// as `normal` makes it.
+fn found_at(line: &str, text: &str) -> Vec<usize> {
     let (start, rest) = match text.strip_prefix('^') {
         Some(rest) => (true, rest),
         None => (false, text),
@@ -1224,7 +1264,7 @@ fn found_in(line: &str, text: &str) -> usize {
     };
     let (line, body) = (normal(line), normal(body));
     if body.is_empty() {
-        return 0;
+        return Vec::new();
     }
     let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
     let wordy = word(body.chars().next());
@@ -1241,7 +1281,8 @@ fn found_in(line: &str, text: &str) -> usize {
                 && (!end || after_at == line.len())
                 && !(wordy && word(before.chars().next_back()))
         })
-        .count()
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// `text` without the control key's echo it ends with (`^C`, lowercased

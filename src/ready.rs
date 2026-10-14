@@ -72,11 +72,11 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         return State::Busy;
     }
     // Quiet since the screen last changed and input last went in.
-    let quiet = now.saturating_duration_since(pane.changed_at.max(pane.written_at));
+    let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
+    let quiet = now.saturating_duration_since(since);
     let tty = child.master.slave_path();
     // No foreground group: its program is gone, its end not yet heard.
-    let since_key = now.saturating_duration_since(pane.written_at);
-    let Some(activity) = activity(child, tty.as_deref(), since_key) else {
+    let Some(activity) = activity(child, tty.as_deref(), pane.since_key(now)) else {
         return State::Busy;
     };
     // A shell command still runs a program that is not full-screen and

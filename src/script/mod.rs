@@ -378,22 +378,20 @@ pub struct Server {
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
-/// program): a flag it looks at between steps, and its connection, shut
-/// under a request that waits.
+/// program): a flag it looks at between steps, and what ends its
+/// connection's reads under a request that waits.
 #[derive(Clone, Default)]
 pub struct Stop {
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    stream: std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>,
+    stream: std::sync::Arc<std::sync::Mutex<Option<std::io::PipeWriter>>>,
 }
 
 impl Stop {
     /// Stops the run under way.
     pub fn stop(&self) {
         self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(stream) = self.stream.lock()
-            && let Some(stream) = stream.as_ref()
-        {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+        if let Ok(mut stream) = self.stream.lock() {
+            drop(stream.take());
         }
     }
 
@@ -448,12 +446,12 @@ impl Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
-                // A connection a stop can shut.
+                let mut opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
+                // A connection a stop can end.
                 if let Some(stop) = &self.stop
                     && let Ok(mut held) = stop.stream.lock()
                 {
-                    *held = opened.socket_copy();
+                    *held = opened.stopper();
                 }
                 self.requests.insert(opened)
             }

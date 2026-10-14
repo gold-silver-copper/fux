@@ -25,9 +25,9 @@ fux %2 str TERM signal; fux %2 opts respawn             # stop; start again on a
 fux str agent workspace kill                            # at the end: everything run started, at once
 ```
 
-The answer's first line is the pane and its **state**; the lines after it
-are what the program wrote since you acted (your echo too), or the whole
-screen of a full-screen program (an editor, a menu, a form); one that
+The answer's first line is the pane and its **state**; then what came since
+you acted, from the line typed on (its prompt and your echo too), or the
+whole screen of a full-screen program (an editor, a menu, a form); one that
 redraws in place on the main screen answers from the top row it changed:
 
 ```
@@ -35,7 +35,7 @@ redraws in place on the main screen answers from the top row it changed:
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
 %2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0)
-%2 busy · 12 bytes unread      still running or printing at the time limit (status 124)
+%2 busy · 12 bytes unread      still running or printing at the time limit (status 124); unread: input fux holds yet
 %2 exited 3                    the program ended; its last output follows
 ```
 
@@ -51,32 +51,36 @@ redraws in place on the main screen answers from the top row it changed:
   the pane: use it. Each `fux` is a fresh program (a `let` name lasts only
   within one). The pane stays after the program ends.
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
-  `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; a typo is refused).
-  Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T paste`
-  (one bracketed paste), `str FILE paste-file`; 900 KiB at most in all,
-  repeats too. `N times` (1 to 1000) repeats only the input just before
-  it: `str Down key 2 times str Enter key` is Down Down Enter.
+  `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; no keypad keys; a typo
+  is refused). Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T
+  paste` (one bracketed paste, an end-of-paste mark in T dropped), `str FILE paste-file`;
+  900 KiB at most in all, repeats too. `N times` (1 to 1000) repeats only the
+  input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
   `wait-bell`; several: whichever first. A text: case ignored, blanks as
   one, from a word's start (`READY` is not in `NOT_READY`); `^T` a line's
   first word, indented or not, `T$` its last. Met, it answers the first new
   line that holds the text (`run`: the pane, then that line; `wait-gone`,
-  the pane's state), never what you typed, Enter or not, nor the prompt
+  the pane's state; after `run` or `respawn` a text must show before it
+  can go), never what you typed, Enter or not, nor the prompt
   before it, on each row it went on (with the keys, or for a later wait your
   last input); what the program writes after it on that row counts. A wait
   counts what came since your last input to the pane (or since the program
   started), scrolled away too: it never starts too late; but a later wait
   does not see a line overwritten in place before it began. **Status 7:**
   the program reads its terminal and the text has not come: it cannot before
-  you type (fux judges the terminal's foreground program; one left running
-  in the background may still write it); the answer is the screen (it starts `… earlier lines not kept`
+  you type. fux judges by what the terminal's foreground program is blocked
+  in: one woken by a timer (`alarm`) or by another descriptor it waits on
+  with the terminal may still go on, and one left running in the background
+  may still write it. The answer is the screen (it starts `… earlier lines not kept`
   if lines since were let go past history-lines before the wait read them:
   the text may have passed unseen). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
-  `last-output` (a shell command's output), `joined`, `marks`, `styles`,
+  `last-output` (a shell command's output), `joined` (with `rows`, a
+  wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after,
   else that full screen if they changed it, else the screen as it is.
@@ -150,7 +154,7 @@ resize` changes it later (a pane's: its tab; `resize-auto` goes back to a
 client's screen). `PANE 95 percent resize-x` sizes a pane within its tab. A
 size that cannot be had (over 500 a side, too small for a tab's panes, a
 split with no room left) is refused, and nothing changes. A client's size
-is its terminal's, whatever it is.
+is its terminal's, at most 4096 a side.
 
 ## Which server
 

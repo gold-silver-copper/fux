@@ -94,7 +94,7 @@ impl std::fmt::Display for Error {
             {
                 write!(
                     f,
-                    "no fux server is running at {} (its socket is left from one that stopped); {}",
+                    "no fux server is running at {} (one that stopped left it); {}",
                     path.display(),
                     crate::socket::start_hint(path)
                 )
@@ -190,9 +190,10 @@ fn restore() {
 /// denies sockets (a sandbox) or the server serves its door alone.
 fn open(socket: &SocketPath) -> Result<Link, Error> {
     let door = crate::door::path(socket.path());
+    // Said of the socket chosen, which a hint starts again.
     let by_door = || {
         crate::door::knock(socket.path()).map_err(|source| Error::Connect {
-            path: door.clone(),
+            path: socket.path().to_owned(),
             source,
         })
     };
@@ -368,9 +369,10 @@ impl Requests {
         Ok(None)
     }
 
-    /// A copy of its socket, to shut down from another thread.
-    pub fn socket_copy(&self) -> Option<UnixStream> {
-        self.stream.socket_copy()
+    /// What stops it from another thread: dropped, the request under way
+    /// ends as if the server had closed the connection.
+    pub fn stopper(&mut self) -> Option<std::io::PipeWriter> {
+        self.stream.stopper().ok()
     }
 }
 

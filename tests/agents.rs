@@ -2524,13 +2524,15 @@ fn a_later_wait_skips_a_line_redrawn_the_same() -> Outcome {
 
 /// The prompt on the row the keys went in on was there before them: a
 /// program that echoes nothing and writes on that row after does not make
-/// the prompt new, for the keys' own wait or a later one.
+/// the prompt new, for the keys' own wait or a later one; the text written
+/// after it on that row is new.
 #[test]
 fn the_prompt_on_the_typed_row_is_never_new() -> Outcome {
     let server = Server::start("")?;
     let quiet = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
                  w('READY prompt> '); sys.stdout.flush(); sys.stdin.read(1)\n\
-                 w(' other output'); sys.stdout.flush(); sys.stdin.read(1)\n";
+                 w(' other output'); sys.stdout.flush(); sys.stdin.read(1)\n\
+                 w(' READY suffix'); sys.stdout.flush(); sys.stdin.read(1)\n";
     let pane = id(&server.ok(&run(&[], &["python3", "-c", quiet]))?);
     let wait = |words: &[&str]| -> Result<Output, String> {
         server.fux(&[&["str", &pane, "pane"][..], words].concat())
@@ -2554,6 +2556,101 @@ fn the_prompt_on_the_typed_row_is_never_new() -> Outcome {
         "{}{}",
         later.stdout, later.stderr
     );
+    let after = wait(&[
+        "keys",
+        "str",
+        "y",
+        "text",
+        "str",
+        "READY",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+    ])?;
+    assert_eq!(after.status, 0, "{}{}", after.stdout, after.stderr);
+    assert!(after.stdout.ends_with("READY suffix\n"), "{}", after.stdout);
+    Ok(())
+}
+
+/// A prompt wider than the pane wraps from the rows above the keys': it is
+/// still no new text, for the keys' wait, with Enter or not, or a later
+/// one.
+#[test]
+fn a_wrapped_prompt_is_never_new() -> Outcome {
+    let server = Server::start("")?;
+    let prompt = "print('PROMPT READY READY>', end='', flush=True)\n\
+                  while True:\n input(); print('RESULT OK', flush=True)\n";
+    let pane = id(&server.ok(&run(&["12", "8", "size"], &["python3", "-c", prompt]))?);
+    let keys = |input: &[&str]| -> Result<Output, String> {
+        let wait = ["str", "READY", "wait-text", "2", "timeout", "send-keys"];
+        server.fux(&[&["str", &pane, "pane", "keys"][..], input, &wait].concat())
+    };
+    let typed = keys(&["str", "abc", "text"])?;
+    assert_eq!(typed.status, CANNOT_COME, "{}", typed.stdout);
+    let enter = keys(&["str", "Enter", "key"])?;
+    assert_eq!(enter.status, CANNOT_COME, "{}", enter.stdout);
+    assert!(enter.stdout.contains("RESULT OK"), "{}", enter.stdout);
+    let later = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "READY",
+        "wait-text",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(later.status, CANNOT_COME, "{}", later.stdout);
+    Ok(())
+}
+
+/// After a line taller than the screen, an answer starts at the line typed:
+/// the screen's top row, which goes on that line, did not change.
+#[test]
+fn an_answer_after_a_line_taller_than_the_screen_is_what_came() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(
+        &["40", "10", "size", "str", "PS1", "str", "QA> ", "env"],
+        &["bash", "--norc", "-i"],
+    ))?);
+    let a: String = std::iter::repeat_n('a', 1000).collect();
+    let long = format!("v='{a}'");
+    line(&server, &shell, &long)?;
+    let next = line(&server, &shell, "printf 'NEXT\\n'")?;
+    assert!(
+        body(&next).starts_with("QA> printf 'NEXT\\n'\nNEXT\n"),
+        "{next}"
+    );
+    Ok(())
+}
+
+/// A program that takes the alternate screen lets no line go: a text wait
+/// on it does not say lines were let go.
+#[test]
+fn the_alternate_screen_lets_no_line_go() -> Outcome {
+    let server = Server::start("")?;
+    let full = "import sys, tty\ntty.setraw(0)\n\
+                sys.stdout.write('\\x1b[?1049hMENU'); sys.stdout.flush(); sys.stdin.read(1)\n";
+    let out = server.fux(&run(
+        &[
+            "40",
+            "10",
+            "size",
+            "str",
+            "READY",
+            "wait-text",
+            "2",
+            "timeout",
+        ],
+        &["python3", "-c", full],
+    ))?;
+    assert_eq!(out.status, CANNOT_COME, "{}{}", out.stdout, out.stderr);
+    let said = format!("{}{}", out.stdout, out.stderr);
+    assert!(!said.contains("not kept"), "{said}");
+    assert!(!said.contains("let go"), "{said}");
     Ok(())
 }
 
@@ -2616,5 +2713,24 @@ fn a_deleted_line_is_answered() -> Outcome {
     let pane = id(&server.ok(&run(&["40", "10", "size"], &["python3", "-c", delete]))?);
     let answer = server.ok(&["str", &pane, "pane", "str", "x", "type"])?;
     assert_eq!(body(&answer), "ROW2\nROW3\n", "{answer}");
+    Ok(())
+}
+
+/// A text a program `run` just started never showed has not gone: its
+/// `wait-gone` runs to the limit, which says what the pane does.
+#[test]
+fn a_new_programs_text_goes_once_shown() -> Outcome {
+    let server = Server::start("")?;
+    let out = server.fux(&run(
+        &["str", "ABSENT", "wait-gone", "2", "timeout"],
+        &["sh", "-c", "echo ready; read x"],
+    ))?;
+    assert_eq!(out.status, 124, "{}{}", out.stdout, out.stderr);
+    let pane = id(&out.stdout);
+    assert!(
+        out.stderr.contains(&format!("; {pane} {READING}, ")),
+        "{}",
+        out.stderr
+    );
     Ok(())
 }

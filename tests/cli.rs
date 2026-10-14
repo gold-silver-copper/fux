@@ -403,6 +403,22 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{before}"
     );
     assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
+    // The language's own words say how they are written.
+    for (words, usage) in [
+        (
+            &["str", "a", "if", "1", "then"][..],
+            "(use: BOOL if … else … then)",
+        ),
+        (&["3", "each", "1", "end"][..], "(use: SEQ each … end)"),
+        (&["let", "X"][..], "(use: X let NAME)"),
+        (
+            &["begin", "str", "x", "until"][..],
+            "(use: begin … BOOL until)",
+        ),
+    ] {
+        let wrong = said(words)?;
+        assert!(wrong.ends_with(&format!("{usage}\n")), "{wrong}");
+    }
     let named = said(&["1", "let", "+7"])?;
     assert!(
         named.contains("+7: cannot be defined: it names a workspace"),

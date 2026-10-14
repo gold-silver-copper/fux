@@ -108,14 +108,16 @@ fn started(server: &Server, code: &str) -> Result<(String, String), String> {
 /// What a program waits on decides whether it reads: a select, poll or
 /// epoll that watches its terminal with no time limit is `reading`, and a
 /// text it has not printed cannot come (status 7): so does a raw read whose
-/// timer runs only once a key came (VMIN 1, VTIME 10), no key sent, and one
+/// timer runs only once a key came (VMIN 1, VTIME 100), no key sent since
+/// it started, and one
 /// whose child ended unreaped (a zombie), one whose main thread waits for
 /// another that reads, and one whose grandchild reads. One that reads or
 /// watches a pipe alone, or watches its terminal for no input, may go on
 /// alone: `waiting`, never 7. Nor is a program whose main thread reads its
 /// terminal while another thread, or a child, sleeps on a timer: what that
-/// one prints next is waited for. Nor, with what it may not be traced, is
-/// one still printing.
+/// one prints next is waited for. A main thread waiting for another that
+/// sleeps is asleep: busy. Nor, with what it may not be traced, is one
+/// still printing.
 #[test]
 fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
     if !PROBED {
@@ -143,7 +145,7 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
         (
             "import sys, termios, tty\n\
              tty.setraw(0); m = termios.tcgetattr(0)\n\
-             m[6][termios.VMIN] = 1; m[6][termios.VTIME] = 10\n\
+             m[6][termios.VMIN] = 1; m[6][termios.VTIME] = 100\n\
              termios.tcsetattr(0, termios.TCSANOW, m)\n\
              sys.stdout.write('ready\\r\\n'); sys.stdout.flush(); sys.stdin.read(5)\n",
             "reading",
@@ -211,6 +213,15 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
                   threading.Thread(target=later).start(); input()\n";
     let child = "import subprocess\n\
                  subprocess.Popen(['sh', '-c', 'sleep 0.8; echo LATER']); input()\n";
+    let asleep = "import threading, time\nt = threading.Thread(target=time.sleep, args=(30,))\n\
+                  print('ready', flush=True); t.start(); t.join()\n";
+    let busy = server.fux(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", asleep, "arg", "2",
+        "timeout", "run",
+    ])?;
+    assert_eq!(busy.status, 124, "{}{}", busy.stdout, busy.stderr);
+    let state = busy.stdout.lines().next().unwrap_or_default();
+    assert!(state.ends_with(" busy"), "{}", busy.stdout);
     for code in [thread, child] {
         let later = server.fux(&[
             "opts",

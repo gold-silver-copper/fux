@@ -1,6 +1,7 @@
 //! A sandbox like Codex's on Linux: a seccomp filter under which `connect`,
-//! `bind`, `sendto` (`send`) and `setsockopt` fail with `EPERM`, while
-//! socket pairs, FIFOs, read(2) and write(2) and sendmsg(2) keep working.
+//! `bind`, `sendto` (`send`), `setsockopt` and `shutdown` fail with
+//! `EPERM`, while socket pairs, FIFOs, read(2) and write(2) and sendmsg(2)
+//! keep working.
 //!
 //! The filter goes on a thread of its own, installed with a safe call (the
 //! tests forbid unsafe code), and every process that thread spawns inherits
@@ -23,13 +24,14 @@ pub fn sandboxed<T: Send>(work: impl FnOnce() -> Result<T, String> + Send) -> Re
 
 /// Installs the filter on the calling thread: `no_new_privs`, then a BPF
 /// program that checks the architecture (another is killed) and answers the
-/// four calls `EPERM`, allowing the rest.
+/// five calls `EPERM`, allowing the rest.
 fn deny_sockets() -> Result<(), String> {
     let denied = [
         libc::SYS_connect,
         libc::SYS_bind,
         libc::SYS_sendto,
         libc::SYS_setsockopt,
+        libc::SYS_shutdown,
     ];
     let rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> =
         denied.into_iter().map(|call| (call, Vec::new())).collect();

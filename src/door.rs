@@ -183,29 +183,47 @@ fn answer(dir: &Path, name: &str) -> io::Result<UnixStream> {
 
 /// Starts relaying what comes from `from` to one end of a socket pair, and
 /// what is written to that end into `into`: the other end, which is used as
-/// a connected socket would be, and can be shut down as one.
+/// a connected socket would be. Once `from` ends (the other side gone), its
+/// end is closed, every copy of it, so the other reads its end: a sandbox
+/// that refuses shutdown(2) refuses nothing here.
 fn relay(from: File, into: File) -> io::Result<UnixStream> {
     fuxix::io::set_nonblocking(&from, false)?;
     fuxix::io::set_nonblocking(&into, false)?;
     let (ours, theirs) = UnixStream::pair()?;
     // Read and written as a file: a sandbox that refuses send(2) allows
     // write(2).
-    let shut = theirs.try_clone()?;
     let theirs = File::from(OwnedFd::from(theirs));
     let back = theirs.try_clone()?;
-    // The end of either ends both.
+    // Closed as `from` ends, to stop the copy back, which holds a copy of
+    // the pair's end.
+    let (stopped, stop) = io::pipe()?;
     std::thread::spawn(move || {
-        copy(from, &theirs);
-        let _ = shut.shutdown(std::net::Shutdown::Both);
+        copy(from, &theirs, None);
+        drop(stop);
     });
-    std::thread::spawn(move || copy(&back, into));
+    std::thread::spawn(move || copy(&back, into, Some(&stopped)));
     Ok(ours)
 }
 
-/// Copies `from` into `into` until either ends.
-fn copy(mut from: impl Read, mut into: impl Write) {
+/// Copies `from` into `into` until either ends, or `stop` does.
+fn copy(mut from: impl Read + AsFd, mut into: impl Write, stop: Option<&io::PipeReader>) {
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
+        if let Some(stop) = stop {
+            let mut fds = [
+                fuxix::poll::PollFd::new(&from, fuxix::poll::Events::IN),
+                fuxix::poll::PollFd::new(stop, fuxix::poll::Events::IN),
+            ];
+            match fuxix::poll::poll(&mut fds, None) {
+                Ok(_) => {}
+                Err(fuxix::Errno::INTR) => continue,
+                Err(_) => return,
+            }
+            let [_, stopped] = &fds;
+            if !stopped.revents().is_empty() {
+                return;
+            }
+        }
         match from.read(&mut buffer) {
             Ok(0) => return,
             Ok(n) => {
@@ -277,25 +295,25 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
 
 /// A client's connection to its server: its socket, or one end of a pair
 /// relayed to a door's two FIFOs. Read and written with read(2) and
-/// write(2) alone, and timed with poll(2): Codex's sandbox refuses send(2)
-/// and setsockopt(2), even on a socket pair.
+/// write(2) alone, and timed and stopped with poll(2): Codex's sandbox
+/// refuses send(2), setsockopt(2) and shutdown(2), even on a socket pair.
 pub struct Link {
     /// The socket, read and written as a file.
     file: File,
-    /// The socket, to shut down.
-    socket: UnixStream,
     /// Whether it comes through a door, which carries no descriptor.
     door: bool,
     timeout: Option<Duration>,
+    /// Ends its reads once its other end closes (`Link::stopper`).
+    stop: Option<io::PipeReader>,
 }
 
 impl Link {
     pub fn socket(socket: UnixStream) -> io::Result<Link> {
         Ok(Link {
-            file: File::from(OwnedFd::from(socket.try_clone()?)),
-            socket,
+            file: File::from(OwnedFd::from(socket)),
             door: false,
             timeout: None,
+            stop: None,
         })
     }
 
@@ -321,22 +339,37 @@ impl Link {
         !self.door
     }
 
-    /// A copy of its socket, to shut down from another thread.
-    pub fn socket_copy(&self) -> Option<UnixStream> {
-        self.socket.try_clone().ok()
+    /// What stops it from another thread: dropped, its reads end, as at
+    /// the server's end, from then on.
+    pub fn stopper(&mut self) -> io::Result<io::PipeWriter> {
+        let (stop, stopper) = io::pipe()?;
+        self.stop = Some(stop);
+        Ok(stopper)
     }
 }
 
 impl Read for Link {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if let Some(timeout) = self.timeout {
-            let mut fds = [fuxix::poll::PollFd::new(
-                &self.file,
-                fuxix::poll::Events::IN,
-            )];
-            if fuxix::poll::poll(&mut fds, Some(timeout))? == 0 {
-                return Err(io::ErrorKind::TimedOut.into());
+        let ready = |fds: &mut [fuxix::poll::PollFd<'_>]| fuxix::poll::poll(fds, self.timeout);
+        let file = fuxix::poll::PollFd::new(&self.file, fuxix::poll::Events::IN);
+        let found = match (&self.stop, self.timeout) {
+            (Some(stop), _) => {
+                let mut fds = [
+                    file,
+                    fuxix::poll::PollFd::new(stop, fuxix::poll::Events::IN),
+                ];
+                let found = ready(&mut fds)?;
+                let [_, stopped] = &fds;
+                if !stopped.revents().is_empty() {
+                    return Ok(0);
+                }
+                found
             }
+            (None, Some(_)) => ready(&mut [file])?,
+            (None, None) => 1,
+        };
+        if found == 0 {
+            return Err(io::ErrorKind::TimedOut.into());
         }
         self.file.read(buffer)
     }

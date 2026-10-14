@@ -149,23 +149,35 @@ pub fn explain(name: &str) -> Option<String> {
             builtin.about()
         ));
     }
-    let language = match name {
-        "if" | "else" | "then" => "bool if … else … then: runs one branch",
-        "begin" | "until" => "begin … bool until: runs until the bool is true",
-        "define" | "end" => {
-            "define NAME … end: a word of your own; it may call itself (end also closes list and each)"
-        }
-        "let" => "x let NAME: NAME pushes x from then on (in a definition, for that call)",
-        "list" => {
-            "list … end: a list of the values its body leaves; the body starts with an empty stack"
-        }
-        "each" => {
-            "seq each … end: the body once per element of a string or list, the element pushed"
-        }
-        "str" => "str WORD: WORD as text, whatever it looks like",
+    let (shape, about) = syntax(name)?;
+    Some(format!("{name}  {shape}: {about}\n"))
+}
+
+/// A word of the language's own syntax: how it is written, and what it
+/// does.
+pub(crate) fn syntax(name: &str) -> Option<(&'static str, &'static str)> {
+    Some(match name {
+        "if" | "else" | "then" => ("BOOL if … else … then", "runs one branch"),
+        "begin" | "until" => ("begin … BOOL until", "runs until the bool is true"),
+        "define" | "end" => (
+            "define NAME … end",
+            "a word of your own; it may call itself (end also closes list and each)",
+        ),
+        "let" => (
+            "X let NAME",
+            "NAME pushes X from then on (in a definition, for that call)",
+        ),
+        "list" => (
+            "list … end",
+            "a list of the values its body leaves; the body starts with an empty stack",
+        ),
+        "each" => (
+            "SEQ each … end",
+            "the body once per element of SEQ, a string or list, the element pushed",
+        ),
+        "str" => ("str WORD", "WORD as text, whatever it looks like"),
         _ => return None,
-    };
-    Some(format!("{name}  {language}\n"))
+    })
 }
 
 /// The words that build what a word takes: its options, or its input.

@@ -689,7 +689,8 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
 
 /// What one process of the group does, by its main thread and its others,
 /// if anything (not one ended, or waiting for a child): busy while one
-/// runs, or the main one sleeps on a timer; not known while its system call
+/// runs, or the main one sleeps on a timer, or (parked, waiting for the
+/// others) another does while none reads; not known while its system call
 /// cannot be read; reading while it (or, the main one parked, another)
 /// waits for the terminal and none of the others can go on alone, on a
 /// timer or polling: else polling, as it may draw again on its own; else
@@ -718,7 +719,7 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
         return None;
     }
     let first = on_terminal(blocked);
-    let (mut reading, mut alone) = (false, false);
+    let (mut reading, mut polling, mut asleep) = (false, false, false);
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
     for task in tasks.filter_map(|t| t.ok()) {
         let Some(tid) = task.file_name().to_str().map(str::to_owned) else {
@@ -729,7 +730,8 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
         }
         match thread_blocked(pid, &tid).map(on_terminal) {
             Some(Some(Activity::Reading)) => reading = true,
-            Some(Some(Activity::Polling | Activity::Busy)) => alone = true,
+            Some(Some(Activity::Polling)) => polling = true,
+            Some(Some(Activity::Busy)) => asleep = true,
             Some(Some(Activity::Waiting | Activity::Unknown) | None) => {}
             None => return Some(Activity::Busy),
         }
@@ -739,9 +741,12 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
         Some(Activity::Waiting) => Activity::Waiting,
         Some(Activity::Unknown) => Activity::Unknown,
         Some(Activity::Polling) => Activity::Polling,
-        Some(Activity::Reading) | None if alone => Activity::Polling,
+        Some(Activity::Reading) if polling || asleep => Activity::Polling,
         Some(Activity::Reading) => Activity::Reading,
+        None if reading && (polling || asleep) => Activity::Polling,
         None if reading => Activity::Reading,
+        None if asleep => Activity::Busy,
+        None if polling => Activity::Polling,
         None => Activity::Waiting,
     })
 }

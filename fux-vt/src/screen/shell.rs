@@ -66,10 +66,12 @@ impl Screen {
         }
     }
 
-    /// The screen erased whole while a command runs (`clear`): its output
-    /// begins again at the screen's top, what was above gone.
+    /// The main screen erased whole while a command runs (`clear`): its
+    /// output begins again at the screen's top, what was above gone. The
+    /// alternate screen erased (a full-screen program the command ran) is
+    /// none of it: the marks are the main screen's.
     pub(crate) fn screen_erased(&mut self) {
-        if !self.commands.running {
+        if !self.commands.running || self.mode(crate::Mode::AlternateScreen) {
             return;
         }
         let grid = self.grid();

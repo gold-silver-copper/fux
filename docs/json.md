@@ -3,7 +3,8 @@
 (`fux help-json`.) `json` turns the value on top of the stack into JSON:
 what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, an action's answer in it as its
-object (a capture or listing in it as its text). Every shape below is part of fux's interface: a field is added,
+object (one of several panes as an array of their objects; a capture or
+listing in it as its text). Every shape below is part of fux's interface: a field is added,
 never renamed or dropped without a release saying so. Rows and
 columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 `"@2"`, `"+1"`, `"c1"`).
@@ -95,12 +96,15 @@ its own status):
 `state` is the pane's (above), or `closed`: a settling action or bare
 `wait` whose pane closed answers `{"pane":"%3","state":"closed","status":4}`,
 with no `output` and nothing on stderr. `output` is what came since the
-input, or the screen of a full-screen program (one the keys made leave
+input, from the line the keys went in on (its prompt too, so a
+`no_change` answer holds that prompt), or the screen of a full-screen program (one the keys made leave
 it: what it printed after, else that full screen if they changed it, else
 the screen), or the screen for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
 line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `no_change` (`true`: the keys
-were read and drew nothing), `unread` (bytes of input not read yet). A
+were read and drew nothing), `unread` (bytes of input fux holds, not yet
+taken by the terminal; what waits in the terminal's own buffers is not
+counted). A
 wait for a text or a bell answers what met it:
 
 ```json

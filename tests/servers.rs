@@ -770,6 +770,71 @@ fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
     checked
 }
 
+/// A request through the door ends with its server: one killed while a
+/// sandboxed client waits for its answer (a program that kills it) fails
+/// at once, said so, though the sandbox refuses shutdown(2). The door it
+/// left is no server, and the hint starts the server chosen.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_request_ends_with_its_server() -> Outcome {
+    use support::sandbox::sandboxed;
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let socket = rt.join("fux").join("t.sock");
+    let t = |args: &[&str]| {
+        let args: Vec<&str> = ["str", "t", "server"].iter().chain(args).copied().collect();
+        named(&rt, &args, &[])
+    };
+    assert_eq!(t(&["start"])?.status, 0);
+    let pid = serving(&socket).ok_or("the server's pid")?;
+    let crash = "import os, signal, time\nos.kill(os.getppid(), signal.SIGKILL)\ntime.sleep(30)\n";
+    let checked = sandboxed(|| {
+        let mut client = Command::new(FUX)
+            .args(["str", "t", "server", "opts", "str", "python3", "program"])
+            .args(["str", "-c", "arg", "str", crash, "arg", "run"])
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_STATE_HOME", rt.join("state"))
+            .env_remove("FUX_SOCKET")
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(e)?;
+        let deadline = after(PATIENCE);
+        let ended = loop {
+            if let Some(status) = client.try_wait().map_err(e)? {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = client.kill();
+                let _ = client.wait();
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let mut said = String::new();
+        if let Some(stderr) = client.stderr.take() {
+            std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut said).map_err(e)?;
+        }
+        let status = ended.ok_or("the client waited on past its server's end")?;
+        assert_eq!(status.code(), Some(1), "{said}");
+        assert!(said.contains("closed the connection"), "{said}");
+        let left = t(&["ls"])?;
+        assert!(
+            left.stderr.contains("`fux str t server start`"),
+            "{}",
+            left.stderr
+        );
+        Ok(())
+    });
+    if alive(pid) {
+        signal(pid, fuxix::process::Signal::Kill);
+    }
+    checked
+}
+
 /// A socket that is the user's, in a directory of the user's, but listened
 /// on by another uid is refused: the client checks who serves it. The other
 /// uid is a user namespace's (`unshare --map-auto`: the user's own uid as

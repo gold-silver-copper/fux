@@ -76,7 +76,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "horizontal", 1, "opts -- opts", "split side by side"),
     word("Starting", "vertical", 1, "opts -- opts", "split stacked"),
     word("Starting", "in", 2, "opts workspace -- opts", "the workspace for run or new-tab (a name not there is made)"),
-    word("Starting", "id", 2, "opts id -- opts", "the id to make it with, never given before (%N, @N, +N)"),
+    word("Starting", "id", 2, "opts id -- opts", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", 2, "opts file -- opts", "keep everything the program writes in a file too"),
     word("Starting", "kill-first", 1, "opts -- opts", "respawn: end the program first if it still runs"),
     word("Starting", "run", 1, "opts -- pane", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
@@ -86,7 +86,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "respawn", 2, "pane opts -- pane", "start again in its pane the program run started"),
     // Waiting
     word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew, not on the line typed (options, keys or a mouse event)"),
-    word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown"),
+    word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
     word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
     word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
     word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most: an action or capture settles within 10, a wait 60; 0 answers at once"),
@@ -95,8 +95,8 @@ pub const WORDS: &[Word] = &[
     word("Input", "keys", 0, "-- keys", "empty input, for send-keys"),
     word("Input", "text", 2, "keys text -- keys", "text, typed"),
     word("Input", "key", 2, "keys name -- keys", "a key by its name: Enter, C-c, Up, F5"),
-    word("Input", "paste", 2, "keys text -- keys", "text as a paste"),
-    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 900 KiB"),
+    word("Input", "paste", 2, "keys text -- keys", "text as a paste; a paste's end mark (ESC [201~) in it is dropped"),
+    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 900 KiB; a paste's end mark in it is dropped"),
     word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
@@ -113,7 +113,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
     word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output"),
-    word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0"),
+    word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0; joined, each line they touch whole"),
     word("Reading", "cols", 3, "opts from to -- opts", "capture: those columns only, from 0"),
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", 1, "handle -- record", "a pane, tab or workspace, all of it"),
@@ -237,10 +237,14 @@ pub fn usage(word: &str) -> Option<String> {
                 .effect(),
         )
     };
-    // Fux's, the prelude's or library's, or the core's.
+    // Fux's, the prelude's or library's, or the core's; else the
+    // language's own syntax, said as it is written.
     let effect = match WORDS.iter().find(|w| w.name == word) {
         Some(w) => w.effect,
-        None => library().or_else(core)?,
+        None => match library().or_else(core) {
+            Some(effect) => effect,
+            None => return crate::help::syntax(word).map(|(shape, _)| format!("use: {shape}")),
+        },
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     let takes = takes.trim().to_uppercase();
@@ -281,7 +285,8 @@ fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
 }
 
 /// A value as JSON: a list as an array of its values', an answer as its
-/// JSON, as alone (an action's object), anything else of fux's as its text.
+/// JSON, as alone (an action's object; of several panes, an array of
+/// theirs), anything else of fux's as its text.
 fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
     use crate::json::Json;
     match value {
@@ -290,8 +295,18 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
         Value::List(list) => Json::Array(list.items.iter().map(json_of).collect()),
+        // An answer of several panes, a line of JSON each, as an array.
         Value::App(Fux::Answer(answer)) => match &answer.json {
-            Some(json) => Json::Raw(json.clone().into()),
+            Some(json) => {
+                let mut objects: Vec<Json<'static>> = (json.lines())
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| Json::Raw(line.to_owned().into()))
+                    .collect();
+                match objects.len() {
+                    1 => objects.pop().unwrap_or(Json::Null),
+                    _ => Json::Array(objects),
+                }
+            }
             None => Json::str(answer.text.clone()),
         },
         Value::App(_) => Json::str(super::display(value)),
@@ -1947,6 +1962,26 @@ mod tests {
         assert_eq!(own_wait(&text).timeout, WAIT_TIMEOUT);
         let action = wait(&Waits::default(), true, true).map(|w| w.timeout);
         assert_eq!(action, Some(SETTLE_TIMEOUT));
+    }
+
+    /// An answer in a list is its object; one of several panes, an array of
+    /// theirs: JSON either way.
+    #[test]
+    fn an_answer_of_several_panes_is_an_array() {
+        let answer = |json: &str| {
+            json_of(&Value::App(Fux::Answer(Box::new(super::super::Answer {
+                text: String::new(),
+                json: Some(json.to_owned()),
+                query: None,
+                pane: None,
+            }))))
+            .render()
+        };
+        assert_eq!(answer("{\"pane\":\"%1\"}\n"), "{\"pane\":\"%1\"}");
+        assert_eq!(
+            answer("{\"pane\":\"%1\"}\n{\"pane\":\"%2\"}\n"),
+            "[{\"pane\":\"%1\"},{\"pane\":\"%2\"}]"
+        );
     }
 
     #[test]

@@ -467,13 +467,16 @@ impl Alerts {
 /// How a pane stood when input last went in, or its program started.
 #[derive(Clone, Debug)]
 pub struct InputFrom {
-    /// The row the cursor was on: what came since is said from there.
+    /// The first row of the line the cursor was on (a prompt wider than
+    /// the screen wraps from rows above): what came since is said from
+    /// there.
     pub cursor: Option<fux_vt::RowId>,
     pub mark: fux_vt::Mark,
     /// How many shell commands had ended.
     pub finished: u64,
     /// What was typed, line by line, and how many lines it ended; the
-    /// cursor's row as it read before: a wait after it knows its echo.
+    /// cursor's line as it read before, to its row: a wait after it knows
+    /// its echo.
     pub echo: Vec<String>,
     pub lines: u32,
     pub before: String,
@@ -494,15 +497,16 @@ impl InputFrom {
         alerts: u64,
     ) -> InputFrom {
         let row = screen.window().row(screen.cursor_position().0);
+        let (cursor, before) = row.map(crate::wait::line_to).unwrap_or_default();
         let (echo, lines) = crate::command::typed_lines(inputs);
         let (shown, above) = crate::wait::shown(screen);
         InputFrom {
-            cursor: row.map(|row| row.id()),
+            cursor,
             mark: screen.mark(),
             finished: screen.commands().finished,
             echo,
             lines,
-            before: row.map(crate::capture::row_text).unwrap_or_default(),
+            before,
             shown,
             above,
             alerts,
@@ -538,9 +542,10 @@ pub struct Pane {
     /// has: a program that redraws the same screen has not changed it.
     shown: u64,
     pub changed_at: Instant,
-    /// When input last went to the program: it is busy with it at first,
-    /// even while still blocked reading (the kernel has yet to wake it).
-    pub written_at: Instant,
+    /// When input last went to the program, if any has: it is busy with
+    /// it at first, even while still blocked reading (the kernel has yet
+    /// to wake it).
+    pub written_at: Option<Instant>,
     /// How the pane stood when input last went in, or its program
     /// started: a wait counts what changed since, so it never starts too
     /// late nor takes what was already there.
@@ -661,7 +666,7 @@ impl Pane {
             paced: Paced::default(),
             shown: 0,
             changed_at: Instant::now(),
-            written_at: Instant::now(),
+            written_at: None,
             input_from,
             revision: 0,
             starts: 0,
@@ -769,6 +774,13 @@ impl Pane {
         begun
     }
 
+    /// How long ago at `now` the last key went to the program: forever, if
+    /// none has (a read timed from a key waits with no limit before one).
+    pub fn since_key(&self, now: Instant) -> Duration {
+        self.written_at
+            .map_or(Duration::MAX, |at| now.saturating_duration_since(at))
+    }
+
     /// Writes the waiting input, as far as the program's terminal takes it.
     pub fn write_input(&mut self) {
         let Process::Reading(child) = &self.process else {
@@ -779,7 +791,7 @@ impl Pane {
                 Ok(0) => break,
                 Ok(n) => {
                     self.input.advance(n);
-                    self.written_at = Instant::now();
+                    self.written_at = Some(Instant::now());
                 }
                 Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
@@ -864,9 +876,7 @@ impl Pane {
             && !self.paced.waiting.is_empty()
         {
             let took = match &self.process {
-                Process::Reading(child) => {
-                    crate::ready::took_keys(child, now.saturating_duration_since(self.written_at))
-                }
+                Process::Reading(child) => crate::ready::took_keys(child, self.since_key(now)),
                 Process::Absent | Process::HungUp(_) | Process::Exited(_) => true,
             };
             if !took && now < by {
@@ -918,6 +928,7 @@ impl Pane {
         self.starts = self.starts.wrapping_add(1);
         self.mouse_held = None;
         self.changed_at = Instant::now();
+        self.written_at = None;
         // A new program: a wait counts from its start, not the last input
         // to the one before.
         self.input_from = InputFrom::new(self.screen(), &[], 0);
