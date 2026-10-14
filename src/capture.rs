@@ -462,7 +462,8 @@ fn print(
             Json::Object(fields).render()
         }
         None if view.styles => {
-            let styled: Vec<String> = lines.iter().map(sgr_line).collect();
+            let marks = view.marks.then_some(&highlighted);
+            let styled: Vec<String> = lines.iter().map(|l| sgr_line(l, marks)).collect();
             styled.join("\n")
         }
         None => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
@@ -490,19 +491,32 @@ fn marked(line: &Cells<'_>, highlighted: &impl Fn(&Attributes) -> bool) -> Strin
 }
 
 /// A line in SGR: each change of attributes set from nothing, and reset at
-/// its end.
-fn sgr_line(line: &Cells<'_>) -> String {
+/// its end; with `marks`, what is highlighted between `⟦` and `⟧`, drawn
+/// outside it.
+fn sgr_line(line: &Cells<'_>, marks: Option<&impl Fn(&Attributes) -> bool>) -> String {
     let mut out = Vec::new();
     let mut pen = Attributes::default();
+    let mut on = false;
     for (text, attributes) in line {
+        let lit = marks.is_some_and(|highlighted| highlighted(attributes));
+        if lit && !on {
+            out.extend_from_slice("⟦".as_bytes());
+        }
         if *attributes != pen {
             crate::render::sgr(&mut out, *attributes, true);
             pen = *attributes;
         }
+        if on && !lit {
+            out.extend_from_slice("⟧".as_bytes());
+        }
+        on = lit;
         out.extend_from_slice(text.as_bytes());
     }
     if pen != Attributes::default() {
         out.extend_from_slice(b"\x1b[0m");
+    }
+    if on {
+        out.extend_from_slice("⟧".as_bytes());
     }
     String::from_utf8_lossy(&out).into_owned()
 }

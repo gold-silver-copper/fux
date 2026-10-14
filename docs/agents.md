@@ -57,15 +57,17 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too.
   `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
-  `wait-bell`; several: whichever first. A text: case ignored, blanks as
+  `wait-bell`; several: whichever came first, in any order given (a text
+  printed before the exit or the bell, though the wait began after both). A text: case ignored, blanks as
   one, from a word's start (`READY` is not in `NOT_READY`); `^T` a line's
   first word, indented or not, `T$` its last. Met, it answers the first new
   line that holds the text (`run`: the pane, then that line; `wait-gone`,
   the pane's state; after `run` or `respawn` a text must show before it
   can go), never what you typed, Enter or not, nor the prompt
   before it, on each row it went on (with the keys, or for a later wait your
-  last input), nor that row drawn again to end with it (with
-  another prompt; keys typed before a shell's prompt, after it); what the
+  last input), nor that row or one below drawn again to end with it (with
+  another prompt; keys typed while the program was busy, before a shell's
+  prompt, after it); what the
   program writes after it on that row counts. A wait
   counts what came since your last input to the pane (or since the program
   started), scrolled away too: it never starts too late. But it reads
@@ -189,7 +191,8 @@ checks that the server runs as you.
   (`PANE str FILE start-log` from any time). `PANE str TEXT notify` shows a
   notice to people watching.
 - `dump` prints what there is as a fuxth program that makes it again; run it
-  with `fux FILE`. It adds to what the server has: on a new server, its own
+  with `fux FILE`. A shell pane comes back as a new shell in its directory:
+  what was typed into it, its `typed` line too, is not typed again. It adds to what the server has: on a new server, its own
   `main` tab stays beside the dump's, which then takes the next name
   (`tab-2`); kill the tab you do not want. A crashed server's next run brings its panes back,
   programs waiting for `respawn`.

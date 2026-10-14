@@ -357,9 +357,15 @@ fn errors_statuses_and_what_is_left() -> Outcome {
             refused.stderr
         );
     }
-    // A size past 500 is refused.
-    let wide = server.fux(&["str", "%1", "pane", "501", "10", "resize"])?;
-    assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
+    // A size past 500 is refused, saying the range it may take, past a
+    // cell's too.
+    for size in ["501", "65536"] {
+        let wide = server.fux(&["str", "%1", "pane", size, "10", "resize"])?;
+        assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
+        assert!(wide.stderr.contains("1 to 500"), "{}", wide.stderr);
+        let opened = server.fux(&["opts", size, "10", "size"])?;
+        assert!(opened.stderr.contains("1 to 500"), "{}", opened.stderr);
+    }
     // A new tab from outside a pane is told the option that places it.
     let nowhere = server.fux(&["opts", "str", "logs", "name", "new-tab"])?;
     assert!(
@@ -419,10 +425,11 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         let wrong = said(words)?;
         assert!(wrong.ends_with(&format!("{usage}\n")), "{wrong}");
     }
-    // `help WORD` of no word says so, as help.
+    // `help WORD` of no word says so, as help, and where, as any error.
     assert_eq!(
         said(&["help", "no-such-word"])?,
-        "fux: unknown_word: help: no word \"no-such-word\" (`fux help` lists every word)\n"
+        "fux: unknown_word: argument 2: help: no word \"no-such-word\" (`fux help` lists \
+         every word)\n"
     );
     let named = said(&["1", "let", "+7"])?;
     assert!(

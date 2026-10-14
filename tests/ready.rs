@@ -330,3 +330,20 @@ fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
     assert!(screen.contains("\nHOOKED\n"), "{screen}");
     Ok(())
 }
+
+/// A program that drops its terminal leaves it no foreground group: it is
+/// judged by what it does itself, here waiting on a timer, not busy.
+#[test]
+fn a_program_that_drops_its_terminal_is_judged_by_itself() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let code = "import fcntl, select, signal, termios\n\
+                signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
+                fcntl.ioctl(0, termios.TIOCNOTTY)\n\
+                print('DETACHED', flush=True)\nselect.select([], [], [], 30)\n";
+    let (_, state) = started(&server, code)?;
+    assert_eq!(state, "waiting");
+    Ok(())
+}

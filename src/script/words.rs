@@ -123,8 +123,8 @@ pub const WORDS: &[Word] = &[
     word("Reading", "events-json", 0, "-- ", "what happens, as JSON lines"),
     word("Reading", "events-of", 1, "handle -- ", "what happens in a pane, tab or workspace"),
     word("Reading", "events-of-json", 1, "handle -- ", "the same, as JSON lines"),
-    word("Reading", "dump", 0, "-- text", "everything, as a program that makes it again"),
-    word("Reading", "dump-of", 1, "handle -- text", "a tab or workspace, as a program that makes it again"),
+    word("Reading", "dump", 0, "-- text", "everything, as a program that makes it again (shells new, nothing typed into them)"),
+    word("Reading", "dump-of", 1, "handle -- text", "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)"),
     // Changing
     word("Changing", "kill", 1, "handle -- ", "close a pane, tab or workspace, without asking"),
     word("Changing", "rename", 2, "handle name -- ", "rename a pane, tab or workspace"),
@@ -354,6 +354,21 @@ fn count<T: Count>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
         i64::MAX => out_of_range(word, format!("{n} is out of range: from 0")),
         most => out_of_range(word, format!("{n} is out of range: 0 to {most}")),
     })
+}
+
+/// A size to lay a tab out on: columns and rows each 1 to 500.
+fn laid_out(word: &str, cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::Size, Failure> {
+    let (cols, rows) = (int(word, cols)?, int(word, rows)?);
+    let cell = |n: i64| u16::try_from(n).ok().filter(|n| (1..=500).contains(n));
+    cell(cols)
+        .zip(cell(rows))
+        .and_then(|(cols, rows)| fux_vt::Size::new(rows, cols).ok())
+        .ok_or_else(|| {
+            out_of_range(
+                word,
+                format!("size {cols} {rows}: columns and rows each 1 to 500"),
+            )
+        })
 }
 
 fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
@@ -726,13 +741,7 @@ impl fuxth::Host for Host<'_> {
             }
             "size" => {
                 let mut o = next()?;
-                let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
-                let size = (cols > 0 && rows > 0 && cols <= 500 && rows <= 500)
-                    .then(|| fux_vt::Size::new(rows, cols).ok())
-                    .flatten()
-                    .ok_or_else(|| {
-                        out_of_range(name, format!("size {cols} {rows}: each 1 to 500"))
-                    })?;
+                let size = laid_out(name, &next()?, &next()?)?;
                 opts(name, &mut o)?.size = Some(size);
                 now(out, o)
             }
@@ -1284,11 +1293,7 @@ impl fuxth::Host for Host<'_> {
             )),
             "resize" => {
                 let t = target(name, &next()?)?.map(WsRef::Id);
-                let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
-                let size = fux_vt::Size::new(rows, cols)
-                    .ok()
-                    .filter(|_| cols <= 500 && rows <= 500)
-                    .ok_or_else(|| out_of_range(name, "columns and rows each 1 to 500"))?;
+                let size = laid_out(name, &next()?, &next()?)?;
                 later(ask(
                     Command::Resize {
                         what: Resized::Tabs(t),

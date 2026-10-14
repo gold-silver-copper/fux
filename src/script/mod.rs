@@ -1143,7 +1143,9 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
                 return Err(Failed {
                     status: 1,
                     code: "unknown_word".to_owned(),
-                    message: format!("help: no word {word:?} (`fux help` lists every word)"),
+                    message: format!(
+                        "argument 2: help: no word {word:?} (`fux help` lists every word)"
+                    ),
                 });
             }
         },

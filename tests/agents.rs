@@ -1208,6 +1208,14 @@ fn screens_and_shells_hold_up_under_stress() -> Outcome {
     ))?;
     let marked = server.ok(&["str", "menu", "pane", "opts", "marks", "capture"])?;
     assert_eq!(body(&marked), "alpha\n⟦beta⟧\n⟦ 日本 ⟧\n");
+    // In SGR too, the marks outside what is highlighted.
+    let styled = ["str", "menu", "pane", "opts", "marks", "styles", "capture"];
+    let styled = server.ok(&styled)?;
+    let beta = body(&styled).lines().nth(1).unwrap_or_default();
+    assert!(
+        beta.starts_with("⟦\x1b[") && beta.ends_with("\x1b[0m⟧") && beta.contains("beta"),
+        "{beta:?}"
+    );
     let flood = r"seq 50; printf '\033[H\033[2J\033[3Jnew'; exec cat";
     server.ok(&run(
         &[
@@ -3011,5 +3019,85 @@ fn a_typed_row_drawn_with_another_prompt_is_echo() -> Outcome {
         "send-keys",
     ])?;
     assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
+    Ok(())
+}
+
+/// Keys typed before a shell fux did not set up draws its first prompt
+/// (one started by another program, over ssh) are echoed twice, by the
+/// terminal and then by the shell after its prompt, on the keys' own row
+/// or below: neither is output, with Enter or not.
+#[test]
+fn keys_typed_before_an_unmarked_prompt_are_echo_twice() -> Outcome {
+    let server = Server::start("")?;
+    let sh = "import os\n\
+              env = dict(os.environ, PS1='PROMPT> ', PROMPT_COMMAND='sleep 0.3')\n\
+              os.execvpe('bash', ['bash', '--noprofile', '--norc', '-i'], env)\n";
+    let wait = ["str", "TYPED_AHEAD", "wait-text", "3", "timeout"];
+    for enter in [true, false] {
+        let shell = id(&server.ok(&run(&["0", "timeout"], &["python3", "-c", sh]))?);
+        let line = [
+            "str",
+            &shell,
+            "pane",
+            "keys",
+            "str",
+            ": TYPED_AHEAD",
+            "text",
+        ];
+        let end: &[&str] = if enter { &["str", "Enter", "key"] } else { &[] };
+        let ahead = server.fux(&[&line[..], end, &wait, &["send-keys"]].concat())?;
+        assert_eq!(
+            ahead.status, CANNOT_COME,
+            "Enter {enter}: {}{}",
+            ahead.stdout, ahead.stderr
+        );
+    }
+    Ok(())
+}
+
+/// A line typed that is taller than the screen, wrapped from history onto
+/// it, is read whole: its echo is no output.
+#[test]
+fn a_typed_line_taller_than_the_screen_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let read = "import sys\nsys.stdout.write('Prompt> '); sys.stdout.flush(); sys.stdin.readline()\n\
+                sys.stdout.write('Next> '); sys.stdout.flush(); sys.stdin.readline()\n";
+    let pane = id(&server.ok(&run(
+        &["16", "12", "size", "str", "Prompt>", "wait-text"],
+        &["python3", "-c", read],
+    ))?);
+    let long: String = std::iter::repeat_n("padding ", 45)
+        .chain(["TOKEN"])
+        .collect();
+    let wait = ["str", "TOKEN", "wait-text", "3", "timeout"];
+    let keys = server.fux(&typed(&pane, &long, &wait))?;
+    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
+    Ok(())
+}
+
+/// Of several conditions met before a wait began, the first to come
+/// answers, in whatever order they were given: a text printed before the
+/// program exited, or before a bell; a bell rung before the text.
+#[test]
+fn the_condition_met_first_answers() -> Outcome {
+    let server = Server::start("")?;
+    let exits = id(&server
+        .fux(&run(
+            &["wait-exit"],
+            &["sh", "-c", "echo READY; sleep 0.2; exit 5"],
+        ))?
+        .stdout);
+    let wait = |pane: &str, conditions: &[&str]| -> Result<Output, String> {
+        let words = [&["str", pane, "pane", "opts"][..], conditions, &["wait"]].concat();
+        server.fux(&words)
+    };
+    let text = wait(&exits, &["wait-exit", "str", "READY", "wait-text"])?;
+    assert_eq!((text.status, text.stdout.as_str()), (0, "READY\n"));
+    let script = "echo READY; sleep 0.2; printf '\\a'; sleep 0.2; echo DONE; read x";
+    let rings = id(&server.ok(&run(&["str", "DONE", "wait-text"], &["sh", "-c", script]))?);
+    let text = wait(&rings, &["wait-bell", "str", "READY", "wait-text"])?;
+    assert_eq!((text.status, text.stdout.as_str()), (0, "READY\n"));
+    let bell = wait(&rings, &["str", "DONE", "wait-text", "wait-bell"])?;
+    assert_eq!((bell.status, bell.stdout.as_str()), (0, "bell\n"));
     Ok(())
 }

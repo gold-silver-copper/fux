@@ -455,6 +455,9 @@ pub struct Alerts {
     pub notifications: u64,
     pub last: Option<String>,
     pub last_notified: bool,
+    /// The screen as the output that held the last one was read: a line
+    /// not changed since came before it.
+    pub at: Option<fux_vt::Mark>,
 }
 
 impl Alerts {
@@ -480,6 +483,10 @@ pub struct InputFrom {
     pub echo: Vec<String>,
     pub recalled: bool,
     pub before: String,
+    /// The keys went in while the program was at work, before it read: a
+    /// line it draws again to end with them (a shell's prompt and line,
+    /// after the terminal's echo) is their echo too.
+    pub ahead: bool,
     /// The screen's lines then, by first row: one redrawn the same since
     /// brings nothing new; and the line above each, by first rows: one
     /// that follows another since moved (lines deleted or put in above it).
@@ -507,6 +514,7 @@ impl InputFrom {
             echo,
             recalled,
             before,
+            ahead: false,
             shown,
             above,
             alerts,
@@ -743,6 +751,7 @@ impl Pane {
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`.
     /// Returns how many bytes were read if it stopped.
     fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
+        let alerts = self.alerts.count();
         let mut sink = Sink {
             replies: Vec::new(),
             title: &mut self.title,
@@ -767,6 +776,9 @@ impl Pane {
             rest = rest.get(taken..).unwrap_or_default();
         }
         let replies = sink.replies;
+        if self.alerts.count() != alerts {
+            self.alerts.at = Some(self.parser.screen().mark());
+        }
         if !replies.is_empty() {
             self.input.reply(&replies);
         }
@@ -838,7 +850,11 @@ impl Pane {
     /// Notes how the pane stands as `inputs` go in (`input_from`): a wait
     /// after them counts what comes since, and knows their echo.
     pub fn note_input(&mut self, inputs: &[crate::command::Input]) {
-        self.input_from = InputFrom::new(self.screen(), inputs, self.alerts.count());
+        let ahead = crate::ready::state(self, Instant::now()) == crate::ready::State::Busy;
+        self.input_from = InputFrom {
+            ahead,
+            ..InputFrom::new(self.screen(), inputs, self.alerts.count())
+        };
     }
 
     /// The name the bar shows: the program's title, else the pane's name.
