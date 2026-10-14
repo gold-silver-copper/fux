@@ -23,6 +23,12 @@ unicode-width = "0.2"
 fuxix = { path = "fuxix", version = "0.3.0" }
 fuxth = { path = "fuxth", version = "0.1.0" }
 
+# The tests' sandbox (tests/support/sandbox.rs): a seccomp filter such as
+# Codex's, installed with a safe call, since the tests forbid unsafe code.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+seccompiler = "0.5"
+
 [profile.dev]
 debug = 0
 

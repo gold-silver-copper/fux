@@ -574,3 +574,268 @@ fn a_door_alone_is_a_server() -> Outcome {
     assert_eq!(t(&["force-kill-server"])?.status, 0);
     Ok(())
 }
+
+/// Whether `result` is the `EPERM` a sandbox answers with.
+#[cfg(target_os = "linux")]
+fn denied<T>(what: &str, result: std::io::Result<T>) -> Outcome {
+    match result {
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => Ok(()),
+        Err(error) => Err(format!("{what}: {error}, not EPERM")),
+        Ok(_) => Err(format!("{what} was allowed")),
+    }
+}
+
+/// The pid of the server that serves `socket`, found by its command line.
+#[cfg(target_os = "linux")]
+fn serving(socket: &std::path::Path) -> Option<i32> {
+    let line = [
+        FUX.as_bytes(),
+        fux::SERVE.as_bytes(),
+        socket.as_os_str().as_encoded_bytes(),
+    ]
+    .join(&0u8);
+    std::fs::read_dir("/proc")
+        .ok()?
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let pid = entry.file_name().to_str()?.parse().ok()?;
+            (cmdline.strip_suffix(&[0u8]) == Some(line.as_slice()) && alive(pid)).then_some(pid)
+        })
+}
+
+/// A client in a sandbox that refuses sockets (Codex's: `connect`, `bind`,
+/// `send` and `setsockopt` denied) reaches a server outside it through the
+/// door: its requests, an action's settled answer, a capture, `status`, a
+/// grant's door, and `kill-server`. A socket with no door beside it, such
+/// as an older server's, is a clear error, not a wait.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use support::sandbox::sandboxed;
+    let mut server = Server::start("")?;
+    let granted = server.dir.join("g").join("s.sock");
+    let grant = granted.to_string_lossy().into_owned();
+    server.ok(&["str", "agent", "str", &grant, "grant"])?;
+    sandboxed(|| {
+        // The sandbox is Codex's: sockets refused, a pair allowed, and on
+        // it write(2) and read(2) but not setsockopt(2) or send(2), with
+        // which std writes a socket.
+        denied("connect", UnixStream::connect(&server.socket))?;
+        denied("bind", UnixListener::bind(server.dir.join("bound.sock")))?;
+        let (a, mut b) = UnixStream::pair().map_err(e)?;
+        denied("setsockopt", a.set_read_timeout(Some(PATIENCE)))?;
+        denied("send", (&a).write(b"x"))?;
+        std::fs::File::from(std::os::fd::OwnedFd::from(a))
+            .write_all(b"x")
+            .map_err(e)?;
+        let mut byte = [0u8; 1];
+        b.read_exact(&mut byte).map_err(e)?;
+        assert!(server.ok(&["ls"])?.contains("+1 main"));
+        let sh = server.ok(&["opts", "str", "sh", "name", "str", "sh", "program", "run"])?;
+        let sh = first_word(&sh);
+        let keys = server.ok(&[
+            "str",
+            sh,
+            "pane",
+            "keys",
+            "str",
+            "echo door-$((40+2))",
+            "text",
+            "str",
+            "Enter",
+            "key",
+            "send-keys",
+        ])?;
+        assert!(
+            keys.contains(READING) && keys.contains("\ndoor-42\n"),
+            "{keys}"
+        );
+        let capture = server.ok(&["str", sh, "pane", "opts", "json", "capture"])?;
+        assert!(
+            capture.starts_with('{') && capture.contains("door-42"),
+            "{capture}"
+        );
+        let status = server.ok(&["status"])?;
+        assert!(status.starts_with("fux "), "{status}");
+        let through = server.fux_env(
+            &[
+                "opts", "str", "inside", "name", "str", "true", "program", "run",
+            ],
+            &[("FUX_SOCKET", &grant)],
+        )?;
+        assert_eq!(through.status, 0, "{}", through.stderr);
+        let agent = server.ok(&["str", "agent", "workspace", "info", "json"])?;
+        assert!(agent.contains(r#""name":"inside""#), "{agent}");
+        server.ok(&["kill-server"])
+    })?;
+    assert!(server.wait_exit()?.success());
+    // A socket left with no door: refused at once, and said why.
+    let _left = UnixListener::bind(&server.socket).map_err(e)?;
+    let started = std::time::Instant::now();
+    let out = sandboxed(|| server.fux(&["ls"]))?;
+    assert_eq!(out.status, 1);
+    assert!(
+        out.stderr.contains("connecting to") && out.stderr.contains("not permitted"),
+        "{}",
+        out.stderr
+    );
+    assert!(started.elapsed() < PATIENCE, "it waited");
+    Ok(())
+}
+
+/// A server started in the sandbox cannot bind its socket: it serves
+/// through its door alone, holding its lock all the same, so no second
+/// server starts. Killed outright, it leaves its door, which is then no
+/// server: `status` says so, and `start` serves again.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
+    use support::sandbox::sandboxed;
+    // A server's, for a private directory of the test's own.
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let socket = rt.join("fux").join("t.sock");
+    let t = |args: &[&str]| {
+        let args: Vec<&str> = ["str", "t", "server"].iter().chain(args).copied().collect();
+        named(&rt, &args, &[])
+    };
+    let checked = sandboxed(|| {
+        let started = t(&["start"])?;
+        assert_eq!(started.status, 0, "{}", started.stderr);
+        assert!(!socket.exists(), "a socket was bound");
+        let pid = serving(&socket).ok_or("the server's pid")?;
+        assert!(support::sandbox::filtered(pid.unsigned_abs()));
+        let second = Command::new(FUX)
+            .arg(fux::SERVE)
+            .arg(&socket)
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_STATE_HOME", rt.join("state"))
+            .output()
+            .map_err(e)?;
+        let refused = String::from_utf8_lossy(&second.stderr);
+        assert!(
+            !second.status.success() && refused.contains("already using"),
+            "{refused}"
+        );
+        assert_eq!(t(&["start"])?.status, 0);
+        assert_eq!(serving(&socket), Some(pid), "another server started");
+        let servers = named(&rt, &["servers"], &[])?;
+        assert!(servers.stdout.starts_with("t  "), "{}", servers.stdout);
+        let answer = t(&[
+            "opts",
+            "str",
+            "sh",
+            "program",
+            "str",
+            "-c",
+            "arg",
+            "str",
+            "echo door-only; read x",
+            "arg",
+            "run",
+        ])?;
+        assert!(answer.stdout.contains("door-only"), "{}", answer.stderr);
+        signal(pid, fuxix::process::Signal::Kill);
+        eventually("the server gone", || Ok(!alive(pid)))?;
+        let status = t(&["status"])?;
+        assert!(
+            status.stdout.starts_with("no fux server"),
+            "{}",
+            status.stdout
+        );
+        assert_eq!(t(&["start"])?.status, 0);
+        assert!(t(&["ls"])?.stdout.contains("main"));
+        let killed = t(&["force-kill-server"])?;
+        assert_eq!(killed.status, 0, "{}", killed.stderr);
+        eventually("the server gone", || Ok(serving(&socket).is_none()))
+    });
+    // Started outside the test's care: never left running.
+    if let Some(pid) = serving(&socket) {
+        signal(pid, fuxix::process::Signal::Kill);
+    }
+    checked
+}
+
+/// A socket that is the user's, in a directory of the user's, but listened
+/// on by another uid is refused: the client checks who serves it. The other
+/// uid is a user namespace's (`unshare --map-auto`: the user's own uid as
+/// its root, and the user's subordinate ids), whose root binds the socket
+/// and listens as uid 1. Where that cannot be had (no `newuidmap` or
+/// subordinate ids, or user namespaces restricted, as AppArmor may on
+/// Ubuntu), the test says so and passes.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_socket_served_by_another_uid_is_refused() -> Outcome {
+    // A server's, for a private directory of the test's own.
+    let server = Server::start("")?;
+    let socket = private(&server.dir)?.join("other.sock");
+    let listen = "import os, socket, sys, time\n\
+                  s = socket.socket(socket.AF_UNIX)\n\
+                  s.bind(sys.argv[1])\n\
+                  os.setgid(1)\n\
+                  os.setuid(1)\n\
+                  s.listen()\n\
+                  print('listening', flush=True)\n\
+                  time.sleep(60)\n";
+    let spawned = Command::new("unshare")
+        .args(["--user", "--map-auto", "--map-root-user", "python3", "-c"])
+        .arg(listen)
+        .arg(&socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let Ok(mut listener) = spawned else {
+        eprintln!("skipped: no unshare");
+        return Ok(());
+    };
+    let _reap = Reap(vec![i32::try_from(listener.id()).map_err(e)?]);
+    let mut line = String::new();
+    let stdout = listener.stdout.take().ok_or("no stdout")?;
+    BufReader::new(stdout).read_line(&mut line).map_err(e)?;
+    if line.trim() != "listening" {
+        let mut why = String::new();
+        if let Some(stderr) = listener.stderr.take() {
+            std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut why).map_err(e)?;
+        }
+        eprintln!("skipped: no user namespace with another uid to be had: {why}");
+        return Ok(());
+    }
+    let socket = socket.to_string_lossy();
+    let out = server.fux_env(&["ls"], &[("FUX_SOCKET", &socket)])?;
+    let euid = fuxix::process::geteuid();
+    assert_eq!(out.status, 1);
+    assert!(
+        out.stderr.contains("its server runs as uid")
+            && out.stderr.contains(&format!("not this user's ({euid})")),
+        "{}",
+        out.stderr
+    );
+    let _ = listener.kill();
+    let _ = listener.wait();
+    Ok(())
+}
+
+/// The real client attaches from a terminal in the sandbox: no descriptor
+/// can go through the door, so the server relays its paints, and keys, a
+/// resize and detaching work as through the socket.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
+    let server = Server::start("")?;
+    let mut terminal = support::sandbox::sandboxed(|| Terminal::attach(&server, 12, 50, &[]))?;
+    assert!(support::sandbox::filtered(terminal.child.id()));
+    terminal.wait_for("%1 sh")?;
+    terminal.type_bytes(b"echo through''-the-door\r")?;
+    terminal.wait_for("through-the-door")?;
+    terminal.resize(15, 70)?;
+    terminal.type_bytes(b"stty size\r")?;
+    terminal.wait_for("14 70")?;
+    terminal.type_bytes(b"\x02d")?;
+    let status = terminal.wait_exit()?;
+    assert!(status.success(), "{status}");
+    Ok(())
+}

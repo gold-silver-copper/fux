@@ -17,6 +17,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+pub mod sandbox;
+
 pub type Outcome = Result<(), String>;
 
 /// Whether fux is told what a pane's program is blocked in (Linux).
