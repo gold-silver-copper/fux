@@ -669,19 +669,30 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
         assert_eq!(through.status, 0, "{}", through.stderr);
         let agent = server.ok(&["str", "agent", "workspace", "info", "json"])?;
         assert!(agent.contains(r#""name":"inside""#), "{agent}");
+        // Each knock's FIFOs are gone once the server has opened them.
+        let dir = server.socket.parent().ok_or("the socket's directory")?;
+        for entry in std::fs::read_dir(dir).map_err(e)? {
+            let name = entry.map_err(e)?.file_name();
+            assert!(!name.to_string_lossy().starts_with("c-"), "{name:?} left");
+        }
         server.ok(&["kill-server"])
     })?;
     assert!(server.wait_exit()?.success());
+    let mut door = server.socket.clone().into_os_string();
+    door.push(".door");
+    assert!(!std::path::Path::new(&door).exists(), "the door left");
     // A socket left with no door: refused at once, and said why.
     let _left = UnixListener::bind(&server.socket).map_err(e)?;
     let started = std::time::Instant::now();
-    let out = sandboxed(|| server.fux(&["ls"]))?;
-    assert_eq!(out.status, 1);
-    assert!(
-        out.stderr.contains("connecting to") && out.stderr.contains("not permitted"),
-        "{}",
-        out.stderr
-    );
+    for words in [["ls"], ["status"]] {
+        let out = sandboxed(|| server.fux(&words))?;
+        assert_eq!(out.status, 1, "{words:?}: {}", out.stdout);
+        assert!(
+            out.stderr.contains("connecting to") && out.stderr.contains("not permitted"),
+            "{words:?}: {}",
+            out.stderr
+        );
+    }
     assert!(started.elapsed() < PATIENCE, "it waited");
     Ok(())
 }
@@ -821,11 +832,13 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
 
 /// The real client attaches from a terminal in the sandbox: no descriptor
 /// can go through the door, so the server relays its paints, and keys, a
-/// resize and detaching work as through the socket.
+/// resize, stopping a key's program (the prefix, then Esc) and detaching
+/// work as through the socket.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
-    let server = Server::start("")?;
+    let server =
+        Server::start("str j str 'me focused opts str never-comes wait-text wait drop' bind")?;
     let mut terminal = support::sandbox::sandboxed(|| Terminal::attach(&server, 12, 50, &[]))?;
     assert!(support::sandbox::filtered(terminal.child.id()));
     terminal.wait_for("%1 sh")?;
@@ -834,6 +847,14 @@ fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
     terminal.resize(15, 70)?;
     terminal.type_bytes(b"stty size\r")?;
     terminal.wait_for("14 70")?;
+    // A wait for a text that never comes, on a busy pane, stopped.
+    terminal.type_bytes(b"echo sleep''ing; sleep 100\r")?;
+    terminal.wait_for("sleeping")?;
+    terminal.type_bytes(b"\x02j")?;
+    // The wait under way at the server, not stopped between its steps.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    terminal.type_bytes(b"\x02\x1b")?;
+    terminal.wait_for("stopped")?;
     terminal.type_bytes(b"\x02d")?;
     let status = terminal.wait_exit()?;
     assert!(status.success(), "{status}");

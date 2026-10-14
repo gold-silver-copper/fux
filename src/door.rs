@@ -176,9 +176,17 @@ fn answer(dir: &Path, name: &str) -> io::Result<UnixStream> {
         return Err(io::Error::other("a FIFO changed as it was opened"));
     }
     remove(&paths);
-    fuxix::io::set_nonblocking(&up, false)?;
     fuxix::io::set_nonblocking(&down, false)?;
     down.write_all(b"+")?;
+    relay(up, down)
+}
+
+/// Starts relaying what comes from `from` to one end of a socket pair, and
+/// what is written to that end into `into`: the other end, which is used as
+/// a connected socket would be, and can be shut down as one.
+fn relay(from: File, into: File) -> io::Result<UnixStream> {
+    fuxix::io::set_nonblocking(&from, false)?;
+    fuxix::io::set_nonblocking(&into, false)?;
     let (ours, theirs) = UnixStream::pair()?;
     // Read and written as a file: a sandbox that refuses send(2) allows
     // write(2).
@@ -187,10 +195,10 @@ fn answer(dir: &Path, name: &str) -> io::Result<UnixStream> {
     let back = theirs.try_clone()?;
     // The end of either ends both.
     std::thread::spawn(move || {
-        copy(up, &theirs);
+        copy(from, &theirs);
         let _ = shut.shutdown(std::net::Shutdown::Both);
     });
-    std::thread::spawn(move || copy(&back, down));
+    std::thread::spawn(move || copy(&back, into));
     Ok(ours)
 }
 
@@ -247,17 +255,19 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
         // Read and write: open at once, whether or not the server reads yet.
         let up = open_fifo(up_path, true, true)?;
         knocked.write_all(format!("{name}\n").as_bytes())?;
-        // The server's byte: it has opened both.
-        let mut down = Link::door(down, up)?;
-        down.set_read_timeout(Some(ANSWER));
-        let mut byte = [0u8; 1];
-        match down.read(&mut byte) {
-            Ok(1) => Ok(down),
-            Ok(_) => Err(io::Error::other("the server closed the door")),
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => Err(io::Error::new(
+        // The server's byte: it has opened both. Read from the FIFO itself,
+        // which shows nothing to poll until the server has written.
+        let mut fds = [fuxix::poll::PollFd::new(&down, fuxix::poll::Events::IN)];
+        if fuxix::poll::poll(&mut fds, Some(ANSWER))? == 0 {
+            return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "no server answered at the door",
-            )),
+            ));
+        }
+        let mut byte = [0u8; 1];
+        match (&down).read(&mut byte) {
+            Ok(1) => Link::door(relay(down, up)?),
+            Ok(_) => Err(io::Error::other("the server closed the door")),
             Err(e) => Err(e),
         }
     })();
@@ -265,38 +275,34 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
     opened
 }
 
-/// A client's connection to its server: a socket, or a door's two FIFOs.
-/// Read and written with read(2) and write(2) alone, and timed with
-/// poll(2): Codex's sandbox refuses send(2) and setsockopt(2), even on a
-/// socket pair.
+/// A client's connection to its server: its socket, or one end of a pair
+/// relayed to a door's two FIFOs. Read and written with read(2) and
+/// write(2) alone, and timed with poll(2): Codex's sandbox refuses send(2)
+/// and setsockopt(2), even on a socket pair.
 pub struct Link {
-    input: File,
-    output: File,
-    /// The socket, to shut down; a door has none.
-    socket: Option<UnixStream>,
+    /// The socket, read and written as a file.
+    file: File,
+    /// The socket, to shut down.
+    socket: UnixStream,
+    /// Whether it comes through a door, which carries no descriptor.
+    door: bool,
     timeout: Option<Duration>,
 }
 
 impl Link {
-    pub fn socket(stream: UnixStream) -> io::Result<Link> {
-        let input = File::from(OwnedFd::from(stream.try_clone()?));
-        let output = input.try_clone()?;
+    pub fn socket(socket: UnixStream) -> io::Result<Link> {
         Ok(Link {
-            input,
-            output,
-            socket: Some(stream),
+            file: File::from(OwnedFd::from(socket.try_clone()?)),
+            socket,
+            door: false,
             timeout: None,
         })
     }
 
-    fn door(down: File, up: File) -> io::Result<Link> {
-        fuxix::io::set_nonblocking(&down, false)?;
-        fuxix::io::set_nonblocking(&up, false)?;
+    fn door(relayed: UnixStream) -> io::Result<Link> {
         Ok(Link {
-            input: down,
-            output: up,
-            socket: None,
-            timeout: None,
+            door: true,
+            ..Link::socket(relayed)?
         })
     }
 
@@ -306,22 +312,22 @@ impl Link {
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-        Ok(fuxix::io::set_nonblocking(&self.input, nonblocking)?)
+        Ok(fuxix::io::set_nonblocking(&self.file, nonblocking)?)
     }
 
     /// What is written to: a terminal can go with it over a socket.
     pub fn output(&self) -> &File {
-        &self.output
+        &self.file
     }
 
-    /// Whether it is a socket: what can carry a descriptor.
+    /// Whether it is the server's socket: what can carry a descriptor.
     pub fn is_socket(&self) -> bool {
-        self.socket.is_some()
+        !self.door
     }
 
     /// A copy of its socket, to shut down from another thread.
     pub fn socket_copy(&self) -> Option<UnixStream> {
-        self.socket.as_ref().and_then(|s| s.try_clone().ok())
+        self.socket.try_clone().ok()
     }
 }
 
@@ -329,20 +335,20 @@ impl Read for Link {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if let Some(timeout) = self.timeout {
             let mut fds = [fuxix::poll::PollFd::new(
-                &self.input,
+                &self.file,
                 fuxix::poll::Events::IN,
             )];
             if fuxix::poll::poll(&mut fds, Some(timeout))? == 0 {
                 return Err(io::ErrorKind::TimedOut.into());
             }
         }
-        self.input.read(buffer)
+        self.file.read(buffer)
     }
 }
 
 impl Write for Link {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.output.write(bytes)
+        self.file.write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -353,6 +359,6 @@ impl Write for Link {
 impl AsFd for Link {
     /// What is polled to read.
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.input.as_fd()
+        self.file.as_fd()
     }
 }
