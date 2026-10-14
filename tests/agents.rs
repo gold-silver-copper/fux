@@ -2016,7 +2016,11 @@ fn answers_around_a_full_screen_say_what_came() -> Outcome {
         .concat(),
     )?;
     assert_eq!(never.status, CANNOT_COME, "{}", never.stderr);
-    assert!(never.stdout.contains("MENU"), "{}", never.stdout);
+    // Status 7 answers with the screen; a time limit (not Linux) says why on
+    // stderr alone.
+    if PROBED {
+        assert!(never.stdout.contains("MENU"), "{}", never.stdout);
+    }
     Ok(())
 }
 
