@@ -1,12 +1,18 @@
 //! Whether a pane's program waits for its terminal: the moment an agent
 //! driving it should look. A program that wants input stops and reads its
-//! terminal, and fux, which runs it, can see that: on Linux, what the
-//! threads of the terminal's foreground group are blocked in
-//! (`fuxix::process::activity`). Where the system does not say, a quiet
-//! screen is taken as settled, and said to be a guess.
+//! terminal, and fux, which runs it, can see that, as far as the system
+//! says (`fuxix::process::Host`, chosen when fux is built):
+//! - Linux and Android name what each thread of the terminal's foreground
+//!   group is blocked in: reading the terminal, polling it, waiting on
+//!   something else, or busy.
+//! - macOS says only whether each thread runs or waits: once every one
+//!   waits (idle), every key read and the screen quiet a moment, the
+//!   program is settled, as it cannot be said to read.
+//! - Where the system does not say (a probe that failed), a quiet screen
+//!   is taken as settled after a longer while, and said to be a guess.
 use crate::pane::{Pane, Process};
 use crate::process::Ended;
-use fuxix::process::Activity;
+use fuxix::process::{Activity, Host, Probe};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -91,7 +97,7 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         && commands.finished > 0
         && tty
             .as_deref()
-            .is_some_and(|tty| fuxix::process::reads_terminal(child.leader.pid(), tty));
+            .is_some_and(|tty| Host::reads_terminal(child.leader.pid(), tty));
     let activity = if left { Activity::Reading } else { activity };
     match activity {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Reading,
@@ -99,10 +105,13 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         // Polling for keys with a time limit: it may draw again on its own
         // (a pause, a clock), so never surely waiting for the agent.
         Activity::Polling | Activity::Waiting if quiet >= QUIET => State::Waiting,
+        // Every thread waits, on what macOS will not say: settled.
+        Activity::Idle if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Settled,
         Activity::Unknown if quiet >= GUESS => State::Settled,
         Activity::Reading
         | Activity::Polling
         | Activity::Waiting
+        | Activity::Idle
         | Activity::Unknown
         | Activity::Busy => State::Busy,
     }
@@ -132,7 +141,7 @@ fn activity(
         };
         t.timed_reads(since)
     };
-    match tty.map(|tty| fuxix::process::activity(group, tty, leader)) {
+    match tty.map(|tty| Host::activity(group, tty, leader)) {
         // A read with a time limit is a poll: the program goes on alone
         // when it runs out.
         Some(Activity::Reading)
@@ -147,10 +156,14 @@ fn activity(
 
 /// Whether the program has read every key and waits for more, with no time
 /// limit: a lone Escape sent is taken alone by then, its timer run out.
+/// Where only idle is known (macOS), every thread waiting with no key
+/// unread: done with them.
 pub fn took_keys(child: &crate::process::Child, since_key: Duration, answered: bool) -> bool {
     let tty = child.master.slave_path();
-    activity(child, tty.as_deref(), since_key, answered) == Activity::Reading
-        && !keys_unread(tty.as_deref())
+    matches!(
+        activity(child, tty.as_deref(), since_key, answered),
+        Activity::Reading | Activity::Idle
+    ) && !keys_unread(tty.as_deref())
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a
