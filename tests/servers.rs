@@ -1,6 +1,6 @@
 //! What a script or an agent needs of the server itself: naming the one it
 //! means, not stopping or closing the wrong thing, hearing what happens as
-//! it happens, sending input only to the screen it read, reaching only what
+//! it happens, sending keys to every pane of a tab, reaching only what
 //! it was granted, and finding its panes again after a crash.
 mod support;
 use std::io::{BufRead, BufReader};
@@ -29,6 +29,11 @@ fn named(rt: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ou
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
+}
+
+/// The pane an answer names: `run` answers `%N STATE` and what came.
+fn first_word(answer: &str) -> &str {
+    answer.split_whitespace().next().unwrap_or_default()
 }
 
 fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -83,22 +88,12 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     );
     // From one of its own panes, kill-server is refused; force-kill-server
     // is not.
-    let sh = server.ok(&[
-        "opts",
-        "str",
-        "sh",
-        "name",
-        "str",
-        "sh",
-        "program",
-        "300",
-        "wait-idle",
-        "run",
-    ])?;
+    let sh = server.ok(&["opts", "str", "sh", "name", "str", "sh", "program", "run"])?;
+    let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
     let refused = server.ok(&[
         "str",
-        sh.trim(),
+        sh,
         "pane",
         "keys",
         "str",
@@ -107,10 +102,6 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         "str",
         "Enter",
         "key",
-        "str",
-        "status=",
-        "wait-text",
-        "with-screen",
         "send-keys",
     ])?;
     assert!(refused.contains("status=1"), "{refused}");
@@ -172,7 +163,7 @@ fn events_tell_what_happens() -> Outcome {
         "arg",
         "run",
     ])?;
-    let pane = pane.trim();
+    let pane = first_word(&pane);
     let created = next(r#""event":"created""#)?;
     assert!(created.contains(r#""name":"agent""#), "{created}");
     next(&format!(r#""event":"created","pane":"{pane}""#))?;
@@ -195,54 +186,24 @@ fn events_tell_what_happens() -> Outcome {
     Ok(())
 }
 
-/// Input meant for one screen goes only to that screen: `if-revision`
-/// sends nothing once it changed (status 6). Keys sent to a tab reach each
-/// of its panes, and their wait waits for each.
+/// Keys sent to a tab reach each of its panes, and each answers once its
+/// shell reads again, with the command's status.
 #[test]
-fn input_goes_only_where_it_was_meant() -> Outcome {
+fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let server = Server::start("")?;
     let bash = [
         "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg",
     ];
-    let a = server.ok(&[
-        &["opts", "str", "a", "name"][..],
-        &bash,
-        &["300", "wait-idle", "run"],
-    ]
-    .concat())?;
-    let a = a.trim();
+    let a = server.ok(&[&["opts", "str", "a", "name"][..], &bash, &["run"]].concat())?;
+    let a = first_word(&a);
     let b = server.ok(&[
         &["str", a, "pane", "opts", "horizontal"][..],
         &bash,
         &["split"],
     ]
     .concat())?;
-    let b = b.trim();
-    server.ok(&["str", b, "pane", "opts", "300", "wait-idle", "wait"])?;
-    let revision = server.ok(&["str", a, "pane", "str", "revision", "get"])?;
-    let revision = revision.trim();
-    server.ok(&["str", a, "pane", "str", "echo moved", "line"])?;
-    let stale = server.fux(&[
-        "str",
-        a,
-        "pane",
-        "keys",
-        "str",
-        "y",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        revision,
-        "if-revision",
-        "send-keys",
-    ])?;
-    assert_eq!(stale.status, 6, "{}", stale.stderr);
-    assert!(
-        stale.stderr.contains("nothing was sent"),
-        "{}",
-        stale.stderr
-    );
+    let b = first_word(&b);
+    server.ok(&["str", b, "pane", "opts", "wait"])?;
     let both = server.ok(&[
         "str",
         a,
@@ -255,13 +216,33 @@ fn input_goes_only_where_it_was_meant() -> Outcome {
         "str",
         "Enter",
         "key",
-        "wait-done",
         "send-keys",
     ])?;
-    assert_eq!(both, format!("{a} done 0\n{b} done 0\n"));
+    // Where nothing says a shell reads (macOS), a quiet screen is taken
+    // as settled, the command maybe still running: wait for its output in
+    // each pane instead.
+    if !PROBED {
+        let tab = [
+            "str",
+            a,
+            "pane",
+            "tab",
+            "opts",
+            "str",
+            "both-42",
+            "wait-text",
+            "wait",
+        ];
+        server.ok(&tab)?;
+        return Ok(());
+    }
+    // Each pane's answer: its state line, then the echo and the output.
     for pane in [a, b] {
-        let screen = server.ok(&["str", pane, "pane", "screen"])?;
-        assert!(screen.contains("both-42"), "{pane}: {screen}");
+        let part = both
+            .split_once(&format!("{pane} {READING} · done 0\n"))
+            .map(|(_, rest)| rest)
+            .ok_or_else(|| format!("no answer from {pane}: {both}"))?;
+        assert!(part.contains("\nboth-42\n"), "{pane}: {both}");
     }
     Ok(())
 }
@@ -289,6 +270,9 @@ fn a_grant_reaches_one_workspace() -> Outcome {
         "str",
         "echo inside; sleep 60",
         "arg",
+        "str",
+        "inside",
+        "wait-text",
         "run",
     ])?;
     assert_eq!(job.status, 0, "{}", job.stderr);
@@ -342,11 +326,14 @@ fn a_crashed_server_comes_back() -> Outcome {
         "str",
         "echo up; sleep 60",
         "arg",
+        "str",
+        "up",
+        "wait-text",
         "run",
     ])?;
-    let app = app.trim();
+    let app = first_word(&app);
     let shell = server.ok(&["str", app, "pane", "opts", "horizontal", "split"])?;
-    let shell = shell.trim();
+    let shell = first_word(&shell);
     server.ok(&["str", app, "pane", "70", "resize-x"])?;
     let before = server.ok(&["ls"])?;
     // Saved within a second of the last change.
@@ -425,6 +412,39 @@ fn a_crashed_server_comes_back() -> Outcome {
     })
 }
 
+/// A pane made just before a crash comes back: a pane, tab or workspace
+/// made or closed is saved at once, not within the second the rest waits.
+#[test]
+fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
+    let server = Server::start("")?;
+    let run = [
+        "opts", "str", "late", "name", "str", "sleep 60", "command", "0", "timeout", "run",
+    ];
+    let late = server.ok(&run)?;
+    let late = first_word(&late);
+    let pid = server.pid().ok_or("the server's pid")?;
+    let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
+    fuxix::process::kill(pid, fuxix::process::Signal::Kill).map_err(e)?;
+    eventually("the server gone", || Ok(!alive(pid.as_raw())))?;
+    let socket = server.socket.to_string_lossy().into_owned();
+    let again = Command::new(FUX)
+        .args(["str", &socket, "socket", "start"])
+        .env("XDG_STATE_HOME", server.dir.join("state"))
+        .env("HOME", &server.dir)
+        .env("SHELL", "/bin/sh")
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SOCKET")
+        .output()
+        .map_err(e)?;
+    assert!(again.status.success());
+    eventually("the late pane back", || {
+        let ls = server.ok(&["ls"])?;
+        Ok(ls.contains(&format!("{late} sleep")))
+    })?;
+    server.ok(&["force-kill-server"])?;
+    Ok(())
+}
+
 /// `dump-of` writes a workspace as a program, and running that program
 /// makes it again.
 #[test]
@@ -446,9 +466,18 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "str",
         "echo built; sleep 60",
         "arg",
+        "0",
+        "timeout",
         "split",
     ])?;
-    server.ok(&["str", worker.trim(), "pane", "str", "worker", "rename"])?;
+    server.ok(&[
+        "str",
+        first_word(&worker),
+        "pane",
+        "str",
+        "worker",
+        "rename",
+    ])?;
     let dump = server.ok(&["str", "build", "workspace", "dump-of"])?;
     server.ok(&["str", "build", "workspace", "kill"])?;
     assert!(!server.ok(&["ls"])?.contains("build"));
@@ -462,5 +491,508 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     );
     let (made, _) = server.newest_pane()?;
     server.ok(&["str", &made, "pane", "str", "built", "await"])?;
+    // A workspace `run` made: its dump takes the workspace from the answer
+    // `run` leaves.
+    server.ok(&[
+        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "0",
+        "timeout", "run",
+    ])?;
+    let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
+    server.ok(&["str", "jobs", "workspace", "kill"])?;
+    std::fs::write(&file, &dump).map_err(e)?;
+    server.ok(&[&file.to_string_lossy()])?;
+    let ls = server.ok(&["ls"])?;
+    assert!(
+        ls.contains(" jobs\n") && ls.contains(" job\n"),
+        "{ls}\nfrom\n{dump}"
+    );
+    Ok(())
+}
+
+/// A dump run on a new server, whose own `main` tab makes the dump's first
+/// tab `tab-2`, gives a tab it names `tab-2` that name all the same: a
+/// name given takes the one fux gave, which it names anew.
+#[test]
+fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
+    let source = Server::start("")?;
+    source.ok(&[
+        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "0",
+        "timeout", "run",
+    ])?;
+    let dump = source.ok(&["dump"])?;
+    let server = Server::start("")?;
+    let file = server.dir.join("source.fux");
+    std::fs::write(&file, &dump).map_err(e)?;
+    server.ok(&[&file.to_string_lossy()])?;
+    let named = server.ok(&["str", "tab-2", "pane", "opts", "0", "timeout", "wait"])?;
+    let ls = server.ok(&["ls"])?;
+    assert!(
+        ls.contains(&format!("{} sleep ", first_word(&named))),
+        "{named}\n{ls}\nfrom\n{dump}"
+    );
+    Ok(())
+}
+
+/// A workspace whose first tab is empty, its pane moved to a new tab, is
+/// made again from its dump: the first tab written opens it.
+#[test]
+fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
+    let server = Server::start("")?;
+    let pane = server.ok(&[
+        "opts", "str", "moved", "in", "str", "sleep 60", "command", "0", "timeout", "run",
+    ])?;
+    server.ok(&[
+        "str",
+        first_word(&pane),
+        "pane",
+        "str",
+        "new-tab",
+        "move-to",
+    ])?;
+    let dump = server.ok(&["str", "moved", "workspace", "dump-of"])?;
+    server.ok(&["str", "moved", "workspace", "kill"])?;
+    let file = server.dir.join("moved.fux");
+    std::fs::write(&file, &dump).map_err(e)?;
+    server.ok(&[&file.to_string_lossy()])?;
+    let ls = server.ok(&["ls"])?;
+    assert!(
+        ls.contains(" moved\n") && ls.contains(" sleep "),
+        "{ls}\nfrom\n{dump}"
+    );
+    Ok(())
+}
+
+/// A server opens a door beside its socket (`NAME.door`): a client that
+/// cannot use the socket (a sandbox that denies sockets; here, the socket
+/// file gone) reaches the server through it, FIFOs of its own relayed to a
+/// connection as the socket's.
+#[test]
+fn a_client_reaches_the_server_through_its_door() -> Outcome {
+    let server = Server::start("")?;
+    let mut door = server.socket.as_os_str().to_owned();
+    door.push(".door");
+    let door = std::path::PathBuf::from(door);
+    assert!(door.exists(), "a door beside {}", server.socket.display());
+    std::fs::remove_file(&server.socket).map_err(|e| e.to_string())?;
+    let ls = server.ok(&["ls"])?;
+    assert!(ls.contains("+1 main"), "{ls}");
+    let answer = server.ok(&[
+        "opts",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "echo through-the-door; read x",
+        "arg",
+        "run",
+    ])?;
+    assert!(
+        answer.contains(READING) && answer.contains("through-the-door"),
+        "{answer}"
+    );
+    Ok(())
+}
+
+/// A server is found by its door alone, as one that serves through it
+/// alone (a sandbox that denies sockets) is: `start` starts no second one,
+/// `servers` lists it, and a grant has a door too. A door no server holds
+/// open, left by one that stopped, is no server: `status` says so, and the
+/// next server takes it.
+#[test]
+fn a_door_alone_is_a_server() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let dir = rt.join("fux");
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let made = Command::new("mkfifo")
+        .args(["-m", "600"])
+        .arg(dir.join("t.sock.door"))
+        .status()
+        .map_err(e)?;
+    assert!(made.success());
+    let t = |args: &[&str]| {
+        let args: Vec<&str> = ["str", "t", "server"].iter().chain(args).copied().collect();
+        named(&rt, &args, &[])
+    };
+    let left = t(&["status"])?;
+    assert_eq!(left.status, 0, "{}", left.stderr);
+    assert!(left.stdout.starts_with("no fux server"), "{}", left.stdout);
+    assert_eq!(t(&["start"])?.status, 0);
+    std::fs::remove_file(dir.join("t.sock")).map_err(e)?;
+    assert_eq!(t(&["start"])?.status, 0);
+    let log = std::fs::read_to_string(dir.join("fux.log")).unwrap_or_default();
+    assert!(!log.contains("already"), "a second server started: {log}");
+    let servers = named(&rt, &["servers"], &[])?;
+    assert!(servers.stdout.starts_with("t  "), "{}", servers.stdout);
+    let granted = rt.join("g").join("s.sock");
+    let socket = granted.to_string_lossy().into_owned();
+    assert_eq!(t(&["str", "agent", "str", &socket, "grant"])?.status, 0);
+    std::fs::remove_file(&granted).map_err(e)?;
+    let through = named(
+        &rt,
+        &[
+            "str", &socket, "socket", "opts", "str", "true", "program", "run",
+        ],
+        &[],
+    )?;
+    assert_eq!(through.status, 0, "{}", through.stderr);
+    assert!(t(&["ls"])?.stdout.contains("agent"));
+    assert_eq!(t(&["force-kill-server"])?.status, 0);
+    Ok(())
+}
+
+/// Whether `result` is the `EPERM` a sandbox answers with.
+#[cfg(target_os = "linux")]
+fn denied<T>(what: &str, result: std::io::Result<T>) -> Outcome {
+    match result {
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => Ok(()),
+        Err(error) => Err(format!("{what}: {error}, not EPERM")),
+        Ok(_) => Err(format!("{what} was allowed")),
+    }
+}
+
+/// The pid of the server that serves `socket`, found by its command line.
+#[cfg(target_os = "linux")]
+fn serving(socket: &std::path::Path) -> Option<i32> {
+    let line = [
+        FUX.as_bytes(),
+        fux::SERVE.as_bytes(),
+        socket.as_os_str().as_encoded_bytes(),
+    ]
+    .join(&0u8);
+    std::fs::read_dir("/proc")
+        .ok()?
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let pid = entry.file_name().to_str()?.parse().ok()?;
+            (cmdline.strip_suffix(&[0u8]) == Some(line.as_slice()) && alive(pid)).then_some(pid)
+        })
+}
+
+/// A client in a sandbox that refuses sockets (Codex's: `connect`, `bind`,
+/// `send` and `setsockopt` denied) reaches a server outside it through the
+/// door: its requests, an action's settled answer, a capture, `status`, a
+/// grant's door, and `kill-server`. A socket with no door beside it, such
+/// as an older server's, is a clear error, not a wait.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use support::sandbox::sandboxed;
+    let mut server = Server::start("")?;
+    let granted = server.dir.join("g").join("s.sock");
+    let grant = granted.to_string_lossy().into_owned();
+    server.ok(&["str", "agent", "str", &grant, "grant"])?;
+    sandboxed(|| {
+        // The sandbox is Codex's: sockets refused, a pair allowed, and on
+        // it write(2) and read(2) but not setsockopt(2) or send(2), with
+        // which std writes a socket.
+        denied("connect", UnixStream::connect(&server.socket))?;
+        denied("bind", UnixListener::bind(server.dir.join("bound.sock")))?;
+        let (a, mut b) = UnixStream::pair().map_err(e)?;
+        denied("setsockopt", a.set_read_timeout(Some(PATIENCE)))?;
+        denied("send", (&a).write(b"x"))?;
+        std::fs::File::from(std::os::fd::OwnedFd::from(a))
+            .write_all(b"x")
+            .map_err(e)?;
+        let mut byte = [0u8; 1];
+        b.read_exact(&mut byte).map_err(e)?;
+        assert!(server.ok(&["ls"])?.contains("+1 main"));
+        let sh = server.ok(&["opts", "str", "sh", "name", "str", "sh", "program", "run"])?;
+        let sh = first_word(&sh);
+        let keys = server.ok(&[
+            "str",
+            sh,
+            "pane",
+            "keys",
+            "str",
+            "echo door-$((40+2))",
+            "text",
+            "str",
+            "Enter",
+            "key",
+            "send-keys",
+        ])?;
+        assert!(
+            keys.contains(READING) && keys.contains("\ndoor-42\n"),
+            "{keys}"
+        );
+        let capture = server.ok(&["str", sh, "pane", "opts", "json", "capture"])?;
+        assert!(
+            capture.starts_with('{') && capture.contains("door-42"),
+            "{capture}"
+        );
+        let status = server.ok(&["status"])?;
+        assert!(status.starts_with("fux "), "{status}");
+        let through = server.fux_env(
+            &[
+                "opts", "str", "inside", "name", "str", "true", "program", "run",
+            ],
+            &[("FUX_SOCKET", &grant)],
+        )?;
+        assert_eq!(through.status, 0, "{}", through.stderr);
+        let agent = server.ok(&["str", "agent", "workspace", "info", "json"])?;
+        assert!(agent.contains(r#""name":"inside""#), "{agent}");
+        // Each knock's FIFOs are gone once the server has opened them.
+        let dir = server.socket.parent().ok_or("the socket's directory")?;
+        for entry in std::fs::read_dir(dir).map_err(e)? {
+            let name = entry.map_err(e)?.file_name();
+            assert!(!name.to_string_lossy().starts_with("c-"), "{name:?} left");
+        }
+        server.ok(&["kill-server"])
+    })?;
+    assert!(server.wait_exit()?.success());
+    let mut door = server.socket.clone().into_os_string();
+    door.push(".door");
+    assert!(!std::path::Path::new(&door).exists(), "the door left");
+    // A socket left with no door: refused at once, and said why.
+    let _left = UnixListener::bind(&server.socket).map_err(e)?;
+    let started = std::time::Instant::now();
+    for words in [["ls"], ["status"]] {
+        let out = sandboxed(|| server.fux(&words))?;
+        assert_eq!(out.status, 1, "{words:?}: {}", out.stdout);
+        assert!(
+            out.stderr.contains("connecting to") && out.stderr.contains("not permitted"),
+            "{words:?}: {}",
+            out.stderr
+        );
+    }
+    assert!(started.elapsed() < PATIENCE, "it waited");
+    Ok(())
+}
+
+/// A server started in the sandbox cannot bind its socket: it serves
+/// through its door alone, holding its lock all the same, so no second
+/// server starts. Killed outright, it leaves its door, which is then no
+/// server: `status` says so, and `start` serves again.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
+    use support::sandbox::sandboxed;
+    // A server's, for a private directory of the test's own.
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let socket = rt.join("fux").join("t.sock");
+    let t = |args: &[&str]| {
+        let args: Vec<&str> = ["str", "t", "server"].iter().chain(args).copied().collect();
+        named(&rt, &args, &[])
+    };
+    let checked = sandboxed(|| {
+        let started = t(&["start"])?;
+        assert_eq!(started.status, 0, "{}", started.stderr);
+        assert!(!socket.exists(), "a socket was bound");
+        let pid = serving(&socket).ok_or("the server's pid")?;
+        assert!(support::sandbox::filtered(pid.unsigned_abs()));
+        let second = Command::new(FUX)
+            .arg(fux::SERVE)
+            .arg(&socket)
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_STATE_HOME", rt.join("state"))
+            .output()
+            .map_err(e)?;
+        let refused = String::from_utf8_lossy(&second.stderr);
+        assert!(
+            !second.status.success() && refused.contains("already using"),
+            "{refused}"
+        );
+        assert_eq!(t(&["start"])?.status, 0);
+        assert_eq!(serving(&socket), Some(pid), "another server started");
+        let servers = named(&rt, &["servers"], &[])?;
+        assert!(servers.stdout.starts_with("t  "), "{}", servers.stdout);
+        let answer = t(&[
+            "opts",
+            "str",
+            "sh",
+            "program",
+            "str",
+            "-c",
+            "arg",
+            "str",
+            "echo door-only; read x",
+            "arg",
+            "run",
+        ])?;
+        assert!(answer.stdout.contains("door-only"), "{}", answer.stderr);
+        signal(pid, fuxix::process::Signal::Kill);
+        eventually("the server gone", || Ok(!alive(pid)))?;
+        let status = t(&["status"])?;
+        assert!(
+            status.stdout.starts_with("no fux server"),
+            "{}",
+            status.stdout
+        );
+        assert_eq!(t(&["start"])?.status, 0);
+        assert!(t(&["ls"])?.stdout.contains("main"));
+        let killed = t(&["force-kill-server"])?;
+        assert_eq!(killed.status, 0, "{}", killed.stderr);
+        eventually("the server gone", || Ok(serving(&socket).is_none()))
+    });
+    // Started outside the test's care: never left running.
+    if let Some(pid) = serving(&socket) {
+        signal(pid, fuxix::process::Signal::Kill);
+    }
+    checked
+}
+
+/// A request through the door ends with its server: one killed while a
+/// sandboxed client waits for its answer (a program that kills it) fails
+/// at once, said so, though the sandbox refuses shutdown(2). The door it
+/// left is no server, and the hint starts the server chosen.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_request_ends_with_its_server() -> Outcome {
+    use support::sandbox::sandboxed;
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let socket = rt.join("fux").join("t.sock");
+    let t = |args: &[&str]| {
+        let args: Vec<&str> = ["str", "t", "server"].iter().chain(args).copied().collect();
+        named(&rt, &args, &[])
+    };
+    assert_eq!(t(&["start"])?.status, 0);
+    let pid = serving(&socket).ok_or("the server's pid")?;
+    let crash = "import os, signal, time\nos.kill(os.getppid(), signal.SIGKILL)\ntime.sleep(30)\n";
+    let checked = sandboxed(|| {
+        let mut client = Command::new(FUX)
+            .args(["str", "t", "server", "opts", "str", "python3", "program"])
+            .args(["str", "-c", "arg", "str", crash, "arg", "run"])
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_STATE_HOME", rt.join("state"))
+            .env_remove("FUX_SOCKET")
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(e)?;
+        let deadline = after(PATIENCE);
+        let ended = loop {
+            if let Some(status) = client.try_wait().map_err(e)? {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = client.kill();
+                let _ = client.wait();
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let mut said = String::new();
+        if let Some(stderr) = client.stderr.take() {
+            std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut said).map_err(e)?;
+        }
+        let status = ended.ok_or("the client waited on past its server's end")?;
+        assert_eq!(status.code(), Some(1), "{said}");
+        assert!(said.contains("closed the connection"), "{said}");
+        let left = t(&["ls"])?;
+        assert!(
+            left.stderr.contains("`fux str t server start`"),
+            "{}",
+            left.stderr
+        );
+        Ok(())
+    });
+    if alive(pid) {
+        signal(pid, fuxix::process::Signal::Kill);
+    }
+    checked
+}
+
+/// A socket that is the user's, in a directory of the user's, but listened
+/// on by another uid is refused: the client checks who serves it. The other
+/// uid is a user namespace's (`unshare --map-auto`: the user's own uid as
+/// its root, and the user's subordinate ids), whose root binds the socket
+/// and listens as uid 1. Where that cannot be had (no `newuidmap` or
+/// subordinate ids, or user namespaces restricted, as AppArmor may on
+/// Ubuntu), the test says so and passes.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_socket_served_by_another_uid_is_refused() -> Outcome {
+    // A server's, for a private directory of the test's own.
+    let server = Server::start("")?;
+    let socket = private(&server.dir)?.join("other.sock");
+    let listen = "import os, socket, sys, time\n\
+                  s = socket.socket(socket.AF_UNIX)\n\
+                  s.bind(sys.argv[1])\n\
+                  os.setgid(1)\n\
+                  os.setuid(1)\n\
+                  s.listen()\n\
+                  print('listening', flush=True)\n\
+                  time.sleep(60)\n";
+    let spawned = Command::new("unshare")
+        .args(["--user", "--map-auto", "--map-root-user", "python3", "-c"])
+        .arg(listen)
+        .arg(&socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let Ok(mut listener) = spawned else {
+        eprintln!("skipped: no unshare");
+        return Ok(());
+    };
+    let _reap = Reap(vec![i32::try_from(listener.id()).map_err(e)?]);
+    let mut line = String::new();
+    let stdout = listener.stdout.take().ok_or("no stdout")?;
+    BufReader::new(stdout).read_line(&mut line).map_err(e)?;
+    if line.trim() != "listening" {
+        let mut why = String::new();
+        if let Some(stderr) = listener.stderr.take() {
+            std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut why).map_err(e)?;
+        }
+        eprintln!("skipped: no user namespace with another uid to be had: {why}");
+        return Ok(());
+    }
+    let socket = socket.to_string_lossy();
+    let out = server.fux_env(&["ls"], &[("FUX_SOCKET", &socket)])?;
+    let euid = fuxix::process::geteuid();
+    assert_eq!(out.status, 1);
+    assert!(
+        out.stderr.contains("its server runs as uid")
+            && out.stderr.contains(&format!("not this user's ({euid})")),
+        "{}",
+        out.stderr
+    );
+    let _ = listener.kill();
+    let _ = listener.wait();
+    Ok(())
+}
+
+/// The real client attaches from a terminal in the sandbox: no descriptor
+/// can go through the door, so the server relays its paints, and keys, a
+/// resize, stopping a key's program (the prefix, then Esc) and detaching
+/// work as through the socket.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
+    let server =
+        Server::start("str j str 'me focused opts str never-comes wait-text wait drop' bind")?;
+    let mut terminal = support::sandbox::sandboxed(|| Terminal::attach(&server, 12, 50, &[]))?;
+    assert!(support::sandbox::filtered(terminal.child.id()));
+    terminal.wait_for("%1 sh")?;
+    terminal.type_bytes(b"echo through''-the-door\r")?;
+    terminal.wait_for("through-the-door")?;
+    terminal.resize(15, 70)?;
+    terminal.type_bytes(b"stty size\r")?;
+    terminal.wait_for("14 70")?;
+    // A wait for a text that never comes, on a busy pane, stopped.
+    terminal.type_bytes(b"echo sleep''ing; sleep 100\r")?;
+    terminal.wait_for("sleeping")?;
+    terminal.type_bytes(b"\x02j")?;
+    // The wait under way at the server, not stopped between its steps.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    terminal.type_bytes(b"\x02\x1b")?;
+    terminal.wait_for("stopped")?;
+    terminal.type_bytes(b"\x02d")?;
+    let status = terminal.wait_exit()?;
+    assert!(status.success(), "{status}");
     Ok(())
 }

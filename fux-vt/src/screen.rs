@@ -299,6 +299,10 @@ pub struct Screen {
     version: u64,
     structural: u64,
     alternate_active: bool,
+    /// Left by 1047 with this pen: the alternate screen is cleared in its
+    /// colours when shown again, and keeps what the program drew till then
+    /// (`alternate_rows`).
+    clear_on_show: Option<Attributes>,
     attributes: Attributes,
     /// The pen's style, and the style of its colours alone (what erasing
     /// fills with), if each is a style that is its own number (`style.rs`),
@@ -361,6 +365,10 @@ pub struct Screen {
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<crate::palette::Colours>>,
+    /// The rows let go since the host last forgot them, while it keeps
+    /// them (`keep_departed`), and how many it has been given.
+    departed: Option<Vec<crate::Departed>>,
+    departures: u64,
 }
 
 mod pictures;
@@ -441,6 +449,7 @@ impl Screen {
             version: 1,
             structural: 1,
             alternate_active: false,
+            clear_on_show: None,
             attributes: Attributes::default(),
             pen_style: 0,
             blank_style: 0,
@@ -468,6 +477,8 @@ impl Screen {
             links_seen: false,
             next_link: 1,
             colours: None,
+            departed: None,
+            departures: 0,
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -868,8 +879,8 @@ impl Screen {
         }
     }
     /// The alternate screen's rows, whichever screen is in use: what a
-    /// full-screen program drew last, kept after it leaves (1049, 47) until
-    /// the alternate screen is shown again. None if it never was.
+    /// full-screen program drew last, kept after it leaves (1049, 1047, 47)
+    /// until the alternate screen is shown again. None if it never was.
     pub fn alternate_rows(&self) -> Rows<'_> {
         let grid = &self.alternate;
         Rows {
@@ -991,6 +1002,9 @@ impl Screen {
         // (allocation failure). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
+        if up && self.departed.is_some() {
+            self.depart(region, count, history);
+        }
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {
@@ -1001,6 +1015,62 @@ impl Screen {
             };
             g.scroll(region, count, direction, blank, next, version)
         })
+    }
+    /// Keeps the rows an upward scroll of `count` rows in `region` is
+    /// about to let go: history's oldest past its limit, for a scroll into
+    /// history; else those scrolled out of the region's top.
+    #[cold]
+    #[inline(never)]
+    fn depart(&mut self, region: Span, count: u16, history: bool) {
+        let g = self.grid();
+        let size = g.size();
+        let (from, gone) = if history && region == size.lines() && g.history_limit() > 0 {
+            let count = usize::from(count.min(size.rows()));
+            let over = (g.history_len().saturating_add(count)).saturating_sub(g.history_limit());
+            (0, over)
+        } else {
+            let top = g.history_len().saturating_add(usize::from(region.first()));
+            (top, usize::from(count.min(region.len())))
+        };
+        let before = self.departures;
+        let departed: Vec<crate::Departed> = (from..from.saturating_add(gone))
+            .filter_map(|i| g.row_at(i))
+            .zip(1u64..)
+            .map(|(row, n)| crate::Departed {
+                seq: before.wrapping_add(n),
+                id: row.id,
+                version: row.version,
+                wrapped: row.wrapped,
+                text: row.cells_text(),
+            })
+            .collect();
+        self.departures = departed.last().map_or(before, |d| d.seq);
+        if let Some(kept) = &mut self.departed {
+            kept.extend(departed);
+        }
+    }
+    /// Starts keeping the rows scrolls let go, for the host to read
+    /// (`departed`) before it forgets them (`forget_departed`); or stops,
+    /// forgetting those kept. A row of history is let go only past its
+    /// limit, and the alternate screen keeps none: a reader looking now and
+    /// then misses none of what scrolled out between its looks.
+    pub fn keep_departed(&mut self, keep: bool) {
+        match (keep, &self.departed) {
+            (true, None) => self.departed = Some(Vec::new()),
+            (false, Some(_)) => self.departed = None,
+            (true, Some(_)) | (false, None) => {}
+        }
+    }
+    /// The rows let go since they were last forgotten, in the order they
+    /// went, while they are kept.
+    pub fn departed(&self) -> &[crate::Departed] {
+        self.departed.as_deref().unwrap_or_default()
+    }
+    /// Forgets the rows let go so far, keeping on.
+    pub fn forget_departed(&mut self) {
+        if let Some(kept) = &mut self.departed {
+            kept.clear();
+        }
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
     /// its blanks in the pen's colours. Out of line: without margins it is
@@ -1710,6 +1780,7 @@ impl Screen {
                 self.primary.reset_links();
                 self.alternate.reset_links();
                 self.alternate_active = false;
+                self.clear_on_show = None;
                 self.attributes = Attributes::default();
                 self.pen_changed();
                 self.saved_attributes = Attributes::default();
@@ -1906,15 +1977,15 @@ impl Screen {
         }
     }
 
-    /// Clears the alternate screen, its blanks in the pen's colours
-    /// (`bce`), as xterm clears it for 1047 and 1049. The cursor, origin
-    /// mode, the margins and the screen's saved cursor stay, and a pending
-    /// wrap ends, as ED's does (DEC STD 070, Appendix D.6.1).
-    fn clear_alternate(&mut self) -> Result<(), Error> {
+    /// Clears the alternate screen, its blanks in `pen`'s colours (`bce`),
+    /// as xterm clears it for 1047 and 1049. The cursor, origin mode, the
+    /// margins and the screen's saved cursor stay, and a pending wrap ends,
+    /// as ED's does (DEC STD 070, Appendix D.6.1).
+    fn clear_alternate(&mut self, pen: Attributes) -> Result<(), Error> {
         let g = &self.alternate;
         let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
         self.alternate.clear(&mut self.next_id, self.version)?;
-        let blank = self.attributes.erased();
+        let blank = pen.erased();
         let blank = match blank.inline_style() {
             Some(style) => style,
             None => self.alternate.style(blank),
@@ -2100,21 +2171,30 @@ impl Screen {
                 self.break_cluster();
                 match switch {
                     Switch::Plain => self.switch_screen(on),
+                    // Cleared on leaving, as xterm does it, but only once
+                    // shown again: till then, what the program drew is
+                    // kept to read. The clear's end of a pending wrap is
+                    // now.
                     Switch::ClearedOnLeaving => {
                         if !on && self.alternate_active {
-                            self.clear_alternate()?;
+                            self.clear_on_show = Some(self.attributes);
+                            self.alternate.cursor.pending_wrap = false;
                         }
                         self.switch_screen(on);
                     }
                     Switch::SavingCursor if on => {
                         self.save();
                         self.switch_screen(true);
-                        self.clear_alternate()?;
+                        self.clear_on_show = None;
+                        self.clear_alternate(self.attributes)?;
                     }
                     Switch::SavingCursor => {
                         self.switch_screen(false);
                         self.restore();
                     }
+                }
+                if let Some(pen) = self.clear_on_show.take_if(|_| on) {
+                    self.clear_alternate(pen)?;
                 }
             }
             Kind::SaveCursor if on => self.save(),

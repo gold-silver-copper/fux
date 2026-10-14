@@ -214,45 +214,32 @@ pub enum Until {
     Text(String),
     /// The text is no longer on the screen.
     Gone(String),
-    /// The screen has shown no change for this long: the same screen
-    /// drawn again is none.
-    Idle(Duration),
-    /// The screen changes: past the revision given (`--since N`), or the
-    /// one it had as the wait began.
-    Change(Option<u64>),
     /// The program exits.
     Exit,
-    /// A shell command ends (shell integration's OSC 133 `D`).
-    Done,
     /// The program rings the bell or sends a desktop notification.
     Bell,
+    /// The pane settles: its program reads its terminal, waits quiet on
+    /// something else, or exits (`crate::ready`). What an action waits for
+    /// when it names nothing.
+    Settled,
 }
 
-/// A wait: for any of its conditions, in any of its panes, how long at
+/// A wait: for any of its conditions, in each of its panes, how long at
 /// most, and how it is told.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wait {
     pub until: Vec<Until>,
     pub timeout: Duration,
-    /// The screen as the wait ends, after what it says.
+    /// What came since it began, or the screen, as the wait ends.
     pub print: bool,
     /// Only what comes after it began counts: text that appears anew, a
     /// screen that changed (send-keys' waits, armed before the keys).
     pub after: bool,
-    /// The text send-keys types, run by run: a line holding a run that
-    /// holds the awaited text is its echo, not what the keys brought.
-    pub echo: Vec<String>,
-    /// `--print`'s screen with reverse video marked, as `capture-pane --marks`.
+    /// What it prints with reverse video marked, as `capture`'s `marks`.
     pub marks: bool,
-    /// How many command lines send-keys types (each Enter, or newline in
-    /// text): a wait for `--done` waits for the last of them.
-    pub lines: u32,
-    /// Over several panes, it waits for each (send-keys' waits, as each
-    /// pane got the keys), rather than for any (`fux wait`).
-    pub all: bool,
 }
 
-/// How long a wait lasts at most if `--timeout` does not say: well inside
+/// How long a wait lasts at most if `timeout` does not say: well inside
 /// what a tool running a command waits for it.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -316,6 +303,8 @@ pub enum Command {
         run: bool,
         ids: Vec<AnyId>,
         json: bool,
+        /// Then waits on the new pane, armed before its program writes.
+        then: Option<Box<Wait>>,
     },
     /// A program, started in place of a shell in a tab of its own, in a
     /// workspace no client is moved to.
@@ -361,8 +350,6 @@ pub enum Command {
     },
     SendMouse {
         target: Option<PaneId>,
-        /// Sent only if the pane's screen is still at this revision.
-        if_revision: Option<u64>,
         mouse: Mouse,
         row: u16,
         col: u16,
@@ -409,11 +396,7 @@ pub enum Command {
         /// A client to send them to instead, as typed at its terminal: its
         /// bindings, overlays and prompts take them as a person's keys.
         client: Option<ClientId>,
-        /// Sent only if the pane's screen is still at this revision.
-        if_revision: Option<u64>,
         inputs: Vec<Input>,
-        /// How many times to send them all.
-        repeat: u16,
         /// A wait for the program to go quiet once they are sent.
         then: Option<Box<Wait>>,
     },
@@ -453,6 +436,9 @@ pub enum Command {
         history: Option<usize>,
         view: CaptureView,
         json: bool,
+        /// Read once the pane settles, waiting this long at most, and said
+        /// with its state; at once, as it is, without.
+        settle: Option<Duration>,
     },
     Reorder {
         subject: Subject,
@@ -606,6 +592,22 @@ impl Command {
         }
         None
     }
+
+    /// Takes the wait `run`, `split` or `respawn` does once it has started
+    /// its program: the command then says only its pane, which the wait
+    /// answers of (as JSON too, if asked).
+    pub fn take_start_wait(&mut self) -> Option<Box<Wait>> {
+        if let Command::Run { json, then, .. } | Command::Split { json, then, .. } = self
+            && then.is_some()
+        {
+            *json = false;
+            return then.take();
+        }
+        if let Command::Respawn { then, .. } = self {
+            return then.take();
+        }
+        None
+    }
 }
 
 /// Whether a word that is no key name looks like one mistyped, as a person
@@ -648,48 +650,199 @@ fn one_off(a: &str, b: &str) -> bool {
     }
 }
 
-/// The lines send-keys types, as a shell or an input box would echo them
-/// (Space joins words, BSpace takes the last character back, pasted text is
-/// shown too), and how many it ends (Enter, or a newline in text).
-pub fn typed_lines(inputs: &[Input], repeat: u16) -> (Vec<String>, u32) {
-    let mut lines: Vec<String> = vec![String::new()];
-    let mut ended = 0u32;
-    let add = |text: &str, lines: &mut Vec<String>, counts: bool, ended: &mut u32| {
-        for (i, part) in text.split('\n').enumerate() {
-            if i > 0 {
-                lines.push(String::new());
-                if counts {
-                    *ended = ended.saturating_add(1);
-                }
-            }
-            if let Some(last) = lines.last_mut() {
-                last.push_str(part);
-            }
-        }
+/// The lines send-keys types, as a terminal shows them after its line
+/// editing (Space joins words, BSpace or DEL takes back the character
+/// before the cursor, C-w the word before it, C-u the line before it; Left,
+/// Right, Home, End, C-b, C-f, C-a and C-e move the cursor, and what is
+/// typed goes in at it; Tab is a blank, and another control character in
+/// text shows as `^A`; pasted text is shown too), and whether a line was
+/// ended (Enter, or a line end in text) after a key whose echo is not known
+/// (Up, C-r: a command recalled).
+pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, bool) {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = Line::default();
+    let (mut unknown, mut recalled) = (false, false);
+    // A line broken: ended for the program (Enter) or not (a paste's line
+    // end), after a key whose echo is known or not.
+    let mut end = |lines: &mut Vec<String>, line: &mut Line, ends: bool, known: bool| {
+        lines.push(std::mem::take(line).text());
+        recalled |= ends && unknown;
+        unknown |= !known;
     };
-    for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+    for input in inputs {
         match input {
-            Input::Text(text) => add(text, &mut lines, true, &mut ended),
-            Input::Paste(text) => add(text, &mut lines, false, &mut ended),
-            Input::Key(key) => match (key.key, key.mods == fux_vt::keys::Modifiers::default()) {
-                (fux_vt::keys::Key::Char(c), true) => {
-                    add(&c.to_string(), &mut lines, true, &mut ended)
-                }
-                (fux_vt::keys::Key::Backspace, true) => {
-                    if let Some(last) = lines.last_mut() {
-                        last.pop();
+            Input::Text(text) => {
+                for c in text.chars() {
+                    match c {
+                        '\n' | '\r' => end(&mut lines, &mut line, true, true),
+                        c => line.type_char(c),
                     }
                 }
-                (fux_vt::keys::Key::Enter, _) => {
-                    ended = ended.saturating_add(1);
-                    lines.push(String::new());
+            }
+            Input::Paste(text) => {
+                for (i, part) in text.split('\n').enumerate() {
+                    if i > 0 {
+                        end(&mut lines, &mut line, false, true);
+                    }
+                    line.left.push_str(part);
                 }
-                // Another key (an arrow, Tab, a control key) leaves the
-                // line as the program makes it: its echo is not known.
-                _ => lines.push(String::new()),
+            }
+            Input::Key(key) => match edit(*key) {
+                Some(Edit::Type(c)) => line.type_char(c),
+                Some(Edit::Move(to)) => line.move_to(to),
+                Some(Edit::End) => end(&mut lines, &mut line, true, true),
+                // Another key (Up, a control key) leaves the line as the
+                // program makes it: its echo is not known.
+                None => end(&mut lines, &mut line, false, false),
             },
         }
     }
+    lines.push(line.text());
     lines.retain(|l| !l.trim().is_empty());
-    (lines, ended)
+    (lines, recalled)
+}
+
+/// Whether `inputs` leave the line they type on open, as `typed_lines`
+/// reads them: none ends it, and each one's echo is known.
+pub fn line_open(inputs: &[Input]) -> bool {
+    inputs.iter().all(|input| match input {
+        Input::Text(text) | Input::Paste(text) => !text.contains(['\n', '\r']),
+        Input::Key(key) => matches!(edit(*key), Some(Edit::Type(_) | Edit::Move(_))),
+    })
+}
+
+/// What a key does to the line it is typed on, as line editing takes it.
+#[derive(Clone, Copy)]
+enum Edit {
+    /// Types a character (BSpace, C-w and C-u as theirs).
+    Type(char),
+    /// Moves the cursor.
+    Move(Move),
+    /// Ends the line (Enter).
+    End,
+}
+
+#[derive(Clone, Copy)]
+enum Move {
+    Left,
+    Right,
+    Home,
+    End,
+}
+
+/// What `key` does to the line, if its echo is known.
+fn edit(key: KeyPress) -> Option<Edit> {
+    use fux_vt::keys::{Key, Modifiers};
+    Some(match (key.key, key.mods) {
+        (Key::Char(c), Modifiers::NONE) => Edit::Type(c),
+        (Key::Char(c @ ('h' | 'u' | 'w')), Modifiers::CTRL) => {
+            Edit::Type(char::from(u8::try_from(c).ok()? & 0x1f))
+        }
+        (Key::Char('b'), Modifiers::CTRL) | (Key::Arrow(Direction::Left), Modifiers::NONE) => {
+            Edit::Move(Move::Left)
+        }
+        (Key::Char('f'), Modifiers::CTRL) | (Key::Arrow(Direction::Right), Modifiers::NONE) => {
+            Edit::Move(Move::Right)
+        }
+        (Key::Char('a'), Modifiers::CTRL) | (Key::Home, Modifiers::NONE) => Edit::Move(Move::Home),
+        (Key::Char('e'), Modifiers::CTRL) | (Key::End, Modifiers::NONE) => Edit::Move(Move::End),
+        (Key::Backspace, Modifiers::NONE) => Edit::Type('\x7f'),
+        (Key::Tab, Modifiers::NONE) => Edit::Type('\t'),
+        (Key::Enter, _) => Edit::End,
+        _ => return None,
+    })
+}
+
+/// A line being typed: what is left of the cursor, and right of it.
+#[derive(Default)]
+struct Line {
+    left: String,
+    right: String,
+}
+
+impl Line {
+    fn text(self) -> String {
+        self.left + &self.right
+    }
+
+    fn move_to(&mut self, to: Move) {
+        match to {
+            Move::Left => {
+                if let Some(c) = self.left.pop() {
+                    self.right = format!("{c}{}", self.right);
+                }
+            }
+            Move::Right => {
+                let mut chars = self.right.chars();
+                if let Some(c) = chars.next() {
+                    self.left.push(c);
+                    self.right = chars.as_str().to_owned();
+                }
+            }
+            Move::Home => self.right = std::mem::take(&mut self.left) + &self.right,
+            Move::End => {
+                self.left.push_str(&self.right);
+                self.right.clear();
+            }
+        }
+    }
+
+    /// Types `c` at the cursor, as a terminal's line editing shows it.
+    fn type_char(&mut self, c: char) {
+        let line = &mut self.left;
+        match c {
+            '\x7f' | '\x08' => {
+                line.pop();
+            }
+            '\x15' => line.clear(),
+            '\x17' => {
+                let kept = line.trim_end();
+                let word = (kept.char_indices().rev())
+                    .find(|(_, c)| c.is_whitespace())
+                    .map_or(0, |(at, c)| at.saturating_add(c.len_utf8()));
+                *line = kept.get(..word).unwrap_or_default().to_owned();
+            }
+            '\t' => line.push('\t'),
+            c if c.is_ascii_control() => {
+                line.push('^');
+                line.push(char::from(u8::try_from(c).unwrap_or(0) ^ 0x40));
+            }
+            c => line.push(c),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fux_vt::keys::{Key, Modifiers};
+
+    /// What is typed reads as a terminal's line editing shows it: a paste
+    /// goes on the line it lands on and breaks it at its own line ends,
+    /// Backspace takes a character back, and only Enter (or a line end in
+    /// text) ends a line the program is told of.
+    #[test]
+    fn typed_lines_follow_line_editing() {
+        let key = |key| Input::Key(KeyPress::new(key, Modifiers::NONE));
+        let inputs = [
+            Input::Text("ab".into()),
+            Input::Paste("cd\nef".into()),
+            key(Key::Backspace),
+            key(Key::Enter),
+            Input::Text("gh".into()),
+        ];
+        assert_eq!(
+            typed_lines(&inputs),
+            (
+                vec!["abcd".to_owned(), "e".to_owned(), "gh".to_owned()],
+                false
+            )
+        );
+        // Enter after Up runs a line recalled, whose echo is not known.
+        let recalled = [
+            key(Key::Arrow(fux_vt::keys::Direction::Up)),
+            key(Key::Enter),
+        ];
+        assert_eq!(typed_lines(&recalled), (Vec::new(), true));
+    }
 }

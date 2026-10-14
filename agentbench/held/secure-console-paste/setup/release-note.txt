@@ -1,0 +1,5 @@
+Release "copper"
+
+Literal: $HOME; $(echo nope)
+Path: C:\drop\notes
+END.

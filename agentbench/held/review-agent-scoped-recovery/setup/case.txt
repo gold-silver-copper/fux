@@ -1,0 +1,4 @@
+case=manifest-review
+alpha=6
+beta=11
+keep-source=yes

@@ -260,3 +260,24 @@ fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
     assert_eq!(n, glyphs);
     Ok(())
 }
+
+/// A command that clears the main screen starts its output again at the
+/// top; one whose full-screen program clears the alternate screen keeps
+/// its output's start on the main screen.
+#[test]
+fn only_a_main_screen_clear_moves_a_commands_output() -> Result<(), Error> {
+    let start = |clear: &[u8]| -> Result<String, Error> {
+        let marks = crate::Options::new().with(crate::Feature::PromptMarks);
+        let mut p = crate::Parser::with_options(Size::of(6, 20), 50, marks)?;
+        p.process(b"$ run\r\n\x1b]133;C\x07BEFORE\r\n")?;
+        p.process(clear)?;
+        p.process(b"AFTER\r\n\x1b]133;D;0\x07$ ")?;
+        let screen = p.screen();
+        let (from, _) = screen.commands().last_output.ok_or(Error::InvalidRange)?;
+        let row = screen.row_by_id(from.row).ok_or(Error::InvalidRange)?;
+        Ok(row.cells_text().trim_end().to_owned())
+    };
+    assert_eq!(start(b"\x1b[?1049h\x1b[2Jmenu\x1b[?1049l")?, "BEFORE");
+    assert_eq!(start(b"\x1b[2J\x1b[H")?, "AFTER");
+    Ok(())
+}

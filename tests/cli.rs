@@ -29,7 +29,7 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    assert_eq!(pane.trim(), "%2");
+    assert!(pane.starts_with(&format!("%2 {READING}\n")), "{pane}");
     shows(&server, "%2", "[a b]")?;
     shows(&server, "%2", "[it's]")?;
     shows(&server, "%2", "[$HOME]")?;
@@ -90,8 +90,8 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let env = [("FUX_PANE", "%2")];
     let out = server.fux_env(&["here", "opts", "vertical", "split"], &env)?;
     assert_eq!(
-        (out.status, out.stdout.as_str()),
-        (0, "%3\n"),
+        (out.status, out.stdout.lines().next()),
+        (0, Some(format!("%3 {READING}").as_str())),
         "{}",
         out.stderr
     );
@@ -201,7 +201,22 @@ fn send_keys_signal_and_buffers() -> Outcome {
         "{}",
         idle.stderr
     );
-    server.type_line("%1", "sleep 600; echo after-sleep")?;
+    // The sleep never settles: `0 timeout` answers at once.
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "keys",
+        "str",
+        "sleep 600; echo after-sleep",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
     eventually("sleep in the foreground", || {
         Ok(server
             .fux(&["str", "%1", "pane", "str", "TERM", "signal"])?
@@ -228,14 +243,54 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     let unknown = server.fux(&["frobnicate"])?;
     assert_eq!(unknown.status, 1);
     assert!(
-        unknown.stderr.starts_with("fux: unknown_word: "),
+        unknown.stderr.starts_with("fux: unknown_word: ") && unknown.stderr.contains("fux help"),
         "{}",
         unknown.stderr
     );
-    let timed_out = server.fux(&[
+    // A program's path holding a line end fails to start, the line end
+    // shown as `\n`, as is a line separator in a message.
+    let path = server.fux(&["opts", "str", "no\nsuch", "program", "run"])?;
+    assert!(
+        path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"no\nsuch:"),
+        "{}",
+        path.stderr
+    );
+    let separator = server.fux(&["str", "a\u{2028}b", "fail"])?;
+    assert!(
+        separator.stderr.contains(r"a\u{2028}b"),
+        "{}",
+        separator.stderr
+    );
+    // A text wait on a program reading its terminal ends at once: the text
+    // cannot come before more input. Where fux is not told so (not Linux),
+    // it is waited for to the limit.
+    let reading = server.fux(&[
         "str",
         "%1",
         "pane",
+        "opts",
+        "str",
+        "never-shown",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(reading.status, CANNOT_COME, "{}", reading.stderr);
+    assert!(
+        reading.stdout.starts_with("%1 reading\n") || !PROBED,
+        "{}",
+        reading.stdout
+    );
+    // On one that sleeps, it waits until its time is up.
+    let timed_out = server.fux(&[
+        "opts",
+        "str",
+        "sleep 30",
+        "command",
+        "0",
+        "timeout",
+        "run",
         "opts",
         "str",
         "never-shown",
@@ -250,22 +305,36 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         timed_out.stderr
     );
+    // A run whose program exits before the text: its pane on stdout, and
+    // why on one line of stderr, its last lines with it; what the words
+    // before it left is printed first.
+    let exited = server.fux(&[
+        "str",
+        "before",
+        "opts",
+        "str",
+        "sh -c 'echo ONE; echo TWO; exit 5'",
+        "command",
+        "str",
+        "NEVER",
+        "wait-text",
+        "run",
+    ])?;
+    assert_eq!(exited.status, 3, "{}", exited.stderr);
+    assert!(
+        exited.stdout.starts_with("before\n%") && exited.stdout.lines().count() == 2,
+        "{}",
+        exited.stdout
+    );
+    assert_eq!(exited.stderr.lines().count(), 1, "{}", exited.stderr);
+    assert!(exited.stderr.contains(r"ONE\nTWO"), "{}", exited.stderr);
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;
     assert_eq!(left, "3\na b\n%1\n@1\n");
-    let outcome = server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "opts",
-        "100",
-        "wait-idle",
-        "wait",
-        "json",
-    ])?;
+    let outcome = server.ok(&["str", "%1", "pane", "opts", "wait", "json"])?;
     assert!(
-        outcome.starts_with(r#"{"pane":"%1","met":"idle""#),
+        outcome.starts_with(&format!(r#"{{"pane":"%1","state":"{READING}""#)),
         "{outcome}"
     );
     let record = server.ok(&["str", "%1", "pane", "info", "json"])?;
@@ -274,6 +343,40 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         server.ok(&["str", "%1", "pane", "str", "exited", "get"])?,
         "null\n"
     );
+    // An option a word would leave unused is refused, not ignored: a new
+    // tab starts a shell, and waits on nothing.
+    for unused in [
+        &["str", "top", "program"][..],
+        &["str", "x", "wait-text"][..],
+    ] {
+        let refused =
+            server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;
+        assert!(
+            refused.stderr.starts_with("fux: unused: "),
+            "{}",
+            refused.stderr
+        );
+    }
+    // A size past 500 is refused, saying the range it may take, past a
+    // cell's too.
+    for size in ["501", "65536"] {
+        let wide = server.fux(&["str", "%1", "pane", size, "10", "resize"])?;
+        assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
+        assert!(wide.stderr.contains("1 to 500"), "{}", wide.stderr);
+        let opened = server.fux(&["opts", size, "10", "size"])?;
+        assert!(opened.stderr.contains("1 to 500"), "{}", opened.stderr);
+    }
+    // A new tab from outside a pane is told the option that places it.
+    let nowhere = server.fux(&["opts", "str", "logs", "name", "new-tab"])?;
+    assert!(
+        nowhere.stderr.contains("`str NAME in`"),
+        "{}",
+        nowhere.stderr
+    );
+    let placed = [
+        "opts", "str", "logs", "name", "str", "agent", "in", "new-tab",
+    ];
+    assert_eq!(server.fux(&placed)?.status, 0);
     Ok(())
 }
 
@@ -293,7 +396,10 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         inside.starts_with("fux: type: argument 3: type: inside type, send-keys: "),
         "{inside}"
     );
-    assert!(inside.ends_with("(use: PANE TEXT type)\n"), "{inside}");
+    assert!(
+        inside.ends_with("(use: PANE TEXT type, which leaves [answer])\n"),
+        "{inside}"
+    );
     // Refused before `run` starts anything.
     let before = said(&[
         "opts", "str", "sh", "program", "run", "str", "a", "1", "add",
@@ -303,6 +409,28 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{before}"
     );
     assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
+    // The language's own words say how they are written.
+    for (words, usage) in [
+        (
+            &["str", "a", "if", "1", "then"][..],
+            "(use: BOOL if … else … then)",
+        ),
+        (&["3", "each", "1", "end"][..], "(use: SEQ each … end)"),
+        (&["let", "X"][..], "(use: X let NAME)"),
+        (
+            &["begin", "str", "x", "until"][..],
+            "(use: begin … BOOL until)",
+        ),
+    ] {
+        let wrong = said(words)?;
+        assert!(wrong.ends_with(&format!("{usage}\n")), "{wrong}");
+    }
+    // `help WORD` of no word says so, as help, and where, as any error.
+    assert_eq!(
+        said(&["help", "no-such-word"])?,
+        "fux: unknown_word: argument 2: help: no word \"no-such-word\" (`fux help` lists \
+         every word)\n"
+    );
     let named = said(&["1", "let", "+7"])?;
     assert!(
         named.contains("+7: cannot be defined: it names a workspace"),
@@ -310,6 +438,16 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     let client = said(&["str", "c9", "client", "focused"])?;
     assert!(client.contains("no client c9"), "{client}");
+    // What a word takes, all of it: focus's every way, text's booleans.
+    let way = said(&["str", "c9", "client", "str", "sideways", "focus"])?;
+    assert!(way.contains("up, down, next, previous or last"), "{way}");
+    let text = said(&["keys", "opts", "text"])?;
+    assert!(text.contains("a string, a number or a boolean"), "{text}");
+    // A workspace of one pane is that pane; of more, said so.
+    assert_eq!(server.ok(&["%1", "workspace", "pane"])?, "%1\n");
+    server.ok(&["%1", "opts", "horizontal", "split"])?;
+    let many = said(&["%1", "workspace", "pane"])?;
+    assert!(many.contains("+1 is a workspace of 2 panes"), "{many}");
     Ok(())
 }
 

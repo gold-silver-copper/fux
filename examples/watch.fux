@@ -1,5 +1,7 @@
-# Watch a program's output come in, wait for its last line, and read the
-# screen and how it ended.
+# Run a program and read what it printed: `run` answers once the program
+# settles, here once it has exited, with its state and its output; as a
+# value it is still the pane, so `get` reads how it ended.
+# expect: %6 exited 0
 # expect: tick 1
 # expect: tick 2
 # expect: tick 3
@@ -7,7 +9,4 @@
 # expect: 0
 
 opts str 'sh -c "for i in 1 2 3; do echo tick \$i; sleep 0.1; done; echo done"' command
-run let TICKS
-TICKS str done await
-dup opts capture
-swap exited str exited get
+run dup str exited get

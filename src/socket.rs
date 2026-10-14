@@ -60,12 +60,7 @@ pub enum Error {
         value: String,
         limit: usize,
     },
-    /// A directory above the socket's that another user could change.
-    Shared {
-        path: PathBuf,
-        mode: u32,
-        uid: u32,
-    },
+    /// The socket's directory is a symbolic link.
     Symlink(PathBuf),
     /// The socket's directory, not a directory of ours with mode 0700.
     NotPrivate {
@@ -90,11 +85,6 @@ pub enum Error {
     /// begins ("locking "), and why.
     Io {
         doing: &'static str,
-        path: PathBuf,
-        source: io::Error,
-    },
-    /// Whether a server listens could not be told.
-    Probe {
         path: PathBuf,
         source: io::Error,
     },
@@ -135,12 +125,6 @@ impl std::fmt::Display for Error {
                  domain socket on this platform (from {from}): {value}",
                 value.len()
             ),
-            Error::Shared { path, mode, uid } => write!(
-                f,
-                "{} (mode {mode:04o}, owner uid {uid}) could be changed by another user, so the socket \
-                 beneath it would not be private; choose another location with FUX_SOCKET",
-                path.display()
-            ),
             Error::Symlink(path) => write!(
                 f,
                 "{} is a symbolic link; the socket directory must be a real directory",
@@ -166,9 +150,9 @@ impl std::fmt::Display for Error {
             Error::NoServer(path) => {
                 write!(
                     f,
-                    "no fux server is running at {}; `fux` in a terminal starts one, or \
-                     `fux start` (or `fux str NAME server start`) one with no terminal",
-                    path.display()
+                    "no fux server is running at {}; {}",
+                    path.display(),
+                    start_hint(path)
                 )
             }
             Error::BadName(name) => write!(
@@ -199,19 +183,22 @@ impl std::fmt::Display for Error {
                 path,
                 source,
             } => write!(f, "{doing}{}: {source}", path.display()),
-            Error::Probe { path, source } => write!(
-                f,
-                "cannot tell whether {} is in use ({source}); it was left in place",
-                path.display()
-            ),
         }
+    }
+}
+
+impl Error {
+    /// Whether the system denied a socket at all (a sandbox that forbids
+    /// them): a door may serve instead (`crate::door`).
+    pub fn denied(&self) -> bool {
+        matches!(self, Error::Io { source, .. } if source.kind() == io::ErrorKind::PermissionDenied)
     }
 }
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Io { source, .. } | Error::Probe { source, .. } => Some(source),
+            Error::Io { source, .. } => Some(source),
             Error::NotUtf8 { .. }
             | Error::NoLocation
             | Error::EmptyVariable { .. }
@@ -221,7 +208,6 @@ impl std::error::Error for Error {
             | Error::Relative { .. }
             | Error::NoFile { .. }
             | Error::TooLong { .. }
-            | Error::Shared { .. }
             | Error::Symlink(_)
             | Error::NotPrivate { .. }
             | Error::NoServer(_)
@@ -318,6 +304,27 @@ pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
     }
 }
 
+/// What starts the server at `path`: `fux start` the default's (or
+/// `FUX_SOCKET`'s), the command that names its socket another's.
+pub fn start_hint(path: &Path) -> String {
+    let default = socket_path(Choice::Default).is_ok_and(|s| s.path == path);
+    if default {
+        return "`fux` in a terminal starts one, or `fux start` one with no terminal".into();
+    }
+    let name = (path.parent().zip(directory().ok()))
+        .filter(|(parent, directory)| parent == directory)
+        .and_then(|_| path.file_name()?.to_str()?.strip_suffix(".sock"));
+    // Quoted for a shell, as the hint is a command to run.
+    let words = match name {
+        Some(name) => format!("str {} server", crate::words::quote(name)),
+        None => format!(
+            "str {} socket",
+            crate::words::quote(&path.to_string_lossy())
+        ),
+    };
+    format!("`fux {words} start` starts one")
+}
+
 /// fux's directory: under `XDG_RUNTIME_DIR`, else `TMPDIR`.
 pub fn directory() -> Result<PathBuf, Error> {
     for base in ["XDG_RUNTIME_DIR", "TMPDIR"] {
@@ -395,28 +402,18 @@ fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
     })
 }
 
-/// The directory holding the socket must be ours, mode 0700, reached only
-/// through directories no other user can rewrite. `create` makes it when it
-/// is missing; nothing that already exists is modified.
+/// The directory holding the socket must be ours, mode 0700. The
+/// directories above it are not checked: inside a sandbox's user namespace
+/// root's show as another uid (65534), and what keeps a connection private
+/// is that each side checks the other's user (the server its clients', a
+/// client its server's), whoever could rename what lies above. `create`
+/// makes it when it is missing; nothing that already exists is modified.
 fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
     let (directory, above) = (socket.directory(), socket.above.as_path());
     let euid = geteuid();
-    let canonical = above
+    above
         .canonicalize()
         .map_err(failed("socket directory parent ", above))?;
-    for ancestor in canonical.ancestors() {
-        let meta = fs::metadata(ancestor).map_err(io(ancestor))?;
-        let mode = meta.permissions().mode();
-        let owned = meta.uid() == 0 || meta.uid() == euid;
-        let shared = mode & 0o022 != 0;
-        if !owned || (shared && mode & 0o1000 == 0) {
-            return Err(Error::Shared {
-                path: ancestor.to_owned(),
-                mode: mode & 0o7777,
-                uid: meta.uid(),
-            });
-        }
-    }
     match fs::symlink_metadata(directory) {
         Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
             match DirBuilder::new().mode(0o700).create(directory) {
@@ -505,17 +502,19 @@ impl Pinned {
     }
 }
 
-/// The bound socket and the lock that makes this server its only owner.
-/// Dropping it removes the socket if it is still the one this server bound.
+/// The lock that makes this server its only owner, and the socket it bound
+/// if the system let it (a sandbox may deny sockets: a door serves instead,
+/// `crate::door`). Dropping it removes the socket if it is still the one
+/// this server bound.
 pub struct Endpoint {
     path: PathBuf,
-    socket: Pinned,
+    socket: Option<Pinned>,
     _lock: File,
 }
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
-        if self.socket.still_at(&self.path) {
+        if self.socket.as_ref().is_some_and(|s| s.still_at(&self.path)) {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -534,8 +533,10 @@ fn probe(path: &Path) -> io::Result<()> {
 }
 
 /// Takes ownership of `path` and binds it. Refuses a live server's socket and
-/// anything that is not a socket; replaces only a socket proven stale.
-pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Error> {
+/// anything that is not a socket; replaces only a socket proven stale. Where
+/// the system denies sockets the lock is taken all the same, with no
+/// listener: its owner serves through its door alone.
+pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener>), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
     let euid = geteuid();
@@ -567,34 +568,37 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io(path)(error)),
         Ok(meta) if foreign(&meta) => return Err(refused()),
-        Ok(_) => match probe(path) {
-            Ok(()) => return Err(Error::Listening(path.to_owned())),
-            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
-                    fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
-                }
+        Ok(_) if probe(path).is_ok() => return Err(Error::Listening(path.to_owned())),
+        // No answer: with the lock held, no server owns it, whether connect
+        // was refused or denied (a sandbox that forbids sockets).
+        Ok(_) => {
+            if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
+                fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(Error::Probe {
-                    path: path.to_owned(),
-                    source,
-                });
-            }
-        },
+        }
     }
-    let fd = fuxix::socket::stream().map_err(failed("a socket for ", path))?;
-    fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
-    let endpoint = Endpoint {
+    let mut endpoint = Endpoint {
         path: path.to_owned(),
-        socket: Pinned::new(path).map_err(io(path))?,
+        socket: None,
         _lock: lock,
     };
+    let bound = fuxix::socket::stream()
+        .map_err(failed("a socket for ", path))
+        .and_then(|fd| {
+            fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
+            Ok(fd)
+        });
+    let fd = match bound {
+        Ok(fd) => fd,
+        Err(error) if error.denied() => return Ok((endpoint, None)),
+        Err(error) => return Err(error),
+    };
+    endpoint.socket = Some(Pinned::new(path).map_err(io(path))?);
     // From here a failure drops `endpoint`, which removes the socket. The mode
     // is set before `listen`, so no connection is accepted on an open socket.
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io(path))?;
     fuxix::socket::listen(&fd, 128).map_err(failed("listening on ", path))?;
-    Ok((endpoint, UnixListener::from(fd)))
+    Ok((endpoint, Some(UnixListener::from(fd))))
 }
 
 #[cfg(test)]
@@ -608,7 +612,10 @@ mod tests {
     }
 
     fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
-        bind_socket(&checked(&path.to_string_lossy(), "test")?)
+        match bind_socket(&checked(&path.to_string_lossy(), "test")?)? {
+            (endpoint, Some(listener)) => Ok((endpoint, listener)),
+            (_, None) => Err(io(path)(io::ErrorKind::PermissionDenied.into())),
+        }
     }
 
     fn scratch(name: &str) -> std::io::Result<PathBuf> {
@@ -666,6 +673,24 @@ mod tests {
             "no socket location: neither XDG_RUNTIME_DIR nor TMPDIR is set; \
              set FUX_SOCKET to an absolute socket path"
         );
+        // No server at a socket chosen by its path: what starts that one.
+        assert!(
+            Error::NoServer(PathBuf::from("/x/y/absent.sock"))
+                .to_string()
+                .ends_with("`fux str /x/y/absent.sock socket start` starts one")
+        );
+        // A path with a blank is quoted, so the command can be pasted.
+        assert!(
+            Error::NoServer(PathBuf::from("/x/my dir/absent.sock"))
+                .to_string()
+                .ends_with("`fux str '/x/my dir/absent.sock' socket start` starts one")
+        );
+        // As is one a shell would read otherwise: `;`, a quote.
+        assert!(
+            Error::NoServer(PathBuf::from("/x/a;b'c.sock"))
+                .to_string()
+                .ends_with(r"`fux str '/x/a;b'\''c.sock' socket start` starts one")
+        );
     }
 
     #[test]
@@ -696,9 +721,11 @@ mod tests {
         assert_eq!(fuxix::socket::peer_uid(&served).ok(), Some(geteuid()));
         drop((client, served, listener, endpoint));
         assert!(!exists(&path), "the socket is removed at exit");
-        // A stale socket (nothing listening) is replaced.
+        // A stale socket (nothing listening) is replaced, even one whose
+        // connect is denied, as a sandbox denies sockets.
         let stale = UnixListener::bind(&path).map_err(|e| e.to_string())?;
         drop(stale);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).map_err(|e| e.to_string())?;
         let (endpoint, _listener) = bind(&path)?;
         // A replacement bound by someone else at the same path is left alone.
         fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -708,6 +735,10 @@ mod tests {
             exists(&path),
             "another program's socket survives our cleanup"
         );
+        // A socket something listens on, though it holds no lock, is never
+        // taken over.
+        assert!(matches!(bind(&path), Err(Error::Listening(_))));
+        assert!(exists(&path), "the live socket is kept");
         drop(replacement);
         let _ = fs::remove_dir_all(&root);
         Ok(())

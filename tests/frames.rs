@@ -6,6 +6,30 @@ mod support;
 use std::time::{Duration, Instant};
 use support::*;
 
+/// Types a line into a pane once its shell shows a prompt, answering at
+/// once (`0 timeout`): what it starts keeps running, so it never settles.
+fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
+    eventually(&format!("a prompt in {pane}"), || {
+        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+    })?;
+    server.ok(&[
+        "str",
+        pane,
+        "pane",
+        "keys",
+        "str",
+        line,
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
+    Ok(())
+}
+
 /// The shell echoes what it is typed, so the text each frame draws is
 /// computed (`$((6*7))` prints as `42`) and the echo never matches it.
 fn frame_line(first: &str, mark: &std::path::Path, then: &str) -> String {
@@ -21,7 +45,8 @@ fn a_client_is_shown_a_synchronized_frame_only_whole() -> Outcome {
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
     let mark = server.dir.join("mid-frame");
-    server.type_line(
+    type_now(
+        &server,
         "%1",
         &frame_line("A", &mark, "sleep 0.6; printf '%sB\\033[?2026l' $((6*7))"),
     )?;
@@ -44,7 +69,7 @@ fn a_frame_that_never_ends_is_shown_after_its_timeout() -> Outcome {
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
     let mark = server.dir.join("begun");
-    server.type_line("%1", &frame_line("C", &mark, "sleep 3"))?;
+    type_now(&server, "%1", &frame_line("C", &mark, "sleep 3"))?;
     eventually("the frame begun", || Ok(mark.exists()))?;
     let begun = Instant::now();
     std::thread::sleep(Duration::from_millis(300));

@@ -21,6 +21,9 @@ pub struct Workspace {
 pub struct Tab {
     pub id: TabId,
     pub name: String,
+    /// Its name was given (`name`, `rename`), not fux's (`main`, `tab-N`, a
+    /// program's): a name given is the only one, and takes fux's.
+    pub given: bool,
     root: Option<Tree>,
     /// Its layout changed since its panes were sized for it: one no client
     /// shows is then laid out again (`Session::size_panes`).
@@ -131,7 +134,11 @@ impl Workspace {
         let Some(tab) = tab.filter(|id| self.tabs.iter().any(|t| t.id == *id)) else {
             return;
         };
+        let viewed = self.viewers.contains(&client);
         for t in &mut self.tabs {
+            if viewed && t.id != tab {
+                t.hidden(client);
+            }
             if let Some(seat) = t.seats.get_mut(&client) {
                 seat.shown = t.id == tab;
             }
@@ -191,6 +198,13 @@ impl Workspace {
         }
     }
 
+    /// `client` no longer looks here.
+    pub(crate) fn hide(&mut self, client: ClientId) {
+        if self.viewers.remove(&client) {
+            self.tabs.iter_mut().for_each(|t| t.hidden(client));
+        }
+    }
+
     /// A client detaches: nothing here names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
         let viewed = self.viewers.remove(&client);
@@ -216,6 +230,7 @@ impl Tab {
         let mut tab = Tab {
             id,
             name,
+            given: false,
             root,
             changed: true,
             fit,
@@ -252,6 +267,14 @@ impl Tab {
 
     pub(crate) fn seat_mut(&mut self, client: ClientId) -> Option<&mut Seat> {
         self.seats.get_mut(&client)
+    }
+
+    /// `client`, which looked at its workspace, no longer sees it: with a
+    /// size of its own, it is laid out on that again, not left at the
+    /// client's (laid out on clients' screens, it keeps what it has: a
+    /// zoomed pane, its whole screen).
+    fn hidden(&mut self, client: ClientId) {
+        self.changed |= self.shown_to(client) && matches!(self.fit, Fit::Fixed(_));
     }
 
     /// Whether `client` is shown this tab in its workspace.

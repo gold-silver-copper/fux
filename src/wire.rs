@@ -660,28 +660,18 @@ impl Wire for Until {
                 tag(out, 1);
                 t.put(out);
             }
-            Until::Idle(d) => {
-                tag(out, 2);
-                d.put(out);
-            }
-            Until::Change(n) => {
-                tag(out, 3);
-                n.put(out);
-            }
             Until::Exit => tag(out, 4),
-            Until::Done => tag(out, 5),
             Until::Bell => tag(out, 6),
+            Until::Settled => tag(out, 7),
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         match u8::get(r)? {
             0 => String::get(r).map(Until::Text),
             1 => String::get(r).map(Until::Gone),
-            2 => Duration::get(r).map(Until::Idle),
-            3 => Option::get(r).map(Until::Change),
             4 => Ok(Until::Exit),
-            5 => Ok(Until::Done),
             6 => Ok(Until::Bell),
+            7 => Ok(Until::Settled),
             other => Err(Error::Tag("condition", other)),
         }
     }
@@ -691,11 +681,9 @@ impl Wire for Wait {
     fn put(&self, out: &mut Vec<u8>) {
         self.until.put(out);
         self.timeout.put(out);
-        for flag in [self.print, self.after, self.marks, self.all] {
+        for flag in [self.print, self.after, self.marks] {
             flag.put(out);
         }
-        self.echo.put(out);
-        self.lines.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok(Wait {
@@ -704,9 +692,6 @@ impl Wire for Wait {
             print: bool::get(r)?,
             after: bool::get(r)?,
             marks: bool::get(r)?,
-            all: bool::get(r)?,
-            echo: Vec::get(r)?,
-            lines: u32::get(r)?,
         })
     }
 }
@@ -865,6 +850,7 @@ impl Wire for Command {
                 run,
                 ids,
                 json,
+                then,
             } => {
                 tag(out, 4);
                 axis.put(out);
@@ -875,6 +861,7 @@ impl Wire for Command {
                 run.put(out);
                 ids.put(out);
                 json.put(out);
+                then.put(out);
             }
             Command::Run {
                 workspace,
@@ -931,7 +918,6 @@ impl Wire for Command {
             }
             Command::SendMouse {
                 target,
-                if_revision,
                 mouse,
                 row,
                 col,
@@ -939,7 +925,6 @@ impl Wire for Command {
             } => {
                 tag(out, 10);
                 target.put(out);
-                if_revision.put(out);
                 mouse.put(out);
                 row.put(out);
                 col.put(out);
@@ -990,17 +975,13 @@ impl Wire for Command {
             Command::SendKeys {
                 targets,
                 client,
-                if_revision,
                 inputs,
-                repeat,
                 then,
             } => {
                 tag(out, 19);
                 targets.put(out);
                 client.put(out);
-                if_revision.put(out);
                 inputs.put(out);
-                repeat.put(out);
                 then.put(out);
             }
             Command::Events { targets, json } => {
@@ -1036,12 +1017,14 @@ impl Wire for Command {
                 history,
                 view,
                 json,
+                settle,
             } => {
                 tag(out, 25);
                 target.put(out);
                 history.put(out);
                 view.put(out);
                 json.put(out);
+                settle.put(out);
             }
             Command::Reorder { subject, toward } => {
                 tag(out, 26);
@@ -1114,6 +1097,7 @@ impl Wire for Command {
                 run: bool::get(r)?,
                 ids: Vec::get(r)?,
                 json: bool::get(r)?,
+                then: Option::get(r)?,
             },
             5 => Command::Run {
                 workspace: Option::get(r)?,
@@ -1148,7 +1132,6 @@ impl Wire for Command {
             },
             10 => Command::SendMouse {
                 target: Option::get(r)?,
-                if_revision: Option::get(r)?,
                 mouse: Mouse::get(r)?,
                 row: u16::get(r)?,
                 col: u16::get(r)?,
@@ -1187,9 +1170,7 @@ impl Wire for Command {
             19 => Command::SendKeys {
                 targets: Vec::get(r)?,
                 client: Option::get(r)?,
-                if_revision: Option::get(r)?,
                 inputs: Vec::get(r)?,
-                repeat: u16::get(r)?,
                 then: Option::get(r)?,
             },
             20 => Command::Events {
@@ -1216,6 +1197,7 @@ impl Wire for Command {
                 history: Option::get(r)?,
                 view: CaptureView::get(r)?,
                 json: bool::get(r)?,
+                settle: Option::get(r)?,
             },
             26 => Command::Reorder {
                 subject: Subject::get(r)?,

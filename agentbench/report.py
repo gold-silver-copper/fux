@@ -11,7 +11,8 @@ import argparse
 import json
 from collections import defaultdict
 
-CATS = ["start", "shell", "wait", "tui", "read", "input", "agents", "size", "cleanup"]
+CATS = ["start", "shell", "wait", "tui", "read", "input", "agents", "size", "cleanup",
+        "panes", "signals", "sessions", "many", "scripting"]
 
 
 def load(path):

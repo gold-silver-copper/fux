@@ -24,6 +24,26 @@ fn pressure_lines(server: &Server) -> usize {
         .count()
 }
 
+/// A pane's screen once it settles: the capture after the state line, which
+/// names the pane (`%1 reading`) and so would pass for a zsh prompt.
+fn screen(server: &Server, pane: &str) -> Result<String, String> {
+    let answer = server.ok(&["str", pane, "pane", "opts", "capture"])?;
+    Ok(answer
+        .split_once('\n')
+        .map(|(_, s)| s.to_owned())
+        .unwrap_or_default())
+}
+
+/// Sends keys to a pane, answering at once (`0 timeout`): a program that is
+/// stopped, sleeping or hung up never settles.
+fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
+    let mut words = vec!["str", pane, "pane", "keys"];
+    words.extend_from_slice(keys);
+    words.extend(["0", "timeout", "send-keys"]);
+    server.ok(&words)?;
+    Ok(())
+}
+
 /// Runs `fux ls`, timing it.
 fn timed_ls(server: &Server) -> Result<(Duration, Output), String> {
     let start = Instant::now();
@@ -209,16 +229,7 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     }
     for i in 0..200u32 {
         let key = char::from(b'A'.saturating_add(u8::try_from(i % 26).map_err(e)?));
-        server.ok(&[
-            "str",
-            "%1",
-            "pane",
-            "keys",
-            "str",
-            &key.to_string(),
-            "text",
-            "send-keys",
-        ])?;
+        send_now(&server, "%1", &["str", &key.to_string(), "text"])?;
         expected.extend(key.to_string().bytes());
     }
     client.pump()?;
@@ -316,27 +327,27 @@ fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome
     })?;
     let pid = server.pid().ok_or("the server's pid")?;
     eventually("a prompt", || {
-        let screen = server.ok(&["str", "%1", "pane", "opts", "capture"])?;
+        let screen = screen(&server, "%1")?;
         Ok(screen.contains('$') || screen.contains('%'))
     })?;
     server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
     eventually("a prompt in %2", || {
-        let screen = server.ok(&["str", "%2", "pane", "opts", "capture"])?;
+        let screen = screen(&server, "%2")?;
         Ok(screen.contains('$') || screen.contains('%'))
     })?;
-    server.ok(&[
-        "str",
+    // At once: settling would wait out the sleep, past the second measured.
+    send_now(
+        &server,
         "%2",
-        "pane",
-        "keys",
-        "str",
-        "exec sleep 2 <&- >&- 2>&-",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+        &[
+            "str",
+            "exec sleep 2 <&- >&- 2>&-",
+            "text",
+            "str",
+            "Enter",
+            "key",
+        ],
+    )?;
     // Let the shell exec, then measure a second of the server's CPU.
     std::thread::sleep(Duration::from_millis(300));
     let before = cpu_seconds(pid)?;
@@ -363,8 +374,25 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     let server = Server::start("")?;
     let pid = server.pid().ok_or("the server's pid")?;
     // sleep reads nothing, so the terminal's buffer and then the pane's
-    // input queue fill.
-    server.type_line("%1", "sleep 60")?;
+    // input queue fill. A sleeping program never settles: the keys wait
+    // for what the shell prints just before it starts sleep, computed so
+    // the echo never matches.
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "keys",
+        "str",
+        "printf 'sleep-%s\\n' started; sleep 60",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "sleep-started",
+        "wait-text",
+        "send-keys",
+    ])?;
     let socket = server.socket.clone();
     std::thread::spawn(move || -> Outcome {
         let mut stream = UnixStream::connect(&socket).map_err(e)?;

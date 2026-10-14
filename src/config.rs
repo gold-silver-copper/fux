@@ -13,15 +13,15 @@ pub enum Error {
     NotANumber {
         option: String,
     },
-    TooLarge {
+    OutOfRange {
         option: String,
+        min: usize,
         max: usize,
     },
     NotOnOff {
         option: String,
         value: String,
     },
-    NoBuffers,
     NoProgram,
     /// A name `update-environment` is given that no variable has.
     NotAVariable {
@@ -39,15 +39,17 @@ impl std::fmt::Display for Error {
                  buffers, bell, titles, shell-marks and update-environment"
             ),
             Error::NotANumber { option } => write!(f, "{option}: not a number"),
-            Error::TooLarge { option, max } => write!(f, "{option}: at most {max}"),
+            Error::OutOfRange { option, min, max } => {
+                write!(f, "{option}: out of range, {min} to {max}")
+            }
             Error::NotOnOff { option, value } => {
                 write!(f, "{option}: {value:?} is not on or off (true or false)")
             }
-            Error::NoBuffers => f.write_str("buffers: at least 1"),
             Error::NoProgram => f.write_str("shell: a program is needed"),
             Error::NotAVariable { name } => write!(
                 f,
-                "update-environment: {name:?} is no variable's name (letters, digits and _)"
+                "update-environment: {name:?} is no variable's name (letters, digits and _, \
+                 not first a digit)"
             ),
             Error::Words(why) => write!(f, "shell: {why}"),
         }
@@ -80,11 +82,32 @@ pub struct Config {
 pub const MAX_HISTORY: usize = 250_000;
 pub const MAX_BUFFERS: usize = 1000;
 
+/// The user's login shell from `/etc/passwd`, for when `SHELL` is unset
+/// (a service, a sandbox, a cleared environment): bash or zsh there marks
+/// its commands, where `/bin/sh` would not.
+fn login_shell() -> Option<String> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    shell_of(&passwd, fuxix::process::geteuid())
+}
+
+/// The shell of user `uid` in `passwd`, the text of `/etc/passwd`.
+fn shell_of(passwd: &str, uid: u32) -> Option<String> {
+    let uid = uid.to_string();
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        (fields.get(2) == Some(&uid.as_str()))
+            .then(|| fields.get(6).map(|s| s.trim().to_owned()))
+            .flatten()
+            .filter(|s| !s.is_empty())
+    })
+}
+
 impl Default for Config {
     fn default() -> Self {
         let shell = std::env::var("SHELL")
             .ok()
             .filter(|s| !s.is_empty())
+            .or_else(login_shell)
             .unwrap_or_else(|| "/bin/sh".into());
         Self {
             shell: vec![shell],
@@ -116,17 +139,17 @@ impl Config {
     /// `update-environment`.
     pub fn set(&mut self, option: &str, value: &str) -> Result<(), Error> {
         let name = || option.to_owned();
-        let number = |max: usize| -> Result<usize, Error> {
-            let n: usize = value
+        let number = |min: usize, max: usize| -> Result<usize, Error> {
+            let n: i128 = value
                 .parse()
                 .map_err(|_| Error::NotANumber { option: name() })?;
-            match n > max {
-                true => Err(Error::TooLarge {
+            (usize::try_from(n).ok())
+                .filter(|n| (min..=max).contains(n))
+                .ok_or(Error::OutOfRange {
                     option: name(),
+                    min,
                     max,
-                }),
-                false => Ok(n),
-            }
+                })
         };
         let on = || match value {
             "on" | "true" => Ok(true),
@@ -144,7 +167,7 @@ impl Config {
                 }
                 self.shell = argv;
             }
-            "history-lines" => self.history_lines = number(MAX_HISTORY)?,
+            "history-lines" => self.history_lines = number(0, MAX_HISTORY)?,
             "clipboard" => self.clipboard = on()?,
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,
@@ -156,13 +179,7 @@ impl Config {
                 }
                 self.update_environment = names;
             }
-            "buffers" => {
-                let n = number(MAX_BUFFERS)?;
-                if n == 0 {
-                    return Err(Error::NoBuffers);
-                }
-                self.buffers = n;
-            }
+            "buffers" => self.buffers = number(1, MAX_BUFFERS)?,
             other => {
                 return Err(Error::UnknownOption {
                     option: other.to_owned(),
@@ -198,8 +215,23 @@ mod tests {
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
         assert_eq!(config.shell, ["/bin/zsh", "-l"]);
         assert!(config.set("history-lines", "lots").is_err());
+        let below = config.set("history-lines", "-1").map_err(|e| e.to_string());
+        assert!(below.is_err_and(|e| e.contains("out of range")));
         assert!(config.set("buffers", "0").is_err());
         assert!(config.set("nonsense", "1").is_err());
         assert!(config.set("update-environment", "OK BAD-NAME").is_err());
+    }
+
+    /// With `SHELL` unset, the shell is the user's own line's in
+    /// `/etc/passwd`, not the first line's.
+    #[test]
+    fn the_login_shell_is_the_users_own() {
+        let passwd = "root:x:0:0::/root:/bin/bash\n\
+                      me:x:1001:1001::/home/me:/usr/bin/zsh\n\
+                      bare:x:1002:1002::/home/bare:\n";
+        assert_eq!(shell_of(passwd, 1001).as_deref(), Some("/usr/bin/zsh"));
+        assert_eq!(shell_of(passwd, 0).as_deref(), Some("/bin/bash"));
+        assert_eq!(shell_of(passwd, 1002), None);
+        assert_eq!(shell_of(passwd, 7), None);
     }
 }

@@ -34,6 +34,37 @@ def tasks(path=os.path.join(HERE, "tasks.toml")):
         return tomllib.load(f)["task"]
 
 
+def held(task, name):
+    """A held task's own module, `solve` or `check`, from `held/<slug>/`."""
+    import importlib.util
+    path = os.path.join(HERE, "held", task["held"], name + ".py")
+    spec = importlib.util.spec_from_file_location(f"held_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def prepare(task, work):
+    """Sets a held task up: its setup files into the work directory, its
+    fixtures into a directory beside it (out of the agent's way), whose
+    path it gives; None for any other task."""
+    if "held" not in task:
+        return None
+    src = os.path.join(HERE, "held", task["held"])
+    fixtures = work.rstrip("/") + "-fixtures"
+    shutil.rmtree(fixtures, ignore_errors=True)
+    shutil.copytree(os.path.join(src, "fixtures"), fixtures)
+    if os.path.isdir(os.path.join(src, "setup")):
+        shutil.copytree(os.path.join(src, "setup"), work, dirs_exist_ok=True)
+    return fixtures
+
+
+def goal(task, work, fixtures):
+    """The goal as an agent reads it."""
+    text = task["goal"].replace("{fx}", FX)
+    return text.replace("{fixtures}", fixtures).replace("{work}", work) if fixtures else text
+
+
 def isolated_env(slot):
     """An environment whose every socket and runtime directory is this
     slot's own, under the scratch directory."""
@@ -62,6 +93,8 @@ def isolated_env(slot):
 
 def check(task, work):
     """Whether the run did what the task asked, and why not if not."""
+    if "held" in task:
+        return held(task, "check").check(work)
     c = task["check"]
     read = lambda name: open(os.path.join(work, name), encoding="utf-8").read() if os.path.exists(os.path.join(work, name)) else None
     if "answer" in c or "answer_contains" in c:
@@ -118,7 +151,9 @@ def _alive(pid):
 
 def reap(work):
     """Kills whatever a run's programs left, by the pids they wrote."""
-    for name in ("pid.txt", "pids.txt"):
+    fx = os.path.join(work, ".fx")
+    held_pids = [os.path.join(".fx", n) for n in os.listdir(fx) if n.endswith(".pid")] if os.path.isdir(fx) else []
+    for name in ("pid.txt", "pids.txt", *held_pids):
         path = os.path.join(work, name)
         if os.path.exists(path):
             for pid in open(path).read().split():
@@ -152,9 +187,11 @@ def one(tool, task_id, rep, slot, fux_bin):
     import drivers
     import solutions
     task = next(t for t in tasks() if t["id"] == task_id)
-    work = os.path.join(SCRATCH, "runs", tool, task_id, str(rep))
+    # Under its slot: runs side by side (other slot bases) never share one.
+    work = os.path.join(SCRATCH, "runs", str(slot), tool, task_id, str(rep))
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
+    fixtures = prepare(task, work)
     os.chdir(work)
     env = isolated_env(slot)
     d = driver_for(tool, work, env, fux_bin)
@@ -162,7 +199,10 @@ def one(tool, task_id, rep, slot, fux_bin):
     start = time.time()
     try:
         d.start()
-        answer = getattr(solutions, task["recipe"])(d, task.get("args", {}), FX)
+        if "held" in task:
+            answer = held(task, "solve").solve(d, work, fixtures)
+        else:
+            answer = getattr(solutions, task["recipe"])(d, task.get("args", {}), FX)
         if answer is not None:
             with open(os.path.join(work, "answer.txt"), "w") as f:
                 f.write(str(answer))

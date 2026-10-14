@@ -71,9 +71,38 @@ struct Shortage {
 /// moment it stops, its listener closes and the socket is gone, and a
 /// client finds no server rather than one that never answers.
 struct Listening {
-    listener: UnixListener,
-    /// Removes the socket once dropped, after the listener closes.
+    /// None where the system denies sockets: the door alone serves.
+    listener: Option<UnixListener>,
+    /// The door beside the socket, for clients in a sandbox that denies
+    /// them sockets (`crate::door`).
+    door: Option<crate::door::Door>,
+    /// Holds the lock; removes the socket once dropped, after the listener
+    /// closes.
     _endpoint: Endpoint,
+}
+
+impl Listening {
+    /// The socket at `socket` bound and its door opened; where the system
+    /// denies sockets, the door alone, the lock held all the same.
+    fn open(socket: &SocketPath) -> Result<Listening, Error> {
+        let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
+        if let Some(listener) = &listener {
+            listener.set_nonblocking(true).map_err(Error::Setup)?;
+        }
+        let door = match crate::door::Door::open(socket.path()) {
+            Ok(door) => Some(door),
+            Err(error) if listener.is_none() => return Err(Error::Setup(error)),
+            Err(error) => {
+                log(&format!("no door beside the socket: {error}"));
+                None
+            }
+        };
+        Ok(Listening {
+            listener,
+            door,
+            _endpoint: endpoint,
+        })
+    }
 }
 
 /// Where the server is in its life, each stage holding the moment it waits
@@ -488,11 +517,11 @@ pub struct Server {
     /// Where the layout is saved, for a server after a crash to bring
     /// back; none if there is nowhere to.
     saved: Option<Saved>,
-    children: UnixStream,
+    children: std::io::PipeReader,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
     killed: Vec<Leader>,
-    stops: UnixStream,
+    stops: std::io::PipeReader,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -526,11 +555,32 @@ struct Saved {
     at: Instant,
     /// Something happened since it was last saved.
     pending: bool,
+    /// The workspaces, tabs and panes it was last saved with.
+    shape: Shape,
     /// A restore is under way: what there is is not saved over the file.
     restoring: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// One was started, and its end is yet to be seen to
     /// (`Server::after_restore`).
     restored: bool,
+    /// The server stops: nothing more is saved (or what was, forgotten).
+    done: bool,
+}
+
+/// Which workspaces, tabs and panes there are.
+#[derive(Default, PartialEq)]
+struct Shape(Vec<crate::id::WsId>, Vec<crate::id::TabId>, Vec<PaneId>);
+
+impl Shape {
+    fn of(session: &Session) -> Shape {
+        let workspaces = &session.workspaces;
+        Shape(
+            workspaces.iter().map(|w| w.id).collect(),
+            (workspaces.iter())
+                .flat_map(|w| w.tabs().iter().map(|t| t.id))
+                .collect(),
+            session.panes.keys().copied().collect(),
+        )
+    }
 }
 
 impl Saved {
@@ -553,8 +603,10 @@ impl Saved {
             written: String::new(),
             at: Instant::now(),
             pending: false,
+            shape: Shape::default(),
             restoring: std::sync::Arc::default(),
             restored: false,
+            done: false,
         })
     }
 
@@ -607,20 +659,26 @@ impl Saved {
     }
 
     /// Saves the layout if it changed and `SAVE_EVERY` has passed since it
-    /// was last saved; else it is saved then.
+    /// was last saved; else it is saved then. A workspace, tab or pane made
+    /// or closed is saved at once: a crash must not lose a pane.
     fn save_by(&mut self, session: &Session, now: Instant) {
-        if now < self.at {
+        if self.done {
+            return;
+        }
+        let shape = Shape::of(session);
+        if now < self.at && shape == self.shape {
             self.pending = true;
             return;
         }
         self.save(session);
+        self.shape = shape;
         self.at = crate::after(now, SAVE_EVERY);
     }
 
     /// Saves the layout as it is, if it changed and no restore is under
     /// way.
     fn save(&mut self, session: &Session) {
-        if self.restoring.load(std::sync::atomic::Ordering::SeqCst) {
+        if self.restoring() {
             self.pending = true;
             return;
         }
@@ -659,24 +717,21 @@ impl Saved {
         std::fs::rename(&temporary, &self.path)
     }
 
-    /// The layout is not to be brought back: the server was stopped on
-    /// purpose, or its last pane closed.
-    fn forget(&mut self) {
-        self.pending = false;
-        self.at = crate::after(Instant::now(), Duration::from_secs(3600));
-        self.forget_file();
-    }
-
     /// Whether a restore is under way.
     fn restoring(&self) -> bool {
         self.restoring.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Saves nothing more: the server stops, and what it saved last, as it
-    /// was before its panes ended, is what the next brings back.
-    fn freeze(&mut self) {
+    /// Saves nothing more: the server stops. With `keep`, the layout as it
+    /// is, before its panes end, is what the next brings back; else none
+    /// is (the server was stopped on purpose, or its last pane closed).
+    fn stop(&mut self, session: &Session, keep: bool) {
+        match keep {
+            true => self.save(session),
+            false => self.forget_file(),
+        }
         self.pending = false;
-        self.at = crate::after(Instant::now(), Duration::from_secs(3600));
+        self.done = true;
     }
 
     fn forget_file(&self) {
@@ -738,23 +793,19 @@ fn grant(
         &path.to_string_lossy(),
         "grant --socket",
     ));
-    let bound = checked.and_then(|socket| crate::socket::bind_socket(&socket));
-    let (endpoint, listener) = match bound {
-        Ok(bound) => bound,
+    let listening = match checked
+        .map_err(Error::Socket)
+        .and_then(|s| Listening::open(&s))
+    {
+        Ok(listening) => listening,
         Err(error) => return failed(error.to_string()),
     };
-    if let Err(error) = listener.set_nonblocking(true) {
-        return failed(format!("{}: {error}", path.display()));
-    }
     session.grants.push((path.clone(), workspace.clone()));
     let pinned = session
         .resolve_ws(&crate::command::WsRef::Name(workspace.clone()))
         .ok();
     grants.push(Grant {
-        listening: Listening {
-            listener,
-            _endpoint: endpoint,
-        },
+        listening,
         socket: path.clone(),
         workspace,
         pinned,
@@ -804,8 +855,7 @@ impl std::error::Error for Error {
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
 pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
-    let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
-    listener.set_nonblocking(true).map_err(Error::Setup)?;
+    let listening = Listening::open(socket)?;
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
@@ -832,10 +882,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let mut server = Server {
         session,
         phase: Phase::Serving {
-            listening: Listening {
-                listener,
-                _endpoint: endpoint,
-            },
+            listening,
             resting: None,
         },
         conns: Vec::new(),
@@ -863,9 +910,11 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
 /// with `get_mut`, as the lints ask.
 #[derive(Clone, Copy)]
 enum Slot {
-    Listener,
-    /// A socket `fux grant` made, by its index into `grants`.
-    Grant(usize),
+    /// The server's socket, or with an index into `grants` one `fux grant`
+    /// made.
+    Listener(Option<usize>),
+    /// The door beside it: knocks waiting.
+    Door(Option<usize>),
     Children,
     Stops,
     Conn(usize),
@@ -917,8 +966,8 @@ impl Server {
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
                 match slot {
-                    Slot::Listener => self.accept(None),
-                    Slot::Grant(i) => self.accept(Some(i)),
+                    Slot::Listener(grant) => self.accept(grant),
+                    Slot::Door(grant) => self.open_door(grant),
                     Slot::Children => {
                         crate::drain(&self.children);
                         self.reap();
@@ -951,7 +1000,7 @@ impl Server {
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| match &conn.stage {
-            Stage::Waiting(waiting) => Some((waiting.due(&self.session), Wake::Answer)),
+            Stage::Waiting(waiting) => Some((waiting.due(), Wake::Answer)),
             Stage::Hello(_)
             | Stage::Attaching(..)
             | Stage::Attached(_)
@@ -1027,7 +1076,9 @@ impl Server {
         }
     }
 
-    /// Answers each wait that has its answer.
+    /// Answers each wait that has its answer. Each has read the rows its
+    /// panes let go, which are forgotten: kept on only for the panes a
+    /// text wait still watches.
     fn answer_waits(&mut self, now: Instant) {
         for conn in &mut self.conns {
             let Stage::Waiting(waiting) = &mut conn.stage else {
@@ -1036,6 +1087,23 @@ impl Server {
             if let Some(outcome) = waiting.answer(&self.session, now) {
                 conn.answer(&mut self.session, outcome);
             }
+        }
+        let tapped: std::collections::HashSet<PaneId> = (self.conns.iter())
+            .filter_map(|conn| match &conn.stage {
+                Stage::Waiting(waiting) => Some(waiting.tapped()),
+                Stage::Hello(_)
+                | Stage::Attaching(..)
+                | Stage::Attached(_)
+                | Stage::Command
+                | Stage::Events(_)
+                | Stage::Closing
+                | Stage::Dead => None,
+            })
+            .flatten()
+            .collect();
+        for (id, pane) in &mut self.session.panes {
+            pane.parser.forget_departed();
+            pane.parser.keep_departed(tapped.contains(id));
         }
     }
 
@@ -1133,11 +1201,16 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            fds.push(PollFd::new(&listening.listener, PollFlags::IN));
-            slots.push(Slot::Listener);
-            for (i, grant) in self.grants.iter().enumerate() {
-                fds.push(PollFd::new(&grant.listening.listener, PollFlags::IN));
-                slots.push(Slot::Grant(i));
+            let grants = (self.grants.iter().enumerate()).map(|(i, g)| (Some(i), &g.listening));
+            for (grant, listening) in std::iter::once((None, listening)).chain(grants) {
+                if let Some(listener) = &listening.listener {
+                    fds.push(PollFd::new(listener, PollFlags::IN));
+                    slots.push(Slot::Listener(grant));
+                }
+                if let Some(door) = &listening.door {
+                    fds.push(PollFd::new(door.fd(), PollFlags::IN));
+                    slots.push(Slot::Door(grant));
+                }
             }
         }
         fds.push(PollFd::new(&self.children, PollFlags::IN));
@@ -1200,14 +1273,7 @@ impl Server {
         }
         log(&reason);
         if let Some(saved) = &mut self.saved {
-            match keep {
-                // As it is, before its panes end, and nothing after.
-                true => {
-                    saved.save(&self.session);
-                    saved.freeze();
-                }
-                false => saved.forget(),
-            }
+            saved.stop(&self.session, keep);
         }
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
@@ -1355,6 +1421,19 @@ impl Server {
         }
     }
 
+    /// What the server listens on while it serves, or with `grant` what
+    /// that grant does, and the grant's socket, which its connections
+    /// reach through.
+    fn listening(&mut self, grant: Option<usize>) -> Option<(&mut Listening, Option<PathBuf>)> {
+        let Phase::Serving { listening, .. } = &mut self.phase else {
+            return None;
+        };
+        match grant {
+            Some(i) => (self.grants.get_mut(i)).map(|g| (&mut g.listening, Some(g.socket.clone()))),
+            None => Some((listening, None)),
+        }
+    }
+
     /// Accepts the connections waiting on the server's socket, or with
     /// `grant` on that socket `fux grant` made.
     fn accept(&mut self, grant: Option<usize>) {
@@ -1363,13 +1442,15 @@ impl Server {
             // The spare makes room for this accept, and is taken back after
             // it: if it cannot be, the connection took the last descriptor.
             self.spare = None;
-            let Phase::Serving { listening, .. } = &self.phase else {
+            let Some((
+                Listening {
+                    listener: Some(listener),
+                    ..
+                },
+                through,
+            )) = self.listening(grant)
+            else {
                 return;
-            };
-            let (listener, through) = match grant.and_then(|i| self.grants.get(i)) {
-                Some(grant) => (&grant.listening.listener, Some(grant.socket.clone())),
-                None if grant.is_some() => return,
-                None => (&listening.listener, None),
             };
             let accepted = listener.accept();
             let room = match std::fs::File::open("/dev/null") {
@@ -1444,6 +1525,27 @@ impl Server {
                     }
                     return;
                 }
+            }
+        }
+    }
+
+    /// Takes the connections knocks at the door bring: each is the server's
+    /// end of a pair relayed to a client's FIFOs, whose owner the door
+    /// checked, as the socket's peer check does. With `grant`, the door
+    /// beside that grant's socket.
+    fn open_door(&mut self, grant: Option<usize>) {
+        let Some((
+            Listening {
+                door: Some(door), ..
+            },
+            through,
+        )) = self.listening(grant)
+        else {
+            return;
+        };
+        for stream in door.knocks() {
+            if stream.set_nonblocking(true).is_ok() {
+                self.conns.push(Conn::new(stream, through.clone()));
             }
         }
     }
@@ -1789,7 +1891,15 @@ impl Server {
         };
         match session.begin(command, &origin) {
             Begun::Done(outcome) => conn.answer(session, outcome),
-            Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
+            Begun::Waiting(waiting) => {
+                // What its panes let go from now on is kept for it to read.
+                for id in waiting.tapped() {
+                    if let Some(pane) = session.panes.get_mut(&id) {
+                        pane.parser.keep_departed(true);
+                    }
+                }
+                conn.enter(session, Stage::Waiting(waiting));
+            }
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
                 let ready = Event::stream("ready", Vec::new()).line(subscription.json);
@@ -1924,6 +2034,35 @@ mod tests {
         let tty = TakenTerminal::new(OwnedFd::from(tty));
         conn.stage = Stage::Attached(Box::new(Attached::new(client, Some(tty))));
         Ok((session, conn, peer, far))
+    }
+
+    /// Something not a door where the door goes (a file left there): the
+    /// server serves on its socket all the same, with no door.
+    #[test]
+    fn a_door_that_cannot_open_leaves_the_socket_serving() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let e = |e: &dyn std::fmt::Display| e.to_string();
+        let dir = (fuxix::file::scratch().map_err(|x| e(&x))?)
+            .join(format!("fux-listening-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("fux")).map_err(|x| e(&x))?;
+        for private in [dir.clone(), dir.join("fux")] {
+            std::fs::set_permissions(private, std::fs::Permissions::from_mode(0o700))
+                .map_err(|x| e(&x))?;
+        }
+        let path = dir.join("fux").join("s.sock");
+        std::fs::write(crate::door::path(&path), "").map_err(|x| e(&x))?;
+        let socket = crate::socket::socket_path(crate::socket::Choice::Path(
+            &path.to_string_lossy(),
+            "test",
+        ))
+        .map_err(|x| e(&x))?;
+        let listening = Listening::open(&socket).map_err(|x| e(&x))?;
+        assert!(listening.listener.is_some(), "the socket serves");
+        assert!(listening.door.is_none(), "with no door");
+        drop(listening);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     /// The frames waiting for the client: what is painted in them, and the

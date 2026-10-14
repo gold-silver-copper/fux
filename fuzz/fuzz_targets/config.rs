@@ -359,6 +359,7 @@ fn run_config(
         keymap: Some(keymap),
         last_bound: last,
         out: &mut out,
+        settle: false,
     };
     let finished = matches!(machine.run(&mut host, BUDGET), Ok(Outcome::Finished));
     (finished, host.last_bound)

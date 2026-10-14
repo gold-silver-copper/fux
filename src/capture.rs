@@ -29,17 +29,39 @@ pub fn pane(
     // A soft-wrapped row goes on in the next, joined with `-J`.
     let mut wraps = false;
     let read = rows_of(screen, history, view);
-    // History rows above the screen, which the cursor's row counts past
-    // in `lines` (`-S`).
-    let above = if view.last_output || view.main || view.alt || view.join {
-        0
-    } else {
-        read.len().saturating_sub(usize::from(screen.size().rows()))
-    };
+    // The cursor's row and column, if it shows on the screen captured: the
+    // last output is read from the screen shown, whatever else is asked.
+    let alt = screen.mode(Mode::AlternateScreen);
+    let live = view.last_output || if view.main { !alt } else { !view.alt || alt };
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let cursor_id = (live && screen.mode(Mode::ShowCursor))
+        .then(|| screen.window().row(cursor_row).map(|row| row.id()))
+        .flatten();
+    // Where it is among the lines captured, found as they are made.
+    let mut cursor = None;
     // Whether the row before ended in a blank no glyph was written to: the
     // cell a wide glyph left, not fitting at the row's end.
     let mut padded = false;
-    for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| in_rows(i)) {
+    // Joined, a line some of whose rows `rows` takes is taken whole: the
+    // line each row is part of, and the lines the range touches.
+    let line_of: Vec<usize> = read
+        .iter()
+        .scan((0usize, false), |(line, wrapped), (row, _)| {
+            if !*wrapped {
+                *line = line.saturating_add(1);
+            }
+            *wrapped = view.join && row.wrapped();
+            Some(*line)
+        })
+        .collect();
+    let touched: std::collections::HashSet<usize> = (line_of.iter().enumerate())
+        .filter(|(i, _)| in_rows(i))
+        .map(|(_, line)| *line)
+        .collect();
+    let taken = |i: &usize| {
+        in_rows(i) || (view.join && line_of.get(*i).is_some_and(|line| touched.contains(line)))
+    };
+    for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| taken(i)) {
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
         let mut lead = Attributes::default();
@@ -58,13 +80,42 @@ pub fn pane(
         let cells: Cells<'_> = match view.cols {
             Some((start, end)) => {
                 let (start, end) = (usize::from(start), usize::from(end));
-                cells
-                    .skip(start)
-                    .take(end.saturating_sub(start).saturating_add(1))
-                    .collect()
+                let len = end.saturating_sub(start).saturating_add(1);
+                // With the cell after them, to tell a wide glyph cut there.
+                let mut cut: Cells<'_> = cells.skip(start).take(len.saturating_add(1)).collect();
+                let next = (cut.len() > len).then(|| cut.pop()).flatten();
+                // A wide glyph cut in two shows as a blank in the half taken,
+                // so each column is one cell.
+                if next.is_some_and(|(text, _)| text.is_empty())
+                    && let Some(last) = cut.last_mut()
+                {
+                    last.0 = " ";
+                }
+                if let Some(first) = cut.first_mut().filter(|(text, _)| text.is_empty()) {
+                    first.0 = " ";
+                }
+                cut
             }
             None => cells.collect(),
         };
+        // The cursor's cell among these, if it is on this row and in its
+        // columns taken.
+        let at = (Some(row.id()) == cursor_id)
+            .then(|| {
+                let col = usize::from(cursor_col);
+                let col = col
+                    .checked_sub(span.start)
+                    .filter(|_| span.contains(&col))?;
+                match view.cols {
+                    Some((start, end)) if col <= usize::from(end) => {
+                        col.checked_sub(usize::from(start))
+                    }
+                    Some(_) => None,
+                    None => Some(col),
+                }
+            })
+            .flatten();
+        let count = lines.len();
         match lines.last_mut() {
             Some(last) if wraps => {
                 // The blank a wide glyph left at the row's end, not fitting
@@ -72,27 +123,25 @@ pub fn pane(
                 if padded && cells.get(1).is_some_and(|(text, _)| text.is_empty()) {
                     last.pop();
                 }
+                if let Some(col) = at {
+                    cursor = Some((count.saturating_sub(1), last.len().saturating_add(col)));
+                }
                 last.extend(cells);
             }
-            _ => lines.push(cells),
+            _ => {
+                if let Some(col) = at {
+                    cursor = Some((count, col));
+                }
+                lines.push(cells);
+            }
         }
         wraps = view.join && row.wrapped();
         padded = (row.cells().last())
             .is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation());
     }
     let (rows, cols) = screen.size().into();
-    // The cursor's row in `lines`: past the history `-S` adds, from the
-    // first row `--rows` takes; none if outside them.
-    let cursor = Some(screen.cursor_position()).and_then(|(row, col)| {
-        let above = u16::try_from(above).unwrap_or(u16::MAX);
-        let row = row.saturating_add(above);
-        match view.rows {
-            Some((start, end)) => (start..=end)
-                .contains(&row)
-                .then(|| (row.saturating_sub(start), col)),
-            None => Some((row, col)),
-        }
-    });
+    let cursor =
+        cursor.and_then(|(row, col)| Some((u16::try_from(row).ok()?, u16::try_from(col).ok()?)));
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
     print(
         ("pane", pane.id.to_string()),
@@ -133,7 +182,8 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
 
 /// The rows a capture reads, each with the columns of it it reads: the
 /// screen and `history` rows above it (of the main screen with `--main`), or
-/// the last command's output between its marks.
+/// the last command's output between its marks: while one runs, its output
+/// so far, to the cursor.
 fn rows_of(
     screen: &fux_vt::Screen,
     history: Option<usize>,
@@ -141,7 +191,11 @@ fn rows_of(
 ) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
     let all = 0..usize::MAX;
     if view.last_output {
-        let Some((start, end)) = screen.commands().last_output else {
+        let commands = screen.commands();
+        let (row, col) = screen.cursor_position();
+        let cursor = (screen.window().row(row)).map(|r| fux_vt::CommandMark { row: r.id(), col });
+        let running = (commands.output_start.filter(|_| commands.running)).zip(cursor);
+        let Some((start, end)) = running.or(commands.last_output) else {
             return Vec::new();
         };
         let Some(last) = screen.row_index(end.row) else {
@@ -169,12 +223,14 @@ fn rows_of(
             .enumerate()
             .filter_map(|(i, row)| {
                 let from = if i == 0 { usize::from(start.col) } else { 0 };
-                let to = if i.saturating_add(1) == count {
-                    usize::from(end.col)
-                } else {
-                    usize::MAX
+                // The end mark at a line's start ends the output before it;
+                // past it, the row is the command's whole (the prompt goes on
+                // a row of its own), what it wrote right of the cursor too.
+                let to = match (i.saturating_add(1) == count, end.col) {
+                    (true, 0) => 0,
+                    (true, col) if i == 0 && start.col >= col => 0,
+                    _ => usize::MAX,
                 };
-                // The end mark at a line's start ends the output before it.
                 (from < to).then_some((row, from..to))
             })
             .collect();
@@ -246,6 +302,8 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     );
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
+        // reading, waiting, busy, exited 0, …: whether to look now.
+        ("state", Json::str(crate::ready::state(pane, now).word())),
         ("paused", Json::Bool(paused)),
         (
             "exited",
@@ -309,7 +367,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ),
         (
             "bells",
-            count(usize::try_from(pane.alerts.bells).unwrap_or(usize::MAX)),
+            count(usize::try_from(pane.alerts.count()).unwrap_or(usize::MAX)),
         ),
         (
             "notification",
@@ -382,7 +440,12 @@ fn print(
             lines.pop();
         }
     }
-    let text = |line: &Cells<'_>| line.iter().map(|(text, _)| *text).collect::<String>();
+    // On a row trimmed away, the cursor is on none printed.
+    let cursor = cursor.filter(|(row, _)| usize::from(*row) < lines.len());
+    let text = |line: &Cells<'_>| match view.marks {
+        true => marked(line, &highlighted),
+        false => line.iter().map(|(text, _)| *text).collect::<String>(),
+    };
     let mut out = match state {
         Some(state) => {
             let number = |n: u16| Json::Number(i64::from(n));
@@ -405,13 +468,10 @@ fn print(
             Json::Object(fields).render()
         }
         None if view.styles => {
-            let styled: Vec<String> = lines.iter().map(sgr_line).collect();
+            let marks = view.marks.then_some(&highlighted);
+            let styled: Vec<String> = lines.iter().map(|l| sgr_line(l, marks)).collect();
             styled.join("\n")
         }
-        None if view.marks => (lines.iter())
-            .map(|line| marked(line, &highlighted))
-            .collect::<Vec<_>>()
-            .join("\n"),
         None => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
     };
     out.push('\n');
@@ -437,19 +497,32 @@ fn marked(line: &Cells<'_>, highlighted: &impl Fn(&Attributes) -> bool) -> Strin
 }
 
 /// A line in SGR: each change of attributes set from nothing, and reset at
-/// its end.
-fn sgr_line(line: &Cells<'_>) -> String {
+/// its end; with `marks`, what is highlighted between `⟦` and `⟧`, drawn
+/// outside it.
+fn sgr_line(line: &Cells<'_>, marks: Option<&impl Fn(&Attributes) -> bool>) -> String {
     let mut out = Vec::new();
     let mut pen = Attributes::default();
+    let mut on = false;
     for (text, attributes) in line {
+        let lit = marks.is_some_and(|highlighted| highlighted(attributes));
+        if lit && !on {
+            out.extend_from_slice("⟦".as_bytes());
+        }
         if *attributes != pen {
             crate::render::sgr(&mut out, *attributes, true);
             pen = *attributes;
         }
+        if on && !lit {
+            out.extend_from_slice("⟧".as_bytes());
+        }
+        on = lit;
         out.extend_from_slice(text.as_bytes());
     }
     if pen != Attributes::default() {
         out.extend_from_slice(b"\x1b[0m");
+    }
+    if on {
+        out.extend_from_slice("⟧".as_bytes());
     }
     String::from_utf8_lossy(&out).into_owned()
 }
@@ -502,11 +575,5 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
 
 /// A row's text, wide glyphs whole and trailing blanks trimmed.
 pub fn row_text(row: fux_vt::Row<'_>) -> String {
-    row_cells_text(row).trim_end_matches(' ').to_owned()
-}
-
-/// A row's text, every cell, blanks at its end kept.
-pub fn row_cells_text(row: fux_vt::Row<'_>) -> String {
-    let row = row.cells().filter(|c| !c.is_wide_continuation());
-    row.map(crate::render::shown).collect()
+    row.cells_text().trim_end_matches(' ').to_owned()
 }

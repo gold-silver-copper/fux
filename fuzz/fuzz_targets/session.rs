@@ -276,6 +276,7 @@ impl Run {
             keymap: Some(&mut keymap),
             last_bound: None,
             out: &mut out,
+            settle: false,
         };
         let ended = loop {
             let ran = machine.run(&mut host, BUDGET).map_err(Failed::from);
@@ -308,12 +309,9 @@ impl Run {
                     if client.is_some() {
                         context.client = client;
                     }
-                    let request = Request {
-                        command: command.clone(),
-                        context,
-                    };
+                    let request = Request { command, context };
                     let reply = self.ask(request);
-                    let values = fux::script::answered(reply, then, command);
+                    let values = fux::script::answered(reply, then);
                     let pushed = values.and_then(|values| {
                         values
                             .into_iter()

@@ -190,12 +190,6 @@ pub enum Error {
         field: String,
         fields: String,
     },
-    /// The screen changed since the revision input was meant for.
-    Changed {
-        pane: PaneId,
-        revision: u64,
-        now: u64,
-    },
     /// `kill-server` from the CLI, run in one of the server's own panes.
     OwnServer(Option<PaneId>),
     /// `kill-server` from the CLI, with people's terminals attached.
@@ -319,7 +313,6 @@ impl Error {
             | Error::NoClientGiven
             | Error::KillNeedsTarget(_) => "no_target",
             Error::StrayPane(_) => "stray_pane",
-            Error::Changed { .. } => "changed",
             Error::NoField { .. } => "no_field",
             Error::OutOfScope { .. } | Error::NotGranted { .. } | Error::Revoked => "not_granted",
             Error::NotNamed(_) => "no_target",
@@ -379,9 +372,10 @@ impl std::fmt::Display for Error {
             Error::NoPane(id) => write!(f, "no pane {id}"),
             Error::NoTabGiven => f.write_str("no tab given: name one (`str @N tab`)"),
             Error::NoTab(id) => write!(f, "no tab {id}"),
-            Error::NoWorkspaceGiven => {
-                f.write_str("no workspace given: name one (`str NAME workspace`)")
-            }
+            Error::NoWorkspaceGiven => f.write_str(
+                "no workspace given: name one (`str NAME workspace`; for new-tab, the \
+                     option `str NAME in`)",
+            ),
             Error::NoField {
                 target,
                 field,
@@ -410,15 +404,6 @@ impl std::fmt::Display for Error {
             Error::NotGranted { what, scope } => write!(
                 f,
                 "this socket reaches workspace {scope} alone (grant), not {what}"
-            ),
-            Error::Changed {
-                pane,
-                revision,
-                now,
-            } => write!(
-                f,
-                "{pane}: the screen is at revision {now}, not {revision}; nothing was sent: \
-                 read it again"
             ),
             Error::OwnServer(Some(pane)) => write!(
                 f,
@@ -588,7 +573,6 @@ impl std::error::Error for Error {
             | Error::NoTab(_)
             | Error::NoWorkspaceGiven
             | Error::StrayPane(_)
-            | Error::Changed { .. }
             | Error::NoField { .. }
             | Error::NotNamed(_)
             | Error::Revoked
@@ -694,7 +678,7 @@ impl From<Outcome> for crate::protocol::Reply {
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
-/// for one (`wait`, `send-keys --wait-idle`).
+/// for one (`wait`, or an action that settles).
 pub enum Begun {
     Done(Outcome),
     Waiting(Box<crate::wait::Waiting>),
@@ -992,6 +976,50 @@ pub fn json_failure(mut outcome: Outcome, code: Option<&str>) -> Outcome {
     outcome
 }
 
+/// A reading given as text (`capture`, `ls`, `info`, `capture-client`),
+/// asked as JSON.
+fn json_form(command: &Command) -> Option<Command> {
+    if let Command::Ls {
+        json: false,
+        target,
+        get: None,
+    } = command
+    {
+        return Some(Command::Ls {
+            json: true,
+            target: target.clone(),
+            get: None,
+        });
+    }
+    if let &Command::CapturePane {
+        target,
+        history,
+        view,
+        json: false,
+        ..
+    } = command
+    {
+        return Some(Command::CapturePane {
+            target,
+            history,
+            view,
+            json: true,
+            settle: None,
+        });
+    }
+    if let &Command::Client {
+        client,
+        action: ClientAction::Capture { json: false },
+    } = command
+    {
+        return Some(Command::Client {
+            client,
+            action: ClientAction::Capture { json: true },
+        });
+    }
+    None
+}
+
 /// A command that needed its caller's pane, tab or workspace, from a caller
 /// whose `FUX_PANE` is another server's pane: why it got none.
 fn stray(error: Error, origin: &Origin) -> Error {
@@ -1185,30 +1213,14 @@ impl Session {
             launch.env.push((key.clone(), value.clone()));
         }
         let size = pane.size();
-        let mut vars = Vec::new();
-        if let Some(launcher) = &self.launch {
-            vars.extend(launcher.vars(id, self.starting.socket.as_deref()));
-        }
-        vars.extend(
-            self.starting
-                .set
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.clone())),
-        );
-        vars.extend(launch.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
         let child = match &self.launch {
-            Some(launcher) => {
-                let socket = &launcher.socket;
-                let (argv, marks) = with_marks(&self.config, socket, &launch.argv, &launch.env);
-                vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
-                let unset = unset(&self.starting, &launch.env);
-                Some(crate::process::spawn(
-                    &argv,
-                    &launch.cwd,
-                    (&vars, &unset),
-                    size,
-                )?)
-            }
+            Some(launcher) => Some(launcher.spawn(
+                (&self.config, &self.starting),
+                id,
+                (&launch.argv, &launch.env),
+                &launch.cwd,
+                size,
+            )?),
             None => None,
         };
         let history = self.config.history_lines;
@@ -1271,7 +1283,7 @@ impl Session {
         }
         let taken: Vec<TabId> = (self.workspaces.iter())
             .flat_map(Workspace::tabs)
-            .filter(|t| t.name == name && Some(t.id) != except)
+            .filter(|t| t.given && t.name == name && Some(t.id) != except)
             .map(|t| t.id)
             .collect();
         if taken.is_empty() {
@@ -1282,6 +1294,35 @@ impl Session {
             self.panes_of_tabs(&taken),
         ];
         Err(Error::TabNameTaken(name.to_owned(), ids.concat().join(" ")))
+    }
+
+    /// Gives tab `id` the name `name`, checked. It takes it from each other
+    /// tab fux named so (`tab-2`, made before a dump's line names one so):
+    /// that one is named anew as fux names tabs, by its place, the next
+    /// number free.
+    fn give_tab_name(&mut self, id: TabId, name: String) -> Result<(), Error> {
+        let tab = self.tab_mut(id).ok_or(Error::NoTab(id))?;
+        tab.name.clone_from(&name);
+        tab.given = true;
+        let mut taken: std::collections::HashSet<String> = (self.workspaces.iter())
+            .flat_map(|ws| std::iter::once(&ws.name).chain(ws.tabs().iter().map(|t| &t.name)))
+            .cloned()
+            .collect();
+        for ws in &mut self.workspaces {
+            for (place, tab) in (1usize..).zip(ws.tabs_mut().iter_mut()) {
+                if tab.given || tab.name != name {
+                    continue;
+                }
+                let free = (place..)
+                    .map(|n| format!("tab-{n}"))
+                    .find(|n| !taken.contains(n));
+                if let Some(free) = free {
+                    taken.insert(free.clone());
+                    tab.name = free;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The panes of `tabs`, as ids, in their order.
@@ -1296,7 +1337,7 @@ impl Session {
 
     /// Whether a client is in copy mode on pane `pane`: keys typed there
     /// go to copy mode, not the program.
-    fn copying(&self, pane: PaneId) -> bool {
+    pub(crate) fn copying(&self, pane: PaneId) -> bool {
         self.views
             .values()
             .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
@@ -1437,12 +1478,67 @@ impl Session {
                 ))),
             };
         }
+        // A workspace's id stands for its one tab, or its one pane.
+        if let (Kind::Pane | Kind::Tab, Ok(w)) = (kind, text.parse::<WsId>()) {
+            let ws = (self.workspaces.iter())
+                .find(|ws| ws.id == w)
+                .ok_or(Error::NoWorkspace(w))?;
+            let (ones, of) = match kind {
+                Kind::Tab => {
+                    let tabs: Vec<TabId> = ws.tabs().iter().map(|t| t.id).collect();
+                    match tabs.as_slice() {
+                        [tab] => return Ok(AnyRef::Tab(*tab)),
+                        tabs => (tabs.iter().map(ToString::to_string).collect(), "tab"),
+                    }
+                }
+                Kind::Pane | Kind::Workspace => {
+                    let panes: Vec<PaneId> = ws.tabs().iter().flat_map(panes_of).collect();
+                    match panes.as_slice() {
+                        [pane] => return Ok(AnyRef::Pane(*pane)),
+                        panes => (ids(panes), "pane"),
+                    }
+                }
+            };
+            return Err(Error::NotNamed(format!(
+                "{w} is a workspace of {} {of}s ({}): use a {of}'s id",
+                ones.len(),
+                ones.join(" ")
+            )));
+        }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(None, here)?.id)),
             Kind::Pane => match text.parse::<PaneId>() {
                 Ok(id) => Ok(AnyRef::Pane(self.pane(Some(id), here)?.id)),
                 Err(_) => {
-                    let tab = named()?;
+                    // A tab's name, else a pane's own (what `rename` gave
+                    // it, or its program's), else the title its program
+                    // set, as `ls` shows it.
+                    let tab = match named() {
+                        Ok(tab) => tab,
+                        Err(no_tab) => {
+                            let with = |of: fn(&Pane) -> &str| {
+                                let mut panes: Vec<PaneId> = (self.panes.values())
+                                    .filter(|p| of(p) == text)
+                                    .map(|p| p.id)
+                                    .collect();
+                                panes.sort();
+                                panes
+                            };
+                            let mut panes = with(|p| p.name.as_str());
+                            if panes.is_empty() {
+                                panes = with(|p| p.title.as_str());
+                            }
+                            return match panes.as_slice() {
+                                [pane] => Ok(AnyRef::Pane(*pane)),
+                                [] => Err(no_tab),
+                                panes => Err(Error::NotNamed(format!(
+                                    "{text:?} names {} panes ({}): use an id",
+                                    panes.len(),
+                                    ids(panes).join(" ")
+                                ))),
+                            };
+                        }
+                    };
                     match panes_of(tab).as_slice() {
                         [pane] => Ok(AnyRef::Pane(*pane)),
                         panes => Err(Error::NotNamed(format!(
@@ -1498,26 +1594,10 @@ impl Session {
         Ok(out)
     }
 
-    /// Whether pane `id`'s screen is still at `revision`, if one is given:
-    /// input meant for what was read there goes in only then.
-    fn unchanged(&self, id: PaneId, revision: Option<u64>) -> Result<(), Error> {
-        let Some(revision) = revision else {
-            return Ok(());
-        };
-        let pane = self.panes.get(&id).ok_or(Error::NoPane(id))?;
-        match pane.revision == revision {
-            true => Ok(()),
-            false => Err(Error::Changed {
-                pane: id,
-                revision,
-                now: pane.revision,
-            }),
-        }
-    }
-
-    /// Sends `inputs`, `repeat` times, to pane `id`'s program.
-    fn send_inputs(&mut self, id: PaneId, inputs: &[Input], repeat: u16) -> Result<(), Error> {
+    /// Sends `inputs` to pane `id`'s program.
+    fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
         let p = self.panes.get_mut(&id).ok_or(Error::NoPane(id))?;
+        p.note_input(inputs);
         let (mode, bracketed) = (
             p.screen().key_mode(),
             p.screen().mode(fux_vt::Mode::BracketedPaste),
@@ -1535,7 +1615,7 @@ impl Session {
         }
         let mut pieces: Vec<Vec<u8>> = Vec::new();
         let mut last = Kind::Alone;
-        for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+        for input in inputs {
             let mut bytes = Vec::new();
             let kind = match input {
                 Input::Key(key) => {
@@ -1859,8 +1939,9 @@ impl Session {
     /// in it pane `pane`, each if given and there.
     fn show(&mut self, client: ClientId, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
         for w in &mut self.workspaces {
-            w.viewers.remove(&client);
-            if w.id == ws {
+            if w.id != ws {
+                w.hide(client);
+            } else {
                 w.viewers.insert(client);
                 w.show(client, tab, pane);
             }
@@ -2421,6 +2502,38 @@ impl Session {
                 };
             }
             Command::Wait { targets, wait } => (targets, wait, None),
+            // From a command line: read once the pane settles, said with
+            // its state.
+            Command::CapturePane {
+                target,
+                history,
+                view,
+                json,
+                settle: Some(limit),
+            } => {
+                let wait = crate::command::Wait {
+                    until: vec![crate::command::Until::Settled],
+                    timeout: limit,
+                    print: false,
+                    after: false,
+                    marks: false,
+                };
+                let here = match self.here(origin) {
+                    Ok(here) => here,
+                    Err(error) => return self.failed(error, origin),
+                };
+                let pane = match self.pane(target, here) {
+                    Ok(pane) => pane,
+                    Err(error) => return self.failed(error, origin),
+                };
+                let now = Instant::now();
+                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+                waiting.capture = Some((history, view, json));
+                return match waiting.answer(self, now) {
+                    Some(outcome) => Begun::Done(outcome),
+                    None => Begun::Waiting(Box::new(waiting)),
+                };
+            }
             command @ (Command::Ls { .. }
             | Command::KillServer { .. }
             | Command::NewWorkspace { .. }
@@ -2460,48 +2573,13 @@ impl Session {
                 (targets, wait, Some(command))
             }
             // Started, then waited for from its first output on.
-            Command::Run {
-                workspace,
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                log,
-                ids,
-                then: Some(wait),
-                ..
-            } => {
-                // The pane's id, to wait on; --json is the wait's.
-                let run = Command::Run {
-                    workspace,
-                    name,
-                    size,
-                    cwd,
-                    env,
-                    argv,
-                    json: false,
-                    log,
-                    ids,
-                    then: None,
+            mut command @ (Command::Run { then: Some(_), .. }
+            | Command::Split { then: Some(_), .. }
+            | Command::Respawn { then: Some(_), .. }) => {
+                return match command.take_start_wait() {
+                    Some(wait) => self.start_waiting(&command, *wait, origin),
+                    None => Begun::Done(self.run_command(&command, origin)),
                 };
-                return self.start_waiting(&run, *wait, origin);
-            }
-            Command::Respawn {
-                target,
-                kill,
-                env,
-                argv,
-                then: Some(wait),
-            } => {
-                let respawn = Command::Respawn {
-                    target,
-                    kill,
-                    env,
-                    argv,
-                    then: None,
-                };
-                return self.start_waiting(&respawn, *wait, origin);
             }
             command @ (Command::Ls { .. }
             | Command::KillServer { .. }
@@ -2553,11 +2631,15 @@ impl Session {
             Ok(panes) => crate::wait::Waiting::new(&panes, wait, now),
             Err(error) => return self.failed(error, origin),
         };
-        if let Some(command) = keys {
-            let outcome = self.run_command(&command, origin);
-            if outcome.status != 0 {
-                return Begun::Done(outcome);
+        match keys {
+            Some(command) => {
+                let outcome = self.run_command(&command, origin);
+                if outcome.status != 0 {
+                    return Begun::Done(outcome);
+                }
+                waiting.typed(self);
             }
+            None => waiting.more = true,
         }
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
@@ -2713,20 +2795,27 @@ impl Session {
         self.made.clear();
         self.value = None;
         let executed = self.execute(command, origin);
+        let ids = std::mem::take(&mut self.made);
+        // A reading given as text keeps its JSON, read at the same moment:
+        // `json` converts what was read, never a later read.
+        let json = match (&executed, json_form(command)) {
+            (Ok(_), Some(form)) => self.execute(&form, origin).unwrap_or_default(),
+            (Ok(_) | Err(_), _) => String::new(),
+        };
+        self.made.clear();
         self.ids.unwant();
         let outcome = match executed {
             Ok(stdout) => Outcome {
                 stdout,
-                ids: std::mem::take(&mut self.made),
+                json,
+                ids,
                 value: self.value.take(),
                 ..Outcome::default()
             },
             Err(error) => {
                 let error = stray(error, origin);
                 self.last_error = Some(error.code());
-                let status = if matches!(error, Error::Changed { .. }) {
-                    crate::wait::CHANGED
-                } else if matches!(error, Error::Usage(_)) {
+                let status = if matches!(error, Error::Usage(_)) {
                     2
                 } else {
                     1
@@ -2841,18 +2930,17 @@ impl Session {
                 // makes one, its first tab this one.
                 let (ws, tab, pane) = match (self.ws_target(target.as_ref(), here), target) {
                     (Ok(ws), _) => {
-                        let (tab, pane) = self.create_tab(ws, name.clone(), start, place)?;
+                        let (tab, pane) = self.create_tab(ws, None, start, place)?;
                         (ws, tab, pane)
                     }
                     (Err(_), Some(WsRef::Name(ws_name))) => {
-                        let made = self.create_workspace(Some(ws_name.clone()), start, place)?;
-                        if let (Some(name), Some(tab)) = (name, self.tab_mut(made.1)) {
-                            tab.name = name.clone();
-                        }
-                        made
+                        self.create_workspace(Some(ws_name.clone()), start, place)?
                     }
                     (Err(error), _) => return Err(error),
                 };
+                if let Some(name) = name {
+                    self.give_tab_name(tab, name.clone())?;
+                }
                 self.follow(here, ws, Some(tab), None);
                 Ok(self.made_ids((ws, tab, pane), &[tab.to_string(), pane.to_string()], *json))
             }
@@ -2888,7 +2976,13 @@ impl Session {
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let name = name.clone().or_else(|| argv.first().map(|p| basename(p)));
+                // Named after its program, if that makes a name.
+                let derived = argv
+                    .first()
+                    .map(|p| basename(p))
+                    .filter(|n| check_name(n).is_ok());
+                let given = name.clone();
+                let name = name.clone().or(derived);
                 let start = (Start::Program(argv, env), cwd.as_path());
                 let workspace = workspace
                     .clone()
@@ -2910,6 +3004,9 @@ impl Session {
                     }
                     (Err(error), WsRef::Id(_)) => return Err(error),
                 };
+                if let Some(given) = given {
+                    self.give_tab_name(made.1, given)?;
+                }
                 // Before any of its output is read: it all goes there.
                 if let Some(pane) = self.panes.get_mut(&made.2) {
                     pane.log = log;
@@ -3019,14 +3116,12 @@ impl Session {
             }
             &Command::SendMouse {
                 target,
-                if_revision,
                 mouse,
                 row,
                 col,
                 ..
             } => {
                 let id = self.live_pane_mut(target, here)?.id;
-                self.unchanged(id, if_revision)?;
                 let p = self.live_pane_mut(Some(id), here)?;
                 let size = p.size();
                 if row >= size.rows() || col >= size.cols() {
@@ -3084,6 +3179,7 @@ impl Session {
                     }
                 }
                 p.input.push(&report)?;
+                p.note_input(&[]);
                 p.mouse_held = held;
                 Ok(String::new())
             }
@@ -3096,6 +3192,7 @@ impl Session {
                 run,
                 ref ids,
                 json,
+                then: _,
             } => {
                 self.want(ids, &[Kind::Pane])?;
                 let target = self.pane(target, here)?.id;
@@ -3250,7 +3347,6 @@ impl Session {
             &Command::SendKeys {
                 client: Some(client),
                 ref inputs,
-                repeat,
                 ..
             } => {
                 if !self.views.contains_key(&client) {
@@ -3258,32 +3354,22 @@ impl Session {
                 }
                 // The client takes them as typed at its terminal: its
                 // bindings see them.
-                let typed = std::iter::repeat_n(inputs, usize::from(repeat)).flatten();
-                self.outbox
-                    .push(Outgoing::Keys(client, typed.cloned().collect()));
+                self.outbox.push(Outgoing::Keys(client, inputs.clone()));
                 Ok(String::new())
             }
             &Command::SendKeys {
                 ref targets,
                 ref inputs,
-                repeat,
                 client: None,
-                if_revision,
                 ..
             } => {
                 let panes = self.panes_of(targets, here)?;
-                if if_revision.is_some() && panes.len() != 1 {
-                    return Err(Error::Usage(command::Usage::Needs(
-                        "if-revision is for keys to one pane: a revision is one screen's",
-                    )));
-                }
                 // Every pane must take them, or none is sent them.
                 for &id in &panes {
                     self.live_pane_mut(Some(id), here)?;
-                    self.unchanged(id, if_revision)?;
                 }
                 for id in panes {
-                    self.send_inputs(id, inputs, repeat)?;
+                    self.send_inputs(id, inputs)?;
                 }
                 Ok(String::new())
             }
@@ -3292,6 +3378,7 @@ impl Session {
                 history,
                 view,
                 json,
+                ..
             } => {
                 let pane = self.pane(target, here)?;
                 let copying = self.copying(pane.id);
@@ -3342,6 +3429,7 @@ impl Session {
                 let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
                 p.input
                     .push_with(|out| crate::encode::paste(&text, bracketed, out))?;
+                p.note_input(&[Input::Paste(text)]);
                 Ok(String::new())
             }
             &Command::Client { client, ref action } => {
@@ -3432,8 +3520,7 @@ impl Session {
             }
             AnyRef::Tab(t) => {
                 self.check_tab_name(&name, Some(t))?;
-                let tab = tabs_mut(&mut self.workspaces).find(|tab| tab.id == t);
-                tab.ok_or(Error::NoTab(t))?.name = name;
+                self.give_tab_name(t, name)?;
             }
             AnyRef::Workspace(id) => {
                 // The one named, and the others, whose names it cannot take.
@@ -3798,7 +3885,11 @@ impl Session {
                 let scalar = match &value {
                     Json::Number(n) => Scalar::Int(*n),
                     Json::Bool(b) => Scalar::Bool(*b),
-                    Json::Null | Json::String(_) | Json::Array(_) | Json::Object(_) => Scalar::Null,
+                    Json::Null
+                    | Json::String(_)
+                    | Json::Array(_)
+                    | Json::Object(_)
+                    | Json::Raw(_) => Scalar::Null,
                 };
                 (scalar, format!("{}\n", value.render()))
             }
@@ -3907,36 +3998,6 @@ fn closed(origin: &Origin, ids: &[String]) -> String {
     }
 }
 
-/// `argv` as it is started, and variables to add: a shell fux knows
-/// started so that it marks its commands, unless `set shell-marks off`. Its
-/// startup files go beside the server's socket.
-fn with_marks(
-    config: &Config,
-    socket: &Path,
-    argv: &[String],
-    env: &[(String, String)],
-) -> (Vec<String>, Vec<(String, String)>) {
-    let mut dir = socket.as_os_str().to_owned();
-    dir.push(".shell");
-    match config
-        .shell_marks
-        .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
-        .flatten()
-    {
-        Some(marked) => (marked.argv, marked.env),
-        None => (argv.to_vec(), Vec::new()),
-    }
-}
-
-/// The variables a pane started with `env` is not given: those its starter
-/// had not, unless `env` sets them.
-fn unset(fresh: &Starting, env: &[(String, String)]) -> Vec<String> {
-    (fresh.unset.iter())
-        .filter(|name| !env.iter().any(|(k, _)| k == *name))
-        .cloned()
-        .collect()
-}
-
 /// What a started pane is told of its server: the socket to reach it by,
 /// and which run of it this is.
 #[derive(Clone, Debug)]
@@ -3955,6 +4016,45 @@ impl Launcher {
             ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
             ("FUX_SERVER", self.server.clone()),
         ]
+    }
+
+    /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`:
+    /// told of its server, given its starter's variables (`fresh`), and not
+    /// those its starter had not, unless `env` sets them. A shell fux knows
+    /// is started so that it marks its commands, unless `set shell-marks
+    /// off`; its startup files go beside the server's socket.
+    fn spawn(
+        &self,
+        (config, fresh): (&Config, &Starting),
+        id: PaneId,
+        (argv, env): (&[String], &[(String, String)]),
+        cwd: &Path,
+        size: fux_vt::Size,
+    ) -> Result<crate::process::Child, Error> {
+        let mut dir = self.socket.as_os_str().to_owned();
+        dir.push(".shell");
+        let marks = (config.shell_marks)
+            .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
+            .flatten()
+            .unwrap_or_else(|| crate::marks::Marked {
+                argv: argv.to_vec(),
+                ..crate::marks::Marked::default()
+            });
+        let mut vars = self.vars(id, fresh.socket.as_deref()).to_vec();
+        let given = (fresh.set.iter()).chain(env).chain(&marks.env);
+        vars.extend(given.map(|(k, v)| (k.as_str(), v.clone())));
+        vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
+        let mut unset: Vec<String> = (fresh.unset.iter())
+            .filter(|name| !env.iter().any(|(k, _)| k == *name))
+            .cloned()
+            .collect();
+        unset.extend(marks.unset.iter().cloned());
+        Ok(crate::process::spawn(
+            &marks.argv,
+            cwd,
+            (&vars, &unset),
+            size,
+        )?)
     }
 }
 
@@ -4014,13 +4114,7 @@ fn new_pane(
     // A program brought back by a restore waits for `respawn`.
     let paused = fresh.paused && matches!(start, Start::Program(..));
     if let Some(launcher) = launch.filter(|_| !paused) {
-        let mut vars = launcher.vars(id, fresh.socket.as_deref()).to_vec();
-        vars.extend(fresh.set.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        let (argv, marks) = with_marks(config, &launcher.socket, argv, env);
-        vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        let unset = unset(fresh, env);
-        let child = crate::process::spawn(&argv, cwd, (&vars, &unset), size)?;
+        let child = launcher.spawn((config, fresh), id, (argv, env), cwd, size)?;
         pane.process = Process::Reading(child);
     }
     if let Some(typed) = typed {
@@ -4070,7 +4164,7 @@ fn check_workspace_name<'a>(
     // A tab's name too: the workspace's would hide it from `-t NAME`.
     let tabs: Vec<String> = (others.iter())
         .flat_map(|ws| ws.tabs())
-        .filter(|t| t.name == name)
+        .filter(|t| t.given && t.name == name)
         .map(|t| t.id.to_string())
         .collect();
     if !tabs.is_empty() {
@@ -4212,6 +4306,7 @@ pub(crate) mod testing {
             keymap: Some(&mut keymap),
             last_bound: None,
             out: &mut out,
+            settle: false,
         };
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
@@ -4351,6 +4446,7 @@ pub(crate) mod testing {
             keymap: None,
             last_bound: None,
             out: &mut out,
+            settle: false,
         };
         let mut recorder = Recorder(InProcess(s), Vec::new());
         crate::script::run(&mut machine, &mut host, &mut recorder).map_err(|e| e.to_string())?;
@@ -4598,14 +4694,14 @@ mod tests {
         assert_eq!(
             quiet(output(&mut s, "ls json")?),
             concat!(
-                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}],"grants":[]}"#,
+                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}],"grants":[]}"#,
                 "\n"
             )
         );
         assert_eq!(
             quiet(output(&mut s, "str %2 pane opts capture json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
                 "\n"
             )
         );
@@ -4926,11 +5022,125 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         assert_eq!(output(&mut s, "%1 str name get")?, "sh\n");
         assert_eq!(output(&mut s, "@1 str name get")?, "main\n");
+        // A pane's title names it too, as `ls` shows it.
+        s.output(PaneId::of(1), b"\x1b]2;spool\x07");
+        assert_eq!(output(&mut s, "str spool pane")?, "%1\n");
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
         let json = output(&mut s, "%1 opts json capture")?;
         assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
         let made = output(&mut s, "opts str 'sh -c \"exit 0\"' command run")?;
         assert!(made.starts_with('%'), "{made}");
+        Ok(())
+    }
+
+    /// A capture's cursor is where it is among the lines printed: none
+    /// while hidden, on a row trimmed away, outside the columns taken, or
+    /// on the screen not captured; past the columns cut and the rows
+    /// joined.
+    #[test]
+    fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
+            let json = output(s, &format!("%1 opts {read} json capture"))?;
+            let after = json.split("\"cursor\":").nth(1).unwrap_or_default();
+            Ok(after
+                .split(",\"lines\"")
+                .next()
+                .unwrap_or_default()
+                .to_owned())
+        };
+        s.output(PaneId::of(1), b"0123456789\x1b[1;6H");
+        assert_eq!(cursor(&mut s, "")?, "[0,5]");
+        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,3]");
+        assert_eq!(cursor(&mut s, "0 2 cols")?, "null");
+        s.output(PaneId::of(1), b"\x1b[?25l");
+        assert_eq!(cursor(&mut s, "")?, "null", "hidden");
+        s.output(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
+        assert_eq!(cursor(&mut s, "")?, "null", "on a blank row trimmed");
+        s.output(
+            PaneId::of(1),
+            &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
+        );
+        assert_eq!(cursor(&mut s, "")?, "[2,2]");
+        assert_eq!(cursor(&mut s, "joined")?, "[1,2]");
+        s.output(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
+        assert_eq!(cursor(&mut s, "main-screen")?, "null");
+        s.output(PaneId::of(1), b"\x1b[?1049l");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "null");
+        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
+        // What is highlighted is marked in JSON's lines too.
+        s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
+        let json = output(&mut s, "%1 opts marks json capture")?;
+        assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
+        let inverted = output(&mut s, "%1 opts 5 2 rows capture");
+        assert!(
+            inverted.as_ref().is_err_and(|e| e.starts_with("range: ")),
+            "{inverted:?}"
+        );
+        Ok(())
+    }
+
+    /// An action's answer is its pane, to every word that wants a pane:
+    /// `pane`, `tab` and `workspace` too; and `json` gives it as it gives
+    /// it alone, in a list too.
+    #[test]
+    fn an_actions_answer_is_its_pane() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        assert_eq!(output(&mut s, "%1 opts wait str name get")?, "sh\n");
+        assert_eq!(
+            output(&mut s, "%1 opts wait dup tab swap workspace")?,
+            "@1\n+1\n"
+        );
+        let alone = output(&mut s, "%1 opts wait json")?;
+        assert!(alone.starts_with(r#"{"pane":"%1","state":"#), "{alone}");
+        let listed = output(&mut s, "list %1 opts wait end json")?;
+        assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        Ok(())
+    }
+
+    /// A failure is one line, says what a word takes and how it is used,
+    /// and is of the kind it is: a string counted is a type error, a file
+    /// not there says so.
+    #[test]
+    fn failures_say_what_a_word_takes() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        let failed = |s: &mut Session, code: &str| match output(s, code) {
+            Ok(out) => format!("ran: {out}"),
+            Err(error) => error,
+        };
+        let timeout = failed(&mut s, "%1 opts -1 timeout wait");
+        assert!(timeout.starts_with("range: "), "{timeout}");
+        assert!(
+            timeout.contains("-1 is out of range: from 0 (use: "),
+            "{timeout}"
+        );
+        let mouse = failed(&mut s, "%1 str click -1 0 mouse send-mouse");
+        assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
+        let times = failed(&mut s, "keys str a text str 2 times");
+        assert!(times.starts_with("type: "), "{times}");
+        let none = failed(&mut s, "keys str a text 0 times");
+        assert!(none.contains("a count from 1 to 1000 (use: "), "{none}");
+        // The core's words say how they are used too; a library word is
+        // told by its own name, not the word inside it that fails.
+        for code in ["slice", "str a 1 add"] {
+            let core = failed(&mut s, code);
+            assert!(core.contains(" (use: "), "{core}");
+        }
+        let upper = failed(&mut s, "3 upper");
+        assert!(upper.contains("upper: every way"), "{upper}");
+        assert!(
+            upper.contains("(use: S upper") && !upper.contains("each"),
+            "{upper}"
+        );
+        let env = failed(&mut s, "opts str 1bad str v env");
+        assert!(env.contains("not first a digit"), "{env}");
+        let missing = failed(&mut s, "str /no/such/file.fux check");
+        assert!(missing.contains("No such file"), "{missing}");
+        let split = failed(&mut s, "str 'two\nlines' fail");
+        assert!(split.ends_with(r"two\nlines"), "{split}");
+        // A tab in a waited text is a blank, as in the screen's.
+        run(&mut s, "%1 opts str 'ready\tnow' wait-text drop drop")?;
         Ok(())
     }
 

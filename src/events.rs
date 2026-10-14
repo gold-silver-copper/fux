@@ -141,7 +141,8 @@ impl Event {
                 | Json::Bool(_)
                 | Json::Number(_)
                 | Json::Array(_)
-                | Json::Object(_)) => other.render(),
+                | Json::Object(_)
+                | Json::Raw(_)) => other.render(),
             };
             line.push_str(&format!(" {key}={value}"));
         }

@@ -673,8 +673,10 @@ pub fn resize(
     let Tree::Split(axis, split) = root else {
         return false;
     };
-    split.resize_by(*axis, area, pane, direction, amount, true)
-        || split.resize_by(*axis, area, pane, direction, amount, false)
+    match split.resize_by(*axis, area, pane, direction, amount, true) {
+        Some(moved) => moved,
+        None => split.resize_by(*axis, area, pane, direction, amount, false) == Some(true),
+    }
 }
 
 /// `root` with `pane` resized to `len` cells along `axis`, as placed in
@@ -695,9 +697,27 @@ pub fn resize_to(root: &Tree, area: Rect, pane: PaneId, axis: Axis, len: u16) ->
             return Some(tree);
         }
         let amount = now.abs_diff(len);
-        let tried = directions.iter().filter_map(|&direction| {
+        // The pane grows (or shrinks from its far side) itself; or, to
+        // shrink, a neighbour grows into it: a pane between two has no far
+        // side of its own to give from.
+        let placed = place(&tree, area);
+        let growing = directions.iter().map(|&direction| (pane, direction));
+        let neighbours = directions
+            .iter()
+            .filter(|_| now > len)
+            .filter_map(|&direction| {
+                let other = neighbor(&placed, pane, direction)?;
+                let back = match direction {
+                    Direction::Left => Direction::Right,
+                    Direction::Right => Direction::Left,
+                    Direction::Up => Direction::Down,
+                    Direction::Down => Direction::Up,
+                };
+                Some((other, back))
+            });
+        let tried = growing.chain(neighbours).filter_map(|(which, direction)| {
             let mut moved = tree.clone();
-            resize(&mut moved, area, pane, direction, amount).then_some(())?;
+            resize(&mut moved, area, which, direction, amount).then_some(())?;
             Some((size(&moved)?.abs_diff(len), moved))
         });
         match tried.min_by_key(|(off, _)| *off) {
@@ -712,6 +732,9 @@ impl Split {
     /// `resize`, at this split, along `axis`, and those below it: with
     /// `toward`, only a split with a sibling on the direction's side acts;
     /// without, the nearest along the axis does, from whichever side it can.
+    /// Whether a border moved, once a split could act (one whose siblings
+    /// are all at their least passes to the split around it); `None` if
+    /// none could.
     fn resize_by(
         &mut self,
         axis: Axis,
@@ -720,10 +743,8 @@ impl Split {
         direction: Direction,
         amount: u16,
         toward: bool,
-    ) -> bool {
-        let Some(index) = self.0.iter().position(|(_, c)| c.contains(pane)) else {
-            return false;
-        };
+    ) -> Option<bool> {
+        let index = self.0.iter().position(|(_, c)| c.contains(pane))?;
         // Deeper splits first: the border nearest the pane moves.
         let mut placement = Placement::default();
         if !area.is_empty() {
@@ -739,44 +760,49 @@ impl Split {
                 inner = rect;
             }
         }
-        if let Some((_, Tree::Split((), child))) = children.get_mut(index)
-            && child.resize_by(axis.cross(), inner, pane, direction, amount, toward)
-        {
-            return true;
-        }
-        if axis != Axis::of(direction) {
-            return false;
+        let below = match children.get_mut(index) {
+            Some((_, Tree::Split((), child))) => {
+                child.resize_by(axis.cross(), inner, pane, direction, amount, toward)
+            }
+            Some((_, Tree::Pane(_))) | None => None,
+        };
+        if below == Some(true) || axis != Axis::of(direction) {
+            return below;
         }
         let toward_start = matches!(direction, Direction::Left | Direction::Up);
-        // Grow toward the direction when there is a neighbour that way; else
-        // shrink from the far side, moving the other border the same way.
-        let before = index.checked_sub(1);
-        let after = index.checked_add(1).filter(|i| *i < children.len());
-        let (grow, shrink) = match (toward_start, before, after) {
-            (true, Some(before), _) => (index, before),
-            (false, _, Some(after)) => (index, after),
-            _ if toward => return false,
-            // A split has two children or more: the pane has a sibling.
-            (true, None, _) => (index.saturating_add(1), index),
-            (false, _, None) => (index.saturating_sub(1), index),
-        };
-        let min = children
-            .get(shrink)
-            .map_or(MIN, |(_, c)| c.min_len(axis.cross(), axis));
-        let Ok([grown, shrunk]) = sizes.get_disjoint_mut([grow, shrink]) else {
-            return false;
-        };
-        // One border moves: what one side gains, the other gives, within `area`.
-        let moved = amount.min(shrunk.saturating_sub(min));
-        if moved == 0 {
-            return true;
+        // Grow toward the direction, taking from the siblings that way,
+        // nearest first, each down to its least; else shrink from the far
+        // side, moving the other border the same way.
+        let after = index.saturating_add(1);
+        let (grow, shrink): (usize, Vec<usize>) =
+            match (toward_start, index > 0, after < children.len()) {
+                (true, true, _) => (index, (0..index).rev().collect()),
+                (false, _, true) => (index, (after..children.len()).collect()),
+                _ if toward => return below,
+                // A split has two children or more: the pane has a sibling.
+                (true, false, _) => (after, vec![index]),
+                (false, _, false) => (index.saturating_sub(1), vec![index]),
+            };
+        // What the grown side gains, the others give, within `area`.
+        let mut moved: u16 = 0;
+        for i in shrink {
+            let min = children
+                .get(i)
+                .map_or(MIN, |(_, c)| c.min_len(axis.cross(), axis));
+            if let Some(size) = sizes.get_mut(i) {
+                let given = amount.saturating_sub(moved).min(size.saturating_sub(min));
+                *size = size.saturating_sub(given);
+                moved = moved.saturating_add(given);
+            }
         }
+        let Some(grown) = sizes.get_mut(grow).filter(|_| moved > 0) else {
+            return Some(false);
+        };
         *grown = grown.saturating_add(moved);
-        *shrunk = shrunk.saturating_sub(moved);
         for ((share, _), size) in children.iter_mut().zip(&sizes) {
             *share = weight(u32::from(*size));
         }
-        true
+        Some(true)
     }
 }
 
@@ -829,6 +855,20 @@ mod tests {
         let mut root = Tree::Pane(p(0));
         root.split(p(0), p(1), Axis::Horizontal, Side::After);
         root
+    }
+
+    /// A pane between two shrinks: a neighbour grows into it.
+    #[test]
+    fn a_middle_pane_shrinks_to_a_length() {
+        let mut root = tree();
+        root.split(p(1), p(2), Axis::Horizontal, Side::After);
+        let area = area(90, 20);
+        let width = |t: &Tree| place(t, area).rect(p(1)).map(|r| r.w);
+        assert!(width(&root).is_some_and(|w| w > 12));
+        let smaller = resize_to(&root, area, p(1), Axis::Horizontal, 12);
+        assert_eq!(smaller.as_ref().and_then(width), Some(12));
+        let wider = smaller.and_then(|t| resize_to(&t, area, p(1), Axis::Horizontal, 40));
+        assert_eq!(wider.as_ref().and_then(width), Some(40));
     }
 
     #[test]
@@ -1071,6 +1111,34 @@ mod tests {
         let after = place(node, a);
         assert_eq!(width(&after, 3), width(&before, 3).map(|w| w - 2));
         assert_eq!(width(&after, 0), width(&before, 0));
+    }
+
+    /// A border held at a pane's least passes the resize on: to the
+    /// siblings beyond, then to the split around; with none left, nothing
+    /// moves, and the pane does not shrink from its far side instead.
+    #[test]
+    fn a_border_at_its_least_passes_the_resize_on() {
+        let width = |t: &Tree, a, n| place(t, a).rect(p(n)).map(|r| r.w);
+        let a = area(100, 24);
+        let mut row = tree();
+        row.split(p(1), p(2), Axis::Horizontal, Side::After);
+        let wide = resize_to(&row, a, p(2), Axis::Horizontal, 80);
+        let widths = wide.map(|t| [0, 1, 2].map(|n| width(&t, a, n)));
+        assert_eq!(widths, Some([Some(16), Some(MIN), Some(80)]));
+        // `0 | (1 / (2 | 3))`, 2 at its least: left from 3 moves 0's border.
+        let mut nested = tree();
+        nested.split(p(1), p(2), Axis::Vertical, Side::After);
+        nested.split(p(2), p(3), Axis::Horizontal, Side::After);
+        assert!(resize(&mut nested, a, p(3), Direction::Left, 100));
+        let before = [0, 3].map(|n| width(&nested, a, n));
+        assert!(resize(&mut nested, a, p(3), Direction::Left, 10));
+        assert_eq!(width(&nested, a, 0), before[0].map(|w| w - 10));
+        assert_eq!(width(&nested, a, 3), before[1].map(|w| w + 10));
+        let mut pair = tree();
+        assert!(resize(&mut pair, a, p(1), Direction::Left, 100));
+        let held = [0, 1].map(|n| width(&pair, a, n));
+        assert!(!resize(&mut pair, a, p(1), Direction::Left, 1));
+        assert_eq!([0, 1].map(|n| width(&pair, a, n)), held);
     }
 
     #[test]

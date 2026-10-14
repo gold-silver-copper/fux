@@ -76,7 +76,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "horizontal", 1, "opts -- opts", "split side by side"),
     word("Starting", "vertical", 1, "opts -- opts", "split stacked"),
     word("Starting", "in", 2, "opts workspace -- opts", "the workspace for run or new-tab (a name not there is made)"),
-    word("Starting", "id", 2, "opts id -- opts", "the id to make it with, never given before (%N, @N, +N)"),
+    word("Starting", "id", 2, "opts id -- opts", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", 2, "opts file -- opts", "keep everything the program writes in a file too"),
     word("Starting", "kill-first", 1, "opts -- opts", "respawn: end the program first if it still runs"),
     word("Starting", "run", 1, "opts -- pane", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
@@ -85,28 +85,23 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", 1, "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", 2, "pane opts -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew (options, keys or a mouse event)"),
-    word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown"),
-    word("Waiting", "wait-idle", 2, "x ms -- x", "wait until the screen shows no change for ms"),
-    word("Waiting", "wait-change", 1, "x -- x", "wait until the screen changes"),
+    word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew, not on the line typed (options, keys or a mouse event)"),
+    word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
     word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
-    word("Waiting", "wait-done", 1, "x -- x", "wait until the shell's command ends"),
     word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "timeout", 2, "x secs -- x", "how long a wait lasts at most (60)"),
-    word("Waiting", "with-screen", 1, "x -- x", "the screen as the wait ends, after what it says"),
-    word("Waiting", "wait", 2, "x opts -- outcome", "wait as the options say, in a pane, or in any pane of a tab or workspace"),
+    word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most: an action or capture settles within 10, a wait or an action given a wait 60; 0 answers at once"),
+    word("Waiting", "wait", 2, "x opts -- answer", "wait for the pane to settle, or as the options say, in a pane, or each pane of a tab or workspace"),
     // Input
     word("Input", "keys", 0, "-- keys", "empty input, for send-keys"),
     word("Input", "text", 2, "keys text -- keys", "text, typed"),
     word("Input", "key", 2, "keys name -- keys", "a key by its name: Enter, C-c, Up, F5"),
-    word("Input", "paste", 2, "keys text -- keys", "text as a paste"),
-    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste"),
-    word("Input", "times", 2, "keys n -- keys", "all of it n times"),
-    word("Input", "if-revision", 2, "keys n -- keys", "sent only if the screen is still at revision n"),
-    word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal"),
+    word("Input", "paste", 2, "keys text -- keys", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
+    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
+    word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
+    word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", 2, "pane mouse -- [outcome]", "send a mouse event"),
-    word("Input", "signal", 2, "pane name -- ", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH, to the pane's foreground"),
+    word("Input", "signal", 2, "pane name -- [answer]", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH, to the pane's foreground; answers once it exits or settles"),
     // Reading
     word("Reading", "capture", 2, "pane opts -- capture", "the screen, as the options say"),
     word("Reading", "history", 2, "opts lines -- opts", "capture: lines of history first"),
@@ -117,8 +112,8 @@ pub const WORDS: &[Word] = &[
     word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys or a mouse event)"),
     word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output"),
-    word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0"),
+    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor, over main-screen and alt-screen)"),
+    word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0; joined, each line they touch whole"),
     word("Reading", "cols", 3, "opts from to -- opts", "capture: those columns only, from 0"),
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", 1, "handle -- record", "a pane, tab or workspace, all of it"),
@@ -128,8 +123,8 @@ pub const WORDS: &[Word] = &[
     word("Reading", "events-json", 0, "-- ", "what happens, as JSON lines"),
     word("Reading", "events-of", 1, "handle -- ", "what happens in a pane, tab or workspace"),
     word("Reading", "events-of-json", 1, "handle -- ", "the same, as JSON lines"),
-    word("Reading", "dump", 0, "-- text", "everything, as a program that makes it again"),
-    word("Reading", "dump-of", 1, "handle -- text", "a tab or workspace, as a program that makes it again"),
+    word("Reading", "dump", 0, "-- text", "everything, as a program that makes it again (shells new, nothing typed into them)"),
+    word("Reading", "dump-of", 1, "handle -- text", "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)"),
     // Changing
     word("Changing", "kill", 1, "handle -- ", "close a pane, tab or workspace, without asking"),
     word("Changing", "rename", 2, "handle name -- ", "rename a pane, tab or workspace"),
@@ -213,11 +208,11 @@ pub const WORDS: &[Word] = &[
 
 /// At most `limit` bytes of the file at `path`, and one more if it has
 /// them: never more is read, whatever it is (`/dev/zero`).
-fn bounded(path: &str, limit: u64) -> std::io::Result<Vec<u8>> {
+fn bounded(path: &str, limit: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut read = Vec::new();
     std::fs::File::open(path)?
-        .take(limit.saturating_add(1))
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
         .read_to_end(&mut read)?;
     Ok(read)
 }
@@ -230,15 +225,26 @@ fn fail(code: &'static str, message: impl Into<String>) -> Failure {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
+    let library = || {
+        let mut library = crate::help::library().into_iter();
+        Some(library.find(|(name, ..)| *name == word)?.1)
+    };
+    let core = || {
+        Some(
+            fuxth::Builtin::ALL
+                .iter()
+                .find(|b| b.name() == word)?
+                .effect(),
+        )
+    };
+    // Fux's, the prelude's or library's, or the core's; else the
+    // language's own syntax, said as it is written.
     let effect = match WORDS.iter().find(|w| w.name == word) {
         Some(w) => w.effect,
-        // A word of the prelude's or library's.
-        None => {
-            crate::help::library()
-                .into_iter()
-                .find(|(name, ..)| *name == word)?
-                .1
-        }
+        None => match library().or_else(core) {
+            Some(effect) => effect,
+            None => return crate::help::syntax(word).map(|(shape, _)| format!("use: {shape}")),
+        },
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     let takes = takes.trim().to_uppercase();
@@ -274,12 +280,15 @@ fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
         Value::Str(s) => Ok(s.to_string()),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other @ (Value::List(_) | Value::App(_)) => Err(wrong(word, "a string or a number", other)),
+        other @ (Value::List(_) | Value::App(_)) => {
+            Err(wrong(word, "a string, a number or a boolean", other))
+        }
     }
 }
 
-/// A value as JSON: a list as an array of its values', anything of
-/// fux's as its text.
+/// A value as JSON: a list as an array of its values', an answer as its
+/// JSON, as alone (a capture's, a listing's or an action's object; of
+/// several panes, an array of theirs), anything else of fux's as its text.
 fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
     use crate::json::Json;
     match value {
@@ -288,6 +297,20 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
         Value::List(list) => Json::Array(list.items.iter().map(json_of).collect()),
+        // An answer of several panes, a line of JSON each, as an array.
+        Value::App(Fux::Answer(answer)) => match &answer.json {
+            Some(json) => {
+                let mut objects: Vec<Json<'static>> = (json.lines())
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| Json::Raw(line.to_owned().into()))
+                    .collect();
+                match objects.len() {
+                    1 => objects.pop().unwrap_or(Json::Null),
+                    _ => Json::Array(objects),
+                }
+            }
+            None => Json::str(answer.text.clone()),
+        },
         Value::App(_) => Json::str(super::display(value)),
     }
 }
@@ -301,15 +324,59 @@ fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
     }
 }
 
+/// A value outside what `word` takes: what it takes, and how it is used.
+fn out_of_range(word: &str, message: impl std::fmt::Display) -> Failure {
+    let usage = usage(word).map_or_else(String::new, |u| format!(" ({u})"));
+    fail("range", format!("{message}{usage}"))
+}
+
+/// What a count or a cell can be: from 0 to the most it holds.
+trait Count: TryFrom<i64> {
+    const MOST: i64;
+}
+
+impl Count for u16 {
+    const MOST: i64 = u16::MAX as i64;
+}
+
+impl Count for u64 {
+    const MOST: i64 = i64::MAX;
+}
+
+impl Count for usize {
+    const MOST: i64 = i64::MAX;
+}
+
 /// A count or a cell: an integer from 0 that fits.
-fn count<T: TryFrom<i64>>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
+fn count<T: Count>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
     let n = int(word, value)?;
-    T::try_from(n).map_err(|_| fail("range", format!("{n} is out of range")))
+    T::try_from(n).map_err(|_| match T::MOST {
+        i64::MAX => out_of_range(word, format!("{n} is out of range: from 0")),
+        most => out_of_range(word, format!("{n} is out of range: 0 to {most}")),
+    })
+}
+
+/// A size to lay a tab out on: columns and rows each 1 to 500.
+fn laid_out(word: &str, cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::Size, Failure> {
+    let (cols, rows) = (int(word, cols)?, int(word, rows)?);
+    let cell = |n: i64| u16::try_from(n).ok().filter(|n| (1..=500).contains(n));
+    cell(cols)
+        .zip(cell(rows))
+        .and_then(|(cols, rows)| fux_vt::Size::new(rows, cols).ok())
+        .ok_or_else(|| {
+            out_of_range(
+                word,
+                format!("size {cols} {rows}: columns and rows each 1 to 500"),
+            )
+        })
 }
 
 fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
     match value {
         Value::App(Fux::Pane(p)) => Ok(*p),
+        Value::App(Fux::Answer(answer)) if answer.pane.is_some() => {
+            answer.pane.ok_or_else(|| wrong(word, "a pane", value))
+        }
         other @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -333,6 +400,10 @@ fn client(word: &str, value: &Value<Fux>) -> Result<crate::id::ClientId, Failure
 fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef<WsId>, Failure> {
     match value {
         Value::App(Fux::Pane(p)) => Ok(AnyRef::Pane(*p)),
+        Value::App(Fux::Answer(answer)) if answer.pane.is_some() => answer
+            .pane
+            .map(AnyRef::Pane)
+            .ok_or_else(|| wrong(word, "a pane", value)),
         Value::App(Fux::Tab(t)) => Ok(AnyRef::Tab(*t)),
         Value::App(Fux::Workspace(w)) => Ok(AnyRef::Workspace(*w)),
         other @ (Value::Int(_)
@@ -373,20 +444,57 @@ fn sibling(word: &str, value: &Value<Fux>) -> Result<Sibling, Failure> {
 
 /// Options a word would leave unused, refused rather than ignored: a
 /// program for words that start a shell, a typed line for `run`, a tab's
-/// name, size or log for `split`, a wait for words that do not wait.
+/// name, size or log for `split`, a wait for words that do not wait, what
+/// starts a program for words that start none, a view of the screen for
+/// `wait`.
 fn ignored(word: &str, built: &Opts) -> Result<(), Failure> {
     let refuse = |what: &str, instead: &str| {
         Err(fail("unused", format!("{word} takes no {what}: {instead}")))
     };
+    let starts = built.name.is_some()
+        || built.size.is_some()
+        || built.cwd.is_some()
+        || !built.env.is_empty()
+        || !built.argv.is_empty()
+        || built.typed.is_some()
+        || built.axis.is_some()
+        || built.place.is_some()
+        || !built.ids.is_empty()
+        || built.log.is_some()
+        || built.kill;
+    // `marks` goes on what a wait prints too.
+    let viewed = built.history.is_some()
+        || built.json
+        || built.view
+            != (crate::command::CaptureView {
+                marks: built.view.marks,
+                ..Default::default()
+            });
     match word {
+        "capture" if !built.waits.until.is_empty() => refuse(
+            "wait",
+            "it reads at once; PANE opts … wait, then PANE opts capture",
+        ),
+        "capture" | "wait" if starts => refuse(
+            "program, name, size, place or the like",
+            "they go on what starts a pane: run, split, new-tab, respawn",
+        ),
+        "wait" if viewed => refuse(
+            "capture view",
+            "a wait prints the screen as it is; PANE opts … capture reads a view, and json goes after wait",
+        ),
         "new-tab" | "new-workspace" if !built.argv.is_empty() => refuse(
             "program",
             "it starts a shell; run starts a program, or `str LINE typed` types one",
         ),
-        "new-tab" | "new-workspace" | "split" if !built.waits.until.is_empty() => {
+        "new-tab" | "new-workspace" if !built.waits.until.is_empty() => {
             refuse("wait", "wait on the pane it leaves: PANE opts … wait")
         }
         "run" if built.typed.is_some() => refuse("typed line", "it starts no shell to type into"),
+        "respawn" if built.log.is_some() => refuse(
+            "log",
+            "PANE str FILE start-log keeps what it writes from now on",
+        ),
         "split" if built.name.is_some() || built.size.is_some() || built.log.is_some() => refuse(
             "name, size or log",
             "a pane takes its tab's; name, size and log-to are run's",
@@ -440,20 +548,40 @@ fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failu
     }
 }
 
-/// A wait as the server takes it, armed after an action when `after`.
-fn wait(waits: &Waits, after: bool) -> Option<Box<Wait>> {
-    (!waits.until.is_empty()).then(|| {
-        Box::new(Wait {
-            until: waits.until.clone(),
-            timeout: waits.timeout.unwrap_or(WAIT_TIMEOUT),
-            print: waits.print,
-            after,
-            echo: Vec::new(),
-            marks: waits.marks,
-            lines: 0,
-            all: true,
-        })
-    })
+/// The most input one send-keys sends: a request holds it whole.
+const INPUT_MAX: usize = 900 * 1024;
+
+/// How long an action waits for its pane to settle when it names nothing.
+pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The wait an action makes, armed before it when `after`: what it names;
+/// or, from a command line (`settle`), for each pane to settle.
+fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
+    let named = !waits.until.is_empty();
+    (named || settle).then(|| Box::new(waited(waits, after, SETTLE_TIMEOUT)))
+}
+
+/// The wait the `wait` word makes, with a wait's time either way: on a
+/// tab or workspace, for each of its panes.
+fn own_wait(waits: &Waits) -> Wait {
+    waited(waits, false, WAIT_TIMEOUT)
+}
+
+/// A wait for what `waits` names, else for the pane to settle (within
+/// `settle`, unless it says), said with what came.
+fn waited(waits: &Waits, after: bool, settle: Duration) -> Wait {
+    let settles = waits.until.is_empty();
+    Wait {
+        until: if settles {
+            vec![Until::Settled]
+        } else {
+            waits.until.clone()
+        },
+        timeout: (waits.timeout).unwrap_or(if settles { settle } else { WAIT_TIMEOUT }),
+        print: waits.print || settles,
+        after,
+        marks: waits.marks,
+    }
 }
 
 fn ask(command: Command, then: Then) -> Ask {
@@ -533,7 +661,14 @@ impl fuxth::Host for Host<'_> {
                     "tab" => Kind::Tab,
                     _ => Kind::Workspace,
                 };
-                match next()? {
+                // An action's answer is its pane.
+                let mut found = next()?;
+                if let Value::App(Fux::Answer(answer)) = &found
+                    && let Some(p) = answer.pane
+                {
+                    found = Value::App(Fux::Pane(p));
+                }
+                match found {
                     // An empty name names nothing: never the caller's own,
                     // which `here` is, so that an empty variable closes
                     // nothing.
@@ -586,13 +721,7 @@ impl fuxth::Host for Host<'_> {
             }
             // ---------------------------------------------------- starting
             "opts" => now(out, Value::App(Fux::Opts(Box::default()))),
-            "keys" => now(
-                out,
-                Value::App(Fux::Keys(Box::new(Keys {
-                    repeat: 1,
-                    ..Keys::default()
-                }))),
-            ),
+            "keys" => now(out, Value::App(Fux::Keys(Box::default()))),
             "command" => {
                 let mut o = next()?;
                 let line = string(name, &next()?)?;
@@ -645,11 +774,7 @@ impl fuxth::Host for Host<'_> {
             }
             "size" => {
                 let mut o = next()?;
-                let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
-                let size = (cols > 0 && rows > 0 && cols <= 500 && rows <= 500)
-                    .then(|| fux_vt::Size::new(rows, cols).ok())
-                    .flatten()
-                    .ok_or_else(|| fail("range", format!("size {cols} {rows}: each 1 to 500")))?;
+                let size = laid_out(name, &next()?, &next()?)?;
                 opts(name, &mut o)?.size = Some(size);
                 now(out, o)
             }
@@ -659,13 +784,15 @@ impl fuxth::Host for Host<'_> {
                 if !crate::command::shell_name(&key) {
                     return Err(fail(
                         "bad_value",
-                        format!("{key:?} is no variable's name (letters, digits and _)"),
+                        format!(
+                            "{key:?} is no variable's name (letters, digits and _, not first a digit)"
+                        ),
                     ));
                 }
                 opts(name, &mut o)?.env.push((key, value));
                 now(out, o)
             }
-            // On a capture's options, and on a wait's screen (`with-screen`),
+            // On a capture's options, and on what a wait prints,
             // whether among options, keys or a mouse event.
             "marks" => {
                 let mut x = next()?;
@@ -701,6 +828,12 @@ impl fuxth::Host for Host<'_> {
             "rows" | "cols" => {
                 let mut o = next()?;
                 let (from, to) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
+                if from > to {
+                    return Err(out_of_range(
+                        name,
+                        format!("{from} {to}: the first {name} before the last"),
+                    ));
+                }
                 let view = &mut opts(name, &mut o)?.view;
                 match name {
                     "rows" => view.rows = Some((from, to)),
@@ -731,7 +864,7 @@ impl fuxth::Host for Host<'_> {
                             json: false,
                             log: built.log,
                             ids: built.ids,
-                            then: wait(&built.waits, false),
+                            then: wait(&built.waits, false, self.settle),
                         }
                     }
                     "new-tab" => Command::NewTab {
@@ -777,6 +910,7 @@ impl fuxth::Host for Host<'_> {
                         run,
                         ids: built.ids,
                         json: false,
+                        then: wait(&built.waits, false, self.settle),
                     },
                     Then::Handle(Kind::Pane),
                 ))
@@ -785,13 +919,14 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
+                ignored(name, &built)?;
                 later(ask(
                     Command::Respawn {
                         target: Some(p),
                         kill: built.kill,
                         env: built.env,
                         argv: built.argv,
-                        then: wait(&built.waits, false),
+                        then: wait(&built.waits, false, self.settle),
                     },
                     Then::Handle(Kind::Pane),
                 ))
@@ -800,10 +935,12 @@ impl fuxth::Host for Host<'_> {
             "wait-text" | "wait-gone" => {
                 let x = next()?;
                 let t = string(name, &next()?)?;
-                if t.is_empty() || t.contains(['\n', '\t']) {
+                let bare = t.trim_start_matches('^').trim_end_matches('$').trim();
+                // A tab is a blank, as a wait compares: blanks as one.
+                if bare.is_empty() || t.contains(['\n', '\r']) {
                     return Err(fail(
                         "bad_value",
-                        "a text of one line, not empty, with no tab",
+                        "a text of one line, not empty (^ and $ alone hold nothing)",
                     ));
                 }
                 now(
@@ -818,32 +955,26 @@ impl fuxth::Host for Host<'_> {
                     })?,
                 )
             }
-            "wait-idle" | "timeout" => {
+            "timeout" => {
                 let x = next()?;
                 let n = count::<u64>(name, &next()?)?;
                 now(
                     out,
                     with(name, x, |w| {
-                        match name {
-                            "wait-idle" => w.until.push(Until::Idle(Duration::from_millis(n))),
-                            _ => w.timeout = Some(Duration::from_secs(n)),
-                        }
+                        w.timeout = Some(Duration::from_secs(n));
                         Ok(())
                     })?,
                 )
             }
-            "wait-change" | "wait-exit" | "wait-done" | "wait-bell" | "with-screen" => {
+            "wait-exit" | "wait-bell" => {
                 let x = next()?;
                 now(
                     out,
                     with(name, x, |w| {
-                        match name {
-                            "wait-change" => w.until.push(Until::Change(None)),
-                            "wait-exit" => w.until.push(Until::Exit),
-                            "wait-done" => w.until.push(Until::Done),
-                            "wait-bell" => w.until.push(Until::Bell),
-                            _ => w.print = true,
-                        }
+                        w.until.push(match name {
+                            "wait-exit" => Until::Exit,
+                            _ => Until::Bell,
+                        });
                         Ok(())
                     })?,
                 )
@@ -851,24 +982,18 @@ impl fuxth::Host for Host<'_> {
             "wait" => {
                 let p = target(name, &next()?)?.map(WsRef::Id);
                 let mut o = next()?;
-                let built = opts(name, &mut o)?.clone();
-                let Some(mut wait) = wait(&built.waits, false) else {
-                    return Err(fail(
-                        "no_condition",
-                        "wait needs a condition: wait-text, wait-idle, wait-exit, wait-done, …",
-                    ));
-                };
-                wait.all = false;
+                let built = opts(name, &mut o)?;
+                ignored(name, built)?;
                 later(ask(
                     Command::Wait {
                         targets: vec![p],
-                        wait: *wait,
+                        wait: own_wait(&built.waits),
                     },
                     Then::Outcome { waited: true },
                 ))
             }
             // ------------------------------------------------------- input
-            "text" | "key" | "paste" | "paste-file" | "times" | "if-revision" => {
+            "text" | "key" | "paste" | "paste-file" | "times" => {
                 let mut k = next()?;
                 let v = next()?;
                 let built = keys(name, &mut k)?;
@@ -887,9 +1012,9 @@ impl fuxth::Host for Host<'_> {
                     "paste" => built.inputs.push(Input::Paste(string(name, &v)?)),
                     "paste-file" => {
                         let path = string(name, &v)?;
-                        let read = bounded(&path, 900 * 1024)
+                        let read = bounded(&path, INPUT_MAX)
                             .map_err(|e| fail("paste", format!("{path}: {e}")))?;
-                        if read.len() > 900 * 1024 {
+                        if read.len() > INPUT_MAX {
                             return Err(fail(
                                 "paste",
                                 format!("{path}: more than 900 KiB, the most one paste takes"),
@@ -899,13 +1024,25 @@ impl fuxth::Host for Host<'_> {
                             .map_err(|_| fail("paste", format!("{path}: not UTF-8 text")))?;
                         built.inputs.push(Input::Paste(text));
                     }
-                    "times" => {
-                        built.repeat = count(name, &v)
+                    // The input just before it, n times in all.
+                    _ => {
+                        let n = int(name, &v)?;
+                        let n = usize::try_from(n)
                             .ok()
-                            .filter(|n| *n > 0)
-                            .ok_or_else(|| fail("range", "a count from 1"))?
+                            .filter(|n| (1..=1000).contains(n))
+                            .ok_or_else(|| {
+                                out_of_range(name, format!("{n}: a count from 1 to 1000"))
+                            })?;
+                        let Some(last) = built.inputs.last().cloned() else {
+                            return Err(fail(
+                                "no_keys",
+                                "times repeats the input before it: str Down key 3 times",
+                            ));
+                        };
+                        built
+                            .inputs
+                            .extend(std::iter::repeat_n(last, n.saturating_sub(1)));
                     }
-                    _ => built.if_revision = Some(count(name, &v)?),
                 }
                 now(out, k)
             }
@@ -916,21 +1053,35 @@ impl fuxth::Host for Host<'_> {
                 if built.inputs.is_empty() {
                     return Err(fail("no_keys", "send-keys needs keys: keys str hello text"));
                 }
-                let mut then = wait(&built.waits, true);
-                if let Some(wait) = &mut then {
-                    let (echo, lines) = crate::command::typed_lines(&built.inputs, built.repeat);
-                    wait.echo = echo;
-                    wait.lines = lines;
+                // As the request carries them, which must fit in one frame:
+                // text and pastes their bytes, keys their names' (`C-M-F12`
+                // 7), and each input after the first 5 bytes more.
+                let typed: usize = (built.inputs.iter())
+                    .map(|input| match input {
+                        Input::Text(text) | Input::Paste(text) => text.len(),
+                        Input::Key(key) => key.to_string().len(),
+                    })
+                    .fold(0usize, |sum, n| sum.saturating_add(n))
+                    .saturating_add(built.inputs.len().saturating_sub(1).saturating_mul(5));
+                if typed > INPUT_MAX {
+                    return Err(fail(
+                        "too_long",
+                        format!(
+                            "send-keys: {typed} bytes, more than 900 KiB, the most it sends at once \
+                             (text and pastes count their bytes, keys their names', each input \
+                             after the first 5 more)"
+                        ),
+                    ));
                 }
+                let then = wait(&built.waits, true, self.settle);
                 let waited = then.is_some();
                 let (targets, to_client) = match &to {
                     // Typed at its terminal: whatever pane they reach is the
                     // client's to choose, so there is none to wait on here.
-                    Value::App(Fux::Client(_)) if waited || built.if_revision.is_some() => {
+                    Value::App(Fux::Client(_)) if waited && !self.settle => {
                         return Err(fail(
                             "unused",
-                            "send-keys to a client takes no wait or if-revision: \
-                             wait on the pane after (PANE opts … wait)",
+                            "send-keys to a client takes no wait: wait on the pane after (PANE opts … wait)",
                         ));
                     }
                     Value::App(Fux::Client(c)) => (Vec::new(), Some(*c)),
@@ -948,9 +1099,7 @@ impl fuxth::Host for Host<'_> {
                     Command::SendKeys {
                         targets,
                         client: to_client,
-                        if_revision: built.if_revision,
                         inputs: built.inputs,
-                        repeat: built.repeat,
                         then,
                     },
                     Then::Outcome { waited },
@@ -983,7 +1132,6 @@ impl fuxth::Host for Host<'_> {
                         mouse,
                         row,
                         col,
-                        if_revision: None,
                         waits: Waits::default(),
                     }))),
                 )
@@ -1000,12 +1148,11 @@ impl fuxth::Host for Host<'_> {
                         return Err(wrong(name, "a mouse event (from mouse)", &other));
                     }
                 };
-                let then = wait(&m.waits, true);
+                let then = wait(&m.waits, true, self.settle);
                 let waited = then.is_some();
                 later(ask(
                     Command::SendMouse {
                         target: Some(p),
-                        if_revision: m.if_revision,
                         mouse: m.mouse,
                         row: m.row,
                         col: m.col,
@@ -1039,13 +1186,16 @@ impl fuxth::Host for Host<'_> {
                         ));
                     }
                 };
+                // From a command line: answers once the program exited or settled.
+                let then = wait(&Waits::default(), true, self.settle);
+                let waited = then.is_some();
                 later(ask(
                     Command::Signal {
                         target: Some(p),
                         signal,
-                        then: None,
+                        then,
                     },
-                    Then::Nothing,
+                    Then::Outcome { waited },
                 ))
             }
             // ----------------------------------------------------- reading
@@ -1053,13 +1203,23 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
-                let then = if built.json { Then::Text } else { Then::Answer };
+                ignored(name, &built)?;
+                let then = if built.json {
+                    Then::Json("a capture")
+                } else {
+                    Then::Answer("a capture")
+                };
+                // From a command line, read once the pane settles.
+                let settle = self
+                    .settle
+                    .then(|| built.waits.timeout.unwrap_or(SETTLE_TIMEOUT));
                 later(ask(
                     Command::CapturePane {
                         target: Some(p),
                         history: built.history,
                         view: built.view,
                         json: built.json,
+                        settle,
                     },
                     then,
                 ))
@@ -1070,7 +1230,7 @@ impl fuxth::Host for Host<'_> {
                     target: None,
                     get: None,
                 },
-                Then::Answer,
+                Then::Answer("a listing"),
             )),
             "info" => {
                 let t = target(name, &next()?)?;
@@ -1080,7 +1240,7 @@ impl fuxth::Host for Host<'_> {
                         target: Some(t.map(WsRef::Id)),
                         get: None,
                     },
-                    Then::Answer,
+                    Then::Answer("a listing"),
                 ))
             }
             "get" => {
@@ -1102,10 +1262,9 @@ impl fuxth::Host for Host<'_> {
                     opts.json = true;
                     now(out, Value::App(Fux::Opts(opts)))
                 }
-                Value::App(Fux::Answer(answer)) => match (&answer.json, &answer.query) {
-                    (Some(json), _) => now(out, Value::str(json.clone())),
-                    (None, Some(query)) => later(ask(as_json(query.clone()), Then::Text)),
-                    (None, None) => now(
+                Value::App(Fux::Answer(answer)) => match &answer.json {
+                    Some(json) => now(out, Value::str(json.clone())),
+                    None => now(
                         out,
                         Value::str(crate::json::Json::str(answer.text.clone()).render()),
                     ),
@@ -1178,11 +1337,7 @@ impl fuxth::Host for Host<'_> {
             )),
             "resize" => {
                 let t = target(name, &next()?)?.map(WsRef::Id);
-                let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
-                let size = fux_vt::Size::new(rows, cols)
-                    .ok()
-                    .filter(|_| cols <= 500 && rows <= 500)
-                    .ok_or_else(|| fail("range", "columns and rows each 1 to 500"))?;
+                let size = laid_out(name, &next()?, &next()?)?;
                 later(ask(
                     Command::Resize {
                         what: Resized::Tabs(t),
@@ -1206,7 +1361,7 @@ impl fuxth::Host for Host<'_> {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
-                    .ok_or_else(|| fail("range", "columns and rows each from 1"))?;
+                    .ok_or_else(|| out_of_range(name, "columns and rows each from 1"))?;
                 later(ask(
                     Command::Resize {
                         what: Resized::Client(c),
@@ -1245,7 +1400,10 @@ impl fuxth::Host for Host<'_> {
             "percent" => {
                 let n = int(name, &next()?)?;
                 let Some(n) = u8::try_from(n).ok().filter(|n| (1..=100).contains(n)) else {
-                    return Err(fail("range", format!("percent takes 1 to 100, not {n}")));
+                    return Err(out_of_range(
+                        name,
+                        format!("percent takes 1 to 100, not {n}"),
+                    ));
                 };
                 now(out, Value::App(Fux::Extent(Extent::Percent(n))))
             }
@@ -1395,7 +1553,7 @@ impl fuxth::Host for Host<'_> {
             "headless" => {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 if cols == 0 || rows == 0 {
-                    return Err(fail("range", "a size of at least 1 by 1"));
+                    return Err(out_of_range(name, "a size of at least 1 by 1"));
                 }
                 later(Ask::Local(Local::Headless { cols, rows }))
             }
@@ -1405,7 +1563,16 @@ impl fuxth::Host for Host<'_> {
                     "next" => PanePick::Step(Sibling::Next),
                     "previous" => PanePick::Step(Sibling::Previous),
                     "last" => PanePick::Last,
-                    other => PanePick::Toward(direction(name, &Value::str(other))?),
+                    other => {
+                        PanePick::Toward(direction(name, &Value::str(other)).map_err(|_| {
+                            fail(
+                                "bad_value",
+                                format!(
+                                    "{other:?} is not left, right, up, down, next, previous or last"
+                                ),
+                            )
+                        })?)
+                    }
                 };
                 later(act(c, ClientAction::SelectPane(pick)))
             }
@@ -1505,7 +1672,7 @@ impl fuxth::Host for Host<'_> {
                         client: Some(c),
                         action: ClientAction::Capture { json: false },
                     },
-                    Then::Answer,
+                    Then::Answer("a capture"),
                 ))
             }
             // ------------------------------------------------------ server
@@ -1603,16 +1770,11 @@ impl fuxth::Host for Host<'_> {
             }
             "check" => {
                 let path = string(name, &next()?)?;
-                let text = bounded(&path, 16 << 20)
-                    .ok()
-                    .filter(|t| t.len() <= 16 << 20)
-                    .and_then(|t| String::from_utf8(t).ok())
-                    .ok_or_else(|| {
-                        fail(
-                            "read",
-                            format!("{path}: not a fuxth file of at most 16 MiB"),
-                        )
-                    })?;
+                // Read as running it reads it, and refused alike.
+                let text = std::fs::File::open(&path)
+                    .map_err(|e| super::read_failed(&path, &e.to_string()))
+                    .and_then(|file| super::source(&path, file))
+                    .map_err(|f| fail("read", f.message))?;
                 let tokens =
                     fuxth::token::source(&path, &text).map_err(|e| fail("check", e.to_string()))?;
                 super::compile(&tokens).map_err(|e| fail("check", e.to_string()))?;
@@ -1733,66 +1895,6 @@ impl Host<'_> {
     }
 }
 
-/// The same query, its answer as JSON.
-fn as_json(query: Command) -> Command {
-    match query {
-        Command::Ls { target, get, .. } => Command::Ls {
-            json: true,
-            target,
-            get,
-        },
-        Command::CapturePane {
-            target,
-            history,
-            view,
-            ..
-        } => Command::CapturePane {
-            target,
-            history,
-            view,
-            json: true,
-        },
-        Command::Client {
-            client,
-            action: ClientAction::Capture { .. },
-        } => Command::Client {
-            client,
-            action: ClientAction::Capture { json: true },
-        },
-        other @ (Command::KillServer { .. }
-        | Command::NewWorkspace { .. }
-        | Command::NewTab { .. }
-        | Command::Split { .. }
-        | Command::Run { .. }
-        | Command::Respawn { .. }
-        | Command::Notify { .. }
-        | Command::Resize { .. }
-        | Command::Wait { .. }
-        | Command::SendMouse { .. }
-        | Command::KillPane { .. }
-        | Command::Signal { .. }
-        | Command::KillTab { .. }
-        | Command::KillWorkspace { .. }
-        | Command::Rename { .. }
-        | Command::MovePane { .. }
-        | Command::SwapPane { .. }
-        | Command::ResizePane { .. }
-        | Command::SendKeys { .. }
-        | Command::Events { .. }
-        | Command::DumpLayout { .. }
-        | Command::Grant { .. }
-        | Command::Log { .. }
-        | Command::ClearHistory { .. }
-        | Command::Reorder { .. }
-        | Command::Set { .. }
-        | Command::Resolve { .. }
-        | Command::ListBuffers
-        | Command::ShowBuffer { .. }
-        | Command::PasteBuffer { .. }
-        | Command::Client { .. }) => other,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1836,6 +1938,44 @@ mod tests {
             .find(|w| w.name == "send-keys")
             .map(Word::gives);
         assert_eq!(send, Some(0..=1), "an outcome only with a wait");
+    }
+
+    /// `wait` has a wait's time, settling or not; an action settles within
+    /// its own.
+    #[test]
+    fn a_wait_of_its_own_has_a_waits_time() {
+        let settle = own_wait(&Waits::default());
+        assert_eq!(
+            (settle.until, settle.timeout),
+            (vec![Until::Settled], WAIT_TIMEOUT)
+        );
+        let text = Waits {
+            until: vec![Until::Text("x".into())],
+            ..Waits::default()
+        };
+        assert_eq!(own_wait(&text).timeout, WAIT_TIMEOUT);
+        let action = wait(&Waits::default(), true, true).map(|w| w.timeout);
+        assert_eq!(action, Some(SETTLE_TIMEOUT));
+    }
+
+    /// An answer in a list is its object; one of several panes, an array of
+    /// theirs: JSON either way.
+    #[test]
+    fn an_answer_of_several_panes_is_an_array() {
+        let answer = |json: &str| {
+            json_of(&Value::App(Fux::Answer(Box::new(super::super::Answer {
+                text: String::new(),
+                json: Some(json.to_owned()),
+                kind: "an answer of several panes",
+                pane: None,
+            }))))
+            .render()
+        };
+        assert_eq!(answer("{\"pane\":\"%1\"}\n"), "{\"pane\":\"%1\"}");
+        assert_eq!(
+            answer("{\"pane\":\"%1\"}\n{\"pane\":\"%2\"}\n"),
+            "[{\"pane\":\"%1\"},{\"pane\":\"%2\"}]"
+        );
     }
 
     #[test]

@@ -725,6 +725,15 @@ impl Parser {
     pub fn clear_history(&mut self) {
         self.screen.clear_history();
     }
+    /// Starts or stops keeping the rows scrolls let go
+    /// ([`Screen::keep_departed`]).
+    pub fn keep_departed(&mut self, keep: bool) {
+        self.screen.keep_departed(keep);
+    }
+    /// Forgets the rows let go so far ([`Screen::forget_departed`]).
+    pub fn forget_departed(&mut self) {
+        self.screen.forget_departed();
+    }
     /// Tells the parser what the host's terminal shows for palette entries
     /// 0 to 15, the ones themes change (`None`: the host does not know
     /// that one), replacing what it told before, with `Feature::Palette`: a

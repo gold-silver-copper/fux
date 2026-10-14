@@ -101,17 +101,18 @@ def one(tool, task, slot, fux_bin, model, timeout, tag="run"):
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     env = agent_env(slot, tool, fux_bin, work)
+    fixtures = run.prepare(task, work)
     if task.get("args", {}).get("setup_lines"):
         with open(os.path.join(work, "data.txt"), "w") as f:
             f.write("".join(f"{i}\n" for i in range(task["args"]["setup_lines"])))
-    if task["recipe"] == "less_search":
+    if task.get("recipe") == "less_search":
         with open(os.path.join(work, "lines.data"), "w") as f:
             f.write("".join(f"row {i}{' needle here' if i == 338 else ''}\n" for i in range(1, 600)))
-    if task["recipe"] == "nvim_edit":
+    if task.get("recipe") == "nvim_edit":
         open(os.path.join(work, "edit.txt"), "w").close()
     d = run.driver_for(tool, work, env, fux_bin)
     d.start()
-    goal = task["goal"].replace("{fx}", run.FX)
+    goal = run.goal(task, work, fixtures)
     prompt = PROMPT.format(learn=LEARN[tool], goal=goal, work=work)
     started = time.time()
     record = {"tool": tool, "task": task["id"], "cat": task["cat"]}

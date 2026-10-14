@@ -257,6 +257,41 @@ impl<'a> Row<'a> {
             cell.read_as(text, last.1)
         })
     }
+    /// The row's text, a cell at a time: a blank cell, or one holding a
+    /// placeholder, as a space, the second half of a wide glyph left out,
+    /// and the blanks at its end kept.
+    pub fn cells_text(&self) -> String {
+        (self.cells().filter(|c| !c.is_wide_continuation()))
+            .map(|c| match c.contents() {
+                text if c.has_contents() && text != PLACEHOLDER => text,
+                _ => " ",
+            })
+            .collect()
+    }
+}
+
+/// A row a scroll let go, unretained since ([`Screen::keep_departed`]):
+/// scrolled out of the alternate screen or a scroll region, which keep no
+/// history, or history's oldest, let go past its limit.
+#[derive(Clone, Debug)]
+pub struct Departed {
+    /// Its place among the rows let go while they were kept: one more
+    /// than the row before's.
+    pub seq: u64,
+    /// Its identity, as it had while retained.
+    pub id: RowId,
+    version: u64,
+    /// Whether its line went on in the row after it.
+    pub wrapped: bool,
+    /// Its text, as [`Row::cells_text`] read it.
+    pub text: String,
+}
+
+impl Departed {
+    /// Whether the row had changed since `mark` was taken.
+    pub fn changed_since(&self, mark: Mark) -> bool {
+        self.version > mark.0
+    }
 }
 
 /// Input/resource errors. Failing size changes leave the old screen intact.

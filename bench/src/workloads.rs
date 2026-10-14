@@ -443,6 +443,7 @@ fn paint(
             run: false,
             ids: Vec::new(),
             json: false,
+            then: None,
         };
         s.run_command(&split, &fux::session::Origin::default());
     }

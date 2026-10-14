@@ -1,0 +1,6 @@
+name: "ledger$HOME"
+
+paths:
+	- literal/$(date)
+	- café/β
+end: "\n is text"

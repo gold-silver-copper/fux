@@ -19,13 +19,15 @@ dependencies = [
  "fux-vt",
  "fuxix",
  "fuxth",
+ "libc",
+ "seccompiler",
  "signal-hook",
  "unicode-width",
 ]
 
 [[package]]
 name = "fux-vt"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -33,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
 ]
@@ -47,6 +49,15 @@ name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+
+[[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "signal-hook"

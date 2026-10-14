@@ -59,7 +59,7 @@ fn settings_reach_the_server() -> Outcome {
     let server = Server::start("str history-lines 3 set")?;
     // History lines apply to new panes.
     let pane = server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
-    let pane = pane.trim();
+    let pane = pane.split_whitespace().next().unwrap_or_default();
     server.type_line(
         pane,
         "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do echo h$i; done",
@@ -82,7 +82,12 @@ fn settings_reach_the_server() -> Outcome {
     let custom = server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
     eventually("the custom prompt", || {
         Ok(server
-            .ok(&["str", custom.trim(), "pane", "screen"])?
+            .ok(&[
+                "str",
+                custom.split_whitespace().next().unwrap_or_default(),
+                "pane",
+                "screen",
+            ])?
             .contains("custom$"))
     })?;
     // Bad values are refused; keys are a client's, never the server's.
@@ -125,5 +130,63 @@ fn a_bad_config_is_reported() -> Outcome {
     );
     std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
     assert!(server.ok(&["str", &path, "check"])?.ends_with(": ok\n"));
+    Ok(())
+}
+
+/// The examples of the words a config uses check as a config: none binds
+/// after a key bound by default.
+#[test]
+fn the_config_words_examples_check() -> Outcome {
+    let server = Server::start("")?;
+    let config = server.dir.join("config.fux");
+    let path = config.to_string_lossy().into_owned();
+    for word in ["bind", "bind-root", "prefix"] {
+        let explained = server.ok(&["str", word, "explain"])?;
+        let example = (explained.lines())
+            .find_map(|line| line.split_once("; e.g. "))
+            .map(|(_, example)| example)
+            .ok_or(format!("no example: {explained}"))?;
+        std::fs::write(&config, example).map_err(e)?;
+        let checked = server.fux(&["str", &path, "check"])?;
+        assert_eq!(checked.status, 0, "{example}: {}", checked.stderr);
+    }
+    Ok(())
+}
+
+/// `update-environment` names what a new pane takes from the client that
+/// made it: one the client has is passed on; one it lacks is removed, even
+/// though the server has it (here `ENV`, which the test server is given).
+#[test]
+fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
+    let server = Server::start("str update-environment str 'ENV FUXT_GIVEN' set")?;
+    let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"";
+    let out = std::process::Command::new(FUX)
+        .args([
+            "opts",
+            "str",
+            "sh",
+            "program",
+            "str",
+            "-c",
+            "arg",
+            "str",
+            shown,
+            "arg",
+            "str",
+            "FUXT_OTHER",
+            "str",
+            "x",
+            "env",
+            "run",
+        ])
+        .env("FUX_SOCKET", &server.socket)
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env_remove("FUX_PANE")
+        .env_remove("ENV")
+        .env("FUXT_GIVEN", "yes")
+        .output()
+        .map_err(e)?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[unset] [yes]"), "{stdout}");
     Ok(())
 }

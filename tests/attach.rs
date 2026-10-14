@@ -628,8 +628,10 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     let pane = pane.trim();
     let mut fields = Vec::new();
     eventually("the program's report", || {
-        let screen = server.ok(&["str", pane, "pane", "opts", "capture"])?;
-        let mut lines = screen.lines().skip_while(|l| l.trim().is_empty());
+        // It sleeps, so it never settles: `0 timeout` looks at once. The
+        // answer's first line is the pane's state.
+        let screen = server.ok(&["str", pane, "pane", "opts", "0", "timeout", "capture"])?;
+        let mut lines = (screen.lines().skip(1)).skip_while(|l| l.trim().is_empty());
         fields = lines
             .next()
             .unwrap_or_default()
@@ -703,9 +705,14 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     let server = Server::start("")?;
     let missing = server.dir.join("no-such-shell");
     let not_executable = server.dir.join("server.log");
+    let script = server.dir.join("script");
+    std::fs::write(&script, "#!/no/such/sh -e\necho hi\n").map_err(e)?;
+    let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&script, executable).map_err(e)?;
     for (program, error) in [
         (&missing, "No such file or directory (os error 2)"),
         (&not_executable, "Permission denied (os error 13)"),
+        (&script, "its interpreter /no/such/sh does not exist"),
     ] {
         let program = program.to_string_lossy();
         server.ok(&["str", "shell", "str", &program, "set"])?;

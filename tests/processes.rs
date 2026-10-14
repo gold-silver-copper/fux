@@ -9,6 +9,31 @@ use support::*;
 /// room for a loaded machine.
 const GONE_WITHIN: Duration = Duration::from_secs(3);
 
+/// Types a line whose program keeps running, in the foreground, once the
+/// pane's shell shows a prompt: a sleeping program never settles, so the
+/// keys answer at once (`0 timeout`).
+fn start_line(server: &Server, pane: &str, line: &str) -> Outcome {
+    eventually(&format!("a prompt in {pane}"), || {
+        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+    })?;
+    server.ok(&[
+        "str",
+        pane,
+        "pane",
+        "keys",
+        "str",
+        line,
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
+    Ok(())
+}
+
 fn gone(pid: i32, what: &str) -> Outcome {
     let deadline = after(GONE_WITHIN);
     while alive(pid) {
@@ -68,7 +93,21 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
             "kill-pane" => {
                 server.ok(&["str", &pane, "pane", "kill"])?;
             }
-            "exit" => server.type_line(&pane, "exit")?,
+            // The shell exits and its pane closes: answered with status 4.
+            "exit" => {
+                let keys = [
+                    "keys",
+                    "str",
+                    "exit",
+                    "text",
+                    "str",
+                    "Enter",
+                    "key",
+                    "send-keys",
+                ];
+                let out = server.fux(&[&["str", &pane, "pane"][..], &keys].concat())?;
+                assert!(matches!(out.status, 0 | 4), "{}", out.stderr);
+            }
             _ => {
                 server.ok(&["str", "doomed", "workspace", "kill"])?;
             }
@@ -88,7 +127,8 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let (pane, shell) = server.newest_pane()?;
     let job = server.dir.join("job");
     let front = server.dir.join("front");
-    server.type_line(
+    start_line(
+        &server,
         &pane,
         &format!(
             "sleep 300 & echo $! > '{}'; sh -c 'echo $$ > \"$0\"; exec sleep 302' '{}'",
@@ -98,12 +138,9 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     )?;
     let (job, front) = (pid_in(&job)?, pid_in(&front)?);
     let _reap = Reap(vec![job, front]);
-    eventually("the foreground program running", || {
-        Ok(server
-            .fux(&["str", &pane, "pane", "str", "TERM", "signal"])?
-            .status
-            == 0)
-    })?;
+    // It answers once the program ended and the shell reads again.
+    let answer = server.ok(&["str", &pane, "pane", "str", "TERM", "signal"])?;
+    assert!(answer.starts_with(&format!("{pane} {READING}")), "{answer}");
     gone(front, "the foreground program, after signal TERM")?;
     assert!(alive(job), "signal ended a background job");
     assert!(alive(shell), "signal ended the shell");
@@ -177,7 +214,8 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
     let (pane, _) = server.newest_pane()?;
     let front = server.dir.join("front");
-    server.type_line(
+    start_line(
+        &server,
         &pane,
         &format!(
             "sh -c 'echo $$ > \"$0\"; exec sleep 300' '{}'",

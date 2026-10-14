@@ -21,18 +21,22 @@ usage: fux                 attach, starting a server if none runs
 fuxth is a small Forth: words run left to right, each taking what the words
 before it left. A number is a value; `%2`, `@2`, `+1` alone are a pane, a tab,
 a workspace; `str WORD` pushes WORD as text, however it looks; any other bare
-word runs. What is left at the end is printed, a value a line. A failure
-prints `fux: CODE: MESSAGE` on stderr, with how the word is used; a wait's
-status is the exit status (3 exited, 4 closed, 5 unchanged, 6 changed, 124
-timeout), any other failure 1. Each `fux` is a fresh program.
+word runs. What is left at the end is printed, a value a line. An action
+answers once its pane settles (10s at most; a wait, or an action given a
+wait, 60s; `SECS timeout` changes it, `0 timeout` answers at once). A
+failure prints `fux: CODE: MESSAGE` on stderr, with how the word is used
+(one of fux's own); an action's or a wait's status is the exit status (3
+exited first, 4 closed, 7 the program is blocked reading its terminal and
+the text has not come, 124 still busy), any other failure 1. Each `fux` is a fresh program.
 
 Most steps have one of these shapes (UPPER = what you fill in):
 
-  fux opts OPTIONS run                  start a program; prints its pane, %2
-  fux %2 keys INPUT [WAIT] send-keys    type: str T text, str Enter key, …
-  fux %2 opts WAIT wait                 wait: str T wait-text, 300 wait-idle, …
-  fux %2 opts READ capture              read: 100 history, marks, json, …
-  fux %2 str FIELD get                  one value: exited, pid, revision, …
+  fux opts OPTIONS run                  start a program; answers once it settles: %2 reading, then its output
+  fux %2 keys INPUT send-keys           type: str T text, str Enter key, …; answers as run does
+  fux %3 str 'make test' line           a shell command: answers `%3 reading · done 0` and its output
+  fux %2 opts [WAIT] wait               settle, or wait for str T wait-text, wait-exit, …
+  fux %2 opts READ capture              read once settled: 100 history, marks, json, …
+  fux %2 str FIELD get                  one value: state, exited, pid, …
 
   fux opts str 'htop -d 5' command run  start htop
   fux %2 str Load await                 wait until it shows Load
@@ -78,17 +82,29 @@ One word at length: `fux str WORD explain`.
 
 /// The prelude's and library's words: each name, stack effect, what it
 /// does, and its definition, from the comment before its `define`:
-/// `# pane text -- : what it does`.
-pub fn library() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
-    let mut words = Vec::new();
+/// `# pane text -- : what it does`. A definition over several lines is
+/// its indented body and the `end` closing it.
+pub fn library() -> Vec<(&'static str, &'static str, &'static str, String)> {
+    let mut words: Vec<(_, _, _, String)> = Vec::new();
     let mut comment = None;
+    let mut open = false;
     for line in fuxth::STDLIB.lines().chain(LIBRARY.lines()) {
+        if open && (line.starts_with("  ") || line == "end") {
+            if let Some((.., code)) = words.last_mut() {
+                code.push_str("\n  ");
+                code.push_str(line);
+            }
+            open = line != "end";
+            continue;
+        }
+        open = false;
         if let Some(text) = line.strip_prefix("# ") {
             comment = text.split_once(" : ");
         } else if let Some(rest) = line.strip_prefix("define ") {
             let name = rest.split_whitespace().next().unwrap_or_default();
             if let Some((effect, about)) = comment.take() {
-                words.push((name, effect, about, line));
+                words.push((name, effect, about, line.to_owned()));
+                open = true;
             }
         }
     }
@@ -103,9 +119,13 @@ pub fn explain(name: &str) -> Option<String> {
             out.push_str(&format!("\n{usage}\n"));
         }
         if let Some(takes) = options(name) {
-            out.push_str(&format!(
-                "\nIts options, after opts (or keys) and before {name}:\n"
-            ));
+            // What they go on: send-keys' input, send-mouse's event.
+            let on = match name {
+                "send-keys" => "keys (opts is refused)",
+                "send-mouse" => "mouse",
+                _ => "opts",
+            };
+            out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
             for option in takes {
                 if let Some(w) = WORDS.iter().find(|w| w.name == *option) {
                     out.push_str(&format!("  {:<14} {:<26} {}\n", w.name, w.effect, w.about));
@@ -129,38 +149,45 @@ pub fn explain(name: &str) -> Option<String> {
             builtin.about()
         ));
     }
-    let language = match name {
-        "if" | "else" | "then" => "bool if … else … then: runs one branch",
-        "begin" | "until" => "begin … bool until: runs until the bool is true",
-        "define" | "end" => {
-            "define NAME … end: a word of your own; it may call itself (end also closes list and each)"
-        }
-        "let" => "x let NAME: NAME pushes x from then on (in a definition, for that call)",
-        "list" => {
-            "list … end: a list of the values its body leaves; the body starts with an empty stack"
-        }
-        "each" => {
-            "seq each … end: the body once per element of a string or list, the element pushed"
-        }
-        "str" => "str WORD: WORD as text, whatever it looks like",
+    let (shape, about) = syntax(name)?;
+    Some(format!("{name}  {shape}: {about}\n"))
+}
+
+/// A word of the language's own syntax: how it is written, and what it
+/// does.
+pub(crate) fn syntax(name: &str) -> Option<(&'static str, &'static str)> {
+    Some(match name {
+        "if" | "else" | "then" => ("BOOL if … else … then", "runs one branch"),
+        "begin" | "until" => ("begin … BOOL until", "runs until the bool is true"),
+        "define" | "end" => (
+            "define NAME … end",
+            "a word of your own; it may call itself (end also closes list and each)",
+        ),
+        "let" => (
+            "X let NAME",
+            "NAME pushes X from then on (in a definition, for that call)",
+        ),
+        "list" => (
+            "list … end",
+            "a list of the values its body leaves; the body starts with an empty stack",
+        ),
+        "each" => (
+            "SEQ each … end",
+            "the body once per element of SEQ, a string or list, the element pushed",
+        ),
+        "str" => ("str WORD", "WORD as text, whatever it looks like"),
         _ => return None,
-    };
-    Some(format!("{name}  {language}\n"))
+    })
 }
 
 /// The words that build what a word takes: its options, or its input.
 fn options(name: &str) -> Option<&'static [&'static str]> {
-    const WAITS: [&str; 10] = [
+    const WAITS: [&str; 5] = [
         "wait-text",
         "wait-gone",
-        "wait-idle",
-        "wait-change",
         "wait-exit",
-        "wait-done",
         "wait-bell",
         "timeout",
-        "with-screen",
-        "marks",
     ];
     Some(match name {
         "run" => &[
@@ -175,7 +202,6 @@ fn options(name: &str) -> Option<&'static [&'static str]> {
             "log-to",
             "id",
             "wait-text",
-            "wait-idle",
             "wait-exit",
             "timeout",
         ],
@@ -214,6 +240,7 @@ fn options(name: &str) -> Option<&'static [&'static str]> {
             "rows",
             "cols",
             "json",
+            "timeout",
         ],
         "wait" => &WAITS,
         "send-keys" => &[
@@ -222,22 +249,11 @@ fn options(name: &str) -> Option<&'static [&'static str]> {
             "paste",
             "paste-file",
             "times",
-            "if-revision",
             "wait-text",
-            "wait-idle",
-            "wait-done",
-            "wait-change",
+            "wait-exit",
             "timeout",
-            "with-screen",
-            "marks",
         ],
-        "send-mouse" => &[
-            "wait-text",
-            "wait-idle",
-            "wait-change",
-            "timeout",
-            "with-screen",
-        ],
+        "send-mouse" => &["wait-text", "wait-exit", "timeout"],
         _ => return None,
     })
 }
@@ -248,12 +264,13 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "run" => "fux opts str app name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 opts vertical split",
         "command" => "fux opts str 'python3 -I app.py --fast' command run",
-        "new-tab" => "fux opts str logs name new-tab",
+        "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 opts kill-first respawn",
-        "wait-text" | "wait" => "fux %3 opts str ready wait-text 30 timeout wait",
-        "wait-idle" => "fux %3 opts 500 wait-idle wait",
-        "wait-done" => "fux %3 keys str make text str Enter key wait-done send-keys",
+        "wait" => "fux %3 opts wait",
+        "wait-text" => "fux %3 opts str ready wait-text 30 timeout wait",
+        "times" => "fux %3 keys str Down key 2 times str Enter key send-keys",
+        "line" => "fux %3 str 'make test' line",
         "send-keys" => "fux %3 keys str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 keys str C-c key send-keys",
         "capture" => "fux %3 opts 100 history capture",
@@ -266,14 +283,13 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "resize-x" => "fux %3 30 percent resize-x",
         "move-to" => "fux %3 str new-tab move-to",
         "focus" => "fux str c1 client str left focus",
-        "bind" => "str 'v h' str 'me focused opts horizontal split drop' bind",
+        "bind" => "str 'g v' str 'me focused opts horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",
         "set" => "fux str history-lines 50000 set",
         "server" => "fux str test server start opts str ./app program run",
         "headless" => "fux 100 30 headless",
         "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",
-        "if-revision" => "fux %3 keys 42 if-revision str y text send-keys",
         _ => return None,
     })
 }
@@ -309,8 +325,17 @@ mod tests {
             }
         }
         assert!(library().len() >= 5);
+        // A word defined over several lines shows all of them.
+        let range = explain("range").unwrap_or_default();
+        assert!(range.contains("  define range\n    let to\n"), "{range}");
+        assert!(range.ends_with("\n  end\n"), "{range}");
         for (name, ..) in library() {
             assert!(explain(name).is_some(), "{name}");
+        }
+        // Each word's options go on what it takes.
+        for (name, on) in [("send-keys", "after keys"), ("run", "after opts")] {
+            let explained = explain(name).unwrap_or_default();
+            assert!(explained.contains(&format!("options, {on}")), "{explained}");
         }
         assert!(AGENTS.contains("fux "));
     }

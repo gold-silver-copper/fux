@@ -12,6 +12,30 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 use support::*;
 
+/// Types a line into a pane once its shell shows a prompt, answering at
+/// once (`0 timeout`): what it starts keeps running, so it never settles.
+fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
+    eventually(&format!("a prompt in {pane}"), || {
+        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+    })?;
+    server.ok(&[
+        "str",
+        pane,
+        "pane",
+        "keys",
+        "str",
+        line,
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
+    Ok(())
+}
+
 /// SIGTERM, SIGINT and SIGHUP each stop a server: every attached client is
 /// told why, and the socket is removed.
 #[test]
@@ -154,12 +178,32 @@ fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
     Ok(())
 }
 
-/// With no `set shell`, a pane runs `$SHELL`, and with no `$SHELL`,
-/// `/bin/sh`. Each server has a socket of its own (never the default, which
-/// a real server may hold).
+/// The login shell `/etc/passwd` gives this user, if it gives one.
+fn login_shell() -> Option<String> {
+    let euid = fuxix::process::geteuid().to_string();
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        (fields.get(2) == Some(&euid.as_str()))
+            .then(|| fields.get(6).map(|s| s.trim().to_owned()))
+            .flatten()
+            .filter(|s| !s.is_empty())
+    })
+}
+
+/// With no `set shell`, a pane runs `$SHELL`; with no `$SHELL`, the user's
+/// login shell from `/etc/passwd`, and with none there, `/bin/sh`. Each
+/// server has a socket of its own (never the default, which a real server
+/// may hold).
 #[test]
-fn a_pane_runs_shell_else_bin_sh() -> Outcome {
-    for (shell, name) in [(Some("/bin/bash"), "bash"), (None, "sh")] {
+fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
+    let unset = login_shell().unwrap_or_else(|| "/bin/sh".into());
+    let unset = Path::new(&unset)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("the login shell's name")?
+        .to_owned();
+    for (shell, name) in [(Some("/bin/bash"), "bash"), (None, unset.as_str())] {
         let dir = fuxix::file::scratch()
             .map_err(e)?
             .join(format!("fux-shell-{name}-{}", std::process::id()));
@@ -222,7 +266,8 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     client.wait_for("$")?;
     // Every frame different, and the whole screen: far more paint than a
     // client may have waiting.
-    server.type_line(
+    type_now(
+        &server,
         "%1",
         "i=0; while :; do i=$((i+1)); printf '%0199d\\n' $i; done",
     )?;

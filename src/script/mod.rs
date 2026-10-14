@@ -53,7 +53,7 @@ impl AppValue for Fux {
             Fux::Keys(_) => "keys (from keys)",
             Fux::Mouse(_) => "a mouse event (from mouse)",
             Fux::Extent(_) => "a size (from percent)",
-            Fux::Answer(_) => "an answer",
+            Fux::Answer(answer) => answer.kind,
         }
     }
 
@@ -119,8 +119,6 @@ pub struct Opts {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Keys {
     pub inputs: Vec<Input>,
-    pub repeat: u16,
-    pub if_revision: Option<u64>,
     pub waits: Waits,
 }
 
@@ -130,17 +128,19 @@ pub struct MouseEvent {
     pub mouse: Mouse,
     pub row: u16,
     pub col: u16,
-    pub if_revision: Option<u64>,
     pub waits: Waits,
 }
 
-/// What the server answered, to print as text, or as JSON (asked again
-/// for, by `query`, if it was not given).
+/// What the server answered, to print as text, or as JSON: the JSON the
+/// server gave with it, read at the same moment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Answer {
     pub text: String,
     pub json: Option<String>,
-    pub query: Option<Command>,
+    /// What it is, said where it is refused: `a capture`, `a listing`.
+    pub kind: &'static str,
+    /// The pane an action's answer is of: a word that wants a pane takes it.
+    pub pane: Option<crate::id::PaneId>,
 }
 
 /// What an application word asks while the program waits.
@@ -164,8 +164,12 @@ pub enum Then {
     Nothing,
     /// The pane, tab or workspace it made or found, of `Kind`.
     Handle(Kind),
-    /// Its text, as an answer `json` can show as JSON.
-    Answer,
+    /// Its text, as an answer `json` can show as JSON: what it is, as
+    /// [`Answer::kind`].
+    Answer(&'static str),
+    /// Its text, which is JSON: an answer as [`Then::Answer`] makes, that
+    /// prints it and that `json` gives as it is.
+    Json(&'static str),
     /// Its text, as a string.
     Text,
     /// A field's value.
@@ -209,6 +213,10 @@ pub struct Host<'a> {
     /// whether it is bound without the prefix.
     pub last_bound: Option<(Vec<crate::keys::KeyPress>, bool)>,
     pub out: &'a mut dyn Write,
+    /// A command line an agent or a person runs: an action waits for its
+    /// pane to settle unless it names what to wait for. Bindings, configs
+    /// and restores act at once.
+    pub settle: bool,
 }
 
 /// How a run ended: its status, and why it failed, if it did.
@@ -227,18 +235,44 @@ pub struct Failed {
 }
 
 impl std::fmt::Display for Failed {
+    /// One line, as `fux: CODE: MESSAGE` is read: a message of several (a
+    /// program's last lines, a path holding a line end) has its lines
+    /// trimmed and joined with `\n`, any other control character or line
+    /// separator escaped.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
+        let escaped = |c: char| match c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            true => c.escape_default().to_string(),
+            false => c.to_string(),
+        };
+        let lines: Vec<String> = (self.message.lines().map(str::trim))
+            .filter(|l| !l.is_empty())
+            .map(|line| line.chars().map(escaped).collect())
+            .collect();
+        write!(f, "{}: {}", self.code, lines.join("\\n"))
     }
 }
 
 impl From<fuxth::Error> for Failed {
     fn from(mut error: fuxth::Error) -> Failed {
-        // A word of fux's given too few values says how it is used.
-        if error.code == fuxth::Code::StackUnderflow
+        // A bundled word that fails whatever way it takes is told by its
+        // own name and use, not by the word inside it that would fail.
+        let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
+        if error.word.as_deref().is_some_and(bundled)
+            && let Some((whole, _)) = error.message.split_once(": ")
+            && whole.starts_with("every way through it fails")
+        {
+            error.message = whole.to_owned();
+        }
+        // A word given too few values, or the wrong kind, says how it is
+        // used.
+        if matches!(error.code, fuxth::Code::StackUnderflow | fuxth::Code::Type)
+            && !error.message.contains("(use: ")
             && let Some(usage) = error.word.as_deref().and_then(words::usage)
         {
             error.message.push_str(&format!(" ({usage})"));
+        }
+        if error.code == fuxth::Code::UnknownWord {
+            error.message.push_str(" (`fux help` lists every word)");
         }
         let word = error.word.as_deref().filter(|w| !w.is_empty());
         let message = match (&error.place, word) {
@@ -349,22 +383,20 @@ pub struct Server {
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
-/// program): a flag it looks at between steps, and its connection, shut
-/// under a request that waits.
+/// program): a flag it looks at between steps, and what ends its
+/// connection's reads under a request that waits.
 #[derive(Clone, Default)]
 pub struct Stop {
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    stream: std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>,
+    stream: std::sync::Arc<std::sync::Mutex<Option<std::io::PipeWriter>>>,
 }
 
 impl Stop {
     /// Stops the run under way.
     pub fn stop(&self) {
         self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(stream) = self.stream.lock()
-            && let Some(stream) = stream.as_ref()
-        {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+        if let Ok(mut stream) = self.stream.lock() {
+            drop(stream.take());
         }
     }
 
@@ -419,12 +451,12 @@ impl Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
-                // A connection a stop can shut.
+                let mut opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
+                // A connection a stop can end.
                 if let Some(stop) = &self.stop
                     && let Ok(mut held) = stop.stream.lock()
                 {
-                    *held = opened.stream().try_clone().ok();
+                    *held = opened.stopper();
                 }
                 self.requests.insert(opened)
             }
@@ -595,14 +627,19 @@ pub fn run_capped(
                 if client.is_some() {
                     context.client = client;
                 }
-                let query = command.clone();
                 let reply = asks
                     .ask(&Request { command, context }, host.out)
                     .map_err(|f| placed(machine, f))?;
                 if met(&reply) && reply.status != 0 {
                     status = reply.status;
                 }
-                for value in answered(reply, then, query).map_err(|f| placed(machine, f))? {
+                // A failure that answered too (`run`'s pane): its answer is
+                // left, printed before why it failed.
+                let answer = !reply.message.trim().is_empty() && !reply.text.trim().is_empty();
+                if reply.status != 0 && answer {
+                    machine.push(Value::str(reply.text.trim_end()))?;
+                }
+                for value in answered(reply, then).map_err(|f| placed(machine, f))? {
                     machine.push(value)?;
                 }
             }
@@ -678,20 +715,19 @@ fn met(reply: &Reply) -> bool {
 }
 
 /// What a reply puts on the stack, `then` saying what it is; a failure,
-/// with its status, if it failed.
-pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fux>>, Failed> {
+/// with its status, if it failed: why, else what it answered.
+pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
     if reply.status != 0 && !met(&reply) {
         let message = match (reply.message.trim_end(), reply.text.trim_end()) {
-            ("", text) => text.to_owned(),
-            (message, "") => message.to_owned(),
-            (message, text) => format!("{text}\n{message}"),
-        };
+            ("", text) => text,
+            (message, _) => message,
+        }
+        .to_owned();
         let code = reply.code.unwrap_or_else(|| {
             match reply.status {
                 3 => "exited",
                 4 => "closed",
-                5 => "unchanged",
-                6 => "changed",
+                7 => "stopped",
                 124 => "timeout",
                 _ => "failed",
             }
@@ -704,9 +740,36 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
         });
     }
     let text = reply.text.trim_end_matches('\n').to_owned();
+    let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
+    // An action's answer is its pane's, when the reply names one pane alone
+    // (a wait on a tab's panes answers each): never read from what the
+    // program wrote.
+    let mut panes = reply.ids.iter().filter_map(|id| match id {
+        crate::command::AnyRef::Pane(p) => Some(*p),
+        crate::command::AnyRef::Tab(_) | crate::command::AnyRef::Workspace(_) => None,
+    });
+    let pane = match (panes.next(), panes.next()) {
+        (Some(pane), None) => Some(pane),
+        (Some(_), Some(_)) | (None, _) => None,
+    };
+    let action = |text: String, json: Option<String>| {
+        Value::App(Fux::Answer(Box::new(Answer {
+            text,
+            json,
+            kind: match pane {
+                Some(_) => "an action's answer",
+                None => "an answer of several panes",
+            },
+            pane,
+        })))
+    };
     Ok(match then {
         Then::Nothing => Vec::new(),
         Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
+            // A pane an action settled: its answer, which is its pane too.
+            Some(crate::command::AnyRef::Pane(p)) if json.is_some() && pane == Some(*p) => {
+                vec![action(text, json)]
+            }
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed {
@@ -716,10 +779,17 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
                 });
             }
         },
-        Then::Answer => vec![Value::App(Fux::Answer(Box::new(Answer {
+        Then::Answer(kind) => vec![Value::App(Fux::Answer(Box::new(Answer {
             text,
-            json: None,
-            query: Some(query),
+            json,
+            kind,
+            pane: None,
+        })))],
+        Then::Json(kind) => vec![Value::App(Fux::Answer(Box::new(Answer {
+            json: Some(text.clone()),
+            text,
+            kind,
+            pane: None,
         })))],
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
@@ -731,15 +801,12 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
             Some(Scalar::Null) | None => Value::App(Fux::Answer(Box::new(Answer {
                 json: Some(text.clone()),
                 text,
-                query: None,
+                kind: "a JSON value",
+                pane: None,
             }))),
         }],
         Then::Outcome { waited: false } => Vec::new(),
-        Then::Outcome { waited: true } => vec![Value::App(Fux::Answer(Box::new(Answer {
-            text,
-            json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
-            query: None,
-        })))],
+        Then::Outcome { waited: true } => vec![action(text, json)],
     })
 }
 
@@ -820,24 +887,25 @@ fn local(
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
             let (text, _) = crate::status(&socket, &probe, false);
             let (json, _) = crate::status(&socket, &probe, true);
-            return Ok(vec![answer(text, json)]);
+            return Ok(vec![answer(text, json, "a status")]);
         }
         Local::Servers => {
             let fail = |e: crate::socket::Error| client_failed(e.into());
             let text = crate::servers(false).map_err(fail)?;
             let json = crate::servers(true).map_err(fail)?;
-            return Ok(vec![answer(text, json)]);
+            return Ok(vec![answer(text, json, "a listing of servers")]);
         }
     }
     Ok(Vec::new())
 }
 
 /// An answer the client made itself, as text and JSON.
-fn answer(text: String, json: String) -> Value<Fux> {
+fn answer(text: String, json: String, kind: &'static str) -> Value<Fux> {
     Value::App(Fux::Answer(Box::new(Answer {
         text: text.trim_end().to_owned(),
         json: Some(json.trim_end().to_owned()),
-        query: None,
+        kind,
+        pane: None,
     })))
 }
 
@@ -845,7 +913,7 @@ fn answer(text: String, json: String) -> Value<Fux> {
 /// started has the config's settings (`set`) at once.
 fn started(server: &mut Server) -> Result<crate::socket::SocketPath, Failed> {
     let socket = server.socket()?;
-    if std::os::unix::net::UnixStream::connect(socket.path()).is_err() {
+    if !crate::client::answers(&socket) {
         crate::client::start_server(&socket).map_err(client_failed)?;
         if let (_, Some(problem)) = configured(server) {
             let _ = writeln!(std::io::stderr(), "fux: {problem}");
@@ -908,6 +976,7 @@ fn run_file(
         keymap: Some(keymap),
         last_bound: None,
         out: &mut out,
+        settle: false,
     };
     run_capped(
         &mut machine,
@@ -985,6 +1054,7 @@ pub fn restore(
         keymap: None,
         last_bound: None,
         out: &mut out,
+        settle: false,
     };
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
     run_capped(
@@ -1079,7 +1149,18 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         [help, topic] if help == "help" => match topic.as_str() {
             "agents" => fuxth::token::arguments(&["help-agents"]),
             "json" => fuxth::token::arguments(&["help-json"]),
-            word => fuxth::token::arguments(&["str", word, "explain"]),
+            word if crate::help::explain(word).is_some() => {
+                fuxth::token::arguments(&["str", word, "explain"])
+            }
+            word => {
+                return Err(Failed {
+                    status: 1,
+                    code: "unknown_word".to_owned(),
+                    message: format!(
+                        "argument 2: help: no word {word:?} (`fux help` lists every word)"
+                    ),
+                });
+            }
         },
         // What other programs take for help and their version.
         [flag] if matches!(flag.as_str(), "--help" | "-h") => fuxth::token::arguments(&["help"]),
@@ -1095,9 +1176,15 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         keymap: None,
         last_bound: None,
         out: &mut out,
+        settle: true,
     };
-    let ended = run(&mut machine, &mut host, &mut Cli::default())?;
-    for value in &ended.stack {
+    let ran = run(&mut machine, &mut host, &mut Cli::default());
+    // What the words before a failure left is printed too: their answers.
+    let stack = match &ran {
+        Ok(ended) => ended.stack.as_slice(),
+        Err(_) => machine.stack(),
+    };
+    for value in stack {
         // An answer with nothing to say (a wait for quiet, an empty
         // listing) prints no blank line.
         if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty()) {
@@ -1106,13 +1193,14 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         let _ = writeln!(host.out, "{}", display(value));
     }
     let _ = host.out.flush();
+    let status = ran?.status;
     match out.failed {
         Some(error) => Err(Failed {
             status: 1,
             code: "output".to_owned(),
             message: format!("writing the output: {error}"),
         }),
-        None => Ok(ended.status),
+        None => Ok(status),
     }
 }
 
