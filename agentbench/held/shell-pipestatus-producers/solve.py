@@ -6,7 +6,9 @@ import shlex
 
 def solve(d, work, fixtures):
     cli = f"python3 -I {shlex.quote(fixtures + '/buildctl.py')} {shlex.quote(work)}"
-    sh = d.spawn(["bash"])  # the task asks for bash itself
+    # The task asks for bash itself; -i, as the fixture takes a shell given
+    # an rc file's path (`--rcfile FILE`, as fux starts bash) for a script.
+    sh = d.spawn(["bash", "-i"])
     d.wait_idle(sh)
     d.run_command(sh, f"cd {shlex.quote(work + '/project')}; export BUILD_FLAVOR=strict")
     # A terminal for the producer from Python's pty (util-linux script differs

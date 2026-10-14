@@ -1680,7 +1680,9 @@ fn escape_alone_full_screens_and_waits_on_many() -> Outcome {
     assert!(keys.contains("ESC alone\nCTRL-S\n"), "{keys}");
     let full = "printf '\\033[?1049hEDIT> '; read x; echo saved; sleep 0.2; printf '\\033[?1049l'";
     let editor = id(&server.ok(&run(&["str", "EDIT>", "wait-text"], &["sh", "-c", full]))?);
-    let saved = server.ok(&typed(&editor, "q", &[]))?;
+    // Waited to its exit: where a quiet screen is taken as settled (not
+    // Linux), the 0.2s before it would answer first.
+    let saved = server.ok(&typed(&editor, "q", &["wait-exit"]))?;
     assert!(
         saved.starts_with(&format!("{editor} exited 0\n")) && saved.contains("saved"),
         "{saved}"
