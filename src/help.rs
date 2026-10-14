@@ -127,7 +127,7 @@ pub fn explain(name: &str) -> Option<String> {
             };
             out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
             for option in takes {
-                if let Some(w) = WORDS.iter().find(|w| w.name == *option) {
+                if let Some(w) = WORDS.iter().find(|w| w.name == option) {
                     out.push_str(&format!("  {:<14} {:<26} {}\n", w.name, w.effect, w.about));
                 }
             }
@@ -180,82 +180,51 @@ pub(crate) fn syntax(name: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// The words that build what a word takes: its options, or its input.
-fn options(name: &str) -> Option<&'static [&'static str]> {
-    const WAITS: [&str; 5] = [
-        "wait-text",
-        "wait-gone",
-        "wait-exit",
-        "wait-bell",
-        "timeout",
-    ];
-    Some(match name {
-        "run" => &[
-            "name",
-            "size",
-            "cwd",
-            "env",
-            "command",
-            "program",
-            "arg",
-            "in",
-            "log-to",
-            "id",
-            "wait-text",
-            "wait-exit",
-            "timeout",
-        ],
-        "split" => &[
-            "horizontal",
-            "vertical",
-            "cwd",
-            "env",
-            "command",
-            "program",
-            "arg",
-            "typed",
-            "id",
-        ],
-        "new-tab" | "new-workspace" => &["name", "size", "cwd", "env", "typed", "in", "id"],
-        "respawn" => &[
-            "kill-first",
-            "env",
-            "command",
-            "program",
-            "arg",
-            "wait-text",
-            "wait-exit",
-            "timeout",
-        ],
-        "capture" => &[
-            "history",
-            "all-history",
-            "joined",
-            "full",
-            "styles",
-            "marks",
-            "main-screen",
-            "alt-screen",
-            "last-output",
-            "rows",
-            "cols",
-            "json",
-            "timeout",
-        ],
-        "wait" => &WAITS,
-        "send-keys" => &[
-            "text",
-            "key",
-            "paste",
-            "paste-file",
-            "times",
-            "wait-text",
-            "wait-exit",
-            "timeout",
-        ],
-        "send-mouse" => &["wait-text", "wait-exit", "timeout"],
-        _ => return None,
-    })
+/// The words that build what a word takes, its options or its input: the
+/// words each uses, which `explain` prints and the word refuses others of.
+/// Words that wait take a wait's words, and `marks` for the screen it
+/// prints.
+pub(crate) const OPTIONS: [(&str, &str); 9] = [
+    (
+        "run",
+        "name size cwd env command program arg in log-to id \
+         wait-text wait-gone wait-exit wait-bell timeout marks",
+    ),
+    (
+        "split",
+        "horizontal vertical cwd env command program arg typed id \
+         wait-text wait-gone wait-exit wait-bell timeout marks",
+    ),
+    ("new-tab", "name size cwd env typed in id"),
+    ("new-workspace", "name size cwd env typed id"),
+    (
+        "respawn",
+        "kill-first env command program arg wait-text wait-gone wait-exit wait-bell timeout marks",
+    ),
+    (
+        "capture",
+        "history all-history joined full styles marks main-screen alt-screen last-output \
+         rows cols json timeout",
+    ),
+    (
+        "wait",
+        "wait-text wait-gone wait-exit wait-bell timeout marks",
+    ),
+    (
+        "send-keys",
+        "text key paste paste-file times wait-text wait-gone wait-exit wait-bell timeout marks",
+    ),
+    (
+        "send-mouse",
+        "wait-text wait-gone wait-exit wait-bell timeout marks",
+    ),
+];
+
+/// The options `name` takes, if it takes any.
+pub(crate) fn options(name: &str) -> Option<std::str::SplitWhitespace<'static>> {
+    (OPTIONS.iter())
+        .find(|(word, _)| *word == name)
+        .map(|(_, takes)| takes.split_whitespace())
 }
 
 /// An example of a word in use, as a command line.
@@ -336,6 +305,12 @@ mod tests {
         for (name, on) in [("send-keys", "after keys"), ("run", "after opts")] {
             let explained = explain(name).unwrap_or_default();
             assert!(explained.contains(&format!("options, {on}")), "{explained}");
+        }
+        // Each option is a word, which explain lists.
+        for (name, takes) in OPTIONS {
+            for option in takes.split_whitespace() {
+                assert!(WORDS.iter().any(|w| w.name == option), "{name} {option}");
+            }
         }
         assert!(AGENTS.contains("fux "));
     }

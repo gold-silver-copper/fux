@@ -2595,23 +2595,65 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
     Ok(())
 }
 
-/// `capture` and `wait` refuse options they would not use, as `split`
-/// does: a capture waits for nothing, a wait starts and views nothing.
+/// A word refuses options it would not use, and makes nothing: a capture
+/// waits for nothing, a wait starts and views nothing, a split takes its
+/// tab's place, a run splits nothing and views nothing, a respawn keeps
+/// its pane's name, size, place and ids.
 #[test]
-fn capture_and_wait_refuse_options_they_do_not_use() -> Outcome {
+fn words_refuse_options_they_do_not_use() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x"]))?);
-    let opts = ["str", &pane, "pane", "opts"];
-    for (unused, word) in [
-        (&["str", "x", "wait-text"][..], "capture"),
-        (&["100", "40", "size"][..], "capture"),
-        (&["str", "x", "name"][..], "wait"),
-        (&["10", "history"][..], "wait"),
+    let on = ["str", &pane, "pane", "opts"];
+    let opts = ["opts"];
+    let cat = ["str", "cat", "program"];
+    for (before, unused, word) in [
+        (&on[..], &["str", "x", "wait-text"][..], "capture"),
+        (&on, &["100", "40", "size"], "capture"),
+        (&on, &["str", "x", "name"], "wait"),
+        (&on, &["10", "history"], "wait"),
+        (&on, &["str", "nowhere", "in"], "split"),
+        (&on, &["str", "nowhere", "in"], "respawn"),
+        (&on, &["str", "x", "name"], "respawn"),
+        (&on, &["100", "30", "size"], "respawn"),
+        (&on, &["str", "/", "cwd"], "respawn"),
+        (&on, &["str", "%99", "id"], "respawn"),
+        (&on, &["vertical"], "respawn"),
+        (&opts, &["str", "nowhere", "in"], "new-workspace"),
     ] {
-        let refused = server.fux(&[&opts[..], unused, &[word]].concat())?;
+        let refused = server.fux(&[before, unused, &[word]].concat())?;
         assert_eq!(refused.status, 1, "{unused:?} {word}: {}", refused.stdout);
-        assert!(refused.stderr.contains("unused"), "{}", refused.stderr);
+        assert!(
+            refused.stderr.starts_with("fux: unused: "),
+            "{unused:?} {word}: {}",
+            refused.stderr
+        );
     }
+    for unused in [
+        &["horizontal"][..],
+        &["vertical"],
+        &["kill-first"],
+        &["full"],
+        &["alt-screen"],
+        &["last-output"],
+        &["joined"],
+        &["0", "5", "rows"],
+        &["json"],
+    ] {
+        let refused = server.fux(&[&opts[..], unused, &cat, &["run"]].concat())?;
+        assert_eq!(refused.status, 1, "{unused:?} run: {}", refused.stdout);
+        assert!(
+            refused.stderr.starts_with("fux: unused: "),
+            "{unused:?} run: {}",
+            refused.stderr
+        );
+    }
+    // Nothing was made: the two panes, and no workspace "nowhere".
+    let ls = server.ok(&["ls"])?;
+    assert!(!ls.contains("nowhere"), "{ls}");
+    assert_eq!(ls.matches('%').count(), 2, "{ls}");
+    // A capture's refusal of a wait says what it does: settles, then reads.
+    let refused = server.fux(&[&on[..], &["str", "x", "wait-text", "capture"]].concat())?;
+    assert!(refused.stderr.contains("settles"), "{}", refused.stderr);
     Ok(())
 }
 
