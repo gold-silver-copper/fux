@@ -11,6 +11,7 @@ pub mod command;
 pub mod config;
 pub mod copy;
 pub mod door;
+pub mod echo;
 pub mod events;
 pub mod help;
 pub mod id;
