@@ -731,3 +731,29 @@ fn type_char(lines: &mut [String], c: char) {
         c => line.push(c),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fux_vt::keys::{Key, Modifiers};
+
+    /// What is typed reads as a terminal's line editing shows it: a paste
+    /// goes on the line it lands on and breaks it at its own line ends,
+    /// Backspace takes a character back, and only Enter (or a line end in
+    /// text) ends a line the program is told of.
+    #[test]
+    fn typed_lines_follow_line_editing() {
+        let key = |key| Input::Key(KeyPress::new(key, Modifiers::NONE));
+        let inputs = [
+            Input::Text("ab".into()),
+            Input::Paste("cd\nef".into()),
+            key(Key::Backspace),
+            key(Key::Enter),
+            Input::Text("gh".into()),
+        ];
+        assert_eq!(
+            typed_lines(&inputs),
+            (vec!["abcd".to_owned(), "e".to_owned(), "gh".to_owned()], 1)
+        );
+    }
+}

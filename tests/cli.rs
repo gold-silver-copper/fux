@@ -343,6 +343,23 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         server.ok(&["str", "%1", "pane", "str", "exited", "get"])?,
         "null\n"
     );
+    // An option a word would leave unused is refused, not ignored: a new
+    // tab starts a shell, and waits on nothing.
+    for unused in [
+        &["str", "top", "program"][..],
+        &["str", "x", "wait-text"][..],
+    ] {
+        let refused =
+            server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;
+        assert!(
+            refused.stderr.starts_with("fux: unused: "),
+            "{}",
+            refused.stderr
+        );
+    }
+    // A size past 500 is refused.
+    let wide = server.fux(&["str", "%1", "pane", "501", "10", "resize"])?;
+    assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
     // A new tab from outside a pane is told the option that places it.
     let nowhere = server.fux(&["opts", "str", "logs", "name", "new-tab"])?;
     assert!(
