@@ -218,6 +218,24 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         "key",
         "send-keys",
     ])?;
+    // Where nothing says a shell reads (macOS), a quiet screen is taken
+    // as settled, the command maybe still running: wait for its output in
+    // each pane instead.
+    if !PROBED {
+        let tab = [
+            "str",
+            a,
+            "pane",
+            "tab",
+            "opts",
+            "str",
+            "both-42",
+            "wait-text",
+            "wait",
+        ];
+        server.ok(&tab)?;
+        return Ok(());
+    }
     // Each pane's answer: its state line, then the echo and the output.
     for pane in [a, b] {
         let part = both
