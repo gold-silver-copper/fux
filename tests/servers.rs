@@ -491,6 +491,35 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     Ok(())
 }
 
+/// A workspace whose first tab is empty, its pane moved to a new tab, is
+/// made again from its dump: the first tab written opens it.
+#[test]
+fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
+    let server = Server::start("")?;
+    let pane = server.ok(&[
+        "opts", "str", "moved", "in", "str", "sleep 60", "command", "0", "timeout", "run",
+    ])?;
+    server.ok(&[
+        "str",
+        first_word(&pane),
+        "pane",
+        "str",
+        "new-tab",
+        "move-to",
+    ])?;
+    let dump = server.ok(&["str", "moved", "workspace", "dump-of"])?;
+    server.ok(&["str", "moved", "workspace", "kill"])?;
+    let file = server.dir.join("moved.fux");
+    std::fs::write(&file, &dump).map_err(e)?;
+    server.ok(&[&file.to_string_lossy()])?;
+    let ls = server.ok(&["ls"])?;
+    assert!(
+        ls.contains(" moved\n") && ls.contains(" sleep "),
+        "{ls}\nfrom\n{dump}"
+    );
+    Ok(())
+}
+
 /// A server opens a door beside its socket (`NAME.door`): a client that
 /// cannot use the socket (a sandbox that denies sockets; here, the socket
 /// file gone) reaches the server through it, FIFOs of its own relayed to a

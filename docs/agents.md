@@ -26,9 +26,9 @@ fux str agent workspace kill                            # at the end: everything
 ```
 
 The answer's first line is the pane and its **state**; then what came since
-you acted, from the line typed on (its prompt and your echo too; after a lone Enter,
-from the first line that changed), or the whole screen of a full-screen program (an
-editor, a menu, a form); one that redraws in place on the main screen answers from the top row it changed:
+you acted, from the line typed on if it changed (its prompt and your echo too;
+else, as after a lone Enter or keys not echoed, from the first line that changed),
+or the whole screen of a full-screen program (an editor, a menu, a form); one that redraws in place on the main screen answers from the top row it changed:
 
 ```
 %2 reading                     it waits for you: blocked reading its terminal, every key read
@@ -39,10 +39,10 @@ editor, a menu, a form); one that redraws in place on the main screen answers fr
 %2 exited 3                    the program ended; its last output follows
 ```
 
-- **Time:** an action or `capture` settles within 10s; a `wait`, or an action
-  given a wait (`wait-text` …), within 60s; `SECS timeout` changes it. `0 timeout`
-  acts and answers at once, the state as it is (start many programs with it, then
-  one `wait` on their tab or workspace: it settles each pane). Busy at the limit: status 124; `PANE opts wait` waits on.
+- **Time:** an action or `capture` settles within 10s; a `wait`, or an action given a
+  wait (`wait-text` …), within 60s; `SECS timeout` changes it. `0 timeout` acts and answers
+  at once, the state as it is (start many programs so, then one `wait` on their tab or
+  workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on.
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
   workspace `agent`. OPTIONS: `str app name` (the tab's; one in use is
   refused), `100 30 size`, `str "$PWD" cwd` (a real path), `str K str V env`,
@@ -64,7 +64,9 @@ editor, a menu, a form); one that redraws in place on the main screen answers fr
   the pane's state; after `run` or `respawn` a text must show before it
   can go), never what you typed, Enter or not, nor the prompt
   before it, on each row it went on (with the keys, or for a later wait your
-  last input); what the program writes after it on that row counts. A wait
+  last input), in any case, nor that row drawn again to end with it (with
+  another prompt; keys typed before a shell's prompt, after it); what the
+  program writes after it on that row counts. A wait
   counts what came since your last input to the pane (or since the program
   started), scrolled away too: it never starts too late. But it reads
   screens, not every byte: text drawn over in place before fux reads the
@@ -75,7 +77,9 @@ editor, a menu, a form); one that redraws in place on the main screen answers fr
   not gone). This is fux's judgement from what the program is blocked in:
   one also woken by a timer (`alarm`) or another descriptor gets 7 too,
   though it may go on alone, as may a program left in the background (look
-  again later, or use `wait-exit`). The answer is the screen (it starts `…
+  again later, or use `wait-exit`). A read with the terminal's own time
+  limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
+  returns alone, so a text wait runs to its limit (124). The answer is the screen (it starts `…
   earlier lines not kept` if lines since were let go past history-lines
   before the wait read them: the text may have passed unseen). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
@@ -85,8 +89,8 @@ editor, a menu, a form); one that redraws in place on the main screen answers fr
   `last-output` (a shell command's output), `joined` (with `rows`, a
   wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
-  which a program leaves its full screen answer what it printed after,
-  else that full screen if they changed it, else the screen as it is.
+  which a program leaves its full screen answer what it printed after (in
+  whole rows: old text on the row it starts on too), else that full screen if they changed it, else the screen as it is.
 - **Mouse:** `%2 str click ROW COL mouse send-mouse` (`right`, `wheel-up`,
   `press`, `release`, `move`), a cell counted from 0 as a capture counts:
   a program's own "row 22" hint is usually counted from 1.

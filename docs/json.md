@@ -83,7 +83,8 @@ word that wants a pane takes it as one.
 ## Answers and waits
 
 `json` of an action's answer (`run`, `send-keys`, `send-mouse`, `signal`,
-a bare `wait` …): one object, or a line each for keys sent to several panes. A
+a bare `wait` …): one object, or a line each for several panes (a tab or
+workspace waited on, or sent keys). A
 pane that settled, still busy at the limit (124), blocked reading its
 terminal before the waited text came or went (7), or whose exit was waited for (`wait-exit`,
 its own status):
@@ -96,10 +97,11 @@ its own status):
 `state` is the pane's (above), or `closed`: a settling action or bare
 `wait` whose pane closed answers `{"pane":"%3","state":"closed","status":4}`,
 with no `output` and nothing on stderr. `output` is what came since the
-input, from the line the keys went in on (its prompt too, so a
-`no_change` answer holds that prompt; after a lone Enter, from the first
-line that changed), or the screen of a full-screen program (one the keys made leave
-it: what it printed after, else that full screen if they changed it, else
+input, from the line the keys went in on if it changed (its prompt too;
+a `no_change` answer holds that prompt), else from the first line that
+changed (a lone Enter, a password or raw keys, which echo nothing), or the
+screen of a full-screen program (one the keys made leave it: what it
+printed after, in whole rows, so old text on the row it starts on too, else that full screen if they changed it, else
 the screen), or the screen for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
 line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `no_change` (`true`: the keys
@@ -121,8 +123,8 @@ wait for a text or a bell answers what met it:
 fails (the program exited first or was started again, 3; the pane closed,
 4; the time limit, 124) ends the
 program with that status and says why on stderr, `fux: CODE: MESSAGE`: it
-leaves no answer to print, but what `run` or `split` started is printed
-first, its pane alone (`%2`, as text, `json` or not), and so are the
+leaves no answer to print, but what `run`, `split` or `respawn` started
+is printed first, its pane alone (`%2`, as text, `json` or not), and so are the
 answers of the words before it.
 
 ## `events-json`, `X events-of-json`

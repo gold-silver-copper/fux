@@ -224,7 +224,7 @@ pub enum Until {
     Settled,
 }
 
-/// A wait: for any of its conditions, in any of its panes, how long at
+/// A wait: for any of its conditions, in each of its panes, how long at
 /// most, and how it is told.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wait {
@@ -237,9 +237,6 @@ pub struct Wait {
     pub after: bool,
     /// What it prints with reverse video marked, as `capture`'s `marks`.
     pub marks: bool,
-    /// Over several panes, it waits for each (send-keys' waits, as each
-    /// pane got the keys), rather than for any (`fux wait`).
-    pub all: bool,
 }
 
 /// How long a wait lasts at most if `timeout` does not say: well inside

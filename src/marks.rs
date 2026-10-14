@@ -25,13 +25,14 @@ use std::path::{Path, PathBuf};
 /// (no command substitution, from bash 4.4). The marks run no command of
 /// the shell's own either, so
 /// the user's DEBUG, ERR and RETURN traps see nothing of them, and `$?` and
-/// `PIPESTATUS` stay the command's:
+/// `PIPESTATUS` stay the command's, for the user's hooks too:
 ///
 /// - `END`, first in `PROMPT_COMMAND` (its first element, an array's
 ///   too, so that setting it anew replaces the user's hooks, as without
-///   fux), so before the user's own hooks print: subshells, which inherit no DEBUG trap, the first exiting with
-///   the command's status (its `&&` keeps the ERR trap from it), print
-///   `D;STATUS` and `A`. The status and the state (`__fux_w`, a prompt
+///   fux), so before the user's own hooks print: subshells, which inherit
+///   no DEBUG trap, print `D;STATUS` and `A`, the test of an `if` (which
+///   sets off no ERR trap) that then makes `PIPESTATUS` and `$?` again.
+///   The status, `PIPESTATUS` and the state (`__fux_w`, a prompt
 ///   shown and no command started since; `__fux_h`, the next history
 ///   number then) are kept in the arithmetic of a redirection of its own,
 ///   as no subshell can keep them: a line run with no start mark (one bash
@@ -67,9 +68,13 @@ done
 unset __fux_f
 "#;
 
-/// A command's end, `{H}` the next history number (see `BASHRC`). No
+/// A command's end, `{H}` the next history number, `{K}` keeping the
+/// command's `PIPESTATUS` and `{P}` making it again (see `BASHRC`). No
 /// single quotes: the startup file quotes it with them.
-const END: &str = r#"{ ([ "$__fux_m" = 1 ] && printf "\033]133;C;late\007" >&2; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&2; exit "$__fux_s") && (:); } >/dev/null 2>&$((__fux_s = $?, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2))"#;
+const END: &str = r#"{ if ([ "$__fux_m" = 1 ] && printf "\033]133;C;late\007" >&2; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&2; exit $((__fux_c != 1))); then {P}; fi; } >/dev/null 2>&$((__fux_s = $?, {K}__fux_c = ${#PIPESTATUS[@]}, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2))"#;
+/// The longest pipeline whose statuses `END` gives the user's hooks in
+/// `PIPESTATUS`; of a longer one they see its status alone.
+const PIPES: usize = 8;
 const HISTORY_NEW: &str = "${HISTCMD-0}";
 const HISTORY_OLD: &str = r#"$(__fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; echo "${__fux_n%%[!0-9]*}") + 1"#;
 /// Before bash 4.4: the DEBUG trap, as a `printf` format of the user's own
@@ -85,11 +90,37 @@ const PS1_END: &str = r"\[\033]133;D;$?\007\033]133;A\007${__fux_z[__fux_a = 1]-
 /// What `PS0` ends with: a command's start.
 const PS0_START: &str = r"\033]133;C\007${__fux_z[__fux_w = 0]-}";
 
-/// `END` for bash 4.4 and later, and for older ones.
+/// `END` for bash 4.4 and later, and for older ones. The command's
+/// `PIPESTATUS` is kept (`__fux_p`, its length `__fux_c`) and made again
+/// last, for the user's hooks after: a pipeline of as many subshells, each
+/// exiting with a status, run twice (`&&`: once if it fails, as a failure
+/// there would set off the ERR trap; again if not, so that it is the last
+/// pipeline run).
 fn ends() -> (String, String) {
+    let kept: String = (0..PIPES)
+        .map(|i| format!("__fux_p[{i}] = ${{PIPESTATUS[{i}]-0}}, "))
+        .collect();
+    let again: Vec<String> = (1..=PIPES)
+        .map(|n| {
+            let pipe = (0..n)
+                .map(|i| format!("(exit ${{__fux_p[{i}]}})"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("{pipe} && {pipe}")
+        })
+        .collect();
+    let mut made = String::new();
+    for (n, pipe) in (1..).zip(&again) {
+        if n > 1 {
+            made.push_str(&format!("; elif (exit $((__fux_c != {n}))); then "));
+        }
+        made.push_str(pipe);
+    }
+    made.push_str("; else (exit \"$__fux_s\") && (:)");
+    let end = END.replace("{K}", &kept).replace("{P}", &made);
     (
-        END.replace("{H}", HISTORY_NEW),
-        END.replace("{H}", HISTORY_OLD),
+        end.replace("{H}", HISTORY_NEW),
+        end.replace("{H}", HISTORY_OLD),
     )
 }
 

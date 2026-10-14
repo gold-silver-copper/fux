@@ -1,6 +1,6 @@
 //! `fux wait`, and send-keys' waits: a command line from the CLI that answers
-//! once one of its panes does what one of its conditions asks, its program
-//! exits first, its pane goes, or its time is up. The server holds its
+//! once each of its panes has: done what one of its conditions asks, its
+//! program exited first, its pane gone, or its time is up. The server holds its
 //! connection meanwhile and asks it again whenever a pane may have changed,
 //! or its time comes (`Waiting::due`).
 //!
@@ -64,7 +64,7 @@ pub struct Waiting {
     pub more: bool,
     /// What the command it follows made, for its reply.
     pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
-    /// What each pane said, for a wait on each of several (`Wait::all`).
+    /// What each pane said, once it has.
     answers: Vec<Option<Outcome>>,
     /// A capture to give once the pane settles (`capture` from a command
     /// line): its history, view and whether as JSON.
@@ -210,8 +210,8 @@ impl Waiting {
             .fold(self.deadline, Instant::min)
     }
 
-    /// Its answer, if it has one at `now`: what it waited for came in one of
-    /// its panes, a pane's program exited first, a pane went, or its time is
+    /// Its answer, if it has one at `now`: in each of its panes, what it
+    /// waited for came, its program exited first, it went, or its time is
     /// up.
     pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
         let mut outcome = self.look(session, now)?;
@@ -245,90 +245,49 @@ impl Waiting {
         })
     }
 
-    /// Over several panes, a wait for any (`fux wait`): a pane that met it
-    /// answers; one that stopped short of the text, or can no longer meet
-    /// it (its program exited or was started again, or the pane went), only
-    /// once none is left that could, a stopped one first. A wait on each
-    /// (`Wait::all`): each answers on its own, as a lone pane's wait would,
-    /// and the wait once every one has, a line from each, in order, with
-    /// the first failing status. At the limit, any is said of a pane at
-    /// work, each of every pane yet to answer.
+    /// Each pane answers on its own, as a lone pane's wait would, and the
+    /// wait once every one has: a line from each, in order, with the first
+    /// failing status. At the limit, each pane yet to answer is said as it
+    /// is.
     fn look(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
         let several = self.watches.len() > 1;
         let (wait, texts) = (&self.wait, self.texts.as_slice());
         let (window, mode) = ((self.began, now), (self.fresh, self.more));
-        let verdicts: Vec<Option<(Told, Since)>> = (self.watches.iter_mut())
-            .zip(&self.answers)
-            .map(|(watch, answer)| {
-                let pane = session.panes.get(&watch.pane);
-                answer
-                    .is_none()
-                    .then(|| watch.verdict(pane, wait, texts, window, mode))?
-            })
-            .collect();
-        let tell = |id: PaneId, (told, since): (Told, Since)| {
-            wait.told(id, session.panes.get(&id), told, several, since)
-        };
         let late = now >= self.deadline;
-        if wait.all && several {
-            for ((watch, answer), verdict) in
-                (self.watches.iter().zip(&mut self.answers)).zip(verdicts)
-            {
-                if let Some(verdict) = verdict {
-                    *answer = Some(tell(watch.pane, verdict));
-                } else if late && answer.is_none() {
-                    *answer = Some(watch.timed_out(session, wait, texts, several));
-                }
+        for (watch, answer) in self.watches.iter_mut().zip(&mut self.answers) {
+            if answer.is_some() {
+                continue;
             }
-            let answers: Vec<&Outcome> = self
-                .answers
-                .iter()
-                .map(Option::as_ref)
-                .collect::<Option<_>>()?;
-            let mut stderr = String::new();
-            for answer in answers.iter().filter(|a| !a.stderr.is_empty()) {
-                stderr.push_str(answer.stderr.trim_end());
-                stderr.push('\n');
+            let pane = session.panes.get(&watch.pane);
+            if let Some((told, since)) = watch.verdict(pane, wait, texts, window, mode) {
+                *answer = Some(wait.told(watch.pane, pane, told, several, since));
+            } else if late {
+                *answer = Some(watch.timed_out(session, wait, texts, several));
             }
-            return Some(Outcome {
-                status: (answers.iter().map(|a| a.status))
-                    .find(|s| *s != 0)
-                    .unwrap_or(0),
-                stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
-                stderr,
-                json: answers.iter().map(|a| a.json.as_str()).collect(),
-                ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
-                ..Outcome::default()
-            });
         }
-        let stopped =
-            |v: &Option<(Told, Since)>| matches!(v, Some((Told::Found(Found::Stopped), _)));
-        let met = (verdicts.iter())
-            .position(|v| matches!(v, Some((Told::Found(f), _)) if !matches!(f, Found::Stopped)));
-        let ended = || {
-            (verdicts.iter().all(Option::is_some))
-                .then(|| verdicts.iter().position(stopped).unwrap_or(0))
-        };
-        if let Some(at) = met.or_else(ended) {
-            let id = self.watches.get(at)?.pane;
-            return Some(tell(id, verdicts.into_iter().nth(at).flatten()?));
+        let answers: Vec<&Outcome> = self
+            .answers
+            .iter()
+            .map(Option::as_ref)
+            .collect::<Option<_>>()?;
+        if let [one] = answers.as_slice() {
+            return Some((*one).clone());
         }
-        if !late {
-            return None;
+        let mut stderr = String::new();
+        for answer in answers.iter().filter(|a| !a.stderr.is_empty()) {
+            stderr.push_str(answer.stderr.trim_end());
+            stderr.push('\n');
         }
-        // One at work if one is, else one still running: one reading its
-        // terminal waits for keys.
-        let running = |w: &&Watch, busy: bool| {
-            (session.panes.get(&w.pane)).is_some_and(|p| {
-                let reading = crate::ready::state(p, now) == crate::ready::State::Reading;
-                p.process.exit_status().is_none() && !(busy && reading)
-            })
-        };
-        let first = (self.watches.iter())
-            .find(|w| running(w, true))
-            .or_else(|| self.watches.iter().find(|w| running(w, false)))
-            .or(self.watches.first())?;
-        Some(first.timed_out(session, wait, texts, several))
+        Some(Outcome {
+            status: (answers.iter().map(|a| a.status))
+                .find(|s| *s != 0)
+                .unwrap_or(0),
+            stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
+            stderr,
+            json: answers.iter().map(|a| a.json.as_str()).collect(),
+            ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
+            ..Outcome::default()
+        })
     }
 }
 
@@ -1148,7 +1107,10 @@ fn joined(rows: impl Iterator<Item = (fux_vt::RowId, bool, String, bool)>) -> Ve
 /// the line the cursor was on as the keys went in, the prompt and the
 /// first line typed; below it, each line typed after, on the first line
 /// from there on that shows it, in order. A text found from there on is
-/// output: what the program writes past the echo, or in its place.
+/// output: what the program writes past the echo, or in its place. A line
+/// drawn again, to end with a line typed, is its echo whole: the keys' own
+/// row, its prompt gone, drawn with another, or a prompt that starts below
+/// it (a shell drawing keys typed before its prompt after it).
 fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line) -> usize {
     let Some(cursor) = typed.cursor else {
         return 0;
@@ -1162,13 +1124,16 @@ fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line
         // one whole; Enter alone types nothing, so what follows the row as
         // it was is output, and an empty row, or one written over, takes
         // the program's output.
-        let prompt = if !before.is_empty() && line.text.starts_with(before) {
+        let kept = line.text.starts_with(before);
+        let prompt = if !before.is_empty() && kept {
             before.len()
         } else {
             0
         };
         return match first {
-            Some(first) => echo_end(&line.text, before, first, true).unwrap_or(prompt),
+            Some(first) => echo_end(&line.text, before, first, true)
+                .or_else(|| redrawn(&line.text, [first]).filter(|_| !kept))
+                .unwrap_or(prompt),
             None if typed.recalled && prompt > 0 => line.text.len(),
             None => prompt,
         };
@@ -1178,18 +1143,31 @@ fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line
     };
     let mut next = keys.next();
     for shown in lines(screen.rows().skip(from), None).iter().skip(1) {
-        let Some(keys_now) = next else {
-            return 0;
-        };
-        let end = echo_end(&shown.text, before, keys_now, false);
-        if shown.first == line.first {
-            return end.unwrap_or(0);
-        }
+        let end = next.and_then(|keys| echo_end(&shown.text, before, keys, false));
         if end.is_some() {
             next = keys.next();
         }
+        if shown.first == line.first {
+            let prompt = screen
+                .row_by_id(line.first)
+                .is_some_and(|r| r.starts_prompt());
+            let typed = typed.echo.iter().map(|t| t.trim());
+            return end
+                .or_else(|| redrawn(&line.text, typed).filter(|_| prompt))
+                .unwrap_or(0);
+        }
     }
     0
+}
+
+/// The whole of `text`, if it ends with one of the lines `typed` (as a
+/// wait compares them): those keys drawn again.
+fn redrawn<'a>(text: &str, typed: impl IntoIterator<Item = &'a str>) -> Option<usize> {
+    let shown = normal(text);
+    let mut typed = typed.into_iter().map(normal);
+    typed
+        .any(|keys| !keys.is_empty() && shown.ends_with(&keys))
+        .then_some(text.len())
 }
 
 /// Where the echo of a line typed, `keys`, ends on a line of `text`: after
@@ -1198,9 +1176,9 @@ fn echo_len(screen: &fux_vt::Screen, typed: &crate::pane::InputFrom, line: &Line
 /// below may), the blanks after it, and as many characters as were typed,
 /// a run of blanks typed as the run shown (a Tab goes to a tab stop).
 /// Only while the line shows them, their first word or its start (`2` of
-/// `2**10`, still being drawn), or on the keys' own row nothing yet: a
-/// program that echoes nothing, or writes over the echo, puts its own
-/// output there.
+/// `2**10`, still being drawn; case ignored, as a terminal may change it),
+/// or on the keys' own row nothing yet: a program that echoes nothing, or
+/// writes over the echo, puts its own output there.
 fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize> {
     let rest = match text.strip_prefix(before) {
         Some(rest) => rest,
@@ -1208,9 +1186,13 @@ fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize
         None => text,
     };
     let shown = rest.trim_start();
-    let word = keys.split_whitespace().next().unwrap_or_default();
-    let shows = match shown.split_whitespace().next() {
-        Some(first) => word.starts_with(first) || first.starts_with(word),
+    let word = keys
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let shows = match shown.split_whitespace().next().map(str::to_lowercase) {
+        Some(first) => word.starts_with(&first) || first.starts_with(&word),
         None => own_row,
     };
     let (mut on, mut typed) = (shown.char_indices().peekable(), keys.chars().peekable());

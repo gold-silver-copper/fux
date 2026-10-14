@@ -1650,10 +1650,10 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
 
 /// The key after a lone Escape waits until the program has taken the
 /// Escape alone (here after 120ms), so it is not read as Alt and that key,
-/// or a second at most; a text wait on several panes outlasts one that reads without it; a
-/// program that leaves its full screen and exits answers with that screen.
+/// or a second at most; a program that leaves its full screen and exits
+/// answers with that screen.
 #[test]
-fn escape_alone_full_screens_and_waits_on_many() -> Outcome {
+fn escape_alone_and_full_screens() -> Outcome {
     let server = Server::start("")?;
     let esc = "import os, select, tty\n\
                tty.setraw(0); os.write(1, b'ready\\r\\n')\n\
@@ -1719,22 +1719,28 @@ fn escape_alone_full_screens_and_waits_on_many() -> Outcome {
         saved.starts_with(&format!("{editor} exited 0\n")) && saved.contains("saved"),
         "{saved}"
     );
-    server.ok(&run(&["0", "timeout"], &["sh", "-c", "echo idle; read x"]))?;
-    server.ok(&run(
-        &["0", "timeout"],
-        &["sh", "-c", "sleep 1; echo SEALED; read x"],
-    ))?;
-    let sealed = server.ok(&[
-        "str",
-        "agent",
-        "workspace",
-        "opts",
-        "str",
-        "SEALED",
-        "wait-text",
-        "wait",
-    ])?;
-    assert!(sealed.ends_with("SEALED\n"), "{sealed}");
+    Ok(())
+}
+
+/// A wait with a condition on a workspace waits on each pane, as a bare
+/// one settles each: met once every pane meets it, a line of each.
+#[test]
+fn a_condition_on_a_workspace_is_met_in_each_pane() -> Outcome {
+    let server = Server::start("")?;
+    let mut panes = Vec::new();
+    for pause in ["0", "0.5", "1"] {
+        let start = ["str", "g", "in", "0", "timeout"];
+        let made = server.ok(&run(
+            &start,
+            &["sh", "-c", &format!("sleep {pause}; echo E")],
+        ))?;
+        panes.push(id(&made));
+    }
+    let words = ["str", "g", "workspace", "opts", "wait-exit", "wait"];
+    let exited = server.ok(&words)?;
+    for pane in &panes {
+        assert!(exited.contains(&format!("{pane} exited 0\n")), "{exited}");
+    }
     Ok(())
 }
 
@@ -2024,10 +2030,9 @@ fn answers_around_a_full_screen_say_what_came() -> Outcome {
     Ok(())
 }
 
-/// `run`'s answer names its pane once, a state answer too; a wait on a tab
-/// that runs out names the pane at work, not the one reading. Settling a
-/// tab, or an action on it, answers of each pane, a line each, with the
-/// first failing status and each one's reason.
+/// `run`'s answer names its pane once, a state answer too. A wait on a
+/// tab, settling or not, or an action on it, answers of each pane, a line
+/// each, with the first failing status and each one's reason.
 #[test]
 fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
     let server = Server::start("")?;
@@ -2075,11 +2080,12 @@ fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
         "timeout",
         "wait",
     ])?;
-    assert_eq!(out.status, 124, "{}", out.stderr);
-    // Not told which reads (not Linux), it names the first, both quiet.
-    let named = if PROBED { &busy } else { &reader };
+    // Each answers: the reader cannot get the text (where fux is told it
+    // reads), the one at work runs out of time; the reader's is first.
+    let first = if PROBED { CANNOT_COME } else { 124 };
+    assert_eq!(out.status, first, "{}", out.stderr);
     assert!(
-        out.stderr.contains(&format!("{named}: timed out")),
+        out.stderr.contains(&format!("{busy}: timed out")),
         "{}",
         out.stderr
     );
@@ -2906,5 +2912,102 @@ fn respawn_keeps_a_rename() -> Outcome {
     server.ok(&["str", &pane, "pane", "opts", "respawn"])?;
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
     assert_eq!(name, "keepme\n");
+    Ok(())
+}
+
+/// A `PROMPT_COMMAND` hook from the user's startup sees the command's
+/// `PIPESTATUS` and `$?`, as without fux.
+#[test]
+fn a_startup_hook_sees_the_commands_pipestatus() -> Outcome {
+    let server = Server::start("")?;
+    let rc = "PROMPT_COMMAND='echo \"P=${PIPESTATUS[*]} S=$?\"'\n";
+    let home = bash_home(&server, "home", rc)?;
+    server.ok(&run(
+        &["str", "h", "name", "str", "HOME", "str", &home, "env"],
+        &["bash"],
+    ))?;
+    let piped = line(&server, "h", "false | (exit 7)")?;
+    assert!(piped.contains("P=1 7 S=7"), "{piped}");
+    let passed = line(&server, "h", "false | true")?;
+    assert!(passed.contains("P=1 0 S=0"), "{passed}");
+    Ok(())
+}
+
+/// Keys typed before a shell draws its prompt are echoed twice, by the
+/// terminal and then by the shell after its prompt: neither is output.
+#[test]
+fn keys_typed_before_the_prompt_are_echo_twice() -> Outcome {
+    let server = Server::start("")?;
+    let home = bash_home(&server, "slow", "sleep 0.5\n")?;
+    let before = ["str", "HOME", "str", &home, "env", "0", "timeout"];
+    let shell = id(&server.ok(&run(&before, &["bash"]))?);
+    let wait = ["str", "TYPED_AHEAD", "wait-text", "3", "timeout"];
+    let ahead = server.fux(&typed(&shell, ": TYPED_AHEAD", &wait))?;
+    assert_eq!(
+        ahead.status, CANNOT_COME,
+        "{}{}",
+        ahead.stdout, ahead.stderr
+    );
+    Ok(())
+}
+
+/// The keys' row cleared and drawn again with another prompt still shows
+/// their echo, not output.
+#[test]
+fn a_typed_row_drawn_with_another_prompt_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let redraw = "import os, tty\ntty.setraw(0); os.write(1, b'Input> ')\n\
+                  s = os.read(0, 6); os.write(1, s)\n\
+                  os.write(1, b'\\r\\x1b[2KChanged> ' + s); os.read(0, 1)\n";
+    let pane = id(&server.ok(&run(
+        &["str", "Input>", "wait-text"],
+        &["python3", "-c", redraw],
+    ))?);
+    let keys = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "SECRET",
+        "text",
+        "str",
+        "SECRET",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+    ])?;
+    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
+    Ok(())
+}
+
+/// An echo in another case than the keys (a terminal or program that
+/// upper-cases it) is their echo: a wait ignores case either way.
+#[test]
+fn an_echo_in_another_case_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let upper = "import os, tty\ntty.setraw(0); os.write(1, b'Input> ')\n\
+                 os.write(1, os.read(0, 6).upper()); os.read(0, 1)\n";
+    let pane = id(&server.ok(&run(
+        &["str", "Input>", "wait-text"],
+        &["python3", "-c", upper],
+    ))?);
+    let keys = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "secret",
+        "text",
+        "str",
+        "SECRET",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+    ])?;
+    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
     Ok(())
 }

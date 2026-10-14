@@ -280,7 +280,9 @@ fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
         Value::Str(s) => Ok(s.to_string()),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other @ (Value::List(_) | Value::App(_)) => Err(wrong(word, "a string or a number", other)),
+        other @ (Value::List(_) | Value::App(_)) => {
+            Err(wrong(word, "a string, a number or a boolean", other))
+        }
     }
 }
 
@@ -511,14 +513,10 @@ fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
     (named || settle).then(|| Box::new(waited(waits, after, SETTLE_TIMEOUT)))
 }
 
-/// The wait the `wait` word makes, with a wait's time either way: settling
-/// a tab or workspace waits for each of its panes; a condition, for
-/// whichever pane meets it first.
+/// The wait the `wait` word makes, with a wait's time either way: on a
+/// tab or workspace, for each of its panes.
 fn own_wait(waits: &Waits) -> Wait {
-    Wait {
-        all: waits.until.is_empty(),
-        ..waited(waits, false, WAIT_TIMEOUT)
-    }
+    waited(waits, false, WAIT_TIMEOUT)
 }
 
 /// A wait for what `waits` names, else for the pane to settle (within
@@ -535,7 +533,6 @@ fn waited(waits: &Waits, after: bool, settle: Duration) -> Wait {
         print: waits.print || settles,
         after,
         marks: waits.marks,
-        all: true,
     }
 }
 
@@ -1517,7 +1514,16 @@ impl fuxth::Host for Host<'_> {
                     "next" => PanePick::Step(Sibling::Next),
                     "previous" => PanePick::Step(Sibling::Previous),
                     "last" => PanePick::Last,
-                    other => PanePick::Toward(direction(name, &Value::str(other))?),
+                    other => {
+                        PanePick::Toward(direction(name, &Value::str(other)).map_err(|_| {
+                            fail(
+                                "bad_value",
+                                format!(
+                                    "{other:?} is not left, right, up, down, next, previous or last"
+                                ),
+                            )
+                        })?)
+                    }
                 };
                 later(act(c, ClientAction::SelectPane(pick)))
             }

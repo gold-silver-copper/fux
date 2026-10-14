@@ -1405,6 +1405,33 @@ impl Session {
                 ))),
             };
         }
+        // A workspace's id stands for its one tab, or its one pane.
+        if let (Kind::Pane | Kind::Tab, Ok(w)) = (kind, text.parse::<WsId>()) {
+            let ws = (self.workspaces.iter())
+                .find(|ws| ws.id == w)
+                .ok_or(Error::NoWorkspace(w))?;
+            let (ones, of) = match kind {
+                Kind::Tab => {
+                    let tabs: Vec<TabId> = ws.tabs().iter().map(|t| t.id).collect();
+                    match tabs.as_slice() {
+                        [tab] => return Ok(AnyRef::Tab(*tab)),
+                        tabs => (tabs.iter().map(ToString::to_string).collect(), "tab"),
+                    }
+                }
+                Kind::Pane | Kind::Workspace => {
+                    let panes: Vec<PaneId> = ws.tabs().iter().flat_map(panes_of).collect();
+                    match panes.as_slice() {
+                        [pane] => return Ok(AnyRef::Pane(*pane)),
+                        panes => (ids(panes), "pane"),
+                    }
+                }
+            };
+            return Err(Error::NotNamed(format!(
+                "{w} is a workspace of {} {of}s ({}): use a {of}'s id",
+                ones.len(),
+                ones.join(" ")
+            )));
+        }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(None, here)?.id)),
             Kind::Pane => match text.parse::<PaneId>() {
@@ -2417,7 +2444,6 @@ impl Session {
                     print: false,
                     after: false,
                     marks: false,
-                    all: false,
                 };
                 let here = match self.here(origin) {
                     Ok(here) => here,

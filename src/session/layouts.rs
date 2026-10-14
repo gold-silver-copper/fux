@@ -20,10 +20,14 @@ impl Session {
             other => other,
         };
         let mut out = String::from("# fux: running this makes it again\n");
+        let whole = !matches!(only, Some(AnyRef::Tab(_)));
         for ws in &self.workspaces {
             if matches!(only, Some(AnyRef::Workspace(w)) if w != ws.id) {
                 continue;
             }
+            // The first tab written opens its workspace: one before it may
+            // be empty (its panes moved out), and is not written.
+            let mut opens = whole;
             for (index, tab) in ws.tabs().iter().enumerate() {
                 if matches!(only, Some(AnyRef::Tab(t)) if t != tab.id) {
                     continue;
@@ -31,27 +35,27 @@ impl Session {
                 let Some(root) = tab.root() else {
                     continue;
                 };
-                let whole = !matches!(only, Some(AnyRef::Tab(_)));
-                self.dump_tab(ws, (index, tab), root, (whole, ids), &mut out);
+                self.dump_tab(ws, (index, tab), root, (whole, opens, ids), &mut out);
+                opens = false;
             }
         }
         out
     }
 
     /// The lines that make tab `tab`, the `index`th of `ws`, and its panes:
-    /// with `whole`, as part of its workspace.
+    /// with `whole`, as part of its workspace, which it `opens` if it is the
+    /// first written.
     fn dump_tab(
         &self,
         ws: &Workspace,
         (index, tab): (usize, &Tab),
         root: &Tree,
-        (whole, ids): (bool, bool),
+        (whole, opens, ids): (bool, bool, bool),
         out: &mut String,
     ) {
         let Some(first) = root.first_pane() else {
             return;
         };
-        let opens = whole && index == 0;
         let program = self.program(first);
         let default_name = match program {
             Some(launch) => launch.argv.first().map(|p| basename(p)).unwrap_or_default(),

@@ -431,6 +431,16 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     let client = said(&["str", "c9", "client", "focused"])?;
     assert!(client.contains("no client c9"), "{client}");
+    // What a word takes, all of it: focus's every way, text's booleans.
+    let way = said(&["str", "c9", "client", "str", "sideways", "focus"])?;
+    assert!(way.contains("up, down, next, previous or last"), "{way}");
+    let text = said(&["keys", "opts", "text"])?;
+    assert!(text.contains("a string, a number or a boolean"), "{text}");
+    // A workspace of one pane is that pane; of more, said so.
+    assert_eq!(server.ok(&["%1", "workspace", "pane"])?, "%1\n");
+    server.ok(&["%1", "opts", "horizontal", "split"])?;
+    let many = said(&["%1", "workspace", "pane"])?;
+    assert!(many.contains("+1 is a workspace of 2 panes"), "{many}");
     Ok(())
 }
 

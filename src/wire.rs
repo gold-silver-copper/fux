@@ -681,7 +681,7 @@ impl Wire for Wait {
     fn put(&self, out: &mut Vec<u8>) {
         self.until.put(out);
         self.timeout.put(out);
-        for flag in [self.print, self.after, self.marks, self.all] {
+        for flag in [self.print, self.after, self.marks] {
             flag.put(out);
         }
     }
@@ -692,7 +692,6 @@ impl Wire for Wait {
             print: bool::get(r)?,
             after: bool::get(r)?,
             marks: bool::get(r)?,
-            all: bool::get(r)?,
         })
     }
 }
