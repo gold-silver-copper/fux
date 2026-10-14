@@ -93,7 +93,21 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
             "kill-pane" => {
                 server.ok(&["str", &pane, "pane", "kill"])?;
             }
-            "exit" => server.type_line(&pane, "exit")?,
+            // The shell exits and its pane closes: answered with status 4.
+            "exit" => {
+                let keys = [
+                    "keys",
+                    "str",
+                    "exit",
+                    "text",
+                    "str",
+                    "Enter",
+                    "key",
+                    "send-keys",
+                ];
+                let out = server.fux(&[&["str", &pane, "pane"][..], &keys].concat())?;
+                assert!(matches!(out.status, 0 | 4), "{}", out.stderr);
+            }
             _ => {
                 server.ok(&["str", "doomed", "workspace", "kill"])?;
             }
