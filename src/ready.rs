@@ -105,8 +105,9 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         // Polling for keys with a time limit: it may draw again on its own
         // (a pause, a clock), so never surely waiting for the agent.
         Activity::Polling | Activity::Waiting if quiet >= QUIET => State::Waiting,
-        // Every thread waits, on what macOS will not say: settled.
-        Activity::Idle if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Settled,
+        // Every thread waits, on what macOS will not say (a sleep or a
+        // read): settled once quiet as long as where nothing is known.
+        Activity::Idle if quiet >= GUESS && !keys_unread(tty.as_deref()) => State::Settled,
         Activity::Unknown if quiet >= GUESS => State::Settled,
         Activity::Reading
         | Activity::Polling
