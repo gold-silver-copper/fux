@@ -484,53 +484,6 @@ fn the_alternate_screen_holds_no_cells_until_shown() -> Result<(), Error> {
     Ok(())
 }
 
-/// Kept, the rows a scroll lets go are there to read, in order: history's
-/// oldest past its limit, and rows scrolled off the alternate screen,
-/// which keeps no history. Not kept, none are.
-#[test]
-fn rows_let_go_are_kept_while_asked() -> Result<(), Error> {
-    let gone = |parser: &Parser| -> Vec<String> {
-        (parser.screen().departed().iter())
-            .map(|d| d.text.trim_end().to_owned())
-            .collect()
-    };
-    let mut parser = Parser::new(Size::of(3, 10), 2)?;
-    parser.process(b"a\r\nb\r\nc\r\nd\r\n")?;
-    assert!(parser.screen().departed().is_empty());
-    parser.keep_departed(true);
-    parser.process(b"e\r\nf\r\ng\r\n")?;
-    assert_eq!(gone(&parser), ["a", "b", "c"]);
-    parser.forget_departed();
-    parser.process(b"\x1b[?1049h\x1b[Hx\r\ny\r\nz\r\nw\r\nv")?;
-    assert_eq!(gone(&parser), ["x", "y"]);
-    parser.keep_departed(false);
-    parser.process(b"\r\nu\r\n")?;
-    assert!(parser.screen().departed().is_empty());
-    // Rows scrolled out of a scroll region's top go to no history either.
-    let mut parser = Parser::new(Size::of(4, 10), 100)?;
-    parser.keep_departed(true);
-    parser.process(b"\x1b[1;2ra\r\nb\r\nc\r\n")?;
-    assert_eq!(gone(&parser), ["a", "b"]);
-    Ok(())
-}
-
-/// A row let go says whether it changed since a mark, as a kept row does:
-/// not the row written last before it, but one written after.
-#[test]
-fn rows_let_go_tell_whether_they_changed_since_a_mark() -> Result<(), Error> {
-    let mut parser = Parser::new(Size::of(3, 10), 0)?;
-    parser.keep_departed(true);
-    parser.process(b"x\r\nb\r\nc\x1b[Ha")?;
-    let mark = parser.screen().mark();
-    parser.process(b"\x1b[3H\n")?;
-    parser.process(b"\x1b[Hq\x1b[3H\n")?;
-    let changed: Vec<(String, bool)> = (parser.screen().departed().iter())
-        .map(|d| (d.text.trim_end().to_owned(), d.changed_since(mark)))
-        .collect();
-    assert_eq!(changed, [("a".to_owned(), false), ("q".to_owned(), true)]);
-    Ok(())
-}
-
 /// The printable run, as the general path counts it: a byte at a time.
 fn printable_slowly(bytes: &[u8]) -> usize {
     bytes

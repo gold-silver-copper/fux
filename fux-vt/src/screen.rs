@@ -365,10 +365,6 @@ pub struct Screen {
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<crate::palette::Colours>>,
-    /// The rows let go since the host last forgot them, while it keeps
-    /// them (`keep_departed`), and how many it has been given.
-    departed: Option<Vec<crate::Departed>>,
-    departures: u64,
     /// What was printed since the host last took it, while it records
     /// (`record_prints`): text drawn and drawn over before it reads the
     /// screen is there still.
@@ -487,8 +483,6 @@ impl Screen {
             links_seen: false,
             next_link: 1,
             colours: None,
-            departed: None,
-            departures: 0,
             prints: None,
             mark_nonce: None,
             submitted: None,
@@ -1060,9 +1054,6 @@ impl Screen {
         // (allocation failure). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
-        if up && self.departed.is_some() {
-            self.depart(region, count, history);
-        }
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {
@@ -1087,68 +1078,6 @@ impl Screen {
             self.printed(first, 0..0, "");
         }
         Ok(())
-    }
-    /// Which retained rows an upward scroll of `count` rows in `region`
-    /// lets go: from where, and how many.
-    fn leaving(&self, region: Span, count: u16, history: bool) -> (usize, usize) {
-        let g = self.grid();
-        let size = g.size();
-        if history && region == size.lines() {
-            let count = usize::from(count.min(size.rows()));
-            let over = (g.history_len().saturating_add(count)).saturating_sub(g.history_limit());
-            (0, if g.history_limit() > 0 { over } else { count })
-        } else {
-            let top = g.history_len().saturating_add(usize::from(region.first()));
-            (top, usize::from(count.min(region.len())))
-        }
-    }
-    /// Keeps the rows an upward scroll of `count` rows in `region` is
-    /// about to let go: history's oldest past its limit, for a scroll into
-    /// history; else those scrolled out of the region's top.
-    #[cold]
-    #[inline(never)]
-    fn depart(&mut self, region: Span, count: u16, history: bool) {
-        let (from, gone) = self.leaving(region, count, history);
-        let g = self.grid();
-        let before = self.departures;
-        let departed: Vec<crate::Departed> = (from..from.saturating_add(gone))
-            .filter_map(|i| g.row_at(i))
-            .zip(1u64..)
-            .map(|(row, n)| crate::Departed {
-                seq: before.wrapping_add(n),
-                id: row.id,
-                version: row.version,
-                wrapped: row.wrapped,
-                text: row.cells_text(),
-            })
-            .collect();
-        self.departures = departed.last().map_or(before, |d| d.seq);
-        if let Some(kept) = &mut self.departed {
-            kept.extend(departed);
-        }
-    }
-    /// Starts keeping the rows scrolls let go, for the host to read
-    /// (`departed`) before it forgets them (`forget_departed`); or stops,
-    /// forgetting those kept. A row of history is let go only past its
-    /// limit, and the alternate screen keeps none: a reader looking now and
-    /// then misses none of what scrolled out between its looks.
-    pub fn keep_departed(&mut self, keep: bool) {
-        match (keep, &self.departed) {
-            (true, None) => self.departed = Some(Vec::new()),
-            (false, Some(_)) => self.departed = None,
-            (true, Some(_)) | (false, None) => {}
-        }
-    }
-    /// The rows let go since they were last forgotten, in the order they
-    /// went, while they are kept.
-    pub fn departed(&self) -> &[crate::Departed] {
-        self.departed.as_deref().unwrap_or_default()
-    }
-    /// Forgets the rows let go so far, keeping on.
-    pub fn forget_departed(&mut self) {
-        if let Some(kept) = &mut self.departed {
-            kept.clear();
-        }
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
     /// its blanks in the pen's colours. Out of line: without margins it is

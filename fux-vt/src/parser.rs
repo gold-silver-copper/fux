@@ -726,15 +726,6 @@ impl Parser {
     pub fn clear_history(&mut self) {
         self.screen.clear_history();
     }
-    /// Starts or stops keeping the rows scrolls let go
-    /// ([`Screen::keep_departed`]).
-    pub fn keep_departed(&mut self, keep: bool) {
-        self.screen.keep_departed(keep);
-    }
-    /// Forgets the rows let go so far ([`Screen::forget_departed`]).
-    pub fn forget_departed(&mut self) {
-        self.screen.forget_departed();
-    }
     /// A new number, after every one processing has taken so far
     /// ([`Screen::version`]): for something the host records between
     /// pieces of output, which the next piece's number follows.

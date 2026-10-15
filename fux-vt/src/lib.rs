@@ -270,30 +270,6 @@ impl<'a> Row<'a> {
     }
 }
 
-/// A row a scroll let go, unretained since ([`Screen::keep_departed`]):
-/// scrolled out of the alternate screen or a scroll region, which keep no
-/// history, or history's oldest, let go past its limit.
-#[derive(Clone, Debug)]
-pub struct Departed {
-    /// Its place among the rows let go while they were kept: one more
-    /// than the row before's.
-    pub seq: u64,
-    /// Its identity, as it had while retained.
-    pub id: RowId,
-    version: u64,
-    /// Whether its line went on in the row after it.
-    pub wrapped: bool,
-    /// Its text, as [`Row::cells_text`] read it.
-    pub text: String,
-}
-
-impl Departed {
-    /// Whether the row had changed since `mark` was taken.
-    pub fn changed_since(&self, mark: Mark) -> bool {
-        self.version > mark.0
-    }
-}
-
 /// What was printed while the host records ([`Parser::record_prints`]):
 /// each run of text that changed cells, in the order printed, though later
 /// drawn over, its texts end to end. A row moved within the screen, its
