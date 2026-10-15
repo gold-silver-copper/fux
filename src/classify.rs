@@ -1,20 +1,25 @@
-//! Whether a piece of output is the echo of what was typed or the
-//! program's own output, decided as the piece arrives, from three sources
-//! in a fixed order of trust:
+//! Whether output is the echo of what was typed or the program's own,
+//! decided as it arrives from what fux recorded, never from how it reads:
 //!
-//! 1. **The shell's marks.** While a shell fux marked (its marks carry the
-//!    pane's nonce) reads its command line, what it draws is the echo of
-//!    the line typed, and what follows a line submitted is output.
-//! 2. **The kernel's echo.** In line mode the terminal echoes input by
+//! 1. **The kernel's echo.** In line mode the terminal echoes input by
 //!    fixed rules (`crate::echo`): those bytes, found in order in what
-//!    follows the input, are echo, and the rest is output.
-//! 3. **Order.** Input is written a piece at a time, each once the program
-//!    has taken the one before (`crate::pane::Pace`): what follows an edit
-//!    at once ([`EDIT_WINDOW`]) is the echo on the line typed on, and output
-//!    elsewhere; what follows anything else, or comes later, is output.
+//!    follows the input, are echo, certainly, and the rest is output.
+//! 2. **The shell's marks.** A shell fux marks (its marks carry the pane's
+//!    nonce) says when it reads its command line: what it draws after a key
+//!    that edits the line is the line's echo; what follows a line submitted
+//!    is output; and keys written while it was not reading (a command ran,
+//!    or no prompt was drawn yet) are typed ahead, which it draws again at
+//!    its next prompt.
+//! 3. **Order and place.** Input is written a piece at a time, each once
+//!    the program took the one before (`crate::pane::Pace`). What follows
+//!    an edit at once ([`EDIT_WINDOW`]), on the line typed on, is its echo
+//!    if it holds the text typed, or is part of it (a key's redraw, part of
+//!    the line typed); anything else, or later, is output. Text typed ahead
+//!    of a program's read is its echo when a line editor (the terminal raw)
+//!    draws it again.
 //!
-//! A full-screen program's screen is all output, as is anything before
-//! the first input.
+//! A full-screen program's screen is all output, as is anything before the
+//! first input. What stays ambiguous is said in `docs/agents.md`.
 use crate::log::{InputSeq, Origin, Source, Unit};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
