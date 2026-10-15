@@ -1320,32 +1320,42 @@ fn osc_before(before: &[u8]) -> Option<usize> {
     }
 }
 
-/// A row's cells as they read, one string each, column by column: the
-/// second cell of a wide character empty, a blank or placeholder a space.
-pub type Cells = Vec<String>;
+/// A row's cells as they read: its text, a blank or placeholder a space,
+/// and where in it each column starts (a wide character's second cell
+/// where the next starts).
+#[derive(Clone, Debug, Default)]
+pub struct Cells {
+    text: String,
+    at: Vec<usize>,
+}
 
 /// The cells of `row`.
 pub fn row_cells(row: &fux_vt::Row<'_>) -> Cells {
-    (row.cells())
-        .map(|c| match c.contents() {
-            _ if c.is_wide_continuation() => String::new(),
-            text if c.has_contents() && text != fux_vt::PLACEHOLDER => text.to_owned(),
-            _ => " ".to_owned(),
-        })
-        .collect()
+    let mut cells = Cells::default();
+    for c in row.cells() {
+        cells.at.push(cells.text.len());
+        match c.contents() {
+            _ if c.is_wide_continuation() => {}
+            text if c.has_contents() && text != fux_vt::PLACEHOLDER => cells.text.push_str(text),
+            _ => cells.text.push(' '),
+        }
+    }
+    cells
 }
 
 /// The text of `row`'s cells from column `col` on.
-fn text_from(row: &[String], col: u16) -> String {
-    row.iter()
-        .skip(usize::from(col))
-        .map(String::as_str)
-        .collect()
+fn text_from(row: &Cells, col: u16) -> &str {
+    let at = row
+        .at
+        .get(usize::from(col))
+        .copied()
+        .unwrap_or(row.text.len());
+    row.text.get(at..).unwrap_or_default()
 }
 
 /// Whether `row`, a row's cells, holds what `print` printed at its
 /// columns, a wide character's two cells as one.
-pub fn holds_at(row: &[String], print: &fux_vt::Print<'_>) -> bool {
+pub fn holds_at(row: &Cells, print: &fux_vt::Print<'_>) -> bool {
     text_from(row, print.cols.0).starts_with(print.text)
 }
 
@@ -1354,7 +1364,7 @@ pub fn holds_at(row: &[String], print: &fux_vt::Print<'_>) -> bool {
 /// of the line typed (a line editor drawing it again, its prompt and all),
 /// those from the first that differs from what stood in its cell to the
 /// last; of other output, all of it (its row may have been erased since).
-pub fn changed(row: &[String], print: &fux_vt::Print<'_>, echo: bool) -> (usize, usize) {
+pub fn changed(row: &Cells, print: &fux_vt::Print<'_>, echo: bool) -> (usize, usize) {
     let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
     let text: Vec<char> = print.text.chars().collect();
     if !echo {

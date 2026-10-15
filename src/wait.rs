@@ -114,6 +114,9 @@ struct Watch {
     stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
     /// The `wait-gone` texts seen since the wait began, for a fresh program.
     appeared: Vec<String>,
+    /// More came than the pane keeps: the rows changed up to this number
+    /// were read as they read then.
+    scanned: Seq,
     /// A text was found in the echo of what was typed alone.
     echo_skipped: bool,
     finished: u64,
@@ -662,6 +665,7 @@ impl Watch {
             found: None,
             stream: std::collections::HashMap::new(),
             appeared: Vec::new(),
+            scanned: Seq(0),
             echo_skipped: false,
             finished,
             revision: pane.revision,
@@ -963,7 +967,11 @@ impl Watch {
         // as they read now, on the screen and in history.
         if pane.prints_lost {
             let screen = pane.screen();
-            let changed = screen.rows().filter(|r| r.version() > self.from.0);
+            // Only the rows changed since the last look: a row changed
+            // again since takes a newer number and is read again.
+            let since = self.from.max(self.scanned).0;
+            self.scanned = Seq(screen.version());
+            let changed = screen.rows().filter(|r| r.version() > since);
             let found = changed.map(|row| Line::of_row(row)).find_map(|l| {
                 let at = texts.iter().filter_map(|t| l.holds(t).map(|at| (at, t)));
                 at.min_by_key(|(at, _)| *at)
