@@ -723,7 +723,7 @@ impl Watch {
     /// Why a text may have come unseen: more came than the pane keeps, or
     /// the text was in the echo of what was typed alone.
     fn unseen(&self, pane: Option<&Pane>) -> Option<&'static str> {
-        if pane.is_some_and(|p| p.prints_lost || p.departed_lost) {
+        if pane.is_some_and(|p| p.prints_lost) {
             return Some(
                 "more was written since the input than fux keeps for a wait: the text \
                  may have come unseen",
@@ -904,7 +904,7 @@ impl Watch {
             on_full: self.on_full,
             finished: self.finished,
             revision: self.revision,
-            cut: pane.is_some_and(|p| p.cut || p.prints_lost || p.departed_lost),
+            cut: pane.is_some_and(|p| p.cut || p.prints_lost),
         }
     }
 }
@@ -934,8 +934,7 @@ impl Line {
     }
 
     /// The line the piece `print` went on, wherever it is now: on the
-    /// screen or in history, else among the rows let go; else the piece's
-    /// own text. Of a line wrapped over many rows, the rows within `reach`
+    /// screen or in history; else (let go) the piece's own text. Of a line wrapped over many rows, the rows within `reach`
     /// characters of the piece: a text that holds any of it lies there.
     /// An end of the window that is no end of the line is marked so that
     /// `^` and `$` find no line's start or end there.
@@ -983,29 +982,6 @@ impl Line {
                 if row.is_some() && after.is_some_and(|n| n >= rows) {
                     line.push(CUT_END, false);
                     return line;
-                }
-            }
-            return line.trimmed();
-        }
-        if let Some(&at) = pane.departed_at.get(&print.row) {
-            let rows = pane.departed.get(..=at).unwrap_or_default();
-            let start = rows
-                .iter()
-                .rposition(|d| !d.wrapped && d.id != print.row)
-                .map_or(0, |i| i.saturating_add(1));
-            let mut line = Line {
-                text: String::new(),
-                printed: Vec::new(),
-                rows: Vec::new(),
-            };
-            for row in pane.departed.get(start..).unwrap_or_default() {
-                for (col, c) in row.text.chars().enumerate() {
-                    let col = u16::try_from(col).unwrap_or(u16::MAX);
-                    let ours = row.id == print.row && print.cols.contains(&col);
-                    line.push(c.encode_utf8(&mut [0; 4]), ours);
-                }
-                if !row.wrapped {
-                    break;
                 }
             }
             return line.trimmed();

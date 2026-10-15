@@ -20,60 +20,6 @@ pub(crate) fn request(value: impl TryInto<Request>) -> Result<Request> {
 #[derive(Clone)]
 pub struct Termios(libc::termios);
 
-/// The modes a terminal's echo of typed input depends on, as plain data:
-/// local, input and output modes by their termios names, and the editing,
-/// signal and flow characters, each `None` when disabled. A mode one kernel
-/// lacks is always off on the other: `iuclc` and `olcuc` are Linux's,
-/// `altwerase`, `onoeot` and `status` macOS's.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub struct Modes {
-    /// Line editing (`ICANON`).
-    pub canonical: bool,
-    pub echo: bool,
-    pub echoe: bool,
-    pub echok: bool,
-    pub echoke: bool,
-    pub echoctl: bool,
-    pub echonl: bool,
-    pub echoprt: bool,
-    pub iexten: bool,
-    pub isig: bool,
-    pub noflsh: bool,
-    pub extproc: bool,
-    pub altwerase: bool,
-    pub icrnl: bool,
-    pub inlcr: bool,
-    pub igncr: bool,
-    pub istrip: bool,
-    pub iutf8: bool,
-    pub ixon: bool,
-    pub parmrk: bool,
-    pub iuclc: bool,
-    pub opost: bool,
-    pub onlcr: bool,
-    pub ocrnl: bool,
-    pub onocr: bool,
-    pub olcuc: bool,
-    pub onoeot: bool,
-    /// Tabs written as spaces (`XTABS` on Linux, `OXTABS` on macOS).
-    pub expand_tabs: bool,
-    pub erase: Option<u8>,
-    pub kill: Option<u8>,
-    pub werase: Option<u8>,
-    pub intr: Option<u8>,
-    pub quit: Option<u8>,
-    pub susp: Option<u8>,
-    pub eof: Option<u8>,
-    pub eol: Option<u8>,
-    pub eol2: Option<u8>,
-    pub lnext: Option<u8>,
-    pub reprint: Option<u8>,
-    pub start: Option<u8>,
-    pub stop: Option<u8>,
-    pub discard: Option<u8>,
-    pub status: Option<u8>,
-}
-
 /// The modes only one kernel has, as nothing on the other.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod only {
@@ -98,143 +44,115 @@ mod only {
     pub const VSTATUS: Option<usize> = Some(libc::VSTATUS);
 }
 
+/// Declares `Modes`, the modes a terminal's echo of typed input depends
+/// on, as plain data, with how each is read from a termios and set in one:
+/// each flag, its field and bit; tabs written as spaces; each character, at
+/// its place in `c_cc` (`None` when disabled).
+macro_rules! modes {
+    (
+        flags { $($flag:ident: $field:ident $bit:expr),* $(,)? }
+        chars { $($char:ident: $at:expr),* $(,)? }
+    ) => {
+        /// The modes a terminal's echo of typed input depends on, as plain
+        /// data: local, input and output modes by their termios names,
+        /// `expand_tabs` for tabs written as spaces (`XTABS` on Linux,
+        /// `OXTABS` on macOS), and the editing, signal and flow characters,
+        /// each `None` when disabled. A mode one kernel lacks is always off
+        /// on the other: `iuclc` and `olcuc` are Linux's, `altwerase`,
+        /// `onoeot` and `status` macOS's.
+        #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+        pub struct Modes {
+            $(pub $flag: bool,)*
+            pub expand_tabs: bool,
+            $(pub $char: Option<u8>,)*
+        }
+
+        impl Termios {
+            /// The modes its echo depends on.
+            pub fn modes(&self) -> Modes {
+                let t = &self.0;
+                let at = |at: Option<usize>| {
+                    at.and_then(|at| t.c_cc.get(at).copied())
+                        .filter(|&c| c != libc::_POSIX_VDISABLE)
+                };
+                Modes {
+                    $($flag: t.$field & $bit != 0,)*
+                    expand_tabs: t.c_oflag & only::TABS.0 == only::TABS.1,
+                    $($char: at($at),)*
+                }
+            }
+
+            /// Sets the modes `Modes` covers to `modes`, leaving the rest as
+            /// they are; one this kernel lacks stays off.
+            pub fn set_modes(&mut self, modes: &Modes) {
+                let t = &mut self.0;
+                $(
+                    t.$field = if modes.$flag { t.$field | $bit } else { t.$field & !$bit };
+                )*
+                t.c_oflag &= !only::TABS.0;
+                if modes.expand_tabs {
+                    t.c_oflag |= only::TABS.1;
+                }
+                $(
+                    if let Some(slot) = ($at).and_then(|at: usize| t.c_cc.get_mut(at)) {
+                        *slot = modes.$char.unwrap_or(libc::_POSIX_VDISABLE);
+                    }
+                )*
+            }
+        }
+    };
+}
+
+modes! {
+    flags {
+        canonical: c_lflag libc::ICANON,
+        echo: c_lflag libc::ECHO,
+        echoe: c_lflag libc::ECHOE,
+        echok: c_lflag libc::ECHOK,
+        echoke: c_lflag libc::ECHOKE,
+        echoctl: c_lflag libc::ECHOCTL,
+        echonl: c_lflag libc::ECHONL,
+        echoprt: c_lflag libc::ECHOPRT,
+        iexten: c_lflag libc::IEXTEN,
+        isig: c_lflag libc::ISIG,
+        noflsh: c_lflag libc::NOFLSH,
+        extproc: c_lflag libc::EXTPROC,
+        altwerase: c_lflag only::ALTWERASE,
+        icrnl: c_iflag libc::ICRNL,
+        inlcr: c_iflag libc::INLCR,
+        igncr: c_iflag libc::IGNCR,
+        istrip: c_iflag libc::ISTRIP,
+        iutf8: c_iflag libc::IUTF8,
+        ixon: c_iflag libc::IXON,
+        parmrk: c_iflag libc::PARMRK,
+        iuclc: c_iflag only::IUCLC,
+        opost: c_oflag libc::OPOST,
+        onlcr: c_oflag libc::ONLCR,
+        ocrnl: c_oflag libc::OCRNL,
+        onocr: c_oflag libc::ONOCR,
+        olcuc: c_oflag only::OLCUC,
+        onoeot: c_oflag only::ONOEOT,
+    }
+    chars {
+        erase: Some(libc::VERASE),
+        kill: Some(libc::VKILL),
+        werase: Some(libc::VWERASE),
+        intr: Some(libc::VINTR),
+        quit: Some(libc::VQUIT),
+        susp: Some(libc::VSUSP),
+        eof: Some(libc::VEOF),
+        eol: Some(libc::VEOL),
+        eol2: Some(libc::VEOL2),
+        lnext: Some(libc::VLNEXT),
+        reprint: Some(libc::VREPRINT),
+        start: Some(libc::VSTART),
+        stop: Some(libc::VSTOP),
+        discard: Some(libc::VDISCARD),
+        status: only::VSTATUS,
+    }
+}
+
 impl Termios {
-    /// The modes its echo depends on.
-    pub fn modes(&self) -> Modes {
-        let t = &self.0;
-        let l = |flag| t.c_lflag & flag != 0;
-        let i = |flag| t.c_iflag & flag != 0;
-        let o = |flag| t.c_oflag & flag != 0;
-        let c = |at: usize| {
-            t.c_cc
-                .get(at)
-                .copied()
-                .filter(|&c| c != libc::_POSIX_VDISABLE)
-        };
-        Modes {
-            canonical: l(libc::ICANON),
-            echo: l(libc::ECHO),
-            echoe: l(libc::ECHOE),
-            echok: l(libc::ECHOK),
-            echoke: l(libc::ECHOKE),
-            echoctl: l(libc::ECHOCTL),
-            echonl: l(libc::ECHONL),
-            echoprt: l(libc::ECHOPRT),
-            iexten: l(libc::IEXTEN),
-            isig: l(libc::ISIG),
-            noflsh: l(libc::NOFLSH),
-            extproc: l(libc::EXTPROC),
-            altwerase: l(only::ALTWERASE),
-            icrnl: i(libc::ICRNL),
-            inlcr: i(libc::INLCR),
-            igncr: i(libc::IGNCR),
-            istrip: i(libc::ISTRIP),
-            iutf8: i(libc::IUTF8),
-            ixon: i(libc::IXON),
-            parmrk: i(libc::PARMRK),
-            iuclc: i(only::IUCLC),
-            opost: o(libc::OPOST),
-            onlcr: o(libc::ONLCR),
-            ocrnl: o(libc::OCRNL),
-            onocr: o(libc::ONOCR),
-            olcuc: o(only::OLCUC),
-            onoeot: o(only::ONOEOT),
-            expand_tabs: t.c_oflag & only::TABS.0 == only::TABS.1,
-            erase: c(libc::VERASE),
-            kill: c(libc::VKILL),
-            werase: c(libc::VWERASE),
-            intr: c(libc::VINTR),
-            quit: c(libc::VQUIT),
-            susp: c(libc::VSUSP),
-            eof: c(libc::VEOF),
-            eol: c(libc::VEOL),
-            eol2: c(libc::VEOL2),
-            lnext: c(libc::VLNEXT),
-            reprint: c(libc::VREPRINT),
-            start: c(libc::VSTART),
-            stop: c(libc::VSTOP),
-            discard: c(libc::VDISCARD),
-            status: only::VSTATUS.and_then(c),
-        }
-    }
-
-    /// Sets the modes `Modes` covers to `modes`, leaving the rest as they
-    /// are; one this kernel lacks stays off.
-    pub fn set_modes(&mut self, modes: &Modes) {
-        let t = &mut self.0;
-        let set = |flags: &mut libc::tcflag_t, list: &[(libc::tcflag_t, bool)]| {
-            for &(flag, on) in list {
-                *flags = if on { *flags | flag } else { *flags & !flag };
-            }
-        };
-        set(
-            &mut t.c_lflag,
-            &[
-                (libc::ICANON, modes.canonical),
-                (libc::ECHO, modes.echo),
-                (libc::ECHOE, modes.echoe),
-                (libc::ECHOK, modes.echok),
-                (libc::ECHOKE, modes.echoke),
-                (libc::ECHOCTL, modes.echoctl),
-                (libc::ECHONL, modes.echonl),
-                (libc::ECHOPRT, modes.echoprt),
-                (libc::IEXTEN, modes.iexten),
-                (libc::ISIG, modes.isig),
-                (libc::NOFLSH, modes.noflsh),
-                (libc::EXTPROC, modes.extproc),
-                (only::ALTWERASE, modes.altwerase),
-            ],
-        );
-        set(
-            &mut t.c_iflag,
-            &[
-                (libc::ICRNL, modes.icrnl),
-                (libc::INLCR, modes.inlcr),
-                (libc::IGNCR, modes.igncr),
-                (libc::ISTRIP, modes.istrip),
-                (libc::IUTF8, modes.iutf8),
-                (libc::IXON, modes.ixon),
-                (libc::PARMRK, modes.parmrk),
-                (only::IUCLC, modes.iuclc),
-            ],
-        );
-        set(
-            &mut t.c_oflag,
-            &[
-                (libc::OPOST, modes.opost),
-                (libc::ONLCR, modes.onlcr),
-                (libc::OCRNL, modes.ocrnl),
-                (libc::ONOCR, modes.onocr),
-                (only::OLCUC, modes.olcuc),
-                (only::ONOEOT, modes.onoeot),
-                (only::TABS.0, false),
-                (only::TABS.1, modes.expand_tabs),
-            ],
-        );
-        let chars = [
-            (Some(libc::VERASE), modes.erase),
-            (Some(libc::VKILL), modes.kill),
-            (Some(libc::VWERASE), modes.werase),
-            (Some(libc::VINTR), modes.intr),
-            (Some(libc::VQUIT), modes.quit),
-            (Some(libc::VSUSP), modes.susp),
-            (Some(libc::VEOF), modes.eof),
-            (Some(libc::VEOL), modes.eol),
-            (Some(libc::VEOL2), modes.eol2),
-            (Some(libc::VLNEXT), modes.lnext),
-            (Some(libc::VREPRINT), modes.reprint),
-            (Some(libc::VSTART), modes.start),
-            (Some(libc::VSTOP), modes.stop),
-            (Some(libc::VDISCARD), modes.discard),
-            (only::VSTATUS, modes.status),
-        ];
-        for (at, c) in chars {
-            if let Some(slot) = at.and_then(|at| t.c_cc.get_mut(at)) {
-                *slot = c.unwrap_or(libc::_POSIX_VDISABLE);
-            }
-        }
-    }
-
     /// Whether the terminal echoes what is typed (`ECHO`).
     pub fn echoes(&self) -> bool {
         self.0.c_lflag & libc::ECHO != 0

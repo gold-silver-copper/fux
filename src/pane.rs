@@ -412,20 +412,6 @@ impl Process {
 
 /// A digest of what `screen` shows: its glyphs, their attributes, and the
 /// cursor.
-fn digest(screen: &fux_vt::Screen) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    let window = screen.window();
-    for row in (0..window.rows()).filter_map(|y| window.row(y)) {
-        for cell in row.cells() {
-            cell.contents().hash(&mut hasher);
-            cell.attributes().hash(&mut hasher);
-        }
-    }
-    screen.cursor_position().hash(&mut hasher);
-    hasher.finish()
-}
-
 /// What a pane runs, which says what its program's exit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runs {
@@ -478,8 +464,6 @@ pub struct Printed {
 /// The most bytes of text printed since the last input a pane keeps for
 /// waits; past it, what comes is let go, and said to be.
 pub const PRINTS_BYTES: usize = 8 << 20;
-/// The most rows let go since the last input a pane keeps for waits.
-pub const DEPARTED_ROWS: usize = 10_000;
 
 pub struct Pane {
     pub id: PaneId,
@@ -505,9 +489,10 @@ pub struct Pane {
     /// session last looked, which copies it (`Session::copied`).
     pub copied: Option<String>,
     pace: Pace,
-    /// A digest of what the screen shows (`digest`), and since when it
-    /// has: a program that redraws the same screen has not changed it.
-    shown: u64,
+    /// The screen as it was last seen to change (a mark of it, and the
+    /// cursor), and since when it has shown so: a program that redraws
+    /// the same screen changes no row, and has not changed it.
+    shown: (fux_vt::Mark, (u16, u16)),
     pub changed_at: Instant,
     /// When input last went to the program, if any has: it is busy with
     /// it at first, even while still blocked reading (the kernel has yet
@@ -524,15 +509,9 @@ pub struct Pane {
     pub prints: Vec<Printed>,
     printed: usize,
     pub prints_lost: bool,
-    /// The rows let go since then (scrolled off a full screen or a scroll
-    /// region, or past history's limit), and whether some were let go
-    /// past [`DEPARTED_ROWS`] too.
-    pub departed: Vec<fux_vt::Departed>,
-    /// Where each row let go is among them.
-    pub departed_at: std::collections::HashMap<fux_vt::RowId, usize>,
-    pub departed_lost: bool,
     /// Rows of the main screen written since were let go (past history's
     /// limit, or out of a scroll region): what came since is not all kept.
+    /// What they printed is kept in `prints`.
     pub cut: bool,
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new.
@@ -664,7 +643,7 @@ impl Pane {
             bell: false,
             copied: None,
             pace: Pace::default(),
-            shown: 0,
+            shown: (since_mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
             record: crate::log::Log::default(),
@@ -673,9 +652,6 @@ impl Pane {
             prints: Vec::new(),
             printed: 0,
             prints_lost: false,
-            departed: Vec::new(),
-            departed_at: std::collections::HashMap::new(),
-            departed_lost: false,
             cut: false,
             before: std::collections::HashMap::new(),
             classes: crate::classify::Classes::default(),
@@ -827,16 +803,12 @@ impl Pane {
         }
         let mark = self.since_mark;
         let main = !self.screen().mode(fux_vt::Mode::AlternateScreen);
-        for row in (self.parser.screen().departed().iter()).filter(|r| r.changed_since(mark)) {
-            self.cut |= main;
-            match self.departed.len() < DEPARTED_ROWS {
-                true => {
-                    self.departed_at.insert(row.id, self.departed.len());
-                    self.departed.push(row.clone());
-                }
-                false => self.departed_lost = true,
-            }
-        }
+        self.cut |= main
+            && self
+                .screen()
+                .departed()
+                .iter()
+                .any(|r| r.changed_since(mark));
         self.parser.forget_departed();
         let taken = begun.map_or(run, |t| run.get(..t).unwrap_or_default());
         let event = crate::log::Event::Output {
@@ -968,9 +940,6 @@ impl Pane {
         self.prints.clear();
         self.printed = 0;
         self.prints_lost = false;
-        self.departed.clear();
-        self.departed_at.clear();
-        self.departed_lost = false;
         self.cut = false;
         self.before = rows_now(self.screen());
     }
@@ -1123,9 +1092,11 @@ impl Pane {
     /// Notes, after the screen was read into at `now`, whether what it
     /// shows changed.
     pub fn note_change(&mut self, now: Instant) {
-        let shown = digest(self.screen());
-        if shown != self.shown {
-            self.shown = shown;
+        let screen = self.screen();
+        let cursor = screen.cursor_position();
+        let changed = (screen.dirty_live_rows_since(self.shown.0).next()).is_some();
+        if changed || cursor != self.shown.1 {
+            self.shown = (screen.mark(), cursor);
             self.changed_at = now;
             self.revision = self.revision.wrapping_add(1);
         }
