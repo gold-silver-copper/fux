@@ -981,6 +981,7 @@ impl Pane {
         self.before_shows = (0..window.rows())
             .filter_map(|y| window.row(y).map(|row| (row.id(), (y, shows(&row)))))
             .collect();
+        self.shown_rows.clone_from(&self.before_shows);
         self.seen.clear();
     }
 
@@ -1196,7 +1197,13 @@ impl Pane {
         let cursor = screen.cursor_position();
         // Rows written to that show as they did change nothing.
         let mut changed = cursor != self.shown.1;
+        // Once a change is seen, the other rows are not read: they show
+        // anew when next written (an action's start reads them all again).
         for (y, row) in screen.dirty_live_rows_since(self.shown.0) {
+            if changed {
+                self.shown_rows.remove(&row.id());
+                continue;
+            }
             let now_shows = (y, shows(&row));
             changed |= self.shown_rows.insert(row.id(), now_shows) != Some(now_shows);
         }

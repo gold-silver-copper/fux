@@ -845,6 +845,14 @@ impl Watch {
         self.read = pane.prints.len();
         let before = self.before.as_ref().unwrap_or(&pane.before);
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
+        // The characters of the texts waited for, case and blanks aside.
+        let wanted: std::collections::HashSet<char> = (texts.iter())
+            .flat_map(|t| t.trim_start_matches('^').trim_end_matches('$').chars())
+            .flat_map(|c| match c.is_whitespace() {
+                true => vec![' '],
+                false => c.to_lowercase().collect(),
+            })
+            .collect();
         let pieces = prints.iter().filter(|p| p.seq.0 > self.from);
         let runs = pieces.flat_map(|p| {
             (p.prints.iter().zip(&p.echo).zip(&p.again)).map(move |((r, e), a)| (p.seq, r, e, *a))
@@ -857,6 +865,27 @@ impl Watch {
                     .is_some_and(|row| crate::pane::holds_at(row, &print))
             };
             if again || was(before) {
+                continue;
+            }
+            // The runs printed one after another on the row, joined.
+            let output = *echo == crate::classify::Echo::Not;
+            let stream = match self.stream.remove(&print.row) {
+                Some((start, end, mut text)) if output && end == print.cols.0 => {
+                    text.push_str(print.text);
+                    (start, print.cols.1, text)
+                }
+                _ => (print.cols.0, print.cols.1, print.text.to_owned()),
+            };
+            if output {
+                self.stream.insert(print.row, stream.clone());
+            }
+            // A text found here holds some of the run: one of its
+            // characters.
+            let some = |c: char| {
+                (c.is_whitespace() && wanted.contains(&' '))
+                    || c.to_lowercase().any(|c| wanted.contains(&c))
+            };
+            if !print.text.chars().any(some) {
                 continue;
             }
             // The piece's line, as long as the row still holds what it
@@ -874,15 +903,6 @@ impl Watch {
                 true => Line::of(pane, &print, reach),
                 false => Line::piece(&print, above),
             };
-            // The runs printed one after another on the row, joined.
-            let output = *echo == crate::classify::Echo::Not;
-            let stream = match self.stream.remove(&print.row) {
-                Some((start, end, mut text)) if output && end == print.cols.0 => {
-                    text.push_str(print.text);
-                    (start, print.cols.1, text)
-                }
-                _ => (print.cols.0, print.cols.1, print.text.to_owned()),
-            };
             let joined = Line::piece(
                 &fux_vt::Print {
                     cols: (stream.0, stream.1),
@@ -891,9 +911,6 @@ impl Watch {
                 },
                 above,
             );
-            if output {
-                self.stream.insert(print.row, stream);
-            }
             let lines = [line, joined];
             // A text an echo may show is no news here: one made of what was
             // typed, as its keys may have edited it into any order.
