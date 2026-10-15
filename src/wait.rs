@@ -815,35 +815,31 @@ impl Watch {
         self.read = pane.prints.len();
         let before = self.before.as_ref().unwrap_or(&pane.before);
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
-        for printed in prints.iter().filter(|p| p.seq.0 > self.from) {
-            let line = Line::of(pane, &printed.print, reach);
+        let pieces = prints.iter().filter(|p| p.seq.0 > self.from);
+        let runs =
+            pieces.flat_map(|p| (p.prints.iter().zip(&p.echo)).map(move |(r, e)| (p.seq, r, *e)));
+        for (seq, print, echo) in runs.filter(|(_, r, _)| !r.text.is_empty()) {
+            let line = Line::of(pane, &print, reach);
             // Printed again to read as it did: nothing new.
             if line.reads_as(pane, before) {
                 continue;
             }
-            if printed.echo {
-                let piece = Line::piece(&printed.print);
-                let lines = [&line, &piece];
-                if texts
-                    .iter()
-                    .any(|t| lines.iter().any(|l| l.holds(t).is_some()))
-                {
-                    self.echo_skipped = true;
-                }
+            let lines = [line, Line::piece(&print)];
+            if echo {
+                let held = |t: &String| lines.iter().any(|l| l.holds(t).is_some());
+                self.echo_skipped |= texts.iter().any(held);
                 continue;
             }
             // On its line where the piece went, else in the piece itself:
             // of several texts, the one furthest left.
-            let found = [&line, &Line::piece(&printed.print)]
-                .into_iter()
-                .find_map(|l| {
-                    (texts.iter())
-                        .filter_map(|t| l.holds(t).map(|at| (at, t)))
-                        .min_by_key(|(at, _)| *at)
-                        .map(|(_, t)| (t.clone(), l.text.replace(CUT_END, "")))
-                });
+            let found = lines.iter().find_map(|l| {
+                (texts.iter())
+                    .filter_map(|t| l.holds(t).map(|at| (at, t)))
+                    .min_by_key(|(at, _)| *at)
+                    .map(|(_, t)| (t.clone(), l.text.replace(CUT_END, "")))
+            });
             if let Some((text, line)) = found {
-                self.found = Some((text, line, printed.seq.0));
+                self.found = Some((text, line, seq.0));
                 return;
             }
         }
@@ -904,7 +900,7 @@ impl Watch {
             on_full: self.on_full,
             finished: self.finished,
             revision: self.revision,
-            cut: pane.is_some_and(|p| p.cut || p.prints_lost),
+            cut: pane.is_some_and(|p| p.cut() || p.prints_lost),
         }
     }
 }
@@ -938,7 +934,7 @@ impl Line {
     /// characters of the piece: a text that holds any of it lies there.
     /// An end of the window that is no end of the line is marked so that
     /// `^` and `$` find no line's start or end there.
-    fn of(pane: &Pane, print: &fux_vt::Print, reach: usize) -> Line {
+    fn of(pane: &Pane, print: &fux_vt::Print<'_>, reach: usize) -> Line {
         let screen = pane.screen();
         if let Some(at) = screen.row_by_id(print.row) {
             let width = usize::from(screen.size().cols()).max(1);
@@ -971,7 +967,7 @@ impl Line {
                         _ => " ",
                     };
                     let col = u16::try_from(col).unwrap_or(u16::MAX);
-                    line.push(text, ours && print.cols.contains(&col));
+                    line.push(text, ours && print.cols.0 <= col && col < print.cols.1);
                 }
                 after = match (ours, after) {
                     (true, _) => Some(0),
@@ -1004,10 +1000,10 @@ impl Line {
     }
 
     /// The piece's own text, all of it printed.
-    fn piece(print: &fux_vt::Print) -> Line {
+    fn piece(print: &fux_vt::Print<'_>) -> Line {
         Line {
             printed: vec![true; print.text.len()],
-            text: print.text.clone(),
+            text: print.text.to_owned(),
             rows: Vec::new(),
         }
     }
@@ -1196,7 +1192,7 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
     // A row changed since, or moved (`fux_vt::Print`).
     let moved: std::collections::HashSet<fux_vt::RowId> = (pane.prints.iter())
         .filter(|p| p.seq.0 > since.from)
-        .map(|p| p.print.row)
+        .flat_map(|p| p.prints.iter().map(|r| r.row))
         .collect();
     let new = |r: &fux_vt::Row<'_>| r.version() > since.from.0 || moved.contains(&r.id());
     let Some(mut first) = screen.rows().find(new) else {

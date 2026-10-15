@@ -888,6 +888,10 @@ impl Grid {
     }
 
     /// Marks live row `row` as where a prompt starts (OSC 133 ; A).
+    /// The newest version of a history row let go past the limit.
+    pub(crate) fn let_go(&self) -> u64 {
+        self.history.let_go
+    }
     pub fn mark_prompt(&mut self, row: u16) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)

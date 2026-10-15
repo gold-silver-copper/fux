@@ -450,20 +450,22 @@ impl Alerts {
     }
 }
 
-/// What was printed, and the output it came in: kept since the last
+/// What a piece of output printed, and its number: kept since the last
 /// action's input, for waits to read.
 #[derive(Clone, Debug)]
 pub struct Printed {
     pub seq: crate::log::OutputSeq,
-    pub print: fux_vt::Print,
-    /// It is the echo of what was typed (`crate::classify`), which a wait
-    /// never takes.
-    pub echo: bool,
+    pub prints: fux_vt::Prints,
+    /// Which of its runs are the echo of what was typed
+    /// (`crate::classify`), which a wait never takes.
+    pub echo: Vec<bool>,
 }
 
 /// The most bytes of text printed since the last input a pane keeps for
-/// waits; past it, what comes is let go, and said to be.
-pub const PRINTS_BYTES: usize = 8 << 20;
+/// waits, about as much as history keeps; past it, nothing more is recorded
+/// until the next input, and a wait reads the lines changed since as they
+/// read now, said to be all it has.
+pub const PRINTS_BYTES: usize = 1 << 20;
 
 pub struct Pane {
     pub id: PaneId,
@@ -501,18 +503,13 @@ pub struct Pane {
     /// What happened in it, in order (`crate::log`).
     pub record: crate::log::Log,
     /// Where the last action's input began (or the program started):
-    /// what came since is what it brought, and a mark of the screen then.
+    /// what came since is what it brought.
     pub since: crate::log::Seq,
-    since_mark: fux_vt::Mark,
     /// What was printed since then, and its bytes; whether some was let
     /// go past [`PRINTS_BYTES`].
     pub prints: Vec<Printed>,
     printed: usize,
     pub prints_lost: bool,
-    /// Rows of the main screen written since were let go (past history's
-    /// limit, or out of a scroll region): what came since is not all kept.
-    /// What they printed is kept in `prints`.
-    pub cut: bool,
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new.
     pub before: std::collections::HashMap<fux_vt::RowId, String>,
@@ -629,7 +626,7 @@ impl Pane {
                 }
             })?,
         );
-        let since_mark = parser.screen().mark();
+        let mark = parser.screen().mark();
         Ok(Pane {
             id,
             name,
@@ -643,16 +640,14 @@ impl Pane {
             bell: false,
             copied: None,
             pace: Pace::default(),
-            shown: (since_mark, (0, 0)),
+            shown: (mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
             record: crate::log::Log::default(),
             since: crate::log::Seq::default(),
-            since_mark,
             prints: Vec::new(),
             printed: 0,
             prints_lost: false,
-            cut: false,
             before: std::collections::HashMap::new(),
             classes: crate::classify::Classes::default(),
             nonce: None,
@@ -738,8 +733,8 @@ impl Pane {
         let mut done = 0usize;
         let begun = loop {
             let rest = bytes.get(done..).unwrap_or_default();
-            let piece = rest.get(..cut(rest)).unwrap_or_default();
             let marked = self.nonce.is_some();
+            let piece = rest.get(..cut(rest, marked)).unwrap_or_default();
             let runs = (self.classes).classify(self.parser.screen(), marked, piece, now);
             let mut start = 0usize;
             let mut begun = None;
@@ -786,30 +781,29 @@ impl Pane {
         let bells = self.alerts.count();
         let begun = self.parse(run, until_frame);
         let seq = crate::log::Seq(self.screen().version());
-        for print in self.parser.take_prints() {
-            self.printed = self.printed.saturating_add(print.text.len());
-            if self.printed > PRINTS_BYTES {
+        let prints = self.parser.take_prints();
+        self.printed = self.printed.saturating_add(prints.len());
+        match (prints.is_empty(), self.printed > PRINTS_BYTES) {
+            (true, _) => {}
+            (false, true) => {
                 self.prints_lost = true;
-                continue;
+                self.parser.record_prints(false);
             }
-            let screen = self.parser.screen();
-            let line = || first_row(screen, print.row).unwrap_or(print.row);
-            let echo = self.classes.echoes(origin, &print, line, reads);
-            self.prints.push(Printed {
-                seq: crate::log::OutputSeq(seq),
-                print,
-                echo,
-            });
+            (false, false) => {
+                let screen = self.parser.screen();
+                let echo = (prints.iter())
+                    .map(|print| {
+                        let line = || first_row(screen, print.row).unwrap_or(print.row);
+                        self.classes.echoes(origin, &print, line, reads)
+                    })
+                    .collect();
+                self.prints.push(Printed {
+                    seq: crate::log::OutputSeq(seq),
+                    prints,
+                    echo,
+                });
+            }
         }
-        let mark = self.since_mark;
-        let main = !self.screen().mode(fux_vt::Mode::AlternateScreen);
-        self.cut |= main
-            && self
-                .screen()
-                .departed()
-                .iter()
-                .any(|r| r.changed_since(mark));
-        self.parser.forget_departed();
         let taken = begun.map_or(run, |t| run.get(..t).unwrap_or_default());
         let event = crate::log::Event::Output {
             origin,
@@ -934,13 +928,12 @@ impl Pane {
     /// and what was printed before is forgotten.
     pub fn note_input(&mut self) {
         self.since = crate::log::Seq(self.parser.tick());
-        self.since_mark = self.screen().mark();
         self.record
             .push(self.since, Instant::now(), crate::log::Event::Action);
         self.prints.clear();
         self.printed = 0;
         self.prints_lost = false;
-        self.cut = false;
+        self.parser.record_prints(true);
         self.before = rows_now(self.screen());
     }
 
@@ -987,6 +980,14 @@ impl Pane {
         if let Some((bytes, unit)) = self.pace.waiting.pop_front() {
             self.write_unit(bytes, unit, now);
         }
+    }
+
+    /// Whether rows of the main screen written since the last input were
+    /// let go (past history's limit, or out of a scroll region): what came
+    /// since is not all on the screen or in history. What they printed is
+    /// kept in `prints`.
+    pub fn cut(&self) -> bool {
+        self.screen().let_go() > self.since.0
     }
 
     /// Whether the pane's shell, marked by fux, is at its prompt, reading
@@ -1134,38 +1135,61 @@ impl Pane {
 }
 
 /// Where the first piece of `bytes` that `Pane::feed` reads alone ends:
-/// just after a bell (BEL, or a run of them), or after a shell mark (OSC
-/// 133, ended by BEL or ST); else all of them.
-fn cut(bytes: &[u8]) -> usize {
-    // A run of bells is one: a terminal whose line is full rings one for
-    // each key it drops.
-    let bell = (bytes.iter().position(|b| *b == 0x07)).map(|at| {
-        let run = bytes.get(at..).unwrap_or_default();
-        at.saturating_add(
-            run.iter()
-                .take_while(|b| **b == 0x07)
-                .count()
-                .saturating_sub(1),
-        )
-    });
-    let mark = (0..bytes.len())
-        .find(|at| {
-            bytes
-                .get(*at..)
-                .is_some_and(|r| r.starts_with(b"\x1b]133;"))
-        })
-        .and_then(|at| {
-            (at..bytes.len()).find(|i| match bytes.get(*i..) {
-                Some([0x07, ..]) => true,
-                Some([0x1b, b'\\', ..]) => false,
-                _ => i.checked_sub(1).and_then(|j| bytes.get(j..=*i)) == Some(b"\x1b\\"),
-            })
-        });
-    [bell, mark]
-        .into_iter()
-        .flatten()
-        .min()
-        .map_or(bytes.len(), |at| at.saturating_add(1))
+/// just after a bell (BEL, or a run of them, as a terminal whose line is
+/// full rings one for each key it drops), or, if `marks`, after a shell
+/// mark (OSC 133, which fux's shells end with BEL); else [`PIECE`] bytes
+/// at most. A BEL that ends another OSC (a title) is no bell. Only BEL is
+/// searched for, output seldom holding one; and no further than a piece's
+/// length, as the parser may stop sooner (a frame drawn in synchronized
+/// output begins), and what follows is read again from there.
+const PIECE: usize = 4096;
+
+/// Where the first piece of `bytes` that `Pane::feed` reads alone ends.
+fn cut(bytes: &[u8], marks: bool) -> usize {
+    let bytes = bytes.get(..PIECE).unwrap_or(bytes);
+    let mut from = 0usize;
+    while let Some(at) = (bytes.get(from..).unwrap_or_default().iter())
+        .position(|b| *b == 0x07)
+        .map(|i| from.saturating_add(i))
+    {
+        let next = at.saturating_add(1);
+        // An OSC holds no BEL: one this BEL ends began since the last.
+        match osc_before(bytes.get(from..at).unwrap_or_default()) {
+            // An OSC's end: a shell mark's, read alone; else a title's.
+            Some(start) => {
+                let start = from.saturating_add(start);
+                let mark = bytes
+                    .get(start..)
+                    .is_some_and(|o| o.starts_with(b"\x1b]133;"));
+                if marks && mark {
+                    return next;
+                }
+                from = next;
+            }
+            None => {
+                let run = bytes.get(at..).unwrap_or_default();
+                return at.saturating_add(run.iter().take_while(|b| **b == 0x07).count());
+            }
+        }
+    }
+    bytes.len()
+}
+
+/// Where the OSC that `before`, which holds no BEL, ends inside began, if
+/// it ends inside one (`ESC ]`, and no ST after it).
+fn osc_before(before: &[u8]) -> Option<usize> {
+    let mut end = before.len();
+    loop {
+        let at = before.get(..end)?.iter().rposition(|b| *b == b']')?;
+        let start = at.checked_sub(1)?;
+        if before.get(start) == Some(&0x1b) {
+            // Ended since, by ST.
+            let rest = before.get(at..).unwrap_or_default();
+            let st = (rest.iter().zip(rest.iter().skip(1))).any(|(a, b)| (*a, *b) == (0x1b, b'\\'));
+            return (!st).then_some(start);
+        }
+        end = at;
+    }
 }
 
 /// The screen's rows as they read now, by row.
@@ -1195,11 +1219,9 @@ pub fn first_row(screen: &fux_vt::Screen, id: fux_vt::RowId) -> Option<fux_vt::R
     Some(row.id())
 }
 
-/// `parser`, recording what it prints and the rows it lets go, as a pane's
-/// does (`Pane::record`).
+/// `parser`, recording what it prints, as a pane's does (`Pane::record`).
 fn recording(mut parser: fux_vt::Parser) -> fux_vt::Parser {
     parser.record_prints(true);
-    parser.keep_departed(true);
     parser
 }
 
@@ -1482,6 +1504,17 @@ mod tests {
             fux_vt::Color::Rgb([255, 0, 0].into())
         );
         Ok(())
+    }
+
+    /// Output is read in pieces that end at a bell, or a run of bells, or
+    /// a shell mark; a BEL that ends a title is no bell.
+    #[test]
+    fn pieces_end_at_bells_and_shell_marks() {
+        assert_eq!(super::cut(b"\x1b]0;title\x07text\x07more", true), 15);
+        assert_eq!(super::cut(b"a\x07\x07\x07b", false), 4);
+        assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", true), 17);
+        assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", false), 19);
+        assert_eq!(super::cut(b"plain", true), 5);
     }
 
     #[test]

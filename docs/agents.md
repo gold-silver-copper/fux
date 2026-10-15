@@ -85,7 +85,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
   returns alone, so a text wait runs to its limit (124). The answer is the
   screen (it starts `… earlier lines not kept` if lines written since were
-  let go past history-lines, or more came than fux keeps for a wait, 8 MiB
+  let go past history-lines, or more came than fux keeps for a wait, 1 MiB
   of text: the text may have passed unseen). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
   status.

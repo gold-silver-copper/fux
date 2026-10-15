@@ -372,7 +372,7 @@ pub struct Screen {
     /// What was printed since the host last took it, while it records
     /// (`record_prints`): text drawn and drawn over before it reads the
     /// screen is there still.
-    prints: Option<Vec<crate::Print>>,
+    prints: Option<crate::Prints>,
     /// The nonce a shell mark must carry to count (`require_mark_nonce`):
     /// one without it is a program's output, not its shell's.
     mark_nonce: Option<Box<[u8]>>,
@@ -937,11 +937,16 @@ impl Screen {
     }
     /// Records what is printed from now on, or stops and forgets it.
     pub(crate) fn record_prints(&mut self, on: bool) {
-        self.prints = on.then(Vec::new);
+        self.prints = on.then(crate::Prints::default);
     }
     /// What was printed since the last call, while recording.
-    pub(crate) fn take_prints(&mut self) -> Vec<crate::Print> {
+    pub(crate) fn take_prints(&mut self) -> crate::Prints {
         self.prints.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+    /// The number of the last change to a row of the primary screen's
+    /// history that has since been let go past its limit: 0 if none was.
+    pub fn let_go(&self) -> u64 {
+        self.primary.let_go()
     }
     /// Notes that `text` was printed at live row `row`, column `col`, if
     /// recording.
@@ -950,18 +955,7 @@ impl Screen {
             return;
         };
         if let Some(prints) = &mut self.prints {
-            match prints.last_mut() {
-                // The run goes on where the last left off, on its row.
-                Some(last) if last.row == id && last.cols.end == cols.start => {
-                    last.text.push_str(text);
-                    last.cols.end = cols.end;
-                }
-                _ => prints.push(crate::Print {
-                    row: id,
-                    cols,
-                    text: text.to_owned(),
-                }),
-            }
+            prints.push(id, cols, text);
         }
     }
     /// Makes shell marks count only with `nonce=NONCE` among their
@@ -1082,17 +1076,31 @@ impl Screen {
         // Rows moved within the screen (lines deleted or put in above
         // them, a region scrolled) are recorded, their text unchanged: a
         // whole screen scrolled into history moves none of its lines.
-        if self.prints.is_some() && !(history && region == self.grid().size().lines()) {
-            let kept = region.len().saturating_sub(count);
+        if self.prints.is_some()
+            && !(history && region == self.grid().size().lines())
+            && region.len() > count
+        {
             let first = match up {
                 true => region.first(),
                 false => region.first().saturating_add(count),
             };
-            for row in (0..kept).map(|i| first.saturating_add(i)) {
-                self.printed(row, 0..0, "");
-            }
+            self.printed(first, 0..0, "");
         }
         Ok(())
+    }
+    /// Which retained rows an upward scroll of `count` rows in `region`
+    /// lets go: from where, and how many.
+    fn leaving(&self, region: Span, count: u16, history: bool) -> (usize, usize) {
+        let g = self.grid();
+        let size = g.size();
+        if history && region == size.lines() {
+            let count = usize::from(count.min(size.rows()));
+            let over = (g.history_len().saturating_add(count)).saturating_sub(g.history_limit());
+            (0, if g.history_limit() > 0 { over } else { count })
+        } else {
+            let top = g.history_len().saturating_add(usize::from(region.first()));
+            (top, usize::from(count.min(region.len())))
+        }
     }
     /// Keeps the rows an upward scroll of `count` rows in `region` is
     /// about to let go: history's oldest past its limit, for a scroll into
@@ -1100,16 +1108,8 @@ impl Screen {
     #[cold]
     #[inline(never)]
     fn depart(&mut self, region: Span, count: u16, history: bool) {
+        let (from, gone) = self.leaving(region, count, history);
         let g = self.grid();
-        let size = g.size();
-        let (from, gone) = if history && region == size.lines() && g.history_limit() > 0 {
-            let count = usize::from(count.min(size.rows()));
-            let over = (g.history_len().saturating_add(count)).saturating_sub(g.history_limit());
-            (0, over)
-        } else {
-            let top = g.history_len().saturating_add(usize::from(region.first()));
-            (top, usize::from(count.min(region.len())))
-        };
         let before = self.departures;
         let departed: Vec<crate::Departed> = (from..from.saturating_add(gone))
             .filter_map(|i| g.row_at(i))

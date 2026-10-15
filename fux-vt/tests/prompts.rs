@@ -214,13 +214,13 @@ fn prints_are_recorded_though_drawn_over() -> Result {
     p.process(b"\rsame\r\nREADY\rxxxxx\x1b[1mbo\x1b[0mld")?;
     let prints = p.take_prints();
     let row = |i: usize| p.screen().rows().nth(i).map(|r| r.id());
-    let texts: Vec<(Option<fux_vt::RowId>, std::ops::Range<u16>, &str)> = prints
+    let texts: Vec<(Option<fux_vt::RowId>, (u16, u16), &str)> = prints
         .iter()
-        .map(|t| (Some(t.row), t.cols.clone(), t.text.as_str()))
+        .map(|t| (Some(t.row), t.cols, t.text))
         .collect();
     assert_eq!(
         texts,
-        [(row(1), 0..5, "READY"), (row(1), 0..9, "xxxxxbold")]
+        [(row(1), (0, 5), "READY"), (row(1), (0, 9), "xxxxxbold")]
     );
     assert!(p.take_prints().is_empty());
     Ok(())

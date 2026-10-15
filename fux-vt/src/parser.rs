@@ -749,7 +749,7 @@ impl Parser {
     }
     /// What was printed since the last call, while recording: each run
     /// of text that changed cells, though drawn over since.
-    pub fn take_prints(&mut self) -> Vec<crate::Print> {
+    pub fn take_prints(&mut self) -> crate::Prints {
         self.screen.take_prints()
     }
     /// Makes shell marks (OSC 133) count only if they carry

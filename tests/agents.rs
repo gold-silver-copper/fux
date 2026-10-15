@@ -2482,8 +2482,8 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
         "{}",
         found.stderr
     );
-    // Past the text the pane keeps for waits (8 MiB since the input).
-    let flood = "import sys; w = sys.stdout.write\nw(('filler ' * 10 + '\\n') * 120000)\n\
+    // Past the text the pane keeps for waits (1 MiB since the input).
+    let flood = "import sys; w = sys.stdout.write\nw(('filler ' * 10 + '\\n') * 20000)\n\
                  w('LOST_LINE\\n' + 'after\\n' * 100 + 'END\\n'); sys.stdout.flush(); input()";
     let lost = id(&server.ok(&run(
         &["str", "END", "wait-text"],

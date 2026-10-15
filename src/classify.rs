@@ -183,7 +183,7 @@ impl Classes {
     pub fn echoes(
         &self,
         origin: Origin,
-        print: &fux_vt::Print,
+        print: &fux_vt::Print<'_>,
         line: impl FnOnce() -> fux_vt::RowId,
         reads: bool,
     ) -> bool {
@@ -208,7 +208,7 @@ impl Classes {
                 };
                 typed == Some(line())
                     && match text {
-                        Some(t) => print.text.contains(t) || t.contains(&print.text),
+                        Some(t) => print.text.contains(t) || t.contains(print.text),
                         None => shell || redrawn(),
                     }
             }
