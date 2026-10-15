@@ -35,7 +35,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
 %2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0)
-%2 busy · 12 bytes unread      still running or printing at the time limit (status 124); unread: input fux holds yet
+%2 busy · 12 bytes unread      still running, printing or asleep on a timer (a sleep loop) at the time limit (status 124); unread: input fux holds yet
 %2 exited 3                    the program ended; what it printed since your input follows
 ```
 
@@ -86,7 +86,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   returns alone, so a text wait runs to its limit (124). The answer is the
   screen (it starts `… earlier lines not kept (past history-lines)` if lines
   written since were let go, or `… more came than fux keeps for a wait (1
-  MiB): text may have passed unseen`). Status 3: the program exited first.
+  MiB): text may have passed unseen`; past that, a wait reads the lines
+  changed since as they read now, and cannot tell an echo there). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
@@ -136,9 +137,10 @@ the input was. A few cases look the same either way, and are taken so:
 - A program that, after Enter, prints exactly the line you typed: taken
   as its output, its reply to Enter. (A line editor drawing your line again
   on Enter, the same text in the same place, changes nothing: no output.)
-- Keys typed ahead into a shell fux did not start (over ssh), with Enter:
-  the shell drawing them again at its next prompt reads as output that
-  repeats them. A shell fux starts marks its prompt, and says which.
+- Keys typed ahead, with Enter, into a program fux does not mark (a shell
+  over ssh, or a line editor still busy or asleep when they went in): its
+  drawing them again once it reads them reads as output that repeats them.
+  A shell fux starts marks its prompt, and says which.
 - Keys typed just as a command ends: the terminal may echo them after
   the command's last output, and when that output holds the same
   characters in the same order, those are taken as the echo.

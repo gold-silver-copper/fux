@@ -4151,3 +4151,59 @@ fn a_thread_on_a_timed_futex_goes_on_alone() -> Outcome {
     assert_eq!(out.status, 124, "{}{}", out.stdout, out.stderr);
     Ok(())
 }
+
+/// Codex review: a wide character before a run on its row takes two cells
+/// and is one character: the run is still found where it went, and a wait
+/// for its text at the line's end is met.
+#[test]
+fn a_run_after_a_wide_character_is_found_where_it_went() -> Outcome {
+    let server = Server::start("")?;
+    let wide = "import os, tty\ntty.setraw(0)\nos.write(1, '界 '.encode())\nos.read(0, 1)\n\
+                os.write(1, b'READY')\nos.read(0, 1)\n";
+    let pane = id(&server.ok(&run(&["str", "界", "wait-text"], &["python3", "-c", wide]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "k",
+        "text",
+        "str",
+        "READY$",
+        "wait-text",
+        "3",
+        "timeout",
+        "send-keys",
+    ];
+    let out = server.fux(&keys)?;
+    assert_eq!(out.status, 0, "{}{}", out.stdout, out.stderr);
+    Ok(())
+}
+
+/// Set B review (TB-463): a wait met on a long line wrapped over many rows
+/// answers the whole line, not the rows read around the text to find it.
+#[test]
+fn a_met_wait_answers_the_whole_wrapped_line() -> Outcome {
+    let server = Server::start("")?;
+    let long = "import os, tty\ntty.setraw(0)\nos.write(1, b'> ')\nos.read(0, 1)\n\
+                os.write(1, b'\\r\\nCALIBRATION ' + b'x' * 250 + b' LANE=TAIL\\r\\n')\nos.read(0, 1)\n";
+    let size = ["80", "24", "size", "str", ">", "wait-text"];
+    let pane = id(&server.ok(&run(&size, &["python3", "-c", long]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "k",
+        "text",
+        "str",
+        "CALIBRATION",
+        "wait-text",
+        "send-keys",
+    ];
+    let out = server.ok(&keys)?;
+    assert!(out.contains("LANE=TAIL"), "{out}");
+    Ok(())
+}

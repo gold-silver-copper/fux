@@ -470,6 +470,9 @@ pub struct Printed {
 /// until the next input, and a wait reads the lines changed since as they
 /// read now, said to be all it has.
 pub const PRINTS_BYTES: usize = 1 << 20;
+/// What a printed run costs to keep beside its text, against
+/// [`PRINTS_BYTES`]: its row, columns, place in the text, echo and change.
+const RUN_COST: usize = 64;
 
 pub struct Pane {
     pub id: PaneId,
@@ -519,10 +522,10 @@ pub struct Pane {
     pub prints_lost: bool,
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new.
-    pub before: std::collections::HashMap<fux_vt::RowId, String>,
+    pub before: std::collections::HashMap<fux_vt::RowId, Cells>,
     /// The rows printed on since then, as they read after the last piece
     /// that printed on them: what the next piece finds there.
-    seen: std::collections::HashMap<fux_vt::RowId, String>,
+    seen: std::collections::HashMap<fux_vt::RowId, Cells>,
     /// Where each row of the screen was then and what it showed
     /// ([`shows`]): a row drawn again to show as it did is no change.
     pub before_shows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
@@ -806,7 +809,13 @@ impl Pane {
         let begun = self.parse(run, until_frame);
         let seq = crate::log::Seq(self.screen().version());
         let prints = self.parser.take_prints();
-        self.printed = self.printed.saturating_add(prints.len());
+        // A run costs its text and its place, though it printed nothing (a
+        // row moved): output that only moves rows reaches the limit too.
+        let runs = prints.iter().count().saturating_mul(RUN_COST);
+        self.printed = self
+            .printed
+            .saturating_add(prints.len())
+            .saturating_add(runs);
         match (prints.is_empty(), self.printed > PRINTS_BYTES) {
             (true, _) => {}
             (false, true) => {
@@ -838,7 +847,7 @@ impl Pane {
                     .collect();
                 for print in prints.iter() {
                     if let Some(row) = rows.get(&print.row) {
-                        self.seen.insert(print.row, row.cells_text());
+                        self.seen.insert(print.row, row_cells(row));
                     }
                 }
                 self.prints.push(Printed {
@@ -1311,21 +1320,42 @@ fn osc_before(before: &[u8]) -> Option<usize> {
     }
 }
 
-/// Whether `row`, a row's text, holds what `print` printed at its columns.
-pub fn holds_at(row: &str, print: &fux_vt::Print<'_>) -> bool {
-    let there = row.chars().skip(usize::from(print.cols.0));
-    there
-        .take(print.text.chars().count())
-        .eq(print.text.chars())
+/// A row's cells as they read, one string each, column by column: the
+/// second cell of a wide character empty, a blank or placeholder a space.
+pub type Cells = Vec<String>;
+
+/// The cells of `row`.
+pub fn row_cells(row: &fux_vt::Row<'_>) -> Cells {
+    (row.cells())
+        .map(|c| match c.contents() {
+            _ if c.is_wide_continuation() => String::new(),
+            text if c.has_contents() && text != fux_vt::PLACEHOLDER => text.to_owned(),
+            _ => " ".to_owned(),
+        })
+        .collect()
 }
 
-/// The characters of `print` that change `row` (its text just before):
+/// The text of `row`'s cells from column `col` on.
+fn text_from(row: &[String], col: u16) -> String {
+    row.iter()
+        .skip(usize::from(col))
+        .map(String::as_str)
+        .collect()
+}
+
+/// Whether `row`, a row's cells, holds what `print` printed at its
+/// columns, a wide character's two cells as one.
+pub fn holds_at(row: &[String], print: &fux_vt::Print<'_>) -> bool {
+    text_from(row, print.cols.0).starts_with(print.text)
+}
+
+/// The characters of `print` that change `row` (its cells just before):
 /// none if it printed what was there; else, of a run that may be the echo
 /// of the line typed (a line editor drawing it again, its prompt and all),
 /// those from the first that differs from what stood in its cell to the
 /// last; of other output, all of it (its row may have been erased since).
-pub fn changed(row: &str, print: &fux_vt::Print<'_>, echo: bool) -> (usize, usize) {
-    let there: Vec<char> = row.chars().skip(usize::from(print.cols.0)).collect();
+pub fn changed(row: &[String], print: &fux_vt::Print<'_>, echo: bool) -> (usize, usize) {
+    let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
     let text: Vec<char> = print.text.chars().collect();
     if !echo {
         return match holds_at(row, print) {
@@ -1354,11 +1384,11 @@ pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
 }
 
 /// The screen's rows as they read now, by row.
-pub fn rows_now(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, String> {
+pub fn rows_now(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, Cells> {
     let window = screen.window();
     (0..window.rows())
         .filter_map(|y| window.row(y))
-        .map(|row| (row.id(), row.cells_text()))
+        .map(|row| (row.id(), row_cells(&row)))
         .collect()
 }
 
@@ -1528,6 +1558,19 @@ mod tests {
             size(rows, cols),
             10,
         )
+    }
+
+    /// Output that only moves rows (insert line, over and over) still
+    /// reaches the limit of what is kept for waits, and stops being kept.
+    #[test]
+    fn rows_moved_alone_count_against_what_is_kept() -> Result<(), Error> {
+        let mut pane = pane(24, 80)?;
+        pane.note_input();
+        for _ in 0..40_000 {
+            pane.output(b"\x1b[H\x1b[L");
+        }
+        assert!(pane.prints_lost, "{} kept", pane.printed);
+        Ok(())
     }
 
     /// A frame drawn in synchronized output reaches the screen whole, when

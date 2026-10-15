@@ -105,7 +105,7 @@ struct Watch {
     read: usize,
     /// The screen's rows as they read when it began, if it began after the
     /// last action (else the pane's, `Pane::before`).
-    before: Option<std::collections::HashMap<fux_vt::RowId, String>>,
+    before: Option<std::collections::HashMap<fux_vt::RowId, crate::pane::Cells>>,
     /// The first text found: which, its line, and when it came.
     found: Option<(String, String, Seq)>,
     /// The text printed on each row, runs that go on from each other
@@ -890,7 +890,7 @@ impl Watch {
             let screen = pane.screen();
             let intact = screen
                 .row_by_id(whole.row)
-                .is_some_and(|row| crate::pane::holds_at(&row.cells_text(), &whole));
+                .is_some_and(|row| crate::pane::holds_at(&crate::pane::row_cells(&row), &whole));
             // A row a line wraps onto goes on from the row above's end.
             let above = (screen.row_by_id(whole.row))
                 .and_then(|row| row.above())
@@ -947,6 +947,14 @@ impl Watch {
                     .map(|(_, t)| (t.clone(), l.text.replace(CUT_END, "")))
             });
             if let Some((text, line)) = found {
+                // The answer is the whole line, not the rows read around
+                // the text to find it.
+                let line = match intact {
+                    true => Line::of(pane, &print, usize::MAX >> 8)
+                        .text
+                        .replace(CUT_END, ""),
+                    false => line,
+                };
                 self.found = Some((text, line, seq.0));
                 return;
             }
