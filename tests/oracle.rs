@@ -1610,6 +1610,34 @@ fn fuzz() -> Outcome {
         errors.len(),
         errors.join("\n")
     );
+    // ORACLE_BENCH=FILE: every case's steps and disagreements as JSON, the
+    // same cases on any build (FUX_BIN), nothing shrunk or saved.
+    if let Some(path) = std::env::var_os("ORACLE_BENCH") {
+        let cases = (results.iter()).map(|(case, found, verdicts)| {
+            let found = found.iter().map(|d| {
+                object([
+                    ("step", number(d.step)),
+                    ("class", Value::Str(d.class.into())),
+                    ("source", Value::Str(d.source.into())),
+                    ("known", Value::Bool(known(d))),
+                ])
+            });
+            object([
+                ("mode", Value::Str(case.mode.name().into())),
+                ("seed", number(case.seed)),
+                ("chunk", number(case.chunk)),
+                ("steps", number(verdicts.len())),
+                ("disagreements", Value::List(found.collect())),
+            ])
+        });
+        let out = object([
+            ("seed", number(seed)),
+            ("unanswered", number(errors.len())),
+            ("cases", Value::List(cases.collect())),
+        ]);
+        std::fs::write(&path, format!("{}\n", out.render())).map_err(e)?;
+        return Ok(());
+    }
     // One shrunk case per class not known (and, with ORACLE_SAVE_KNOWN,
     // per entry of KNOWN).
     let save_known = std::env::var_os("ORACLE_SAVE_KNOWN").is_some();
