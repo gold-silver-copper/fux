@@ -15,7 +15,7 @@ def check(work: str) -> tuple[bool, str]:
         assert r['password'] == token('password') and r['watch'] == 'watch READY'
         assert r['ack'] == 'ack ' + token('ticket')
         assert r['session'] == token('session') and r['receipt'] == token('receipt')
-        assert (w / 'answer.txt').read_bytes() == ('session=' + token('session') + '\nreceipt=' + token('receipt') + '\n').encode(), 'incorrect watch values' 
+        assert (w / 'answer.txt').read_bytes() == ('session=' + token('session') + '\nreceipt=' + token('receipt') + '\n').encode(), 'incorrect watch values'
         return True, 'exact answer and terminal protocol verified'
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         return False, str(e) or 'final state does not match'

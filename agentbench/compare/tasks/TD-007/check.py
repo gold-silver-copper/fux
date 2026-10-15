@@ -14,7 +14,7 @@ def check(work: str) -> tuple[bool, str]:
         r = record('archive')
         assert r['query'] == 'report VOLUME-K9'
         for k in ('origin', 'digest', 'ticket'): assert r[k] == token(k)
-        assert (w / 'answer.txt').read_bytes() == ''.join(k + '=' + token(k) + '\n' for k in ('origin', 'digest', 'ticket')).encode(), 'incorrect archive values' 
+        assert (w / 'answer.txt').read_bytes() == ''.join(k + '=' + token(k) + '\n' for k in ('origin', 'digest', 'ticket')).encode(), 'incorrect archive values'
         return True, 'exact answer and terminal protocol verified'
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         return False, str(e) or 'final state does not match'

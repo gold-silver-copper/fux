@@ -21,7 +21,7 @@ def check(work: str) -> tuple[bool, str]:
         assert p['test'] == 'test ' + token('artifact') and p['finish'] == 'finish'
         assert s['publish'] == 'publish ' + token('verdict') and s['stop'] == 'stop ' + token('deployment')
         assert c['artifact'] == token('artifact') and p['verdict'] == token('verdict') and s['deployment'] == token('deployment')
-        assert (w / 'answer.txt').read_bytes() == ('artifact=' + token('artifact') + '\nseal=' + token('verdict') + '\ndeployment=' + token('deployment') + '\n').encode(), 'incorrect handoff values' 
+        assert (w / 'answer.txt').read_bytes() == ('artifact=' + token('artifact') + '\nseal=' + token('verdict') + '\ndeployment=' + token('deployment') + '\n').encode(), 'incorrect handoff values'
         return True, 'exact answer and terminal protocol verified'
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         return False, str(e) or 'final state does not match'

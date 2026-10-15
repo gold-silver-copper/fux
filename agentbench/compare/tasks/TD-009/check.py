@@ -14,7 +14,7 @@ def check(work: str) -> tuple[bool, str]:
         r = record('migration')
         assert r['recipe'] == ['route north', 'message You said: COMMIT', '', 'limit 017', '.']
         assert r['finalize'] == 'finalize ' + token('challenge') and r['checksum'] == token('checksum')
-        assert (w / 'answer.txt').read_bytes() == ('checksum=' + token('checksum') + '\n').encode(), 'incorrect migration checksum' 
+        assert (w / 'answer.txt').read_bytes() == ('checksum=' + token('checksum') + '\n').encode(), 'incorrect migration checksum'
         return True, 'exact answer and terminal protocol verified'
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         return False, str(e) or 'final state does not match'

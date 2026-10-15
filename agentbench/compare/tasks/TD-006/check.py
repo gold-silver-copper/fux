@@ -14,7 +14,7 @@ def check(work: str) -> tuple[bool, str]:
         r = record('receipt')
         assert r['query'] == 'lookup crate/west-7'
         assert r['receipt'] == token('receipt') and r['seal'] == token('seal')
-        assert (w / 'answer.txt').read_bytes() == ('receipt=' + token('receipt') + '\nseal=' + token('seal') + '\n').encode(), 'incorrect receipt or seal' 
+        assert (w / 'answer.txt').read_bytes() == ('receipt=' + token('receipt') + '\nseal=' + token('seal') + '\n').encode(), 'incorrect receipt or seal'
         return True, 'exact answer and terminal protocol verified'
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         return False, str(e) or 'final state does not match'
