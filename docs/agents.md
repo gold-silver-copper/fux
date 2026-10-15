@@ -111,10 +111,12 @@ fux records which input each piece of output followed, and tells echo
 from output by the shell's marks, the terminal's own echo rules, and what
 the input was. A few cases look the same either way, and are taken so:
 
+- A full-screen program's screen is all output: a form's field showing
+  what you typed meets a wait for it (wait for it to know the keys went
+  in).
 - Until a key submits the line you type (Enter), a text made only of
   characters you typed on it (in any order: editing keys move them) is
-  taken as their echo, as a line editor or a form's field shows them,
-  wherever it lands: a program that answers your keys with nothing but
+  taken as their echo, as a line editor shows them, wherever it lands: a program that answers your keys with nothing but
   some of them is not seen. A text holding anything else is output.
 - A program that, after Enter, prints exactly the line you typed: taken
   as its output, its reply to Enter. (A line editor drawing your line again

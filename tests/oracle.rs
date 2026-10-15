@@ -39,7 +39,15 @@ const CONFIG: &str = "str history-lines 100 set";
 /// here so the deterministic part reports them without failing: its
 /// class, the classify source, the fixture's mode, and why. Remove an
 /// entry once fixed; the tests then hold it.
-const KNOWN: &[Known] = &[];
+const KNOWN: &[Known] = &[Known {
+    class: "echo-taken-as-output",
+    sources: &["screen"],
+    modes: &["full"],
+    chunked: false,
+    why: "a kept rule (docs/agents.md, notes kept-rules.md): a full-screen program's \
+          screen is all output, so a form's field showing the text typed meets a wait \
+          for it, which agents use to know the keys went in (agentbench's form tasks)",
+}];
 
 struct Known {
     class: &'static str,

@@ -18,8 +18,8 @@
 //!    is output. Text typed ahead of a program's read may be its echo when
 //!    a line editor (the terminal raw) draws it again.
 //!
-//! Anything before the first input is output. What stays ambiguous is said
-//! in `docs/agents.md`.
+//! A full-screen program's screen is all output, as is anything before the
+//! first input. What stays ambiguous is said in `docs/agents.md`.
 use crate::log::{InputSeq, Origin, Source, Unit};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -101,17 +101,14 @@ impl Classes {
             }
             None => false,
         };
-        // Text typed or pasted (its marks left out), not a key.
+        // Text typed or pasted (its marks left out), not a key: what it
+        // shows, its control characters (BSpace, C-u, Tab) aside.
         let pasted =
             (bytes.strip_prefix(b"\x1b[200~")).map(|b| b.strip_suffix(b"\x1b[201~").unwrap_or(b));
         let typed = std::str::from_utf8(pasted.unwrap_or(bytes))
             .ok()
-            .filter(|_| input.unit == Unit::Edit)
-            .filter(|t| {
-                !t.chars()
-                    .any(|c| c.is_control() && !matches!(c, '\n' | '\r'))
-            })
-            .map(str::to_owned);
+            .filter(|t| input.unit == Unit::Edit && !t.starts_with('\x1b'))
+            .map(|t| t.chars().filter(|c| !c.is_control()).collect::<String>());
         if let Some(text) = typed.as_ref().filter(|_| input.ahead) {
             self.ahead_text.push(text.clone());
         }
@@ -209,22 +206,14 @@ impl Classes {
 
     /// Where output that is not the kernel's echo came from.
     fn rest(&self, screen: &fux_vt::Screen, marked: bool) -> Origin {
-        let full = screen.mode(fux_vt::Mode::AlternateScreen);
+        // A full-screen program's screen is all output: a field showing
+        // what was typed is a text an agent may wait for, to know it went in.
+        if screen.mode(fux_vt::Mode::AlternateScreen) {
+            return Origin::Output { by: Source::Screen };
+        }
         let Some(written) = self.written.as_ref() else {
             return Origin::Output { by: Source::Order };
         };
-        // A full-screen program's: its echo of an edit on the line typed
-        // on (a field, a query), and the rest output.
-        if full {
-            return match written.input.unit {
-                Unit::Edit => Origin::Edited {
-                    of: written.input.seq,
-                    line: written.input.line,
-                    shell: false,
-                },
-                Unit::Submit => Origin::Output { by: Source::Screen },
-            };
-        }
         let commands = screen.commands();
         let reading = marked && commands.prompt && !commands.running;
         match (reading, written.input.unit) {
