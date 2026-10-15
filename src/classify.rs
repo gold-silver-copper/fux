@@ -12,12 +12,11 @@
 //!    its next prompt.
 //! 3. **Order and place.** Input is written a piece at a time, each once
 //!    the program took the one before (`crate::pane::Pace`). An echo shows
-//!    only what was typed: what follows an edit on the line typed on, till
-//!    a key submits it, may be the echo of the text typed on that line, and
-//!    a text that is no part of it is output there too; what follows
-//!    anything else, or shows elsewhere, is output. Text typed ahead of a
-//!    program's read may be its echo when a line editor (the terminal raw)
-//!    draws it again.
+//!    only what was typed: what follows an edit, till a key submits the
+//!    line, may be the echo of the text typed on it, wherever it lands, and
+//!    a text that is no part of it is output; what follows anything else
+//!    is output. Text typed ahead of a program's read may be its echo when
+//!    a line editor (the terminal raw) draws it again.
 //!
 //! Anything before the first input is output. What stays ambiguous is said
 //! in `docs/agents.md`.
@@ -121,10 +120,7 @@ impl Classes {
             (Unit::Edit, None) => {}
             (Unit::Submit, _) => self.line.clear(),
         }
-        self.written = Some(Written {
-            input,
-            kernel,
-        });
+        self.written = Some(Written { input, kernel });
     }
 
     /// Whether text typed ahead waits to be drawn again: then `echoes`
@@ -176,10 +172,10 @@ impl Classes {
     /// What `print`, which came from `origin` and went on the line that
     /// starts at `line()` (found only if asked), may be the echo of: none
     /// (output); everything (the kernel's echo, or a shell fux marks
-    /// drawing the line it reads); or, after an edit on the line typed on,
-    /// or as a line editor (`reads`) draws text typed ahead of its read,
-    /// what was typed. An echo shows only what was typed: a text that is no
-    /// part of it is output wherever it shows.
+    /// drawing the line it reads); or, after an edit till a key submits the
+    /// line, or as a line editor (`reads`) draws text typed ahead of its
+    /// read, what was typed. An echo shows only what was typed: a text
+    /// that is no part of it is output wherever it shows.
     pub fn echo(
         &self,
         origin: Origin,
@@ -199,11 +195,15 @@ impl Classes {
             Origin::Output { by: Source::Screen } => Echo::Not,
             Origin::Output { .. } => ahead(),
             Origin::Echo { .. } => Echo::Is,
-            Origin::Edited { line: typed, shell, .. } if typed == Some(line()) => match shell {
-                true => Echo::Is,
-                false => Echo::Of(self.line.as_str().into()),
-            },
-            Origin::Edited { .. } => Echo::Not,
+            // A shell fux marks draws the line it reads: all of it echo.
+            Origin::Edited {
+                line: typed,
+                shell: true,
+                ..
+            } if typed == Some(line()) => Echo::Is,
+            // Wherever it lands (another line printed above the line typed
+            // moves it down), an echo shows only what was typed.
+            Origin::Edited { .. } => Echo::Of(self.line.as_str().into()),
         }
     }
 

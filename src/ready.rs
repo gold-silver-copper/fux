@@ -179,8 +179,10 @@ pub fn took_keys(
 pub fn reads_keys(child: &crate::process::Child, (since_key, answered): (Duration, bool)) -> bool {
     let tty = child.master.slave_path();
     let activity = activity(child, tty.as_deref(), since_key, answered);
-    matches!(activity, Activity::Reading | Activity::Polling | Activity::Idle)
-        && !keys_unread(tty.as_deref())
+    matches!(
+        activity,
+        Activity::Reading | Activity::Polling | Activity::Idle
+    ) && !keys_unread(tty.as_deref())
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a

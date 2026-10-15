@@ -1042,10 +1042,15 @@ impl Line {
 
 /// Whether `print` printed what its row already held there when the wait
 /// began (`before`): a program drawing its screen again, the same.
-fn was(before: &std::collections::HashMap<fux_vt::RowId, String>, print: &fux_vt::Print<'_>) -> bool {
+fn was(
+    before: &std::collections::HashMap<fux_vt::RowId, String>,
+    print: &fux_vt::Print<'_>,
+) -> bool {
     before.get(&print.row).is_some_and(|row| {
         let there = row.chars().skip(usize::from(print.cols.0));
-        there.take(print.text.chars().count()).eq(print.text.chars())
+        there
+            .take(print.text.chars().count())
+            .eq(print.text.chars())
     })
 }
 
@@ -1057,10 +1062,13 @@ fn typed_from(typed: &str, text: &str) -> bool {
         .filter(|c| !c.is_whitespace())
         .map(Some)
         .collect();
-    text.to_lowercase().chars().filter(|c| !c.is_whitespace()).all(|c| {
-        let slot = left.iter_mut().find(|l| **l == Some(c));
-        slot.map(Option::take).is_some()
-    })
+    text.to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .all(|c| {
+            let slot = left.iter_mut().find(|l| **l == Some(c));
+            slot.map(Option::take).is_some()
+        })
 }
 
 /// A text waited for without its `^` and `$`.
