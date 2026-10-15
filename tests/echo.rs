@@ -65,7 +65,7 @@ fn modes(rng: &mut Rng) -> Modes {
     let mut modes = Modes {
         canonical: flag(75),
         echo: flag(80),
-        echoe: flag(70),
+        echoe: flag(97),
         echok: flag(50),
         echoke: flag(60),
         echoctl: flag(70),
@@ -101,7 +101,7 @@ fn modes(rng: &mut Rng) -> Modes {
     modes.eol2 = char(rng, None);
     modes.lnext = rare_char(rng, 0x16);
     modes.reprint = rare_char(rng, 0x12);
-    modes.start = char(rng, Some(0x11));
+    modes.start = rare_char(rng, 0x11);
     modes.stop = rare_char(rng, 0x13);
     modes.discard = rare_char(rng, 0x0f);
     modes.status = rare_char(rng, 0x14);
@@ -116,11 +116,10 @@ fn key(rng: &mut Rng) -> Vec<u8> {
     const LINE_ENDS: &[u8] = b"\r\n";
     const SIGNALS: &[u8] = b"\x03\x1c\x1a";
     const CONTROLS: &[&[u8]] = &[
-        b"\t", b"\x1b", b"\x1b[A", b"\x04", b"\x01", b"\x05", b"\x18", b"\x11", b"\x80", b"\xc3",
-        b"\xff",
+        b"\t", b"\x1b", b"\x1b[A", b"\x04", b"\x01", b"\x05", b"\x18", b"\x80", b"\xc3", b"\xff",
     ];
-    // Reprint, status, discard, literal next and stop.
-    const RARE: &[u8] = b"\x12\x14\x0f\x16\x13";
+    // Reprint, status, discard, literal next, start and stop.
+    const RARE: &[u8] = b"\x12\x14\x0f\x16\x11\x13";
     let one = |byte: Option<&u8>| byte.map(|&b| vec![b]).unwrap_or_default();
     match rng.below(1000) {
         0..550 => one(rng.pick(PRINTABLE)),
@@ -131,7 +130,7 @@ fn key(rng: &mut Rng) -> Vec<u8> {
         650..800 => one(rng.pick(EDITING)),
         800..860 => one(rng.pick(LINE_ENDS)),
         860..890 => one(rng.pick(SIGNALS)),
-        890..995 => rng.pick(CONTROLS).map(|k| k.to_vec()).unwrap_or_default(),
+        890..999 => rng.pick(CONTROLS).map(|k| k.to_vec()).unwrap_or_default(),
         _ => one(rng.pick(RARE)),
     }
 }
