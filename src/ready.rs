@@ -173,6 +173,16 @@ pub fn took_keys(
     reads && !keys_unread(tty.as_deref())
 }
 
+/// Whether keys written now go to a program that reads them, at once or
+/// within a time limit (a read with a timer, or one thread reading while
+/// another sleeps): else they are typed ahead of its read.
+pub fn reads_keys(child: &crate::process::Child, (since_key, answered): (Duration, bool)) -> bool {
+    let tty = child.master.slave_path();
+    let activity = activity(child, tty.as_deref(), since_key, answered);
+    matches!(activity, Activity::Reading | Activity::Polling | Activity::Idle)
+        && !keys_unread(tty.as_deref())
+}
+
 /// Whether keys wait in the terminal for its program to read: blocked in a
 /// read still, it has yet to be woken (a busy machine) to read them. The
 /// terminal is opened only to ask, so that its program's end still closes

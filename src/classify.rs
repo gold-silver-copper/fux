@@ -11,15 +11,16 @@
 //!    or no prompt was drawn yet) are typed ahead, which it draws again at
 //!    its next prompt.
 //! 3. **Order and place.** Input is written a piece at a time, each once
-//!    the program took the one before (`crate::pane::Pace`). What follows
-//!    an edit at once ([`EDIT_WINDOW`]), on the line typed on, is its echo
-//!    if it holds the text typed, or is part of it (a key's redraw, part of
-//!    the line typed); anything else, or later, is output. Text typed ahead
-//!    of a program's read is its echo when a line editor (the terminal raw)
+//!    the program took the one before (`crate::pane::Pace`). An echo shows
+//!    only what was typed: what follows an edit on the line typed on, till
+//!    a key submits it, may be the echo of the text typed on that line, and
+//!    a text that is no part of it is output there too; what follows
+//!    anything else, or shows elsewhere, is output. Text typed ahead of a
+//!    program's read may be its echo when a line editor (the terminal raw)
 //!    draws it again.
 //!
-//! A full-screen program's screen is all output, as is anything before the
-//! first input. What stays ambiguous is said in `docs/agents.md`.
+//! Anything before the first input is output. What stays ambiguous is said
+//! in `docs/agents.md`.
 use crate::log::{InputSeq, Origin, Source, Unit};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -27,11 +28,17 @@ use std::time::{Duration, Instant};
 /// How long the kernel's echo of a piece of input is looked for in what
 /// follows it: it comes within a millisecond or two.
 const ECHO_WITHIN: Duration = Duration::from_secs(1);
-/// How long after an edit what a program draws on the line typed on is
-/// taken as its echo: a line editor draws it as it handles the key, within
-/// milliseconds; a program that answers the keys later (after a pause, a
-/// sleep, some work) answers with output.
-pub const EDIT_WINDOW: Duration = Duration::from_millis(250);
+
+/// What a run of printed text may be the echo of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Echo {
+    /// Nothing: it is output.
+    Not,
+    /// All of it: it is an echo.
+    Is,
+    /// This text typed, if anything: a text no part of it is output.
+    Of(std::sync::Arc<str>),
+}
 
 /// A piece of input as it was written.
 #[derive(Clone, Copy, Debug)]
@@ -50,9 +57,6 @@ pub struct Input {
 #[derive(Clone, Debug)]
 struct Written {
     input: Input,
-    at: Instant,
-    /// The text it typed, if it typed text (not a key).
-    typed: Option<String>,
     /// The terminal edited or echoed input then (`ICANON` or `ECHO`), and
     /// the kernel's echo of it is known.
     kernel: bool,
@@ -71,8 +75,8 @@ pub struct Classes {
     /// typed since while it read: a program that reads it later draws it
     /// again, its echo.
     ahead_text: Vec<String>,
-    /// The text typed on the line since a key last submitted one: what a
-    /// line editor draws again after a key that edits it.
+    /// The text typed on the line since a key last submitted one: all an
+    /// echo of an edit can show.
     line: String,
 }
 
@@ -119,8 +123,6 @@ impl Classes {
         }
         self.written = Some(Written {
             input,
-            at: now,
-            typed,
             kernel,
         });
     }
@@ -145,7 +147,7 @@ impl Classes {
             self.pending.clear();
             self.pending_until = None;
         }
-        let rest = self.rest(screen, marked, now);
+        let rest = self.rest(screen, marked);
         let (Some(written), false) = (self.written.as_ref(), self.pending.is_empty()) else {
             return vec![(piece.len(), rest)];
         };
@@ -171,58 +173,58 @@ impl Classes {
         runs
     }
 
-    /// Whether `print`, which came from `origin` and went on the line that
-    /// starts at `line()` (found only if asked), is an echo: one of the
-    /// kernel's or the shell's; after an edit, on the line typed on, text
-    /// that holds what was typed or is part of it, or after a key that
-    /// edits, text that is part of the line typed (a line editor drawing
-    /// it again; not a menu redrawing its choices there), or in a shell
-    /// reading its command line any (a line recalled, completed); or text
-    /// typed ahead of the program's read, drawn again as a line editor
-    /// reads it (`reads`).
-    pub fn echoes(
+    /// What `print`, which came from `origin` and went on the line that
+    /// starts at `line()` (found only if asked), may be the echo of: none
+    /// (output); everything (the kernel's echo, or a shell fux marks
+    /// drawing the line it reads); or, after an edit on the line typed on,
+    /// or as a line editor (`reads`) draws text typed ahead of its read,
+    /// what was typed. An echo shows only what was typed: a text that is no
+    /// part of it is output wherever it shows.
+    pub fn echo(
         &self,
         origin: Origin,
         print: &fux_vt::Print<'_>,
         line: impl FnOnce() -> fux_vt::RowId,
         reads: bool,
-    ) -> bool {
-        // Text typed ahead, drawn again as a line editor reads it (`reads`:
-        // a shell at its prompt, or a terminal raw now).
-        let again = || {
-            reads
-                && (self.ahead_text.iter())
-                    .any(|t| !t.trim().is_empty() && print.text.contains(t.as_str()))
+    ) -> Echo {
+        let ahead = || {
+            let ahead = self.ahead_text.concat();
+            let drawn = reads && !ahead.trim().is_empty() && !print.text.trim().is_empty();
+            match drawn {
+                true => Echo::Of(ahead.into()),
+                false => Echo::Not,
+            }
         };
         match origin {
-            Origin::Output { by: Source::Screen } => false,
-            Origin::Output { .. } => again(),
-            Origin::Echo { .. } => true,
-            Origin::Edited {
-                line: typed, shell, ..
-            } => {
-                let text = self.written.as_ref().and_then(|w| w.typed.as_deref());
-                let redrawn = || {
-                    let drawn = print.text.trim();
-                    !drawn.is_empty() && self.line.contains(drawn)
-                };
-                typed == Some(line())
-                    && match text {
-                        Some(t) => print.text.contains(t) || t.contains(print.text),
-                        None => shell || redrawn(),
-                    }
-            }
+            Origin::Output { by: Source::Screen } => Echo::Not,
+            Origin::Output { .. } => ahead(),
+            Origin::Echo { .. } => Echo::Is,
+            Origin::Edited { line: typed, shell, .. } if typed == Some(line()) => match shell {
+                true => Echo::Is,
+                false => Echo::Of(self.line.as_str().into()),
+            },
+            Origin::Edited { .. } => Echo::Not,
         }
     }
 
     /// Where output that is not the kernel's echo came from.
-    fn rest(&self, screen: &fux_vt::Screen, marked: bool, now: Instant) -> Origin {
-        if screen.mode(fux_vt::Mode::AlternateScreen) {
-            return Origin::Output { by: Source::Screen };
-        }
+    fn rest(&self, screen: &fux_vt::Screen, marked: bool) -> Origin {
+        let full = screen.mode(fux_vt::Mode::AlternateScreen);
         let Some(written) = self.written.as_ref() else {
             return Origin::Output { by: Source::Order };
         };
+        // A full-screen program's: its echo of an edit on the line typed
+        // on (a field, a query), and the rest output.
+        if full {
+            return match written.input.unit {
+                Unit::Edit => Origin::Edited {
+                    of: written.input.seq,
+                    line: written.input.line,
+                    shell: false,
+                },
+                Unit::Submit => Origin::Output { by: Source::Screen },
+            };
+        }
         let commands = screen.commands();
         let reading = marked && commands.prompt && !commands.running;
         match (reading, written.input.unit) {
@@ -230,13 +232,12 @@ impl Classes {
             // line typed ahead again, as it reads it.
             (true, Unit::Submit) => Origin::Output { by: Source::Marks },
             (false, _) if written.kernel => Origin::Output { by: Source::Kernel },
-            (_, Unit::Edit) if now < crate::after(written.at, EDIT_WINDOW) => Origin::Edited {
+            (_, Unit::Edit) => Origin::Edited {
                 of: written.input.seq,
                 line: written.input.line,
                 shell: reading,
             },
-            (true, Unit::Edit) => Origin::Output { by: Source::Marks },
-            (false, Unit::Edit | Unit::Submit) => Origin::Output { by: Source::Order },
+            (false, Unit::Submit) => Origin::Output { by: Source::Order },
         }
     }
 }

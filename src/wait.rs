@@ -105,6 +105,9 @@ struct Watch {
     before: Option<std::collections::HashMap<fux_vt::RowId, String>>,
     /// The first text found: which, its line, and when it came.
     found: Option<(String, String, Seq)>,
+    /// The text printed last on a row, runs that go on from each other
+    /// joined, though printed in several pieces: its row and where it ends.
+    stream: Option<(fux_vt::RowId, u16, String)>,
     /// The `wait-gone` texts seen since the wait began, for a fresh program.
     appeared: Vec<String>,
     /// A text was found in the echo of what was typed alone.
@@ -647,6 +650,7 @@ impl Watch {
             read: if after { pane.prints.len() } else { 0 },
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
+            stream: None,
             appeared: Vec::new(),
             echo_skipped: false,
             finished: screen.commands().finished,
@@ -817,23 +821,41 @@ impl Watch {
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         let pieces = prints.iter().filter(|p| p.seq.0 > self.from);
         let runs =
-            pieces.flat_map(|p| (p.prints.iter().zip(&p.echo)).map(move |(r, e)| (p.seq, r, *e)));
+            pieces.flat_map(|p| (p.prints.iter().zip(&p.echo)).map(move |(r, e)| (p.seq, r, e)));
         for (seq, print, echo) in runs.filter(|(_, r, _)| !r.text.is_empty()) {
+            // Printed again where it was: nothing new.
+            if was(before, &print) {
+                continue;
+            }
             let line = Line::of(pane, &print, reach);
-            // Printed again to read as it did: nothing new.
-            if line.reads_as(pane, before) {
-                continue;
-            }
-            let lines = [line, Line::piece(&print)];
-            if echo {
-                let held = |t: &String| lines.iter().any(|l| l.holds(t).is_some());
-                self.echo_skipped |= texts.iter().any(held);
-                continue;
-            }
+            // The runs printed one after another on the row, joined.
+            let output = *echo == crate::classify::Echo::Not;
+            let stream = match self.stream.take() {
+                Some((row, end, mut text)) if output && row == print.row && end == print.cols.0 => {
+                    text.push_str(print.text);
+                    (row, print.cols.1, text)
+                }
+                _ => (print.row, print.cols.1, print.text.to_owned()),
+            };
+            let joined = Line::piece(&fux_vt::Print {
+                text: &stream.2,
+                ..print
+            });
+            self.stream = output.then_some(stream);
+            let lines = [line, joined];
+            // A text an echo may show is no news here: one made of what was
+            // typed, as its keys may have edited it into any order.
+            let echoed = |t: &String| match echo {
+                crate::classify::Echo::Not => false,
+                crate::classify::Echo::Is => true,
+                crate::classify::Echo::Of(typed) => typed_from(typed, bare(t)),
+            };
+            let held = |t: &String| lines.iter().any(|l| l.holds(t).is_some());
+            self.echo_skipped |= texts.iter().any(|t| echoed(t) && held(t));
             // On its line where the piece went, else in the piece itself:
             // of several texts, the one furthest left.
             let found = lines.iter().find_map(|l| {
-                (texts.iter())
+                (texts.iter().filter(|t| !echoed(t)))
                     .filter_map(|t| l.holds(t).map(|at| (at, t)))
                     .min_by_key(|(at, _)| *at)
                     .map(|(_, t)| (t.clone(), l.text.replace(CUT_END, "")))
@@ -985,20 +1007,6 @@ impl Line {
         Line::piece(print)
     }
 
-    /// Whether every row it was read from reads as `before` has it.
-    fn reads_as(
-        &self,
-        pane: &Pane,
-        before: &std::collections::HashMap<fux_vt::RowId, String>,
-    ) -> bool {
-        let screen = pane.screen();
-        !self.rows.is_empty()
-            && self.rows.iter().all(|id| {
-                let now = screen.row_by_id(*id).map(|r| r.cells_text());
-                now.is_some() && before.get(id) == now.as_ref()
-            })
-    }
-
     /// The piece's own text, all of it printed.
     fn piece(print: &fux_vt::Print<'_>) -> Line {
         Line {
@@ -1030,6 +1038,35 @@ impl Line {
             printed.get(*at..end).is_some_and(|p| p.iter().any(|b| *b))
         })
     }
+}
+
+/// Whether `print` printed what its row already held there when the wait
+/// began (`before`): a program drawing its screen again, the same.
+fn was(before: &std::collections::HashMap<fux_vt::RowId, String>, print: &fux_vt::Print<'_>) -> bool {
+    before.get(&print.row).is_some_and(|row| {
+        let there = row.chars().skip(usize::from(print.cols.0));
+        there.take(print.text.chars().count()).eq(print.text.chars())
+    })
+}
+
+/// Whether `text` could be shown by an echo of what was `typed`: each of
+/// its characters (blanks aside, case ignored) one that was typed, as
+/// often, in whatever order the line's editing left them.
+fn typed_from(typed: &str, text: &str) -> bool {
+    let mut left: Vec<Option<char>> = (typed.to_lowercase().chars())
+        .filter(|c| !c.is_whitespace())
+        .map(Some)
+        .collect();
+    text.to_lowercase().chars().filter(|c| !c.is_whitespace()).all(|c| {
+        let slot = left.iter_mut().find(|l| **l == Some(c));
+        slot.map(Option::take).is_some()
+    })
+}
+
+/// A text waited for without its `^` and `$`.
+fn bare(text: &str) -> &str {
+    let text = text.strip_prefix('^').unwrap_or(text);
+    text.strip_suffix('$').unwrap_or(text)
 }
 
 /// `text` as `normal` makes it, with which of its bytes come from bytes

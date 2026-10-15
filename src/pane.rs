@@ -456,9 +456,9 @@ impl Alerts {
 pub struct Printed {
     pub seq: crate::log::OutputSeq,
     pub prints: fux_vt::Prints,
-    /// Which of its runs are the echo of what was typed
-    /// (`crate::classify`), which a wait never takes.
-    pub echo: Vec<bool>,
+    /// What each of its runs may be the echo of (`crate::classify`), which
+    /// a wait never takes.
+    pub echo: Vec<crate::classify::Echo>,
 }
 
 /// The most bytes of text printed since the last input a pane keeps for
@@ -794,7 +794,7 @@ impl Pane {
                 let echo = (prints.iter())
                     .map(|print| {
                         let line = || first_row(screen, print.row).unwrap_or(print.row);
-                        self.classes.echoes(origin, &print, line, reads)
+                        self.classes.echo(origin, &print, line, reads)
                     })
                     .collect();
                 self.prints.push(Printed {
@@ -1016,14 +1016,14 @@ impl Pane {
     fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
+        let keys = (self.since_key(now), self.answered());
         let reading = child.is_some_and(|child| {
-            self.input.is_empty()
-                && crate::ready::took_keys(child, (self.since_key(now), self.answered()), false)
+            self.input.is_empty() && crate::ready::took_keys(child, keys, false)
         });
         // Typed ahead: a shell fux marks says whether it reads its line.
         let ahead = match self.nonce {
             Some(_) => !self.at_prompt(),
-            None => !reading,
+            None => !child.is_some_and(|child| crate::ready::reads_keys(child, keys)),
         };
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())

@@ -39,59 +39,7 @@ const CONFIG: &str = "str history-lines 100 set";
 /// here so the deterministic part reports them without failing: its
 /// class, the classify source, the fixture's mode, and why. Remove an
 /// entry once fixed; the tests then hold it.
-const KNOWN: &[Known] = &[
-    Known {
-        class: "echo-taken-as-output",
-        sources: &["order"],
-        modes: &["ptk", "full"],
-        chunked: false,
-        why: "a line editor that redraws the prompt with the line on every key \
-              (`\\r\\e[K> IN`): the redraw neither holds the text typed nor is part \
-              of it, so `Classes::echoes` (src/classify.rs, Origin::Edited) takes it \
-              as output, and a wait for the typed text is met by its echo",
-    },
-    Known {
-        class: "echo-taken-as-output",
-        sources: &["screen"],
-        modes: &[],
-        chunked: false,
-        why: "on the alternate screen everything is output (`Classes::rest`, \
-              src/classify.rs: Source::Screen): a line editor's echo there, or a \
-              form's input field, meets a wait for the typed text",
-    },
-    Known {
-        class: "output-taken-as-echo",
-        sources: &["order"],
-        modes: &["readline", "ptk", "full"],
-        chunked: false,
-        why: "text typed while fux judged the program not reading (busy, or another \
-              thread asleep: `waiting`) is kept as typed ahead (`Classes::wrote`, \
-              src/classify.rs: ahead_text), and any later output that holds it is \
-              taken as its echo (`Classes::echoes`, the `again` closure): a reply \
-              that repeats the input (`IN6 OUT6`, or exactly `IN6`) is never met",
-    },
-    Known {
-        class: "missed-overwritten",
-        sources: &[],
-        modes: &[],
-        chunked: true,
-        why: "a text printed in several pieces and drawn over before the wait \
-              reads it (`OUT` `000` `6\\r___`): `Watch::read_prints` (src/wait.rs) \
-              looks in each piece alone and in its line as it reads now, never in \
-              the pieces printed one after another on the row",
-    },
-    Known {
-        class: "missed-overwritten",
-        sources: &[],
-        modes: &[],
-        chunked: false,
-        why: "a text printed and then erased in the same read, its row left as it \
-              read before the input (`TOKEN\\r\\n\\e[H\\e[2J`, or a full-screen redraw \
-              of the same form): `Watch::read_prints` (src/wait.rs) skips a piece \
-              whose line `reads_as` it did before (\"printed again to read as it \
-              did\"), though the piece printed the text",
-    },
-];
+const KNOWN: &[Known] = &[];
 
 struct Known {
     class: &'static str,
