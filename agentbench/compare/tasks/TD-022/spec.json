@@ -1,0 +1,13 @@
+{
+  "id": "TD-022",
+  "title": "The accepted sample between two erasures",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/pressure.py {work}` in a terminal and let it finish. Retain the emitted output, including status text that is erased within the same output burst. No input is needed. You may restart a failed attempt.\n\nThe pressure display includes rejected previews and exactly one `SNAPSHOT accepted` sample. Read the ticket and peak from that accepted sample, and the seal from the final `RENDER COMPLETE` message. Do not substitute the final on-screen idle value or a preview sample. The accepted sample is announced with a bell and is immediately overwritten.\n\nWrite `{work}/answer.txt` as exactly three lines, in this order: `ticket=<accepted ticket>`, `peak=<accepted peak as printed>`, `seal=<final seal>`. Each line must end with a newline. Marker lines, ANSI controls, and all other text must be omitted. Wait for RENDER COMPLETE before finishing.",
+  "setup": {
+    "files": {
+      "sensor.txt": "ceramic-bank:19:calibration-8\n"
+    }
+  },
+  "note": "Traps: accepted text and a bell occur in a single write containing CR, erase-line and cursor movement, then are overwritten in that same burst. A screen snapshot after the burst shows only idle, so emitted-output retention is necessary. Rejected previews have the same ticket/peak field names. The completion text has no final newline and arrives as the process exits. Values are derived from the setup seed, not disclosed in the goal. The checker requires a completed tty run and exact derived values; output redirection cannot satisfy the tty record. There is no input deadline, and a short fixed wait neither obtains the erased values nor proves completion."
+}

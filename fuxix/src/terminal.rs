@@ -20,6 +20,140 @@ pub(crate) fn request(value: impl TryInto<Request>) -> Result<Request> {
 #[derive(Clone)]
 pub struct Termios(libc::termios);
 
+/// The modes only one kernel has, as nothing on the other.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod only {
+    use libc::tcflag_t;
+    pub const IUCLC: tcflag_t = libc::IUCLC;
+    pub const OLCUC: tcflag_t = libc::OLCUC;
+    pub const ALTWERASE: tcflag_t = 0;
+    pub const ONOEOT: tcflag_t = 0;
+    /// The bits that say how tabs are written, and their value for spaces.
+    // TABDLY and TAB3 (XTABS), one value, which the libc crate types
+    // differently for musl.
+    pub const TABS: (tcflag_t, tcflag_t) = (0o14000, 0o14000);
+    pub const VSTATUS: Option<usize> = None;
+}
+
+#[cfg(target_os = "macos")]
+mod only {
+    use libc::tcflag_t;
+    pub const IUCLC: tcflag_t = 0;
+    pub const OLCUC: tcflag_t = 0;
+    pub const ALTWERASE: tcflag_t = libc::ALTWERASE;
+    pub const ONOEOT: tcflag_t = libc::ONOEOT;
+    pub const TABS: (tcflag_t, tcflag_t) = (libc::OXTABS, libc::OXTABS);
+    pub const VSTATUS: Option<usize> = Some(libc::VSTATUS);
+}
+
+/// Declares `Modes`, the modes a terminal's echo of typed input depends
+/// on, as plain data, with how each is read from a termios and set in one:
+/// each flag, its field and bit; tabs written as spaces; each character, at
+/// its place in `c_cc` (`None` when disabled).
+macro_rules! modes {
+    (
+        flags { $($flag:ident: $field:ident $bit:expr),* $(,)? }
+        chars { $($char:ident: $at:expr),* $(,)? }
+    ) => {
+        /// The modes a terminal's echo of typed input depends on, as plain
+        /// data: local, input and output modes by their termios names,
+        /// `expand_tabs` for tabs written as spaces (`XTABS` on Linux,
+        /// `OXTABS` on macOS), and the editing, signal and flow characters,
+        /// each `None` when disabled. A mode one kernel lacks is always off
+        /// on the other: `iuclc` and `olcuc` are Linux's, `altwerase`,
+        /// `onoeot` and `status` macOS's.
+        #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+        pub struct Modes {
+            $(pub $flag: bool,)*
+            pub expand_tabs: bool,
+            $(pub $char: Option<u8>,)*
+        }
+
+        impl Termios {
+            /// The modes its echo depends on.
+            pub fn modes(&self) -> Modes {
+                let t = &self.0;
+                let at = |at: Option<usize>| {
+                    at.and_then(|at| t.c_cc.get(at).copied())
+                        .filter(|&c| c != libc::_POSIX_VDISABLE)
+                };
+                Modes {
+                    $($flag: t.$field & $bit != 0,)*
+                    expand_tabs: t.c_oflag & only::TABS.0 == only::TABS.1,
+                    $($char: at($at),)*
+                }
+            }
+
+            /// Sets the modes `Modes` covers to `modes`, leaving the rest as
+            /// they are; one this kernel lacks stays off.
+            pub fn set_modes(&mut self, modes: &Modes) {
+                let t = &mut self.0;
+                $(
+                    t.$field = if modes.$flag { t.$field | $bit } else { t.$field & !$bit };
+                )*
+                t.c_oflag &= !only::TABS.0;
+                if modes.expand_tabs {
+                    t.c_oflag |= only::TABS.1;
+                }
+                $(
+                    if let Some(slot) = ($at).and_then(|at: usize| t.c_cc.get_mut(at)) {
+                        *slot = modes.$char.unwrap_or(libc::_POSIX_VDISABLE);
+                    }
+                )*
+            }
+        }
+    };
+}
+
+modes! {
+    flags {
+        canonical: c_lflag libc::ICANON,
+        echo: c_lflag libc::ECHO,
+        echoe: c_lflag libc::ECHOE,
+        echok: c_lflag libc::ECHOK,
+        echoke: c_lflag libc::ECHOKE,
+        echoctl: c_lflag libc::ECHOCTL,
+        echonl: c_lflag libc::ECHONL,
+        echoprt: c_lflag libc::ECHOPRT,
+        iexten: c_lflag libc::IEXTEN,
+        isig: c_lflag libc::ISIG,
+        noflsh: c_lflag libc::NOFLSH,
+        extproc: c_lflag libc::EXTPROC,
+        altwerase: c_lflag only::ALTWERASE,
+        icrnl: c_iflag libc::ICRNL,
+        inlcr: c_iflag libc::INLCR,
+        igncr: c_iflag libc::IGNCR,
+        istrip: c_iflag libc::ISTRIP,
+        iutf8: c_iflag libc::IUTF8,
+        ixon: c_iflag libc::IXON,
+        parmrk: c_iflag libc::PARMRK,
+        iuclc: c_iflag only::IUCLC,
+        opost: c_oflag libc::OPOST,
+        onlcr: c_oflag libc::ONLCR,
+        ocrnl: c_oflag libc::OCRNL,
+        onocr: c_oflag libc::ONOCR,
+        olcuc: c_oflag only::OLCUC,
+        onoeot: c_oflag only::ONOEOT,
+    }
+    chars {
+        erase: Some(libc::VERASE),
+        kill: Some(libc::VKILL),
+        werase: Some(libc::VWERASE),
+        intr: Some(libc::VINTR),
+        quit: Some(libc::VQUIT),
+        susp: Some(libc::VSUSP),
+        eof: Some(libc::VEOF),
+        eol: Some(libc::VEOL),
+        eol2: Some(libc::VEOL2),
+        lnext: Some(libc::VLNEXT),
+        reprint: Some(libc::VREPRINT),
+        start: Some(libc::VSTART),
+        stop: Some(libc::VSTOP),
+        discard: Some(libc::VDISCARD),
+        status: only::VSTATUS,
+    }
+}
+
 impl Termios {
     /// Whether the terminal echoes what is typed (`ECHO`).
     pub fn echoes(&self) -> bool {
@@ -216,6 +350,13 @@ mod tests {
         // The master reads the modes the program set on its side.
         let seen = attributes(&master).map_err(|e| e.to_string())?;
         assert!(!seen.echoes() && !seen.line_mode());
+        // The modes echo depends on, set and read back as they were.
+        let mut echo = seen.modes();
+        (echo.canonical, echo.echoctl, echo.erase, echo.eol) = (true, true, Some(0x08), None);
+        let mut termios = seen.clone();
+        termios.set_modes(&echo);
+        set_attributes(&slave, &termios).map_err(|e| e.to_string())?;
+        assert_eq!(attributes(&slave).map_err(|e| e.to_string())?.modes(), echo);
         // No session has it as its terminal: no foreground group.
         assert_eq!(foreground_group(&master), None);
         assert!(attributes(std::fs::File::open("/dev/null").map_err(|e| e.to_string())?).is_err());

@@ -1,0 +1,75 @@
+[
+  {
+    "name": "correct-password-same-row",
+    "args": [
+      "--seed",
+      "2"
+    ],
+    "size": [
+      80,
+      24
+    ],
+    "steps": [
+      {
+        "keys": "alice\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "swordfish\r",
+        "pause_ms": 120
+      }
+    ]
+  },
+  {
+    "name": "denied-password-bell",
+    "args": [
+      "--seed",
+      "8"
+    ],
+    "size": [
+      35,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "bob\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "wrong\r",
+        "pause_ms": 120
+      }
+    ]
+  },
+  {
+    "name": "retry-and-empty-password",
+    "args": [
+      "--seed",
+      "13",
+      "--attempts",
+      "2"
+    ],
+    "size": [
+      50,
+      10
+    ],
+    "steps": [
+      {
+        "keys": "carol\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "carol\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "swordfish\r",
+        "pause_ms": 120
+      }
+    ]
+  }
+]

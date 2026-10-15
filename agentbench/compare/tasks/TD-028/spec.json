@@ -1,0 +1,11 @@
+{
+  "id": "TD-028",
+  "title": "Ledger microscope across a resize",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Set a terminal to exactly 72 columns by 24 rows, then run python3 -I {fixtures}/ledger.py {work} exactly once there. Wait for INPUT READY and submit the scan command shown. Only the ledger between LEDGER LIVE BEGIN and LEDGER LIVE END counts: ignore the rehearsal before your scan command and its echo. Retain the live HEADER key near the beginning and the tail key at the very end of the single long ROW-END record after the bulk output; wrapped screen rows are not separate records. After the program prints RESIZE NOW, change that same terminal to exactly 132 columns by 32 rows while the program is still running. Do not resize earlier. Read the resize receipt emitted by the program, then at INPUT READY submit commit <header key> <tail key> <resize receipt>. Wait for LEDGER CLOSED. Write {work}/answer.txt with exactly three newline-terminated lines: header=<live HEADER key>, tail=<live ROW-END tail key>, resize=<resize receipt>. Include no section markers, rehearsal values, colours, or other text. There is no input or resize deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "The live header is followed by 1,338,880 bytes of numbered bulk records; only after that does a 16,000-character wrapped record end with the tail key. A pre-input rehearsal gives plausible but wrong header and tail values; after the real row, an erased redraw advertises another wrong tail. The checker derives keys and resize receipt, validates exactly 72x24 at startup and 132x32 only after the resize barrier, exact final commit, terminal run, and answer bytes. The fixture records resize signals before the barrier as failure, and reads geometry as well as the signal. Fixed sleeps cannot supply the far-back header or wrapped tail, and resizing/typing early is detected. All records are atomic and there is no deadline."
+}

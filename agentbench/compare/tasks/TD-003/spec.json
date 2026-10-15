@@ -1,0 +1,11 @@
+{
+  "id": "TD-003",
+  "title": "Queue a build note and capture the shell result",
+  "category": "shell",
+  "difficulty": "hard",
+  "goal": "Use an interactive shell in a terminal. In that shell run python3 -I {fixtures}/build.py {work} \"$-\". Follow the displayed build-note procedure: while the build is busy, type its displayed draft text WITHOUT Enter; it will redraw that queued text later. Only press Enter after NOTE READY. Do not type after submitting the note until the build exits. Immediately after that command returns, run python3 -I {fixtures}/status.py {work} \"$?\" \"$-\" in the same interactive shell so it records the observed exit status. Leave both records complete. Write {work}/answer.txt as exactly three newline-terminated lines: artifact=<the build's published artifact id>, note=<the acknowledged note id>, status=<the exit status reported by the shell>. Include these labels and no echo, preview or marker lines. Earlier failed attempts may be retried by repeating the whole build/status sequence.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: the shell echoes a command containing $?; the busy build accepts a draft without Enter, then redraws that typed-ahead line with a misleading status= field. A transient artifact preview is overwritten. NOTE READY distinguishes permission to submit from a redraw of the agent's keys, and input during publish fails the attempt. The fixture's requested nonzero exit status is derived from a hash, and a separate terminal helper validates the shell-provided status plus the i flag in $-. No terminal device names are compared. The checker independently computes status, note and artifact and verifies the recorded order; earlier failed attempts are accepted."
+}

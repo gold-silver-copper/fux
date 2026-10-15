@@ -270,27 +270,59 @@ impl<'a> Row<'a> {
     }
 }
 
-/// A row a scroll let go, unretained since ([`Screen::keep_departed`]):
-/// scrolled out of the alternate screen or a scroll region, which keep no
-/// history, or history's oldest, let go past its limit.
-#[derive(Clone, Debug)]
-pub struct Departed {
-    /// Its place among the rows let go while they were kept: one more
-    /// than the row before's.
-    pub seq: u64,
-    /// Its identity, as it had while retained.
-    pub id: RowId,
-    version: u64,
-    /// Whether its line went on in the row after it.
-    pub wrapped: bool,
-    /// Its text, as [`Row::cells_text`] read it.
-    pub text: String,
+/// What was printed while the host records ([`Parser::record_prints`]):
+/// each run of text that changed cells, in the order printed, though later
+/// drawn over, its texts end to end. A row moved within the screen, its
+/// text as it was (lines deleted or put in above it, a region scrolled),
+/// is a run with no text and no columns: the topmost of those moved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Prints {
+    runs: Vec<(RowId, std::ops::Range<u16>, std::ops::Range<usize>)>,
+    text: String,
 }
 
-impl Departed {
-    /// Whether the row had changed since `mark` was taken.
-    pub fn changed_since(&self, mark: Mark) -> bool {
-        self.version > mark.0
+/// A run of [`Prints`]: the row it was printed on, the columns it took,
+/// and its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Print<'a> {
+    /// The row it was printed on.
+    pub row: RowId,
+    /// The columns it took.
+    pub cols: (u16, u16),
+    /// What was printed there.
+    pub text: &'a str,
+}
+
+impl Prints {
+    /// The runs, in the order printed.
+    pub fn iter(&self) -> impl Iterator<Item = Print<'_>> {
+        self.runs.iter().map(|(row, cols, text)| Print {
+            row: *row,
+            cols: (cols.start, cols.end),
+            text: self.text.get(text.clone()).unwrap_or_default(),
+        })
+    }
+    /// How many bytes of text the runs hold.
+    pub fn len(&self) -> usize {
+        self.text.len()
+    }
+    /// Whether nothing was printed.
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+    /// Adds `text` printed at `cols` of `row`: to the last run if it goes
+    /// on where that left off, on its row.
+    pub(crate) fn push(&mut self, row: RowId, cols: std::ops::Range<u16>, text: &str) {
+        let start = self.text.len();
+        self.text.push_str(text);
+        let end = self.text.len();
+        match self.runs.last_mut() {
+            Some((last, at, bytes)) if *last == row && at.end == cols.start && !cols.is_empty() => {
+                at.end = cols.end;
+                bytes.end = end;
+            }
+            _ => self.runs.push((row, cols, start..end)),
+        }
     }
 }
 

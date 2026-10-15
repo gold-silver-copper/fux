@@ -1,0 +1,11 @@
+{
+  "id": "TD-011",
+  "title": "The first bell in the audit console",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/audit_console.py {work} exactly once in a terminal. Follow its displayed instruction to begin the new audit. Historical EVENT lines above the start prompt do not belong to the new audit. Among the new audit's ACCEPT, DENY, and MANUAL events, identify the one emitted first. Its line is transient and is overwritten; at the Decision> prompt you may use replay as often as needed to view the same three-event sequence again. Do not submit a command while a sequence is playing. After the real Decision> prompt, submit choose <first-kind> <first-token> using the spelling shown by that event. Wait for the console's receipt and normal exit. Write {work}/answer.txt as exactly two newline-terminated lines: first=<first-kind>:<first-token> then receipt=<receipt>. Replace angle-bracket placeholders with observed values; include no EVENT or receipt marker lines. There is no input deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: historical EVENT lines precede the start input; the first current event is erased in place while later events remain; selection is about emission order, not the last visible event. A deterministic replay makes the disappearing text recoverable without a lucky timed capture. Commands sent during playback are recorded as premature and fail. A fixed wait alone leaves only the later events visible; guesses fail the exact first-event and receipt checks. The checker checks one tty launch, submitted commands, first event, normal completion, and exact answer bytes."
+}

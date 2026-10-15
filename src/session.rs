@@ -1223,11 +1223,13 @@ impl Session {
             )?),
             None => None,
         };
+        let (child, nonce) = child.unzip();
         let history = self.config.history_lines;
         let Some(pane) = self.panes.get_mut(&id) else {
             return Err(Error::NoPane(id));
         };
         let old = pane.respawned(launch, child.map(Process::Reading), history)?;
+        pane.mark_with(nonce.flatten());
         if let Process::Reading(mut child) | Process::HungUp(mut child) = old {
             child.leader.closed();
             child.leader.hang_up();
@@ -1594,56 +1596,66 @@ impl Session {
         Ok(out)
     }
 
-    /// Sends `inputs` to pane `id`'s program.
+    /// Sends `inputs` to pane `id`'s program, a piece at a time
+    /// (`crate::log::Unit`): text typed in a row is one piece, keys that
+    /// edit the line in a row another, and each other key, a lone Escape
+    /// and a paste each their own. So in `--text msg Enter` the Enter is
+    /// read alone, as a submit, not as a newline pasted with the text, and
+    /// what follows each piece is told apart (`crate::classify`).
     fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
+        use crate::log::Unit;
         let p = self.panes.get_mut(&id).ok_or(Error::NoPane(id))?;
-        p.note_input(inputs);
+        p.note_input();
         let (mode, bracketed) = (
             p.screen().key_mode(),
             p.screen().mode(fux_vt::Mode::BracketedPaste),
         );
-        // Inputs go in pieces, each read by the program on its own,
-        // paced apart: text typed in a row is one piece, keys pressed
-        // in a row another, and a lone Escape and a paste each their
-        // own. So in `--text msg Enter` the Enter is read alone, as a
-        // submit, not as a newline pasted with the text.
-        #[derive(PartialEq)]
-        enum Kind {
-            Text,
-            Keys,
-            Alone,
-        }
-        let mut pieces: Vec<Vec<u8>> = Vec::new();
-        let mut last = Kind::Alone;
+        let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
+        // Whether the last piece takes more: text or keys that edit, of
+        // the same kind.
+        let mut last: Option<bool> = None;
         for input in inputs {
             let mut bytes = Vec::new();
-            let kind = match input {
+            let (unit, text) = match input {
                 Input::Key(key) => {
                     crate::encode::key_bytes((*key).into(), mode, &mut bytes);
-                    if bytes == b"\x1b" {
-                        Kind::Alone
-                    } else {
-                        Kind::Keys
-                    }
+                    (crate::command::unit(*key), false)
                 }
                 Input::Text(text) => {
-                    bytes.extend_from_slice(text.as_bytes());
-                    Kind::Text
+                    // A line end in text submits the line, read alone.
+                    let mut rest = text.as_str();
+                    while let Some(at) = rest.find(['\r', '\n']) {
+                        let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
+                        if !part.is_empty() {
+                            push_piece(&mut units, &mut last, part.as_bytes(), Some(true));
+                        }
+                        let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
+                        units.push((end.as_bytes().to_vec(), Unit::Submit));
+                        last = None;
+                        rest = after;
+                    }
+                    if !rest.is_empty() {
+                        push_piece(&mut units, &mut last, rest.as_bytes(), Some(true));
+                    }
+                    continue;
                 }
                 Input::Paste(text) => {
                     crate::encode::paste(text, bracketed, &mut bytes);
-                    Kind::Alone
+                    units.push((bytes, paste_unit(text, bracketed)));
+                    last = None;
+                    continue;
                 }
             };
-            match pieces.last_mut() {
-                Some(piece) if kind != Kind::Alone && kind == last => {
-                    piece.extend_from_slice(&bytes);
+            let joins = (unit == Unit::Edit && bytes != b"\x1b").then_some(text);
+            match joins {
+                Some(kind) => push_piece(&mut units, &mut last, &bytes, Some(kind)),
+                None => {
+                    units.push((bytes, unit));
+                    last = None;
                 }
-                _ => pieces.push(bytes),
             }
-            last = kind;
         }
-        p.send(pieces, Instant::now())?;
+        p.send(units, Instant::now())?;
         Ok(())
     }
 
@@ -2637,7 +2649,6 @@ impl Session {
                 if outcome.status != 0 {
                     return Begun::Done(outcome);
                 }
-                waiting.typed(self);
             }
             None => waiting.more = true,
         }
@@ -3178,8 +3189,8 @@ impl Session {
                         });
                     }
                 }
-                p.input.push(&report)?;
-                p.note_input(&[]);
+                p.note_input();
+                p.send(vec![(report, crate::log::Unit::Submit)], Instant::now())?;
                 p.mouse_held = held;
                 Ok(String::new())
             }
@@ -3427,9 +3438,10 @@ impl Session {
                 let text = text.ok_or(Error::NoBuffer(index))?;
                 let p = self.pane_mut(target, here)?;
                 let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
-                p.input
-                    .push_with(|out| crate::encode::paste(&text, bracketed, out))?;
-                p.note_input(&[Input::Paste(text)]);
+                let mut bytes = Vec::new();
+                crate::encode::paste(&text, bracketed, &mut bytes);
+                p.note_input();
+                p.send(vec![(bytes, paste_unit(&text, bracketed))], Instant::now())?;
                 Ok(String::new())
             }
             &Command::Client { client, ref action } => {
@@ -4030,16 +4042,22 @@ impl Launcher {
         (argv, env): (&[String], &[(String, String)]),
         cwd: &Path,
         size: fux_vt::Size,
-    ) -> Result<crate::process::Child, Error> {
+    ) -> Result<(crate::process::Child, Option<String>), Error> {
         let mut dir = self.socket.as_os_str().to_owned();
         dir.push(".shell");
-        let marks = (config.shell_marks)
+        let marked = (config.shell_marks)
             .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
-            .flatten()
-            .unwrap_or_else(|| crate::marks::Marked {
-                argv: argv.to_vec(),
-                ..crate::marks::Marked::default()
-            });
+            .flatten();
+        // A shell fux marks is given a nonce its marks carry: one printed
+        // by a program it runs carries none (`fux_vt::Parser::require_mark_nonce`).
+        let nonce = marked.as_ref().and_then(|_| crate::marks::nonce());
+        let mut marks = marked.unwrap_or_else(|| crate::marks::Marked {
+            argv: argv.to_vec(),
+            ..crate::marks::Marked::default()
+        });
+        if let Some(nonce) = &nonce {
+            marks.env.push(("__fux_k".to_owned(), nonce.clone()));
+        }
         let mut vars = self.vars(id, fresh.socket.as_deref()).to_vec();
         let given = (fresh.set.iter()).chain(env).chain(&marks.env);
         vars.extend(given.map(|(k, v)| (k.as_str(), v.clone())));
@@ -4049,12 +4067,8 @@ impl Launcher {
             .cloned()
             .collect();
         unset.extend(marks.unset.iter().cloned());
-        Ok(crate::process::spawn(
-            &marks.argv,
-            cwd,
-            (&vars, &unset),
-            size,
-        )?)
+        let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)?;
+        Ok((child, nonce))
     }
 }
 
@@ -4114,8 +4128,9 @@ fn new_pane(
     // A program brought back by a restore waits for `respawn`.
     let paused = fresh.paused && matches!(start, Start::Program(..));
     if let Some(launcher) = launch.filter(|_| !paused) {
-        let child = launcher.spawn((config, fresh), id, (argv, env), cwd, size)?;
+        let (child, nonce) = launcher.spawn((config, fresh), id, (argv, env), cwd, size)?;
         pane.process = Process::Reading(child);
+        pane.mark_with(nonce);
     }
     if let Some(typed) = typed {
         pane.input = InputQueue::from(typed);
@@ -4580,6 +4595,32 @@ pub(crate) mod testing {
             }
         }
     }
+}
+
+/// What a paste is to the program reading it: an edit, bracketed or one
+/// line; unbracketed with a line end, it submits lines.
+fn paste_unit(text: &str, bracketed: bool) -> crate::log::Unit {
+    match bracketed || !text.contains(['\r', '\n']) {
+        true => crate::log::Unit::Edit,
+        false => crate::log::Unit::Submit,
+    }
+}
+
+/// Adds `bytes`, an edit of kind `kind` (text, or keys), to the last
+/// piece if that is an edit of the same kind, else as a piece of its own.
+fn push_piece(
+    units: &mut Vec<(Vec<u8>, crate::log::Unit)>,
+    last: &mut Option<bool>,
+    bytes: &[u8],
+    kind: Option<bool>,
+) {
+    match units.last_mut() {
+        Some((piece, crate::log::Unit::Edit)) if last.is_some() && *last == kind => {
+            piece.extend_from_slice(bytes);
+        }
+        _ => units.push((bytes.to_vec(), crate::log::Unit::Edit)),
+    }
+    *last = kind;
 }
 
 #[cfg(test)]

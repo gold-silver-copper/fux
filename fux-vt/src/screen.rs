@@ -365,10 +365,16 @@ pub struct Screen {
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<crate::palette::Colours>>,
-    /// The rows let go since the host last forgot them, while it keeps
-    /// them (`keep_departed`), and how many it has been given.
-    departed: Option<Vec<crate::Departed>>,
-    departures: u64,
+    /// What was printed since the host last took it, while it records
+    /// (`record_prints`): text drawn and drawn over before it reads the
+    /// screen is there still.
+    prints: Option<crate::Prints>,
+    /// The nonce a shell mark must carry to count (`require_mark_nonce`):
+    /// one without it is a program's output, not its shell's.
+    mark_nonce: Option<Box<[u8]>>,
+    /// Where the cursor was as the host last said a line was submitted
+    /// (`note_submit`): a late `C` starts the output after that line.
+    submitted: Option<CommandMark>,
 }
 
 mod pictures;
@@ -477,8 +483,9 @@ impl Screen {
             links_seen: false,
             next_link: 1,
             colours: None,
-            departed: None,
-            departures: 0,
+            prints: None,
+            mark_nonce: None,
+            submitted: None,
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -815,6 +822,12 @@ impl Screen {
     /// other commands (`B`, `C`, `D`, `P` and the rest) change nothing.
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
+        // Printed by a program, not its shell: no mark.
+        if let Some(nonce) = &self.mark_nonce
+            && !(payload.split(|b| *b == b';')).any(|o| o.strip_prefix(b"nonce=") == Some(nonce))
+        {
+            return Ok(());
+        }
         let command = parts.next().unwrap_or_default();
         if matches!(command, b"C" | b"D") {
             self.command_mark(command, parts.next());
@@ -829,6 +842,7 @@ impl Screen {
             if kind.is_none_or(|k| k == b"i") {
                 let row = self.grid().cursor.row();
                 self.grid_mut().mark_prompt(row);
+                self.prompted();
             }
             return Ok(());
         }
@@ -845,6 +859,7 @@ impl Screen {
         if command != b"L" {
             let row = self.grid().cursor.row();
             self.grid_mut().mark_prompt(row);
+            self.prompted();
         }
         Ok(())
     }
@@ -908,6 +923,43 @@ impl Screen {
     /// A mark of the screen as it is now, to ask later what changed.
     pub fn mark(&self) -> Mark {
         Mark(self.version)
+    }
+    /// The number of the last processing (or `Parser::tick`): each row
+    /// keeps the number of the one that last changed it (`Row::version`).
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    /// Records what is printed from now on, or stops and forgets it.
+    pub(crate) fn record_prints(&mut self, on: bool) {
+        self.prints = on.then(crate::Prints::default);
+    }
+    /// What was printed since the last call, while recording.
+    pub(crate) fn take_prints(&mut self) -> crate::Prints {
+        self.prints.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+    /// The number of the last change to a row of the primary screen's
+    /// history that has since been let go past its limit: 0 if none was.
+    pub fn let_go(&self) -> u64 {
+        self.primary.let_go()
+    }
+    /// Notes that `text` was printed at live row `row`, column `col`, if
+    /// recording.
+    fn printed(&mut self, row: u16, cols: std::ops::Range<u16>, text: &str) {
+        let Some(id) = self.grid().live_row(row).map(|r| r.id()) else {
+            return;
+        };
+        if let Some(prints) = &mut self.prints {
+            prints.push(id, cols, text);
+        }
+    }
+    /// Makes shell marks count only with `nonce=NONCE` among their
+    /// options, or with none (`None`) every one.
+    pub(crate) fn require_mark_nonce(&mut self, nonce: Option<&[u8]>) {
+        self.mark_nonce = nonce.map(Box::from);
+    }
+    /// Notes that a line was submitted with the cursor where it is.
+    pub(crate) fn note_submit(&mut self) {
+        self.submitted = self.cursor_mark();
     }
     /// Whether the screen may have changed since `mark`: true after any
     /// processing at all, as the README says; false, nothing changed.
@@ -1002,9 +1054,6 @@ impl Screen {
         // (allocation failure). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
-        if up && self.departed.is_some() {
-            self.depart(region, count, history);
-        }
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {
@@ -1014,63 +1063,21 @@ impl Screen {
                 Scroll::Down
             };
             g.scroll(region, count, direction, blank, next, version)
-        })
-    }
-    /// Keeps the rows an upward scroll of `count` rows in `region` is
-    /// about to let go: history's oldest past its limit, for a scroll into
-    /// history; else those scrolled out of the region's top.
-    #[cold]
-    #[inline(never)]
-    fn depart(&mut self, region: Span, count: u16, history: bool) {
-        let g = self.grid();
-        let size = g.size();
-        let (from, gone) = if history && region == size.lines() && g.history_limit() > 0 {
-            let count = usize::from(count.min(size.rows()));
-            let over = (g.history_len().saturating_add(count)).saturating_sub(g.history_limit());
-            (0, over)
-        } else {
-            let top = g.history_len().saturating_add(usize::from(region.first()));
-            (top, usize::from(count.min(region.len())))
-        };
-        let before = self.departures;
-        let departed: Vec<crate::Departed> = (from..from.saturating_add(gone))
-            .filter_map(|i| g.row_at(i))
-            .zip(1u64..)
-            .map(|(row, n)| crate::Departed {
-                seq: before.wrapping_add(n),
-                id: row.id,
-                version: row.version,
-                wrapped: row.wrapped,
-                text: row.cells_text(),
-            })
-            .collect();
-        self.departures = departed.last().map_or(before, |d| d.seq);
-        if let Some(kept) = &mut self.departed {
-            kept.extend(departed);
+        })?;
+        // Rows moved within the screen (lines deleted or put in above
+        // them, a region scrolled) are recorded, their text unchanged: a
+        // whole screen scrolled into history moves none of its lines.
+        if self.prints.is_some()
+            && !(history && region == self.grid().size().lines())
+            && region.len() > count
+        {
+            let first = match up {
+                true => region.first(),
+                false => region.first().saturating_add(count),
+            };
+            self.printed(first, 0..0, "");
         }
-    }
-    /// Starts keeping the rows scrolls let go, for the host to read
-    /// (`departed`) before it forgets them (`forget_departed`); or stops,
-    /// forgetting those kept. A row of history is let go only past its
-    /// limit, and the alternate screen keeps none: a reader looking now and
-    /// then misses none of what scrolled out between its looks.
-    pub fn keep_departed(&mut self, keep: bool) {
-        match (keep, &self.departed) {
-            (true, None) => self.departed = Some(Vec::new()),
-            (false, Some(_)) => self.departed = None,
-            (true, Some(_)) | (false, None) => {}
-        }
-    }
-    /// The rows let go since they were last forgotten, in the order they
-    /// went, while they are kept.
-    pub fn departed(&self) -> &[crate::Departed] {
-        self.departed.as_deref().unwrap_or_default()
-    }
-    /// Forgets the rows let go so far, keeping on.
-    pub fn forget_departed(&mut self) {
-        if let Some(kept) = &mut self.departed {
-            kept.clear();
-        }
+        Ok(())
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
     /// its blanks in the pen's colours. Out of line: without margins it is
@@ -1287,6 +1294,7 @@ impl Screen {
         let split = self.links_seen
             && width == 1
             && self.grid().stored(row, col).is_some_and(Compact::is_wide);
+        let mut changed = false;
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
@@ -1325,6 +1333,7 @@ impl Screen {
                 {
                     *cell = Compact::continuation();
                 }
+                changed = true;
                 true
             });
             // Past the glyph; in the last column it waits there to wrap.
@@ -1340,6 +1349,13 @@ impl Screen {
             }
         }
         self.last_print = Some(Printed::new((row, col), c));
+        if changed && self.prints.is_some() {
+            self.printed(
+                row,
+                col..col.saturating_add(width),
+                c.encode_utf8(&mut [0; 4]),
+            );
+        }
         Ok(())
     }
 
@@ -1530,7 +1546,15 @@ impl Screen {
             // repairs, is written up to it, and the glyph there printed.
             let written = loop {
                 match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
-                    Written::All => break true,
+                    Written::All => {
+                        if self.prints.is_some() {
+                            let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
+                            let text = std::str::from_utf8(run).unwrap_or_default();
+                            self.printed(row, col..end, text);
+                        }
+                        break true;
+                    }
+                    Written::Same => break true,
                     Written::Before(n) => match run.get(..n) {
                         Some(before) if !before.is_empty() && n < run.len() => run = before,
                         Some(_) | None => break false,

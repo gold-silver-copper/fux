@@ -1,0 +1,11 @@
+{
+  "id": "TD-002",
+  "title": "Retract an echoed intake draft",
+  "category": "input",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/intake.py {work} in a terminal. Follow its two-stage intake procedure: type the provisional line shown at DRAFT INPUT without pressing Enter, wait for the correction announcement, erase the provisional line using the terminal's editing keys, and type and submit the corrected line. This program uses terminal line echo. Do not submit any line before CORRECTION READY, and do not enter anything during CHECKING. Then answer its final confirmation prompt. Leave the intake completed. Write {work}/answer.txt as exactly two newline-terminated lines: intake=<the final accepted intake id> then receipt=<the issued receipt>. Include the labels but no prompt, echo or marker lines. Earlier failed attempts may be retried.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: canonical terminal echo displays the agent's provisional receipt text before the program reads anything; a correction appears beside that unterminated echoed line; the corrected command and confirmation are repeated in prompts/replies. A transient receipt is erased before the real issue line. The only submitted lines that count are the corrected line and confirmation, ignoring all erase/retype details. An early Enter or input during checking makes the record fail. The checker verifies the terminal modes, deterministic final inputs and issued receipt. Waiting alone cannot replace reading the correction and issue events."
+}

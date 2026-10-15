@@ -1,0 +1,13 @@
+{
+  "id": "TD-007",
+  "title": "Archive beyond the visible page",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/archive.py {work} in a terminal. Read the scan's unique kind=origin row and the digest at the far right of its unique kind=extent row, retaining the values across the large scan. At SCAN READY submit exactly report VOLUME-K9. Observe the FINAL ticket emitted after the program's You said reply, before its row is overwritten, and let the program close. Write {work}/answer.txt with exactly three newline-terminated lines in this order: origin=<observed origin value>, digest=<observed extent digest>, ticket=<observed FINAL ticket>. Do not include row numbers, prompts, or marker lines.",
+  "setup": {
+    "files": {
+      "seed.txt": "archive/extent/271\n"
+    }
+  },
+  "note": "Traps: the origin is hundreds of rows back, the extent digest is at the far end of a long wrapped line, and the report echoes the submitted text before a bell and a ticket overwritten in the same output burst. The checker requires the successful tty report and three independently derived seed tokens. A current-screen read misses history and the transient ticket; early submission fails. Retries are accepted. A fixed sleep followed by a screen capture loses the ticket and may omit the old or wrapped fields; guessed values fail the exact answer check."
+}

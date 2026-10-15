@@ -1,0 +1,11 @@
+{
+  "id": "TD-013",
+  "title": "The archive tail beyond the scrollback flood",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Start python3 -I {fixtures}/archive_reader.py {work} exactly once in a terminal that is 72 columns by 18 rows. Retain the current ARCHIVE tag and submit the stream request shown at Stream>; the SAMPLE line above that input is a decoy. Keep enough output history to read the archive. The program prints more than a megabyte of scan output, then stops at RESIZE REQUIRED. At that point resize this same running terminal to exactly 113 columns by 31 rows, then submit the displayed continue request. Read the entire wrapped PAYLOAD line: its final field is the current tail token; earlier tail fields are decoys. Thousands of footer lines then scroll that line away. When FOOTERS COMPLETE and Seal> appear, submit seal <current-archive-tag> <final-tail-token>. Wait for SEALED and normal exit. Write {work}/answer.txt as exactly three newline-terminated lines: archive=<current-archive-tag>, tail=<final-tail-token>, receipt=<sealed-receipt>. Exclude all marker lines. Do not submit commands during scan or footer output; there is no input deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: pre-input SAMPLE tail, a current archive tag before a scan flood over a megabyte, multiple bogus tail fields inside a roughly 58 KB wrapped line whose final field alone is authoritative, then 2600 footer lines hiding the payload in scrollback. The same terminal must resize at a visible protocol boundary. Early input is rejected, initial and resumed sizes are checked from the fixture, and exact sealed data and answer bytes are checked. Waiting or reading only the last screen cannot recover all values."
+}

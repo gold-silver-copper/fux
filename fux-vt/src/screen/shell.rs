@@ -2,7 +2,9 @@
 //! `C` where a command's output starts, `D ; status` where it ends and how.
 //! `C ; late`, sent only as the command ends (a line the shell could not
 //! parse, so never ran, has no start mark of its own), starts its output
-//! on the row after the line of the prompt it was typed at. A host reads them to know when a command typed into a shell is done, its
+//! on the row after the line last submitted, as the host said
+//! (`Parser::note_submit`), else after the line of the prompt it was
+//! typed at. A host reads them to know when a command typed into a shell is done, its
 //! status, and its output ([`Screen::commands`], [`Screen::last_output`]).
 
 use super::Screen;
@@ -31,6 +33,9 @@ pub struct Commands {
     pub last_output: Option<(Mark, Mark)>,
     /// Where the running command's output began.
     pub output_start: Option<Mark>,
+    /// The shell drew a prompt (`A`) and has started no command since
+    /// (`C`): it is reading its command line.
+    pub prompt: bool,
 }
 
 impl Screen {
@@ -51,8 +56,10 @@ impl Screen {
             b"C" => {
                 let late = option == Some(&b"late"[..]);
                 self.commands.running = true;
+                self.commands.prompt = false;
+                let submitted = self.submitted.take().and_then(|s| self.after_line(s.row));
                 self.commands.output_start = Some(match late {
-                    true => self.after_prompt().unwrap_or(here),
+                    true => submitted.or_else(|| self.after_prompt()).unwrap_or(here),
                     false => here,
                 });
             }
@@ -91,6 +98,13 @@ impl Screen {
         }
     }
 
+    /// A prompt was drawn: the shell reads its command line, and a line
+    /// submitted before is no longer its.
+    pub(crate) fn prompted(&mut self) {
+        self.commands.prompt = true;
+        self.submitted = None;
+    }
+
     /// The start of the row after the line the last prompt above the
     /// cursor starts (its soft-wrapped rows with it), if that is not below
     /// the cursor: where what a line typed at it brought begins.
@@ -102,7 +116,25 @@ impl Screen {
         let prompt = (0..=cursor)
             .rev()
             .find(|i| grid.row_at(*i).is_some_and(|r| r.starts_prompt()))?;
-        let next = (prompt..=cursor)
+        self.line_after(prompt, cursor)
+    }
+
+    /// The start of the row after the line row `row` is on, if that is
+    /// not below the cursor: where what followed a line submitted there
+    /// begins.
+    fn after_line(&self, row: RowId) -> Option<Mark> {
+        let grid = self.grid();
+        let cursor = grid
+            .history_len()
+            .checked_add(usize::from(grid.cursor.row()))?;
+        self.line_after(grid.index_of(row)?, cursor)
+    }
+
+    /// The start of the row after the line that row `at` is on, its
+    /// soft-wrapped rows with it, if that is not below row `cursor`.
+    fn line_after(&self, at: usize, cursor: usize) -> Option<Mark> {
+        let grid = self.grid();
+        let next = (at..=cursor)
             .find(|i| grid.row_at(*i).is_some_and(|r| !r.wrapped()))?
             .checked_add(1)?;
         let row = grid.row_at(next).filter(|_| next <= cursor)?;
@@ -112,7 +144,7 @@ impl Screen {
         })
     }
 
-    fn cursor_mark(&self) -> Option<Mark> {
+    pub(crate) fn cursor_mark(&self) -> Option<Mark> {
         let grid = self.grid();
         let index = grid
             .history_len()

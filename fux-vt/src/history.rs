@@ -169,12 +169,15 @@ pub(crate) struct History {
     /// The most rows the grid keeps, which `rows` grows no larger than
     /// for long: the grid lets the oldest go once the newest is in.
     limit: usize,
+    /// The newest version of a row let go past the limit.
+    pub(crate) let_go: u64,
 }
 
 impl History {
     pub(crate) fn new(limit: usize) -> Self {
         Self {
             limit,
+            let_go: 0,
             ..Self::default()
         }
     }
@@ -409,6 +412,7 @@ impl History {
         };
         let number = self.first_row;
         self.first_row = self.first_row.wrapping_add(1);
+        self.let_go = self.let_go.max(gone.version);
         self.cells = self.cells.saturating_sub(gone.len());
         if gone.flags() & (TEXT | LINKED) != 0 {
             self.forget(number, gone.flags());

@@ -2453,30 +2453,48 @@ fn keys_with_no_enter_are_their_echo() -> Outcome {
     Ok(())
 }
 
-/// A later text wait that begins after the lines it would read left
-/// history says they were let go: the text may have come unseen.
+/// A later text wait reads the lines let go past history's limit since
+/// the input too, as the pane kept them; past what it keeps, it says they
+/// were let go: the text may have come unseen.
 #[test]
 fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
     let server = Server::start("str history-lines 20 set")?;
-    let flood = "echo GONE_LINE; seq 200; read x";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", flood]))?);
-    let out = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "opts",
-        "str",
-        "GONE_LINE",
-        "wait-text",
-        "3",
-        "timeout",
-        "wait",
-    ])?;
+    let wait = |pane: &str, text: &str| {
+        let args = [
+            "str",
+            pane,
+            "pane",
+            "opts",
+            "str",
+            text,
+            "wait-text",
+            "3",
+            "timeout",
+            "wait",
+        ];
+        server.fux(&args)
+    };
+    let kept = id(&server.ok(&run(&[], &["sh", "-c", "echo GONE_LINE; seq 200; read x"]))?);
+    let found = wait(&kept, "GONE_LINE")?;
+    assert_eq!(
+        (found.status, found.stdout.as_str()),
+        (0, "GONE_LINE\n"),
+        "{}",
+        found.stderr
+    );
+    // Past the text the pane keeps for waits (1 MiB since the input).
+    let flood = "import sys; w = sys.stdout.write\nw(('filler ' * 10 + '\\n') * 20000)\n\
+                 w('LOST_LINE\\n' + 'after\\n' * 100 + 'END\\n'); sys.stdout.flush(); input()";
+    let lost = id(&server.ok(&run(
+        &["str", "END", "wait-text"],
+        &["python3", "-c", flood],
+    ))?);
+    let out = wait(&lost, "LOST_LINE")?;
     assert_eq!(out.status, CANNOT_COME, "{}", out.stderr);
     // Told at once, the answer is the screen; at the limit, the error.
     let (said, why) = match PROBED {
-        true => (&out.stdout, "earlier lines not kept"),
-        false => (&out.stderr, "let go past history-lines"),
+        true => (&out.stdout, "more came than fux keeps"),
+        false => (&out.stderr, "may have come unseen"),
     };
     assert!(said.contains(why), "{}{}", out.stdout, out.stderr);
     Ok(())
@@ -2595,23 +2613,65 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
     Ok(())
 }
 
-/// `capture` and `wait` refuse options they would not use, as `split`
-/// does: a capture waits for nothing, a wait starts and views nothing.
+/// A word refuses options it would not use, and makes nothing: a capture
+/// waits for nothing, a wait starts and views nothing, a split takes its
+/// tab's place, a run splits nothing and views nothing, a respawn keeps
+/// its pane's name, size, place and ids.
 #[test]
-fn capture_and_wait_refuse_options_they_do_not_use() -> Outcome {
+fn words_refuse_options_they_do_not_use() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x"]))?);
-    let opts = ["str", &pane, "pane", "opts"];
-    for (unused, word) in [
-        (&["str", "x", "wait-text"][..], "capture"),
-        (&["100", "40", "size"][..], "capture"),
-        (&["str", "x", "name"][..], "wait"),
-        (&["10", "history"][..], "wait"),
+    let on = ["str", &pane, "pane", "opts"];
+    let opts = ["opts"];
+    let cat = ["str", "cat", "program"];
+    for (before, unused, word) in [
+        (&on[..], &["str", "x", "wait-text"][..], "capture"),
+        (&on, &["100", "40", "size"], "capture"),
+        (&on, &["str", "x", "name"], "wait"),
+        (&on, &["10", "history"], "wait"),
+        (&on, &["str", "nowhere", "in"], "split"),
+        (&on, &["str", "nowhere", "in"], "respawn"),
+        (&on, &["str", "x", "name"], "respawn"),
+        (&on, &["100", "30", "size"], "respawn"),
+        (&on, &["str", "/", "cwd"], "respawn"),
+        (&on, &["str", "%99", "id"], "respawn"),
+        (&on, &["vertical"], "respawn"),
+        (&opts, &["str", "nowhere", "in"], "new-workspace"),
     ] {
-        let refused = server.fux(&[&opts[..], unused, &[word]].concat())?;
+        let refused = server.fux(&[before, unused, &[word]].concat())?;
         assert_eq!(refused.status, 1, "{unused:?} {word}: {}", refused.stdout);
-        assert!(refused.stderr.contains("unused"), "{}", refused.stderr);
+        assert!(
+            refused.stderr.starts_with("fux: unused: "),
+            "{unused:?} {word}: {}",
+            refused.stderr
+        );
     }
+    for unused in [
+        &["horizontal"][..],
+        &["vertical"],
+        &["kill-first"],
+        &["full"],
+        &["alt-screen"],
+        &["last-output"],
+        &["joined"],
+        &["0", "5", "rows"],
+        &["json"],
+    ] {
+        let refused = server.fux(&[&opts[..], unused, &cat, &["run"]].concat())?;
+        assert_eq!(refused.status, 1, "{unused:?} run: {}", refused.stdout);
+        assert!(
+            refused.stderr.starts_with("fux: unused: "),
+            "{unused:?} run: {}",
+            refused.stderr
+        );
+    }
+    // Nothing was made: the two panes, and no workspace "nowhere".
+    let ls = server.ok(&["ls"])?;
+    assert!(!ls.contains("nowhere"), "{ls}");
+    assert_eq!(ls.matches('%').count(), 2, "{ls}");
+    // A capture's refusal of a wait says what it does: settles, then reads.
+    let refused = server.fux(&[&on[..], &["str", "x", "wait-text", "capture"]].concat())?;
+    assert!(refused.stderr.contains("settles"), "{}", refused.stderr);
     Ok(())
 }
 
@@ -3288,19 +3348,41 @@ fn a_typed_row_drawn_with_another_prompt_is_echo() -> Outcome {
     Ok(())
 }
 
-/// Keys typed before a shell fux did not set up draws its first prompt
-/// (one started by another program, over ssh) are echoed twice, by the
-/// terminal and then by the shell after its prompt, on the keys' own row
-/// or below: neither is output, with Enter or not.
+/// Keys typed before a shell draws its first prompt are echoed twice, by
+/// the terminal and then by the shell after its prompt: neither is output.
+/// A shell fux marks says so, Enter or not. One it did not set up (started
+/// by another program, over ssh) says nothing: its line drawn again reads
+/// as output that repeats the keys would, and only while it still edits
+/// the line (no Enter) is it known for the echo, by the terminal taking
+/// keys raw, where fux is told what the shell is blocked in (Linux, where
+/// fux marks `bash --norc` too).
 #[test]
-fn keys_typed_before_an_unmarked_prompt_are_echo_twice() -> Outcome {
+fn keys_typed_before_a_prompt_are_echo_twice() -> Outcome {
     let server = Server::start("")?;
-    let sh = "import os\n\
+    let unmarked = "import os\n\
               env = dict(os.environ, PS1='PROMPT> ', PROMPT_COMMAND='sleep 0.3')\n\
               os.execvpe('bash', ['bash', '--noprofile', '--norc', '-i'], env)\n";
+    let marked = ["bash", "--norc", "-i"];
+    let vars = [
+        "str",
+        "PS1",
+        "str",
+        "PROMPT> ",
+        "env",
+        "str",
+        "PROMPT_COMMAND",
+    ];
+    let vars = [&vars[..], &["str", "sleep 0.3", "env", "0", "timeout"]].concat();
     let wait = ["str", "TYPED_AHEAD", "wait-text", "3", "timeout"];
-    for enter in [true, false] {
-        let shell = id(&server.ok(&run(&["0", "timeout"], &["python3", "-c", sh]))?);
+    let cases: [(&[&str], &[&str], bool); 3] = [
+        (&["0", "timeout"], &["python3", "-c", unmarked], false),
+        (&vars, &marked, false),
+        (&vars, &marked, true),
+    ];
+    // Without marks, keys typed ahead are told by what the shell is blocked
+    // in, which only Linux says; and fux marks `bash --norc` only there.
+    for (options, program, enter) in cases.into_iter().filter(|_| PROBED) {
+        let shell = id(&server.ok(&run(options, program))?);
         let line = [
             "str",
             &shell,
@@ -3314,7 +3396,7 @@ fn keys_typed_before_an_unmarked_prompt_are_echo_twice() -> Outcome {
         let ahead = server.fux(&[&line[..], end, &wait, &["send-keys"]].concat())?;
         assert_eq!(
             ahead.status, CANNOT_COME,
-            "Enter {enter}: {}{}",
+            "{program:?} Enter {enter}: {}{}",
             ahead.stdout, ahead.stderr
         );
     }
@@ -3386,7 +3468,9 @@ fn a_line_edited_with_cursor_keys_is_echo() -> Outcome {
 fn output_that_ends_with_keys_typed_ahead_is_output() -> Outcome {
     let server = Server::start("")?;
     let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
-    let script = "printf 'BEG''IN\\n'; sleep 1; printf '\\nYou said: NEE''DLE\\n'";
+    // Long enough that the keys go in while it runs (`docs/agents.md`: keys
+    // typed as a command ends may have their echo come after its output).
+    let script = "printf 'BEG''IN\\n'; sleep 2; printf '\\nYou said: NEE''DLE\\n'";
     server.ok(&typed(&shell, script, &["str", "^BEGIN", "wait-text"]))?;
     let keys = [
         "str",
@@ -3506,5 +3590,620 @@ fn a_bell_before_a_text_in_one_write_answers_first() -> Outcome {
     ]
     .concat())?;
     assert!(rang.contains(r#""met":"bell""#), "{rang}");
+    Ok(())
+}
+
+/// QA wave 11, issue 1: keys typed while an earlier command still runs
+/// (typed ahead) are the terminal's echo, then the shell's as it reads
+/// them: a wait for a text they hold answers what the command prints, once
+/// it runs, never the typed line.
+#[test]
+fn keys_typed_while_a_command_runs_are_echo() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
+    server.ok(&typed(&shell, "sleep 2", &["0", "timeout"]))?;
+    let started = std::time::Instant::now();
+    let done = server.ok(&typed(&shell, "echo DONE", &["str", "DONE", "wait-text"]))?;
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(1500),
+        "{done}"
+    );
+    assert_eq!(done, "DONE\n");
+    Ok(())
+}
+
+/// QA wave 11, issue 3: a command over several lines that bash cannot
+/// parse: its last output is the complaint alone, not the continuation
+/// prompts and the lines typed at them.
+#[test]
+fn a_command_bash_cannot_parse_over_lines_outputs_its_complaint() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
+    server.ok(&typed(&shell, "for i in 1 2", &["0", "timeout"]))?;
+    server.ok(&typed(&shell, "do echo $i", &["0", "timeout"]))?;
+    let status = line(&server, &shell, "done)")?;
+    assert!(done(&status).is_some(), "{status}");
+    let error = last_output(&server, &shell)?;
+    assert!(
+        error.contains("syntax error") && !error.contains("> ") && !error.contains("echo"),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// Sends `input` to `pane` with a wait for NEEDLE: its status.
+fn needle(server: &Server, pane: &str, input: &[&str]) -> Result<i32, String> {
+    let words = [
+        &["str", pane, "pane", "keys"][..],
+        input,
+        &["str", "NEEDLE", "wait-text", "2", "timeout", "send-keys"],
+    ]
+    .concat();
+    Ok(server.fux(&words)?.status)
+}
+
+/// QA wave 11, issue 4: text typed and then erased (C-u, then Enter, to a
+/// program reading a line) is the echo, never output: a wait for it in
+/// the same send-keys cannot be met.
+#[test]
+fn text_typed_then_erased_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let read = "x = input('Input> '); print('GOT', len(x)); input()";
+    let python = id(&server.ok(&run(
+        &["str", "Input>", "wait-text"],
+        &["python3", "-c", read],
+    ))?);
+    let erased = [
+        "str", "NEEDLE", "text", "str", "C-u", "key", "str", "Enter", "key",
+    ];
+    assert_eq!(needle(&server, &python, &erased)?, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 11, issue 5: a line edited with Left and Delete (readline) is
+/// the echo, never output: a wait for the text it comes to cannot be met.
+#[test]
+fn text_edited_with_delete_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let edit = "read -e -p 'Edit> ' x; echo got; read y";
+    let bash = id(&server.ok(&run(&["str", "Edit>", "wait-text"], &["bash", "-c", edit]))?);
+    let edited = [
+        "str", "NEEDXE", "text", "str", "Left", "key", "str", "Left", "key", "str", "DC", "key",
+        "str", "L", "text",
+    ];
+    assert_eq!(needle(&server, &bash, &edited)?, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 12: a text a fresh program shows and takes away in one burst
+/// (drawn over) has shown, so `wait-gone` is met; and `^` holds a text to
+/// a line's start, not to where a run of output starts after a tab.
+#[test]
+fn a_text_shown_and_gone_in_a_burst_has_gone_and_anchors_hold_to_lines() -> Outcome {
+    let server = Server::start("")?;
+    let burst = "import sys; sys.stdout.write('READY\\rxxxxx'); sys.stdout.flush(); input()";
+    let gone = server.fux(&run(
+        &["str", "READY", "wait-gone", "5", "timeout"],
+        &["python3", "-c", burst],
+    ))?;
+    assert_eq!(gone.status, 0, "{}{}", gone.stdout, gone.stderr);
+    let tab = id(&server.ok(&run(
+        &["str", "END", "wait-text"],
+        &["sh", "-c", "printf 'FIRST\\tSECOND END\\n'; read x"],
+    ))?);
+    let anchored = [
+        "str",
+        &tab,
+        "pane",
+        "opts",
+        "str",
+        "^SECOND",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ];
+    assert_eq!(server.fux(&anchored)?.status, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 12: a line edited (Left, Delete, then the text it lacked) is
+/// the echo for a later wait too, not only for the one sent with the keys.
+#[test]
+fn a_line_edited_is_echo_for_a_later_wait() -> Outcome {
+    let server = Server::start("")?;
+    let edit = "read -e -p 'Edit> ' x; echo got; read y";
+    let bash = id(&server.ok(&run(&["str", "Edit>", "wait-text"], &["bash", "-c", edit]))?);
+    let keys = [
+        "str",
+        &bash,
+        "pane",
+        "keys",
+        "str",
+        "NEEDLX",
+        "text",
+        "str",
+        "Left",
+        "key",
+        "str",
+        "DC",
+        "key",
+        "str",
+        "E",
+        "text",
+        "send-keys",
+    ];
+    server.ok(&keys)?;
+    let later = [
+        "str",
+        &bash,
+        "pane",
+        "opts",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ];
+    assert_eq!(server.fux(&later)?.status, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 12: a program whose main thread sleeps while another reads its
+/// terminal waits (it may go on alone), not busy.
+#[test]
+fn a_sleeping_main_thread_beside_a_reader_waits() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let program = "import os, time, threading\n\
+                   threading.Thread(target=lambda: os.read(0, 100), daemon=True).start()\n\
+                   print('READY', flush=True); time.sleep(60)\n";
+    let out = server.fux(&run(
+        &["str", "READY", "wait-text", "3", "timeout"],
+        &["python3", "-c", program],
+    ))?;
+    let pane = id(&out.stdout);
+    let settle = server.fux(&["str", &pane, "pane", "opts", "3", "timeout", "wait"])?;
+    assert_eq!(settle.status, 0, "{}{}", settle.stdout, settle.stderr);
+    assert!(
+        settle.stdout.starts_with(&format!("{pane} waiting")),
+        "{}",
+        settle.stdout
+    );
+    Ok(())
+}
+
+/// QA wave 13: of several conditions, the first to come answers, a text
+/// gone among them; and a later wait places a text written over by
+/// another where it came, not where its successor did.
+#[test]
+fn the_first_condition_to_come_answers_a_text_gone_too() -> Outcome {
+    let server = Server::start("")?;
+    let swap = "import sys, time\nw = sys.stdout.write\nw('BUSY'); sys.stdout.flush(); time.sleep(0.3)\n\
+                w('\\r\\x1b[K'); sys.stdout.flush(); time.sleep(0.3)\n\
+                w('LATER\\r\\n'); sys.stdout.flush(); input()\n";
+    let busy = id(&server.ok(&run(
+        &["str", "LATER", "wait-text"],
+        &["python3", "-c", swap],
+    ))?);
+    let both = [
+        "str",
+        &busy,
+        "pane",
+        "opts",
+        "str",
+        "LATER",
+        "wait-text",
+        "str",
+        "BUSY",
+        "wait-gone",
+        "wait",
+        "json",
+    ];
+    // BUSY went before LATER came: the text gone answers, with the pane's
+    // state, where a text met would say `met`.
+    let out = server.fux(&both)?;
+    assert!(
+        out.status == 0 && out.stdout.contains("\"state\"") && !out.stdout.contains("\"met\""),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let over = "import sys, time\nw = sys.stdout.write\nw('FIRST'); sys.stdout.flush(); time.sleep(0.3)\n\
+                w('\\rSECOND\\r\\n'); sys.stdout.flush(); input()\n";
+    let pane = id(&server.ok(&run(
+        &["str", "SECOND", "wait-text"],
+        &["python3", "-c", over],
+    ))?);
+    let first = [
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "SECOND",
+        "wait-text",
+        "str",
+        "FIRST",
+        "wait-text",
+        "wait",
+    ];
+    assert_eq!(
+        server.ok(&first)?.trim_end(),
+        "FIRST",
+        "the text that came first"
+    );
+    Ok(())
+}
+
+/// QA wave 13: a line editor that draws the line again, the same, as
+/// Enter takes it brings nothing new: a wait sent with the keys for the
+/// text typed cannot be met by it.
+#[test]
+fn a_line_drawn_again_the_same_on_enter_is_no_output() -> Outcome {
+    let server = Server::start("")?;
+    let editor = "import os, tty\ntty.setraw(0)\nline = ''\nos.write(1, b'> ')\n\
+                  while True:\n    c = os.read(0, 1).decode()\n\
+                  \x20   if c in '\\r\\n':\n        os.write(1, ('\\r\\x1b[K> ' + line + '\\r\\n').encode()); line = ''; os.write(1, b'> '); continue\n\
+                  \x20   line += c; os.write(1, ('\\r\\x1b[K> ' + line).encode())\n";
+    let pane = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", editor]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "NEEDLE",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+    ];
+    assert_eq!(server.fux(&keys)?.status, CANNOT_COME);
+    Ok(())
+}
+
+/// Replay: a shell command that ended after its own action answered is
+/// still said done by a later wait, which counts from the last input.
+#[test]
+fn a_later_wait_says_a_command_ended_since_the_input() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
+    assert_eq!(done(&line(&server, &shell, "true")?), Some("done 0"));
+    let keys = [
+        "str",
+        &shell,
+        "pane",
+        "keys",
+        "str",
+        "sleep 0.3; (exit 6)",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ];
+    server.fux(&keys)?;
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let later = server.ok(&["str", &shell, "pane", "opts", "wait"])?;
+    assert_eq!(done(&later), Some("done 6"), "{later}");
+    Ok(())
+}
+
+/// Replay: a resize after the input brings nothing new; a later wait's
+/// answer starts where the input's reply does, not at the screen's top.
+#[test]
+fn a_resize_since_the_input_brings_nothing_new() -> Outcome {
+    let server = Server::start("")?;
+    let echo = "echo OLDLINE; while read l; do echo GOT$l; done";
+    let pane = id(&server.ok(&run(&["str", "OLDLINE", "wait-text"], &["sh", "-c", echo]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "abc",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "GOTabc",
+        "wait-text",
+        "send-keys",
+    ];
+    server.ok(&keys)?;
+    server.ok(&[
+        "str", &pane, "pane", "opts", "str", "sleep", "program", "str", "30", "arg", "0",
+        "timeout", "split",
+    ])?;
+    let later = server.ok(&["str", &pane, "pane", "opts", "wait"])?;
+    assert!(
+        !later.contains("OLDLINE") && later.contains("GOTabc"),
+        "{later}"
+    );
+    Ok(())
+}
+
+/// Replay: a screen erased and drawn again as it was is no change, and
+/// one drawn again with a row changed is answered from that row.
+#[test]
+fn a_screen_drawn_again_as_it_was_is_no_change() -> Outcome {
+    let server = Server::start("")?;
+    let menu = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                def draw(v): w('\\x1b[H\\x1b[2JMAIN MENU\\r\\n' + v); sys.stdout.flush()\n\
+                draw('old value')\n\
+                while True:\n    draw('new value' if sys.stdin.read(1) == 'b' else 'old value')\n";
+    let pane = id(&server.ok(&run(
+        &["str", "old value", "wait-text"],
+        &["python3", "-c", menu],
+    ))?);
+    let same = server.ok(&["str", &pane, "pane", "str", "a", "type"])?;
+    // Said where fux is told the program reads (`no change` is that).
+    let said = if PROBED { " · no change" } else { "" };
+    assert_eq!(head(&same), format!("{pane} {READING}{said}"), "{same}");
+    assert_eq!(body(&same), "", "{same}");
+    let changed = server.ok(&["str", &pane, "pane", "str", "b", "type"])?;
+    assert_eq!(body(&changed), "new value\n", "{changed}");
+    Ok(())
+}
+
+/// Replay: a word a line wraps onto the next row starts no word there: a
+/// wait for it from a word's or a line's start is not met.
+#[test]
+fn a_word_wrapped_onto_a_row_starts_no_word_there() -> Outcome {
+    let server = Server::start("")?;
+    let wrap = "import sys, tty\ntty.setraw(0)\nsys.stdout.write('> '); sys.stdout.flush()\n\
+                sys.stdin.read(1); sys.stdout.write('\\r\\nxxxxxxxxxxxxREADY'); sys.stdout.flush()\n\
+                sys.stdin.read(1)\n";
+    let size = ["12", "5", "size", "str", ">", "wait-text"];
+    let pane = id(&server.ok(&run(&size, &["python3", "-c", wrap]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "k",
+        "text",
+        "str",
+        "READY",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+        "json",
+    ];
+    let out = server.fux(&keys)?;
+    let not_met = if PROBED { CANNOT_COME } else { 124 };
+    assert_eq!(out.status, not_met, "{}{}", out.stdout, out.stderr);
+    Ok(())
+}
+
+/// Replay: a full-screen program's keys go in at full speed, its screen
+/// being all output: one read takes every key an action sends.
+#[test]
+fn a_full_screen_program_takes_an_actions_keys_at_once() -> Outcome {
+    let server = Server::start("")?;
+    let once = "import os, sys, time, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                w('\\x1b[?1049hREADY'); sys.stdout.flush(); time.sleep(0.5)\n\
+                w('\\r\\nGOT ' + repr(os.read(0, 100))); sys.stdout.flush(); os.read(0, 1)\n";
+    let pane = id(&server.ok(&run(
+        &["str", "READY", "wait-text"],
+        &["python3", "-c", once],
+    ))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "abc",
+        "text",
+        "str",
+        "Home",
+        "key",
+        "str",
+        "End",
+        "key",
+        "str",
+        "GOT",
+        "wait-text",
+        "send-keys",
+    ];
+    let got = server.ok(&keys)?;
+    assert!(got.contains("GOT b'abc\\x1b[H\\x1b[F'"), "{got}");
+    Ok(())
+}
+
+/// Replay: a wait sent with keys answers once all of them went in, though
+/// the reply to the first meets it before the program takes the rest.
+#[test]
+fn a_keys_wait_answers_once_every_key_went_in() -> Outcome {
+    let server = Server::start("")?;
+    let raw = "import os, time, tty\ntty.setraw(0)\nos.write(1, b'> ')\n\
+               os.read(0, 1); os.write(1, b'\\r\\nRX'); time.sleep(0.6)\n\
+               os.read(0, 1); os.write(1, b'\\r\\nSECOND'); os.read(0, 1)\n";
+    let pane = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", raw]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "a",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "RX",
+        "wait-text",
+        "send-keys",
+    ];
+    let began = std::time::Instant::now();
+    server.ok(&keys)?;
+    // Enter goes in once the program reads again, after its sleep: where
+    // fux is told it reads (macOS says a sleep and a read alike).
+    assert!(
+        !PROBED || began.elapsed() >= std::time::Duration::from_millis(400),
+        "{:?}",
+        began.elapsed()
+    );
+    Ok(())
+}
+
+/// Replay: `run`'s answer holds all a program printed, lines scrolled into
+/// history too, as no snapshot of the screen came before them.
+#[test]
+fn a_runs_answer_holds_what_scrolled_away() -> Outcome {
+    let server = Server::start("")?;
+    let burst = "for i in $(seq 0 59); do echo BURST_$i; done; read x";
+    let out = server.ok(&run(
+        &["str", "BURST_59", "wait-text"],
+        &["sh", "-c", burst],
+    ))?;
+    let later = server.ok(&["str", &id(&out), "pane", "opts", "wait"])?;
+    assert!(
+        later.contains("BURST_0\n") && later.contains("BURST_59"),
+        "{later}"
+    );
+    Ok(())
+}
+
+/// Sealed Set C (TC-026): a line editor that draws its whole line again,
+/// prompt and all, at each key: the prompt it draws again where it stood
+/// is no news; a wait for it is met by the next prompt, after the reply.
+#[test]
+fn a_prompt_drawn_again_with_the_typed_line_is_no_news() -> Outcome {
+    let server = Server::start("")?;
+    let desk = "import os, time, tty\ntty.setraw(0)\nline = ''\nos.write(1, b'desk> ')\n\
+                while True:\n    c = os.read(0, 1).decode()\n\
+                \x20   if c in '\\r\\n':\n        os.write(1, b'\\r\\n'); time.sleep(0.5)\n\
+                \x20       os.write(1, ('OK ' + line + '\\r\\ndesk> ').encode()); line = ''; continue\n\
+                \x20   line += c; os.write(1, ('\\r\\x1b[Kdesk> ' + line).encode())\n";
+    let pane = id(&server.ok(&run(
+        &["str", "desk>", "wait-text"],
+        &["python3", "-c", desk],
+    ))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "inspect",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "desk>",
+        "wait-text",
+        "send-keys",
+    ];
+    let began = std::time::Instant::now();
+    server.ok(&keys)?;
+    assert!(
+        began.elapsed() >= std::time::Duration::from_millis(400),
+        "{:?}",
+        began.elapsed()
+    );
+    Ok(())
+}
+
+/// Set B (TB-053): a thread waiting on a timer through a futex (Python's
+/// `Event.wait(0.1)`) goes on alone: beside a thread reading the terminal,
+/// the program is `waiting`, and a text wait runs to its limit, never 7.
+#[test]
+fn a_thread_on_a_timed_futex_goes_on_alone() -> Outcome {
+    let server = Server::start("")?;
+    let ticker = "import threading\nstop = threading.Event()\n\
+                  def tick():\n    while not stop.wait(0.1): pass\n\
+                  threading.Thread(target=tick, daemon=True).start()\nprint('READY', flush=True)\ninput()\n";
+    let started = ["str", "READY", "wait-text"];
+    let pane = id(&server.ok(&run(&started, &["python3", "-c", ticker]))?);
+    let never = [
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "NEVER",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ];
+    let out = server.fux(&never)?;
+    assert_eq!(out.status, 124, "{}{}", out.stdout, out.stderr);
+    Ok(())
+}
+
+/// Codex review: a wide character before a run on its row takes two cells
+/// and is one character: the run is still found where it went, and a wait
+/// for its text at the line's end is met.
+#[test]
+fn a_run_after_a_wide_character_is_found_where_it_went() -> Outcome {
+    let server = Server::start("")?;
+    let wide = "import os, tty\ntty.setraw(0)\nos.write(1, '界 '.encode())\nos.read(0, 1)\n\
+                os.write(1, b'READY')\nos.read(0, 1)\n";
+    let pane = id(&server.ok(&run(&["str", "界", "wait-text"], &["python3", "-c", wide]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "k",
+        "text",
+        "str",
+        "READY$",
+        "wait-text",
+        "3",
+        "timeout",
+        "send-keys",
+    ];
+    let out = server.fux(&keys)?;
+    assert_eq!(out.status, 0, "{}{}", out.stdout, out.stderr);
+    Ok(())
+}
+
+/// Set B review (TB-463): a wait met on a long line wrapped over many rows
+/// answers the whole line, not the rows read around the text to find it.
+#[test]
+fn a_met_wait_answers_the_whole_wrapped_line() -> Outcome {
+    let server = Server::start("")?;
+    let long = "import os, tty\ntty.setraw(0)\nos.write(1, b'> ')\nos.read(0, 1)\n\
+                os.write(1, b'\\r\\nCALIBRATION ' + b'x' * 250 + b' LANE=TAIL\\r\\n')\nos.read(0, 1)\n";
+    let size = ["80", "24", "size", "str", ">", "wait-text"];
+    let pane = id(&server.ok(&run(&size, &["python3", "-c", long]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "k",
+        "text",
+        "str",
+        "CALIBRATION",
+        "wait-text",
+        "send-keys",
+    ];
+    let out = server.ok(&keys)?;
+    assert!(out.contains("LANE=TAIL"), "{out}");
     Ok(())
 }

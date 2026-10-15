@@ -1,0 +1,11 @@
+{
+  "id": "TD-005",
+  "title": "Commit a full-screen routing form",
+  "category": "tui",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/routing.py {work} in a terminal. In its full-screen form, replace the recipient with exactly night-ops and select mode guarded. Use the displayed navigation and editing keys to open the review modal, request preparation, wait for COMMIT READY, and submit the exact commit command then displayed. No input is permitted during PREPARING. A preview and text echoed in the form or modal are not a committed result. After it reports ROUTING COMMITTED, use its displayed exit key so the program exits successfully. Write {work}/answer.txt as exactly two newline-terminated lines: revision=<the committed revision> then receipt=<the final saved receipt>. Include these labels, with no prompt, preview, echo or marker lines. Earlier failed attempts may be retried.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: a full-screen alternate-screen form redraws the prompt and recipient after every key; its saved= preview and modal receipt-shaped text are echoes, and a preparation revision is overwritten on the same screen. The valid commit token is displayed only after preparation. Input before COMMIT READY fails, and submission alone is insufficient: the final committed revision differs from the preview and the operator must exit using the displayed key. The checker derives committed values and validates exact recipient, mode, modal submissions, terminal use and clean exit. All accepted navigation key encodings are normalized."
+}

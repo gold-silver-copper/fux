@@ -1,0 +1,69 @@
+[
+  {
+    "name": "navigate-and-inspect",
+    "args": [
+      "--seed",
+      "5"
+    ],
+    "size": [
+      80,
+      24
+    ],
+    "steps": [
+      {
+        "keys": "\u001b[B\u001b[B\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "\u001b[A\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "q",
+        "pause_ms": 120
+      }
+    ]
+  },
+  {
+    "name": "notes-and-backspace",
+    "args": [
+      "--seed",
+      "14"
+    ],
+    "size": [
+      64,
+      15
+    ],
+    "steps": [
+      {
+        "keys": "hello!\u007f?",
+        "pause_ms": 80
+      },
+      {
+        "keys": "j\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "q",
+        "pause_ms": 120
+      }
+    ]
+  },
+  {
+    "name": "burst-navigation-and-bell",
+    "args": [
+      "--seed",
+      "23"
+    ],
+    "size": [
+      70,
+      12
+    ],
+    "steps": [
+      {
+        "keys": "jjkk\u0007\rq",
+        "pause_ms": 150
+      }
+    ]
+  }
+]

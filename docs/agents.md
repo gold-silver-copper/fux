@@ -35,8 +35,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
 %2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0)
-%2 busy · 12 bytes unread      still running or printing at the time limit (status 124); unread: input fux holds yet
-%2 exited 3                    the program ended; its last output follows
+%2 busy · 12 bytes unread      still running, printing or asleep on a timer (a sleep loop) at the time limit (status 124); unread: input fux holds yet
+%2 exited 3                    the program ended; what it printed since your input follows
 ```
 
 - **Time:** an action or `capture` settles within 10s; a `wait`, or an action given a
@@ -57,32 +57,22 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too
   (text its bytes, a key its name's, each input after the first 5 more). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
-  `wait-bell`; several: whichever came first, in any order given (a text
-  printed before the exit or the bell, though the wait began after both).
-  fux keeps no time of each character: a wait that begins after several
-  texts came takes the line nearest the top (history first), on one line
-  the text furthest left; and a text before the bell if its line held it
-  as the first bell since your input rang. A text: case ignored, blanks as
-  one, from a word's start (`READY` is not in `NOT_READY`); `^T` a line's
-  first word, indented or not, `T$` its last. Met, it answers the first new
-  line that holds the text (`run`: the pane, then that line; `wait-gone`,
-  the pane's state; after `run` or `respawn` a text must show before it
-  can go), never what you typed, Enter or not, nor the prompt
-  before it, on each row it went on (with the keys, or for a later wait your
-  last input; a line typed over several sends, as BSpace, C-w, C-u and the
-  cursor keys left it: Left, Right, Home, End, C-a, C-e, C-b, C-f; a
-  bracketed paste's marks as the terminal echoes them, `^[[200~`), nor that
-  row drawn again with another prompt to end with it, nor a row below so
-  drawn for keys typed while the program was busy (a prompt's row: one the
-  shell marks so, or that starts with the prompt your keys before went in
-  at); what the program writes after it on that row counts, as does
-  another row it writes that ends with it (`You said: NEEDLE`). A wait
-  counts what came since your last input to the pane (or since the program
-  started), scrolled away too: it never starts too late. But it reads
-  screens, not every byte: text drawn over in place before fux reads the
-  screen (`printf 'READY\rxxxxx'` in one write) is never seen, by any wait,
-  and a later wait does not see a line overwritten in place before it
-  began; `log-to` keeps every byte. **Status 7:** the terminal's foreground
+  `wait-bell`; several: whichever came first, as they came (fux records
+  each piece of output as it arrives, and where a bell rang among them). A
+  text: case ignored, blanks as one, from a word's start (`READY` is not in
+  `NOT_READY`); `^T` a line's first word, indented or not, `T$` its last.
+  Met, it answers the line that holds the text (`run`: the pane, then that
+  line; `wait-gone`, the pane's state; after `run` or `respawn` a text must
+  show before it can go). A wait counts what the program printed since your
+  last input to the pane (or since it started): lines scrolled away, and
+  text drawn over in the same breath (`printf 'READY\rxxxxx'`), too; it
+  never starts too late. It never matches what you typed: the echo of your
+  keys (the terminal's own, for a program that reads lines; the shell's as
+  it reads its command line; a line editor's, drawn where you typed) is no
+  output, whatever it reads like. What the program prints in reply is,
+  though it repeats your words (`You said: NEEDLE`). A line drawn again to
+  read as it did before your input brings nothing new. **Status 7:** the
+  terminal's foreground
   program is blocked reading it, and the text has not come (`wait-gone`:
   not gone). This is fux's judgement from what the program is blocked in:
   one also woken by a timer (`alarm`) or another descriptor gets 7 too,
@@ -93,15 +83,17 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   action answers status 0 after 1s, and a text wait runs to its limit
   (124), never 7. A read with the terminal's own time
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
-  returns alone, so a text wait runs to its limit (124). The answer is the screen (it starts `…
-  earlier lines not kept` if lines since were let go past history-lines
-  before the wait read them: the text may have passed unseen). Status 3: the program exited first.
+  returns alone, so a text wait runs to its limit (124). The answer is the
+  screen (it starts `… earlier lines not kept (past history-lines)` if lines
+  written since were let go, or `… more came than fux keeps for a wait (1
+  MiB): text may have passed unseen`; past that, a wait reads the lines
+  changed since as they read now, and cannot tell an echo there). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output; while one runs, its output so far:
-  a full-screen one's is its screen up to the cursor, whatever
+  a full-screen one's is its screen to the cursor's row, whole, whatever
   `main-screen` or `alt-screen` say), `joined` (with `rows`, a
   wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
@@ -113,6 +105,45 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 - **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) answers once the program
   exits or settles; `%2 kill` closes one pane; `%2 opts respawn` starts it
   again, on a new terminal.
+
+## Keys a program reads one by one
+
+To a program that reads each key itself (raw, on the main screen: a line
+editor, a REPL), or one whose echo fux cannot work out, each text and key
+goes in once it took the one before, so that what it draws follows the key
+it answers: it may read them in several reads, the same bytes in the same
+order. A wait sent with them answers once all went in. A full-screen
+program, and one reading lines, gets them at once. A shell fux starts reads its
+command line key by key too: of several lines sent to it at once, each goes
+in as it reads again, or after a second, so a line may go in while the one
+before still runs, the terminal showing it among that command's output.
+
+## What fux cannot tell
+
+fux records which input each piece of output followed, and tells echo
+from output by the shell's marks, the terminal's own echo rules, and what
+the input was. A few cases look the same either way, and are taken so:
+
+- A full-screen program's screen is all output: a form's field showing
+  what you typed meets a wait for it (wait for it to know the keys went
+  in).
+- Until a key submits the line you type (Enter), a text made only of
+  characters you typed on it (in any order: editing keys move them; case
+  ignored, as a wait ignores it) is taken as their echo, as a line editor
+  shows them, wherever it lands: a program that answers your keys with
+  nothing but some of them is not seen. The text you wait for is what
+  counts, not the line it is on: `RESULT TOKEN` printed before Enter meets
+  a wait for `RESULT TOKEN`, not one for `TOKEN`.
+- A program that, after Enter, prints exactly the line you typed: taken
+  as its output, its reply to Enter. (A line editor drawing your line again
+  on Enter, the same text in the same place, changes nothing: no output.)
+- Keys typed ahead, with Enter, into a program fux does not mark (a shell
+  over ssh, or a line editor still busy or asleep when they went in): its
+  drawing them again once it reads them reads as output that repeats them.
+  A shell fux starts marks its prompt, and says which.
+- Keys typed just as a command ends: the terminal may echo them after
+  the command's last output, and when that output holds the same
+  characters in the same order, those are taken as the echo.
 
 ## Status
 
@@ -149,14 +180,17 @@ split-on trim upper number join contains starts-with`), lists (`range sort
 reverse sum count first last`), and `dup swap over rot not mod min max …`;
 `fux help` lists every word, `fux help WORD` explains one. A mistake every
 run would make (a word given too few values, a string written just before
-`add` or `if`) fails before any word acts; a value from a list or a word,
-and the kinds fux's own words take, are checked as they run.
+`add` or `if`, or a word that always leaves the wrong kind) fails before
+any word acts; a value whose kind cannot be known before (from a list, or
+a word that leaves either), and the kinds fux's own words take, are
+checked as it runs.
 
 ## Shells
 
 `fux opts str agent in new-tab` gives a shell (yours, else your login
-shell). Each shell fux starts reads your own startup files, then marks its
-commands (OSC 133): `line` answers `· done STATUS` once the command ends and
+shell). Each shell fux starts (bash, zsh or fish, interactive, given no
+script, command or rc file of its own) reads your own startup files, then
+marks its commands (OSC 133): `line` answers `· done STATUS` once the command ends and
 the shell reads again, `last-output` reads a command's output alone, and
 `$?`, `PIPESTATUS`, your prompt and your hooks behave as without fux. A
 command longer than the limit answers `busy` (124): `wait` on. A command
@@ -183,8 +217,9 @@ is its terminal's, at most 4096 a side.
 ## Which server
 
 `FUX_SOCKET` chooses the server; `str NAME server` (a server of your own,
-`NAME.sock` in fux's directory) or `str PATH socket` first chooses another;
-`start` starts one and returns once it answers; `status` says whether one
+`NAME.sock` in fux's directory) or `str PATH socket` first chooses another
+(a socket's path is at most 107 bytes, 103 on macOS: a longer one is
+refused, door and all); `start` starts one and returns once it answers; `status` says whether one
 answers. Inside a person's pane, `here` is that pane, but only on that
 pane's own server (`FUX_SERVER` says which): on yours it is not acted on. A
 person can give you `str agent str PATH grant`: a socket that reaches

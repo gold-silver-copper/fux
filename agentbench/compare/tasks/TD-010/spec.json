@@ -1,0 +1,13 @@
+{
+  "id": "TD-010",
+  "title": "Compiler probe and preview handoff",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/compile.py {work}, python3 -I {fixtures}/probe.py {work}, and python3 -I {fixtures}/serve.py {work} in three separate terminals, with all three alive together before requesting a build. Wait for COMPILER INPUT, PROBE READY and SERVER READY, then submit build READY to the compiler. Retain its transient BUILD artifact value and wait for COMPILER CLOSED. At the probe's ready prompt submit test <observed artifact>. Retain the transient VERDICT seal and wait for FINISH INPUT. At the server's ready prompt submit publish <observed seal>. Retain its transient DEPLOY id; at STOP INPUT submit stop <observed id>. Wait for SERVER CLOSED, then submit finish to the probe and wait for PROBE CLOSED. Every angle-bracketed argument above is replaced by the corresponding observed value. Each transient value is overwritten within its output burst. Write {work}/answer.txt with exactly three newline-terminated lines in this order: artifact=<observed BUILD artifact>, seal=<observed VERDICT seal>, deployment=<observed DEPLOY id>. Include no prompt or marker lines. The programs reject input during startup and processing and wait indefinitely at input prompts.",
+  "setup": {
+    "files": {
+      "seed.txt": "preview/handoff/308\n"
+    }
+  },
+  "note": "Traps: readiness from three concurrent programs must be distinguished from echoed build READY; BUILD appears just as its program ends, all three handoff values are erased within single writes, and bell-bearing deployment output follows a repeated publish command. The fixtures enforce live readiness before build, compile-before-test, test-before-publish and stop-before-finish. The checker links successful runs by PID and verifies three distinct terminals recorded while they were concurrent, never comparing terminal names from sequential programs. Atomic records are read by fixed names. It accepts earlier failed attempts and recomputes all three output values from the seed. A fixed screen-capture delay loses the handoff values; guessed or premature handoffs fail the input protocol."
+}

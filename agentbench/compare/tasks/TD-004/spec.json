@@ -1,0 +1,11 @@
+{
+  "id": "TD-004",
+  "title": "Supervise an interrupted deployment assistant",
+  "category": "agents",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/assistant.py {work} in a terminal and supervise it to completion. At PLAN INPUT, begin the displayed plan command without Enter; this triggers its background audit. Wait for AUDIT READY to learn the suffix and finish and submit the command. Review and answer the permission prompt, wait for the reported deployment failure, submit its displayed repair command, and answer the final publication prompt. Do not submit partial plans or type during phases labeled BUSY. The assistant echoes its own editable line, and background messages may redraw it. Write {work}/answer.txt as exactly three newline-terminated lines: audit=<the completed audit ticket>, repair=<the acknowledged repair id>, publication=<the final published receipt>. Include these labels and no prompts, echoes, draft or marker lines. Earlier failed attempts may be retried.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: a raw-mode REPL echoes/redraws its own line while a real background thread emits audit messages, including a decoy ticket embedded in the echoed prefix. The audit starts only after a partial plan is typed, so merely waiting stalls. The real audit ticket becomes valid only at AUDIT READY; a permission request repeats the just-typed plan, and a deployment failure can be mistaken for completion. Input during BUSY fails. A repair and separate publication confirmation are required. The checker verifies all four exact final submissions and deterministic final outputs from a terminal, ignoring editing details."
+}

@@ -1,0 +1,13 @@
+{
+  "id": "TD-019",
+  "title": "Revise an agent approval while its planner talks",
+  "category": "agents",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/archive_agent.py {work}` exactly once and complete its archive proposal for the scope in `{work}/job.json`. Submit the displayed planning request. While it is planning, type the displayed draft approval without Enter and press F2 to stage the draft. Do not submit it. A background planner will print messages and redraw the pending input. Wait for REVIEW READY, revise the pending line to the newly displayed exact approval, and submit it. Wait for PERMISSION READY before editing and submitting the displayed one-use permission grant; the prefilled session grant must be replaced. Wait for AGENT COMPLETED. Write `{work}/answer.txt` with exactly three lines: `plan=<observed completed plan id>`, `permission=<observed completed permission id>`, and `result=<observed completed result id>`, in that order. Each line ends with a newline; include no marker lines or other text. The result copied into the echoed approval draft is not the completed result. There is no input deadline. Leave `{work}/job.json` unchanged.",
+  "setup": {
+    "files": {
+      "job.json": "{\n  \"seed\": \"birch-48\",\n  \"scope\": \"reports/quarter-3\"\n}\n"
+    }
+  },
+  "note": "Trap: the raw REPL echoes itself and an actual background thread prints copied approval text, clears the line, and redraws the pending draft. F2 stages a complete draft without submitting; the draft snapshot is graded, not its editing history. Submitting before REVIEW READY or typing before PERMISSION READY fails. The ready plan, permission challenge and completed result are distinct from the draft echo. The checker derives every value, checks the staged draft, exact submitted lines, exactly one tty launch and the completed output. Thread progress starts only after F2 so a slow typist cannot miss it; ready markers, not sleeps, determine the valid action order."
+}

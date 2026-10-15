@@ -1,0 +1,13 @@
+{
+  "id": "TD-006",
+  "title": "Ledger receipt at the overwrite boundary",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/receipt.py {work} in a terminal. Wait for its READY lookup prompt, then submit exactly lookup crate/west-7. Observe the program's receipt reply (which begins with your submitted text and is immediately overwritten), and the AUDIT seal emitted just after the submission. Let the program close. Write {work}/answer.txt with exactly two lines: receipt=<observed receipt> followed by seal=<observed seal>. Both lines must end with a newline; include no prompt or marker lines.",
+  "setup": {
+    "files": {
+      "seed.txt": "freight/ledger/83\n"
+    }
+  },
+  "note": "Own-output versus echo trap: the receipt reply starts with the submitted command, and an immediate carriage-return erase replaces the value in the same write. A background thread emits a bell and the seal just after the keys. The checker recomputes both tokens from seed.txt and requires a successful tty run with the exact submitted query. Startup rejects early input; waiting a fixed interval cannot recover the overwritten receipt. Failed attempts may be retried."
+}

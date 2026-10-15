@@ -412,20 +412,6 @@ impl Process {
 
 /// A digest of what `screen` shows: its glyphs, their attributes, and the
 /// cursor.
-fn digest(screen: &fux_vt::Screen) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    let window = screen.window();
-    for row in (0..window.rows()).filter_map(|y| window.row(y)) {
-        for cell in row.cells() {
-            cell.contents().hash(&mut hasher);
-            cell.attributes().hash(&mut hasher);
-        }
-    }
-    screen.cursor_position().hash(&mut hasher);
-    hasher.finish()
-}
-
 /// What a pane runs, which says what its program's exit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runs {
@@ -455,20 +441,6 @@ pub struct Alerts {
     pub notifications: u64,
     pub last: Option<String>,
     pub last_notified: bool,
-    /// The first since the last input, or the program's start, if one
-    /// came: where it came in the output.
-    pub at: Option<Rung>,
-}
-
-/// Where an alert came: its number (as `Alerts::count` counts it), and
-/// the screen as the output was read up to it, a mark and its lines by
-/// first row. A line not changed since, or holding a text then, came
-/// before it.
-#[derive(Clone, Debug)]
-pub struct Rung {
-    pub count: u64,
-    pub mark: fux_vt::Mark,
-    pub lines: std::collections::HashMap<fux_vt::RowId, String>,
 }
 
 impl Alerts {
@@ -478,78 +450,29 @@ impl Alerts {
     }
 }
 
-/// How a pane stood when input last went in, or its program started.
+/// What a piece of output printed, and its number: kept since the last
+/// action's input, for waits to read.
 #[derive(Clone, Debug)]
-pub struct InputFrom {
-    /// The first row of the line the cursor was on (a prompt wider than
-    /// the screen wraps from rows above): what came since is said from
-    /// there.
-    pub cursor: Option<fux_vt::RowId>,
-    pub mark: fux_vt::Mark,
-    /// How many shell commands had ended.
-    pub finished: u64,
-    /// What was typed, line by line, and whether a line it ended was
-    /// recalled (Up, then Enter: its echo is not known); the cursor's line
-    /// as it read before, to its row: a wait after it knows its echo.
-    pub echo: Vec<String>,
-    pub recalled: bool,
-    pub before: String,
-    /// What was typed on the line, keys before too, while no key ended it
-    /// (`line_open`; else nothing): keys after, on its row, edit it.
-    pub typed: Vec<crate::command::Input>,
-    /// The keys went in while the program was at work, before it read: a
-    /// line it draws again to end with them (a shell's prompt and line,
-    /// after the terminal's echo) is their echo too.
-    pub ahead: bool,
-    /// The cursor's line as it read when keys last went in while the
-    /// program read them, to its row: the prompt they were typed at, which
-    /// a line drawn again for keys typed ahead starts with. Empty while no
-    /// keys went in so.
-    pub prompt: String,
-    /// The screen's lines then, by first row: one redrawn the same since
-    /// brings nothing new; and the line above each, by first rows: one
-    /// that follows another since moved (lines deleted or put in above it).
-    pub shown: std::collections::HashMap<fux_vt::RowId, String>,
-    pub above: std::collections::HashMap<fux_vt::RowId, fux_vt::RowId>,
-    /// Each line's colours then, by first row: a menu's highlight moved
-    /// changes what reads the same.
-    pub styles: std::collections::HashMap<fux_vt::RowId, u64>,
-    /// The bells and notifications heard by then.
-    pub alerts: u64,
+pub struct Printed {
+    pub seq: crate::log::OutputSeq,
+    pub prints: fux_vt::Prints,
+    /// What each of its runs may be the echo of (`crate::classify`), which
+    /// a wait never takes.
+    pub echo: Vec<crate::classify::Echo>,
+    /// Of each of its runs, the characters it changed: those after the
+    /// first and before the last it printed as its row held them just
+    /// before (a line drawn again, the same, changes none: nothing new).
+    pub fresh: Vec<(usize, usize)>,
 }
 
-impl InputFrom {
-    /// How `screen` stands as `inputs` go in, `alerts` heard by then.
-    pub(crate) fn new(
-        screen: &fux_vt::Screen,
-        inputs: &[crate::command::Input],
-        alerts: u64,
-    ) -> InputFrom {
-        let row = screen.window().row(screen.cursor_position().0);
-        let (cursor, before) = row.map(crate::wait::line_to).unwrap_or_default();
-        let (echo, recalled) = crate::command::typed_lines(inputs);
-        let (shown, above, styles) = crate::wait::shown(screen);
-        InputFrom {
-            cursor,
-            mark: screen.mark(),
-            finished: screen.commands().finished,
-            echo,
-            recalled,
-            before,
-            typed: if crate::command::line_open(inputs) {
-                inputs.to_vec()
-            } else {
-                Vec::new()
-            },
-            ahead: false,
-            prompt: String::new(),
-            shown,
-            above,
-            styles,
-            alerts,
-        }
-    }
-}
+/// The most bytes of text printed since the last input a pane keeps for
+/// waits, about as much as history keeps; past it, nothing more is recorded
+/// until the next input, and a wait reads the lines changed since as they
+/// read now, said to be all it has.
+pub const PRINTS_BYTES: usize = 1 << 20;
+/// What a printed run costs to keep beside its text, against
+/// [`PRINTS_BYTES`]: its row, columns, place in the text, echo and change.
+const RUN_COST: usize = 64;
 
 pub struct Pane {
     pub id: PaneId,
@@ -574,19 +497,45 @@ pub struct Pane {
     /// The text the program last put on the clipboard (OSC 52) since the
     /// session last looked, which copies it (`Session::copied`).
     pub copied: Option<String>,
-    paced: Paced,
-    /// A digest of what the screen shows (`digest`), and since when it
-    /// has: a program that redraws the same screen has not changed it.
-    shown: u64,
+    pace: Pace,
+    /// The screen as it was last seen to change (a mark of it, and the
+    /// cursor), and since when it has shown so: a program that redraws
+    /// the same screen changes no row, and has not changed it.
+    shown: (fux_vt::Mark, (u16, u16)),
     pub changed_at: Instant,
     /// When input last went to the program, if any has: it is busy with
     /// it at first, even while still blocked reading (the kernel has yet
     /// to wake it).
     pub written_at: Option<Instant>,
-    /// How the pane stood when input last went in, or its program
-    /// started: a wait counts what changed since, so it never starts too
-    /// late nor takes what was already there.
-    pub input_from: InputFrom,
+    /// What happened in it, in order (`crate::log`).
+    pub record: crate::log::Log,
+    /// Where the last action's input began (or the program started):
+    /// what came since is what it brought.
+    pub since: crate::log::Seq,
+    /// Then: how many shell commands had ended, and whether the full
+    /// screen was in use.
+    pub since_was: (u64, bool),
+    /// What was printed since then, and its bytes; whether some was let
+    /// go past [`PRINTS_BYTES`].
+    pub prints: Vec<Printed>,
+    printed: usize,
+    pub prints_lost: bool,
+    /// The screen's rows as they read then, by row: a line printed again
+    /// to read as it did brings nothing new.
+    pub before: std::collections::HashMap<fux_vt::RowId, Cells>,
+    /// The rows printed on since then, as they read after the last piece
+    /// that printed on them: what the next piece finds there.
+    seen: std::collections::HashMap<fux_vt::RowId, Cells>,
+    /// Where each row of the screen was then and what it showed
+    /// ([`shows`]): a row drawn again to show as it did is no change.
+    pub before_shows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
+    /// What each row showed as the screen was last seen to change.
+    shown_rows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
+    /// Where each piece of output came from (`crate::classify`).
+    classes: crate::classify::Classes,
+    /// The nonce its shell's marks carry, if fux marked its shell: then
+    /// they are the authority on what it reads and runs.
+    pub nonce: Option<String>,
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,
@@ -601,30 +550,41 @@ pub struct Pane {
     pub log: Option<std::fs::File>,
 }
 
-/// How long a piece of input that must be read alone (`Paced`) is given
-/// before the next: longer than a program waits to tell a lone Escape from
-/// one that begins a sequence, and than a burst of input it takes as a
-/// paste, as typing would leave.
+/// How long a piece of input is given before the next is written, if
+/// the program was not reading as it went in: longer than a program waits
+/// to tell a lone Escape from one that begins a sequence, and than a burst
+/// of input it takes as a paste, as typing would leave.
 pub const PACE: Duration = Duration::from_millis(30);
+/// How long a piece of input is given at most for a program that was
+/// reading to take it: ncurses waits a second for an Escape's sequence to
+/// go on.
+pub const TAKE: Duration = Duration::from_secs(1);
+/// How often a program is asked whether it took a piece of input.
+const POLL: Duration = Duration::from_millis(2);
+/// How long after a piece is written the program may be taken to have it
+/// without drawing anything: the kernel hands it on within that.
+const FLOOR: Duration = Duration::from_millis(2);
 
-/// Input that `send-keys` sends in pieces a program must read apart: a lone
-/// Escape, read with what follows, is Alt and that key; text and the key
-/// after it, read together, are a paste whose Enter is a newline. Each piece
-/// is followed by a gap of [`PACE`] before the next is written.
+/// Input written a piece at a time (`crate::log::Unit`), each once the
+/// program took the one before (it reads its terminal again, every key
+/// read and its output read by fux), or once its time is up: so each
+/// piece of output follows the input it answers (`crate::classify`).
 #[derive(Default)]
-pub struct Paced {
-    /// Pieces waiting for the gap.
-    waiting: VecDeque<Vec<u8>>,
-    /// Until when the last piece written is given.
+pub struct Pace {
+    /// Pieces waiting to be written.
+    waiting: VecDeque<(Vec<u8>, crate::log::Unit)>,
+    /// When the last piece was written, until when it is given, and
+    /// whether it was a lone Escape, which a program must surely have
+    /// taken alone before the next piece.
+    /// Whether what follows it is told exactly, needing no pace: the
+    /// kernel's echo of it known, or a full-screen program's screen.
+    written: Option<(Instant, Instant, bool, bool)>,
+    /// Until when the next piece waits for output the program wrote before
+    /// it to be read: output that pours on goes on being written then.
+    drained_by: Option<Instant>,
+    /// When to look again.
     until: Option<Instant>,
-    /// A lone Escape written: the next piece waits, until this at most,
-    /// for its program to take it alone (its timer for a sequence run out).
-    escape_by: Option<Instant>,
 }
-
-/// How long the key after a lone Escape waits at most for the program to
-/// take the Escape alone: ncurses waits a second for a sequence to go on.
-pub const ESCAPE: Duration = Duration::from_secs(1);
 
 /// After the shell's output has been quiet this long, it is taken to be
 /// waiting at its prompt. Output within one burst -- a prompt drawn in
@@ -680,14 +640,16 @@ impl Pane {
         size: fux_vt::Size,
         history: usize,
     ) -> Result<Pane, Error> {
-        let parser = fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
-            Error::Terminal {
-                size,
-                history,
-                source,
-            }
-        })?;
-        let input_from = InputFrom::new(parser.screen(), &[], 0);
+        let parser = recording(
+            fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    size,
+                    history,
+                    source,
+                }
+            })?,
+        );
+        let mark = parser.screen().mark();
         Ok(Pane {
             id,
             name,
@@ -700,11 +662,22 @@ impl Pane {
             colours: crate::outer::Colours::default(),
             bell: false,
             copied: None,
-            paced: Paced::default(),
-            shown: 0,
+            pace: Pace::default(),
+            shown: (mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
-            input_from,
+            record: crate::log::Log::default(),
+            since: crate::log::Seq::default(),
+            since_was: (0, false),
+            prints: Vec::new(),
+            printed: 0,
+            prints_lost: false,
+            before: std::collections::HashMap::new(),
+            seen: std::collections::HashMap::new(),
+            before_shows: std::collections::HashMap::new(),
+            shown_rows: std::collections::HashMap::new(),
+            classes: crate::classify::Classes::default(),
+            nonce: None,
             revision: 0,
             starts: 0,
             mouse_held: None,
@@ -778,44 +751,127 @@ impl Pane {
     }
 
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`.
-    /// Returns how many bytes were read if it stopped. Until an alert since
-    /// the last input is placed (`Alerts::at`), they are read up to each
-    /// byte that may end one (BEL, ST's `\`) at a time, so that the screen
-    /// as it was then places it.
+    /// Returns how many bytes were read if it stopped. They are read a
+    /// piece at a time, each ending at a bell or a shell mark, so that
+    /// each of those has its place among the pieces; each piece is told
+    /// (`crate::classify`), numbered as the screen took it, and recorded.
     fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
+        let now = Instant::now();
         let mut done = 0usize;
         let begun = loop {
             let rest = bytes.get(done..).unwrap_or_default();
-            let ends = |at: usize, b: &u8| {
-                *b == 0x07
-                    || (*b == b'\\' && at.checked_sub(1).and_then(|i| rest.get(i)) == Some(&0x1b))
-            };
-            let piece = match self.alerts.at {
-                Some(_) => rest.len(),
-                None => (rest.iter().enumerate())
-                    .position(|(at, b)| ends(at, b))
-                    .map_or(rest.len(), |at| at.saturating_add(1)),
-            };
-            let alerts = self.alerts.count();
-            let begun = self.parse(rest.get(..piece).unwrap_or_default(), until_frame);
-            if self.alerts.count() != alerts && self.alerts.at.is_none() {
-                let screen = self.parser.screen();
-                self.alerts.at = Some(Rung {
-                    count: alerts.saturating_add(1),
-                    mark: screen.mark(),
-                    lines: crate::wait::shown(screen).0,
-                });
+            let marked = self.nonce.is_some();
+            let piece = rest.get(..cut(rest, marked)).unwrap_or_default();
+            let runs = (self.classes).classify(self.parser.screen(), marked, piece, now);
+            let mut start = 0usize;
+            let mut begun = None;
+            for (end, origin) in runs {
+                let run = piece.get(start..end).unwrap_or_default();
+                if let Some(taken) = self.record(run, origin, until_frame, now) {
+                    begun = Some(done.saturating_add(start).saturating_add(taken));
+                    break;
+                }
+                start = end;
             }
-            done = done.saturating_add(piece);
-            if begun.is_some() || done >= bytes.len() {
-                break begun.map(|taken| done.saturating_sub(piece).saturating_add(taken));
+            done = done.saturating_add(piece.len());
+            if begun.is_some() || done >= bytes.len() || piece.is_empty() {
+                break begun;
             }
         };
         self.input.heard(Instant::now);
         begun
     }
 
-    /// Gives `bytes` to the screen, as `feed` does, alerts aside.
+    /// Gives `run`, which came from `origin`, to the screen, as `feed`
+    /// does, and records it: its number, what it printed, the rows it let
+    /// go, a bell it rang.
+    fn record(
+        &mut self,
+        run: &[u8],
+        origin: crate::log::Origin,
+        until_frame: bool,
+        now: Instant,
+    ) -> Option<usize> {
+        if run.is_empty() {
+            return None;
+        }
+        // Text typed ahead may be drawn again by a line editor reading it,
+        // as things stand before the run: a shell fux marks at its prompt,
+        // as they say; another program, with the terminal raw.
+        let reads = self.classes.ahead()
+            && match self.nonce {
+                Some(_) => self.at_prompt(),
+                None => (self.process.child())
+                    .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
+                    .is_some_and(|t| !t.line_mode()),
+            };
+        let bells = self.alerts.count();
+        let begun = self.parse(run, until_frame);
+        let seq = crate::log::Seq(self.screen().version());
+        let prints = self.parser.take_prints();
+        // A run costs its text and its place, though it printed nothing (a
+        // row moved): output that only moves rows reaches the limit too.
+        let runs = prints.iter().count().saturating_mul(RUN_COST);
+        self.printed = self
+            .printed
+            .saturating_add(prints.len())
+            .saturating_add(runs);
+        match (prints.is_empty(), self.printed > PRINTS_BYTES) {
+            (true, _) => {}
+            (false, true) => {
+                self.prints_lost = true;
+                self.parser.record_prints(false);
+            }
+            (false, false) => {
+                let screen = self.parser.screen();
+                let echo = (prints.iter())
+                    .map(|print| {
+                        let line = || first_row(screen, print.row).unwrap_or(print.row);
+                        self.classes.echo(origin, &print, line, reads)
+                    })
+                    .collect();
+                let held =
+                    |p: &fux_vt::Print<'_>| self.seen.get(&p.row).or(self.before.get(&p.row));
+                let fresh = (prints.iter().zip(&echo))
+                    .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
+                        let echo = *e != crate::classify::Echo::Not;
+                        held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
+                    })
+                    .collect();
+                // Only a row on the screen can be printed on again: one gone
+                // into history is not looked for there.
+                let window = screen.window();
+                let rows: std::collections::HashMap<_, _> = (0..window.rows())
+                    .filter_map(|y| window.row(y))
+                    .map(|row| (row.id(), row))
+                    .collect();
+                for print in prints.iter() {
+                    if let Some(row) = rows.get(&print.row) {
+                        self.seen.insert(print.row, row_cells(row));
+                    }
+                }
+                self.prints.push(Printed {
+                    seq: crate::log::OutputSeq(seq),
+                    prints,
+                    echo,
+                    fresh,
+                });
+            }
+        }
+        let taken = begun.map_or(run, |t| run.get(..t).unwrap_or_default());
+        let event = crate::log::Event::Output {
+            origin,
+            bytes: taken.into(),
+        };
+        self.record.push(seq, now, event);
+        if self.alerts.count() != bells {
+            let bell = crate::log::Seq(self.parser.tick());
+            self.record.push(bell, now, crate::log::Event::Bell);
+        }
+        begun
+    }
+
+    /// Gives `bytes` to the screen, as `feed` does.
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
         let mut sink = Sink {
             replies: Vec::new(),
@@ -886,6 +942,10 @@ impl Pane {
         }
         self.release_frame();
         if self.parser.resize(size).is_ok() {
+            // The number the resize gave every row it kept.
+            let seq = crate::log::Seq(self.screen().version());
+            self.record
+                .push(seq, Instant::now(), crate::log::Event::Resize(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -914,96 +974,184 @@ impl Pane {
         self.parser.screen()
     }
 
-    /// Notes how the pane stands as `inputs` go in (`input_from`): a wait
-    /// after them counts what comes since, and knows their echo.
-    pub fn note_input(&mut self, inputs: &[crate::command::Input]) {
-        let ahead = crate::ready::state(self, Instant::now()) == crate::ready::State::Busy;
-        let mut from = InputFrom::new(self.screen(), inputs, self.alerts.count());
-        self.alerts.at = None;
-        // Keys that go on with a line typed before on its row, not ended:
-        // their echo is that line as they edit it (BSpace, C-w, C-u too),
-        // after the prompt it had then.
-        let old = &self.input_from;
-        if !inputs.is_empty()
-            && !old.typed.is_empty()
-            && old.cursor == from.cursor
-            && from.before.starts_with(&old.before)
-        {
-            let typed: Vec<crate::command::Input> =
-                old.typed.iter().chain(inputs).cloned().collect();
-            (from.echo, from.recalled) = crate::command::typed_lines(&typed);
-            if crate::command::line_open(&typed) {
-                from.typed = typed;
-            }
-            from.before.clone_from(&old.before);
-        }
-        let prompt = match ahead {
-            true => std::mem::take(&mut self.input_from.prompt),
-            false => from.before.trim_end().to_owned(),
-        };
-        self.input_from = InputFrom {
-            ahead,
-            prompt,
-            ..from
-        };
+    /// Makes the pane's shell marks count only with `nonce` (`None`:
+    /// fux marked no shell in it, and they carry no authority).
+    pub fn mark_with(&mut self, nonce: Option<String>) {
+        self.parser
+            .require_mark_nonce(nonce.as_deref().map(str::as_bytes));
+        self.nonce = nonce;
     }
 
-    /// The name the bar shows: the program's title, else the pane's name.
-    /// Sends `pieces` of input in order, each read by the program apart
-    /// (`Paced`): the first at once if no gap holds it, the rest as the gaps
-    /// end ([`Pane::pace_due`]). Refused whole, as `InputQueue::push`
-    /// refuses, if they would not fit.
-    pub fn send(&mut self, pieces: Vec<Vec<u8>>, now: Instant) -> Result<(), Error> {
-        let held: usize = self.paced.waiting.iter().map(Vec::len).sum();
-        let total = pieces
+    /// An action's input begins: what comes after is what it brought,
+    /// and what was printed before is forgotten.
+    pub fn note_input(&mut self) {
+        self.since = crate::log::Seq(self.parser.tick());
+        let screen = self.parser.screen();
+        self.since_was = (
+            screen.commands().finished,
+            screen.mode(fux_vt::Mode::AlternateScreen),
+        );
+        self.record
+            .push(self.since, Instant::now(), crate::log::Event::Action);
+        self.prints.clear();
+        self.printed = 0;
+        self.prints_lost = false;
+        self.parser.record_prints(true);
+        self.before = rows_now(self.screen());
+        let window = self.screen().window();
+        self.before_shows = (0..window.rows())
+            .filter_map(|y| window.row(y).map(|row| (row.id(), (y, shows(&row)))))
+            .collect();
+        self.shown_rows.clone_from(&self.before_shows);
+        self.seen.clear();
+    }
+
+    /// Sends `units` of input in order, each written once the program took
+    /// the one before (`Pace`): the first at once if none is waiting, the
+    /// rest as the program takes them ([`Pane::pace_due`]). Refused whole,
+    /// as `InputQueue::push` refuses, if they would not fit.
+    pub fn send(
+        &mut self,
+        units: Vec<(Vec<u8>, crate::log::Unit)>,
+        now: Instant,
+    ) -> Result<(), Error> {
+        let held: usize = self.pace.waiting.iter().map(|(b, _)| b.len()).sum();
+        let total = units
             .iter()
-            .map(Vec::len)
+            .map(|(b, _)| b.len())
             .fold(held, usize::saturating_add);
         if total > self.input.room() {
             return Err(Error::NotReading);
         }
-        self.paced.waiting.extend(pieces);
+        self.pace.waiting.extend(units);
         self.release_paced(now);
         Ok(())
     }
 
-    /// When paced input waits for its gap to end.
+    /// When paced input is to be looked at again.
     pub fn pace_due(&self) -> Option<Instant> {
-        self.paced.until.filter(|_| !self.paced.waiting.is_empty())
+        self.pace.until.filter(|_| !self.pace.waiting.is_empty())
     }
 
-    /// Writes the next paced piece if its gap has ended at `now`.
+    /// Writes the next piece of paced input if the program took the last
+    /// one by `now`, or its time is up.
     pub fn release_paced(&mut self, now: Instant) {
-        if self.paced.until.is_some_and(|until| until > now) {
+        if self.pace.until.is_some_and(|until| until > now) {
             return;
         }
-        // After a lone Escape, the next waits for the program to have
-        // taken it alone: back to reading, with no time limit.
-        if let Some(by) = self.paced.escape_by
-            && !self.paced.waiting.is_empty()
-        {
-            let took = match &self.process {
-                Process::Reading(child) => {
-                    crate::ready::took_keys(child, self.since_key(now), self.answered())
-                }
-                Process::Absent | Process::HungUp(_) | Process::Exited(_) => true,
+        while !self.pace.waiting.is_empty() {
+            let exact = self.pace.written.is_some_and(|(_, _, _, exact)| exact);
+            // A lone Escape is taken alone, wherever: one with keys after it
+            // reads as another key.
+            let held = (self.pace.written).is_some_and(|(at, limit, escape, _)| {
+                (escape || !exact) && now < limit && !self.taken(at, now, escape)
+            });
+            // Output the program wrote before now came before this piece:
+            // it is read first (unless it pours on for a while), so that
+            // nothing it printed is told as following the piece.
+            let unread = !exact
+                && (self.process.child())
+                    .is_some_and(|c| fuxix::io::unread(&c.master).unwrap_or(0) > 0);
+            let draining = !held
+                && unread
+                && now < *(self.pace.drained_by).get_or_insert(crate::after(now, TAKE));
+            if held || draining {
+                self.pace.until = Some(crate::after(now, POLL));
+                return;
+            }
+            self.pace.drained_by = None;
+            let Some((bytes, unit)) = self.pace.waiting.pop_front() else {
+                return;
             };
-            if !took && now < by {
-                self.paced.until = Some(crate::after(now, PACE));
+            // Paced where nothing exact tells what follows the piece. (A
+            // shell fux marks draws the line typed before Enter as it reads
+            // it, where nothing marks it apart from what follows: paced.)
+            if !self.write_unit(bytes, unit, now) {
                 return;
             }
         }
-        self.paced.escape_by = None;
-        match self.paced.waiting.pop_front() {
-            Some(piece) => {
-                let _ = self.input.push(&piece);
-                self.paced.until = Some(crate::after(now, PACE));
-                if piece == b"\x1b" {
-                    self.paced.escape_by = Some(crate::after(now, ESCAPE));
-                }
+    }
+
+    /// Whether rows of the main screen written since the last input were
+    /// let go (past history's limit, or out of a scroll region): what came
+    /// since is not all on the screen or in history. What they printed is
+    /// kept in `prints`.
+    pub fn cut(&self) -> bool {
+        self.screen().let_go() > self.since.0
+    }
+
+    /// The text typed on the line since a key last submitted one.
+    pub fn typed(&self) -> &str {
+        self.classes.typed()
+    }
+
+    /// Whether the pane's shell, marked by fux, is at its prompt, reading
+    /// its command line, as its marks say.
+    fn at_prompt(&self) -> bool {
+        let commands = self.screen().commands();
+        commands.prompt && !commands.running
+    }
+
+    /// Whether the program took the input written at `at`, by `now`: every
+    /// byte written and read, its output read by fux, and it reads its
+    /// terminal again.
+    fn taken(&self, at: Instant, now: Instant, escape: bool) -> bool {
+        let Process::Reading(child) = &self.process else {
+            return true;
+        };
+        let drawn = self.changed_at > at || now >= crate::after(at, FLOOR);
+        self.input.is_empty()
+            && drawn
+            && fuxix::io::unread(&child.master).unwrap_or(0) == 0
+            && crate::ready::took_keys(child, (self.since_key(now), self.answered()), escape)
+    }
+
+    /// Writes a piece of input, `unit` its kind, and records it: its
+    /// number, the terminal's modes then, the line the cursor is on.
+    /// Whether what follows it is told exactly, needing no pace.
+    fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) -> bool {
+        let escape = bytes == b"\x1b";
+        let child = self.process.child();
+        let keys = (self.since_key(now), self.answered());
+        let reading = child.is_some_and(|child| {
+            self.input.is_empty() && crate::ready::took_keys(child, keys, false)
+        });
+        // Typed ahead: a shell fux marks says whether it reads its line.
+        // Another program's line typed ahead ends at Enter: what it draws
+        // after is output (`docs/agents.md`, what fux cannot tell).
+        let ahead = match self.nonce {
+            Some(_) => !self.at_prompt(),
+            None => {
+                unit == crate::log::Unit::Edit
+                    && !child.is_some_and(|child| crate::ready::reads_keys(child, keys))
             }
-            None => self.paced.until = None,
+        };
+        let modes = child
+            .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
+            .map(|t| t.modes());
+        let seq = crate::log::InputSeq(crate::log::Seq(self.parser.tick()));
+        if unit == crate::log::Unit::Submit {
+            self.parser.note_submit();
         }
+        let line = cursor_line(self.screen());
+        let input = crate::classify::Input {
+            seq,
+            unit,
+            line,
+            ahead,
+        };
+        let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
+            || self.screen().mode(fux_vt::Mode::AlternateScreen);
+        let _ = self.input.push(&bytes);
+        let event = crate::log::Event::Input {
+            unit,
+            bytes: bytes.into(),
+        };
+        self.record.push(seq.0, now, event);
+        let gap = if reading { TAKE } else { PACE };
+        self.pace.written = Some((now, crate::after(now, gap), escape, exact));
+        self.pace.until = Some(crate::after(now, if reading { POLL } else { PACE }));
+        exact
     }
 
     /// Starts `launch` in the pane again as `process`, on a screen as new,
@@ -1015,14 +1163,16 @@ impl Pane {
         history: usize,
     ) -> Result<Process, Error> {
         let size = self.size();
-        let parser = fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
-            Error::Terminal {
-                size,
-                history,
-                source,
-            }
-        })?;
-        self.parser = parser;
+        let mut parser =
+            fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    size,
+                    history,
+                    source,
+                }
+            })?;
+        parser.require_mark_nonce(self.nonce.as_deref().map(str::as_bytes));
+        self.parser = recording(parser);
         // Named after its program, unless renamed.
         let named = |launch: &Launch| {
             launch.argv.first().map_or_else(String::new, |p| {
@@ -1044,9 +1194,11 @@ impl Pane {
         self.mouse_held = None;
         self.changed_at = Instant::now();
         self.written_at = None;
-        // A new program: a wait counts from its start, not the last input
-        // to the one before.
-        self.input_from = InputFrom::new(self.screen(), &[], 0);
+        // A new program, its own record: a wait counts from its start.
+        self.record = crate::log::Log::default();
+        self.classes = crate::classify::Classes::default();
+        self.pace = Pace::default();
+        self.note_input();
         Ok(std::mem::replace(
             &mut self.process,
             process.unwrap_or(Process::Absent),
@@ -1056,9 +1208,31 @@ impl Pane {
     /// Notes, after the screen was read into at `now`, whether what it
     /// shows changed.
     pub fn note_change(&mut self, now: Instant) {
-        let shown = digest(self.screen());
-        if shown != self.shown {
-            self.shown = shown;
+        let screen = self.parser.screen();
+        let cursor = screen.cursor_position();
+        // Rows written to that show as they did change nothing.
+        let mut changed = cursor != self.shown.1;
+        // Once a change is seen, the other rows are not read: they show
+        // anew when next written (an action's start reads them all again).
+        for (y, row) in screen.dirty_live_rows_since(self.shown.0) {
+            if changed {
+                self.shown_rows.remove(&row.id());
+                continue;
+            }
+            let now_shows = (y, shows(&row));
+            changed |= self.shown_rows.insert(row.id(), now_shows) != Some(now_shows);
+        }
+        let rows = usize::from(screen.size().rows());
+        if self.shown_rows.len() > rows.saturating_mul(4) {
+            let window = screen.window();
+            let live: std::collections::HashSet<_> = (0..window.rows())
+                .filter_map(|y| window.row(y))
+                .map(|r| r.id())
+                .collect();
+            self.shown_rows.retain(|id, _| live.contains(id));
+        }
+        self.shown = (screen.mark(), cursor);
+        if changed {
             self.changed_at = now;
             self.revision = self.revision.wrapping_add(1);
         }
@@ -1066,13 +1240,18 @@ impl Pane {
 
     /// How many bytes of input sent the program has not read yet.
     pub fn input_queued(&self) -> usize {
-        let paced: usize = self.paced.waiting.iter().map(Vec::len).sum();
+        let paced: usize = self.pace.waiting.iter().map(|(b, _)| b.len()).sum();
         paced.saturating_add(self.input.len())
+    }
+
+    /// Whether pacing still holds keys back from a running program.
+    pub fn holds_keys(&self) -> bool {
+        !self.pace.waiting.is_empty() && self.process.child().is_some()
     }
 
     /// Whether every piece of input sent has been written to the program.
     pub fn input_written(&self) -> bool {
-        self.paced.waiting.is_empty() && self.input.is_empty()
+        self.pace.waiting.is_empty() && self.input.is_empty()
     }
 
     pub fn label(&self) -> &str {
@@ -1081,6 +1260,170 @@ impl Pane {
             title => title,
         }
     }
+}
+
+/// Where the first piece of `bytes` that `Pane::feed` reads alone ends:
+/// just after a bell (BEL, or a run of them, as a terminal whose line is
+/// full rings one for each key it drops), or, if `marks`, after a shell
+/// mark (OSC 133, which fux's shells end with BEL); else [`PIECE`] bytes
+/// at most. A BEL that ends another OSC (a title) is no bell. Only BEL is
+/// searched for, output seldom holding one; and no further than a piece's
+/// length, as the parser may stop sooner (a frame drawn in synchronized
+/// output begins), and what follows is read again from there.
+const PIECE: usize = 4096;
+
+/// Where the first piece of `bytes` that `Pane::feed` reads alone ends.
+fn cut(bytes: &[u8], marks: bool) -> usize {
+    let bytes = bytes.get(..PIECE).unwrap_or(bytes);
+    let mut from = 0usize;
+    while let Some(at) = (bytes.get(from..).unwrap_or_default().iter())
+        .position(|b| *b == 0x07)
+        .map(|i| from.saturating_add(i))
+    {
+        let next = at.saturating_add(1);
+        // An OSC holds no BEL: one this BEL ends began since the last.
+        match osc_before(bytes.get(from..at).unwrap_or_default()) {
+            // An OSC's end: a shell mark's, read alone; else a title's.
+            Some(start) => {
+                let start = from.saturating_add(start);
+                let mark = bytes
+                    .get(start..)
+                    .is_some_and(|o| o.starts_with(b"\x1b]133;"));
+                if marks && mark {
+                    return next;
+                }
+                from = next;
+            }
+            None => {
+                let run = bytes.get(at..).unwrap_or_default();
+                return at.saturating_add(run.iter().take_while(|b| **b == 0x07).count());
+            }
+        }
+    }
+    bytes.len()
+}
+
+/// Where the OSC that `before`, which holds no BEL, ends inside began, if
+/// it ends inside one (`ESC ]`, and no ST after it).
+fn osc_before(before: &[u8]) -> Option<usize> {
+    let mut end = before.len();
+    loop {
+        let at = before.get(..end)?.iter().rposition(|b| *b == b']')?;
+        let start = at.checked_sub(1)?;
+        if before.get(start) == Some(&0x1b) {
+            // Ended since, by ST.
+            let rest = before.get(at..).unwrap_or_default();
+            let st = (rest.iter().zip(rest.iter().skip(1))).any(|(a, b)| (*a, *b) == (0x1b, b'\\'));
+            return (!st).then_some(start);
+        }
+        end = at;
+    }
+}
+
+/// A row's cells as they read: its text, a blank or placeholder a space,
+/// and where in it each column starts (a wide character's second cell
+/// where the next starts).
+#[derive(Clone, Debug, Default)]
+pub struct Cells {
+    text: String,
+    at: Vec<usize>,
+}
+
+/// The cells of `row`.
+pub fn row_cells(row: &fux_vt::Row<'_>) -> Cells {
+    let mut cells = Cells::default();
+    for c in row.cells() {
+        cells.at.push(cells.text.len());
+        match c.contents() {
+            _ if c.is_wide_continuation() => {}
+            text if c.has_contents() && text != fux_vt::PLACEHOLDER => cells.text.push_str(text),
+            _ => cells.text.push(' '),
+        }
+    }
+    cells
+}
+
+/// The text of `row`'s cells from column `col` on.
+fn text_from(row: &Cells, col: u16) -> &str {
+    let at = row
+        .at
+        .get(usize::from(col))
+        .copied()
+        .unwrap_or(row.text.len());
+    row.text.get(at..).unwrap_or_default()
+}
+
+/// Whether `row`, a row's cells, holds what `print` printed at its
+/// columns, a wide character's two cells as one.
+pub fn holds_at(row: &Cells, print: &fux_vt::Print<'_>) -> bool {
+    text_from(row, print.cols.0).starts_with(print.text)
+}
+
+/// The characters of `print` that change `row` (its cells just before):
+/// none if it printed what was there; else, of a run that may be the echo
+/// of the line typed (a line editor drawing it again, its prompt and all),
+/// those from the first that differs from what stood in its cell to the
+/// last; of other output, all of it (its row may have been erased since).
+pub fn changed(row: &Cells, print: &fux_vt::Print<'_>, echo: bool) -> (usize, usize) {
+    let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
+    let text: Vec<char> = print.text.chars().collect();
+    if !echo {
+        return match holds_at(row, print) {
+            true => (0, 0),
+            false => (0, text.len()),
+        };
+    }
+    let same = |i: &usize| text.get(*i) == there.get(*i);
+    let first = (0..text.len()).find(|i| !same(i));
+    let last = (0..text.len()).rev().find(|i| !same(i));
+    match (first, last) {
+        (Some(first), Some(last)) => (first, last.saturating_add(1)),
+        _ => (0, 0),
+    }
+}
+
+/// What `row` shows, its text and colours, as one number.
+pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for cell in row.cells() {
+        cell.contents().hash(&mut hasher);
+        cell.attributes().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// The screen's rows as they read now, by row.
+pub fn rows_now(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, Cells> {
+    let window = screen.window();
+    (0..window.rows())
+        .filter_map(|y| window.row(y))
+        .map(|row| (row.id(), row_cells(&row)))
+        .collect()
+}
+
+/// The first row of the line the cursor is on (a line wider than the
+/// screen wraps from rows above).
+fn cursor_line(screen: &fux_vt::Screen) -> Option<fux_vt::RowId> {
+    first_row(
+        screen,
+        screen.window().row(screen.cursor_position().0)?.id(),
+    )
+}
+
+/// The first row of the line row `id` is on, if it is kept.
+pub fn first_row(screen: &fux_vt::Screen, id: fux_vt::RowId) -> Option<fux_vt::RowId> {
+    let mut row = screen.row_by_id(id)?;
+    while let Some(up) = row.above().filter(fux_vt::Row::wrapped) {
+        row = up;
+    }
+    Some(row.id())
+}
+
+/// `parser`, recording what it prints, as a pane's does (`Pane::record`).
+fn recording(mut parser: fux_vt::Parser) -> fux_vt::Parser {
+    parser.record_prints(true);
+    parser
 }
 
 #[cfg(test)]
@@ -1227,6 +1570,19 @@ mod tests {
         )
     }
 
+    /// Output that only moves rows (insert line, over and over) still
+    /// reaches the limit of what is kept for waits, and stops being kept.
+    #[test]
+    fn rows_moved_alone_count_against_what_is_kept() -> Result<(), Error> {
+        let mut pane = pane(24, 80)?;
+        pane.note_input();
+        for _ in 0..40_000 {
+            pane.output(b"\x1b[H\x1b[L");
+        }
+        assert!(pane.prints_lost, "{} kept", pane.printed);
+        Ok(())
+    }
+
     /// A frame drawn in synchronized output reaches the screen whole, when
     /// it ends, however its bytes are split across reads: the BSU, the
     /// frame and the ESU each in pieces, and several frames in one read.
@@ -1362,6 +1718,52 @@ mod tests {
             fux_vt::Color::Rgb([255, 0, 0].into())
         );
         Ok(())
+    }
+
+    /// A pane's log replays: its output and resizes, read again into a new
+    /// screen in order, make the same screen, history and all.
+    #[test]
+    fn a_panes_log_replays_its_screen() -> Result<(), Error> {
+        let mut p = pane(4, 12)?;
+        p.output(b"one\r\ntwo \x1b[1mbold\x1b[0m wraps on\x07\r\n");
+        p.resize(size(3, 8));
+        p.output(b"three\r\n\x1b]0;title\x07four");
+        let mut again =
+            fux_vt::Parser::with_options(size(4, 12), 10, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    size: size(4, 12),
+                    history: 10,
+                    source,
+                }
+            })?;
+        assert!(p.record.complete());
+        for entry in p.record.whole() {
+            match &entry.event {
+                crate::log::Event::Output { bytes, .. } => {
+                    let _ = again.process(bytes);
+                }
+                crate::log::Event::Resize(size) => {
+                    let _ = again.resize(*size);
+                }
+                crate::log::Event::Input { .. }
+                | crate::log::Event::Action
+                | crate::log::Event::Bell => {}
+            }
+        }
+        let rows = |s: &fux_vt::Screen| s.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
+        assert_eq!(rows(again.screen()), rows(p.screen()));
+        Ok(())
+    }
+
+    /// Output is read in pieces that end at a bell, or a run of bells, or
+    /// a shell mark; a BEL that ends a title is no bell.
+    #[test]
+    fn pieces_end_at_bells_and_shell_marks() {
+        assert_eq!(super::cut(b"\x1b]0;title\x07text\x07more", true), 15);
+        assert_eq!(super::cut(b"a\x07\x07\x07b", false), 4);
+        assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", true), 17);
+        assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", false), 19);
+        assert_eq!(super::cut(b"plain", true), 5);
     }
 
     #[test]

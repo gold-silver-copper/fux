@@ -442,76 +442,53 @@ fn sibling(word: &str, value: &Value<Fux>) -> Result<Sibling, Failure> {
     }
 }
 
-/// Options a word would leave unused, refused rather than ignored: a
-/// program for words that start a shell, a typed line for `run`, a tab's
-/// name, size or log for `split`, a wait for words that do not wait, what
-/// starts a program for words that start none, a view of the screen for
-/// `wait`.
-fn ignored(word: &str, built: &Opts) -> Result<(), Failure> {
-    let refuse = |what: &str, instead: &str| {
-        Err(fail("unused", format!("{word} takes no {what}: {instead}")))
+/// Options a word would leave unused, refused rather than ignored: it
+/// takes those `help` lists for it.
+fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
+    let takes = |o: &str| crate::help::options(word).is_some_and(|mut t| t.any(|t| t == o));
+    let Some(option) = built.given.iter().find(|o| !takes(o)) else {
+        return Ok(());
     };
-    let starts = built.name.is_some()
-        || built.size.is_some()
-        || built.cwd.is_some()
-        || !built.env.is_empty()
-        || !built.argv.is_empty()
-        || built.typed.is_some()
-        || built.axis.is_some()
-        || built.place.is_some()
-        || !built.ids.is_empty()
-        || built.log.is_some()
-        || built.kill;
-    // `marks` goes on what a wait prints too.
-    let viewed = built.history.is_some()
-        || built.json
-        || built.view
-            != (crate::command::CaptureView {
-                marks: built.view.marks,
-                ..Default::default()
-            });
-    match word {
-        "capture" if !built.waits.until.is_empty() => refuse(
-            "wait",
-            "it reads at once; PANE opts … wait, then PANE opts capture",
-        ),
-        "capture" | "wait" if starts => refuse(
-            "program, name, size, place or the like",
-            "they go on what starts a pane: run, split, new-tab, respawn",
-        ),
-        "wait" if viewed => refuse(
-            "capture view",
-            "a wait prints the screen as it is; PANE opts … capture reads a view, and json goes after wait",
-        ),
-        "new-tab" | "new-workspace" if !built.argv.is_empty() => refuse(
-            "program",
-            "it starts a shell; run starts a program, or `str LINE typed` types one",
-        ),
-        "new-tab" | "new-workspace" if !built.waits.until.is_empty() => {
-            refuse("wait", "wait on the pane it leaves: PANE opts … wait")
+    let instead = match *option {
+        "json" => format!("json goes after it: {word} json"),
+        "wait-text" | "wait-gone" | "wait-exit" | "wait-bell" if word == "capture" => {
+            "it reads once the pane settles (within timeout, 10s if not said); \
+             to wait for something first: PANE opts … wait, then PANE opts capture"
+                .to_owned()
         }
-        "run" if built.typed.is_some() => refuse("typed line", "it starts no shell to type into"),
-        "respawn" if built.log.is_some() => refuse(
-            "log",
-            "PANE str FILE start-log keeps what it writes from now on",
-        ),
-        "split" if built.name.is_some() || built.size.is_some() || built.log.is_some() => refuse(
-            "name, size or log",
-            "a pane takes its tab's; name, size and log-to are run's",
-        ),
-        _ => Ok(()),
-    }
+        _ => {
+            let on: Vec<&str> = (crate::help::OPTIONS.iter())
+                .filter(|(_, takes)| takes.split_whitespace().any(|t| t == *option))
+                .map(|(word, _)| *word)
+                .collect();
+            format!("{option} goes on {}", on.join(", "))
+        }
+    };
+    Err(fail(
+        "unused",
+        format!("{word} takes no {option}: {instead}"),
+    ))
+}
+
+/// The options `value` holds, `word` among those given.
+fn option<'a>(word: &'static str, value: &'a mut Value<Fux>) -> Result<&'a mut Opts, Failure> {
+    let built = opts(word, value)?;
+    built.given.push(word);
+    Ok(built)
 }
 
 /// What a word given options, keys or a mouse event changes of them.
 fn with<T>(
-    word: &str,
+    word: &'static str,
     value: Value<Fux>,
     change: impl FnOnce(&mut Waits) -> Result<T, Failure>,
 ) -> Result<Value<Fux>, Failure> {
     let mut value = value;
     let waits = match &mut value {
-        Value::App(Fux::Opts(opts)) => &mut opts.waits,
+        Value::App(Fux::Opts(opts)) => {
+            opts.given.push(word);
+            &mut opts.waits
+        }
         Value::App(Fux::Keys(keys)) => &mut keys.waits,
         Value::App(Fux::Mouse(mouse)) => &mut mouse.waits,
         other @ (Value::Int(_)
@@ -730,13 +707,13 @@ impl fuxth::Host for Host<'_> {
                 if argv.first().is_none_or(|p| p.is_empty()) {
                     return Err(fail("no_program", "an empty command line"));
                 }
-                opts(name, &mut o)?.argv = argv;
+                option(name, &mut o)?.argv = argv;
                 now(out, o)
             }
             "name" | "cwd" | "program" | "arg" | "typed" | "in" | "id" | "log-to" | "history" => {
                 let mut o = next()?;
                 let v = next()?;
-                let built = opts(name, &mut o)?;
+                let built = option(name, &mut o)?;
                 match name {
                     "name" => built.name = Some(string(name, &v)?),
                     "cwd" => built.cwd = Some(string(name, &v)?),
@@ -775,7 +752,7 @@ impl fuxth::Host for Host<'_> {
             "size" => {
                 let mut o = next()?;
                 let size = laid_out(name, &next()?, &next()?)?;
-                opts(name, &mut o)?.size = Some(size);
+                option(name, &mut o)?.size = Some(size);
                 now(out, o)
             }
             "env" => {
@@ -789,7 +766,7 @@ impl fuxth::Host for Host<'_> {
                         ),
                     ));
                 }
-                opts(name, &mut o)?.env.push((key, value));
+                option(name, &mut o)?.env.push((key, value));
                 now(out, o)
             }
             // On a capture's options, and on what a wait prints,
@@ -810,7 +787,7 @@ impl fuxth::Host for Host<'_> {
             "horizontal" | "vertical" | "kill-first" | "all-history" | "joined" | "full"
             | "styles" | "main-screen" | "alt-screen" | "last-output" => {
                 let mut o = next()?;
-                let built = opts(name, &mut o)?;
+                let built = option(name, &mut o)?;
                 match name {
                     "horizontal" => built.axis = Some(Axis::Horizontal),
                     "vertical" => built.axis = Some(Axis::Vertical),
@@ -834,7 +811,7 @@ impl fuxth::Host for Host<'_> {
                         format!("{from} {to}: the first {name} before the last"),
                     ));
                 }
-                let view = &mut opts(name, &mut o)?.view;
+                let view = &mut option(name, &mut o)?.view;
                 match name {
                     "rows" => view.rows = Some((from, to)),
                     _ => view.cols = Some((from, to)),
@@ -844,7 +821,7 @@ impl fuxth::Host for Host<'_> {
             "run" | "new-tab" | "new-workspace" => {
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
-                ignored(name, &built)?;
+                unused(name, &built)?;
                 let typed: Vec<String> = built.typed.into_iter().collect();
                 let command = match name {
                     "run" => {
@@ -893,7 +870,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
-                ignored(name, &built)?;
+                unused(name, &built)?;
                 let run = !built.argv.is_empty();
                 let cmd = if run {
                     built.argv
@@ -919,7 +896,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
-                ignored(name, &built)?;
+                unused(name, &built)?;
                 later(ask(
                     Command::Respawn {
                         target: Some(p),
@@ -983,7 +960,7 @@ impl fuxth::Host for Host<'_> {
                 let p = target(name, &next()?)?.map(WsRef::Id);
                 let mut o = next()?;
                 let built = opts(name, &mut o)?;
-                ignored(name, built)?;
+                unused(name, built)?;
                 later(ask(
                     Command::Wait {
                         targets: vec![p],
@@ -1203,7 +1180,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
-                ignored(name, &built)?;
+                unused(name, &built)?;
                 let then = if built.json {
                     Then::Json("a capture")
                 } else {
@@ -1260,6 +1237,7 @@ impl fuxth::Host for Host<'_> {
                 // capture` is `opts capture json`.
                 Value::App(Fux::Opts(mut opts)) => {
                     opts.json = true;
+                    opts.given.push(name);
                     now(out, Value::App(Fux::Opts(opts)))
                 }
                 Value::App(Fux::Answer(answer)) => match &answer.json {

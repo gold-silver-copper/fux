@@ -1,0 +1,87 @@
+[
+  {
+    "name": "same-row-password",
+    "args": [
+      "--seed",
+      "0",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      60,
+      16
+    ],
+    "steps": [
+      {
+        "keys": "sword",
+        "pause_ms": 60
+      },
+      {
+        "keys": "fish\r",
+        "pause_ms": 70
+      },
+      {
+        "keys": "status\r",
+        "pause_ms": 50
+      },
+      {
+        "keys": ":quit\r",
+        "pause_ms": 600
+      }
+    ]
+  },
+  {
+    "name": "unicode-secret-with-worker",
+    "args": [
+      "--seed",
+      "4",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      28,
+      9
+    ],
+    "steps": [
+      {
+        "keys": "\u5bc6\u7801 e\u0301 \ud83d\ude42",
+        "pause_ms": 320
+      },
+      {
+        "keys": "\r",
+        "pause_ms": 80
+      },
+      {
+        "keys": "reveal\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": ":quit\r",
+        "pause_ms": 600
+      }
+    ]
+  },
+  {
+    "name": "empty-password-typeahead",
+    "args": [
+      "--seed",
+      "9",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      80,
+      24
+    ],
+    "steps": [
+      {
+        "keys": "\r",
+        "pause_ms": 80
+      },
+      {
+        "keys": "one\rtwo\r:quit\r",
+        "pause_ms": 800
+      }
+    ]
+  }
+]

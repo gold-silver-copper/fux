@@ -1,0 +1,13 @@
+{
+  "id": "TD-023",
+  "title": "A password reply on the prompt row, then two gates",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/migrate.py {work}` in a terminal. Wait for the LIVE password prompt, then submit the single line from `{work}/access.txt`. Password input is not echoed; its reply appears on the same row as the prompt. REPLAY and PREVIEW messages are not live prompts. You may restart a failed attempt.\n\nAfter authentication, wait for both live notices `INDEX settled token=<token>` and `MIGRATION stopped status=<status>`, and for `ACK WINDOW OPEN`. At that window submit `ack <token> <status>` using the observed token and status. A displayed preview of the acknowledgement prompt does not open that window; any input during migration is rejected. There is no deadline; the program waits for the password and for the acknowledgement. Wait for the actual CONFIRMED reply, rather than treating an echoed acknowledgement as confirmation.\n\nWrite `{work}/answer.txt` as exactly three lines: `token=<settled token>`, `status=<stopped status as printed>`, `receipt=<CONFIRMED receipt>`, in that order. Every line must end with a newline. Do not include prompts, marker lines, passwords, or other text.",
+  "setup": {
+    "files": {
+      "access.txt": "maple-door-7!\n"
+    }
+  },
+  "note": "Traps: a replay resembles a password prompt; the live password has no echo and the accepted reply continues its row. A background thread emits that reply immediately after Enter. A premature acknowledgement prompt is explicitly labelled PREVIEW; the two required notices arrive separately, and all keys before the actual window are recorded as failure. A bell accompanies the settled notice. The final You said reply repeats the submitted ack and precedes the actual confirmation. The checker validates tty execution, password success, exact acknowledgement, all stages, and independently derived token/status/receipt. Delays exceed a short fixed sleep but readiness is observable, with no hidden deadline."
+}

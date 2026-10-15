@@ -113,6 +113,9 @@ pub struct Opts {
     pub history: Option<usize>,
     /// `json` among the options: the capture is given as JSON.
     pub json: bool,
+    /// The option words given, for the word they go on to refuse any it
+    /// would not use.
+    pub given: Vec<&'static str>,
 }
 
 /// Input, as words give it.

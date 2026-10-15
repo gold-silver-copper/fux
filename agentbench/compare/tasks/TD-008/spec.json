@@ -1,0 +1,13 @@
+{
+  "id": "TD-008",
+  "title": "Vault watch acknowledgement window",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/watch.py {work} in a terminal. Wait for Password: and enter the password the program displays for this run; it is not echoed. Read the session value in the reply on that same row. At WATCH INPUT submit exactly watch READY. Its echo and the program's repeated copy are not the readiness event. Wait for the bell-bearing READY ticket notice, retain its ticket before the row is overwritten, and only then submit ack <observed ticket>. The program rejects any input during startup or arming; it waits indefinitely at its input prompts. After WATCH CLOSED, write {work}/answer.txt with exactly two newline-terminated lines, session=<observed session> and receipt=<observed acknowledgement receipt>, in that order. Include no marker or prompt lines.",
+  "setup": {
+    "files": {
+      "seed.txt": "vault/watch/59\n"
+    }
+  },
+  "note": "Traps: no-echo password reply on the prompt row; the typed watch READY text is repeated verbatim before the actual readiness event; the genuine bell-bearing ticket is erased within one write. The arming interval is longer than a short sleep and every early byte fails the attempt. The checker requires the password, watch and ticket acknowledgement protocol in a tty plus exact seed-derived session and receipt. Earlier failed attempts are allowed."
+}

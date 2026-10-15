@@ -1,0 +1,69 @@
+[
+  {
+    "name": "prefix-replies",
+    "args": [
+      "--seed",
+      "1"
+    ],
+    "size": [
+      80,
+      24
+    ],
+    "steps": [
+      {
+        "keys": "alpha\r",
+        "pause_ms": 120
+      },
+      {
+        "keys": "beta\r",
+        "pause_ms": 120
+      }
+    ]
+  },
+  {
+    "name": "suffix-replies",
+    "args": [
+      "--seed",
+      "7",
+      "--reply",
+      "suffix"
+    ],
+    "size": [
+      36,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "first\rsecond\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": "",
+        "pause_ms": 160
+      }
+    ]
+  },
+  {
+    "name": "exact-replies-and-empty",
+    "args": [
+      "--seed",
+      "19",
+      "--reply",
+      "exact"
+    ],
+    "size": [
+      24,
+      6
+    ],
+    "steps": [
+      {
+        "keys": "same text\r",
+        "pause_ms": 100
+      },
+      {
+        "keys": "\r",
+        "pause_ms": 100
+      }
+    ]
+  }
+]

@@ -167,3 +167,85 @@ fn n_is_a_and_a_primary_p_marks_its_row() -> Result {
     assert_eq!(text(&p, 3), "ab$");
     Ok(())
 }
+
+/// With a nonce required, a mark counts only if it carries it: one a
+/// program prints (`cat` of a file with marks in it) is no mark.
+#[test]
+fn marks_without_the_nonce_are_ignored() -> Result {
+    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
+    p.require_mark_nonce(Some(b"k3y"));
+    p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07fake\r\n\x1b]133;D;9\x07")?;
+    assert_eq!(marks(&p), Vec::<usize>::new());
+    assert_eq!(p.screen().commands().finished, 0);
+    p.process(b"\r\n\x1b]133;A;nonce=k3y\x07$ ")?;
+    assert!(p.screen().commands().prompt);
+    p.process(b"ls\r\n\x1b]133;C;nonce=k3y\x07a\r\n\x1b]133;D;0;nonce=k3y\x07")?;
+    let commands = p.screen().commands();
+    assert_eq!((commands.finished, commands.last_status), (1, Some(0)));
+    assert!(!commands.prompt);
+    Ok(())
+}
+
+/// A late `C` (a line the shell could not run) starts the output after
+/// the line last submitted, not after the prompt's first line: the
+/// continuation prompts and the lines typed at them are not its output.
+#[test]
+fn a_late_start_follows_the_line_submitted_last() -> Result {
+    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
+    p.process(b"\x1b]133;A\x07$ for i in 1 2\r\n")?;
+    p.process(b"> do echo $i\r\n> done)")?;
+    p.note_submit();
+    p.process(b"\r\nsyntax error\r\n\x1b]133;C;late\x07\x1b]133;D;2\x07")?;
+    let (start, _) = p.screen().commands().last_output.ok_or("no output")?;
+    let row = p.screen().row_index(start.row).ok_or("row gone")?;
+    assert_eq!((row, start.col), (3, 0));
+    assert_eq!(text(&p, 3), "syntax error");
+    Ok(())
+}
+
+/// While recording, every run printed that changed cells is kept, with
+/// its row and columns, though drawn over in the same output; a redraw
+/// of the same text is none.
+#[test]
+fn prints_are_recorded_though_drawn_over() -> Result {
+    let mut p = Parser::with_options(Size::new(4, 20)?, 10, Options::new())?;
+    p.process(b"same")?;
+    p.record_prints(true);
+    p.process(b"\rsame\r\nREADY\rxxxxx\x1b[1mbo\x1b[0mld")?;
+    let prints = p.take_prints();
+    let row = |i: usize| p.screen().rows().nth(i).map(|r| r.id());
+    let texts: Vec<(Option<fux_vt::RowId>, (u16, u16), &str)> = prints
+        .iter()
+        .map(|t| (Some(t.row), t.cols, t.text))
+        .collect();
+    assert_eq!(
+        texts,
+        [(row(1), (0, 5), "READY"), (row(1), (0, 9), "xxxxxbold")]
+    );
+    assert!(p.take_prints().is_empty());
+    Ok(())
+}
+
+/// `tick` numbers something between pieces of output: after every row's
+/// number so far, before the next piece's.
+#[test]
+fn a_tick_falls_between_pieces() -> Result {
+    let mut p = Parser::with_options(Size::new(4, 20)?, 10, Options::new())?;
+    p.process(b"one")?;
+    let first = p
+        .screen()
+        .rows()
+        .next()
+        .map(|r| r.version())
+        .ok_or("no row")?;
+    let tick = p.tick();
+    p.process(b"\r\ntwo")?;
+    let second = p
+        .screen()
+        .rows()
+        .nth(1)
+        .map(|r| r.version())
+        .ok_or("no row")?;
+    assert!(first < tick && tick < second);
+    Ok(())
+}

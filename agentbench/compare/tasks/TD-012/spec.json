@@ -1,0 +1,11 @@
+{
+  "id": "TD-012",
+  "title": "A review result before the spool closes",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/release_watch.py {work} exactly once in a terminal. Submit the exact watch request shown at Follow>. Ignore every outcome printed before that request was submitted, and ignore the outcome words inside the echoed request. Of the current request's REVIEW, COMPLETE, and FAULT outcomes, retain whichever is emitted first. The watcher continues draining output and briefly draws a Settle> prompt before it is usable. Wait for WINDOW OPEN for the current ticket and its following Settle> prompt before submitting settle <first-kind> <first-token>. Do not send that submission during draining. Wait for SETTLED and normal exit. Write {work}/answer.txt as exactly three newline-terminated lines: ticket=<current-ticket>, first=<first-kind>:<first-token>, receipt=<settled-receipt>. Do not include the output marker lines. All values must be observed; there is no input deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: plausible outcomes are printed before input, and the watch request's terminal echo contains COMPLETE and FAULT decoys. REVIEW wins the current stream but later COMPLETE and FAULT lines remain visible. An overwritten premature Settle> prompt is followed by several seconds of draining; only WINDOW OPEN enables input. Early submitted lines are logged and rejected. Exact ticket, first outcome, and receipt plus one tty run and exact semantic input history are required, so a delay or stale regex match is insufficient. Readiness and its real prompt are published together after typeahead is checked, so a response to the visible prompt is never rejected because the watcher was descheduled. The reference matches prompts without trailing spaces and waits for the Settle> after WINDOW OPEN."
+}

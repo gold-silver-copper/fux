@@ -1,0 +1,104 @@
+[
+  {
+    "name": "timeouts-without-input",
+    "args": [
+      "--seed",
+      "6",
+      "--vtime",
+      "1"
+    ],
+    "size": [
+      60,
+      10
+    ],
+    "steps": [
+      {
+        "keys": "",
+        "pause_ms": 500
+      }
+    ]
+  },
+  {
+    "name": "vmin-zero-packets",
+    "args": [
+      "--seed",
+      "15",
+      "--vtime",
+      "2"
+    ],
+    "size": [
+      50,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "a",
+        "pause_ms": 60
+      },
+      {
+        "keys": "bc",
+        "pause_ms": 60
+      },
+      {
+        "keys": "",
+        "pause_ms": 350
+      }
+    ]
+  },
+  {
+    "name": "interbyte-timeout",
+    "args": [
+      "--seed",
+      "24",
+      "--vmin",
+      "3",
+      "--vtime",
+      "2",
+      "--reads",
+      "2"
+    ],
+    "size": [
+      60,
+      10
+    ],
+    "steps": [
+      {
+        "keys": "a",
+        "pause_ms": 50
+      },
+      {
+        "keys": "b",
+        "pause_ms": 300
+      },
+      {
+        "keys": "cde",
+        "pause_ms": 300
+      }
+    ]
+  },
+  {
+    "name": "vmin-threshold-burst",
+    "args": [
+      "--seed",
+      "33",
+      "--vmin",
+      "3",
+      "--reads",
+      "2"
+    ],
+    "size": [
+      40,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "abc",
+        "pause_ms": 60
+      },
+      {
+        "keys": "def",
+        "pause_ms": 350
+      }
+    ]
+  }
+]

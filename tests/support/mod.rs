@@ -48,6 +48,14 @@ pub fn nonzero(n: u16) -> Result<NonZeroU16, String> {
 }
 
 pub const FUX: &str = env!("CARGO_BIN_EXE_fux");
+
+/// The fux binary the shared server runs: `FUX_BIN` if set, to measure
+/// another build with the same tests (the bench harness does), else this
+/// build's.
+pub fn fux() -> &'static str {
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| std::env::var("FUX_BIN").unwrap_or_else(|_| FUX.to_owned()))
+}
 /// How long a test waits for something to show.
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
@@ -152,10 +160,10 @@ impl Server {
                     let mut sh = Command::new("/bin/sh");
                     sh.arg("-c")
                         .arg(format!("ulimit -n {n} && exec \"$0\" \"$@\""))
-                        .arg(FUX);
+                        .arg(fux());
                     sh
                 }
-                None => Command::new(FUX),
+                None => Command::new(fux()),
             };
             let child = command
                 .arg(fux::SERVE)
@@ -216,7 +224,7 @@ impl Server {
     }
 
     pub fn fux_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, String> {
-        let mut command = Command::new(FUX);
+        let mut command = Command::new(fux());
         command
             .args(args)
             .env("FUX_SOCKET", &self.socket)
@@ -290,7 +298,7 @@ impl Drop for Server {
             self.log()
         );
         if let Some(mut child) = self.child.take() {
-            let _ = Command::new(FUX)
+            let _ = Command::new(fux())
                 .args(["force-kill-server"])
                 .env("FUX_SOCKET", &self.socket)
                 .output();
@@ -749,7 +757,7 @@ impl Terminal {
         cols: u16,
         args: &[&str],
     ) -> Result<Terminal, String> {
-        let argv: Vec<&str> = [FUX].into_iter().chain(args.iter().copied()).collect();
+        let argv: Vec<&str> = [fux()].into_iter().chain(args.iter().copied()).collect();
         Terminal::start(rows, cols, &argv, |command| {
             command
                 .env("FUX_SOCKET", &server.socket)
@@ -770,7 +778,7 @@ impl Terminal {
         let (child, _) = {
             let _guard = SPAWN.lock().map_err(e)?;
             slave
-                .spawn(Path::new(FUX), argv, |command| {
+                .spawn(Path::new(fux()), argv, |command| {
                     command.env("TERM", "xterm-256color").env_remove("FUX_PANE");
                     setup(command);
                 })

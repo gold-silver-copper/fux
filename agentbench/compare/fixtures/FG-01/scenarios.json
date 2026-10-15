@@ -1,0 +1,79 @@
+[
+  {
+    "name": "kernel-echo-and-typeahead",
+    "args": [
+      "--seed",
+      "0",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      60,
+      16
+    ],
+    "steps": [
+      {
+        "keys": "deploy ca",
+        "pause_ms": 240
+      },
+      {
+        "keys": "che\r",
+        "pause_ms": 50
+      },
+      {
+        "keys": "next value\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": ":quit\r",
+        "pause_ms": 700
+      }
+    ]
+  },
+  {
+    "name": "unicode-and-wrapping",
+    "args": [
+      "--seed",
+      "4",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      26,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "\u754c\u9762 e\u0301 \ud83d\ude42 long-value-long-value-long-value-long-value-long-value-long-value-long-value-long-value-long-value-",
+        "pause_ms": 230
+      },
+      {
+        "keys": "\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": ":quit\r",
+        "pause_ms": 700
+      }
+    ]
+  },
+  {
+    "name": "burst-commands",
+    "args": [
+      "--seed",
+      "9",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      80,
+      24
+    ],
+    "steps": [
+      {
+        "keys": "same\rsame\r\r:quit\r",
+        "pause_ms": 900
+      }
+    ]
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "id": "TD-016",
+  "title": "An authorization hidden among editor redraws",
+  "category": "input",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/line_dispatch.py {work}` exactly once. Wait for EDITOR READY before sending any input; the sample prompt during startup is not ready. Edit and submit the two exact lines requested by the console, including the observed route and authorization values. The first line is prefilled and the editor redraws its entire prompt and line on every key; it supports Backspace, Ctrl-U, Ctrl-W, Left/Right, Home/End and Delete. Wait for COMMITTED without typing during signing. Write `{work}/answer.txt` with exactly two lines: `route=<observed committed route>` and `receipt=<observed committed receipt>`, in that order. Each line must end with a newline. Include no marker lines or other text. The authorization receipt in the echoed input is distinct from the committed receipt. There is no input deadline. Leave `{work}/job.json` unchanged.",
+  "setup": {
+    "files": {
+      "job.json": "{\n  \"seed\": \"alder-73\",\n  \"depot\": \"coast-west\",\n  \"parcel\": \"crate-508\"\n}\n"
+    }
+  },
+  "note": "Trap: every edit redraws the whole prompt and pending line, so input echo can look like a reply; an old receipt and a new authorization receipt both differ from the committed receipt. Startup and signing reject early input. The checker recomputes the route, both exact submitted lines, and final receipt from the manifest, requires exactly one successful tty launch, and compares exact answer bytes. A short fixed sleep cannot establish readiness; the READY and COMMITTED markers do. No key history is graded: only final submitted lines count."
+}
