@@ -29,7 +29,9 @@ mod only {
     pub const ALTWERASE: tcflag_t = 0;
     pub const ONOEOT: tcflag_t = 0;
     /// The bits that say how tabs are written, and their value for spaces.
-    pub const TABS: (tcflag_t, tcflag_t) = (libc::TABDLY, libc::TAB3);
+    // TABDLY and TAB3 (XTABS), one value, which the libc crate types
+    // differently for musl.
+    pub const TABS: (tcflag_t, tcflag_t) = (0o14000, 0o14000);
     pub const VSTATUS: Option<usize> = None;
 }
 

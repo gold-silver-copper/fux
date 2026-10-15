@@ -888,6 +888,9 @@ impl Pane {
         }
         self.release_frame();
         if self.parser.resize(size).is_ok() {
+            let seq = crate::log::Seq(self.parser.tick());
+            self.record
+                .push(seq, Instant::now(), crate::log::Event::Resize(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -1503,6 +1506,41 @@ mod tests {
             cell.underline_color(),
             fux_vt::Color::Rgb([255, 0, 0].into())
         );
+        Ok(())
+    }
+
+    /// A pane's log replays: its output and resizes, read again into a new
+    /// screen in order, make the same screen, history and all.
+    #[test]
+    fn a_panes_log_replays_its_screen() -> Result<(), Error> {
+        let mut p = pane(4, 12)?;
+        p.output(b"one\r\ntwo \x1b[1mbold\x1b[0m wraps on\x07\r\n");
+        p.resize(size(3, 8));
+        p.output(b"three\r\n\x1b]0;title\x07four");
+        let mut again =
+            fux_vt::Parser::with_options(size(4, 12), 10, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    size: size(4, 12),
+                    history: 10,
+                    source,
+                }
+            })?;
+        assert!(p.record.complete());
+        for entry in p.record.whole() {
+            match &entry.event {
+                crate::log::Event::Output { bytes, .. } => {
+                    let _ = again.process(bytes);
+                }
+                crate::log::Event::Resize(size) => {
+                    let _ = again.resize(*size);
+                }
+                crate::log::Event::Input { .. }
+                | crate::log::Event::Action
+                | crate::log::Event::Bell => {}
+            }
+        }
+        let rows = |s: &fux_vt::Screen| s.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
+        assert_eq!(rows(again.screen()), rows(p.screen()));
         Ok(())
     }
 

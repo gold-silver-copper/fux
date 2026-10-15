@@ -111,6 +111,8 @@ pub struct Log {
     /// The first entry whose bytes are still held: a replay starts no
     /// earlier.
     whole_from: usize,
+    /// It let go of an entry or its bytes.
+    lost: bool,
 }
 
 impl Log {
@@ -127,10 +129,12 @@ impl Log {
                 *bytes = Box::default();
             }
             self.whole_from = self.whole_from.saturating_add(1);
+            self.lost = true;
         }
         while self.entries.len() > LOG_ENTRIES {
             self.entries.pop_front();
             self.whole_from = self.whole_from.saturating_sub(1);
+            self.lost = true;
         }
     }
 
@@ -166,7 +170,7 @@ impl Log {
     /// Whether the log holds every entry since the pane began, bytes too:
     /// a replay rebuilds its screen.
     pub fn complete(&self) -> bool {
-        self.whole_from == 0 && self.entries.front().is_none_or(|e| e.seq.0 <= 1)
+        !self.lost
     }
 }
 
