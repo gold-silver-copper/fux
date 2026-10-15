@@ -36,7 +36,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 %2 reading · no change         it read your keys and drew nothing: do not send them again
 %2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0)
 %2 busy · 12 bytes unread      still running or printing at the time limit (status 124); unread: input fux holds yet
-%2 exited 3                    the program ended; its last output follows
+%2 exited 3                    the program ended; what it printed since your input follows
 ```
 
 - **Time:** an action or `capture` settles within 10s; a `wait`, or an action given a
@@ -56,6 +56,11 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   paste` (bracketed if the program turned that on, an end-of-paste mark in T
   then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too
   (text its bytes, a key its name's, each input after the first 5 more). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
+  To a program that reads each key itself (raw, on the main screen: a line
+  editor, a REPL), each text and key goes in once it took the one before,
+  so that what it draws follows the key it answers: it may read them in
+  several reads, the same bytes in the same order. A wait sent with them
+  answers once all went in.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
   `wait-bell`; several: whichever came first, as they came (fux records
   each piece of output as it arrives, and where a bell rang among them). A
@@ -84,9 +89,9 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   (124), never 7. A read with the terminal's own time
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
   returns alone, so a text wait runs to its limit (124). The answer is the
-  screen (it starts `… earlier lines not kept` if lines written since were
-  let go past history-lines, or more came than fux keeps for a wait, 1 MiB
-  of text: the text may have passed unseen). Status 3: the program exited first.
+  screen (it starts `… earlier lines not kept (past history-lines)` if lines
+  written since were let go, or `… more came than fux keeps for a wait (1
+  MiB): text may have passed unseen`). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
@@ -118,8 +123,9 @@ the input was. A few cases look the same either way, and are taken so:
   characters you typed on it (in any order: editing keys move them; case
   ignored, as a wait ignores it) is taken as their echo, as a line editor
   shows them, wherever it lands: a program that answers your keys with
-  nothing but some of them is not seen. A text holding anything else is
-  output.
+  nothing but some of them is not seen. The text you wait for is what
+  counts, not the line it is on: `RESULT TOKEN` printed before Enter meets
+  a wait for `RESULT TOKEN`, not one for `TOKEN`.
 - A program that, after Enter, prints exactly the line you typed: taken
   as its output, its reply to Enter. (A line editor drawing your line again
   on Enter, the same text in the same place, changes nothing: no output.)

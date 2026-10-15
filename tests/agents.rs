@@ -3871,3 +3871,195 @@ fn a_line_drawn_again_the_same_on_enter_is_no_output() -> Outcome {
     assert_eq!(server.fux(&keys)?.status, CANNOT_COME);
     Ok(())
 }
+
+/// Replay: a shell command that ended after its own action answered is
+/// still said done by a later wait, which counts from the last input.
+#[test]
+fn a_later_wait_says_a_command_ended_since_the_input() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
+    assert_eq!(done(&line(&server, &shell, "true")?), Some("done 0"));
+    let keys = [
+        "str",
+        &shell,
+        "pane",
+        "keys",
+        "str",
+        "sleep 0.3; (exit 6)",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ];
+    server.fux(&keys)?;
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let later = server.ok(&["str", &shell, "pane", "opts", "wait"])?;
+    assert_eq!(done(&later), Some("done 6"), "{later}");
+    Ok(())
+}
+
+/// Replay: a resize after the input brings nothing new; a later wait's
+/// answer starts where the input's reply does, not at the screen's top.
+#[test]
+fn a_resize_since_the_input_brings_nothing_new() -> Outcome {
+    let server = Server::start("")?;
+    let echo = "echo OLDLINE; while read l; do echo GOT$l; done";
+    let pane = id(&server.ok(&run(&["str", "OLDLINE", "wait-text"], &["sh", "-c", echo]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "abc",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "GOTabc",
+        "wait-text",
+        "send-keys",
+    ];
+    server.ok(&keys)?;
+    server.ok(&[
+        "str", &pane, "pane", "opts", "str", "sleep", "program", "str", "30", "arg", "0",
+        "timeout", "split",
+    ])?;
+    let later = server.ok(&["str", &pane, "pane", "opts", "wait"])?;
+    assert!(
+        !later.contains("OLDLINE") && later.contains("GOTabc"),
+        "{later}"
+    );
+    Ok(())
+}
+
+/// Replay: a screen erased and drawn again as it was is no change, and
+/// one drawn again with a row changed is answered from that row.
+#[test]
+fn a_screen_drawn_again_as_it_was_is_no_change() -> Outcome {
+    let server = Server::start("")?;
+    let menu = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                def draw(v): w('\\x1b[H\\x1b[2JMAIN MENU\\r\\n' + v); sys.stdout.flush()\n\
+                draw('old value')\n\
+                while True:\n    draw('new value' if sys.stdin.read(1) == 'b' else 'old value')\n";
+    let pane = id(&server.ok(&run(
+        &["str", "old value", "wait-text"],
+        &["python3", "-c", menu],
+    ))?);
+    let same = server.ok(&["str", &pane, "pane", "str", "a", "type"])?;
+    // Said where fux is told the program reads (`no change` is that).
+    let said = if PROBED { " · no change" } else { "" };
+    assert_eq!(head(&same), format!("{pane} {READING}{said}"), "{same}");
+    assert_eq!(body(&same), "", "{same}");
+    let changed = server.ok(&["str", &pane, "pane", "str", "b", "type"])?;
+    assert_eq!(body(&changed), "new value\n", "{changed}");
+    Ok(())
+}
+
+/// Replay: a word a line wraps onto the next row starts no word there: a
+/// wait for it from a word's or a line's start is not met.
+#[test]
+fn a_word_wrapped_onto_a_row_starts_no_word_there() -> Outcome {
+    let server = Server::start("")?;
+    let wrap = "import sys, tty\ntty.setraw(0)\nsys.stdout.write('> '); sys.stdout.flush()\n\
+                sys.stdin.read(1); sys.stdout.write('\\r\\nxxxxxxxxxxxxREADY'); sys.stdout.flush()\n\
+                sys.stdin.read(1)\n";
+    let size = ["12", "5", "size", "str", ">", "wait-text"];
+    let pane = id(&server.ok(&run(&size, &["python3", "-c", wrap]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "k",
+        "text",
+        "str",
+        "READY",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+        "json",
+    ];
+    let out = server.fux(&keys)?;
+    let not_met = if PROBED { CANNOT_COME } else { 124 };
+    assert_eq!(out.status, not_met, "{}{}", out.stdout, out.stderr);
+    Ok(())
+}
+
+/// Replay: a full-screen program's keys go in at full speed, its screen
+/// being all output: one read takes every key an action sends.
+#[test]
+fn a_full_screen_program_takes_an_actions_keys_at_once() -> Outcome {
+    let server = Server::start("")?;
+    let once = "import os, sys, time, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                w('\\x1b[?1049hREADY'); sys.stdout.flush(); time.sleep(0.5)\n\
+                w('\\r\\nGOT ' + repr(os.read(0, 100))); sys.stdout.flush(); os.read(0, 1)\n";
+    let pane = id(&server.ok(&run(
+        &["str", "READY", "wait-text"],
+        &["python3", "-c", once],
+    ))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "abc",
+        "text",
+        "str",
+        "Home",
+        "key",
+        "str",
+        "End",
+        "key",
+        "str",
+        "GOT",
+        "wait-text",
+        "send-keys",
+    ];
+    let got = server.ok(&keys)?;
+    assert!(got.contains("GOT b'abc\\x1b[H\\x1b[F'"), "{got}");
+    Ok(())
+}
+
+/// Replay: a wait sent with keys answers once all of them went in, though
+/// the reply to the first meets it before the program takes the rest.
+#[test]
+fn a_keys_wait_answers_once_every_key_went_in() -> Outcome {
+    let server = Server::start("")?;
+    let raw = "import os, time, tty\ntty.setraw(0)\nos.write(1, b'> ')\n\
+               os.read(0, 1); os.write(1, b'\\r\\nRX'); time.sleep(0.6)\n\
+               os.read(0, 1); os.write(1, b'\\r\\nSECOND'); os.read(0, 1)\n";
+    let pane = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", raw]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "a",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "RX",
+        "wait-text",
+        "send-keys",
+    ];
+    let began = std::time::Instant::now();
+    server.ok(&keys)?;
+    // Enter goes in once the program reads again, after its sleep.
+    assert!(
+        began.elapsed() >= std::time::Duration::from_millis(400),
+        "{:?}",
+        began.elapsed()
+    );
+    Ok(())
+}

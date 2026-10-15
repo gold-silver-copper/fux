@@ -508,6 +508,9 @@ pub struct Pane {
     /// Where the last action's input began (or the program started):
     /// what came since is what it brought.
     pub since: crate::log::Seq,
+    /// Then: how many shell commands had ended, and whether the full
+    /// screen was in use.
+    pub since_was: (u64, bool),
     /// What was printed since then, and its bytes; whether some was let
     /// go past [`PRINTS_BYTES`].
     pub prints: Vec<Printed>,
@@ -519,6 +522,11 @@ pub struct Pane {
     /// The rows printed on since then, as they read after the last piece
     /// that printed on them: what the next piece finds there.
     seen: std::collections::HashMap<fux_vt::RowId, String>,
+    /// Where each row of the screen was then and what it showed
+    /// ([`shows`]): a row drawn again to show as it did is no change.
+    pub before_shows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
+    /// What each row showed as the screen was last seen to change.
+    shown_rows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
     /// Where each piece of output came from (`crate::classify`).
     classes: crate::classify::Classes,
     /// The nonce its shell's marks carry, if fux marked its shell: then
@@ -654,11 +662,14 @@ impl Pane {
             written_at: None,
             record: crate::log::Log::default(),
             since: crate::log::Seq::default(),
+            since_was: (0, false),
             prints: Vec::new(),
             printed: 0,
             prints_lost: false,
             before: std::collections::HashMap::new(),
             seen: std::collections::HashMap::new(),
+            before_shows: std::collections::HashMap::new(),
+            shown_rows: std::collections::HashMap::new(),
             classes: crate::classify::Classes::default(),
             nonce: None,
             revision: 0,
@@ -910,7 +921,8 @@ impl Pane {
         }
         self.release_frame();
         if self.parser.resize(size).is_ok() {
-            let seq = crate::log::Seq(self.parser.tick());
+            // The number the resize gave every row it kept.
+            let seq = crate::log::Seq(self.screen().version());
             self.record
                 .push(seq, Instant::now(), crate::log::Event::Resize(size));
             if let Some(child) = self.process.child() {
@@ -953,6 +965,11 @@ impl Pane {
     /// and what was printed before is forgotten.
     pub fn note_input(&mut self) {
         self.since = crate::log::Seq(self.parser.tick());
+        let screen = self.parser.screen();
+        self.since_was = (
+            screen.commands().finished,
+            screen.mode(fux_vt::Mode::AlternateScreen),
+        );
         self.record
             .push(self.since, Instant::now(), crate::log::Event::Action);
         self.prints.clear();
@@ -960,6 +977,10 @@ impl Pane {
         self.prints_lost = false;
         self.parser.record_prints(true);
         self.before = rows_now(self.screen());
+        let window = self.screen().window();
+        self.before_shows = (0..window.rows())
+            .filter_map(|y| window.row(y).map(|row| (row.id(), (y, shows(&row)))))
+            .collect();
         self.seen.clear();
     }
 
@@ -993,26 +1014,49 @@ impl Pane {
     /// Writes the next piece of paced input if the program took the last
     /// one by `now`, or its time is up.
     pub fn release_paced(&mut self, now: Instant) {
-        if self.pace.until.is_some_and(|until| until > now) || self.pace.waiting.is_empty() {
+        if self.pace.until.is_some_and(|until| until > now) {
             return;
         }
-        let held = (self.pace.written)
-            .is_some_and(|(at, limit, escape)| now < limit && !self.taken(at, now, escape));
-        // Output the program wrote before now came before this piece: it
-        // is read first (unless it pours on for a while), so that nothing
-        // it printed is told as following the piece.
-        let unread =
-            (self.process.child()).is_some_and(|c| fuxix::io::unread(&c.master).unwrap_or(0) > 0);
-        let draining =
-            !held && unread && now < *(self.pace.drained_by).get_or_insert(crate::after(now, TAKE));
-        if held || draining {
-            self.pace.until = Some(crate::after(now, POLL));
-            return;
+        while !self.pace.waiting.is_empty() {
+            let exact = self.exact();
+            // A lone Escape is taken alone, wherever: one with keys after it
+            // reads as another key.
+            let held = (self.pace.written).is_some_and(|(at, limit, escape)| {
+                (escape || !exact) && now < limit && !self.taken(at, now, escape)
+            });
+            // Output the program wrote before now came before this piece:
+            // it is read first (unless it pours on for a while), so that
+            // nothing it printed is told as following the piece.
+            let unread = !exact
+                && (self.process.child())
+                    .is_some_and(|c| fuxix::io::unread(&c.master).unwrap_or(0) > 0);
+            let draining = !held
+                && unread
+                && now < *(self.pace.drained_by).get_or_insert(crate::after(now, TAKE));
+            if held || draining {
+                self.pace.until = Some(crate::after(now, POLL));
+                return;
+            }
+            self.pace.drained_by = None;
+            if let Some((bytes, unit)) = self.pace.waiting.pop_front() {
+                self.write_unit(bytes, unit, now);
+            }
+            if !exact {
+                return;
+            }
         }
-        self.pace.drained_by = None;
-        if let Some((bytes, unit)) = self.pace.waiting.pop_front() {
-            self.write_unit(bytes, unit, now);
-        }
+    }
+
+    /// Whether what follows input is told exactly, without pacing it: a
+    /// full-screen program's screen is all output, and the kernel's echo is
+    /// known in line mode. (A shell fux marks draws the line typed before
+    /// Enter as it reads it, where nothing marks it apart from what follows
+    /// Enter: paced.)
+    fn exact(&self) -> bool {
+        self.screen().mode(fux_vt::Mode::AlternateScreen)
+            || (self.process.child())
+                .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
+                .is_some_and(|t| t.line_mode())
     }
 
     /// Whether rows of the main screen written since the last input were
@@ -1148,11 +1192,25 @@ impl Pane {
     /// Notes, after the screen was read into at `now`, whether what it
     /// shows changed.
     pub fn note_change(&mut self, now: Instant) {
-        let screen = self.screen();
+        let screen = self.parser.screen();
         let cursor = screen.cursor_position();
-        let changed = (screen.dirty_live_rows_since(self.shown.0).next()).is_some();
-        if changed || cursor != self.shown.1 {
-            self.shown = (screen.mark(), cursor);
+        // Rows written to that show as they did change nothing.
+        let mut changed = cursor != self.shown.1;
+        for (y, row) in screen.dirty_live_rows_since(self.shown.0) {
+            let now_shows = (y, shows(&row));
+            changed |= self.shown_rows.insert(row.id(), now_shows) != Some(now_shows);
+        }
+        let rows = usize::from(screen.size().rows());
+        if self.shown_rows.len() > rows.saturating_mul(4) {
+            let window = screen.window();
+            let live: std::collections::HashSet<_> = (0..window.rows())
+                .filter_map(|y| window.row(y))
+                .map(|r| r.id())
+                .collect();
+            self.shown_rows.retain(|id, _| live.contains(id));
+        }
+        self.shown = (screen.mark(), cursor);
+        if changed {
             self.changed_at = now;
             self.revision = self.revision.wrapping_add(1);
         }
@@ -1162,6 +1220,11 @@ impl Pane {
     pub fn input_queued(&self) -> usize {
         let paced: usize = self.pace.waiting.iter().map(|(b, _)| b.len()).sum();
         paced.saturating_add(self.input.len())
+    }
+
+    /// Whether pacing still holds keys back from a running program.
+    pub fn holds_keys(&self) -> bool {
+        !self.pace.waiting.is_empty() && self.process.child().is_some()
     }
 
     /// Whether every piece of input sent has been written to the program.
@@ -1241,6 +1304,17 @@ pub fn holds_at(row: &str, print: &fux_vt::Print<'_>) -> bool {
     there
         .take(print.text.chars().count())
         .eq(print.text.chars())
+}
+
+/// What `row` shows, its text and colours, as one number.
+pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for cell in row.cells() {
+        cell.contents().hash(&mut hasher);
+        cell.attributes().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// The screen's rows as they read now, by row.
