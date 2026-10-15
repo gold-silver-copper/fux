@@ -38,16 +38,6 @@ pub enum Unit {
     Submit,
 }
 
-/// How an echo is known for certain.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Certain {
-    /// The shell's own marks: it was reading its command line.
-    Marks,
-    /// The terminal's line editing (`ICANON`, `ECHO`) echoed it, as the
-    /// kernel does, by its fixed rules.
-    Kernel,
-}
-
 /// How output that is no echo is known so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -63,19 +53,22 @@ pub enum Source {
 }
 
 /// Where a piece of output came from. Each kind says how it is known:
-/// an echo for certain, output for certain or by what it followed, and
-/// what followed an edit by its time alone.
+/// the kernel's echo for certain, output by its source, and what followed
+/// an edit by its time and place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// The program's own output.
     Output { by: Source },
-    /// The echo of input, wherever it lands.
-    Echo { of: InputSeq, by: Certain },
+    /// The kernel's echo of input (`ICANON`, `ECHO`), by its fixed rules,
+    /// wherever it lands: certain.
+    Echo { of: InputSeq },
     /// What the program drew after an edit, before the next input: the
-    /// echo on the line typed on (`line`, its first row), output elsewhere.
+    /// echo on the line typed on (`line`, its first row), output elsewhere;
+    /// `shell`, a shell reading its command line, as its marks say.
     Edited {
         of: InputSeq,
         line: Option<fux_vt::RowId>,
+        shell: bool,
     },
 }
 

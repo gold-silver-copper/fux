@@ -3354,7 +3354,7 @@ fn a_typed_row_drawn_with_another_prompt_is_echo() -> Outcome {
 /// by another program, over ssh) says nothing: its line drawn again reads
 /// as output that repeats the keys would, and only while it still edits
 /// the line (no Enter) is it known for the echo, by the terminal taking
-/// keys raw.
+/// keys raw, where fux is told what the shell is blocked in (Linux).
 #[test]
 fn keys_typed_before_a_prompt_are_echo_twice() -> Outcome {
     let server = Server::start("")?;
@@ -3378,7 +3378,10 @@ fn keys_typed_before_a_prompt_are_echo_twice() -> Outcome {
         (&vars, &marked, false),
         (&vars, &marked, true),
     ];
-    for (options, program, enter) in cases {
+    // Without marks, keys typed ahead are told by what the shell is blocked
+    // in: where the system does not say (not Linux), they cannot be.
+    let told = |program: &[&str]| PROBED || program == marked;
+    for (options, program, enter) in cases.into_iter().filter(|(_, p, _)| told(p)) {
         let shell = id(&server.ok(&run(options, program))?);
         let line = [
             "str",

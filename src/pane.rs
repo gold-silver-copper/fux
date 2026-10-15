@@ -773,19 +773,19 @@ impl Pane {
         if run.is_empty() {
             return None;
         }
-        let (bells, prompt) = (self.alerts.count(), self.screen().commands().prompt);
+        // Text typed ahead may be drawn again by a line editor reading it,
+        // as things stand before the run: a shell fux marks at its prompt,
+        // as they say; another program, with the terminal raw.
+        let reads = self.classes.ahead()
+            && match self.nonce {
+                Some(_) => self.at_prompt(),
+                None => (self.process.child())
+                    .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
+                    .is_some_and(|t| !t.line_mode()),
+            };
+        let bells = self.alerts.count();
         let begun = self.parse(run, until_frame);
         let seq = crate::log::Seq(self.screen().version());
-        if !prompt && self.screen().commands().prompt {
-            self.classes.prompted();
-        }
-        // Text typed ahead may be drawn again by a line editor: one that
-        // reads keys raw. In a shell fux marks, its marks say so instead.
-        let raw = self.classes.ahead()
-            && self.nonce.is_none()
-            && (self.process.child())
-                .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
-                .is_some_and(|t| !t.line_mode());
         for print in self.parser.take_prints() {
             self.printed = self.printed.saturating_add(print.text.len());
             if self.printed > PRINTS_BYTES {
@@ -794,7 +794,7 @@ impl Pane {
             }
             let screen = self.parser.screen();
             let line = || first_row(screen, print.row).unwrap_or(print.row);
-            let echo = self.classes.echoes(origin, &print, line, raw);
+            let echo = self.classes.echoes(origin, &print, line, reads);
             self.prints.push(Printed {
                 seq: crate::log::OutputSeq(seq),
                 print,
@@ -989,6 +989,13 @@ impl Pane {
         }
     }
 
+    /// Whether the pane's shell, marked by fux, is at its prompt, reading
+    /// its command line, as its marks say.
+    fn at_prompt(&self) -> bool {
+        let commands = self.screen().commands();
+        commands.prompt && !commands.running
+    }
+
     /// Whether the program took the input written at `at`, by `now`: every
     /// byte written and read, its output read by fux, and it reads its
     /// terminal again.
@@ -1012,6 +1019,11 @@ impl Pane {
             self.input.is_empty()
                 && crate::ready::took_keys(child, (self.since_key(now), self.answered()), false)
         });
+        // Typed ahead: a shell fux marks says whether it reads its line.
+        let ahead = match self.nonce {
+            Some(_) => !self.at_prompt(),
+            None => !reading,
+        };
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
             .map(|t| t.modes());
@@ -1024,7 +1036,7 @@ impl Pane {
             seq,
             unit,
             line,
-            reading,
+            ahead,
         };
         self.classes.wrote(input, &bytes, modes.as_ref(), now);
         let _ = self.input.push(&bytes);

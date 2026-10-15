@@ -15,7 +15,7 @@
 //!
 //! A full-screen program's screen is all output, as is anything before
 //! the first input.
-use crate::log::{Certain, InputSeq, Origin, Source, Unit};
+use crate::log::{InputSeq, Origin, Source, Unit};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -35,9 +35,10 @@ pub struct Input {
     pub unit: Unit,
     /// The first row of the line the cursor was on as it went in.
     pub line: Option<fux_vt::RowId>,
-    /// The program was reading its terminal: else the input was typed
-    /// ahead of its read.
-    pub reading: bool,
+    /// The input was typed ahead of the program's read: written while a
+    /// shell fux marks runs a command or has drawn no prompt yet, or, in
+    /// another program, while it was not reading.
+    pub ahead: bool,
 }
 
 /// The last input written, as the output after it is told.
@@ -61,13 +62,13 @@ pub struct Classes {
     pending: VecDeque<u8>,
     pending_until: Option<Instant>,
     kernel: crate::echo::Echo,
-    /// Input went in while the program was not reading (typed ahead),
-    /// and none since while it was; and the text typed so. A program that
-    /// reads it later draws it again: its echo.
-    ahead: bool,
+    /// The text typed ahead of the program's read (`Input::ahead`), none
+    /// typed since while it read: a program that reads it later draws it
+    /// again, its echo.
     ahead_text: Vec<String>,
-    /// The shell drew a prompt since the last input.
-    prompted: bool,
+    /// The text typed on the line since a key last submitted one: what a
+    /// line editor draws again after a key that edits it.
+    line: String,
 }
 
 impl Classes {
@@ -80,8 +81,7 @@ impl Classes {
         modes: Option<&fuxix::terminal::Modes>,
         now: Instant,
     ) {
-        self.ahead = !input.reading;
-        if input.reading {
+        if !input.ahead {
             self.ahead_text.clear();
         }
         let echo = modes.and_then(|m| Some((m, self.kernel.echo(m, bytes)?)));
@@ -93,12 +93,24 @@ impl Classes {
             }
             None => false,
         };
-        let typed = std::str::from_utf8(bytes)
+        // Text typed or pasted (its marks left out), not a key.
+        let pasted =
+            (bytes.strip_prefix(b"\x1b[200~")).map(|b| b.strip_suffix(b"\x1b[201~").unwrap_or(b));
+        let typed = std::str::from_utf8(pasted.unwrap_or(bytes))
             .ok()
-            .filter(|t| input.unit == Unit::Edit && !t.chars().any(char::is_control))
+            .filter(|_| input.unit == Unit::Edit)
+            .filter(|t| {
+                !t.chars()
+                    .any(|c| c.is_control() && !matches!(c, '\n' | '\r'))
+            })
             .map(str::to_owned);
-        if let Some(text) = typed.as_ref().filter(|_| self.ahead) {
+        if let Some(text) = typed.as_ref().filter(|_| input.ahead) {
             self.ahead_text.push(text.clone());
+        }
+        match (input.unit, &typed) {
+            (Unit::Edit, Some(text)) => self.line.push_str(text),
+            (Unit::Edit, None) => {}
+            (Unit::Submit, _) => self.line.clear(),
         }
         self.written = Some(Written {
             input,
@@ -106,18 +118,12 @@ impl Classes {
             typed,
             kernel,
         });
-        self.prompted = false;
     }
 
     /// Whether text typed ahead waits to be drawn again: then `echoes`
-    /// asks whether the terminal is raw.
+    /// asks whether a line editor reads it now.
     pub fn ahead(&self) -> bool {
         !self.ahead_text.is_empty()
-    }
-
-    /// The shell drew a prompt.
-    pub fn prompted(&mut self) {
-        self.prompted = self.written.is_some();
     }
 
     /// Where the bytes of `piece` came from, arriving at `now` on `screen`
@@ -142,7 +148,6 @@ impl Classes {
         // it echoes is its.
         let echo = Origin::Echo {
             of: written.input.seq,
-            by: Certain::Kernel,
         };
         let mut runs: Vec<(usize, Origin)> = Vec::new();
         for (at, byte) in piece.iter().enumerate() {
@@ -162,33 +167,45 @@ impl Classes {
     }
 
     /// Whether `print`, which came from `origin` and went on the line that
-    /// starts at `line()` (found only if asked), is an echo: one of the kernel's or the shell's;
-    /// after an edit, on the line typed on, a redraw after a key, or text
-    /// that holds what was typed or is part of it, as a line editor draws it
-    /// where it was typed (not a reply the program writes there); or text
-    /// typed ahead of the program's read, drawn again as it reads it, with
-    /// the terminal `raw` (no line editing: a line editor's).
+    /// starts at `line()` (found only if asked), is an echo: one of the
+    /// kernel's or the shell's; after an edit, on the line typed on, text
+    /// that holds what was typed or is part of it, or after a key that
+    /// edits, text that is part of the line typed (a line editor drawing
+    /// it again; not a menu redrawing its choices there), or in a shell
+    /// reading its command line any (a line recalled, completed); or text
+    /// typed ahead of the program's read, drawn again as a line editor
+    /// reads it (`reads`).
     pub fn echoes(
         &self,
         origin: Origin,
         print: &fux_vt::Print,
         line: impl FnOnce() -> fux_vt::RowId,
-        raw: bool,
+        reads: bool,
     ) -> bool {
-        // Text typed ahead, drawn again as a line editor (the terminal
-        // `raw` now, as it reads keys) reads it.
+        // Text typed ahead, drawn again as a line editor reads it (`reads`:
+        // a shell at its prompt, or a terminal raw now).
         let again = || {
-            raw && (self.ahead_text.iter())
-                .any(|t| !t.trim().is_empty() && print.text.contains(t.as_str()))
+            reads
+                && (self.ahead_text.iter())
+                    .any(|t| !t.trim().is_empty() && print.text.contains(t.as_str()))
         };
         match origin {
             Origin::Output { by: Source::Screen } => false,
             Origin::Output { .. } => again(),
             Origin::Echo { .. } => true,
-            Origin::Edited { line: typed, .. } => {
+            Origin::Edited {
+                line: typed, shell, ..
+            } => {
                 let text = self.written.as_ref().and_then(|w| w.typed.as_deref());
+                let redrawn = || {
+                    let drawn = print.text.trim();
+                    !drawn.is_empty() && self.line.contains(drawn)
+                };
                 typed == Some(line())
-                    && text.is_none_or(|t| print.text.contains(t) || t.contains(&print.text))
+                    && match text {
+                        Some(t) => print.text.contains(t) || t.contains(&print.text),
+                        None => shell || redrawn(),
+                    }
             }
         }
     }
@@ -206,15 +223,12 @@ impl Classes {
         match (reading, written.input.unit) {
             // A prompt drawn since input typed ahead: the shell draws the
             // line typed ahead again, as it reads it.
-            (true, _) if self.prompted && self.ahead => Origin::Echo {
-                of: written.input.seq,
-                by: Certain::Marks,
-            },
             (true, Unit::Submit) => Origin::Output { by: Source::Marks },
             (false, _) if written.kernel => Origin::Output { by: Source::Kernel },
             (_, Unit::Edit) if now < crate::after(written.at, EDIT_WINDOW) => Origin::Edited {
                 of: written.input.seq,
                 line: written.input.line,
+                shell: reading,
             },
             (true, Unit::Edit) => Origin::Output { by: Source::Marks },
             (false, Unit::Edit | Unit::Submit) => Origin::Output { by: Source::Order },
