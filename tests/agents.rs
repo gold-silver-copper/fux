@@ -4055,9 +4055,10 @@ fn a_keys_wait_answers_once_every_key_went_in() -> Outcome {
     ];
     let began = std::time::Instant::now();
     server.ok(&keys)?;
-    // Enter goes in once the program reads again, after its sleep.
+    // Enter goes in once the program reads again, after its sleep: where
+    // fux is told it reads (macOS says a sleep and a read alike).
     assert!(
-        began.elapsed() >= std::time::Duration::from_millis(400),
+        !PROBED || began.elapsed() >= std::time::Duration::from_millis(400),
         "{:?}",
         began.elapsed()
     );

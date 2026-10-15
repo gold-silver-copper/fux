@@ -81,14 +81,15 @@ pub struct Classes {
 
 impl Classes {
     /// Notes that `bytes`, `input`, were written at `now`, the terminal's
-    /// modes then `modes` (if they could be read).
+    /// modes then `modes` (if they could be read): whether the kernel's echo
+    /// of them is known, and so what follows them, exactly.
     pub fn wrote(
         &mut self,
         input: Input,
         bytes: &[u8],
         modes: Option<&fuxix::terminal::Modes>,
         now: Instant,
-    ) {
+    ) -> bool {
         if !input.ahead {
             self.ahead_text.clear();
         }
@@ -118,6 +119,7 @@ impl Classes {
             (Unit::Submit, _) => self.line.clear(),
         }
         self.written = Some(Written { input, kernel });
+        kernel
     }
 
     /// The text typed on the line since a key last submitted one.

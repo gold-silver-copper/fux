@@ -56,11 +56,6 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   paste` (bracketed if the program turned that on, an end-of-paste mark in T
   then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too
   (text its bytes, a key its name's, each input after the first 5 more). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
-  To a program that reads each key itself (raw, on the main screen: a line
-  editor, a REPL), each text and key goes in once it took the one before,
-  so that what it draws follows the key it answers: it may read them in
-  several reads, the same bytes in the same order. A wait sent with them
-  answers once all went in.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
   `wait-bell`; several: whichever came first, as they came (fux records
   each piece of output as it arrives, and where a bell rang among them). A
@@ -109,6 +104,15 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 - **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) answers once the program
   exits or settles; `%2 kill` closes one pane; `%2 opts respawn` starts it
   again, on a new terminal.
+
+## Keys a program reads one by one
+
+To a program that reads each key itself (raw, on the main screen: a line
+editor, a REPL), or one whose echo fux cannot work out, each text and key
+goes in once it took the one before, so that what it draws follows the key
+it answers: it may read them in several reads, the same bytes in the same
+order. A wait sent with them answers once all went in. A full-screen
+program, and one reading lines, gets them at once.
 
 ## What fux cannot tell
 

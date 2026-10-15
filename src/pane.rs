@@ -572,7 +572,9 @@ pub struct Pace {
     /// When the last piece was written, until when it is given, and
     /// whether it was a lone Escape, which a program must surely have
     /// taken alone before the next piece.
-    written: Option<(Instant, Instant, bool)>,
+    /// Whether what follows it is told exactly, needing no pace: the
+    /// kernel's echo of it known, or a full-screen program's screen.
+    written: Option<(Instant, Instant, bool, bool)>,
     /// Until when the next piece waits for output the program wrote before
     /// it to be read: output that pours on goes on being written then.
     drained_by: Option<Instant>,
@@ -1019,10 +1021,10 @@ impl Pane {
             return;
         }
         while !self.pace.waiting.is_empty() {
-            let exact = self.exact();
+            let exact = self.pace.written.is_some_and(|(_, _, _, exact)| exact);
             // A lone Escape is taken alone, wherever: one with keys after it
             // reads as another key.
-            let held = (self.pace.written).is_some_and(|(at, limit, escape)| {
+            let held = (self.pace.written).is_some_and(|(at, limit, escape, _)| {
                 (escape || !exact) && now < limit && !self.taken(at, now, escape)
             });
             // Output the program wrote before now came before this piece:
@@ -1039,25 +1041,16 @@ impl Pane {
                 return;
             }
             self.pace.drained_by = None;
-            if let Some((bytes, unit)) = self.pace.waiting.pop_front() {
-                self.write_unit(bytes, unit, now);
-            }
-            if !exact {
+            let Some((bytes, unit)) = self.pace.waiting.pop_front() else {
+                return;
+            };
+            // Paced where nothing exact tells what follows the piece. (A
+            // shell fux marks draws the line typed before Enter as it reads
+            // it, where nothing marks it apart from what follows: paced.)
+            if !self.write_unit(bytes, unit, now) {
                 return;
             }
         }
-    }
-
-    /// Whether what follows input is told exactly, without pacing it: a
-    /// full-screen program's screen is all output, and the kernel's echo is
-    /// known in line mode. (A shell fux marks draws the line typed before
-    /// Enter as it reads it, where nothing marks it apart from what follows
-    /// Enter: paced.)
-    fn exact(&self) -> bool {
-        self.screen().mode(fux_vt::Mode::AlternateScreen)
-            || (self.process.child())
-                .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
-                .is_some_and(|t| t.line_mode())
     }
 
     /// Whether rows of the main screen written since the last input were
@@ -1096,7 +1089,8 @@ impl Pane {
 
     /// Writes a piece of input, `unit` its kind, and records it: its
     /// number, the terminal's modes then, the line the cursor is on.
-    fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) {
+    /// Whether what follows it is told exactly, needing no pace.
+    fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) -> bool {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
         let keys = (self.since_key(now), self.answered());
@@ -1127,7 +1121,8 @@ impl Pane {
             line,
             ahead,
         };
-        self.classes.wrote(input, &bytes, modes.as_ref(), now);
+        let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
+            || self.screen().mode(fux_vt::Mode::AlternateScreen);
         let _ = self.input.push(&bytes);
         let event = crate::log::Event::Input {
             unit,
@@ -1135,8 +1130,9 @@ impl Pane {
         };
         self.record.push(seq.0, now, event);
         let gap = if reading { TAKE } else { PACE };
-        self.pace.written = Some((now, crate::after(now, gap), escape));
+        self.pace.written = Some((now, crate::after(now, gap), escape, exact));
         self.pace.until = Some(crate::after(now, if reading { POLL } else { PACE }));
+        exact
     }
 
     /// Starts `launch` in the pane again as `process`, on a screen as new,
