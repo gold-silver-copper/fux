@@ -843,7 +843,6 @@ impl Watch {
         }
         let prints = pane.prints.get(self.read..).unwrap_or_default();
         self.read = pane.prints.len();
-        let before = self.before.as_ref().unwrap_or(&pane.before);
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
         let wanted: Vec<Vec<char>> = (texts.iter())
@@ -851,32 +850,37 @@ impl Watch {
             .collect();
         let pieces = prints.iter().filter(|p| p.seq.0 > self.from);
         let runs = pieces.flat_map(|p| {
-            (p.prints.iter().zip(&p.echo).zip(&p.again)).map(move |((r, e), a)| (p.seq, r, e, *a))
+            (p.prints.iter().zip(&p.echo).zip(&p.fresh)).map(move |((r, e), f)| (p.seq, r, e, *f))
         });
-        for (seq, print, echo, again) in runs.filter(|(_, r, _, _)| !r.text.is_empty()) {
-            // Printed again where it was, just before or as the wait began:
-            // nothing new.
-            let was = |rows: &std::collections::HashMap<_, String>| {
-                rows.get(&print.row)
-                    .is_some_and(|row| crate::pane::holds_at(row, &print))
-            };
-            if again || was(before) {
-                continue;
-            }
-            // The runs printed one after another on the row, joined.
-            let output = *echo == crate::classify::Echo::Not;
-            let stream = match self.stream.remove(&print.row) {
-                Some((start, end, mut text)) if output && end == print.cols.0 => {
-                    text.push_str(print.text);
-                    (start, print.cols.1, text)
+        for (seq, whole, echo, fresh) in runs {
+            // Only what it changed is news: what it printed as its row held
+            // it, just before or as the wait began, is drawn again.
+            let fresh = match self.before.as_ref().and_then(|b| b.get(&whole.row)) {
+                Some(row) => {
+                    let echo = *echo != crate::classify::Echo::Not;
+                    let (a, b) = crate::pane::changed(row, &whole, echo);
+                    (fresh.0.max(a), fresh.1.min(b))
                 }
-                _ => (print.cols.0, print.cols.1, print.text.to_owned()),
+                None => fresh,
+            };
+            let Some(print) = part(&whole, fresh) else {
+                continue;
+            };
+            // The runs printed one after another on the row, joined, whole:
+            // a text may go on over what a run printed as it was.
+            let output = *echo == crate::classify::Echo::Not;
+            let stream = match self.stream.remove(&whole.row) {
+                Some((start, end, mut text)) if output && end == whole.cols.0 => {
+                    text.push_str(whole.text);
+                    (start, whole.cols.1, text)
+                }
+                _ => (whole.cols.0, whole.cols.1, whole.text.to_owned()),
             };
             if output {
-                self.stream.insert(print.row, stream.clone());
+                self.stream.insert(whole.row, stream.clone());
             }
-            // A text found here holds some of the run: one of its
-            // characters.
+            // A text found here holds some of what the run changed: one of
+            // its characters.
             let run = folded(print.text);
             if !wanted.iter().any(|text| overlaps(&run, text)) {
                 continue;
@@ -885,24 +889,34 @@ impl Watch {
             // printed there: else later output took its place.
             let screen = pane.screen();
             let intact = screen
-                .row_by_id(print.row)
-                .is_some_and(|row| crate::pane::holds_at(&row.cells_text(), &print));
+                .row_by_id(whole.row)
+                .is_some_and(|row| crate::pane::holds_at(&row.cells_text(), &whole));
             // A row a line wraps onto goes on from the row above's end.
-            let above = (screen.row_by_id(print.row))
+            let above = (screen.row_by_id(whole.row))
                 .and_then(|row| row.above())
                 .filter(fux_vt::Row::wrapped)
                 .and_then(|up| up.cells_text().chars().last());
             let line = match intact {
                 true => Line::of(pane, &print, reach),
-                false => Line::piece(&print, above),
+                false => Line::piece(&whole, above, fresh),
             };
+            // In the joined runs, what this one changed is at their end.
+            let before_it = stream
+                .2
+                .chars()
+                .count()
+                .saturating_sub(whole.text.chars().count());
             let joined = Line::piece(
                 &fux_vt::Print {
                     cols: (stream.0, stream.1),
                     text: &stream.2,
-                    ..print
+                    ..whole
                 },
                 above,
+                (
+                    before_it.saturating_add(fresh.0),
+                    before_it.saturating_add(fresh.1),
+                ),
             );
             let lines = [line, joined];
             // A text an echo may show is no news here: one made of what was
@@ -1080,14 +1094,15 @@ impl Line {
             }
             return line.trimmed();
         }
-        Line::piece(print, None)
+        Line::piece(print, None, (0, print.text.chars().count()))
     }
 
-    /// The piece's own text, all of it printed: a line's start only if
-    /// it starts its row and the row starts a line, and never its end,
-    /// which the row may go on past. A row a line wraps onto goes on from
-    /// `above`, the last character of the row above.
-    fn piece(print: &fux_vt::Print<'_>, above: Option<char>) -> Line {
+    /// The piece's own text, its characters `from..to` taken as printed
+    /// (what it changed): a line's start only if it starts its row and the
+    /// row starts a line, and never its end, which the row may go on past.
+    /// A row a line wraps onto goes on from `above`, the last character of
+    /// the row above.
+    fn piece(print: &fux_vt::Print<'_>, above: Option<char>, (from, to): (usize, usize)) -> Line {
         let mut line = Line {
             text: String::new(),
             printed: Vec::new(),
@@ -1101,7 +1116,9 @@ impl Line {
             None if print.cols.0 > 0 => line.push(CUT_END, false),
             None => {}
         }
-        line.push(print.text, true);
+        for (n, c) in print.text.chars().enumerate() {
+            line.push(c.encode_utf8(&mut [0; 4]), from <= n && n < to);
+        }
         line.push(CUT_END, false);
         line
     }
@@ -1219,6 +1236,29 @@ fn screen_top(screen: &fux_vt::Screen) -> usize {
 /// none at its ends.
 fn normal(text: &str) -> String {
     blanks_as_one(text).to_lowercase()
+}
+
+/// The characters `from..to` of `print`, where they went; none if empty.
+fn part<'a>(print: &fux_vt::Print<'a>, (from, to): (usize, usize)) -> Option<fux_vt::Print<'a>> {
+    let at = |n: usize| {
+        print
+            .text
+            .char_indices()
+            .nth(n)
+            .map_or(print.text.len(), |(i, _)| i)
+    };
+    let text = print.text.get(at(from)..at(to)).filter(|t| !t.is_empty())?;
+    let col = |n: usize| {
+        print
+            .cols
+            .0
+            .saturating_add(u16::try_from(n).unwrap_or(u16::MAX))
+    };
+    Some(fux_vt::Print {
+        cols: (col(from), col(to)),
+        text,
+        ..*print
+    })
 }
 
 /// `text` as a wait compares it, case and runs of blanks aside, its

@@ -459,9 +459,10 @@ pub struct Printed {
     /// What each of its runs may be the echo of (`crate::classify`), which
     /// a wait never takes.
     pub echo: Vec<crate::classify::Echo>,
-    /// Which of its runs printed only what its row held there just before
-    /// (a line drawn again, the same): nothing new.
-    pub again: Vec<bool>,
+    /// Of each of its runs, the characters it changed: those after the
+    /// first and before the last it printed as its row held them just
+    /// before (a line drawn again, the same, changes none: nothing new).
+    pub fresh: Vec<(usize, usize)>,
 }
 
 /// The most bytes of text printed since the last input a pane keeps for
@@ -822,9 +823,11 @@ impl Pane {
                     .collect();
                 let held =
                     |p: &fux_vt::Print<'_>| self.seen.get(&p.row).or(self.before.get(&p.row));
-                let again = prints
-                    .iter()
-                    .map(|p| held(&p).is_some_and(|row| holds_at(row, &p)))
+                let fresh = (prints.iter().zip(&echo))
+                    .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
+                        let echo = *e != crate::classify::Echo::Not;
+                        held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
+                    })
                     .collect();
                 // Only a row on the screen can be printed on again: one gone
                 // into history is not looked for there.
@@ -842,7 +845,7 @@ impl Pane {
                     seq: crate::log::OutputSeq(seq),
                     prints,
                     echo,
-                    again,
+                    fresh,
                 });
             }
         }
@@ -1314,6 +1317,29 @@ pub fn holds_at(row: &str, print: &fux_vt::Print<'_>) -> bool {
     there
         .take(print.text.chars().count())
         .eq(print.text.chars())
+}
+
+/// The characters of `print` that change `row` (its text just before):
+/// none if it printed what was there; else, of a run that may be the echo
+/// of the line typed (a line editor drawing it again, its prompt and all),
+/// those from the first that differs from what stood in its cell to the
+/// last; of other output, all of it (its row may have been erased since).
+pub fn changed(row: &str, print: &fux_vt::Print<'_>, echo: bool) -> (usize, usize) {
+    let there: Vec<char> = row.chars().skip(usize::from(print.cols.0)).collect();
+    let text: Vec<char> = print.text.chars().collect();
+    if !echo {
+        return match holds_at(row, print) {
+            true => (0, 0),
+            false => (0, text.len()),
+        };
+    }
+    let same = |i: &usize| text.get(*i) == there.get(*i);
+    let first = (0..text.len()).find(|i| !same(i));
+    let last = (0..text.len()).rev().find(|i| !same(i));
+    match (first, last) {
+        (Some(first), Some(last)) => (first, last.saturating_add(1)),
+        _ => (0, 0),
+    }
 }
 
 /// What `row` shows, its text and colours, as one number.

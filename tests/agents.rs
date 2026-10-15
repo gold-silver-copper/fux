@@ -4082,3 +4082,44 @@ fn a_runs_answer_holds_what_scrolled_away() -> Outcome {
     );
     Ok(())
 }
+
+/// Sealed Set C (TC-026): a line editor that draws its whole line again,
+/// prompt and all, at each key: the prompt it draws again where it stood
+/// is no news; a wait for it is met by the next prompt, after the reply.
+#[test]
+fn a_prompt_drawn_again_with_the_typed_line_is_no_news() -> Outcome {
+    let server = Server::start("")?;
+    let desk = "import os, time, tty\ntty.setraw(0)\nline = ''\nos.write(1, b'desk> ')\n\
+                while True:\n    c = os.read(0, 1).decode()\n\
+                \x20   if c in '\\r\\n':\n        os.write(1, b'\\r\\n'); time.sleep(0.5)\n\
+                \x20       os.write(1, ('OK ' + line + '\\r\\ndesk> ').encode()); line = ''; continue\n\
+                \x20   line += c; os.write(1, ('\\r\\x1b[Kdesk> ' + line).encode())\n";
+    let pane = id(&server.ok(&run(
+        &["str", "desk>", "wait-text"],
+        &["python3", "-c", desk],
+    ))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "inspect",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "desk>",
+        "wait-text",
+        "send-keys",
+    ];
+    let began = std::time::Instant::now();
+    server.ok(&keys)?;
+    assert!(
+        began.elapsed() >= std::time::Duration::from_millis(400),
+        "{:?}",
+        began.elapsed()
+    );
+    Ok(())
+}
