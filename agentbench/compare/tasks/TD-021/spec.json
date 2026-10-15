@@ -1,0 +1,13 @@
+{
+  "id": "TD-021",
+  "title": "An audit reply buried under its own echo",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/audit.py {work}` in a terminal. At the LIVE FILTER prompt, submit the single line in `{work}/request.txt`. Do not submit it during startup or during report generation. You may restart a failed attempt.\n\nRead the live reply beginning `You said:`; its tag selects the CURRENT record in the ensuing audit report. REPLAY material, quoted command examples, and historical records are not current results. Preserve enough output to read the selected record even when its line wraps and it scrolls far away. Also read the seal emitted with REPORT END as the program exits. Wait for REPORT END before finishing.\n\nWrite `{work}/answer.txt` as exactly three lines, in this order: `tag=<live reply tag>`, `digest=<selected CURRENT record digest>`, `seal=<REPORT END seal>`. Each line must end with a newline. Do not include any report marker lines, colours, spaces around `=`, or other text. The values must come from the program's output.",
+  "setup": {
+    "files": {
+      "request.txt": "route delta / ledger 37\n"
+    }
+  },
+  "note": "Traps: the reply starts with the exact submitted filter, and a replay has the same You said prefix and a stale tag. Echo and quoted output are decoys. The matching ANSI-coloured CURRENT record is more than one screen wide and is followed by 540 lines. A thread emits the reply immediately after submission. The final seal lands immediately before process exit. The checker independently derives all three values from the setup input, checks the actual submitted line, and requires a completed tty run. Processing delays reject early input; no deadline or guessed sleep is required. Earlier failed runs may be replaced by a successful run."
+}

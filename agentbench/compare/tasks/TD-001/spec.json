@@ -1,0 +1,11 @@
+{
+  "id": "TD-001",
+  "title": "Repair a redrawing dispatch line",
+  "category": "input",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/dispatch.py {work} in a terminal. Repair the prefilled dispatch draft using its line editor and submit the command requested on screen. It supports Backspace, Ctrl-U, Ctrl-W, Left/Right, Home/End and Delete. Wait for each READY event before sending input; submitting a draft or typing during validation fails that attempt. When the program asks for a seal, submit the seal command it displays. Finish with the dispatch recorded as complete. Write {work}/answer.txt as exactly two newline-terminated lines: dispatch=<the accepted dispatch id> then seal=<the final server seal>. Include these two labels, with no prompt, echo, draft, or marker lines. Earlier failed attempts may be retried.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: the entire prompt and buffer are redrawn on every key; the prefilled draft embeds a convincing seal label, and the program repeats the submitted command in its reply. An overwritten seal preview differs from the final server seal. Inputs during the validation delay are recorded as failure. The checker derives both ids, verifies final submitted lines and completion in a real terminal; retries overwrite the attempt record. Readiness and committed output, not elapsed sleeps or draft echoes, determine the correct result."
+}

@@ -1,0 +1,61 @@
+[
+  {
+    "name": "long-label-and-scroll",
+    "args": [
+      "--seed",
+      "10"
+    ],
+    "size": [
+      32,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "a-long-build-label-a-long-build-label-a-long-build-label-a-long-build-label-a-long-build-label-a-long-build-label-a-long-build-label-a-long-build-label-a-long-build-label-\r",
+        "pause_ms": 250
+      }
+    ]
+  },
+  {
+    "name": "narrow-scroll-and-overwrite",
+    "args": [
+      "--seed",
+      "19",
+      "--width",
+      "260",
+      "--rows",
+      "55"
+    ],
+    "size": [
+      20,
+      6
+    ],
+    "steps": [
+      {
+        "keys": "release\r",
+        "pause_ms": 300
+      }
+    ]
+  },
+  {
+    "name": "large-burst-wide-terminal",
+    "args": [
+      "--seed",
+      "28",
+      "--width",
+      "350",
+      "--rows",
+      "70"
+    ],
+    "size": [
+      100,
+      20
+    ],
+    "steps": [
+      {
+        "keys": "nightly\r",
+        "pause_ms": 300
+      }
+    ]
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "id": "TD-020",
+  "title": "Commit a form beyond its receipt preview",
+  "category": "tui",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/dispatch_form.py {work}` exactly once. In its full-screen form set Destination, Note, and Mode to the requested values shown on screen (also in `{work}/job.json`). Use Tab or Shift-Tab to change fields and arrow keys to select the mode. Press F4 to review, replace the modal's prefilled acknowledgement with the exact acknowledgement shown, and submit it with Enter. Wait for COMMIT READY without sending any keys during COMMIT BUSY, then press F6 to commit. Read the actual COMMITTED batch and receipt; the preview and the receipt in the echoed acknowledgement are provisional. Press F10 to close the form after commit. Write `{work}/answer.txt` with exactly two lines: `batch=<observed committed batch>` and `receipt=<observed committed receipt>`, in that order, each ending with a newline. Include no marker lines or other text. There is no input deadline. Leave `{work}/job.json` unchanged.",
+  "setup": {
+    "files": {
+      "job.json": "{\n  \"seed\": \"lichen-92\",\n  \"destination\": \"harbor-east\",\n  \"note\": \"Hold for green manifest\",\n  \"mode\": \"verified\"\n}\n"
+    }
+  },
+  "note": "Trap: full-screen redraws copy the modal acknowledgement and provisional receipt into a status view, but only F6 after COMMIT READY creates the real receipt. Any busy-period key fails. The checker requires the exact desired fields and final acknowledgement, one tty launch, completed commit and F10 exit, plus exact deterministic answer bytes. Tab, arrows and function keys are decoded semantically in common CSI/SS3 encodings, and line edits are graded only by submitted values. The final receipt remains visible until F10, so no transient frame or fixed wait is needed."
+}

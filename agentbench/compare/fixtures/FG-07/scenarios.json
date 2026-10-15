@@ -1,0 +1,107 @@
+[
+  {
+    "name": "edit-menu-and-worker",
+    "args": [
+      "--seed",
+      "0",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      64,
+      18
+    ],
+    "steps": [
+      {
+        "keys": "alpha betx",
+        "pause_ms": 240
+      },
+      {
+        "keys": "\u007fa\u001b[D\u001b[DZ\u001b[C\u001b[3~",
+        "pause_ms": 50
+      },
+      {
+        "keys": "\u001b[H>\u001b[F\t",
+        "pause_ms": 80
+      },
+      {
+        "keys": "\u0017tail\u0015final \u754c e\u0301 \ud83d\ude42",
+        "pause_ms": 50
+      },
+      {
+        "keys": "\r",
+        "pause_ms": 50
+      },
+      {
+        "keys": "queued\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": ":quit\r",
+        "pause_ms": 700
+      }
+    ]
+  },
+  {
+    "name": "wrap-resize-and-typeahead",
+    "args": [
+      "--seed",
+      "4",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      24,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "\u754c\u9762\ud83d\ude42e\u0301 abcdefghij abcdefghij abcdefghij abcdefghij abcdefghij abcdefghij abcdefghij abcdefghij abcdefghij ",
+        "pause_ms": 220
+      },
+      {
+        "keys": "\u001d",
+        "pause_ms": 80
+      },
+      {
+        "keys": "\u001b[H\u001b[C\u001b[3~\u001b[F!",
+        "pause_ms": 50
+      },
+      {
+        "keys": "\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": "after resize\r:quit\r",
+        "pause_ms": 700
+      }
+    ]
+  },
+  {
+    "name": "bell-erasure-and-burst",
+    "args": [
+      "--seed",
+      "9",
+      "--resize",
+      "37x12"
+    ],
+    "size": [
+      80,
+      24
+    ],
+    "steps": [
+      {
+        "keys": "\u007f\u0001\t",
+        "pause_ms": 220
+      },
+      {
+        "keys": "same\rsame\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": "remove word\u0017new\u0015\r:quit\r",
+        "pause_ms": 800
+      }
+    ]
+  }
+]

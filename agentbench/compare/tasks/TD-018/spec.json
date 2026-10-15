@@ -1,0 +1,13 @@
+{
+  "id": "TD-018",
+  "title": "Attest the foreground command, not its echoed status label",
+  "category": "shell",
+  "difficulty": "hard",
+  "goal": "Use an interactive Bash shell whose working directory is `{work}`. In that shell execute `export TASK_SHELL_FLAGS=\"$-\"` and set `PS1='forge status=$? > '`, so the actual status of a foreground command is visible in the next shell prompt. Run `python3 -I {fixtures}/shell_release.py build {work}` exactly once as a foreground command. Wait for INSPECT READY before submitting the exact inspection line shown; send no input during compilation. When the program exits, preserve its exit status immediately in `build_status` using `build_status=$?` before another command changes it. Then, from the same interactive shell, run `python3 -I {fixtures}/shell_release.py attest {work} \"$build_status\"` exactly once and answer its displayed request. The status label echoed in the inspection request and the cached transcript are not the command's exit status. Wait for ATTESTED. Write `{work}/answer.txt` with exactly two newline-terminated lines: `status=<observed build exit status>` and `seal=<observed attested seal>`, in that order. Include no marker lines or other text. There is no input deadline. Leave `{work}/job.json` unchanged.",
+  "setup": {
+    "files": {
+      "job.json": "{\n  \"seed\": \"copper-61\",\n  \"target\": \"image-arm64\"\n}\n"
+    }
+  },
+  "note": "Trap: a cached shell-looking prompt and the echoed inspection both say status=0, whereas the foreground process returns a different computed status. Bash $- is exported by the required shell command, and both modes record tty evidence and the interactive flag; no decision uses the shell command-line arguments. The attestation accepts only the actual computed exit status and a completed build record read by its fixed atomic filename. Startup and compilation reject submitted lines. The checker enforces one launch of each mode, exact input, nonzero computed status and seal. Waiting for the real prompt and ready output avoids fixed sleeps and echoed status guesses."
+}

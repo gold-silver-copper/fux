@@ -1,0 +1,13 @@
+{
+  "id": "TD-017",
+  "title": "Replace the echoed revision before submitting",
+  "category": "input",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/revision_console.py {work}` exactly once. Wait for DRAFT INPUT, then type the displayed DRAFT TO TYPE line without pressing Enter. Leave it pending while the source is resolved. After REVISION READY, erase the pending draft with Ctrl-U, retype the displayed SUBMIT EXACTLY line, and press Enter. This is a canonical terminal input line: the terminal echoes your draft and performs the erasure. Do not submit a line before REVISION READY, and send no further input after the replacement is accepted. Wait for PROGRAM RESULT. Write `{work}/answer.txt` with exactly two lines: `revision=<observed PROGRAM RESULT revision>` and `receipt=<observed PROGRAM RESULT receipt>`, in that order, each ending with a newline. Include no marker lines or other text. A receipt in an echoed command is a request label; report the journal's result. There is no input deadline. Leave `{work}/job.json` unchanged.",
+  "setup": {
+    "files": {
+      "job.json": "{\n  \"seed\": \"quartz-29\",\n  \"document\": \"inventory-august\"\n}\n"
+    }
+  },
+  "note": "Trap: kernel echo leaves a stale draft and a receipt label on screen while asynchronous output arrives. The replacement must be submitted after the source revision is actually announced; a reader thread timestamps completed canonical lines and rejects premature submissions. The final journal receipt arrives after another busy interval and differs from all request echo. The checker requires one tty run, the final canonical line and the deterministic result, not editing keystrokes. Waiting for readiness works without a timing guess. The erase-and-retype instruction intentionally exercises terminal-owned line editing; the checker grades its final submission."
+}

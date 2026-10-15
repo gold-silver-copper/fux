@@ -1,0 +1,14 @@
+{
+  "id": "TD-009",
+  "title": "Migration paste and deferred confirmation",
+  "category": "input",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/migration.py {work} in a terminal. At BEGIN submit load. At PASTE READY submit the exact five lines of {work}/recipe.txt, including its empty third line and its final dot line, with each line terminated. The program repeats each submitted line with You said:. After the dot, observe its later CHALLENGE value before that row is overwritten. Wait for the separate FINALIZE prompt before submitting finalize <observed challenge>; typing during validation fails the attempt. Allow MIGRATION CLOSED. Write {work}/answer.txt with exactly one newline-terminated line, checksum=<observed APPLIED checksum>. Do not include prompt or marker lines. The APPLIED reply begins and ends with your submitted finalize text and is immediately overwritten.",
+  "setup": {
+    "files": {
+      "seed.txt": "migration/north/144\n",
+      "recipe.txt": "route north\nmessage You said: COMMIT\n\nlimit 017\n.\n"
+    }
+  },
+  "note": "Traps: a multiline recipe contains a misleading COMMIT word and an empty line; replies repeat the submitted text, a background-thread bell arrives immediately after the dot, a challenge disappears in one burst, and the final input must wait for a later prompt. The final receipt begins and ends with the typed text and is overwritten. The checker verifies semantic submitted lines, final challenge and tty evidence plus the exact seed-derived checksum. Line editing and either newline encoding are accepted; earlier failures may be retried. A fixed short delay can hit validation, while a late screen capture loses the challenge and receipt; guessed challenge tokens fail the input protocol."
+}

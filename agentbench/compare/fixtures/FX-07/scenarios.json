@@ -1,0 +1,65 @@
+[
+  {
+    "name": "poll-timeouts-during-typing",
+    "args": [
+      "--seed",
+      "7"
+    ],
+    "size": [
+      60,
+      12
+    ],
+    "steps": [
+      {
+        "keys": "bu",
+        "pause_ms": 250
+      },
+      {
+        "keys": "ild\r",
+        "pause_ms": 200
+      }
+    ]
+  },
+  {
+    "name": "bells-alone-and-with-text",
+    "args": [
+      "--seed",
+      "16",
+      "--commands",
+      "2"
+    ],
+    "size": [
+      40,
+      8
+    ],
+    "steps": [
+      {
+        "keys": "\u0007one\r",
+        "pause_ms": 0
+      },
+      {
+        "keys": "two\u007fO\r",
+        "pause_ms": 200
+      }
+    ]
+  },
+  {
+    "name": "idle-limit-exits",
+    "args": [
+      "--seed",
+      "25",
+      "--idle-ticks",
+      "3"
+    ],
+    "size": [
+      50,
+      10
+    ],
+    "steps": [
+      {
+        "keys": "",
+        "pause_ms": 450
+      }
+    ]
+  }
+]

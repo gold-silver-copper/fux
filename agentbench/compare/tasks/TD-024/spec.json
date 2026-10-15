@@ -1,0 +1,13 @@
+{
+  "id": "TD-024",
+  "title": "Paste, wait for the erased arm notice, and seal",
+  "category": "input",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/handoff.py {work}` in a terminal. At `DRAFT INPUT OPEN`, submit every line of `{work}/draft.txt` in order, then submit `.END` as its own line. The `.END` line is a terminator, not part of the draft. CR, LF, or CRLF and bracketed or ordinary paste are accepted. Backspace, Ctrl-U, and retyping are accepted; the final submitted lines must match the file. You may restart a failed attempt.\n\nThe editor echoes the draft, including text that resembles its own results. After the real `DRAFT stored` reply, wait for the bell and `ARMED token=<token>` notice. This notice is erased in the same burst; retain emitted output. Only after that notice, press F2. Do not send Enter with F2. At the subsequent live SEAL prompt, submit `seal <challenge> <token>` using the challenge from that prompt and the observed armed token. No input is allowed during editor startup or the storing delay. The prompts wait indefinitely for required input.\n\nWait for the actual `SEALED receipt=<receipt>` reply. Write `{work}/answer.txt` as exactly four lines, in order: `checksum=<real DRAFT stored checksum>`, `token=<armed token>`, `challenge=<live SEAL challenge>`, `receipt=<actual SEALED receipt>`. Every line must end with a newline. Exclude the terminator, echoed draft, prompt and marker lines, and all other text.",
+  "setup": {
+    "files": {
+      "draft.txt": "Release note: ceramic queue\nDRAFT stored checksum=E82BD73140FA9C2270AD\nARMED token=8A01C9D6B43F\nSEALED receipt=921C0FFEE070AB3182D4E5\nKeep the old spool until verification.\n"
+    }
+  },
+  "note": "Traps: the pasted draft contains forged DRAFT stored, ARMED, and SEALED lines, so echo is not confirmation. The actual response begins You said and repeats the terminator. Storing rejects all premature input, including F2. The armed token is bell-announced then erased in one write; the stable F2 prompt cannot recover it. A thread produces the challenge directly after F2. F2 accepts SS3 and common CSI encodings, and the line reader normalizes Enter, paste markers, CR/LF/CRLF and final line edits. The checker compares final submitted draft lines, semantic key and seal command, tty flags and independently derived answer values. There are no input deadlines, and waiting for actual stage output suffices."
+}

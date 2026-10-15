@@ -1,0 +1,11 @@
+{
+  "id": "TD-015",
+  "title": "Build, serve, and retain the first test outcome",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "Run each of these programs exactly once, concurrently in three separate terminals: python3 -I {fixtures}/builder.py {work}, python3 -I {fixtures}/preview_server.py {work}, and python3 -I {fixtures}/test_probe.py {work}. Keep all three running until settlement. Submit the builder's displayed compile request. Use the current ARTIFACT emitted after that submission to attach the server as its prompt instructs; ignore the builder's cached ARTIFACT. Use the server's current LIVE session, emitted after attach, to probe the tests as their prompt instructs; ignore the cached LIVE session and pre-input test outcomes. Among the current probe's PASS, FAIL, and BLOCKED outcomes, retain whichever appears first. Wait for REPORT CLOSED before settling the server: submit commit <first-token> if PASS was first, rollback <first-token> if FAIL was first, or defer <first-token> if BLOCKED was first. Read the server's SETTLED receipt, then submit quit to each program at its displayed prompt and wait for all three to exit normally. Send no input to a program while it is producing output. Write {work}/answer.txt as exactly four newline-terminated lines: artifact=<current-artifact>, session=<current-session>, first=<first-kind>:<first-token>, receipt=<settled-receipt>. Exclude all output marker lines. There is no input deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Traps: cached artifacts, sessions, and first-outcome decoys occur before inputs; dependencies require the current outputs and cannot be guessed from an echoed attach/probe command. The first current test result is FAIL but PASS and BLOCKED follow, so last-match parsing chooses the wrong server action. Settling before REPORT CLOSED or sending a command during output is recorded and rejected. The probe verifies three distinct simultaneously live terminal programs by name, never compares reused terminal names after exit, and reads only atomic named records. The checker enforces the derived artifact/session/outcome chain, ordered semantic inputs, normal quits, terminal overlap, and exact answer bytes."
+}

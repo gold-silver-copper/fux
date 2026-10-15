@@ -1,0 +1,13 @@
+{
+  "id": "TD-014",
+  "title": "A shell prompt drawn before the command ends",
+  "category": "shell",
+  "difficulty": "hard",
+  "goal": "Use one interactive Bash shell in a terminal, with its prompt set to the literal text LEDGER-SHELL> followed by one space. Run python3 -I {fixtures}/ledger_job.py {work} exactly once as a foreground command in that shell. Its cached status lines and temporary prompt-shaped display are not the shell regaining control. Send no input while the job is running. After it actually returns to the shell, immediately run python3 -I {fixtures}/shell_receipt.py {work} \"$?\" \"$-\" exactly once, so the helper receives the previous command's exit status and the shell's actual option flags. Do not run an intervening command. Read the helper's STATUS RECEIPT and wait for it to exit. Write {work}/answer.txt as exactly two newline-terminated lines: status=<observed-exit-status> then receipt=<receipt-token>. Include no output marker lines. The status is a base-ten integer with no leading zeroes. There is no input deadline.",
+  "setup": {
+    "files": {
+      "ledger.txt": "ledger revision violet / tranche 29\n"
+    }
+  },
+  "note": "Traps: a delayed foreground job emits stale status= lines and draws a shell-like prompt that disappears, then continues working. Input during the job is rejected even if it resembles a shell command; the exit code is available only after completion and is verified by a tty receipt program. An interactive shell is evidenced by both tty use and the i flag in the received $-, never by command-line arguments. The checker derives the code from the seeded ledger, verifies the reported status and exact answer, and requires each helper once. Fixed waits can mistake the temporary prompt for completion or report a printed historical status."
+}

@@ -1,0 +1,11 @@
+{
+  "id": "TD-026",
+  "title": "Mirror race: retain the first route",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/mirror.py {work} exactly once in a terminal. Complete both mirror races. Wait for each INPUT READY prompt and use the command shown there. Do not type during startup or the races. Each race begins at its LIVE BEGIN marker, after your arm command has been accepted. Of the ROUTE lines the program emits after that marker, retain the FIRST route and its ticket, even if it is erased or later contradicted. Rehearsal lines before the marker and the terminal's echo of your input do not count. At the next INPUT READY prompt submit that first route and ticket in the displayed syntax. There is no response deadline; a prompt waits indefinitely. After MIRRORS CLOSED, write {work}/answer.txt with exactly two newline-terminated lines, in race order: race1=<first route>/<its ticket> and race2=<first route>/<its ticket>. Include no marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "The checker recomputes both deterministic winners and checks the accepted arm/retain inputs, completed terminal run, no early input, and exact answer bytes. Each race prints a rehearsal winner before arming, a genuine first route that is erased with a carriage return and erase-line, then a persistent losing route. Round two reverses the kinds of outcomes. Receipt markers exclude echoed arm text. Startup and result delays vary (up to 7.3 seconds); any fixed delay cannot supply the observed winner and acting before INPUT READY is recorded as failure. No input deadline or timing-dependent winner exists."
+}

@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "grade", "workaround", "missing_piece", "layer", "bugs", "friction"],
+  "properties": {
+    "summary": {"type": "string"},
+    "grade": {"type": "string", "enum": ["worked", "hack", "impossible"]},
+    "workaround": {"type": "string"},
+    "missing_piece": {"type": "string"},
+    "layer": {"type": "string", "enum": ["none", "cli", "waiting", "reading", "input", "session", "docs", "errors", "server", "design_rule"]},
+    "bugs": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "repro", "expected", "got"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["panic", "hang", "wrong_result", "misleading_error", "docs_mismatch", "protocol", "other"]},
+        "repro": {"type": "string"}, "expected": {"type": "string"}, "got": {"type": "string"}
+      }}},
+    "friction": {"type": "string"}
+  }
+}

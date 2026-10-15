@@ -1,0 +1,11 @@
+{
+  "id": "TD-027",
+  "title": "Shipping desk: echoed bids and the first decision",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/shipping.py {work} exactly once in a terminal and complete its two consignments. Wait for each INPUT READY prompt before typing. The bid command printed at each prompt intentionally resembles a decision line; its terminal echo is not a decision. Ignore all cached decisions before the matching BID ACCEPTED / DECISIONS OPEN markers. For each consignment, the FIRST program-emitted DECISION after DECISIONS OPEN decides the disposition and seal, including a decision briefly drawn and erased. Later decisions do not replace it. Wait for the settlement prompt, then submit settle <consignment> <first disposition> <first seal> as shown on screen. Prompts wait indefinitely; do not type while the desk is processing. After DESK CLOSED write {work}/answer.txt with exactly three newline-terminated lines: parcel1=<first disposition>/<first seal>, parcel2=<first disposition>/<first seal>, manifest=<the final manifest code printed after both settlements>. Include no markers or echoed bid lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Two independent first-event decisions include REVIEW before RELEASE and CANCEL before REVIEW; one first event disappears and the other is followed by an overwritten status display. Cached DECISION lines are emitted before input. The required bid itself begins DECISION and is echoed with a plausible disposition and seal; only events after the accepted-bid boundary count. The checker derives the first events and final manifest from a fixed seed, validates semantic submitted lines and absence of early input, and compares exact answer bytes. Startup/processing pauses vary through 8.2 seconds, and no fixed sleep identifies the first event. Prompts have no deadlines."
+}
