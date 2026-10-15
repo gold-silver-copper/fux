@@ -2493,7 +2493,7 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
     assert_eq!(out.status, CANNOT_COME, "{}", out.stderr);
     // Told at once, the answer is the screen; at the limit, the error.
     let (said, why) = match PROBED {
-        true => (&out.stdout, "earlier lines not kept"),
+        true => (&out.stdout, "more came than fux keeps"),
         false => (&out.stderr, "may have come unseen"),
     };
     assert!(said.contains(why), "{}{}", out.stdout, out.stderr);
@@ -3670,5 +3670,106 @@ fn text_edited_with_delete_is_echo() -> Outcome {
         "str", "L", "text",
     ];
     assert_eq!(needle(&server, &bash, &edited)?, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 12: a text a fresh program shows and takes away in one burst
+/// (drawn over) has shown, so `wait-gone` is met; and `^` holds a text to
+/// a line's start, not to where a run of output starts after a tab.
+#[test]
+fn a_text_shown_and_gone_in_a_burst_has_gone_and_anchors_hold_to_lines() -> Outcome {
+    let server = Server::start("")?;
+    let burst = "import sys; sys.stdout.write('READY\\rxxxxx'); sys.stdout.flush(); input()";
+    let gone = server.fux(&run(
+        &["str", "READY", "wait-gone", "5", "timeout"],
+        &["python3", "-c", burst],
+    ))?;
+    assert_eq!(gone.status, 0, "{}{}", gone.stdout, gone.stderr);
+    let tab = id(&server.ok(&run(
+        &["str", "END", "wait-text"],
+        &["sh", "-c", "printf 'FIRST\\tSECOND END\\n'; read x"],
+    ))?);
+    let anchored = [
+        "str",
+        &tab,
+        "pane",
+        "opts",
+        "str",
+        "^SECOND",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ];
+    assert_eq!(server.fux(&anchored)?.status, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 12: a line edited (Left, Delete, then the text it lacked) is
+/// the echo for a later wait too, not only for the one sent with the keys.
+#[test]
+fn a_line_edited_is_echo_for_a_later_wait() -> Outcome {
+    let server = Server::start("")?;
+    let edit = "read -e -p 'Edit> ' x; echo got; read y";
+    let bash = id(&server.ok(&run(&["str", "Edit>", "wait-text"], &["bash", "-c", edit]))?);
+    let keys = [
+        "str",
+        &bash,
+        "pane",
+        "keys",
+        "str",
+        "NEEDLX",
+        "text",
+        "str",
+        "Left",
+        "key",
+        "str",
+        "DC",
+        "key",
+        "str",
+        "E",
+        "text",
+        "send-keys",
+    ];
+    server.ok(&keys)?;
+    let later = [
+        "str",
+        &bash,
+        "pane",
+        "opts",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ];
+    assert_eq!(server.fux(&later)?.status, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 12: a program whose main thread sleeps while another reads its
+/// terminal waits (it may go on alone), not busy.
+#[test]
+fn a_sleeping_main_thread_beside_a_reader_waits() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let program = "import os, time, threading\n\
+                   threading.Thread(target=lambda: os.read(0, 100), daemon=True).start()\n\
+                   print('READY', flush=True); time.sleep(60)\n";
+    let out = server.fux(&run(
+        &["str", "READY", "wait-text", "3", "timeout"],
+        &["python3", "-c", program],
+    ))?;
+    let pane = id(&out.stdout);
+    let settle = server.fux(&["str", &pane, "pane", "opts", "3", "timeout", "wait"])?;
+    assert_eq!(settle.status, 0, "{}{}", settle.stdout, settle.stderr);
+    assert!(
+        settle.stdout.starts_with(&format!("{pane} waiting")),
+        "{}",
+        settle.stdout
+    );
     Ok(())
 }

@@ -35,6 +35,9 @@ pub const TIMED_OUT: u8 = 124;
 /// Said first of what came when lines of it were let go past history's
 /// limit.
 const CUT: &str = "… earlier lines not kept (past history-lines)\n";
+/// Said first instead when more came than fux keeps for a wait.
+const MORE_THAN_KEPT: &str =
+    "… more came than fux keeps for a wait (1 MiB): text may have passed unseen\n";
 
 /// How long a bare `wait` on a pane that may go on alone waits for
 /// something new before it answers the pane as it is: longer than the
@@ -85,9 +88,9 @@ struct Since {
     on_full: bool,
     finished: u64,
     revision: u64,
-    /// What came since was more than the pane keeps: some was let go
-    /// before the wait read it.
-    cut: bool,
+    /// What came since was more than the pane keeps, and which notice
+    /// says so: some was let go before the wait read it.
+    cut: Option<&'static str>,
 }
 
 /// One pane a wait watches, and what it found as it began.
@@ -105,9 +108,10 @@ struct Watch {
     before: Option<std::collections::HashMap<fux_vt::RowId, String>>,
     /// The first text found: which, its line, and when it came.
     found: Option<(String, String, Seq)>,
-    /// The text printed last on a row, runs that go on from each other
-    /// joined, though printed in several pieces: its row and where it ends.
-    stream: Option<(fux_vt::RowId, u16, String)>,
+    /// The text printed on each row, runs that go on from each other
+    /// joined, though printed in several pieces and between others: where
+    /// it starts and ends, and the text.
+    stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
     /// The `wait-gone` texts seen since the wait began, for a fresh program.
     appeared: Vec<String>,
     /// A text was found in the echo of what was typed alone.
@@ -362,7 +366,7 @@ impl Wait {
             // Else what came, if asked or of an exit or a text gone.
             let came = self.print || matches!(told, Told::Found(Found::Exit(_) | Found::Gone(_)));
             let body = if matches!(told, Told::Found(Found::Stopped)) {
-                let cut = if since.cut { CUT } else { "" };
+                let cut = since.cut.unwrap_or_default();
                 format!("{cut}{}", text(pane, self.marks, false))
             } else if came {
                 since_text(pane, since, self.marks)
@@ -650,7 +654,7 @@ impl Watch {
             read: if after { pane.prints.len() } else { 0 },
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
-            stream: None,
+            stream: std::collections::HashMap::new(),
             appeared: Vec::new(),
             echo_skipped: false,
             finished: screen.commands().finished,
@@ -762,7 +766,14 @@ impl Watch {
                 Until::Gone(text) => {
                     let shown = lines(screen.rows().skip(screen_top(screen)));
                     let present = shown.iter().any(|l| found_in(&l.text, text) > 0);
-                    if present && !self.appeared.contains(text) {
+                    // Shown between two looks (drawn over, erased, scrolled
+                    // away): printed since, though gone now.
+                    let printed = || {
+                        (pane.prints.iter().filter(|p| p.seq.0 > self.from))
+                            .flat_map(|p| p.prints.iter())
+                            .any(|r| found_in(r.text, text) > 0)
+                    };
+                    if (present || printed()) && !self.appeared.contains(text) {
                         self.appeared.push(text.clone());
                     }
                     let had = !fresh || self.appeared.contains(text);
@@ -830,25 +841,38 @@ impl Watch {
             let line = Line::of(pane, &print, reach);
             // The runs printed one after another on the row, joined.
             let output = *echo == crate::classify::Echo::Not;
-            let stream = match self.stream.take() {
-                Some((row, end, mut text)) if output && row == print.row && end == print.cols.0 => {
+            let stream = match self.stream.remove(&print.row) {
+                Some((start, end, mut text)) if output && end == print.cols.0 => {
                     text.push_str(print.text);
-                    (row, print.cols.1, text)
+                    (start, print.cols.1, text)
                 }
-                _ => (print.row, print.cols.1, print.text.to_owned()),
+                _ => (print.cols.0, print.cols.1, print.text.to_owned()),
             };
             let joined = Line::piece(&fux_vt::Print {
+                cols: (stream.0, stream.1),
                 text: &stream.2,
                 ..print
             });
-            self.stream = output.then_some(stream);
+            if output {
+                self.stream.insert(print.row, stream);
+            }
             let lines = [line, joined];
             // A text an echo may show is no news here: one made of what was
             // typed, as its keys may have edited it into any order.
             let echoed = |t: &String| match echo {
                 crate::classify::Echo::Not => false,
                 crate::classify::Echo::Is => true,
-                crate::classify::Echo::Of(typed) => typed_from(typed, bare(t)),
+                // The line as typed since, if no key submitted it: later
+                // keys edit what this piece showed.
+                crate::classify::Echo::Of(typed) => {
+                    let now = pane.typed();
+                    let typed = if now.starts_with(&**typed) {
+                        now
+                    } else {
+                        typed
+                    };
+                    typed_from(typed, bare(t))
+                }
             };
             let held = |t: &String| lines.iter().any(|l| l.holds(t).is_some());
             self.echo_skipped |= texts.iter().any(|t| echoed(t) && held(t));
@@ -922,7 +946,11 @@ impl Watch {
             on_full: self.on_full,
             finished: self.finished,
             revision: self.revision,
-            cut: pane.is_some_and(|p| p.cut() || p.prints_lost),
+            cut: pane.and_then(|p| match (p.prints_lost, p.cut()) {
+                (true, _) => Some(MORE_THAN_KEPT),
+                (false, true) => Some(CUT),
+                (false, false) => None,
+            }),
         }
     }
 }
@@ -1007,13 +1035,20 @@ impl Line {
         Line::piece(print)
     }
 
-    /// The piece's own text, all of it printed.
+    /// The piece's own text, all of it printed: a line's start only if
+    /// it starts its row, and never its end, which the row may go on past.
     fn piece(print: &fux_vt::Print<'_>) -> Line {
-        Line {
-            printed: vec![true; print.text.len()],
-            text: print.text.to_owned(),
+        let mut line = Line {
+            text: String::new(),
+            printed: Vec::new(),
             rows: Vec::new(),
+        };
+        if print.cols.0 > 0 {
+            line.push(CUT_END, false);
         }
+        line.push(print.text, true);
+        line.push(CUT_END, false);
+        line
     }
 
     fn push(&mut self, text: &str, printed: bool) {
@@ -1256,7 +1291,7 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
     let end = (texts.iter())
         .rposition(|t| !t.is_empty())
         .map_or(0, |i| i.saturating_add(1));
-    let lead = if since.cut { CUT } else { "" };
+    let lead = since.cut.unwrap_or_default();
     let body: String = (texts.get(..end).unwrap_or_default().iter())
         .map(|t| format!("{t}\n"))
         .collect();

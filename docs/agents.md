@@ -115,7 +115,8 @@ the input was. A few cases look the same either way, and are taken so:
   what you typed meets a wait for it (wait for it to know the keys went
   in).
 - Until a key submits the line you type (Enter), a text made only of
-  characters you typed on it (in any order: editing keys move them) is
+  characters you typed on it (in any order: editing keys move them; case
+  ignored, as a wait ignores it) is
   taken as their echo, as a line editor shows them, wherever it lands: a program that answers your keys with nothing but
   some of them is not seen. A text holding anything else is output.
 - A program that, after Enter, prints exactly the line you typed: taken
@@ -166,8 +167,9 @@ and the kinds fux's own words take, are checked as they run.
 ## Shells
 
 `fux opts str agent in new-tab` gives a shell (yours, else your login
-shell). Each shell fux starts reads your own startup files, then marks its
-commands (OSC 133): `line` answers `· done STATUS` once the command ends and
+shell). Each shell fux starts (bash, zsh or fish, interactive, given no
+script, command or rc file of its own) reads your own startup files, then
+marks its commands (OSC 133): `line` answers `· done STATUS` once the command ends and
 the shell reads again, `last-output` reads a command's output alone, and
 `$?`, `PIPESTATUS`, your prompt and your hooks behave as without fux. A
 command longer than the limit answers `busy` (124): `wait` on. A command
@@ -194,8 +196,9 @@ is its terminal's, at most 4096 a side.
 ## Which server
 
 `FUX_SOCKET` chooses the server; `str NAME server` (a server of your own,
-`NAME.sock` in fux's directory) or `str PATH socket` first chooses another;
-`start` starts one and returns once it answers; `status` says whether one
+`NAME.sock` in fux's directory) or `str PATH socket` first chooses another
+(a socket's path is at most 107 bytes, 103 on macOS: a longer one is
+refused, door and all); `start` starts one and returns once it answers; `status` says whether one
 answers. Inside a person's pane, `here` is that pane, but only on that
 pane's own server (`FUX_SERVER` says which): on yours it is not acted on. A
 person can give you `str agent str PATH grant`: a socket that reaches

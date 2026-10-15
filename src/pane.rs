@@ -993,6 +993,11 @@ impl Pane {
         self.screen().let_go() > self.since.0
     }
 
+    /// The text typed on the line since a key last submitted one.
+    pub fn typed(&self) -> &str {
+        self.classes.typed()
+    }
+
     /// Whether the pane's shell, marked by fux, is at its prompt, reading
     /// its command line, as its marks say.
     fn at_prompt(&self) -> bool {

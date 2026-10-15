@@ -120,6 +120,11 @@ impl Classes {
         self.written = Some(Written { input, kernel });
     }
 
+    /// The text typed on the line since a key last submitted one.
+    pub fn typed(&self) -> &str {
+        &self.line
+    }
+
     /// Whether text typed ahead waits to be drawn again: then `echoes`
     /// asks whether a line editor reads it now.
     pub fn ahead(&self) -> bool {

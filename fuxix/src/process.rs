@@ -749,8 +749,12 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
     if matches!(blocked, Blocked::Child | Blocked::Ended) {
         return None;
     }
-    let first = on_terminal(blocked);
-    let (mut reading, mut polling, mut asleep) = (false, false, false);
+    // A main thread asleep is weighed with the others: another may read.
+    let (first, mut asleep) = match on_terminal(blocked) {
+        Some(Activity::Busy) if matches!(blocked, Blocked::Sleep) => (None, true),
+        first => (first, false),
+    };
+    let (mut reading, mut polling) = (false, false);
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
     for task in tasks.filter_map(|t| t.ok()) {
         let Some(tid) = task.file_name().to_str().map(str::to_owned) else {
