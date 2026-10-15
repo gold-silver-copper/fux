@@ -72,7 +72,7 @@ unset __fux_f
 /// A command's end, `{H}` the next history number, `{K}` keeping the
 /// command's `PIPESTATUS` and `{P}` making it again (see `BASHRC`). No
 /// single quotes: the startup file quotes it with them.
-const END: &str = r#"{ if ([ "$__fux_m" = 1 ] && printf "\033]133;C;late\007" >&3; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&3; exit $((__fux_c != 1))); then {P}; fi; } >/dev/null 3>&$((__fux_s = $?, {K}__fux_c = ${#PIPESTATUS[@]}, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2)) 2>/dev/null"#;
+const END: &str = r#"{ if ([ "$__fux_m" = 1 ] && printf "\033]133;C;late;nonce=%s\007" "$__fux_k" >&3; printf "\033]133;D;%s;nonce=%s\007\033]133;A;nonce=%s\007" "$__fux_s" "$__fux_k" "$__fux_k" >&3; exit $((__fux_c != 1))); then {P}; fi; } >/dev/null 3>&$((__fux_s = $?, {K}__fux_c = ${#PIPESTATUS[@]}, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2)) 2>/dev/null"#;
 /// The longest pipeline whose statuses `END` gives the user's hooks in
 /// `PIPESTATUS`; of a longer one they see its status alone.
 const PIPES: usize = 8;
@@ -83,13 +83,13 @@ const HISTORY_OLD: &str = r#"$(__fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_
 /// armed, the start mark (a `case`, as a command there would change
 /// `PIPESTATUS`) and `$?` put back, then theirs. Its arming, last in
 /// `PROMPT_COMMAND` and in `PS1`.
-const START: &str = r#"case ${__fux_a-}${__fux_z[__fux_q = $?]-} in 1) __fux_a=0; __fux_w=0; printf "\\033]133;C\\007" >&2; (exit $__fux_q)\n%s\n;; *) %s\n;; esac"#;
+const START: &str = r#"case ${__fux_a-}${__fux_z[__fux_q = $?]-} in 1) __fux_a=0; __fux_w=0; printf "\\033]133;C;nonce=${__fux_k-}\\007" >&2; (exit $__fux_q)\n%s\n;; *) %s\n;; esac"#;
 const ARM: &str = "{ (:); } 2>&$((__fux_a = 1, 2))";
 /// What `PS1` starts with: a command's end, should `END` not have run, and
 /// the trap's arming.
-const PS1_END: &str = r"\[\033]133;D;$?\007\033]133;A\007${__fux_z[__fux_a = 1]-}\]";
+const PS1_END: &str = r"\[\033]133;D;$?;nonce=${__fux_k-}\007\033]133;A;nonce=${__fux_k-}\007${__fux_z[__fux_a = 1]-}\]";
 /// What `PS0` ends with: a command's start.
-const PS0_START: &str = r"\033]133;C\007${__fux_z[__fux_w = 0]-}";
+const PS0_START: &str = r"\033]133;C;nonce=${__fux_k-}\007${__fux_z[__fux_w = 0]-}";
 
 /// `END` for bash 4.4 and later, and for older ones. The command's
 /// `PIPESTATUS` is kept (`__fux_p`, its length `__fux_c`) and made again
@@ -132,6 +132,7 @@ fn bash_rc(startup: &str) -> String {
         r#"# fux: OSC 133 shell marks, after your own startup. Off: `str shell-marks str off set`.
 __fux_marks() {{
   unset -f __fux_marks
+  export -n __fux_k
   __fux_free() {{ local d; if [ $__fux_new = 1 ]; then d=${{!1@a}}; else d=$(declare -p "$1" 2>/dev/null); d=${{d#declare -}}; d=${{d%% *}}; fi; case $d in *r*) return 1 ;; esac; }}
   local __fux_new=0 __fux_end
   if [ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]; then __fux_new=1; __fux_end='{new}'; else __fux_end='{old}'; fi
@@ -161,7 +162,7 @@ __fux_marks() {{
 /// ends, sets the PROMPT_COMMAND that stays (`__fux_pn`, or before bash
 /// 4.4 `__fux_po` and the trap), puts the caller's `PS1` back, forgets
 /// fux's variables, and runs it.
-const BARE_FIRST: &str = r#"__fux_s=$?; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -ge 44 ]; then PROMPT_COMMAND=$__fux_pn; else PROMPT_COMMAND=$__fux_po; trap '{START}' DEBUG; fi; if [ -n "${__fux_ps1+x}" ]; then PS1='{PS1_END}'$__fux_ps1; else PS1='{PS1_END}\s-\v\$ '; export -n PS1; fi; unset __fux_pc __fux_pn __fux_po __fux_ps1; export -n PS0 PROMPT_COMMAND; (exit "$__fux_s") && :; eval "$PROMPT_COMMAND""#;
+const BARE_FIRST: &str = r#"__fux_s=$?; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -ge 44 ]; then PROMPT_COMMAND=$__fux_pn; else PROMPT_COMMAND=$__fux_po; trap '{START}' DEBUG; fi; if [ -n "${__fux_ps1+x}" ]; then PS1='{PS1_END}'$__fux_ps1; else PS1='{PS1_END}\s-\v\$ '; export -n PS1; fi; unset __fux_pc __fux_pn __fux_po __fux_ps1; export -n PS0 PROMPT_COMMAND __fux_k; (exit "$__fux_s") && :; eval "$PROMPT_COMMAND""#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
 /// the user's `ZDOTDIR` back, so the rest of their files are read from
@@ -170,16 +171,29 @@ const ZSHENV: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off:
 if [[ -n "${FUX_ZDOTDIR+x}" ]]; then ZDOTDIR=$FUX_ZDOTDIR; unset FUX_ZDOTDIR; else unset ZDOTDIR; fi
 [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
 if [[ -o interactive ]]; then
-  __fux_preexec() { print -n '\e]133;C\a' >&2 }
-  __fux_precmd() { print -n "\e]133;D;$?\a\e]133;A\a" >&2 }
+  typeset +x __fux_k
+  __fux_preexec() { print -n "\e]133;C;nonce=${__fux_k-}\a" >&2 }
+  __fux_precmd() { print -n "\e]133;D;$?;nonce=${__fux_k-}\a\e]133;A;nonce=${__fux_k-}\a" >&2 }
   preexec_functions=(__fux_preexec $preexec_functions)
   precmd_functions=(__fux_precmd $precmd_functions)
 fi
 "#;
 
 /// fish: two event handlers, after its own startup.
-const FISH: &str = "function __fux_preexec --on-event fish_preexec; printf '\\e]133;C\\a' >&2; end; \
-     function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s\\a\\e]133;A\\a' $status >&2; end";
+const FISH: &str = "set -gu __fux_k $__fux_k; \
+     function __fux_preexec --on-event fish_preexec; printf '\\e]133;C;nonce=%s\\a' $__fux_k >&2; end; \
+     function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s;nonce=%s\\a\\e]133;A;nonce=%s\\a' $status $__fux_k $__fux_k >&2; end";
+
+/// A new nonce for a shell's marks: 16 hex digits from the system's
+/// randomness, or none if it cannot be read.
+pub fn nonce() -> Option<String> {
+    use std::io::Read;
+    let mut random = [0u8; 8];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut random))
+        .ok()?;
+    Some(random.iter().map(|b| format!("{b:02x}")).collect())
+}
 
 /// How a shell is started so that it marks its commands: its words, and
 /// variables to add and remove.

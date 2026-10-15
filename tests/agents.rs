@@ -2453,30 +2453,48 @@ fn keys_with_no_enter_are_their_echo() -> Outcome {
     Ok(())
 }
 
-/// A later text wait that begins after the lines it would read left
-/// history says they were let go: the text may have come unseen.
+/// A later text wait reads the lines let go past history's limit since
+/// the input too, as the pane kept them; past what it keeps, it says they
+/// were let go: the text may have come unseen.
 #[test]
 fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
     let server = Server::start("str history-lines 20 set")?;
-    let flood = "echo GONE_LINE; seq 200; read x";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", flood]))?);
-    let out = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "opts",
-        "str",
-        "GONE_LINE",
-        "wait-text",
-        "3",
-        "timeout",
-        "wait",
-    ])?;
+    let wait = |pane: &str, text: &str| {
+        let args = [
+            "str",
+            pane,
+            "pane",
+            "opts",
+            "str",
+            text,
+            "wait-text",
+            "3",
+            "timeout",
+            "wait",
+        ];
+        server.fux(&args)
+    };
+    let kept = id(&server.ok(&run(&[], &["sh", "-c", "echo GONE_LINE; seq 200; read x"]))?);
+    let found = wait(&kept, "GONE_LINE")?;
+    assert_eq!(
+        (found.status, found.stdout.as_str()),
+        (0, "GONE_LINE\n"),
+        "{}",
+        found.stderr
+    );
+    // Past the text the pane keeps for waits (8 MiB since the input).
+    let flood = "import sys; w = sys.stdout.write\nw(('filler ' * 10 + '\\n') * 120000)\n\
+                 w('LOST_LINE\\n' + 'after\\n' * 100 + 'END\\n'); sys.stdout.flush(); input()";
+    let lost = id(&server.ok(&run(
+        &["str", "END", "wait-text"],
+        &["python3", "-c", flood],
+    ))?);
+    let out = wait(&lost, "LOST_LINE")?;
     assert_eq!(out.status, CANNOT_COME, "{}", out.stderr);
     // Told at once, the answer is the screen; at the limit, the error.
     let (said, why) = match PROBED {
         true => (&out.stdout, "earlier lines not kept"),
-        false => (&out.stderr, "let go past history-lines"),
+        false => (&out.stderr, "may have come unseen"),
     };
     assert!(said.contains(why), "{}{}", out.stdout, out.stderr);
     Ok(())
@@ -3330,19 +3348,38 @@ fn a_typed_row_drawn_with_another_prompt_is_echo() -> Outcome {
     Ok(())
 }
 
-/// Keys typed before a shell fux did not set up draws its first prompt
-/// (one started by another program, over ssh) are echoed twice, by the
-/// terminal and then by the shell after its prompt, on the keys' own row
-/// or below: neither is output, with Enter or not.
+/// Keys typed before a shell draws its first prompt are echoed twice, by
+/// the terminal and then by the shell after its prompt: neither is output.
+/// A shell fux marks says so, Enter or not. One it did not set up (started
+/// by another program, over ssh) says nothing: its line drawn again reads
+/// as output that repeats the keys would, and only while it still edits
+/// the line (no Enter) is it known for the echo, by the terminal taking
+/// keys raw.
 #[test]
-fn keys_typed_before_an_unmarked_prompt_are_echo_twice() -> Outcome {
+fn keys_typed_before_a_prompt_are_echo_twice() -> Outcome {
     let server = Server::start("")?;
-    let sh = "import os\n\
+    let unmarked = "import os\n\
               env = dict(os.environ, PS1='PROMPT> ', PROMPT_COMMAND='sleep 0.3')\n\
               os.execvpe('bash', ['bash', '--noprofile', '--norc', '-i'], env)\n";
+    let marked = ["bash", "--norc", "-i"];
+    let vars = [
+        "str",
+        "PS1",
+        "str",
+        "PROMPT> ",
+        "env",
+        "str",
+        "PROMPT_COMMAND",
+    ];
+    let vars = [&vars[..], &["str", "sleep 0.3", "env", "0", "timeout"]].concat();
     let wait = ["str", "TYPED_AHEAD", "wait-text", "3", "timeout"];
-    for enter in [true, false] {
-        let shell = id(&server.ok(&run(&["0", "timeout"], &["python3", "-c", sh]))?);
+    let cases: [(&[&str], &[&str], bool); 3] = [
+        (&["0", "timeout"], &["python3", "-c", unmarked], false),
+        (&vars, &marked, false),
+        (&vars, &marked, true),
+    ];
+    for (options, program, enter) in cases {
+        let shell = id(&server.ok(&run(options, program))?);
         let line = [
             "str",
             &shell,
@@ -3356,7 +3393,7 @@ fn keys_typed_before_an_unmarked_prompt_are_echo_twice() -> Outcome {
         let ahead = server.fux(&[&line[..], end, &wait, &["send-keys"]].concat())?;
         assert_eq!(
             ahead.status, CANNOT_COME,
-            "Enter {enter}: {}{}",
+            "{program:?} Enter {enter}: {}{}",
             ahead.stdout, ahead.stderr
         );
     }

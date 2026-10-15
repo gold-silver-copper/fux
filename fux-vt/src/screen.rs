@@ -1078,7 +1078,21 @@ impl Screen {
                 Scroll::Down
             };
             g.scroll(region, count, direction, blank, next, version)
-        })
+        })?;
+        // Rows moved within the screen (lines deleted or put in above
+        // them, a region scrolled) are recorded, their text unchanged: a
+        // whole screen scrolled into history moves none of its lines.
+        if self.prints.is_some() && !(history && region == self.grid().size().lines()) {
+            let kept = region.len().saturating_sub(count);
+            let first = match up {
+                true => region.first(),
+                false => region.first().saturating_add(count),
+            };
+            for row in (0..kept).map(|i| first.saturating_add(i)) {
+                self.printed(row, 0..0, "");
+            }
+        }
+        Ok(())
     }
     /// Keeps the rows an upward scroll of `count` rows in `region` is
     /// about to let go: history's oldest past its limit, for a scroll into

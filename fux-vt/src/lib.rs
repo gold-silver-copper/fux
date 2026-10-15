@@ -296,7 +296,9 @@ impl Departed {
 
 /// Text printed on a row, as recorded while the host records
 /// ([`Parser::record_prints`]): what changed cells, in the order printed,
-/// though later drawn over.
+/// though later drawn over. A row moved within the screen, its text as it
+/// was (lines deleted or put in above it, a region scrolled), is recorded
+/// with no text and no columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Print {
     /// The row it was printed on.
