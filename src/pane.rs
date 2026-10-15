@@ -1059,9 +1059,14 @@ impl Pane {
             self.input.is_empty() && crate::ready::took_keys(child, keys, false)
         });
         // Typed ahead: a shell fux marks says whether it reads its line.
+        // Another program's line typed ahead ends at Enter: what it draws
+        // after is output (`docs/agents.md`, what fux cannot tell).
         let ahead = match self.nonce {
             Some(_) => !self.at_prompt(),
-            None => !child.is_some_and(|child| crate::ready::reads_keys(child, keys)),
+            None => {
+                unit == crate::log::Unit::Edit
+                    && !child.is_some_and(|child| crate::ready::reads_keys(child, keys))
+            }
         };
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
