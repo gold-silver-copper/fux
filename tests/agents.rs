@@ -3587,3 +3587,85 @@ fn a_bell_before_a_text_in_one_write_answers_first() -> Outcome {
     assert!(rang.contains(r#""met":"bell""#), "{rang}");
     Ok(())
 }
+
+/// QA wave 11, issue 1: keys typed while an earlier command still runs
+/// (typed ahead) are the terminal's echo, then the shell's as it reads
+/// them: a wait for a text they hold answers what the command prints, once
+/// it runs, never the typed line.
+#[test]
+fn keys_typed_while_a_command_runs_are_echo() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
+    server.ok(&typed(&shell, "sleep 2", &["0", "timeout"]))?;
+    let started = std::time::Instant::now();
+    let done = server.ok(&typed(&shell, "echo DONE", &["str", "DONE", "wait-text"]))?;
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(1500),
+        "{done}"
+    );
+    assert_eq!(done, "DONE\n");
+    Ok(())
+}
+
+/// QA wave 11, issue 3: a command over several lines that bash cannot
+/// parse: its last output is the complaint alone, not the continuation
+/// prompts and the lines typed at them.
+#[test]
+fn a_command_bash_cannot_parse_over_lines_outputs_its_complaint() -> Outcome {
+    let server = Server::start("")?;
+    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
+    server.ok(&typed(&shell, "for i in 1 2", &["0", "timeout"]))?;
+    server.ok(&typed(&shell, "do echo $i", &["0", "timeout"]))?;
+    let status = line(&server, &shell, "done)")?;
+    assert!(done(&status).is_some(), "{status}");
+    let error = last_output(&server, &shell)?;
+    assert!(
+        error.contains("syntax error") && !error.contains("> ") && !error.contains("echo"),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// Sends `input` to `pane` with a wait for NEEDLE: its status.
+fn needle(server: &Server, pane: &str, input: &[&str]) -> Result<i32, String> {
+    let words = [
+        &["str", pane, "pane", "keys"][..],
+        input,
+        &["str", "NEEDLE", "wait-text", "2", "timeout", "send-keys"],
+    ]
+    .concat();
+    Ok(server.fux(&words)?.status)
+}
+
+/// QA wave 11, issue 4: text typed and then erased (C-u, then Enter, to a
+/// program reading a line) is the echo, never output: a wait for it in
+/// the same send-keys cannot be met.
+#[test]
+fn text_typed_then_erased_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let read = "x = input('Input> '); print('GOT', len(x)); input()";
+    let python = id(&server.ok(&run(
+        &["str", "Input>", "wait-text"],
+        &["python3", "-c", read],
+    ))?);
+    let erased = [
+        "str", "NEEDLE", "text", "str", "C-u", "key", "str", "Enter", "key",
+    ];
+    assert_eq!(needle(&server, &python, &erased)?, CANNOT_COME);
+    Ok(())
+}
+
+/// QA wave 11, issue 5: a line edited with Left and Delete (readline) is
+/// the echo, never output: a wait for the text it comes to cannot be met.
+#[test]
+fn text_edited_with_delete_is_echo() -> Outcome {
+    let server = Server::start("")?;
+    let edit = "read -e -p 'Edit> ' x; echo got; read y";
+    let bash = id(&server.ok(&run(&["str", "Edit>", "wait-text"], &["bash", "-c", edit]))?);
+    let edited = [
+        "str", "NEEDXE", "text", "str", "Left", "key", "str", "Left", "key", "str", "DC", "key",
+        "str", "L", "text",
+    ];
+    assert_eq!(needle(&server, &bash, &edited)?, CANNOT_COME);
+    Ok(())
+}
