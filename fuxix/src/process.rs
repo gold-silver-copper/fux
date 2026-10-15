@@ -595,6 +595,9 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
         441 => Blocked::Poll(arg(3) == 0, Watched::Epoll(arg(0))),
         35 | 230 => Blocked::Sleep,
         61 | 247 => Blocked::Child,
+        // A futex with a time limit (its fourth argument) wakes on a timer:
+        // a sleep (Python's `Event.wait(0.1)`).
+        202 if arg(3) != 0 => Blocked::Sleep,
         202 => Blocked::Futex,
         _ => Blocked::Other,
     }
@@ -617,6 +620,9 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
         441 => Blocked::Poll(arg(3) == 0, Watched::Epoll(arg(0))),
         101 | 115 => Blocked::Sleep,
         260 | 95 => Blocked::Child,
+        // A futex with a time limit (its fourth argument) wakes on a timer:
+        // a sleep (Python's `Event.wait(0.1)`).
+        98 if arg(3) != 0 => Blocked::Sleep,
         98 => Blocked::Futex,
         _ => Blocked::Other,
     }
@@ -1037,6 +1043,11 @@ mod probe {
         ] {
             assert_eq!(blocked_in(nr, &[]), kind, "{nr}");
         }
+        assert_eq!(
+            blocked_in(202, &[9, 0, 0, 7]),
+            Blocked::Sleep,
+            "a futex with a limit"
+        );
     }
 
     /// aarch64's numbers, which share few with x86_64's.
@@ -1070,6 +1081,11 @@ mod probe {
         ] {
             assert_eq!(blocked_in(nr, &[]), kind, "{nr}");
         }
+        assert_eq!(
+            blocked_in(98, &[9, 0, 0, 7]),
+            Blocked::Sleep,
+            "a futex with a limit"
+        );
     }
 
     /// This process, a descriptor of it that stands for its terminal (its

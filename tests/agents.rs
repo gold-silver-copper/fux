@@ -4123,3 +4123,31 @@ fn a_prompt_drawn_again_with_the_typed_line_is_no_news() -> Outcome {
     );
     Ok(())
 }
+
+/// Set B (TB-053): a thread waiting on a timer through a futex (Python's
+/// `Event.wait(0.1)`) goes on alone: beside a thread reading the terminal,
+/// the program is `waiting`, and a text wait runs to its limit, never 7.
+#[test]
+fn a_thread_on_a_timed_futex_goes_on_alone() -> Outcome {
+    let server = Server::start("")?;
+    let ticker = "import threading\nstop = threading.Event()\n\
+                  def tick():\n    while not stop.wait(0.1): pass\n\
+                  threading.Thread(target=tick, daemon=True).start()\nprint('READY', flush=True)\ninput()\n";
+    let started = ["str", "READY", "wait-text"];
+    let pane = id(&server.ok(&run(&started, &["python3", "-c", ticker]))?);
+    let never = [
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "NEVER",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ];
+    let out = server.fux(&never)?;
+    assert_eq!(out.status, 124, "{}{}", out.stdout, out.stderr);
+    Ok(())
+}
