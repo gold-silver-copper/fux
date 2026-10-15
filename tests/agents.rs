@@ -3468,7 +3468,9 @@ fn a_line_edited_with_cursor_keys_is_echo() -> Outcome {
 fn output_that_ends_with_keys_typed_ahead_is_output() -> Outcome {
     let server = Server::start("")?;
     let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
-    let script = "printf 'BEG''IN\\n'; sleep 1; printf '\\nYou said: NEE''DLE\\n'";
+    // Long enough that the keys go in while it runs (`docs/agents.md`: keys
+    // typed as a command ends may have their echo come after its output).
+    let script = "printf 'BEG''IN\\n'; sleep 2; printf '\\nYou said: NEE''DLE\\n'";
     server.ok(&typed(&shell, script, &["str", "^BEGIN", "wait-text"]))?;
     let keys = [
         "str",

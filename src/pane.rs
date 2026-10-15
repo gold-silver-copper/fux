@@ -565,6 +565,9 @@ pub struct Pace {
     /// whether it was a lone Escape, which a program must surely have
     /// taken alone before the next piece.
     written: Option<(Instant, Instant, bool)>,
+    /// Until when the next piece waits for output the program wrote before
+    /// it to be read: output that pours on goes on being written then.
+    drained_by: Option<Instant>,
     /// When to look again.
     until: Option<Instant>,
 }
@@ -993,13 +996,20 @@ impl Pane {
         if self.pace.until.is_some_and(|until| until > now) || self.pace.waiting.is_empty() {
             return;
         }
-        if let Some((at, limit, escape)) = self.pace.written
-            && now < limit
-            && !self.taken(at, now, escape)
-        {
+        let held = (self.pace.written)
+            .is_some_and(|(at, limit, escape)| now < limit && !self.taken(at, now, escape));
+        // Output the program wrote before now came before this piece: it
+        // is read first (unless it pours on for a while), so that nothing
+        // it printed is told as following the piece.
+        let unread =
+            (self.process.child()).is_some_and(|c| fuxix::io::unread(&c.master).unwrap_or(0) > 0);
+        let draining =
+            !held && unread && now < *(self.pace.drained_by).get_or_insert(crate::after(now, TAKE));
+        if held || draining {
             self.pace.until = Some(crate::after(now, POLL));
             return;
         }
+        self.pace.drained_by = None;
         if let Some((bytes, unit)) = self.pace.waiting.pop_front() {
             self.write_unit(bytes, unit, now);
         }

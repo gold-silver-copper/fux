@@ -116,15 +116,19 @@ the input was. A few cases look the same either way, and are taken so:
   in).
 - Until a key submits the line you type (Enter), a text made only of
   characters you typed on it (in any order: editing keys move them; case
-  ignored, as a wait ignores it) is
-  taken as their echo, as a line editor shows them, wherever it lands: a program that answers your keys with nothing but
-  some of them is not seen. A text holding anything else is output.
+  ignored, as a wait ignores it) is taken as their echo, as a line editor
+  shows them, wherever it lands: a program that answers your keys with
+  nothing but some of them is not seen. A text holding anything else is
+  output.
 - A program that, after Enter, prints exactly the line you typed: taken
   as its output, its reply to Enter. (A line editor drawing your line again
   on Enter, the same text in the same place, changes nothing: no output.)
 - Keys typed ahead into a shell fux did not start (over ssh), with Enter:
   the shell drawing them again at its next prompt reads as output that
   repeats them. A shell fux starts marks its prompt, and says which.
+- Keys typed just as a command ends: the terminal may echo them after
+  the command's last output, and when that output holds the same
+  characters in the same order, those are taken as the echo.
 
 ## Status
 
