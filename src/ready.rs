@@ -155,15 +155,22 @@ fn activity(
 }
 
 /// Whether the program has read every key and waits for more, with no time
-/// limit: a lone Escape sent is taken alone by then, its timer run out.
-/// Where only idle is known (macOS), every thread waiting with no key
-/// unread: done with them.
-pub fn took_keys(child: &crate::process::Child, since_key: Duration, answered: bool) -> bool {
+/// limit; `surely`, only where the system says it reads (not idle on
+/// something it does not name: a program telling a lone Escape from a
+/// key's sequence waits in a read with a timer).
+pub fn took_keys(
+    child: &crate::process::Child,
+    (since_key, answered): (Duration, bool),
+    surely: bool,
+) -> bool {
     let tty = child.master.slave_path();
-    matches!(
-        activity(child, tty.as_deref(), since_key, answered),
-        Activity::Reading | Activity::Idle
-    ) && !keys_unread(tty.as_deref())
+    let activity = activity(child, tty.as_deref(), since_key, answered);
+    let reads = match activity {
+        Activity::Reading => true,
+        Activity::Idle => !surely,
+        Activity::Polling | Activity::Waiting | Activity::Busy | Activity::Unknown => false,
+    };
+    reads && !keys_unread(tty.as_deref())
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a

@@ -579,8 +579,10 @@ const FLOOR: Duration = Duration::from_millis(2);
 pub struct Pace {
     /// Pieces waiting to be written.
     waiting: VecDeque<(Vec<u8>, crate::log::Unit)>,
-    /// When the last piece was written, and until when it is given.
-    written: Option<(Instant, Instant)>,
+    /// When the last piece was written, until when it is given, and
+    /// whether it was a lone Escape, which a program must surely have
+    /// taken alone before the next piece.
+    written: Option<(Instant, Instant, bool)>,
     /// When to look again.
     until: Option<Instant>,
 }
@@ -1006,9 +1008,9 @@ impl Pane {
         if self.pace.until.is_some_and(|until| until > now) || self.pace.waiting.is_empty() {
             return;
         }
-        if let Some((at, limit)) = self.pace.written
+        if let Some((at, limit, escape)) = self.pace.written
             && now < limit
-            && !self.taken(at, now)
+            && !self.taken(at, now, escape)
         {
             self.pace.until = Some(crate::after(now, POLL));
             return;
@@ -1021,7 +1023,7 @@ impl Pane {
     /// Whether the program took the input written at `at`, by `now`: every
     /// byte written and read, its output read by fux, and it reads its
     /// terminal again.
-    fn taken(&self, at: Instant, now: Instant) -> bool {
+    fn taken(&self, at: Instant, now: Instant, escape: bool) -> bool {
         let Process::Reading(child) = &self.process else {
             return true;
         };
@@ -1029,16 +1031,17 @@ impl Pane {
         self.input.is_empty()
             && drawn
             && fuxix::io::unread(&child.master).unwrap_or(0) == 0
-            && crate::ready::took_keys(child, self.since_key(now), self.answered())
+            && crate::ready::took_keys(child, (self.since_key(now), self.answered()), escape)
     }
 
     /// Writes a piece of input, `unit` its kind, and records it: its
     /// number, the terminal's modes then, the line the cursor is on.
     fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) {
+        let escape = bytes == b"\x1b";
         let child = self.process.child();
         let reading = child.is_some_and(|child| {
             self.input.is_empty()
-                && crate::ready::took_keys(child, self.since_key(now), self.answered())
+                && crate::ready::took_keys(child, (self.since_key(now), self.answered()), false)
         });
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
@@ -1062,7 +1065,7 @@ impl Pane {
         };
         self.record.push(seq.0, now, event);
         let gap = if reading { TAKE } else { PACE };
-        self.pace.written = Some((now, crate::after(now, gap)));
+        self.pace.written = Some((now, crate::after(now, gap), escape));
         self.pace.until = Some(crate::after(now, if reading { POLL } else { PACE }));
     }
 
