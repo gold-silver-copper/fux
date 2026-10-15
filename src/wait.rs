@@ -768,17 +768,17 @@ impl Watch {
                     let present = shown.iter().any(|l| found_in(&l.text, text) > 0);
                     // Shown between two looks (drawn over, erased, scrolled
                     // away): printed since, though gone now.
-                    let printed = || {
-                        (pane.prints.iter().filter(|p| p.seq.0 > self.from))
-                            .flat_map(|p| p.prints.iter())
-                            .any(|r| found_in(r.text, text) > 0)
-                    };
-                    if (present || printed()) && !self.appeared.contains(text) {
+                    // It went no earlier than the last piece that printed it.
+                    let last = (pane.prints.iter().filter(|p| p.seq.0 > self.from))
+                        .filter(|p| p.prints.iter().any(|r| found_in(r.text, text) > 0))
+                        .map(|p| p.seq.0)
+                        .next_back();
+                    if (present || last.is_some()) && !self.appeared.contains(text) {
                         self.appeared.push(text.clone());
                     }
                     let had = !fresh || self.appeared.contains(text);
                     if !present && had && gone.is_none() {
-                        gone = Some(Found::Gone(text.clone()));
+                        gone = Some((Found::Gone(text.clone()), last.unwrap_or(self.from)));
                     }
                 }
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
@@ -786,18 +786,22 @@ impl Watch {
                 Until::Bell => bell = pane.record.bell_after(self.from),
             }
         }
-        // Of a text and a bell, the first to come.
-        let text = match (&self.found, bell) {
-            (Some((_, _, at)), Some(rung)) if *at > rung => None,
-            (found, _) => found
-                .clone()
-                .map(|(text, line, _)| Found::Text { text, line }),
-        };
-        let bell = bell.map(|_| {
+        // Of a text, a bell and a text gone, the first to come; in one
+        // piece, a text gone before a text came (the piece that erased it
+        // printed the new one), and a text before the bell that ends it.
+        let text = (self.found.clone()).map(|(text, line, at)| (Found::Text { text, line }, at));
+        let bell = bell.map(|at| {
             let notification = pane.alerts.last.clone();
-            Found::Bell(notification.filter(|_| pane.alerts.last_notified))
+            (
+                Found::Bell(notification.filter(|_| pane.alerts.last_notified)),
+                at,
+            )
         });
-        let found = text.or(bell).or(gone).or(exit).or(settled);
+        let first = [gone, text, bell]
+            .into_iter()
+            .flatten()
+            .min_by_key(|(_, at)| *at);
+        let found = first.map(|(found, _)| found).or(exit).or(settled);
         if found.is_some() {
             return found;
         }
@@ -831,14 +835,29 @@ impl Watch {
         let before = self.before.as_ref().unwrap_or(&pane.before);
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         let pieces = prints.iter().filter(|p| p.seq.0 > self.from);
-        let runs =
-            pieces.flat_map(|p| (p.prints.iter().zip(&p.echo)).map(move |(r, e)| (p.seq, r, e)));
-        for (seq, print, echo) in runs.filter(|(_, r, _)| !r.text.is_empty()) {
-            // Printed again where it was: nothing new.
-            if was(before, &print) {
+        let runs = pieces.flat_map(|p| {
+            (p.prints.iter().zip(&p.echo).zip(&p.again)).map(move |((r, e), a)| (p.seq, r, e, *a))
+        });
+        for (seq, print, echo, again) in runs.filter(|(_, r, _, _)| !r.text.is_empty()) {
+            // Printed again where it was, just before or as the wait began:
+            // nothing new.
+            let was = |rows: &std::collections::HashMap<_, String>| {
+                rows.get(&print.row)
+                    .is_some_and(|row| crate::pane::holds_at(row, &print))
+            };
+            if again || was(before) {
                 continue;
             }
-            let line = Line::of(pane, &print, reach);
+            // The piece's line, as long as the row still holds what it
+            // printed there: else later output took its place.
+            let screen = pane.screen();
+            let intact = screen
+                .row_by_id(print.row)
+                .is_some_and(|row| crate::pane::holds_at(&row.cells_text(), &print));
+            let line = match intact {
+                true => Line::of(pane, &print, reach),
+                false => Line::piece(&print),
+            };
             // The runs printed one after another on the row, joined.
             let output = *echo == crate::classify::Echo::Not;
             let stream = match self.stream.remove(&print.row) {
@@ -1073,20 +1092,6 @@ impl Line {
             printed.get(*at..end).is_some_and(|p| p.iter().any(|b| *b))
         })
     }
-}
-
-/// Whether `print` printed what its row already held there when the wait
-/// began (`before`): a program drawing its screen again, the same.
-fn was(
-    before: &std::collections::HashMap<fux_vt::RowId, String>,
-    print: &fux_vt::Print<'_>,
-) -> bool {
-    before.get(&print.row).is_some_and(|row| {
-        let there = row.chars().skip(usize::from(print.cols.0));
-        there
-            .take(print.text.chars().count())
-            .eq(print.text.chars())
-    })
 }
 
 /// Whether `text` could be shown by an echo of what was `typed`: each of

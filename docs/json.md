@@ -98,7 +98,7 @@ its own status):
 `wait` whose pane closed answers `{"pane":"%3","state":"closed","status":4}`,
 with no `output` and nothing on stderr. `output` is what came since the
 input, from the line the keys went in on if it changed (its prompt too;
-a `no_change` answer holds that prompt), else from the first line that
+a `no_change` answer holds nothing), else from the first line that
 changed (a lone Enter, a password or raw keys, which echo nothing), or the
 screen of a full-screen program (one the keys made leave it: what it
 printed after, in whole rows, so old text on the row it starts on too, else that full screen if they changed it, else

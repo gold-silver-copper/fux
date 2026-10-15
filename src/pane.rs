@@ -459,6 +459,9 @@ pub struct Printed {
     /// What each of its runs may be the echo of (`crate::classify`), which
     /// a wait never takes.
     pub echo: Vec<crate::classify::Echo>,
+    /// Which of its runs printed only what its row held there just before
+    /// (a line drawn again, the same): nothing new.
+    pub again: Vec<bool>,
 }
 
 /// The most bytes of text printed since the last input a pane keeps for
@@ -513,6 +516,9 @@ pub struct Pane {
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new.
     pub before: std::collections::HashMap<fux_vt::RowId, String>,
+    /// The rows printed on since then, as they read after the last piece
+    /// that printed on them: what the next piece finds there.
+    seen: std::collections::HashMap<fux_vt::RowId, String>,
     /// Where each piece of output came from (`crate::classify`).
     classes: crate::classify::Classes,
     /// The nonce its shell's marks carry, if fux marked its shell: then
@@ -649,6 +655,7 @@ impl Pane {
             printed: 0,
             prints_lost: false,
             before: std::collections::HashMap::new(),
+            seen: std::collections::HashMap::new(),
             classes: crate::classify::Classes::default(),
             nonce: None,
             revision: 0,
@@ -797,10 +804,22 @@ impl Pane {
                         self.classes.echo(origin, &print, line, reads)
                     })
                     .collect();
+                let held =
+                    |p: &fux_vt::Print<'_>| self.seen.get(&p.row).or(self.before.get(&p.row));
+                let again = prints
+                    .iter()
+                    .map(|p| held(&p).is_some_and(|row| holds_at(row, &p)))
+                    .collect();
+                for print in prints.iter() {
+                    if let Some(row) = screen.row_by_id(print.row) {
+                        self.seen.insert(print.row, row.cells_text());
+                    }
+                }
                 self.prints.push(Printed {
                     seq: crate::log::OutputSeq(seq),
                     prints,
                     echo,
+                    again,
                 });
             }
         }
@@ -938,6 +957,7 @@ impl Pane {
         self.prints_lost = false;
         self.parser.record_prints(true);
         self.before = rows_now(self.screen());
+        self.seen.clear();
     }
 
     /// Sends `units` of input in order, each written once the program took
@@ -1198,6 +1218,14 @@ fn osc_before(before: &[u8]) -> Option<usize> {
         }
         end = at;
     }
+}
+
+/// Whether `row`, a row's text, holds what `print` printed at its columns.
+pub fn holds_at(row: &str, print: &fux_vt::Print<'_>) -> bool {
+    let there = row.chars().skip(usize::from(print.cols.0));
+    there
+        .take(print.text.chars().count())
+        .eq(print.text.chars())
 }
 
 /// The screen's rows as they read now, by row.

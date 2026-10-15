@@ -3773,3 +3773,99 @@ fn a_sleeping_main_thread_beside_a_reader_waits() -> Outcome {
     );
     Ok(())
 }
+
+/// QA wave 13: of several conditions, the first to come answers, a text
+/// gone among them; and a later wait places a text written over by
+/// another where it came, not where its successor did.
+#[test]
+fn the_first_condition_to_come_answers_a_text_gone_too() -> Outcome {
+    let server = Server::start("")?;
+    let swap = "import sys, time\nw = sys.stdout.write\nw('BUSY'); sys.stdout.flush(); time.sleep(0.3)\n\
+                w('\\r\\x1b[K'); sys.stdout.flush(); time.sleep(0.3)\n\
+                w('LATER\\r\\n'); sys.stdout.flush(); input()\n";
+    let busy = id(&server.ok(&run(
+        &["str", "LATER", "wait-text"],
+        &["python3", "-c", swap],
+    ))?);
+    let both = [
+        "str",
+        &busy,
+        "pane",
+        "opts",
+        "str",
+        "LATER",
+        "wait-text",
+        "str",
+        "BUSY",
+        "wait-gone",
+        "wait",
+        "json",
+    ];
+    // BUSY went before LATER came: the text gone answers, with the pane's
+    // state, where a text met would say `met`.
+    let out = server.fux(&both)?;
+    assert!(
+        out.status == 0 && out.stdout.contains("\"state\"") && !out.stdout.contains("\"met\""),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let over = "import sys, time\nw = sys.stdout.write\nw('FIRST'); sys.stdout.flush(); time.sleep(0.3)\n\
+                w('\\rSECOND\\r\\n'); sys.stdout.flush(); input()\n";
+    let pane = id(&server.ok(&run(
+        &["str", "SECOND", "wait-text"],
+        &["python3", "-c", over],
+    ))?);
+    let first = [
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "SECOND",
+        "wait-text",
+        "str",
+        "FIRST",
+        "wait-text",
+        "wait",
+    ];
+    assert_eq!(
+        server.ok(&first)?.trim_end(),
+        "FIRST",
+        "the text that came first"
+    );
+    Ok(())
+}
+
+/// QA wave 13: a line editor that draws the line again, the same, as
+/// Enter takes it brings nothing new: a wait sent with the keys for the
+/// text typed cannot be met by it.
+#[test]
+fn a_line_drawn_again_the_same_on_enter_is_no_output() -> Outcome {
+    let server = Server::start("")?;
+    let editor = "import os, tty\ntty.setraw(0)\nline = ''\nos.write(1, b'> ')\n\
+                  while True:\n    c = os.read(0, 1).decode()\n\
+                  \x20   if c in '\\r\\n':\n        os.write(1, ('\\r\\x1b[K> ' + line + '\\r\\n').encode()); line = ''; os.write(1, b'> '); continue\n\
+                  \x20   line += c; os.write(1, ('\\r\\x1b[K> ' + line).encode())\n";
+    let pane = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", editor]))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "NEEDLE",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "NEEDLE",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+    ];
+    assert_eq!(server.fux(&keys)?.status, CANNOT_COME);
+    Ok(())
+}

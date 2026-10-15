@@ -92,7 +92,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output; while one runs, its output so far:
-  a full-screen one's is its screen up to the cursor, whatever
+  a full-screen one's is its screen to the cursor's row, whole, whatever
   `main-screen` or `alt-screen` say), `joined` (with `rows`, a
   wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
@@ -161,8 +161,10 @@ split-on trim upper number join contains starts-with`), lists (`range sort
 reverse sum count first last`), and `dup swap over rot not mod min max …`;
 `fux help` lists every word, `fux help WORD` explains one. A mistake every
 run would make (a word given too few values, a string written just before
-`add` or `if`) fails before any word acts; a value from a list or a word,
-and the kinds fux's own words take, are checked as they run.
+`add` or `if`, or a word that always leaves the wrong kind) fails before
+any word acts; a value whose kind cannot be known before (from a list, or
+a word that leaves either), and the kinds fux's own words take, are
+checked as it runs.
 
 ## Shells
 
