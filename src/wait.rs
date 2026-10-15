@@ -846,12 +846,8 @@ impl Watch {
         let before = self.before.as_ref().unwrap_or(&pane.before);
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
-        let wanted: std::collections::HashSet<char> = (texts.iter())
-            .flat_map(|t| t.trim_start_matches('^').trim_end_matches('$').chars())
-            .flat_map(|c| match c.is_whitespace() {
-                true => vec![' '],
-                false => c.to_lowercase().collect(),
-            })
+        let wanted: Vec<Vec<char>> = (texts.iter())
+            .map(|t| folded(t.trim_start_matches('^').trim_end_matches('$')))
             .collect();
         let pieces = prints.iter().filter(|p| p.seq.0 > self.from);
         let runs = pieces.flat_map(|p| {
@@ -881,11 +877,8 @@ impl Watch {
             }
             // A text found here holds some of the run: one of its
             // characters.
-            let some = |c: char| {
-                (c.is_whitespace() && wanted.contains(&' '))
-                    || c.to_lowercase().any(|c| wanted.contains(&c))
-            };
-            if !print.text.chars().any(some) {
+            let run = folded(print.text);
+            if !wanted.iter().any(|text| overlaps(&run, text)) {
                 continue;
             }
             // The piece's line, as long as the row still holds what it
@@ -1228,6 +1221,36 @@ fn normal(text: &str) -> String {
     blanks_as_one(text).to_lowercase()
 }
 
+/// `text` as a wait compares it, case and runs of blanks aside, its
+/// ends kept: a run of a line to set against a text.
+fn folded(text: &str) -> Vec<char> {
+    let mut out: Vec<char> = Vec::new();
+    for c in text.chars() {
+        match c.is_whitespace() {
+            true if out.last() == Some(&' ') => {}
+            true => out.push(' '),
+            false => out.extend(c.to_lowercase()),
+        }
+    }
+    out
+}
+
+/// Whether a text found on a line could take in some of `run`, printed on
+/// it: one holds the other, or one's end is the other's start.
+fn overlaps(run: &[char], text: &[char]) -> bool {
+    let holds = |a: &[char], b: &[char]| {
+        (0..=a.len().saturating_sub(b.len()))
+            .any(|at| a.get(at..).is_some_and(|a| a.starts_with(b)))
+    };
+    let joins = |a: &[char], b: &[char]| {
+        (1..=a.len().min(b.len())).any(|k| {
+            a.get(a.len().saturating_sub(k)..)
+                .is_some_and(|end| b.starts_with(end))
+        })
+    };
+    holds(run, text) || holds(text, run) || joins(run, text) || joins(text, run)
+}
+
 /// `text` with runs of blanks as one, and none at its ends.
 fn blanks_as_one(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -1331,8 +1354,9 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
     // A row drawn again to show as it did at the input brings nothing.
     let new = |r: &fux_vt::Row<'_>| {
         (r.version() > since.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
-            && (pane.before_shows.get(&r.id()))
-                != (window.place(r).map(|y| (y, crate::pane::shows(r)))).as_ref()
+            && (pane.before_shows.get(&r.id())).is_none_or(|was| {
+                window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)
+            })
     };
     let Some(mut first) = screen.rows().find(new) else {
         return match (screen.alternate_rows().any(|r| new(&r)), since.on_full) {

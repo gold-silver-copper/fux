@@ -826,8 +826,15 @@ impl Pane {
                     .iter()
                     .map(|p| held(&p).is_some_and(|row| holds_at(row, &p)))
                     .collect();
+                // Only a row on the screen can be printed on again: one gone
+                // into history is not looked for there.
+                let window = screen.window();
+                let rows: std::collections::HashMap<_, _> = (0..window.rows())
+                    .filter_map(|y| window.row(y))
+                    .map(|row| (row.id(), row))
+                    .collect();
                 for print in prints.iter() {
-                    if let Some(row) = screen.row_by_id(print.row) {
+                    if let Some(row) = rows.get(&print.row) {
                         self.seen.insert(print.row, row.cells_text());
                     }
                 }

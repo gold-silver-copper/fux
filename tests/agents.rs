@@ -4064,3 +4064,21 @@ fn a_keys_wait_answers_once_every_key_went_in() -> Outcome {
     );
     Ok(())
 }
+
+/// Replay: `run`'s answer holds all a program printed, lines scrolled into
+/// history too, as no snapshot of the screen came before them.
+#[test]
+fn a_runs_answer_holds_what_scrolled_away() -> Outcome {
+    let server = Server::start("")?;
+    let burst = "for i in $(seq 0 59); do echo BURST_$i; done; read x";
+    let out = server.ok(&run(
+        &["str", "BURST_59", "wait-text"],
+        &["sh", "-c", burst],
+    ))?;
+    let later = server.ok(&["str", &id(&out), "pane", "opts", "wait"])?;
+    assert!(
+        later.contains("BURST_0\n") && later.contains("BURST_59"),
+        "{later}"
+    );
+    Ok(())
+}

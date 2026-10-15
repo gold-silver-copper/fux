@@ -112,7 +112,10 @@ editor, a REPL), or one whose echo fux cannot work out, each text and key
 goes in once it took the one before, so that what it draws follows the key
 it answers: it may read them in several reads, the same bytes in the same
 order. A wait sent with them answers once all went in. A full-screen
-program, and one reading lines, gets them at once.
+program, and one reading lines, gets them at once. A shell fux starts reads its
+command line key by key too: of several lines sent to it at once, each goes
+in as it reads again, or after a second, so a line may go in while the one
+before still runs, the terminal showing it among that command's output.
 
 ## What fux cannot tell
 
