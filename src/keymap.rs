@@ -159,6 +159,7 @@ pub fn key(word: &str) -> Result<KeyPress, String> {
     let press: KeyPress = word
         .parse()
         .map_err(|_| format!("{word:?} is no key's name"))?;
+    // A character's shift is dropped in parsing it: `S-` is read again.
     let mut rest = word;
     let mut shift = false;
     while let Some((modifier, tail)) = rest.split_at_checked(2) {
@@ -973,6 +974,20 @@ mod tests {
 
     fn stroke(name: &str) -> Result<Keystroke, String> {
         key(name).map(Keystroke::from)
+    }
+
+    #[test]
+    fn every_default_is_bound() {
+        let keymap = Keymap::default();
+        assert_eq!(keymap.bindings.all().len(), DEFAULTS.len());
+        assert!(keymap.root.is_empty());
+    }
+
+    #[test]
+    fn a_shifted_letter_is_its_upper_case() {
+        assert_eq!(key("S-v").map(|k| k.key), Ok(Key::Char('V')));
+        assert_eq!(key("s-M-v").map(|k| k.key), Ok(Key::Char('V')));
+        assert_eq!(key("S-1").map(|k| k.key), Ok(Key::Char('1')));
     }
 
     #[test]
