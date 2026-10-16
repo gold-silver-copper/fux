@@ -3,6 +3,7 @@ use crate::bytes::ByteQueue;
 use crate::id::PaneId;
 use crate::process::Child;
 use fux_vt::Feature;
+use fuxix::process::Activity;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -644,10 +645,10 @@ impl Pane {
         size: fux_vt::Size,
         history: usize,
     ) -> Result<Pane, Error> {
-        let parser = recording(
-            fux_vt::Parser::with_options(size, history, OPTIONS)
-                .map_err(|source| Error::Terminal { size, source })?,
-        );
+        let mut parser = fux_vt::Parser::with_options(size, history, OPTIONS)
+            .map_err(|source| Error::Terminal { size, source })?;
+        // What it prints is recorded (`Pane::record`).
+        parser.record_prints(true);
         let mark = parser.screen().mark();
         Ok(Pane {
             id,
@@ -1104,16 +1105,28 @@ impl Pane {
 
     /// Whether the program took the input written at `at`, by `now`: every
     /// byte written and read, its output read by fux, and it reads its
-    /// terminal again.
+    /// terminal again, with no time limit. After a lone Escape (`escape`),
+    /// only where the system says it reads, not idle on something it does
+    /// not name: a program telling a lone Escape from a key's sequence
+    /// waits in a read with a timer.
     fn taken(&self, at: Instant, now: Instant, escape: bool) -> bool {
         let Process::Reading(child) = &self.process else {
             return true;
         };
         let drawn = self.changed_at > at || now >= crate::after(at, FLOOR);
+        // The program asked last, after the checks that read no `/proc`.
+        let taking = || crate::ready::taking(child, (self.since_key(now), self.answered()));
         self.input.is_empty()
             && drawn
             && fuxix::io::unread(&child.master).unwrap_or(0) == 0
-            && crate::ready::took_keys(child, (self.since_key(now), self.answered()), escape)
+            && match taking() {
+                Some(Activity::Reading) => true,
+                Some(Activity::Idle) => !escape,
+                Some(
+                    Activity::Busy | Activity::Polling | Activity::Waiting | Activity::Unknown,
+                )
+                | None => false,
+            }
     }
 
     /// Writes a piece of input, `unit` its kind, and records it: its
@@ -1123,17 +1136,23 @@ impl Pane {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
         let keys = (self.since_key(now), self.answered());
-        let reading = child.is_some_and(|child| {
-            self.input.is_empty() && crate::ready::took_keys(child, keys, false)
-        });
+        let taking = child.and_then(|child| crate::ready::taking(child, keys));
+        let reading =
+            self.input.is_empty() && matches!(taking, Some(Activity::Reading | Activity::Idle));
         // Typed ahead: a shell fux marks says whether it reads its line.
         // Another program's line typed ahead ends at Enter: what it draws
-        // after is output (`docs/agents.md`, what fux cannot tell).
+        // after is output (`docs/agents.md`, what fux cannot tell). Else
+        // the keys go to a program that reads them at once or within a
+        // time limit (a read with a timer, or one thread reading while
+        // another sleeps).
         let ahead = match self.nonce {
             Some(_) => !self.at_prompt(),
             None => {
                 unit == crate::log::Unit::Edit
-                    && !child.is_some_and(|child| crate::ready::reads_keys(child, keys))
+                    && !matches!(
+                        taking,
+                        Some(Activity::Reading | Activity::Polling | Activity::Idle)
+                    )
             }
         };
         let modes = child
@@ -1327,10 +1346,8 @@ impl Cells {
                 }
                 self.at.push(start);
             }
-            match c.contents() {
-                _ if c.is_wide_continuation() => {}
-                text if c.has_contents() && text != fux_vt::PLACEHOLDER => self.text.push_str(text),
-                _ => self.text.push(' '),
+            if !c.is_wide_continuation() {
+                self.text.push_str(c.shown());
             }
         }
     }
@@ -1427,12 +1444,6 @@ pub fn line_top(mut row: fux_vt::Row<'_>) -> fux_vt::Row<'_> {
         row = up;
     }
     row
-}
-
-/// `parser`, recording what it prints, as a pane's does (`Pane::record`).
-fn recording(mut parser: fux_vt::Parser) -> fux_vt::Parser {
-    parser.record_prints(true);
-    parser
 }
 
 #[cfg(test)]

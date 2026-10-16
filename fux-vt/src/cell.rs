@@ -460,6 +460,14 @@ impl<'a> CellRef<'a> {
     pub fn contents(&self) -> &'a str {
         self.text
     }
+    /// Its text as a reader sees it: a space for a blank cell, or one
+    /// holding a picture's [`PLACEHOLDER`](crate::PLACEHOLDER).
+    pub fn shown(&self) -> &'a str {
+        match self.text {
+            "" | crate::PLACEHOLDER => " ",
+            text => text,
+        }
+    }
     /// Whether the cell holds text: neither blank nor the second half of a
     /// wide glyph.
     pub fn has_contents(&self) -> bool {

@@ -277,10 +277,7 @@ impl<'a> Row<'a> {
     /// and the blanks at its end kept.
     pub fn cells_text(&self) -> String {
         (self.cells().filter(|c| !c.is_wide_continuation()))
-            .map(|c| match c.contents() {
-                text if c.has_contents() && text != PLACEHOLDER => text,
-                _ => " ",
-            })
+            .map(|c| c.shown())
             .collect()
     }
 }

@@ -155,35 +155,16 @@ fn activity(
     }
 }
 
-/// Whether the program has read every key and waits for more, with no time
-/// limit; `surely`, only where the system says it reads (not idle on
-/// something it does not name: a program telling a lone Escape from a
-/// key's sequence waits in a read with a timer).
-pub fn took_keys(
+/// What the program of `child` is blocked in (`activity`), the last key
+/// written `since_key` ago, the screen changed since if `answered`; `None`
+/// while keys wait in its terminal unread.
+pub fn taking(
     child: &crate::process::Child,
     (since_key, answered): (Duration, bool),
-    surely: bool,
-) -> bool {
+) -> Option<Activity> {
     let tty = child.master.slave_path();
     let activity = activity(child, tty.as_deref(), since_key, answered);
-    let reads = match activity {
-        Activity::Reading => true,
-        Activity::Idle => !surely,
-        Activity::Polling | Activity::Waiting | Activity::Busy | Activity::Unknown => false,
-    };
-    reads && !keys_unread(tty.as_deref())
-}
-
-/// Whether keys written now go to a program that reads them, at once or
-/// within a time limit (a read with a timer, or one thread reading while
-/// another sleeps): else they are typed ahead of its read.
-pub fn reads_keys(child: &crate::process::Child, (since_key, answered): (Duration, bool)) -> bool {
-    let tty = child.master.slave_path();
-    let activity = activity(child, tty.as_deref(), since_key, answered);
-    matches!(
-        activity,
-        Activity::Reading | Activity::Polling | Activity::Idle
-    ) && !keys_unread(tty.as_deref())
+    (!keys_unread(tty.as_deref())).then_some(activity)
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a
