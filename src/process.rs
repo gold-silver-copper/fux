@@ -29,15 +29,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Pty(error) => Some(error),
-            Error::Launcher(error) | Error::Start { source: error, .. } => Some(error),
-            Error::NoProgram => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 /// A pane's program: the leader of a session of its own, started by fux
 /// and not yet reaped. Unreaped, its pid is its group's and its session's

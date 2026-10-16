@@ -132,34 +132,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Socket(error) => Some(error),
-            Error::Protocol(error) => Some(error),
-            Error::Mismatch(mismatch) => Some(mismatch),
-            Error::Connect { source: error, .. }
-            | Error::Write(error)
-            | Error::Read(error)
-            | Error::Exe(error)
-            | Error::Log(error)
-            | Error::Spawn(error)
-            | Error::Signals(error)
-            | Error::WriteTerminal(error) => Some(error),
-            Error::Modes(errno)
-            | Error::RawMode(errno)
-            | Error::Poll(errno)
-            | Error::ReadTerminal(errno) => Some(errno),
-            Error::Refused(_)
-            | Error::NoAnswer
-            | Error::Timeout
-            | Error::Closed
-            | Error::Exited { .. }
-            | Error::NotStarted { .. }
-            | Error::NotATerminal => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 impl From<crate::socket::Error> for Error {
     fn from(error: crate::socket::Error) -> Error {

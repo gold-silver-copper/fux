@@ -56,14 +56,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::NotReading => None,
-            Error::Terminal { source, .. } => Some(source),
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 /// Input and terminal replies waiting for the pane's program to read them,
 /// end to end, to be written together: at most [`INPUT_BYTES`] of them,

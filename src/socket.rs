@@ -195,30 +195,7 @@ impl Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Io { source, .. } => Some(source),
-            Error::NotUtf8 { .. }
-            | Error::NoLocation
-            | Error::EmptyVariable { .. }
-            | Error::RelativeVariable { .. }
-            | Error::EmptyPath { .. }
-            | Error::Nul { .. }
-            | Error::Relative { .. }
-            | Error::NoFile { .. }
-            | Error::TooLong { .. }
-            | Error::Symlink(_)
-            | Error::NotPrivate { .. }
-            | Error::NoServer(_)
-            | Error::BadName(_)
-            | Error::NotOurs(_)
-            | Error::Foreign(_)
-            | Error::InUse(_)
-            | Error::Listening(_) => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 /// An I/O error about `path`.
 fn io<'a>(path: &'a Path) -> impl FnOnce(io::Error) -> Error + 'a {

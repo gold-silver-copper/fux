@@ -842,15 +842,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Socket(error) => Some(error),
-            Error::Setup(error) => Some(error),
-            Error::Start(error) => Some(error),
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
