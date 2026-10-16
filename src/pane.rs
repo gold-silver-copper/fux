@@ -1117,7 +1117,7 @@ impl Pane {
         };
         let drawn = self.changed_at > at || now >= crate::after(at, FLOOR);
         // The program asked last, after the checks that read no `/proc`.
-        let taking = || crate::ready::taking(child, (self.since_key(now), self.answered()));
+        let taking = || crate::ready::taking(self, child, now);
         self.input.is_empty()
             && drawn
             && fuxix::io::unread(&child.master).unwrap_or(0) == 0
@@ -1137,8 +1137,7 @@ impl Pane {
     fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) -> bool {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
-        let keys = (self.since_key(now), self.answered());
-        let taking = child.and_then(|child| crate::ready::taking(child, keys));
+        let taking = child.and_then(|child| crate::ready::taking(self, child, now));
         let reading =
             self.input.is_empty() && matches!(taking, Some(Activity::Reading | Activity::Idle));
         // Typed ahead: a shell fux marks says whether it reads its line.
@@ -1185,7 +1184,7 @@ impl Pane {
     pub fn respawned(
         &mut self,
         launch: Launch,
-        process: Option<Process>,
+        process: Process,
         history: usize,
     ) -> Result<Process, Error> {
         // Named after its program, unless renamed.
@@ -1206,7 +1205,7 @@ impl Pane {
         fresh.log = self.log.take();
         fresh.revision = self.revision.wrapping_add(1);
         fresh.starts = self.starts.wrapping_add(1);
-        fresh.process = process.unwrap_or(Process::Absent);
+        fresh.process = process;
         fresh.note_input();
         Ok(std::mem::replace(self, fresh).process)
     }

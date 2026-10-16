@@ -81,7 +81,7 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
     let quiet = now.saturating_duration_since(since);
     let tty = child.master.slave_path();
-    let activity = activity(child, tty.as_deref(), pane.since_key(now), pane.answered());
+    let activity = activity(pane, child, tty.as_deref(), now);
     // A shell command still runs a program that is not full-screen and
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();
@@ -119,16 +119,17 @@ pub fn state(pane: &Pane, now: Instant) -> State {
 }
 
 /// What the foreground group of `child`'s terminal, at `tty`, is blocked
-/// in, the last key written `since_key` ago, and the screen changed since
-/// if `answered`. With no foreground group (its program dropped its
-/// terminal, or is gone, its end not yet heard), its first process's own
-/// group: busy once none is left in it.
+/// in, as `pane`'s last key and its screen since say by `now`. With no
+/// foreground group (its program dropped its terminal, or is gone, its end
+/// not yet heard), its first process's own group: busy once none is left
+/// in it.
 fn activity(
+    pane: &Pane,
     child: &crate::process::Child,
     tty: Option<&Path>,
-    since_key: Duration,
-    answered: bool,
+    now: Instant,
 ) -> Activity {
+    let (since_key, answered) = (pane.since_key(now), pane.answered());
     let leader = child.leader.pid();
     let group = fuxix::terminal::foreground_group(&child.master).unwrap_or(leader);
     // A read timed from a key (`VMIN` and `VTIME`) times the gap after the
@@ -155,15 +156,11 @@ fn activity(
     }
 }
 
-/// What the program of `child` is blocked in (`activity`), the last key
-/// written `since_key` ago, the screen changed since if `answered`; `None`
-/// while keys wait in its terminal unread.
-pub fn taking(
-    child: &crate::process::Child,
-    (since_key, answered): (Duration, bool),
-) -> Option<Activity> {
+/// What the program of `child`, `pane`'s, is blocked in by `now`
+/// (`activity`); `None` while keys wait in its terminal unread.
+pub fn taking(pane: &Pane, child: &crate::process::Child, now: Instant) -> Option<Activity> {
     let tty = child.master.slave_path();
-    let activity = activity(child, tty.as_deref(), since_key, answered);
+    let activity = activity(pane, child, tty.as_deref(), now);
     (!keys_unread(tty.as_deref())).then_some(activity)
 }
 

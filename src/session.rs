@@ -822,7 +822,11 @@ impl Session {
             (self.spawn(id, (&launch.argv, &launch.env), &launch.cwd, size)?).unzip();
         let history = self.config.history_bytes;
         let pane = self.pane_mut(id)?;
-        let old = pane.respawned(launch, child.map(Process::Reading), history)?;
+        let old = pane.respawned(
+            launch,
+            child.map_or(Process::Absent, Process::Reading),
+            history,
+        )?;
         pane.mark_with(nonce.flatten());
         self.end(id, old, true);
         self.touch();
