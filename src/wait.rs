@@ -458,7 +458,7 @@ impl Wait {
                         idle.as_secs()
                     ));
                     if state == crate::ready::State::Busy {
-                        message.push_str(&format!("; `{id} {} wait` waits on", self.again()));
+                        message.push_str("; still busy: the same wait waits on");
                     }
                 }
                 if let Some(line) = &last {
@@ -549,19 +549,6 @@ impl Wait {
             ));
         }
         (line, fields)
-    }
-
-    /// The options that wait for its conditions again (`opts …`).
-    fn again(&self) -> String {
-        let words = (self.until.iter()).map(|until| match until {
-            Until::Text(text) => format!("str '{text}' wait-text"),
-            Until::Gone(text) => format!("str '{text}' wait-gone"),
-            Until::Exit => "wait-exit".to_owned(),
-            Until::Bell => "wait-bell".to_owned(),
-            Until::Settled => String::new(),
-        });
-        let words: Vec<String> = words.filter(|w| !w.is_empty()).collect();
-        format!("opts {}", words.join(" ")).trim_end().to_owned()
     }
 
     /// Its conditions, as an error says what did not come.
