@@ -2908,49 +2908,47 @@ impl Session {
                     | ClientAction::SelectTab(_)
                     | ClientAction::SelectWorkspace(_) => {}
                 }
-                // The client's view is the command's while it runs: out of
-                // the map, so that nothing looks it up again.
-                let mut view = self.views.remove(&client).ok_or(Error::NoClient(client))?;
-                let done = self.on_client(&mut view, place, action);
-                if let ClientAction::Detach = action {
-                    self.workspaces.iter_mut().for_each(|w| w.forget(client));
-                    self.outbox.push(Outgoing::Exit(client, "detached".into()));
-                } else {
-                    self.views.insert(client, view);
+                // A command on a client's screen. Targets it leaves out are
+                // the client's own.
+                let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
+                let picked = match *action {
+                    ClientAction::Detach => {
+                        self.views.remove(&client);
+                        self.workspaces.iter_mut().for_each(|w| w.forget(client));
+                        self.outbox.push(Outgoing::Exit(client, "detached".into()));
+                        return Ok(String::new());
+                    }
+                    ClientAction::Capture { json } => {
+                        let mut grid = crate::render::Grid::new(0, 0);
+                        crate::render::compose_view(
+                            self,
+                            view,
+                            &mut grid,
+                            &mut Placement::default(),
+                        );
+                        let read = crate::capture::client(client, &grid);
+                        let (text, form) = crate::capture::asked(read, json);
+                        self.json = form;
+                        return Ok(text);
+                    }
+                    ClientAction::Zoom => None,
+                    ClientAction::SelectPane(pick) => Some(self.pick_pane(view, place, pick)?),
+                    ClientAction::SelectTab(pick) => Some(self.pick_tab(place, pick)?),
+                    ClientAction::SelectWorkspace(ref pick) => Some(self.pick_ws(view, pick)?),
+                    // Answered above.
+                    ClientAction::Choices(_) | ClientAction::Run(_) => return Ok(String::new()),
+                };
+                // A select shows the client where it picked, unzoomed.
+                match picked {
+                    Some((ws, tab, pane)) => {
+                        self.follow(Here::Client(client, place), ws, tab, pane)
+                    }
+                    None => (self.views.get_mut(&client))
+                        .into_iter()
+                        .for_each(|v| v.zoom = !v.zoom),
                 }
-                done
-            }
-        }
-    }
-
-    /// A command on a client's screen, its view in hand. Targets it leaves
-    /// out are the client's own.
-    fn on_client(
-        &mut self,
-        view: &mut View,
-        place: Place,
-        action: &ClientAction,
-    ) -> Result<String, Error> {
-        match *action {
-            // `execute` does not put the view back.
-            ClientAction::Detach => Ok(String::new()),
-            ClientAction::Capture { json } => {
-                let mut grid = crate::render::Grid::new(0, 0);
-                crate::render::compose_view(self, view, &mut grid, &mut Placement::default());
-                let read = crate::capture::client(view.id, &grid);
-                let (text, form) = crate::capture::asked(read, json);
-                self.json = form;
-                Ok(text)
-            }
-            ClientAction::Zoom => {
-                view.zoom = !view.zoom;
                 Ok(String::new())
             }
-            ClientAction::SelectPane(pick) => self.select(self.pick_pane(view, place, pick)?, view),
-            ClientAction::SelectTab(pick) => self.select(self.pick_tab(place, pick)?, view),
-            ClientAction::SelectWorkspace(ref pick) => self.select(self.pick_ws(view, pick)?, view),
-            // Answered before the view is taken (`execute`).
-            ClientAction::Choices(_) | ClientAction::Run(_) => Ok(String::new()),
         }
     }
 
@@ -3090,13 +3088,6 @@ impl Session {
                 .ok_or(Error::NoWorkspace(w))?,
         };
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
-    }
-
-    /// Shows client `view` where a select command picked, unzoomed.
-    fn select(&mut self, (ws, tab, pane): Picked, view: &mut View) -> Result<String, Error> {
-        self.show(view.id, ws, tab, pane);
-        view.zoom = false;
-        Ok(String::new())
     }
 
     /// The pane `select-pane` picks for client `view`, which is at `at`.
