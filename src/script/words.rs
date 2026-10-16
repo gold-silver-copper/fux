@@ -718,8 +718,7 @@ impl fuxth::Host for Host<'_> {
             "command" => {
                 let mut o = next()?;
                 let line = string(name, &next()?)?;
-                let argv =
-                    crate::words::split(&line).map_err(|e| fail("bad_value", e.to_string()))?;
+                let argv = crate::words::split(&line).map_err(|e| fail("bad_value", e))?;
                 if argv.first().is_none_or(|p| p.is_empty()) {
                     return Err(fail("no_program", "an empty command line"));
                 }

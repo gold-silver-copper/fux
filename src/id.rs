@@ -126,7 +126,9 @@ impl Ids {
         }
         // An id far ahead would leave none after it: the ids would run out.
         if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
-            return Err(Error::IdTooHigh(crate::session::describe(id)));
+            let id = crate::session::describe(id);
+            let why = "too far ahead of the ids given so far, which would run out after it";
+            return Err(crate::session::fail("id", format!("id {id}: {why}")));
         }
         *wanted = Some(n);
         Ok(())
@@ -149,7 +151,8 @@ fn take(counter: &mut u32, wanted: &mut Option<u32>, what: &'static str) -> Resu
         *counter = (*counter).max(n);
         return Ok(n);
     }
-    *counter = counter.checked_add(1).ok_or(Error::IdsExhausted(what))?;
+    *counter = (counter.checked_add(1))
+        .ok_or_else(|| crate::session::fail("ids_exhausted", format!("no {what} IDs are left")))?;
     Ok(*counter)
 }
 

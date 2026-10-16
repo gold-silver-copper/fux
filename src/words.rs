@@ -2,45 +2,12 @@
 //! bindings and the command prompt; and quoting words back for display and for a
 //! shell.
 
-/// Why a line does not split into words, or an argument cannot be typed
-/// into a shell.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// A quote, `'` or `"`, that is never closed.
-    Unterminated(char),
-    /// A backslash with nothing after it to escape.
-    TrailingBackslash,
-    /// An argument with a control character, which would act as a key in
-    /// the shell's line editor.
-    Control { argument: String, character: char },
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Unterminated(quote) => write!(f, "unterminated {quote} quote"),
-            Error::TrailingBackslash => {
-                f.write_str("a backslash at the end of the line escapes nothing")
-            }
-            Error::Control {
-                argument,
-                character,
-            } => write!(
-                f,
-                "the command argument {argument:?} contains the control character {character:?}; \
-                 it would act as a key in the shell"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
 /// Splits `line` like a shell: whitespace separates words; `'…'` is literal;
 /// `"…"` is literal except that a backslash escapes `"`, `\`, `$` and a
 /// backquote; outside quotes a backslash escapes any character; and a `#` at
 /// the start of a word begins a comment that runs to the end of the line.
-pub fn split(line: &str) -> Result<Vec<String>, Error> {
+/// A line that does not split says why.
+pub fn split(line: &str) -> Result<Vec<String>, String> {
     let mut words = Vec::new();
     let mut word = String::new();
     // Whether a word has started, so that `''` is an empty word, not none.
@@ -63,7 +30,7 @@ pub fn split(line: &str) -> Result<Vec<String>, Error> {
                 match chars.next() {
                     Some('\'') => break,
                     Some(c) => word.push(c),
-                    None => return Err(Error::Unterminated('\'')),
+                    None => return Err(unterminated('\'')),
                 }
             },
             '"' => loop {
@@ -75,15 +42,15 @@ pub fn split(line: &str) -> Result<Vec<String>, Error> {
                             word.push('\\');
                             word.push(c);
                         }
-                        None => return Err(Error::Unterminated('"')),
+                        None => return Err(unterminated('"')),
                     },
                     Some(c) => word.push(c),
-                    None => return Err(Error::Unterminated('"')),
+                    None => return Err(unterminated('"')),
                 }
             },
             '\\' => match chars.next() {
                 Some(c) => word.push(c),
-                None => return Err(Error::TrailingBackslash),
+                None => return Err("a backslash at the end of the line escapes nothing".to_owned()),
             },
             c => word.push(c),
         }
@@ -105,6 +72,10 @@ fn bare(word: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
 }
 
+fn unterminated(quote: char) -> String {
+    format!("unterminated {quote} quote")
+}
+
 /// Quotes one word so that `split`, a shell and fuxth read it back unchanged.
 pub fn quote(word: &str) -> String {
     if bare(word) {
@@ -121,14 +92,14 @@ pub fn quote(word: &str) -> String {
 /// `\` is doubled there. A control character would act as a key in the
 /// shell's line editor, so an argument with one is refused. One argument
 /// alone is a line as it is typed (`cd src && make`), unquoted.
-pub fn shell_line(argv: &[String], fish: bool) -> Result<String, Error> {
+pub fn shell_line(argv: &[String], fish: bool) -> Result<String, String> {
     let words = argv
         .iter()
         .map(|arg| match arg.chars().find(|c| c.is_control()) {
-            Some(character) => Err(Error::Control {
-                argument: arg.clone(),
-                character,
-            }),
+            Some(character) => Err(format!(
+                "the command argument {arg:?} contains the control character {character:?}; \
+                 it would act as a key in the shell"
+            )),
             None if argv.len() == 1 => Ok(arg.clone()),
             None if fish => Ok(quote(&arg.replace('\\', "\\\\"))),
             None => Ok(quote(arg)),
@@ -146,22 +117,15 @@ mod tests {
 
     #[test]
     fn errors_say_what_is_wrong() {
-        for (line, error, message) in [
-            ("'open", Error::Unterminated('\''), "unterminated ' quote"),
-            (
-                "a \"open",
-                Error::Unterminated('"'),
-                "unterminated \" quote",
-            ),
+        for (line, message) in [
+            ("'open", "unterminated ' quote"),
+            ("a \"open", "unterminated \" quote"),
             (
                 "end\\",
-                Error::TrailingBackslash,
                 "a backslash at the end of the line escapes nothing",
             ),
         ] {
-            let got = split(line);
-            assert_eq!(got, Err(error), "{line}");
-            assert_eq!(got.err().map(|e| e.to_string()).as_deref(), Some(message));
+            assert_eq!(split(line), Err(message.to_owned()), "{line}");
         }
     }
 

@@ -151,18 +151,13 @@ impl Here<'_> {
 pub enum Error {
     // What a command names, or its context gives, that is not there.
     NoWorkspace(WsId),
-    NoWorkspaceNamed(String),
     NoPaneGiven,
     NoPane(PaneId),
     NoTabGiven,
     NoTab(TabId),
     NoWorkspaceGiven,
-    /// A `-t NAME` that names no tab, or several: why.
-    NotNamed(String),
     /// `--id` asked for an id given before, or one there is.
     IdTaken(String),
-    /// `--id` so far ahead that ids would run out after it.
-    IdTooHigh(String),
     /// A kill from the CLI that names nothing, which would close the
     /// caller's own pane, tab or workspace: its usage.
     KillNeedsTarget(&'static str),
@@ -177,12 +172,6 @@ pub enum Error {
         from: PaneId,
         direction: Direction,
     },
-    /// The pane's program has exited: it takes no input.
-    Exited {
-        pane: PaneId,
-        status: crate::process::Ended,
-    },
-    NotADirectory(PathBuf),
     // What copy mode cannot do.
     NoRows,
     /// A selection of more than `MAX_CELLS` cells.
@@ -194,14 +183,8 @@ pub enum Error {
     TabNameTaken(String, String),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
-    /// A counter of IDs, never reused, that would wrap.
-    IdsExhausted(&'static str),
     // What failed below the session.
     Usage(command::Usage),
-    Words(crate::words::Error),
-    Pane(crate::pane::Error),
-    Process(crate::process::Error),
-    Config(crate::config::Error),
     /// Any other failure, made in one place and told apart by its code
     /// alone: the code `--json` names, and why.
     Failed {
@@ -211,7 +194,7 @@ pub enum Error {
 }
 
 /// A failure of kind `code` (see [`Error::Failed`]).
-fn fail(code: &'static str, message: impl Into<String>) -> Error {
+pub(crate) fn fail(code: &'static str, message: impl Into<String>) -> Error {
     Error::Failed {
         code,
         message: message.into(),
@@ -223,28 +206,21 @@ impl Error {
     /// script to tell failures apart by.
     pub fn code(&self) -> &'static str {
         match self {
-            Error::NoWorkspace(_) | Error::NoWorkspaceNamed(_) => "no_workspace",
+            Error::NoWorkspace(_) => "no_workspace",
             Error::NoPane(_) | Error::NoPaneToCopy => "no_pane",
             Error::NoTab(_) => "no_tab",
             Error::NoPaneGiven
             | Error::NoTabGiven
             | Error::NoWorkspaceGiven
-            | Error::NotNamed(_)
             | Error::KillNeedsTarget(_) => "no_target",
-            Error::IdTaken(_) | Error::IdTooHigh(_) => "id",
+            Error::IdTaken(_) => "id",
             Error::NoClient(_) => "no_client",
             Error::NoBuffer(_) => "no_buffer",
             Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => "nothing_there",
-            Error::Exited { .. } => "exited",
-            Error::NotADirectory(_) => "not_a_directory",
             Error::NoRows | Error::SelectionTooLarge => "selection",
             Error::NameReadAsTarget(_) => "bad_name",
             Error::NameTaken(_) | Error::TabNameTaken(..) => "name_taken",
-            Error::IdsExhausted(_) => "ids_exhausted",
-            Error::Usage(_) | Error::Words(_) => "usage",
-            Error::Pane(crate::pane::Error::NotReading) => "not_reading",
-            Error::Pane(_) | Error::Process(_) => "start",
-            Error::Config(_) => "config",
+            Error::Usage(_) => "usage",
             Error::Failed { code, .. } => code,
         }
     }
@@ -254,7 +230,6 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::NoWorkspace(id) => write!(f, "no workspace {id}"),
-            Error::NoWorkspaceNamed(name) => write!(f, "no workspace named {name:?}"),
             Error::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
             Error::NoPane(id) => write!(f, "no pane {id}"),
             Error::NoTabGiven => f.write_str("no tab given: name one (`str @N tab`)"),
@@ -263,14 +238,9 @@ impl std::fmt::Display for Error {
                 "no workspace given: name one (`str NAME workspace`; for new-tab, the \
                      option `str NAME in`)",
             ),
-            Error::NotNamed(why) => f.write_str(why),
             Error::IdTaken(id) => write!(
                 f,
                 "id {id}: that id, or a higher one, was given before, and ids are never given twice"
-            ),
-            Error::IdTooHigh(id) => write!(
-                f,
-                "id {id}: too far ahead of the ids given so far, which would run out after it"
             ),
             Error::KillNeedsTarget(usage) => write!(
                 f,
@@ -285,15 +255,6 @@ impl std::fmt::Display for Error {
             Error::NoNeighbor { from, direction } => {
                 write!(f, "no pane {} of {from}", direction.name())
             }
-            Error::Exited { pane, status } => {
-                let was = match status {
-                    crate::process::Ended::Exited(_) => "",
-                    crate::process::Ended::Signalled(_) => "was ",
-                };
-                let told = crate::process::told(*status);
-                write!(f, "the program in {pane} {was}{told}")
-            }
-            Error::NotADirectory(path) => write!(f, "{} is not a directory", path.display()),
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
@@ -309,34 +270,31 @@ impl std::fmt::Display for Error {
                 f,
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
             ),
-            Error::IdsExhausted(what) => write!(f, "no {what} IDs are left"),
             Error::Usage(error) => error.fmt(f),
-            Error::Words(error) => error.fmt(f),
-            Error::Pane(error) => error.fmt(f),
-            Error::Process(error) => error.fmt(f),
-            Error::Config(error) => error.fmt(f),
             Error::Failed { message, .. } => f.write_str(message),
         }
     }
 }
 impl std::error::Error for Error {}
 
-impl From<crate::words::Error> for Error {
-    fn from(error: crate::words::Error) -> Error {
-        Error::Words(error)
-    }
-}
-
 impl From<crate::pane::Error> for Error {
     fn from(error: crate::pane::Error) -> Error {
-        Error::Pane(error)
+        let code = match error {
+            crate::pane::Error::NotReading => "not_reading",
+            crate::pane::Error::Terminal { .. } => "start",
+        };
+        fail(code, error.to_string())
     }
 }
 
-impl From<crate::process::Error> for Error {
-    fn from(error: crate::process::Error) -> Error {
-        Error::Process(error)
-    }
+/// `pane`'s program has ended, with `status`: it takes no input.
+fn ended(pane: PaneId, status: crate::process::Ended) -> Error {
+    let was = match status {
+        crate::process::Ended::Exited(_) => "",
+        crate::process::Ended::Signalled(_) => "was ",
+    };
+    let told = crate::process::told(status);
+    fail("exited", format!("the program in {pane} {was}{told}"))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -668,7 +626,7 @@ fn one<T: Copy + std::fmt::Display>(
         [item] => Ok(*item),
         items => {
             let ids: Vec<String> = items.iter().map(ToString::to_string).collect();
-            Err(Error::NotNamed(many(items.len(), ids.join(" "))))
+            Err(fail("no_target", many(items.len(), ids.join(" "))))
         }
     }
 }
@@ -811,7 +769,7 @@ impl Session {
         match r {
             WsRef::Id(id) => self.workspace(*id).ok_or(Error::NoWorkspace(*id)),
             WsRef::Name(name) => (self.workspaces.iter().find(|w| w.name == *name))
-                .ok_or_else(|| Error::NoWorkspaceNamed(name.clone())),
+                .ok_or_else(|| fail("no_workspace", format!("no workspace named {name:?}"))),
         }
         .map(|w| w.id)
     }
@@ -917,10 +875,7 @@ impl Session {
     fn signalled(&self, target: Option<PaneId>, here: Here) -> Result<crate::process::Pid, Error> {
         let pane = self.pane(target, here)?;
         if let Some(status) = pane.process.exit_status() {
-            return Err(Error::Exited {
-                pane: pane.id,
-                status,
-            });
+            return Err(ended(pane.id, status));
         }
         // The program `run` started, unless that is a shell (`run -- bash`):
         // its foreground job, if any, is what a signal is for.
@@ -1107,19 +1062,22 @@ impl Session {
         let named = || -> Result<&Tab, Error> {
             match tabs.as_slice() {
                 [tab] => Ok(*tab),
-                [] => Err(Error::NotNamed(format!(
-                    "no {} named {text:?}",
-                    kind.name()
-                ))),
+                [] => Err(fail(
+                    "no_target",
+                    format!("no {} named {text:?}", kind.name()),
+                )),
                 many => {
                     let each: Vec<String> = (many.iter())
                         .map(|t| format!("{} {}", t.id, ids(&panes_of(t)).join(" ")))
                         .collect();
-                    Err(Error::NotNamed(format!(
-                        "{text:?} names {} tabs ({}): use an id",
-                        many.len(),
-                        each.join(", ")
-                    )))
+                    Err(fail(
+                        "no_target",
+                        format!(
+                            "{text:?} names {} tabs ({}): use an id",
+                            many.len(),
+                            each.join(", ")
+                        ),
+                    ))
                 }
             }
         };
@@ -1306,10 +1264,7 @@ impl Session {
     fn live_pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
         let pane = self.pane_mut(explicit, here)?;
         match pane.process.exit_status() {
-            Some(status) => Err(Error::Exited {
-                pane: pane.id,
-                status,
-            }),
+            Some(status) => Err(ended(pane.id, status)),
             None => Ok(pane),
         }
     }
@@ -1465,7 +1420,10 @@ impl Session {
         };
         match cwd.is_dir() {
             true => Ok(cwd),
-            false => Err(Error::NotADirectory(cwd)),
+            false => Err(fail(
+                "not_a_directory",
+                format!("{} is not a directory", cwd.display()),
+            )),
         }
     }
 
@@ -2875,7 +2833,9 @@ impl Session {
                 // `run_command` marks every view to paint, as after any
                 // command that can show something new: `titles` shows at
                 // each client's next paint.
-                self.config.set(option, value).map_err(Error::Config)?;
+                self.config
+                    .set(option, value)
+                    .map_err(|m| fail("config", m))?;
                 self.configured();
                 Ok(String::new())
             }
@@ -3513,7 +3473,8 @@ impl Launcher {
             .cloned()
             .collect();
         unset.extend(marks.unset.iter().cloned());
-        let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)?;
+        let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)
+            .map_err(|m| fail("start", m))?;
         Ok((child, nonce))
     }
 }
@@ -3559,7 +3520,9 @@ fn new_pane(
         Start::Shell([], _) | Start::Program(..) => None,
         Start::Shell(cmd, _) => {
             let fish = basename(&shell_program) == "fish";
-            let mut line = crate::words::shell_line(cmd, fish)?.into_bytes();
+            let mut line = crate::words::shell_line(cmd, fish)
+                .map_err(|m| fail("usage", m))?
+                .into_bytes();
             line.push(b'\r');
             let deadline = crate::after(Instant::now(), TYPE_WAIT);
             Some(
@@ -4634,7 +4597,7 @@ mod tests {
         ));
         assert!(matches!(
             run("str nope 1 set")?.as_slice(),
-            [Err(Error::Config(_))]
+            [Err(e)] if e.code() == "config"
         ));
         let kill = Command::KillPane {
             target: Some(PaneId::of(9)),
@@ -4645,7 +4608,7 @@ mod tests {
         ));
         assert!(matches!(
             s.attach(10, 40, Some("%1")),
-            Err(Error::NoWorkspaceNamed(_))
+            Err(e) if e.code() == "no_workspace"
         ));
         assert!(matches!(
             s.attach(10, 40, Some("+x")),

@@ -4,18 +4,6 @@
 use crate::words;
 use std::path::PathBuf;
 
-/// Why a setting is refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Error(String);
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Error {}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub shell: Vec<String>,
@@ -112,10 +100,10 @@ impl Default for Config {
 impl Config {
     /// Sets `option` to `value`, its text: a number, `on` or `off` (or
     /// `true` or `false`), a command line for `shell`, names for
-    /// `update-environment`.
-    pub fn set(&mut self, option: &str, value: &str) -> Result<(), Error> {
-        let refused = |why: String| Error(format!("{option}: {why}"));
-        let number = |min: usize, max: usize| -> Result<usize, Error> {
+    /// `update-environment`. A setting refused says why.
+    pub fn set(&mut self, option: &str, value: &str) -> Result<(), String> {
+        let refused = |why: String| format!("{option}: {why}");
+        let number = |min: usize, max: usize| -> Result<usize, String> {
             let n: i128 = value.parse().map_err(|_| refused("not a number".into()))?;
             (usize::try_from(n).ok())
                 .filter(|n| (min..=max).contains(n))
@@ -130,7 +118,7 @@ impl Config {
         };
         match option {
             "shell" => {
-                let argv = words::split(value).map_err(|e| refused(e.to_string()))?;
+                let argv = words::split(value).map_err(refused)?;
                 if argv.first().is_none_or(|p| p.is_empty()) {
                     return Err(refused("a program is needed".into()));
                 }
@@ -157,11 +145,11 @@ impl Config {
             }
             "buffers" => self.buffers = number(1, MAX_BUFFERS)?,
             other => {
-                return Err(Error(format!(
+                return Err(format!(
                     "no setting {other:?}; the settings are shell, history-bytes, wait-seconds, \
                      journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks \
                      and update-environment"
-                )));
+                ));
             }
         }
         Ok(())
