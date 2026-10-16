@@ -180,7 +180,7 @@ impl Decoder {
                 for x in self.x..right {
                     let at = offset(x, y, self.width).unwrap_or(usize::MAX);
                     if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
-                        pixel.copy_from_slice(&[r, g, b, 255]);
+                        crate::copy_from(pixel, &[r, g, b, 255]);
                     }
                 }
             }
@@ -210,7 +210,7 @@ impl Decoder {
             if let (Some(source), Some(target)) =
                 (source, grown.get_mut(to..to.saturating_add(old)))
             {
-                target.copy_from_slice(source);
+                crate::copy_from(target, source);
             }
         }
         (self.width, self.height, self.pixels) = (width, height, grown);
