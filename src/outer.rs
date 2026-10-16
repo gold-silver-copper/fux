@@ -41,6 +41,7 @@ use crate::id::PaneId;
 use crate::id::{ClientId, TabId};
 use crate::session::{Outgoing, Session};
 use crate::view::View;
+use fux_vt::ModeStatus;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
 use std::time::Instant;
@@ -223,12 +224,11 @@ impl Session {
                 }
             }
             Reply::Mode { mode: 2031, status } => {
-                // 1 or 2: known, and set or reset; 3: always set
-                // (DECRQM, ctlseqs).
+                // Known, and set or reset; or always set (DECRQM, ctlseqs).
                 let queries = match status {
-                    1 | 2 => REPORTS_ON,
-                    3 => SCHEME_QUERY,
-                    _ => return,
+                    ModeStatus::Set | ModeStatus::Reset => REPORTS_ON,
+                    ModeStatus::PermanentlySet => SCHEME_QUERY,
+                    ModeStatus::NotRecognized | ModeStatus::PermanentlyReset => return,
                 };
                 terminal.asked = terminal.asked.saturating_add(1);
                 self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));

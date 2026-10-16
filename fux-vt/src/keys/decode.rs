@@ -45,11 +45,11 @@
 //!
 //! An answer's string longer than any answer (`OSC_LIMIT`, `DCS_LIMIT`) is
 //! dropped to its end as it arrives, none of it typed.
-use crate::Rgb;
 use crate::keys::colour::Scheme;
 use crate::keys::encode::{PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
+use crate::{ModeStatus, Rgb};
 use std::borrow::Cow;
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
@@ -122,9 +122,8 @@ pub enum Reply {
     Mode {
         /// The mode asked about.
         mode: u16,
-        /// DECRPM's status: 0 not recognised, 1 set, 2 reset, 3 permanently set, 4 permanently
-        /// reset.
-        status: u8,
+        /// Its status.
+        status: ModeStatus,
     },
     /// The kitty keyboard protocol's flags: `CSI ? flags u`.
     KittyFlags(u8),
@@ -741,9 +740,10 @@ fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
         },
         b'y' => {
             let (mode, status) = text.strip_suffix('$')?.split_once(';')?;
+            let status = status.parse().ok()?;
             Some(Reply::Mode {
                 mode: mode.parse().ok()?,
-                status: status.parse().ok()?,
+                status: ModeStatus::ALL.into_iter().find(|s| s.number() == status)?,
             })
         }
         _ => None,
@@ -1427,7 +1427,7 @@ mod tests {
             palette(15, 0xff, 0xff, 0xff),
             Input::Reply(Reply::Mode {
                 mode: 2031,
-                status: 2,
+                status: ModeStatus::Reset,
             }),
             Input::Reply(Reply::Scheme(Scheme::Dark)),
             key("c"),
@@ -1447,7 +1447,10 @@ mod tests {
             all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;red\x07\x1b]4;256;rgb:0/0/0\x07\x1b]4;x;rgb:0/0/0\x07\x1b]4;1\x07\x1b[?6;1$yx"),
             vec![
                 Input::Reply(Reply::Attributes { sixel: false }),
-                Input::Reply(Reply::Mode { mode: 6, status: 1 }),
+                Input::Reply(Reply::Mode {
+                    mode: 6,
+                    status: ModeStatus::Set,
+                }),
                 key("x")
             ]
         );

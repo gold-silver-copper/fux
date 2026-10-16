@@ -587,7 +587,8 @@ impl Screen {
             }
             Kind::Origin => self.grid().cursor.origin,
             Kind::Screen(_) => self.alternate_active,
-            Kind::SaveCursor | Kind::Reset => false,
+            Kind::SaveCursor => false,
+            Kind::Permanent(set) => set,
             Kind::Mouse(mouse) => self.mouse == mouse,
             Kind::Encoding(encoding) => self.encoding == encoding,
         }
@@ -2142,7 +2143,7 @@ impl Screen {
             }
             Kind::SaveCursor if on => self.save(),
             Kind::SaveCursor => self.restore(),
-            Kind::Reset => {}
+            Kind::Permanent(_) => {}
             Kind::Mouse(mouse) => latest(&mut self.mouse, mouse, on),
             Kind::Encoding(encoding) => latest(&mut self.encoding, encoding, on),
         }

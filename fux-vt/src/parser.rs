@@ -2,7 +2,7 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::mode::{Kind, Mode};
+use crate::mode::{Kind, Mode, ModeStatus};
 use crate::{Error, Reply, Rgb, Screen, Size, screen::Dispatch};
 
 #[cfg(test)]
@@ -1419,22 +1419,18 @@ impl Parser {
             (b"*", b'y') if self.options.has(Feature::RectangleChecksums) => {
                 Some(self.screen.rectangle_checksum(&self.params))
             }
-            // DECRQM: 1 set, 2 reset, 0 not recognized (and 1048, an
-            // action), 4 permanently reset for DECARM, and 3 permanently set
-            // for 2027: graphemes are always clustered, as kitty's and
-            // Ghostty's mode 2027 does, so a program measuring them counts
-            // their cells as fux does.
+            // DECRQM.
             (b"?$" | b"$", b'p') if modes => {
                 let private = intermediates == b"?$";
                 let mode = Mode::of(n, private, &self.options);
                 let status = match mode.map(|m| (m, m.kind())) {
-                    None if private && n == 2027 => 3,
-                    None | Some((_, Kind::SaveCursor)) => 0,
-                    Some((_, Kind::Reset)) => 4,
-                    Some((mode, _)) if self.screen.mode(mode) => 1,
-                    Some(_) => 2,
+                    None | Some((_, Kind::SaveCursor)) => ModeStatus::NotRecognized,
+                    Some((_, Kind::Permanent(true))) => ModeStatus::PermanentlySet,
+                    Some((_, Kind::Permanent(false))) => ModeStatus::PermanentlyReset,
+                    Some((mode, _)) if self.screen.mode(mode) => ModeStatus::Set,
+                    Some(_) => ModeStatus::Reset,
                 };
-                let marker = if private { "?" } else { "" };
+                let (marker, status) = (if private { "?" } else { "" }, status.number());
                 Some(Reply::of(format_args!("\x1b[{marker}{n};{status}$y")))
             }
             _ => None,

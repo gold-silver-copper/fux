@@ -12,6 +12,7 @@ use crate::keys::decode::Reply;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::keys::{Keystroke, Kitty, Modifiers};
 use crate::wire::{wire_enum, wire_struct};
+use fux_vt::ModeStatus;
 
 /// One action of an attached client.
 #[derive(Clone, Debug, PartialEq)]
@@ -173,6 +174,13 @@ wire_enum!(MouseAction, "mouse action" {
     0 => Press,
     1 => Release,
     2 => Motion,
+});
+wire_enum!(ModeStatus, "mode status" {
+    0 => NotRecognized,
+    1 => Set,
+    2 => Reset,
+    3 => PermanentlySet,
+    4 => PermanentlyReset,
 });
 wire_enum!(Scheme, "scheme" {
     0 => Light,
