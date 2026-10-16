@@ -846,11 +846,8 @@ impl Pane {
             // printed on no more, and finding one there would read all of
             // history); rows scrolled off since are let go.
             if tell {
-                let window = screen.window();
-                let rows: std::collections::HashMap<_, _> = (0..window.rows())
-                    .filter_map(|y| window.row(y))
-                    .map(|row| (row.id(), row))
-                    .collect();
+                let rows: std::collections::HashMap<_, _> =
+                    live(screen).map(|(_, row)| (row.id(), row)).collect();
                 let mut last = None;
                 for print in prints.iter() {
                     if last.replace(print.row) == Some(print.row) {
@@ -860,9 +857,7 @@ impl Pane {
                         self.seen.entry(print.row).or_default().read(row);
                     }
                 }
-                if self.seen.len() > rows.len().saturating_mul(4) {
-                    self.seen.retain(|id, _| rows.contains_key(id));
-                }
+                prune(&mut self.seen, screen);
             } else {
                 self.seen.clear();
             }
@@ -1017,9 +1012,8 @@ impl Pane {
             .push(self.since.from, Instant::now(), crate::log::Event::Action);
         self.redraws = 0;
         self.before = rows_now(self.screen());
-        let window = self.screen().window();
-        self.before_shows = (0..window.rows())
-            .filter_map(|y| window.row(y).map(|row| (row.id(), (y, shows(&row)))))
+        self.before_shows = (live(self.screen()))
+            .map(|(y, row)| (row.id(), (y, shows(&row))))
             .collect();
         self.shown_rows.clone_from(&self.before_shows);
         self.seen.clear();
@@ -1230,15 +1224,7 @@ impl Pane {
             let now_shows = (y, shows(&row));
             changed |= self.shown_rows.insert(row.id(), now_shows) != Some(now_shows);
         }
-        let rows = usize::from(screen.size().rows());
-        if self.shown_rows.len() > rows.saturating_mul(4) {
-            let window = screen.window();
-            let live: std::collections::HashSet<_> = (0..window.rows())
-                .filter_map(|y| window.row(y))
-                .map(|r| r.id())
-                .collect();
-            self.shown_rows.retain(|id, _| live.contains(id));
-        }
+        prune(&mut self.shown_rows, screen);
         self.shown = (screen.mark(), cursor);
         if changed {
             self.changed_at = now;
@@ -1418,11 +1404,24 @@ pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
 
 /// The screen's rows as they read now, by row.
 pub fn rows_now(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, Cells> {
-    let window = screen.window();
-    (0..window.rows())
-        .filter_map(|y| window.row(y))
-        .map(|row| (row.id(), row_cells(&row)))
+    live(screen)
+        .map(|(_, row)| (row.id(), row_cells(&row)))
         .collect()
+}
+
+/// The screen's rows, from the top, and where each is.
+fn live(screen: &fux_vt::Screen) -> impl Iterator<Item = (u16, fux_vt::Row<'_>)> {
+    let window = screen.window();
+    (0..window.rows()).filter_map(move |y| Some((y, window.row(y)?)))
+}
+
+/// Past four times the screen's rows, keeps in `map` only the rows on the
+/// screen: rows scrolled off are printed on no more.
+pub fn prune<V>(map: &mut std::collections::HashMap<fux_vt::RowId, V>, screen: &fux_vt::Screen) {
+    if map.len() > usize::from(screen.size().rows()).saturating_mul(4) {
+        let rows: std::collections::HashSet<_> = live(screen).map(|(_, row)| row.id()).collect();
+        map.retain(|id, _| rows.contains(id));
+    }
 }
 
 /// The first row of the line the cursor is on (a line wider than the
