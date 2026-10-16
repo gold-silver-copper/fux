@@ -106,13 +106,12 @@ struct Watch {
     /// joined, though printed in several pieces and between others: where
     /// it starts and ends, and the text.
     stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
-    /// The `wait-gone` texts seen since the wait began, for a fresh program.
-    appeared: Vec<String>,
-    /// How far it read the journal, for texts, texts gone and bells, and
-    /// the last piece that printed each text gone: each look reads only
-    /// what is new.
+    /// The `wait-gone` texts seen since the wait began, for a fresh
+    /// program, and the last piece that printed each, if one did.
+    appeared: std::collections::HashMap<String, Option<Seq>>,
+    /// How far it read the journal, for texts, texts gone and bells: each
+    /// look reads only what is new.
     looked: Seq,
-    printed: Vec<(String, Seq)>,
     bell: Option<Seq>,
     /// A text was found in the echo of what was typed alone.
     echo_skipped: bool,
@@ -663,9 +662,9 @@ impl Watch {
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
             stream: std::collections::HashMap::new(),
-            appeared: Vec::new(),
+            appeared: std::collections::HashMap::new(),
             looked: start.from,
-            printed: Vec::new(),
+
             bell: None,
             echo_skipped: false,
             revision: pane.revision,
@@ -775,8 +774,7 @@ impl Watch {
                 if let Until::Gone(text) = until
                     && p.prints.iter().any(|r| found_in(r.text, text) > 0)
                 {
-                    self.printed.retain(|(t, _)| t != text);
-                    self.printed.push((text.clone(), seq));
+                    self.appeared.insert(text.clone(), Some(seq));
                 }
             }
         }
@@ -794,16 +792,15 @@ impl Watch {
                 Until::Text(_) => {}
                 Until::Gone(text) => {
                     let present = on_screen(screen, text);
+                    if present {
+                        self.appeared.entry(text.clone()).or_default();
+                    }
                     // Shown between two looks (drawn over, erased, scrolled
                     // away): printed since, though gone now.
                     // It went no earlier than the last piece that printed it.
-                    let last = (self.printed.iter())
-                        .find(|(t, _)| t == text)
-                        .map(|(_, seq)| *seq);
-                    if (present || last.is_some()) && !self.appeared.contains(text) {
-                        self.appeared.push(text.clone());
-                    }
-                    let had = !fresh || self.appeared.contains(text);
+                    let seen = self.appeared.get(text);
+                    let last = seen.copied().flatten();
+                    let had = !fresh || seen.is_some();
                     if !present && had && gone.is_none() {
                         gone = Some((Found::Gone(text.clone()), last.unwrap_or(self.start.from)));
                     }
