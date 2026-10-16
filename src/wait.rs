@@ -352,21 +352,9 @@ impl Wait {
         // A settling action whose pane closed (a shell that exited): said,
         // with status 4, not a failure.
         if settles && matches!(told, Told::Gone) {
-            return Outcome {
-                status: GONE,
-                stdout: format!("{id} closed\n"),
-                json: format!(
-                    "{}\n",
-                    Json::Object(vec![
-                        ("pane", Json::str(id.to_string())),
-                        ("state", Json::str("closed")),
-                        ("status", Json::Number(i64::from(GONE))),
-                    ])
-                    .render()
-                ),
-                ids: vec![AnyRef::Pane(id)],
-                ..Outcome::default()
-            };
+            let stdout = format!("{id} closed\n");
+            let state = vec![("state", Json::str("closed"))];
+            return answer(id, GONE, (stdout, String::new()), state, None);
         }
         if let (Some(state), Some(pane)) = (state, pane) {
             let (line, notes) = self.state_line(id, pane, state, since);
@@ -383,21 +371,11 @@ impl Wait {
             };
             // Said on stdout, with its status: still busy (124), stopped
             // short of the text (7). Not a failure: the answer is the screen.
-            let mut fields = vec![
-                ("pane", Json::str(id.to_string())),
-                ("state", Json::str(state.word())),
-            ];
+            let mut fields = vec![("state", Json::str(state.word()))];
             fields.extend(notes);
-            fields.push(("status", Json::Number(i64::from(status))));
-            fields.push(("output", Json::str(body.clone())));
-            let json = Json::Object(fields);
-            return Outcome {
-                status,
-                stdout: format!("{line}\n{body}"),
-                json: format!("{}\n", json.render()),
-                ids: vec![AnyRef::Pane(id)],
-                ..Outcome::default()
-            };
+            let stdout = format!("{line}\n{body}");
+            let output = Some(("output", Json::str(body)));
+            return answer(id, status, (stdout, String::new()), fields, output);
         }
         let screen = pane
             .filter(|_| self.print)
@@ -490,26 +468,43 @@ impl Wait {
                 )
             }
         };
-        let mut fields = vec![("pane", Json::str(id.to_string()))];
-        fields.extend(json);
-        fields.push(("status", Json::Number(i64::from(status))));
-        if let Some(screen) = &screen {
-            fields.push(("screen", Json::str(screen.clone())));
-        }
-        let json = format!("{}\n", Json::Object(fields).render());
         let said = if said.is_empty() {
             said
         } else {
             format!("{prefix}{said}\n")
         };
-        Outcome {
+        let stdout = format!("{said}{}", screen.as_deref().unwrap_or_default());
+        let screen = screen.map(|screen| ("screen", Json::str(screen)));
+        answer(
+            id,
             status,
-            stdout: format!("{said}{}", screen.unwrap_or_default()),
-            stderr: problem.unwrap_or_default(),
+            (stdout, problem.unwrap_or_default()),
             json,
-            ids: vec![AnyRef::Pane(id)],
-            ..Outcome::default()
-        }
+            screen,
+        )
+    }
+}
+
+/// A wait's answer of pane `id`: its JSON the pane, `fields`, the status,
+/// then `last`, if any.
+fn answer(
+    id: PaneId,
+    status: u8,
+    (stdout, stderr): (String, String),
+    fields: Vec<(&'static str, Json<'static>)>,
+    last: Option<(&'static str, Json<'static>)>,
+) -> Outcome {
+    let mut all = vec![("pane", Json::str(id.to_string()))];
+    all.extend(fields);
+    all.push(("status", Json::Number(i64::from(status))));
+    all.extend(last);
+    Outcome {
+        status,
+        stdout,
+        stderr,
+        json: format!("{}\n", Json::Object(all).render()),
+        ids: vec![AnyRef::Pane(id)],
+        ..Outcome::default()
     }
 }
 
