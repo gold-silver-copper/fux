@@ -255,7 +255,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "bind" => "str 'g v' str 'me focused opts horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",
-        "set" => "fux str history-lines 50000 set",
+        "set" => "fux str history-bytes 16777216 set",
         "server" => "fux str test server start opts str ./app program run",
         "headless" => "fux 100 30 headless",
         "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",

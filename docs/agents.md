@@ -84,7 +84,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   (124), never 7. A read with the terminal's own time
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
   returns alone, so a text wait runs to its limit (124). The answer is the
-  screen (it starts `… earlier lines not kept (past history-lines)` if lines
+  screen (it starts `… earlier lines not kept (past history-bytes)` if lines
   written since were let go, or `… more came than the pane's journal keeps
   (journal-bytes): text may have passed unseen`, 32 MiB by default). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's

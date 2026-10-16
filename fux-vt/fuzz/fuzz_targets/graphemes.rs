@@ -114,7 +114,7 @@ fuzz_target!(|input: Input| {
 
     let options = Options::new().with(Feature::Reflow);
     let size = Size::new(rows, cols).expect("a row and four columns at least");
-    let Ok(mut parser) = Parser::with_options(size, 1_000, options) else {
+    let Ok(mut parser) = Parser::with_options(size, 1 << 20, options) else {
         return;
     };
     let mut rest = output.as_slice();

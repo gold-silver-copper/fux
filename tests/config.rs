@@ -56,8 +56,9 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
 /// line changes a running one; bad values are refused.
 #[test]
 fn settings_reach_the_server() -> Outcome {
-    let server = Server::start("str history-lines 3 set")?;
-    // History lines apply to new panes.
+    // Three rows of two cells or more: 24 bytes a row and 8 a cell.
+    let server = Server::start("str history-bytes 120 set")?;
+    // History bytes apply to new panes.
     let pane = server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
     let pane = pane.split_whitespace().next().unwrap_or_default();
     server.type_line(
@@ -119,7 +120,7 @@ fn a_bad_config_is_reported() -> Outcome {
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
     // An unknown word is found before anything runs, naming its line.
-    std::fs::write(&config, "str history-lines 5 set\nfrobnicate\n").map_err(e)?;
+    std::fs::write(&config, "str history-bytes 5 set\nfrobnicate\n").map_err(e)?;
     let path = config.to_string_lossy().into_owned();
     let checked = server.fux(&["str", &path, "check"])?;
     assert_eq!(checked.status, 1);

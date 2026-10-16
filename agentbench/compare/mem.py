@@ -28,7 +28,8 @@ def measure(bin_):
     e = {k: v for k, v in os.environ.items() if k not in ("FUX_SOCKET", "FUX_PANE", "FUX_SERVER")}
     e.update(XDG_RUNTIME_DIR=d, FUX_SOCKET=os.path.join(d, "s"), XDG_STATE_HOME=os.path.join(d, "st"))
     run(bin_, e, "start")
-    run(bin_, e, "str", "history-lines", "50000", "set")
+    # 50,000 rows of 79 cells: 24 bytes a row and 8 a cell.
+    run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set")
     pid = int(run(bin_, e, "str", "pid", "server", "get").stdout.strip() or 0) if False else None
     def server():
         for p in os.listdir("/proc"):

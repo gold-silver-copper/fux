@@ -938,7 +938,7 @@ impl Screen {
         self.prints.as_mut().map(std::mem::take).unwrap_or_default()
     }
     /// The number of the last change to a row of the primary screen's
-    /// history that has since been let go past its limit: 0 if none was.
+    /// history that has since been let go past its budget: 0 if none was.
     pub fn let_go(&self) -> u64 {
         self.primary.let_go()
     }
@@ -1024,15 +1024,14 @@ impl Screen {
         Ok(())
     }
 
-    pub(crate) fn set_history_limit(&mut self, lines: usize) -> Result<(), Error> {
-        if self.primary.history_limit() == lines {
-            return Ok(());
+    pub(crate) fn set_history_bytes(&mut self, bytes: usize) {
+        if self.primary.history_bytes() == bytes {
+            return;
         }
-        self.primary.set_history_limit(lines)?;
+        self.primary.set_history_bytes(bytes);
         // Rows may have left history: every reader reads again.
         self.version = self.version.wrapping_add(1);
         self.structural = self.version;
-        Ok(())
     }
 
     fn scroll(&mut self, region: Span, count: u16, up: bool, history: bool) -> Result<(), Error> {
@@ -1490,8 +1489,9 @@ impl Screen {
         let Some(per_row) = usize::from(line).checked_div(width).filter(|n| *n > 0) else {
             return Ok(());
         };
+        // History holds fewer rows than bytes.
         let lines = usize::from(g.size().rows())
-            .saturating_add(g.history_limit())
+            .saturating_add(g.history_bytes())
             .saturating_add(1);
         let full = lines.saturating_mul(per_row);
         let mut count = usize::from(count);
@@ -1791,7 +1791,7 @@ impl Screen {
                     self.primary.clear(&mut next, self.version)?;
                     self.alternate.clear(&mut next, self.version)?;
                 } else {
-                    let history = self.primary.history_limit();
+                    let history = self.primary.history_bytes();
                     let primary = Grid::new(size, history, &mut next, self.version)?;
                     let alternate = Grid::unmade(size, &mut next, self.version)?;
                     self.primary = primary;

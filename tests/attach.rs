@@ -162,7 +162,7 @@ fn a_resize_reaches_the_program() -> Outcome {
 
 #[test]
 fn capture_pane_shows_the_screen_and_history() -> Outcome {
-    let server = Server::start("str history-lines 100 set")?;
+    let server = Server::start("str history-bytes 100000 set")?;
     let mut client = server.attach(6, 30)?;
     client.wait_for("$")?;
     client.keys("for i in 1 2 3 4 5 6 7 8; do echo line$i; done\r")?;

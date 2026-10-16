@@ -1798,12 +1798,12 @@ fn a_signal_that_ends_the_program_says_so() -> Outcome {
 }
 
 /// A text wait sees every line written since it began, however fast they
-/// pass: past history's limit between two looks, or off the alternate
+/// pass: past history's budget between two looks, or off the alternate
 /// screen, which keeps none. Of several texts already shown, the one that
 /// came first answers. An answer whose start was let go says so.
 #[test]
 fn a_wait_misses_no_line_however_fast_it_passes() -> Outcome {
-    let server = Server::start("str history-lines 20 set")?;
+    let server = Server::start("str history-bytes 2000 set")?;
     let flood = "import os; os.write(1, b'FIRST_READY\\n' + b'filler\\n' * 5000); input()";
     let first = server.fux(&run(
         &["str", "FIRST_READY", "wait-text"],
@@ -2453,12 +2453,12 @@ fn keys_with_no_enter_are_their_echo() -> Outcome {
     Ok(())
 }
 
-/// A later text wait reads the lines let go past history's limit since
+/// A later text wait reads the lines let go past history's budget since
 /// the input too, as the pane kept them; past what it keeps, it says they
 /// were let go: the text may have come unseen.
 #[test]
 fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
-    let server = Server::start("str history-lines 20 set  str journal-bytes 200000 set")?;
+    let server = Server::start("str history-bytes 2000 set  str journal-bytes 200000 set")?;
     let wait = |pane: &str, text: &str| {
         let args = [
             "str",

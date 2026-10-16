@@ -406,8 +406,9 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
         assert_eq!(lines(&p), ["---"], "{between:?}");
     }
     // However many: 65536 in all fill the screen, and the history, ending
-    // in the last column with a wrap pending, as in xterm.
-    let mut p = Parser::new(Size::new(2, 4)?, 3)?;
+    // in the last column with a wrap pending, as in xterm. History holds
+    // three rows of four cells: 24 bytes a row and 8 a cell.
+    let mut p = Parser::new(Size::new(2, 4)?, 3 * 56)?;
     p.process(b"x\x1b[65535b")?;
     assert_eq!(lines(&p), ["xxxx", "xxxx"]);
     assert_eq!(p.screen().cursor_position(), (1, 3));

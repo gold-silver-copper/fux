@@ -203,7 +203,8 @@ fn a_version_changes_with_its_row_and_only_then() -> Result {
     let (mut calls, mut changed, mut quiet) = (0u64, 0u64, 0u64);
     for case in 0..1_500u64 {
         let size = r.size()?;
-        let history = usize::try_from(r.below(20))?;
+        // Up to 20 rows of history, at 64 bytes a row.
+        let history = usize::try_from(r.below(20))? * 64;
         let mut parser = Parser::new(size, history)?;
         for step in 0..r.below(30) {
             // Some output of every kind, then the same screen written again.
@@ -266,7 +267,7 @@ fn dirty_live_rows_are_the_live_dirty_rows() -> Result {
     let (mut compared, mut refreshed) = (0u64, 0u64);
     for _ in 0..1_000u64 {
         let size = r.size()?;
-        let history = usize::try_from(r.below(40))?;
+        let history = usize::try_from(r.below(40))? * 64;
         let mut parser = Parser::new(size, history)?;
         for _ in 0..r.below(20) {
             let mark = parser.screen().mark();

@@ -28,10 +28,9 @@ const ESU: &[u8] = b"\x1b[?2026l";
 pub enum Error {
     /// The queue is full, or refusing until the program reads.
     NotReading,
-    /// No terminal of this size and history.
+    /// No terminal of this size.
     Terminal {
         size: fux_vt::Size,
-        history: usize,
         source: fux_vt::Error,
     },
 }
@@ -42,16 +41,9 @@ impl std::fmt::Display for Error {
             Error::NotReading => f.write_str(
                 "the pane's program is not reading its input; nothing more is queued until it does",
             ),
-            Error::Terminal {
-                size,
-                history,
-                source,
-            } => write!(
-                f,
-                "a {}x{} terminal with {history} lines of history: {source}",
-                size.cols(),
-                size.rows()
-            ),
+            Error::Terminal { size, source } => {
+                write!(f, "a {}x{} terminal: {source}", size.cols(), size.rows())
+            }
         }
     }
 }
@@ -614,13 +606,8 @@ impl Pane {
         history: usize,
     ) -> Result<Pane, Error> {
         let parser = recording(
-            fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
-                Error::Terminal {
-                    size,
-                    history,
-                    source,
-                }
-            })?,
+            fux_vt::Parser::with_options(size, history, OPTIONS)
+                .map_err(|source| Error::Terminal { size, source })?,
         );
         let mark = parser.screen().mark();
         Ok(Pane {
@@ -1053,7 +1040,7 @@ impl Pane {
     }
 
     /// Whether rows of the main screen written since the last input were
-    /// let go (past history's limit, or out of a scroll region): what came
+    /// let go (past history-bytes, or out of a scroll region): what came
     /// since is not all on the screen or in history. What they printed is
     /// kept in `prints`.
     pub fn cut(&self) -> bool {
@@ -1143,14 +1130,8 @@ impl Pane {
         history: usize,
     ) -> Result<Process, Error> {
         let size = self.size();
-        let mut parser =
-            fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
-                Error::Terminal {
-                    size,
-                    history,
-                    source,
-                }
-            })?;
+        let mut parser = fux_vt::Parser::with_options(size, history, OPTIONS)
+            .map_err(|source| Error::Terminal { size, source })?;
         parser.require_mark_nonce(self.nonce.as_deref().map(str::as_bytes));
         self.parser = recording(parser);
         // Named after its program, unless renamed.
@@ -1546,7 +1527,7 @@ mod tests {
             "sh".into(),
             Runs::Shell,
             size(rows, cols),
-            10,
+            1 << 10,
         )
     }
 
@@ -1622,13 +1603,14 @@ mod tests {
         assert_eq!(pane.frame_deadline(), None);
         pane.output(b"\x1b[2J\x1b[H\x1b[?2026hw");
         pane.resize(size(3, 20));
-        // The cursor's row: a reflow may bring history down above it.
+        // The cursor's row: a reflow may bring history down above it, and
+        // join the wrapped row history ends with to it.
         let (y, _) = pane.screen().cursor_position();
         let row: String = (0..20)
             .filter_map(|x| pane.screen().cell(y, x))
             .map(|c| c.contents().chars().next().unwrap_or(' '))
             .collect();
-        assert_eq!(row.trim_end(), "w", "a resize reads it first");
+        assert!(row.trim_end().ends_with('w'), "a resize reads it first");
         Ok(())
     }
 
@@ -1714,10 +1696,9 @@ mod tests {
         p.resize(size(3, 8));
         p.output(b"three\r\n\x1b]0;title\x07four");
         let mut again =
-            fux_vt::Parser::with_options(size(4, 12), 10, OPTIONS).map_err(|source| {
+            fux_vt::Parser::with_options(size(4, 12), 1 << 10, OPTIONS).map_err(|source| {
                 Error::Terminal {
                     size: size(4, 12),
-                    history: 10,
                     source,
                 }
             })?;

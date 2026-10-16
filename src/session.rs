@@ -238,8 +238,8 @@ pub enum Error {
         row: u16,
         col: u16,
     },
-    /// A size no pane can have, with this much history.
-    TooBig(fux_vt::Size, usize),
+    /// A size no pane can have.
+    TooBig(fux_vt::Size),
     /// A size a tab's panes cannot all have.
     TooSmall(TabId, usize),
     /// A name several tabs have, and no workspace.
@@ -477,12 +477,9 @@ impl std::fmt::Display for Error {
                 f,
                 "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
             ),
-            Error::TooBig(size, history) => write!(
-                f,
-                "{}x{} is too big for a pane keeping {history} lines of history",
-                size.cols(),
-                size.rows()
-            ),
+            Error::TooBig(size) => {
+                write!(f, "{}x{} is too big for a pane", size.cols(), size.rows())
+            }
             Error::TooSmall(tab, panes) => write!(
                 f,
                 "{tab} cannot show its {panes} panes at that size; close some, or choose a bigger one"
@@ -1111,7 +1108,7 @@ impl Session {
             None => None,
         };
         let (child, nonce) = child.unzip();
-        let history = self.config.history_lines;
+        let history = self.config.history_bytes;
         let Some(pane) = self.panes.get_mut(&id) else {
             return Err(Error::NoPane(id));
         };
@@ -2031,13 +2028,10 @@ impl Session {
         true
     }
 
-    /// The settings changed: every pane keeps the history they say. A pane
-    /// whose history cannot be that long at its size keeps its own, as a
-    /// new pane of that size would fail.
+    /// The settings changed: every pane keeps the history they say.
     fn configured(&mut self) {
-        let lines = self.config.history_lines;
         for pane in self.panes.values_mut() {
-            let _ = pane.parser.set_history_lines(lines);
+            pane.parser.set_history_bytes(self.config.history_bytes);
             pane.record.set_budget(self.config.journal_bytes);
         }
         self.keep_journals();
@@ -2989,12 +2983,11 @@ impl Session {
             Command::Resize { what, size } => {
                 match what {
                     Resized::Tabs(target) => {
-                        // A size no pane could have, with the history kept,
-                        // is refused, not left unmet.
+                        // A size no pane could have is refused, not left unmet.
                         if let Some(size) = size
-                            && !fux_vt::fits(*size, self.config.history_lines)
+                            && !fux_vt::fits(*size)
                         {
-                            return Err(Error::TooBig(*size, self.config.history_lines));
+                            return Err(Error::TooBig(*size));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
@@ -4050,7 +4043,7 @@ fn new_pane(
         .first()
         .map(|c| basename(c))
         .unwrap_or_else(|| basename(&shell_program));
-    let mut pane = Pane::new(id, name, runs, size, config.history_lines)?;
+    let mut pane = Pane::new(id, name, runs, size, config.history_bytes)?;
     pane.record.set_budget(config.journal_bytes);
     // A program brought back by a restore waits for `respawn`.
     let paused = fresh.paused && matches!(start, Start::Program(..));
@@ -4555,10 +4548,10 @@ mod tests {
     use super::testing::{attached, output, requests, run, started};
     use super::*;
 
-    /// `set history-lines` changes every pane's history, not only the next
+    /// `set history-bytes` changes every pane's history, not only the next
     /// pane's.
     #[test]
-    fn set_history_lines_applies_to_panes_there_are() -> Result<(), String> {
+    fn set_history_bytes_applies_to_panes_there_are() -> Result<(), String> {
         let (mut s, _) = attached(5, 20)?;
         s.output(
             PaneId::of(1),
@@ -4572,7 +4565,8 @@ mod tests {
                 .map(|p| p.screen().history_len())
         };
         assert!(history(&s) > Some(2));
-        run(&mut s, "str history-lines 2 set")?;
+        // Two rows of four cells: 24 bytes a row and 8 a cell.
+        run(&mut s, "str history-bytes 112 set")?;
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
@@ -4823,8 +4817,9 @@ mod tests {
     /// follows it ends copy mode when they go.
     #[test]
     fn output_that_drops_a_copy_modes_rows_ends_it() -> Result<(), Box<dyn std::error::Error>> {
+        // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started(Config {
-            history_lines: 2,
+            history_bytes: 2 * 32,
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
@@ -4851,8 +4846,9 @@ mod tests {
     #[test]
     fn copy_mode_ends_when_sizing_its_pane_drops_its_rows() -> Result<(), Box<dyn std::error::Error>>
     {
+        // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started(Config {
-            history_lines: 2,
+            history_bytes: 2 * 32,
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
@@ -4927,7 +4923,7 @@ mod tests {
             ("str %1 pane str left move-beside", "no pane left of %1".to_owned()),
             (
                 "str nope 1 set",
-                r#"no setting "nope"; the settings are shell, history-lines, wait-seconds, journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
+                r#"no setting "nope"; the settings are shell, history-bytes, wait-seconds, journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
             ),
             ("opts str '' name new-workspace", "a name cannot be empty or blank".to_owned()),
             (

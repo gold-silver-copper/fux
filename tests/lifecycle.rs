@@ -260,7 +260,7 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
 #[test]
 fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Little history, so the memory measured is what waits for the client.
-    let server = Server::start("str history-lines 100 set")?;
+    let server = Server::start("str history-bytes 160000 set")?;
     let pid = server.pid().ok_or("the server's pid")?;
     let mut client = server.attach(60, 200)?;
     client.wait_for("$")?;
@@ -293,7 +293,7 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
 /// encoded; then only to the paste buffer, saying so.
 #[test]
 fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
-    let server = Server::start("str history-lines 2000 set")?;
+    let server = Server::start("")?;
     let mut client = server.attach(20, 120)?;
     client.wait_for("$")?;
     let copy_all = |client: &mut Client| -> Outcome {

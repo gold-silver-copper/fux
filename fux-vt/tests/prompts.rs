@@ -67,7 +67,7 @@ fn a_and_l_start_a_fresh_line() -> Result {
     assert_eq!(text(&p, 3), "y");
     assert_eq!(marks(&p), [1]);
     // At the bottom, the fresh line scrolls.
-    let mut p = Parser::with_options(Size::new(2, 10)?, 5, MARKS)?;
+    let mut p = Parser::with_options(Size::new(2, 10)?, 1 << 10, MARKS)?;
     p.process(b"a\r\nb\x1b]133;A\x07$")?;
     assert_eq!(marks(&p), [2]);
     assert_eq!(text(&p, 1), "$");
@@ -80,7 +80,8 @@ fn a_and_l_start_a_fresh_line() -> Result {
 /// from its prompt to redraw it.
 #[test]
 fn marks_go_with_their_rows() -> Result {
-    let mut p = Parser::with_options(Size::new(3, 6)?, 2, MARKS)?;
+    // Two rows of up to five cells: 24 bytes a row and 8 a cell.
+    let mut p = Parser::with_options(Size::new(3, 6)?, 2 * 64, MARKS)?;
     p.process(b"\x1b]133;A\x07$ one\r\nout\r\n\x1b]133;A\x07$ two\r\nout\r\n\x1b]133;A\x07$")?;
     assert_eq!(marks(&p), [0, 2, 4]);
     // Past the history, the first row leaves.
@@ -114,11 +115,11 @@ fn marks_go_with_their_rows() -> Result {
 #[test]
 fn marks_survive_resize_and_reflow() -> Result {
     let input = b"\x1b]133;A\x07$ long command\r\noutput\r\n\x1b]133;A\x07$ ";
-    let mut p = Parser::with_options(Size::new(4, 20)?, 10, MARKS)?;
+    let mut p = Parser::with_options(Size::new(4, 20)?, 1 << 12, MARKS)?;
     p.process(input)?;
     p.resize(Size::new(4, 6)?)?;
     assert_eq!(marks(&p), [0, 2]);
-    let mut p = Parser::with_options(Size::new(4, 20)?, 10, MARKS.with(Feature::Reflow))?;
+    let mut p = Parser::with_options(Size::new(4, 20)?, 1 << 12, MARKS.with(Feature::Reflow))?;
     p.process(input)?;
     // "$ long command" takes three rows of six.
     p.resize(Size::new(4, 6)?)?;

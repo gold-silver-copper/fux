@@ -449,7 +449,7 @@ pub enum Command {
         subject: Subject,
         toward: Sibling,
     },
-    /// A server setting (`history-lines`, `clipboard`, …), as its value's
+    /// A server setting (`history-bytes`, `clipboard`, …), as its value's
     /// text.
     Set {
         option: String,

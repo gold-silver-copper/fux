@@ -343,6 +343,10 @@ impl Text {
     pub(crate) fn long_len(&self) -> usize {
         self.long.len()
     }
+    /// The bytes of text kept, long clusters and short.
+    pub(crate) fn bytes(&self) -> usize {
+        self.long.len().saturating_add(self.short.len())
+    }
     /// Whether the row keeps no text at all.
     pub(crate) fn is_empty(&self) -> bool {
         self.long.len() == 0 && self.short.is_empty()

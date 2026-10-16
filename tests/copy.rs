@@ -182,7 +182,7 @@ fn motions_and_search_move_the_cursor() -> Outcome {
 
 #[test]
 fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
-    let server = Server::start("str history-lines 1000 set")?;
+    let server = Server::start("str history-bytes 100000 set")?;
     let mut copier = prepared(&server, 12, 40, &["first", "second"])?;
     let mut watcher = server.attach(12, 40)?;
     watcher.wait_for("second")?;
@@ -223,7 +223,7 @@ fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
 
 #[test]
 fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
-    let server = Server::start("str history-lines 5 set")?;
+    let server = Server::start("str history-bytes 1000 set")?;
     let mut client = prepared(&server, 10, 40, &["keep"])?;
     server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;

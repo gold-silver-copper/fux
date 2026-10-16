@@ -685,17 +685,17 @@ pub struct Parser {
 mod tests;
 
 impl Parser {
-    /// A parser with a screen of `size` keeping up to `history_lines` rows
-    /// of history, and [`Options::default`]: see [`Parser::with_options`].
-    pub fn new(size: Size, history_lines: usize) -> Result<Self, Error> {
-        Self::with_options(size, history_lines, Options::default())
+    /// A parser with a screen of `size` keeping up to `history_bytes` of
+    /// history, and [`Options::default`]: see [`Parser::with_options`].
+    pub fn new(size: Size, history_bytes: usize) -> Result<Self, Error> {
+        Self::with_options(size, history_bytes, Options::default())
     }
-    /// A parser with a screen of `size` keeping up to `history_lines` rows
-    /// of history (none on the alternate screen), with `options`. More
-    /// cells than a grid may hold are refused.
-    pub fn with_options(size: Size, history_lines: usize, options: Options) -> Result<Self, Error> {
+    /// A parser with a screen of `size` keeping up to `history_bytes` of
+    /// history (none on the alternate screen; 24 bytes a row, 8 a cell, and
+    /// its text), with `options`. More cells than a grid may hold are refused.
+    pub fn with_options(size: Size, history_bytes: usize, options: Options) -> Result<Self, Error> {
         Ok(Self {
-            screen: Screen::new(size, history_lines)?,
+            screen: Screen::new(size, history_bytes)?,
             options,
             osc: Vec::new(),
             osc_limit: if options.has(Feature::Events)
@@ -781,12 +781,11 @@ impl Parser {
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
         self.screen.resize(size, self.options.has(Feature::Reflow))
     }
-    /// Keeps at most `lines` rows of the primary screen's history from now
-    /// on, as `history_lines` did when the parser was made: lowering it lets
-    /// the oldest rows go at once. Fails, with nothing changed, as
-    /// [`Parser::new`] would with `lines`.
-    pub fn set_history_lines(&mut self, lines: usize) -> Result<(), Error> {
-        self.screen.set_history_limit(lines)
+    /// Keeps at most `bytes` of the primary screen's history from now on,
+    /// as `history_bytes` did when the parser was made: lowering it lets
+    /// the oldest rows go at once.
+    pub fn set_history_bytes(&mut self, bytes: usize) {
+        self.screen.set_history_bytes(bytes);
     }
     /// The size report a program that set in-band resize (mode 2048) is to
     /// be sent after the terminal's size changed: `CSI 48 ; rows ; cols ; 0

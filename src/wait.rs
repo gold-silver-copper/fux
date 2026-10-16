@@ -33,8 +33,8 @@ pub const STOPPED: u8 = 7;
 pub const TIMED_OUT: u8 = 124;
 
 /// Said first of what came when lines of it were let go past history's
-/// limit.
-const CUT: &str = "… earlier lines not kept (past history-lines)\n";
+/// budget.
+const CUT: &str = "… earlier lines not kept (past history-bytes)\n";
 /// Said first instead when more came than fux keeps for a wait.
 const MORE_THAN_KEPT: &str =
     "… more came than the pane's journal keeps (journal-bytes): text may have passed unseen\n";

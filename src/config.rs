@@ -35,7 +35,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::UnknownOption { option } => write!(
                 f,
-                "no setting {option:?}; the settings are shell, history-lines, wait-seconds, \
+                "no setting {option:?}; the settings are shell, history-bytes, wait-seconds, \
                  journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks \
                  and update-environment"
             ),
@@ -62,7 +62,8 @@ impl std::error::Error for Error {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub shell: Vec<String>,
-    pub history_lines: usize,
+    /// The bytes of history each pane keeps, for copy mode and `capture`.
+    pub history_bytes: usize,
     /// How long an action or a wait waits at most, unless it says.
     pub wait_seconds: u64,
     /// The bytes each pane's journal keeps (`crate::log`).
@@ -85,8 +86,6 @@ pub struct Config {
     pub update_environment: Vec<String>,
 }
 
-/// The largest history a pane keeps.
-pub const MAX_HISTORY: usize = 250_000;
 pub const MAX_BUFFERS: usize = 1000;
 /// How long an action or a wait waits at most by default: a build or a
 /// program's startup is waited through, while a wait that cannot be met
@@ -126,7 +125,7 @@ impl Default for Config {
             .unwrap_or_else(|| "/bin/sh".into());
         Self {
             shell: vec![shell],
-            history_lines: 10_000,
+            history_bytes: 8 << 20,
             wait_seconds: WAIT.as_secs(),
             journal_bytes: crate::log::JOURNAL_BYTES,
             journal_total: 16 * crate::log::JOURNAL_BYTES,
@@ -185,7 +184,7 @@ impl Config {
                 }
                 self.shell = argv;
             }
-            "history-lines" => self.history_lines = number(0, MAX_HISTORY)?,
+            "history-bytes" => self.history_bytes = number(0, 1 << 30)?,
             "wait-seconds" => {
                 self.wait_seconds = u64::try_from(number(0, MAX_WAIT_SECONDS)?).unwrap_or(0)
             }
@@ -238,14 +237,14 @@ mod tests {
     #[test]
     fn settings_take_their_values_as_text() {
         let mut config = Config::default();
-        assert_eq!(config.set("history-lines", "5000"), Ok(()));
-        assert_eq!(config.history_lines, 5000);
+        assert_eq!(config.set("history-bytes", "5000"), Ok(()));
+        assert_eq!(config.history_bytes, 5000);
         assert_eq!(config.set("bell", "false"), Ok(()));
         assert!(!config.bell);
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
         assert_eq!(config.shell, ["/bin/zsh", "-l"]);
-        assert!(config.set("history-lines", "lots").is_err());
-        let below = config.set("history-lines", "-1").map_err(|e| e.to_string());
+        assert!(config.set("history-bytes", "lots").is_err());
+        let below = config.set("history-bytes", "-1").map_err(|e| e.to_string());
         assert!(below.is_err_and(|e| e.contains("out of range")));
         assert!(config.set("buffers", "0").is_err());
         assert!(config.set("nonsense", "1").is_err());

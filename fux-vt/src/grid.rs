@@ -105,9 +105,10 @@ fn take_row(
     Ok(true)
 }
 
-/// Maximum addressable retained cells per buffer (512 MiB at 8 bytes a cell).
-/// Storage is committed only for live/retained rows, not empty history slots.
+/// The most cells a screen holds, and its history (512 MiB at 8 bytes a
+/// cell), whatever history's budget.
 pub(crate) const MAX_CELLS: usize = 64 * 1024 * 1024;
+/// The most rows history holds, whatever its budget.
 pub(crate) const MAX_ROWS: usize = 1_048_576;
 
 /// A row of the screen, in its slot: what it is, besides its cells.
@@ -286,36 +287,25 @@ pub(crate) fn next_id(next: &mut u64) -> RowId {
 }
 
 impl Grid {
-    /// The most rows its history keeps.
-    pub(crate) fn history_limit(&self) -> usize {
-        self.history.limit()
+    /// The most bytes its history holds.
+    pub(crate) fn history_bytes(&self) -> usize {
+        self.history.budget()
     }
 
-    /// Keeps at most `limit` rows of history from now on, letting the
-    /// oldest go at once if it holds more; nothing changes if `limit` and
-    /// the size are more than a grid can hold.
-    /// Lets every row of history go, its limit kept.
+    /// Lets every row of history go, its budget kept.
     pub(crate) fn clear_history(&mut self) {
-        let limit = self.history.limit();
-        self.history.set_limit(0);
-        self.history.set_limit(limit);
+        let budget = self.history.budget();
+        self.history.set_budget(0);
+        self.history.set_budget(budget);
     }
 
-    pub(crate) fn set_history_limit(&mut self, limit: usize) -> Result<(), Error> {
-        Self::check_size(self.size, limit)?;
-        self.history.set_limit(limit);
-        Ok(())
+    pub(crate) fn set_history_bytes(&mut self, bytes: usize) {
+        self.history.set_budget(bytes);
     }
 
-    pub fn check_size(size: Size, history: usize) -> Result<(), Error> {
-        let retained = history
-            .checked_add(usize::from(size.rows()))
-            .ok_or(Error::Capacity)?;
-        if retained > MAX_ROWS
-            || retained
-                .checked_mul(usize::from(size.cols()))
-                .is_none_or(|n| n > MAX_CELLS)
-        {
+    /// Whether a screen of `size` is more than a grid holds.
+    pub fn check_size(size: Size) -> Result<(), Error> {
+        if size.cells() > MAX_CELLS {
             return Err(Error::Capacity);
         }
         Ok(())
@@ -323,11 +313,11 @@ impl Grid {
 
     pub fn new(
         size: Size,
-        history_limit: usize,
+        history_bytes: usize,
         next: &mut u64,
         version: u64,
     ) -> Result<Self, Error> {
-        Self::made(size, history_limit, next, version, false)
+        Self::made(size, history_bytes, next, version, false)
     }
 
     /// `new`, but with no storage for the screen's cells until `make`
@@ -358,15 +348,15 @@ impl Grid {
 
     fn made(
         size: Size,
-        history_limit: usize,
+        history_bytes: usize,
         next: &mut u64,
         version: u64,
         unmade: bool,
     ) -> Result<Self, Error> {
-        Self::check_size(size, history_limit)?;
+        Self::check_size(size)?;
         let mut grid = Self {
             unmade,
-            ..Self::bare(size, history_limit)
+            ..Self::bare(size, history_bytes)
         };
         grid.reserve_screen()?;
         for _ in 0..size.rows() {
@@ -377,7 +367,7 @@ impl Grid {
     }
 
     /// A grid of `size` with no row yet, nor storage for one.
-    fn bare(size: Size, history_limit: usize) -> Self {
+    fn bare(size: Size, history_bytes: usize) -> Self {
         Self {
             cells: Vec::new(),
             meta: Vec::new(),
@@ -388,7 +378,7 @@ impl Grid {
             recent: [(Attributes::default(), 0); RECENT],
             epoch: 0,
             order: Order::default(),
-            history: History::new(history_limit),
+            history: History::new(history_bytes),
             size,
             cursor: Cursor::default(),
             saved: Cursor::default(),
@@ -408,7 +398,7 @@ impl Grid {
             recent: self.recent,
             epoch: self.epoch,
             unmade: self.unmade,
-            ..Self::bare(size, self.history_limit())
+            ..Self::bare(size, self.history_bytes())
         }
     }
 
@@ -1263,7 +1253,7 @@ impl Grid {
         // goes straight to history.
         if direction == (Scroll::Up { history: true })
             && region == self.size.lines()
-            && self.history_limit() > 0
+            && self.history_bytes() > 0
         {
             for _ in 0..count.min(self.size.rows()) {
                 self.scroll_into_history(blank, next, version)?;
@@ -1472,9 +1462,7 @@ impl Grid {
         if !taken {
             self.take_row_with_extras(slot)?;
         }
-        if self.history.len() > self.history_limit() {
-            self.history.pop();
-        }
+        self.history.trim();
         let id = next_id(next);
         if taken {
             // Its cells are blank, and it has neither text nor links: it
@@ -1586,7 +1574,7 @@ impl Grid {
     /// new storage is built before anything changes, so a failed allocation
     /// leaves this grid as it was.
     pub fn resized(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
-        Self::check_size(size, self.history_limit())?;
+        Self::check_size(size)?;
         let (rows, cols) = (size.rows(), size.cols());
         let history = self.history_len();
         // Rows are placed around the cursor, so that the line it is on stays
@@ -1595,7 +1583,8 @@ impl Grid {
         // scrolls rows above it into history: a screen with its content at
         // the top keeps it, and a full screen keeps its bottom line. A grow
         // pulls rows back from history above, as xterm does, and pads the rest
-        // with blank rows below. history_limit bounds history, oldest first.
+        // with blank rows below. History is trimmed to its budget, oldest
+        // first.
         let old_retained = self.retained_len();
         let live_top = match rows.checked_sub(self.size.rows()) {
             // A grow takes back as many history rows as there are.
@@ -1611,10 +1600,7 @@ impl Grid {
                     .ok_or(Error::Capacity)?
             }
         };
-        let new_history = live_top.min(self.history_limit());
-        // Rows past the history limit are dropped, oldest first.
-        let base = live_top.saturating_sub(self.history_limit());
-        let keep_total = new_history
+        let end = live_top
             .checked_add(usize::from(rows))
             .ok_or(Error::Capacity)?;
         // Both cursors move with the rows they sit on, and stop at the last.
@@ -1634,12 +1620,11 @@ impl Grid {
             ..self.successor(size)
         };
         replacement.reserve_screen()?;
-        let end = base.checked_add(keep_total).ok_or(Error::Capacity)?;
         // Each row is laid out whole in `row`, as wide as it is, then kept.
         let mut row = Vec::new();
-        for (p, source) in (base..end).enumerate() {
+        for source in 0..end {
             let old = self.row_at(source).filter(|_| source < old_retained);
-            let is_history = p < new_history;
+            let is_history = source < live_top;
             let id = match old {
                 Some(r) => r.id,
                 None => next_id(next),
@@ -1688,6 +1673,7 @@ impl Grid {
                 replacement
                     .history
                     .attach(text.map(|text| text.exact()), links);
+                replacement.history.trim();
             } else {
                 let mut meta = Meta::new(id, row_version, wrapped, width);
                 meta.prompt = prompt;
@@ -1704,7 +1690,7 @@ impl Grid {
         if !self.recyclable() {
             // The links' table is kept, which counts the link the program
             // has open (`Screen::link_cells`), and finds it by its `id`.
-            let mut grid = Self::made(self.size, self.history_limit(), next, version, self.unmade)?;
+            let mut grid = Self::made(self.size, self.history_bytes(), next, version, self.unmade)?;
             grid.links = std::mem::take(&mut self.links);
             grid.epoch = self.epoch.wrapping_add(1);
             *self = grid;

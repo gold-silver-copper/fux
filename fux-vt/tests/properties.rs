@@ -215,7 +215,7 @@ fn reflow_narrower_and_back_keeps_every_line() -> Result {
                 text.push_str(r.pick(PIECES).unwrap_or("a"));
             }
         }
-        let mut parser = Parser::with_options(Size::new(rows, cols)?, 1_000, options)?;
+        let mut parser = Parser::with_options(Size::new(rows, cols)?, 1 << 20, options)?;
         parser.process(text.as_bytes())?;
         let before = lines(&parser);
         let cursor = parser.screen().cursor_position();

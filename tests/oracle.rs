@@ -32,8 +32,9 @@ use support::{Outcome, PROBED, Server, e};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/oracle/fixture.py");
 const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/oracle/corpus");
-/// History short enough that `scroll` lets the reply go past it.
-const CONFIG: &str = "str history-lines 100 set";
+/// History short enough that `scroll` lets the reply go past it: about 100
+/// rows of its lines.
+const CONFIG: &str = "str history-bytes 12000 set";
 
 /// Disagreements known to be fux's, each a defect in src/ to fix, listed
 /// here so the deterministic part reports them without failing: its

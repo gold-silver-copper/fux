@@ -519,10 +519,10 @@ impl<'a> Window<'a> {
     }
 }
 
-/// Whether a screen of `size` keeping `history` rows of history can be
-/// made: the most cells and rows one holds are bounded.
-pub fn fits(size: Size, history: usize) -> bool {
-    grid::Grid::check_size(size, history).is_ok()
+/// Whether a screen of `size` can be made: the most cells one holds are
+/// bounded.
+pub fn fits(size: Size) -> bool {
+    grid::Grid::check_size(size).is_ok()
 }
 
 #[cfg(test)]
