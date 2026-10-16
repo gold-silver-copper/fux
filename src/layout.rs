@@ -154,29 +154,29 @@ impl Rect {
             Axis::Vertical => self.h,
         }
     }
+    /// Its first cell along `axis`.
+    fn start(&self, axis: Axis) -> u16 {
+        match axis {
+            Axis::Horizontal => self.x,
+            Axis::Vertical => self.y,
+        }
+    }
+    /// The rect `len` cells long from `start` along `axis`, and as it is
+    /// across.
+    fn along(mut self, axis: Axis, start: u16, len: u16) -> Rect {
+        match axis {
+            Axis::Horizontal => (self.x, self.w) = (start, len),
+            Axis::Vertical => (self.y, self.h) = (start, len),
+        }
+        self
+    }
     /// Its first `len` cells along `axis`, or all of it if it has fewer,
     /// and the rest.
     pub fn split(self, axis: Axis, len: u16) -> (Rect, Rect) {
-        let len = len.min(self.len(axis));
-        let rest = self.len(axis).saturating_sub(len);
-        match axis {
-            Axis::Horizontal => (
-                Rect { w: len, ..self },
-                Rect {
-                    x: self.x.saturating_add(len),
-                    w: rest,
-                    ..self
-                },
-            ),
-            Axis::Vertical => (
-                Rect { h: len, ..self },
-                Rect {
-                    y: self.y.saturating_add(len),
-                    h: rest,
-                    ..self
-                },
-            ),
-        }
+        let (start, all) = (self.start(axis), self.len(axis));
+        let len = len.min(all);
+        let rest = self.along(axis, start.saturating_add(len), all.saturating_sub(len));
+        (self.along(axis, start, len), rest)
     }
     /// Its bottom-right corner, at most `h` by `w`.
     pub fn corner(self, h: u16, w: u16) -> Rect {
@@ -813,10 +813,8 @@ fn placed_span(axis: Axis, child: &Tree<()>, area: Rect, placement: &Placement) 
     let mut span: Option<Range<u16>> = None;
     child.for_each_pane(&mut |p| {
         if let Some(r) = placement.rect(p) {
-            let (start, end) = match axis {
-                Axis::Horizontal => (r.x, r.right()),
-                Axis::Vertical => (r.y, r.bottom()),
-            };
+            let start = r.start(axis);
+            let end = start.saturating_add(r.len(axis));
             span = Some(
                 span.as_ref()
                     .map_or(start..end, |s| s.start.min(start)..s.end.max(end)),
@@ -825,19 +823,7 @@ fn placed_span(axis: Axis, child: &Tree<()>, area: Rect, placement: &Placement) 
     });
     // Inside `area`, as the panes are.
     let Range { start, end } = span.unwrap_or_default();
-    let len = end.saturating_sub(start);
-    match axis {
-        Axis::Horizontal => Rect {
-            x: start,
-            w: len,
-            ..area
-        },
-        Axis::Vertical => Rect {
-            y: start,
-            h: len,
-            ..area
-        },
-    }
+    area.along(axis, start, end.saturating_sub(start))
 }
 
 #[cfg(test)]
