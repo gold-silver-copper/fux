@@ -1125,16 +1125,7 @@ impl Grid {
             let col = usize::from(col);
             // A wide glyph across the right margin loses both halves: the
             // edit moves one and not the other.
-            if row_cells
-                .get(end)
-                .is_some_and(Compact::is_wide_continuation)
-            {
-                for at in [end.saturating_sub(1), end] {
-                    if let Some(c) = row_cells.get_mut(at) {
-                        *c = c.blanked();
-                    }
-                }
-            }
+            split_wide(row_cells, end);
             let Some(cells) = row_cells.get_mut(..end) else {
                 return false;
             };
@@ -1151,17 +1142,7 @@ impl Grid {
             };
             // Clear a wide glyph straddling either edit boundary before shifting.
             for boundary in [col, shifted] {
-                if cells
-                    .get(boundary)
-                    .is_some_and(Compact::is_wide_continuation)
-                {
-                    if let Some(c) = boundary.checked_sub(1).and_then(|i| cells.get_mut(i)) {
-                        *c = c.blanked();
-                    }
-                    if let Some(c) = cells.get_mut(boundary) {
-                        *c = c.blanked();
-                    }
-                }
+                split_wide(cells, boundary);
             }
             shift(cells, col, count, insert, blank);
             repair_wide(row_cells);
@@ -1285,14 +1266,7 @@ impl Grid {
             self.mutate_row(y, version, 0, |cells| {
                 let mut changed = false;
                 for edge in [left, end] {
-                    if edge > 0 && cells.get(edge).is_some_and(Compact::is_wide_continuation) {
-                        for at in [edge.saturating_sub(1), edge] {
-                            if let Some(c) = cells.get_mut(at) {
-                                *c = c.blanked();
-                            }
-                        }
-                        changed = true;
-                    }
+                    changed |= edge > 0 && split_wide(cells, edge);
                 }
                 changed
             });
@@ -2043,6 +2017,21 @@ fn shift<T: Copy>(cells: &mut [T], col: usize, count: usize, insert: bool, blank
     if let Some(run) = tail.get_mut(fill) {
         run.fill(blank);
     }
+}
+
+/// If cell `at` is the second half of a wide glyph, blanks it and the
+/// first half before it; whether it did.
+fn split_wide(cells: &mut [Compact], at: usize) -> bool {
+    let Some(pair) = cells.get_mut(at.saturating_sub(1)..=at) else {
+        return false;
+    };
+    if !pair.last().is_some_and(Compact::is_wide_continuation) {
+        return false;
+    }
+    for cell in pair {
+        *cell = cell.blanked();
+    }
+    true
 }
 
 pub(crate) fn repair_wide(cells: &mut [Compact]) {
