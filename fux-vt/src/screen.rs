@@ -1788,15 +1788,11 @@ impl Screen {
                 self.alternate.reset_links();
                 self.alternate_active = false;
                 self.clear_on_show = None;
-                self.attributes = Attributes::default();
-                self.pen_changed();
-                self.saved_attributes = Attributes::default();
-                self.charsets = Charsets::default();
-                self.saved_charsets = Charsets::default();
+                // The pen, the saved cursor's attributes, the character
+                // sets, protection and the palette, as DECSTR resets them;
+                // the grids' cursors and margins are new already.
+                self.soft_reset();
                 self.modes = Modes::DEFAULT;
-                self.protect = 0;
-                self.saved_protect = 0;
-                self.protection = Protection::Off;
                 self.tabs = TabStops::default();
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
@@ -1804,11 +1800,6 @@ impl Screen {
                 self.primary_keyboard = KeyboardStack::default();
                 self.alternate_keyboard = KeyboardStack::default();
                 self.modify_other_keys = None;
-                // The palette, as xterm resets it; the dynamic and special
-                // colours stay, as in xterm.
-                if let Some(colours) = &mut self.colours {
-                    colours.reset_palette();
-                }
                 self.structural = self.version;
             }
             // ST (ECMA-48 8.3.143) is done too: it ended the string before
