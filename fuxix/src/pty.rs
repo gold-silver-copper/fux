@@ -446,34 +446,24 @@ fn redrive<T>(
     }
 }
 
-/// The path of the slave of the PTY `master`.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// The path of the slave of the PTY `master`, in a buffer of ours: macOS's
+/// `ptsname` returns a shared one, so it is asked by an ioctl there.
 fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
+    let fd = master.as_fd().as_raw_fd();
     let mut buffer: [libc::c_char; 128] = [0; 128];
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: the buffer is writable for its length, which is passed; the
     // call reports its errors as a number rather than in errno.
-    let error = unsafe {
-        libc::ptsname_r(
-            master.as_fd().as_raw_fd(),
-            buffer.as_mut_ptr(),
-            buffer.len(),
-        )
-    };
-    if error != 0 {
-        return Err(Errno::from_raw(error));
+    match unsafe { libc::ptsname_r(fd, buffer.as_mut_ptr(), buffer.len()) } {
+        0 => {}
+        error => return Err(Errno::from_raw(error)),
     }
-    Ok(path(&buffer))
-}
-
-/// The path of the slave of the PTY `master`. macOS's `ptsname` returns a
-/// shared buffer; its ioctl fills one of ours.
-#[cfg(target_os = "macos")]
-fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
-    let mut buffer: [libc::c_char; 128] = [0; 128];
+    #[cfg(target_os = "macos")]
     let get = terminal::request(libc::TIOCPTYGNAME)?;
+    #[cfg(target_os = "macos")]
     // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL included, and the
     // buffer is 128 bytes.
-    check(unsafe { libc::ioctl(master.as_fd().as_raw_fd(), get, buffer.as_mut_ptr()) })?;
+    check(unsafe { libc::ioctl(fd, get, buffer.as_mut_ptr()) })?;
     Ok(path(&buffer))
 }
 
