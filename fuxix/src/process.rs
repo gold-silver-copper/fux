@@ -605,14 +605,14 @@ enum Blocked {
     Other,
 }
 
-/// Where the descriptors a poll watches are: an array of `pollfd` in the
-/// program's memory and its length (poll), the length and address of the
-/// set read from (select), or an epoll descriptor (epoll_wait).
+/// Where the descriptors a poll watches are: an array of `len` `pollfd`s
+/// at `at` in the program's memory (poll), the set of the descriptors below
+/// `len` read from, at `at` (select), or an epoll descriptor (epoll_wait).
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Watched {
-    Fds(u64, u64),
-    Set(u64, u64),
+    Fds { at: u64, len: u64 },
+    Set { len: u64, at: u64 },
     Epoll(u64),
 }
 
@@ -629,8 +629,14 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
         return Blocked::Other;
     };
     let (fds, set, epoll) = (
-        Watched::Fds(arg(0), arg(1)),
-        Watched::Set(arg(0), arg(1)),
+        Watched::Fds {
+            at: arg(0),
+            len: arg(1),
+        },
+        Watched::Set {
+            len: arg(0),
+            at: arg(1),
+        },
         Watched::Epoll(arg(0)),
     );
     match nr {
@@ -719,7 +725,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
         bytes
     };
     let fds: Vec<u64> = match watched {
-        Watched::Fds(at, n) => {
+        Watched::Fds { at, len: n } => {
             let array = memory(at, n.min(1024).saturating_mul(8));
             let (pollfds, _) = array.as_chunks::<8>();
             (pollfds.iter())
@@ -729,7 +735,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
                 })
                 .collect()
         }
-        Watched::Set(n, at) => {
+        Watched::Set { len: n, at } => {
             let n = n.min(1024);
             let set = memory(at, n.div_ceil(64).saturating_mul(8));
             let (words, _) = set.as_chunks::<8>();
@@ -1002,8 +1008,8 @@ mod probe {
         for read in [SYS_read, SYS_pread64, SYS_readv, SYS_preadv, SYS_splice] {
             assert_eq!(blocked_in(nr(read), &[5]), Blocked::Read(5), "{read}");
         }
-        let fds = Watched::Fds(9, 2);
-        let set = Watched::Set(4, 9);
+        let fds = Watched::Fds { at: 9, len: 2 };
+        let set = Watched::Set { len: 4, at: 9 };
         let epoll = Watched::Epoll(3);
         #[cfg(target_arch = "x86_64")]
         {
@@ -1109,20 +1115,33 @@ mod probe {
             [&fd[..], &events.to_ne_bytes()[..], &[0, 0][..]].concat()
         };
         let asks = pollfd(libc::POLLIN);
-        assert!(watches_terminal(pid, Watched::Fds(address(&asks), 1), tty));
+        assert!(watches_terminal(
+            pid,
+            Watched::Fds {
+                at: address(&asks),
+                len: 1
+            },
+            tty
+        ));
         let other = pollfd(libc::POLLPRI);
         assert!(!watches_terminal(
             pid,
-            Watched::Fds(address(&other), 1),
+            Watched::Fds {
+                at: address(&other),
+                len: 1
+            },
             tty
         ));
         let elsewhere = std::path::Path::new("/nowhere");
         assert!(!watches_terminal(
             pid,
-            Watched::Fds(address(&asks), 1),
+            Watched::Fds {
+                at: address(&asks),
+                len: 1
+            },
             elsewhere
         ));
-        assert!(!watches_terminal(pid, Watched::Fds(0, 1), tty));
+        assert!(!watches_terminal(pid, Watched::Fds { at: 0, len: 1 }, tty));
         Ok(())
     }
 
@@ -1147,21 +1166,37 @@ mod probe {
         let watched = set(&[fd]);
         assert!(watches_terminal(
             pid,
-            Watched::Set(n, address(&watched)),
+            Watched::Set {
+                len: n,
+                at: address(&watched)
+            },
             tty
         ));
         let others = set(&[0]);
         assert!(!watches_terminal(
             pid,
-            Watched::Set(n, address(&others)),
+            Watched::Set {
+                len: n,
+                at: address(&others)
+            },
             tty
         ));
         let none = set(&[]);
-        assert!(!watches_terminal(pid, Watched::Set(n, address(&none)), tty));
+        assert!(!watches_terminal(
+            pid,
+            Watched::Set {
+                len: n,
+                at: address(&none)
+            },
+            tty
+        ));
         // Below its count only.
         assert!(!watches_terminal(
             pid,
-            Watched::Set(fd, address(&watched)),
+            Watched::Set {
+                len: fd,
+                at: address(&watched)
+            },
             tty
         ));
         Ok(())
