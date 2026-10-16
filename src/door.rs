@@ -294,7 +294,7 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
         }
         let mut byte = [0u8; 1];
         match (&down).read(&mut byte) {
-            Ok(1) => Link::door(relay(down, up)?),
+            Ok(1) => Ok(Link::door(relay(down, up)?)),
             Ok(_) => Err(io::Error::other("the server closed the door")),
             Err(e) => Err(e),
         }
@@ -318,20 +318,20 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn socket(socket: UnixStream) -> io::Result<Link> {
-        Ok(Link {
+    pub fn socket(socket: UnixStream) -> Link {
+        Link {
             file: File::from(OwnedFd::from(socket)),
             door: false,
             timeout: None,
             stop: None,
-        })
+        }
     }
 
-    fn door(relayed: UnixStream) -> io::Result<Link> {
-        Ok(Link {
+    fn door(relayed: UnixStream) -> Link {
+        Link {
             door: true,
-            ..Link::socket(relayed)?
-        })
+            ..Link::socket(relayed)
+        }
     }
 
     /// How long a read waits for something to come; `None`, for ever.

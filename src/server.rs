@@ -517,8 +517,6 @@ struct Saved {
     /// (`Server::after_restore`); while its thread runs, what there is is
     /// not saved over the file.
     restore: Option<std::thread::JoinHandle<()>>,
-    /// The server stops: nothing more is saved (or what was, forgotten).
-    done: bool,
 }
 
 /// Which workspaces, tabs and panes there are.
@@ -560,7 +558,6 @@ impl Saved {
             pending: false,
             shape: Shape::default(),
             restore: None,
-            done: false,
         })
     }
 
@@ -604,9 +601,6 @@ impl Saved {
     /// was last saved; else it is saved then. A workspace, tab or pane made
     /// or closed is saved at once: a crash must not lose a pane.
     fn save_by(&mut self, session: &Session, now: Instant) {
-        if self.done {
-            return;
-        }
         let shape = Shape::of(session);
         if now < self.at && shape == self.shape {
             self.pending = true;
@@ -663,16 +657,14 @@ impl Saved {
         (self.restore.as_ref()).is_some_and(|thread| !thread.is_finished())
     }
 
-    /// Saves nothing more: the server stops. With `keep`, the layout as it
-    /// is, before its panes end, is what the next brings back; else none
-    /// is (the server was stopped on purpose, or its last pane closed).
-    fn stop(&mut self, session: &Session, keep: bool) {
+    /// The last save: the server stops. With `keep`, the layout as it is,
+    /// before its panes end, is what the next brings back; else none is
+    /// (the server was stopped on purpose, or its last pane closed).
+    fn stop(mut self, session: &Session, keep: bool) {
         match keep {
             true => self.save(session),
             false => self.forget_file(),
         }
-        self.pending = false;
-        self.done = true;
     }
 
     fn forget_file(&self) {
@@ -1104,7 +1096,8 @@ impl Server {
             return;
         }
         log!("{reason}");
-        if let Some(saved) = &mut self.saved {
+        // Nothing more is saved (or what was, forgotten).
+        if let Some(saved) = self.saved.take() {
             saved.stop(&self.session, keep);
         }
         // The sockets go first: from now on a client finds no server.

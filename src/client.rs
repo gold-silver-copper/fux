@@ -171,7 +171,7 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
     // Its server is this user's, whoever made the path's directories.
     let euid = fuxix::process::geteuid();
     match fuxix::socket::peer_uid(&stream) {
-        Ok(uid) if uid == euid => Link::socket(stream),
+        Ok(uid) if uid == euid => Ok(Link::socket(stream)),
         Ok(uid) => Err(std::io::Error::other(format!(
             "its server runs as uid {uid}, not this user's ({euid})"
         ))),
@@ -1131,7 +1131,7 @@ mod tests {
     /// a socket in `wait`.
     fn answer(server: impl FnOnce(&mut UnixStream), wait: Duration) -> Result<String, Error> {
         let (client, mut peer) = UnixStream::pair()?;
-        let mut client = Link::socket(client)?;
+        let mut client = Link::socket(client);
         server(&mut peer);
         let mut decoder = Decoder::default();
         let answer = read_frame(&mut client, &mut decoder, Some(wait));
