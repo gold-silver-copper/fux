@@ -124,13 +124,10 @@ fn serve(args: &[String]) -> ExitCode {
     }
 }
 
-/// `fux status`: what answers on `socket`, as text or JSON, and whether it
-/// is a server this fux can drive.
-pub(crate) fn status(
-    socket: &socket::SocketPath,
-    probe: &client::Probe,
-    json: bool,
-) -> (String, bool) {
+/// `fux status`: what answers on `socket`, as text and as JSON, and
+/// whether it is a server this fux can drive.
+pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> (String, String) {
+    use json::Json;
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
     let left = matches!(probe, client::Probe::Left);
@@ -139,40 +136,33 @@ pub(crate) fn status(
         client::Probe::Server { protocol, version } => (true, Some((*protocol, version.as_str()))),
     };
     let compatible = theirs.is_some_and(|(protocol, _)| protocol == protocol::PROTOCOL);
-    let text = if json {
-        let mut fields = vec![
-            ("running", json::Json::Bool(running)),
-            ("socket", json::Json::str(&path)),
-            ("version", json::Json::str(ours)),
-            (
-                "protocol",
-                json::Json::Number(i64::from(protocol::PROTOCOL)),
-            ),
-        ];
-        if left {
-            fields.push(("left", json::Json::Bool(true)));
+    let mut fields = vec![
+        ("running", Json::Bool(running)),
+        ("socket", Json::str(&path)),
+        ("version", Json::str(ours)),
+        ("protocol", Json::int(protocol::PROTOCOL)),
+    ];
+    if left {
+        fields.push(("left", Json::Bool(true)));
+    }
+    if let Some((protocol, version)) = theirs {
+        fields.push(("server_version", Json::str(version)));
+        fields.push(("server_protocol", Json::int(protocol)));
+        fields.push(("compatible", Json::Bool(compatible)));
+    }
+    let text = match theirs {
+        None if left => {
+            format!("no fux server at {path} (its socket is left from one that stopped)")
         }
-        if let Some((protocol, version)) = theirs {
-            fields.push(("server_version", json::Json::str(version)));
-            fields.push(("server_protocol", json::Json::Number(i64::from(protocol))));
-            fields.push(("compatible", json::Json::Bool(compatible)));
-        }
-        json::Json::Object(fields).render()
-    } else {
-        match theirs {
-            None if left => {
-                format!("no fux server at {path} (its socket is left from one that stopped)")
-            }
-            None => format!("no fux server at {path}"),
-            Some((_, version)) if compatible => format!("fux {version} at {path}"),
-            Some((protocol, version)) => format!(
-                "fux {version} at {path} speaks protocol {protocol}, not this fux's ({}, \
-                 fux {ours}): `fux force-kill-server` stops it",
-                protocol::PROTOCOL
-            ),
-        }
+        None => format!("no fux server at {path}"),
+        Some((_, version)) if compatible => format!("fux {version} at {path}"),
+        Some((protocol, version)) => format!(
+            "fux {version} at {path} speaks protocol {protocol}, not this fux's ({}, \
+             fux {ours}): `fux force-kill-server` stops it",
+            protocol::PROTOCOL
+        ),
     };
-    (text, compatible)
+    (text, Json::Object(fields).render())
 }
 
 /// `fux servers`: every server that answers in fux's directory, a line

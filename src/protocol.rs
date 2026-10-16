@@ -211,16 +211,8 @@ impl Hello {
     }
 }
 
-impl Frame<'_> for Hello {
-    fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
-        expect(kind, kind::HELLO)?;
-        read(payload)
-    }
-
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
-        self.put(out);
-        kind::HELLO
-    }
+impl OneKind for Hello {
+    const KIND: u8 = kind::HELLO;
 }
 
 /// An attaching client's one frame after its `Hello`: its terminal's size,
@@ -244,16 +236,8 @@ wire_struct!(Attach {
     env
 });
 
-impl Frame<'_> for Attach {
-    fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
-        expect(kind, kind::ATTACH)?;
-        read(payload)
-    }
-
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
-        self.put(out);
-        kind::ATTACH
-    }
+impl OneKind for Attach {
+    const KIND: u8 = kind::ATTACH;
 }
 
 /// An attached client's frames.
@@ -323,16 +307,8 @@ wire_struct!(Context {
 
 wire_struct!(Request { command, context });
 
-impl Frame<'_> for Request {
-    fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
-        expect(kind, kind::COMMAND)?;
-        read(payload)
-    }
-
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
-        self.put(out);
-        kind::COMMAND
-    }
+impl OneKind for Request {
+    const KIND: u8 = kind::COMMAND;
 }
 
 /// A field's value, as its JSON has it.
@@ -549,11 +525,22 @@ fn raw(out: &mut Vec<u8>, kind: u8, bytes: &[u8]) -> u8 {
     kind
 }
 
-/// A frame of one kind is `expected`, or no frame decoded here.
-fn expect(kind: u8, expected: u8) -> Result<(), Error> {
-    (kind == expected)
-        .then_some(())
-        .ok_or(Error::UnexpectedKind(kind))
+/// A frame of one kind, its payload its value's wire bytes.
+trait OneKind: Wire {
+    const KIND: u8;
+}
+
+impl<T: OneKind> Frame<'_> for T {
+    fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
+        match kind == T::KIND {
+            true => read(payload),
+            false => Err(Error::UnexpectedKind(kind)),
+        }
+    }
+
+    fn write(&self, out: &mut Vec<u8>) -> u8 {
+        wired(out, T::KIND, self)
+    }
 }
 
 /// The value `payload` holds, all of it.

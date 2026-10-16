@@ -1487,7 +1487,7 @@ impl fuxth::Host for Host<'_> {
                     None => {
                         let config = crate::config::default_path().filter(|p| p.exists());
                         let keymap = match config {
-                            Some(path) => super::dry_config(&path)
+                            Some(path) => super::run_file(&path, None)
                                 .map_err(|e| fail(Code::Config, e.to_string()))?,
                             None => crate::keymap::Keymap::default(),
                         };
@@ -1527,7 +1527,7 @@ impl fuxth::Host for Host<'_> {
                     .file_name()
                     .is_some_and(|n| n == "config.fux");
                 if config {
-                    super::dry_config(std::path::Path::new(&path))
+                    super::run_file(std::path::Path::new(&path), None)
                         .map_err(|e| fail(Code::Check, e.to_string()))?;
                 }
                 self.show(&format!("{path}: ok\n"))

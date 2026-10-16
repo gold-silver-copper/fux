@@ -485,10 +485,28 @@ impl Server {
         };
         crate::socket::socket_path(choice).map_err(|e| client_failed(e.into()))
     }
+}
 
-    /// Asks the server `request`, what it streams before its reply going to
-    /// `out`.
-    pub fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+fn client_failed(error: crate::client::Error) -> Failed {
+    Failed::new(error.code(), error.to_string())
+}
+
+/// What a program's requests go to, and what does what the client does
+/// itself: a server (`Server`), the command line's (`Cli`), or in tests a
+/// session itself.
+pub trait Asks {
+    /// Asks `request`, what is streamed before its reply going to `out`.
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed>;
+    /// Does what the client does itself: by default, nothing, refused.
+    fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+        refuse_local(what)
+    }
+}
+
+/// The server's: each request asked on one connection, opened at the
+/// first.
+impl Asks for Server {
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
         let requests = match &mut self.requests {
             Some(requests) => requests,
             None => {
@@ -508,28 +526,6 @@ impl Server {
             self.requests = None;
         }
         asked
-    }
-}
-
-fn client_failed(error: crate::client::Error) -> Failed {
-    Failed::new(error.code(), error.to_string())
-}
-
-/// What a program's requests go to, and what does what the client does
-/// itself: a server (`Server`), the command line's (`Cli`), or in tests a
-/// session itself.
-pub trait Asks {
-    /// Asks `request`, what is streamed before its reply going to `out`.
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed>;
-    /// Does what the client does itself: by default, nothing, refused.
-    fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
-        refuse_local(what)
-    }
-}
-
-impl Asks for Server {
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        Server::ask(self, request, out)
     }
 }
 
@@ -841,8 +837,7 @@ fn local(
         Local::Status => {
             let socket = server.socket()?;
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
-            let (text, _) = crate::status(&socket, &probe, false);
-            let (json, _) = crate::status(&socket, &probe, true);
+            let (text, json) = crate::status(&socket, &probe);
             return Ok(vec![answer(&text, &json, "a status")]);
         }
         Local::Servers => {
@@ -876,23 +871,14 @@ fn started(server: &mut Server) -> Result<crate::socket::SocketPath, Failed> {
 /// The client's keymap, its config run on the defaults; and what was wrong
 /// with the config, if anything was.
 pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
-    let mut keymap = Keymap::default();
     let Some(path) = crate::config::default_path().filter(|p| p.exists()) else {
-        return (keymap, None);
+        return (Keymap::default(), None);
     };
-    match run_file(&path, &mut keymap, Some(server)) {
-        Ok(()) => (keymap, None),
+    match run_file(&path, Some(server)) {
+        Ok(keymap) => (keymap, None),
         // Half a config is no config: the defaults, and why.
         Err(failed) => (Keymap::default(), Some(format!("config: {failed}"))),
     }
-}
-
-/// The keymap the config file at `path` makes, run dry: its bindings made,
-/// its settings checked and sent nowhere; or why it would fail.
-pub fn dry_config(path: &std::path::Path) -> Result<Keymap, Failed> {
-    let mut keymap = Keymap::default();
-    run_file(path, &mut keymap, None)?;
-    Ok(keymap)
 }
 
 /// Runs the config file at `path` against the server on `socket`, as a
@@ -901,24 +887,28 @@ pub fn configure(
     path: &std::path::Path,
     socket: &crate::socket::SocketPath,
 ) -> Result<Keymap, Failed> {
-    let mut keymap = Keymap::default();
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
-    run_file(path, &mut keymap, Some(&mut server))?;
-    Ok(keymap)
+    run_file(path, Some(&mut server))
 }
 
-/// Runs a config file, its words changing `keymap`, its settings sent to
-/// `server`. A config attaches nothing, and chooses no other server.
-fn run_file(
-    path: &std::path::Path,
-    keymap: &mut Keymap,
-    server: Option<&mut Server>,
-) -> Result<(), Failed> {
+/// The keymap a config file makes, its words run on the defaults, its
+/// settings sent to `server`, or with none checked and sent nowhere (a dry
+/// run); or why it fails. A config attaches nothing, and chooses no other
+/// server.
+pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let text = std::fs::read_to_string(path)
         .map_err(|e| Failed::new(Code::Read, format!("{shown}: {e}")))?;
     let context = crate::client::context();
-    run_quiet(&shown, &text, context, Some(keymap), &mut Settings(server))
+    let mut keymap = Keymap::default();
+    run_quiet(
+        &shown,
+        &text,
+        context,
+        Some(&mut keymap),
+        &mut Settings(server),
+    )?;
+    Ok(keymap)
 }
 
 /// Runs the program `text`, read from `name`, its requests going to `asks`
