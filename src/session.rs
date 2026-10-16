@@ -163,10 +163,6 @@ pub enum Error {
     NotNamed(String),
     /// A command through a socket whose grant was revoked.
     Revoked,
-    /// A line of a layout file that could not be made: its number, and why.
-    LayoutLine(usize, String),
-    /// A layout file that could not be read.
-    LayoutFile(PathBuf, String),
     /// `--id` asked for an id given before, or one there is.
     IdTaken(String),
     /// `--id` of a kind the command makes none of, or two of one kind.
@@ -201,7 +197,6 @@ pub enum Error {
     NoClient(ClientId),
     NoWorkspaces,
     NoBuffer(usize),
-    NoConfigFile,
     // What the client's view has none of.
     NoLastPane,
     /// The client focuses no pane.
@@ -294,7 +289,6 @@ pub enum Error {
     Pane(crate::pane::Error),
     Process(crate::process::Error),
     Config(crate::config::Error),
-    Reload(crate::config::Error),
 }
 
 impl Error {
@@ -317,13 +311,11 @@ impl Error {
             Error::OutOfScope { .. } | Error::NotGranted { .. } | Error::Revoked => "not_granted",
             Error::NotNamed(_) => "no_target",
             Error::IdTaken(_) | Error::IdKind(_) | Error::IdTooHigh(_) => "id",
-            Error::LayoutLine(..) | Error::LayoutFile(..) => "layout",
             Error::OwnServer(_) => "own_server",
             Error::PeopleAttached(_) => "people_attached",
             Error::NoClient(_) => "no_client",
             Error::NotHeadless(_) => "not_headless",
             Error::NoBuffer(_) => "no_buffer",
-            Error::NoConfigFile => "no_config",
             Error::NoLastPane | Error::NoPaneToCopy | Error::TabEmpty => "no_pane",
             Error::OnlyOne(_)
             | Error::AtEnd(_)
@@ -358,7 +350,7 @@ impl Error {
             Error::Usage(_) | Error::Words(_) => "usage",
             Error::Pane(crate::pane::Error::NotReading) => "not_reading",
             Error::Pane(_) | Error::Process(_) => "start",
-            Error::Config(_) | Error::Reload(_) => "config",
+            Error::Config(_) => "config",
         }
     }
 }
@@ -383,8 +375,6 @@ impl std::fmt::Display for Error {
             } => write!(f, "{target} has no field {field:?}; it has {fields}"),
             Error::NotNamed(why) => f.write_str(why),
             Error::Revoked => f.write_str("the grant this socket came through was revoked"),
-            Error::LayoutLine(line, why) => write!(f, "line {line}: {why}; nothing was made"),
-            Error::LayoutFile(path, why) => write!(f, "{}: {why}", path.display()),
             Error::IdTaken(id) => write!(
                 f,
                 "id {id}: that id, or a higher one, was given before, and ids are never given twice"
@@ -439,7 +429,6 @@ impl std::fmt::Display for Error {
             Error::NoClient(id) => write!(f, "no client {id}"),
             Error::NoWorkspaces => f.write_str("the server has no workspace"),
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Error::NoConfigFile => f.write_str("no config file to reload"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
             Error::NoPaneToCopy => f.write_str("no pane to copy from"),
             Error::TabEmpty => f.write_str("the tab is empty"),
@@ -548,7 +537,6 @@ impl std::fmt::Display for Error {
             Error::Pane(error) => error.fmt(f),
             Error::Process(error) => error.fmt(f),
             Error::Config(error) => error.fmt(f),
-            Error::Reload(error) => write!(f, "{error}; the previous configuration is kept"),
         }
     }
 }
@@ -653,8 +641,6 @@ pub struct Session {
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
-    /// The code of the last command's error, for `--json` to name it.
-    last_error: Option<&'static str>,
     /// What the command under way made or found, for its reply.
     made: Vec<AnyRef<WsId>>,
     /// The field the command under way read (`ls --get`), for its reply.
@@ -883,26 +869,6 @@ impl Reach<'_> {
     }
 }
 
-/// A failed outcome as `--json` gives it: its message as JSON on stderr,
-/// with `code`, or what its status says.
-pub fn json_failure(mut outcome: Outcome, code: Option<&str>) -> Outcome {
-    let text = outcome.stderr.trim_end();
-    if outcome.status == 0 || text.is_empty() || text.starts_with('{') {
-        return outcome;
-    }
-    let code = match (outcome.status, code) {
-        (_, Some(code)) => code,
-        (2, None) => "usage",
-        (_, None) => "failed",
-    };
-    outcome.stderr = Json::Object(vec![
-        ("error", Json::str(code)),
-        ("message", Json::str(text)),
-    ])
-    .render();
-    outcome
-}
-
 /// A command that needed its caller's pane, tab or workspace, from a caller
 /// whose `FUX_PANE` is another server's pane: why it got none.
 fn stray(error: Error, origin: &Origin) -> Error {
@@ -949,7 +915,6 @@ impl Session {
             placed: Placement::default(),
             ids: Ids::default(),
             changes: 0,
-            last_error: None,
             made: Vec::new(),
             value: None,
             json: None,
@@ -2369,7 +2334,6 @@ impl Session {
     /// which the server asks for its answer until it has one; a stream of
     /// events, its subscription; any other runs at once.
     pub fn begin(&mut self, command: Command, origin: &Origin) -> Begun {
-        self.last_error = None;
         self.restoring = matches!(
             origin,
             Origin::Cli(Caller {
@@ -2573,7 +2537,6 @@ impl Session {
     /// kept for `--json`.
     fn failed(&mut self, error: Error, origin: &Origin) -> Begun {
         let error = stray(error, origin);
-        self.last_error = Some(error.code());
         Begun::Done(Outcome {
             status: 1,
             stderr: error.to_string(),
@@ -2633,7 +2596,6 @@ impl Session {
             },
             Err(error) => {
                 let error = stray(error, origin);
-                self.last_error = Some(error.code());
                 let status = if matches!(error, Error::Usage(_)) {
                     2
                 } else {
@@ -3337,15 +3299,6 @@ impl Session {
             // Answered before the view is taken (`execute`).
             ClientAction::Choices(_) | ClientAction::Run(_) => Ok(String::new()),
         }
-    }
-
-    pub fn name_of(&self, target: AnyRef<WsId>) -> String {
-        match target {
-            AnyRef::Pane(p) => self.panes.get(&p).map(|p| p.name.clone()),
-            AnyRef::Tab(t) => self.tab(t).map(|t| t.name.clone()),
-            AnyRef::Workspace(w) => self.workspace(w).map(|w| w.name.clone()),
-        }
-        .unwrap_or_default()
     }
 
     fn rename(&mut self, target: AnyRef<WsId>, name: String) -> Result<(), Error> {
