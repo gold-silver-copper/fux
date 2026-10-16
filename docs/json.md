@@ -179,9 +179,9 @@ the file, line and word it came from. Its exit status is 1, a usage error's
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.23.0","protocol":10,
- "server_version":"0.23.0","server_protocol":10,"compatible":true}
-[{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.23.0","compatible":true}]
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.24.0","protocol":10,
+ "server_version":"0.24.0","server_protocol":10,"compatible":true}
+[{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.24.0","compatible":true}]
 ```
 
 With no server, `status` gives `running`, `socket`, `version` and `protocol`
