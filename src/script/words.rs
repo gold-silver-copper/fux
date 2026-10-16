@@ -1668,6 +1668,19 @@ mod tests {
         }
     }
 
+    /// `set`'s help and the README's table name every setting, in order.
+    #[test]
+    fn every_setting_is_told_of() {
+        let set = WORDS.iter().find(|w| w.name == "set");
+        let help: Vec<&str> =
+            (set.map(|w| w.about.split_whitespace().collect())).unwrap_or_default();
+        assert_eq!(help, crate::config::NAMES);
+        let readme = include_str!("../../README.md");
+        for name in crate::config::NAMES {
+            assert!(readme.contains(&format!("\n| `{name}` |")), "{name}");
+        }
+    }
+
     /// A word's effect names what it takes and gives: the checker counts
     /// on both.
     #[test]
