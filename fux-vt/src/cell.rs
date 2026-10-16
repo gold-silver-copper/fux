@@ -153,6 +153,22 @@ impl std::fmt::Debug for Attributes {
     }
 }
 
+/// Expands each `get with BIT "what";` to the getter `get(self) -> bool`
+/// and the builder `with(self, on: bool) -> Self` of that one flag bit.
+macro_rules! flags {
+    ($($get:ident $with:ident $bit:ident $what:literal;)*) => {$(
+        #[doc = concat!("Whether ", $what, " is on.")]
+        pub fn $get(self) -> bool {
+            self.flags & Self::$bit != 0
+        }
+        #[doc = concat!("These attributes with ", $what, " on or off.")]
+        #[must_use]
+        pub const fn $with(self, on: bool) -> Self {
+            self.with_flag(Self::$bit, on)
+        }
+    )*};
+}
+
 impl Attributes {
     // The bits of `flags`: one for each style, but the underline, whose
     // style's number (`UnderlineStyle`, 0 for none) takes three bits from
@@ -313,20 +329,13 @@ impl Attributes {
         };
         self
     }
-    /// These attributes with bold (SGR 1) on or off.
-    #[must_use]
-    pub const fn with_bold(self, on: bool) -> Self {
-        self.with_flag(Self::BOLD, on)
-    }
-    /// These attributes with dim (SGR 2) on or off.
-    #[must_use]
-    pub const fn with_dim(self, on: bool) -> Self {
-        self.with_flag(Self::DIM, on)
-    }
-    /// These attributes with italic (SGR 3) on or off.
-    #[must_use]
-    pub const fn with_italic(self, on: bool) -> Self {
-        self.with_flag(Self::ITALIC, on)
+    flags! {
+        bold with_bold BOLD "bold (SGR 1)";
+        dim with_dim DIM "dim (SGR 2)";
+        italic with_italic ITALIC "italic (SGR 3)";
+        inverse with_inverse INVERSE "inverse (SGR 7)";
+        hidden with_hidden HIDDEN "hidden (SGR 8)";
+        strikeout with_strikeout STRIKEOUT "strikeout (SGR 9)";
     }
     /// These attributes with a single underline (SGR 4), or none of any
     /// style.
@@ -344,11 +353,6 @@ impl Attributes {
         self.flags = (self.flags & !Self::UNDERLINE) | (style.number() << Self::UNDERLINE_SHIFT);
         self
     }
-    /// These attributes with inverse (SGR 7) on or off.
-    #[must_use]
-    pub const fn with_inverse(self, on: bool) -> Self {
-        self.with_flag(Self::INVERSE, on)
-    }
     /// These attributes blinking as `blink` says (SGR 5, 6 and 25).
     #[must_use]
     pub const fn with_blink(self, blink: Blink) -> Self {
@@ -359,33 +363,11 @@ impl Attributes {
         };
         self.with_flag(Self::BLINK, false).with_flag(bit, true)
     }
-    /// These attributes with hidden (SGR 8) on or off.
-    #[must_use]
-    pub const fn with_hidden(self, on: bool) -> Self {
-        self.with_flag(Self::HIDDEN, on)
-    }
-    /// These attributes with strikeout (SGR 9) on or off.
-    #[must_use]
-    pub const fn with_strikeout(self, on: bool) -> Self {
-        self.with_flag(Self::STRIKEOUT, on)
-    }
     /// These attributes with `color` as the underline colour (SGR 58).
     #[must_use]
     pub const fn with_underline_color(mut self, color: Color) -> Self {
         self.underline_color = Packed::new(color);
         self
-    }
-    /// Whether bold (SGR 1) is on.
-    pub fn bold(self) -> bool {
-        self.flags & Self::BOLD != 0
-    }
-    /// Whether dim (SGR 2) is on.
-    pub fn dim(self) -> bool {
-        self.flags & Self::DIM != 0
-    }
-    /// Whether italic (SGR 3) is on.
-    pub fn italic(self) -> bool {
-        self.flags & Self::ITALIC != 0
     }
     /// Whether the text is underlined, in any style.
     pub fn underline(self) -> bool {
@@ -396,10 +378,6 @@ impl Attributes {
         UnderlineStyle::from_number((self.flags & Self::UNDERLINE) >> Self::UNDERLINE_SHIFT)
             .unwrap_or(UnderlineStyle::None)
     }
-    /// Whether inverse (SGR 7) is on.
-    pub fn inverse(self) -> bool {
-        self.flags & Self::INVERSE != 0
-    }
     /// How the text blinks.
     pub fn blink(self) -> Blink {
         if self.flags & Self::SLOW_BLINK != 0 {
@@ -409,14 +387,6 @@ impl Attributes {
         } else {
             Blink::None
         }
-    }
-    /// Whether hidden (SGR 8) is on.
-    pub fn hidden(self) -> bool {
-        self.flags & Self::HIDDEN != 0
-    }
-    /// Whether strikeout (SGR 9) is on.
-    pub fn strikeout(self) -> bool {
-        self.flags & Self::STRIKEOUT != 0
     }
 }
 
@@ -447,6 +417,17 @@ pub struct CellRef<'a> {
     attributes: Attributes,
     /// `WIDE` and `CONTINUATION`.
     halves: u8,
+}
+
+/// Expands each `name of Type, "doc";` to the method `name(&self) -> Type`
+/// that returns the cell's attributes' `of()`.
+macro_rules! forward {
+    ($($name:ident $of:ident $ty:ty, $doc:literal;)*) => {$(
+        #[doc = $doc]
+        pub fn $name(&self) -> $ty {
+            self.attributes.$of()
+        }
+    )*};
 }
 
 impl<'a> CellRef<'a> {
@@ -503,53 +484,19 @@ impl<'a> CellRef<'a> {
     pub fn attributes(&self) -> Attributes {
         self.attributes
     }
-    /// The foreground colour.
-    pub fn fgcolor(&self) -> Color {
-        self.attributes.foreground()
-    }
-    /// The background colour.
-    pub fn bgcolor(&self) -> Color {
-        self.attributes.background()
-    }
-    /// The underline colour (SGR 58).
-    pub fn underline_color(&self) -> Color {
-        self.attributes.underline_color()
-    }
-    /// Whether bold (SGR 1) is on.
-    pub fn bold(&self) -> bool {
-        self.attributes.bold()
-    }
-    /// Whether dim (SGR 2) is on.
-    pub fn dim(&self) -> bool {
-        self.attributes.dim()
-    }
-    /// Whether italic (SGR 3) is on.
-    pub fn italic(&self) -> bool {
-        self.attributes.italic()
-    }
-    /// Whether the text is underlined, in any style.
-    pub fn underline(&self) -> bool {
-        self.attributes.underline()
-    }
-    /// How the text is underlined.
-    pub fn underline_style(&self) -> UnderlineStyle {
-        self.attributes.underline_style()
-    }
-    /// Whether inverse (SGR 7) is on.
-    pub fn inverse(&self) -> bool {
-        self.attributes.inverse()
-    }
-    /// How the text blinks.
-    pub fn blink(&self) -> Blink {
-        self.attributes.blink()
-    }
-    /// Whether hidden (SGR 8) is on.
-    pub fn hidden(&self) -> bool {
-        self.attributes.hidden()
-    }
-    /// Whether strikeout (SGR 9) is on.
-    pub fn strikeout(&self) -> bool {
-        self.attributes.strikeout()
+    forward! {
+        fgcolor foreground Color, "The foreground colour.";
+        bgcolor background Color, "The background colour.";
+        underline_color underline_color Color, "The underline colour (SGR 58).";
+        bold bold bool, "Whether bold (SGR 1) is on.";
+        dim dim bool, "Whether dim (SGR 2) is on.";
+        italic italic bool, "Whether italic (SGR 3) is on.";
+        underline underline bool, "Whether the text is underlined, in any style.";
+        underline_style underline_style UnderlineStyle, "How the text is underlined.";
+        inverse inverse bool, "Whether inverse (SGR 7) is on.";
+        blink blink Blink, "How the text blinks.";
+        hidden hidden bool, "Whether hidden (SGR 8) is on.";
+        strikeout strikeout bool, "Whether strikeout (SGR 9) is on.";
     }
 }
 
