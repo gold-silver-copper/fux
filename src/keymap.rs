@@ -214,210 +214,151 @@ const GROUPS: [&str; 5] = ["Panes", "Focus", "Tabs", "Workspaces", "Session"];
 /// The group of bindings without the prefix that gave none.
 pub const ROOT_GROUP: &str = "Without the prefix";
 
-/// The default bindings: keys after the prefix, fuxth, label, group, and
-/// whether it repeats. After the prefix every default key is a lower-case
+/// A group's bindings: keys after the prefix, fuxth and label.
+type Bindings = &'static [(&'static str, &'static str, &'static str)];
+
+/// The default bindings, by group, and whether the group's layer
+/// repeats. After the prefix every default key is a lower-case
 /// letter: `r` and `m` are repeat modes, `t` and `w` layers sharing their
 /// verbs.
-pub const DEFAULTS: &[(&str, &str, &str, &str, bool)] = &[
-    ("h", "me str left focus", "focus left", "Focus", false),
-    ("j", "me str down focus", "focus down", "Focus", false),
-    ("k", "me str up focus", "focus up", "Focus", false),
-    ("l", "me str right focus", "focus right", "Focus", false),
-    ("o", "me str next focus", "next pane", "Focus", false),
-    ("q", "me str last focus", "last pane", "Focus", false),
+pub const DEFAULTS: &[(&str, bool, Bindings)] = &[
     (
-        "v",
-        "me focused opts horizontal split drop",
-        "split side by side",
+        "Focus",
+        false,
+        &[
+            ("h", "me str left focus", "focus left"),
+            ("j", "me str down focus", "focus down"),
+            ("k", "me str up focus", "focus up"),
+            ("l", "me str right focus", "focus right"),
+            ("o", "me str next focus", "next pane"),
+            ("q", "me str last focus", "last pane"),
+        ],
+    ),
+    (
         "Panes",
         false,
+        &[
+            (
+                "v",
+                "me focused opts horizontal split drop",
+                "split side by side",
+            ),
+            ("s", "me focused opts vertical split drop", "split stacked"),
+            ("x", "me me focused confirm-close", "close pane"),
+            ("z", "me zoom", "zoom or restore"),
+            ("a", "me me focused menu", "pane actions"),
+            ("c", "me copy-mode", "copy and select"),
+            ("p", "me focused 0 paste-buffer", "paste the newest copy"),
+        ],
     ),
     (
-        "s",
-        "me focused opts vertical split drop",
-        "split stacked",
-        "Panes",
-        false,
-    ),
-    (
-        "x",
-        "me me focused confirm-close",
-        "close pane",
-        "Panes",
-        false,
-    ),
-    ("z", "me zoom", "zoom or restore", "Panes", false),
-    ("a", "me me focused menu", "pane actions", "Panes", false),
-    ("c", "me copy-mode", "copy and select", "Panes", false),
-    (
-        "p",
-        "me focused 0 paste-buffer",
-        "paste the newest copy",
-        "Panes",
-        false,
-    ),
-    (
-        "r h",
-        "me focused str left 1 move-border",
-        "shrink or grow left",
         "Resize",
         true,
+        &[
+            (
+                "r h",
+                "me focused str left 1 move-border",
+                "shrink or grow left",
+            ),
+            (
+                "r j",
+                "me focused str down 1 move-border",
+                "shrink or grow down",
+            ),
+            (
+                "r k",
+                "me focused str up 1 move-border",
+                "shrink or grow up",
+            ),
+            (
+                "r l",
+                "me focused str right 1 move-border",
+                "shrink or grow right",
+            ),
+        ],
     ),
     (
-        "r j",
-        "me focused str down 1 move-border",
-        "shrink or grow down",
-        "Resize",
-        true,
-    ),
-    (
-        "r k",
-        "me focused str up 1 move-border",
-        "shrink or grow up",
-        "Resize",
-        true,
-    ),
-    (
-        "r l",
-        "me focused str right 1 move-border",
-        "shrink or grow right",
-        "Resize",
-        true,
-    ),
-    (
-        "m h",
-        "me focused str left move-beside",
-        "move left",
         "Move",
         true,
+        &[
+            ("m h", "me focused str left move-beside", "move left"),
+            ("m j", "me focused str down move-beside", "move down"),
+            ("m k", "me focused str up move-beside", "move up"),
+            ("m l", "me focused str right move-beside", "move right"),
+        ],
     ),
     (
-        "m j",
-        "me focused str down move-beside",
-        "move down",
-        "Move",
-        true,
-    ),
-    (
-        "m k",
-        "me focused str up move-beside",
-        "move up",
-        "Move",
-        true,
-    ),
-    (
-        "m l",
-        "me focused str right move-beside",
-        "move right",
-        "Move",
-        true,
-    ),
-    ("n", "me next-tab", "next tab", "Tabs", false),
-    ("b", "me previous-tab", "previous tab", "Tabs", false),
-    ("t n", "opts new-tab drop", "new tab", "Tabs", false),
-    ("t h", "me previous-tab", "previous tab", "Tabs", false),
-    ("t l", "me next-tab", "next tab", "Tabs", false),
-    ("t g", "me choose-tab", "choose a tab", "Tabs", false),
-    (
-        "t r",
-        "me me focused tab rename-prompt",
-        "rename tab",
         "Tabs",
         false,
+        &[
+            ("n", "me next-tab", "next tab"),
+            ("b", "me previous-tab", "previous tab"),
+            ("t n", "opts new-tab drop", "new tab"),
+            ("t h", "me previous-tab", "previous tab"),
+            ("t l", "me next-tab", "next tab"),
+            ("t g", "me choose-tab", "choose a tab"),
+            ("t r", "me me focused tab rename-prompt", "rename tab"),
+            ("t x", "me me focused tab confirm-close", "close tab"),
+            ("t a", "me me focused tab menu", "tab actions"),
+        ],
     ),
     (
-        "t x",
-        "me me focused tab confirm-close",
-        "close tab",
-        "Tabs",
-        false,
-    ),
-    (
-        "t a",
-        "me me focused tab menu",
-        "tab actions",
-        "Tabs",
-        false,
-    ),
-    (
-        "t m h",
-        "me focused tab str previous reorder",
-        "move tab earlier",
         "Reorder",
         true,
+        &[
+            (
+                "t m h",
+                "me focused tab str previous reorder",
+                "move tab earlier",
+            ),
+            ("t m l", "me focused tab str next reorder", "move tab later"),
+        ],
     ),
     (
-        "t m l",
-        "me focused tab str next reorder",
-        "move tab later",
+        "Workspaces",
+        false,
+        &[
+            ("w n", "opts new-workspace drop", "new workspace"),
+            ("w h", "me previous-workspace", "previous workspace"),
+            ("w l", "me next-workspace", "next workspace"),
+            ("w g", "me choose-workspace", "choose a workspace"),
+            (
+                "w r",
+                "me me focused workspace rename-prompt",
+                "rename workspace",
+            ),
+            (
+                "w x",
+                "me me focused workspace confirm-close",
+                "close workspace",
+            ),
+            ("w a", "me me focused workspace menu", "workspace actions"),
+        ],
+    ),
+    (
         "Reorder",
         true,
+        &[
+            (
+                "w m h",
+                "me focused workspace str previous reorder",
+                "move workspace earlier",
+            ),
+            (
+                "w m l",
+                "me focused workspace str next reorder",
+                "move workspace later",
+            ),
+        ],
     ),
     (
-        "w n",
-        "opts new-workspace drop",
-        "new workspace",
-        "Workspaces",
+        "Session",
         false,
+        &[
+            ("e", "me command-prompt", "command prompt"),
+            ("d", "me detach", "detach"),
+        ],
     ),
-    (
-        "w h",
-        "me previous-workspace",
-        "previous workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w l",
-        "me next-workspace",
-        "next workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w g",
-        "me choose-workspace",
-        "choose a workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w r",
-        "me me focused workspace rename-prompt",
-        "rename workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w x",
-        "me me focused workspace confirm-close",
-        "close workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w a",
-        "me me focused workspace menu",
-        "workspace actions",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w m h",
-        "me focused workspace str previous reorder",
-        "move workspace earlier",
-        "Reorder",
-        true,
-    ),
-    (
-        "w m l",
-        "me focused workspace str next reorder",
-        "move workspace later",
-        "Reorder",
-        true,
-    ),
-    ("e", "me command-prompt", "command prompt", "Session", false),
-    ("d", "me detach", "detach", "Session", false),
 ];
 
 impl Default for Keymap {
@@ -427,13 +368,15 @@ impl Default for Keymap {
             bindings: Layer::default(),
             root: Vec::new(),
         };
-        for (keys, code, label, group, repeat) in DEFAULTS {
-            let binding = Binding {
-                code: (*code).to_owned(),
-                label: (*label).to_owned(),
-                group: (*group).to_owned(),
-            };
-            let _ = self::keys(keys).and_then(|keys| keymap.bind(&keys, binding, *repeat));
+        for (group, repeat, bindings) in DEFAULTS {
+            for (keys, code, label) in *bindings {
+                let binding = Binding {
+                    code: (*code).to_owned(),
+                    label: (*label).to_owned(),
+                    group: (*group).to_owned(),
+                };
+                let _ = self::keys(keys).and_then(|keys| keymap.bind(&keys, binding, *repeat));
+            }
         }
         keymap
     }
@@ -979,7 +922,8 @@ mod tests {
     #[test]
     fn every_default_is_bound() {
         let keymap = Keymap::default();
-        assert_eq!(keymap.bindings.all().len(), DEFAULTS.len());
+        let defaults: usize = DEFAULTS.iter().map(|(_, _, bindings)| bindings.len()).sum();
+        assert_eq!(keymap.bindings.all().len(), defaults);
         assert!(keymap.root.is_empty());
     }
 
