@@ -678,7 +678,7 @@ impl Session {
     }
     pub(crate) fn shown_tab_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
         let ws = (self.workspaces.iter_mut()).find(|w| w.viewers.contains(&client))?;
-        ws.tabs_mut().iter_mut().find(|t| t.shown_to(client))
+        ws.tab_of_mut(client)
     }
     /// The pane client `client` focuses.
     pub fn focused(&self, client: ClientId) -> Option<PaneId> {

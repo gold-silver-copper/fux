@@ -16,6 +16,8 @@ pub struct Workspace {
     /// The clients showing it: each attached client shows one workspace
     /// while there is any.
     pub(crate) viewers: BTreeSet<ClientId>,
+    /// The tab each attached client is shown when it shows the workspace.
+    shown: BTreeMap<ClientId, TabId>,
 }
 
 pub struct Tab {
@@ -66,8 +68,6 @@ impl Fit {
 /// A client's place in a tab: every attached client has one in every tab.
 #[derive(Clone, Copy, Default)]
 pub struct Seat {
-    /// Shown this tab when it shows the workspace: true in one tab of each.
-    shown: bool,
     /// The pane it focuses, one of the tab's, unless the tab is empty.
     focus: Option<PaneId>,
     /// The pane it focused before (`str last focus`), another of the
@@ -100,13 +100,15 @@ impl Workspace {
         (root, fit): (Option<Tree>, Fit),
         clients: impl Iterator<Item = ClientId>,
     ) -> Workspace {
-        let tab = Tab::new(tab, tab_name, (root, fit), clients, true);
+        let tab = Tab::new(tab, tab_name, (root, fit), clients);
+        let shown = tab.seats.keys().map(|c| (*c, tab.id)).collect();
         let (tabs, viewers) = (vec![tab], BTreeSet::new());
         Workspace {
             id,
             name,
             tabs,
             viewers,
+            shown,
         }
     }
 
@@ -121,7 +123,13 @@ impl Workspace {
 
     /// The tab `client` is shown here.
     pub fn tab_of(&self, client: ClientId) -> Option<&Tab> {
-        self.tabs.iter().find(|t| t.shown_to(client))
+        let shown = self.shown.get(&client)?;
+        self.tabs.iter().find(|t| t.id == *shown)
+    }
+
+    pub(crate) fn tab_of_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
+        let shown = self.shown.get(&client)?;
+        self.tabs.iter_mut().find(|t| t.id == *shown)
     }
 
     /// Adds a tab, named after its place if no name is given, with a seat
@@ -130,7 +138,7 @@ impl Workspace {
         let number = self.tabs.len().saturating_add(1);
         let name = name.unwrap_or_else(|| numbered(number));
         let clients = self.tabs.first().map(|t| t.seats.keys().copied());
-        let tab = Tab::new(id, name, layout, clients.into_iter().flatten(), false);
+        let tab = Tab::new(id, name, layout, clients.into_iter().flatten());
         self.tabs.push(tab);
     }
 
@@ -140,17 +148,18 @@ impl Workspace {
         let Some(tab) = tab.filter(|id| self.tabs.iter().any(|t| t.id == *id)) else {
             return;
         };
-        let viewed = self.viewers.contains(&client);
-        for t in &mut self.tabs {
-            if viewed && t.id != tab {
-                t.hidden(client);
-            }
-            if let Some(seat) = t.seats.get_mut(&client) {
-                seat.shown = t.id == tab;
-            }
-            if let Some(pane) = pane.filter(|_| t.id == tab) {
-                t.set_focus(client, pane);
-            }
+        let Some(shown) = self.shown.get_mut(&client) else {
+            return;
+        };
+        let was = std::mem::replace(shown, tab);
+        if self.viewers.contains(&client) && was != tab {
+            self.tabs
+                .iter_mut()
+                .filter(|t| t.id == was)
+                .for_each(Tab::hidden);
+        }
+        if let Some((t, pane)) = self.tabs.iter_mut().find(|t| t.id == tab).zip(pane) {
+            t.set_focus(client, pane);
         }
     }
 
@@ -163,9 +172,9 @@ impl Workspace {
         &mut self,
         client: Option<Rect>,
     ) -> impl Iterator<Item = (&Tree, Rect)> {
-        let viewers = &self.viewers;
+        let (viewers, shown_to) = (&self.viewers, &self.shown);
         self.tabs.iter_mut().filter_map(move |tab| {
-            let shown = viewers.iter().any(|&c| tab.shown_to(c));
+            let shown = viewers.iter().any(|c| shown_to.get(c) == Some(&tab.id));
             let area = tab.fit.area(client).filter(|_| !shown);
             if area.is_some() || shown {
                 let changed = std::mem::take(&mut tab.changed);
@@ -180,17 +189,15 @@ impl Workspace {
     /// to are shown its neighbour.
     pub(crate) fn remove_tab(&mut self, tab: TabId) -> Option<Tree> {
         let index = self.tabs.iter().position(|t| t.id == tab)?;
-        let gone = self.tabs.get_mut(index)?;
-        let (seats, root) = (std::mem::take(&mut gone.seats), gone.root.take());
+        let root = self.tabs.get_mut(index)?.root.take();
         // Tab IDs are unique: this removes the tab at `index`.
         self.tabs.retain(|t| t.id != tab);
         let next = index.min(self.tabs.len().saturating_sub(1));
-        if let Some(next) = self.tabs.get_mut(next) {
-            for (client, _) in seats.iter().filter(|(_, s)| s.shown) {
-                if let Some(seat) = next.seats.get_mut(client) {
-                    seat.shown = true;
-                }
-            }
+        if let Some(next) = self.tabs.get(next).map(|t| t.id) {
+            self.shown
+                .values_mut()
+                .filter(|t| **t == tab)
+                .for_each(|t| *t = next);
         }
         root
     }
@@ -198,26 +205,32 @@ impl Workspace {
     /// A client attaches: it is shown the first tab, and focuses each tab's
     /// first pane.
     pub(crate) fn attach(&mut self, client: ClientId) {
-        for (i, tab) in self.tabs.iter_mut().enumerate() {
-            tab.seats.entry(client).or_default().shown = i == 0;
+        if let Some(first) = self.tabs.first() {
+            self.shown.insert(client, first.id);
+        }
+        for tab in &mut self.tabs {
+            tab.seats.entry(client).or_default();
             tab.refocus();
         }
     }
 
     /// `client` no longer looks here.
     pub(crate) fn hide(&mut self, client: ClientId) {
-        if self.viewers.remove(&client) {
-            self.tabs.iter_mut().for_each(|t| t.hidden(client));
+        if self.viewers.remove(&client)
+            && let Some(tab) = self.tab_of_mut(client)
+        {
+            tab.hidden();
         }
     }
 
     /// A client detaches: nothing here names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
         let viewed = self.viewers.remove(&client);
+        let shown = self.shown.remove(&client);
         for tab in &mut self.tabs {
             // A tab the client showed is laid out again on its own fit (its
             // `size`), not left at the client's.
-            tab.changed |= viewed && tab.shown_to(client);
+            tab.changed |= viewed && shown == Some(tab.id);
             tab.seats.remove(&client);
             tab.typist = tab.typist.filter(|t| *t != client);
         }
@@ -230,7 +243,6 @@ impl Tab {
         name: String,
         (root, fit): (Option<Tree>, Fit),
         clients: impl Iterator<Item = ClientId>,
-        shown: bool,
     ) -> Tab {
         let (seats, typist) = (clients.map(|c| (c, Seat::default())).collect(), None);
         let mut tab = Tab {
@@ -243,7 +255,6 @@ impl Tab {
             seats,
             typist,
         };
-        tab.seats.values_mut().for_each(|s| s.shown = shown);
         tab.refocus();
         tab
     }
@@ -275,17 +286,12 @@ impl Tab {
         self.seats.get_mut(&client)
     }
 
-    /// `client`, which looked at its workspace, no longer sees it: with a
-    /// size of its own, it is laid out on that again, not left at the
-    /// client's (laid out on clients' screens, it keeps what it has: a
-    /// zoomed pane, its whole screen).
-    fn hidden(&mut self, client: ClientId) {
-        self.changed |= self.shown_to(client) && matches!(self.fit, Fit::Fixed(_));
-    }
-
-    /// Whether `client` is shown this tab in its workspace.
-    pub fn shown_to(&self, client: ClientId) -> bool {
-        self.seat(client).is_some_and(|s| s.shown)
+    /// A client it was shown to, which looked at its workspace, no longer
+    /// sees it: with a size of its own, it is laid out on that again, not
+    /// left at the client's (laid out on clients' screens, it keeps what it
+    /// has: a zoomed pane, its whole screen).
+    fn hidden(&mut self) {
+        self.changed |= matches!(self.fit, Fit::Fixed(_));
     }
 
     /// The pane `client` focuses here.

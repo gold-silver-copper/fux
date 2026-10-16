@@ -44,6 +44,7 @@ use crate::view::View;
 use fux_vt::ModeStatus;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 /// The colours asked one by one, each its own OSC: the foreground, the
@@ -361,15 +362,17 @@ impl Session {
         else {
             return;
         };
-        let viewers = ws.viewers.clone();
+        // Each client showing the workspace, and whether it is shown the tab.
+        let viewers: BTreeMap<ClientId, bool> = (ws.viewers.iter())
+            .map(|c| (*c, ws.tab_of(*c).is_some_and(|t| t.holds(id))))
+            .collect();
         let Some(tab) = ws.tabs_mut().iter_mut().find(|t| t.holds(id)) else {
             return;
         };
         for view in self.views.values_mut() {
-            if !viewers.contains(&view.id) {
+            let Some(&shown) = viewers.get(&view.id) else {
                 continue;
-            }
-            let shown = tab.shown_to(view.id);
+            };
             if let Some(seat) = tab.seat_mut(view.id).filter(|s| !shown && !s.rang) {
                 seat.rang = true;
                 view.dirty = true;
