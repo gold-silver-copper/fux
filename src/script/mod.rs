@@ -870,8 +870,7 @@ fn local(
         }
         Local::Servers => {
             let fail = |e: crate::socket::Error| client_failed(e.into());
-            let text = crate::servers(false).map_err(fail)?;
-            let json = crate::servers(true).map_err(fail)?;
+            let (text, json) = crate::servers().map_err(fail)?;
             return Ok(vec![answer(&text, &json, "a listing of servers")]);
         }
     }

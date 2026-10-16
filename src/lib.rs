@@ -175,8 +175,8 @@ pub(crate) fn status(
 }
 
 /// `fux servers`: every server that answers in fux's directory, a line
-/// each, or a JSON array.
-pub(crate) fn servers(json: bool) -> Result<String, socket::Error> {
+/// each, and the same as a JSON array, from one look at each.
+pub(crate) fn servers() -> Result<(String, String), socket::Error> {
     let directory = socket::directory()?;
     let mut names: Vec<String> = match std::fs::read_dir(&directory) {
         Ok(entries) => entries
@@ -212,8 +212,6 @@ pub(crate) fn servers(json: bool) -> Result<String, socket::Error> {
             ),
         ]));
     }
-    Ok(match json {
-        true => format!("{}\n", json::Json::Array(objects).render()),
-        false => lines.concat(),
-    })
+    let json = format!("{}\n", json::Json::Array(objects).render());
+    Ok((lines.concat(), json))
 }
