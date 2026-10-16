@@ -1676,7 +1676,7 @@ mod tests {
             timeout: Some(Duration::from_secs(5)),
             ..Waits::default()
         };
-        assert_eq!(waited(&said, false).limit(), Duration::from_secs(5));
+        assert_eq!(waited(&said, false).timeout, Some(Duration::from_secs(5)));
     }
 
     /// An answer in a list is its object; one of several panes, an array of

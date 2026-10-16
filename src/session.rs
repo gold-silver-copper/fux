@@ -3425,7 +3425,7 @@ pub(crate) mod testing {
             let outcome = match session.begin(request.command.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
                 super::Begun::Waiting(mut waiting) => {
-                    let later = crate::after(std::time::Instant::now(), waiting.wait.limit());
+                    let later = crate::after(std::time::Instant::now(), waiting.limit);
                     waiting.answer(session, later).unwrap_or_default()
                 }
                 super::Begun::Events(_) => {

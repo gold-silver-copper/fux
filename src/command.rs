@@ -214,13 +214,6 @@ pub struct Wait {
     pub marks: bool,
 }
 
-impl Wait {
-    /// How long it waits at most.
-    pub fn limit(&self) -> Duration {
-        self.timeout.unwrap_or(crate::config::WAIT)
-    }
-}
-
 /// What `send-mouse` does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mouse {

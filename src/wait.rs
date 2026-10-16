@@ -23,7 +23,7 @@ use crate::process::Ended;
 use crate::protocol::{End, Reply};
 use crate::session::Session;
 use std::num::NonZeroU8;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The exit statuses a wait ends with, besides 0 (what it waited for came)
 /// and the 1 and 2 of any command.
@@ -45,15 +45,15 @@ const MORE_THAN_KEPT: &str =
 /// How long a bare `wait` on a pane that may go on alone waits for
 /// something new before it answers the pane as it is: longer than the
 /// pauses of a program polling for keys.
-const MORE: std::time::Duration = std::time::Duration::from_secs(5);
+const MORE: Duration = Duration::from_secs(5);
 
 /// How often a wait that asks what a pane's program is blocked in looks
 /// again: that changes with nothing on the screen to wake the server.
-const PROBE: std::time::Duration = std::time::Duration::from_millis(30);
+const PROBE: Duration = Duration::from_millis(30);
 /// How long a pane must look settled, the screen as it was, to be taken as
 /// settled: output its program wrote just before is in fux's hands by then
 /// (the kernel hands it on within a millisecond or two).
-const HOLD: std::time::Duration = std::time::Duration::from_millis(10);
+const HOLD: Duration = Duration::from_millis(10);
 
 /// A wait under way.
 pub struct Waiting {
@@ -64,6 +64,8 @@ pub struct Waiting {
     /// When it began: a pane is quiet from then at the soonest.
     began: Instant,
     deadline: Instant,
+    /// How long it waits at most: its own timeout, else the server's.
+    pub(crate) limit: Duration,
     /// Printed before what the wait says: the pane `run` started.
     pub lead: String,
     /// The program has just started (`run`, `respawn`): its screen is
@@ -146,13 +148,8 @@ enum Found {
 
 impl Waiting {
     /// A wait in `panes` from `now`, for `limit` at most unless it says.
-    pub fn new(
-        panes: &[&Pane],
-        mut wait: Wait,
-        now: Instant,
-        limit: std::time::Duration,
-    ) -> Waiting {
-        wait.timeout = Some(wait.timeout.unwrap_or(limit));
+    pub fn new(panes: &[&Pane], wait: Wait, now: Instant, limit: Duration) -> Waiting {
+        let limit = wait.timeout.unwrap_or(limit);
         let texts = (wait.until.iter())
             .filter_map(|u| match u {
                 Until::Text(text) => Some(text.clone()),
@@ -163,7 +160,8 @@ impl Waiting {
             answers: vec![None; panes.len()],
             watches: panes.iter().map(|p| Watch::new(p, wait.after)).collect(),
             texts,
-            deadline: crate::after(now, wait.limit()),
+            deadline: crate::after(now, limit),
+            limit,
             wait,
             began: now,
             lead: String::new(),
@@ -233,7 +231,7 @@ impl Waiting {
     /// is.
     fn look(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let several = self.watches.len() > 1;
-        let (wait, texts) = (&self.wait, self.texts.as_slice());
+        let (wait, texts, limit) = (&self.wait, self.texts.as_slice(), self.limit);
         let (window, mode) = ((self.began, now), (self.fresh, self.more));
         let late = now >= self.deadline;
         for (watch, answer) in self.watches.iter_mut().zip(&mut self.answers) {
@@ -245,10 +243,10 @@ impl Waiting {
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *answer = Some(wait.told(pane, told, several, watch.since(pane)));
+                *answer = Some(wait.told(pane, told, (several, limit), watch.since(pane)));
             } else if late {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *answer = Some(wait.told(pane, told, several, watch.since(pane)));
+                *answer = Some(wait.told(pane, told, (several, limit), watch.since(pane)));
             }
         }
         let answers: Vec<&Reply> = self
@@ -334,7 +332,13 @@ impl Wait {
     }
 
     /// The outcome of a wait that ended so in `pane`.
-    fn told(&self, pane: &Pane, told: Told, several: bool, since: Since) -> Reply {
+    fn told(
+        &self,
+        pane: &Pane,
+        told: Told,
+        (several, limit): (bool, Duration),
+        since: Since,
+    ) -> Reply {
         use crate::ready::State;
         let (id, now) = (pane.id, Instant::now());
         let status = told.status();
@@ -365,7 +369,7 @@ impl Wait {
             // timeout` answers at once, as it is, and never fails.
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
                 let state = crate::ready::state(pane, now);
-                let calm = self.limit().is_zero() || state != State::Busy;
+                let calm = limit.is_zero() || state != State::Busy;
                 return settled(state, status.filter(|_| !calm), asked());
             }
             Told::Found(Found::Text { text, line }) => {
@@ -414,7 +418,7 @@ impl Wait {
                 let idle = now.saturating_duration_since(pane.changed_at).as_secs();
                 let mut message = format!(
                     "{id}: timed out after {}s waiting for {}",
-                    self.limit().as_secs_f64(),
+                    limit.as_secs_f64(),
                     self.describe()
                 );
                 // What it does: reading its terminal, waiting, busy…
