@@ -155,8 +155,6 @@ struct Conn {
     /// The socket `fux grant` made that it came through, if one did: its
     /// commands reach that grant's workspace alone, while it lasts.
     grant: Option<PathBuf>,
-    /// A request that waits for a restore to end (`Server::request`).
-    held: Option<Box<(crate::command::Command, crate::protocol::Context)>>,
 }
 
 /// Where a connection is in its life, each stage holding what it alone
@@ -179,6 +177,10 @@ enum Stage {
     /// It said hello as a command client: its requests come next, each
     /// answered before the next is read.
     Command,
+    /// Its request waits for the restore that runs to end, so that it takes
+    /// no id the restore asks for (`Server::request`). It is read only to
+    /// notice the client go.
+    Held(Box<Request>),
     /// Its request waits for its pane (`wait`): it is answered once the
     /// wait has an answer. It is read only to notice the client go.
     Waiting(Box<Waiting>),
@@ -201,6 +203,7 @@ impl Stage {
             | Stage::Attaching(..)
             | Stage::Attached(_)
             | Stage::Command
+            | Stage::Held(_)
             | Stage::Waiting(_)
             | Stage::Events(_) => true,
             Stage::Closing | Stage::Dead => false,
@@ -360,7 +363,6 @@ impl Conn {
             out: ByteQueue::default(),
             stage: Stage::Hello(None),
             grant,
-            held: None,
         }
     }
 
@@ -950,13 +952,13 @@ impl Server {
             log!("starting afresh: {error}");
         }
         for index in 0..self.conns.len() {
-            if let Some((command, context)) = self
-                .conns
-                .get_mut(index)
-                .and_then(|c| c.held.take())
-                .map(|h| *h)
+            let Some(conn) = self.conns.get_mut(index) else {
+                continue;
+            };
+            if let Stage::Held(_) = conn.stage
+                && let Stage::Held(held) = std::mem::replace(&mut conn.stage, Stage::Command)
             {
-                self.request(index, command, context);
+                self.request(index, held.command, held.context);
             }
         }
     }
@@ -1616,7 +1618,11 @@ impl Server {
             // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
-            Stage::Waiting(_) | Stage::Events(_) | Stage::Closing | Stage::Dead => {
+            Stage::Held(_)
+            | Stage::Waiting(_)
+            | Stage::Events(_)
+            | Stage::Closing
+            | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
             }
@@ -1637,10 +1643,12 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
+        // A restore is the server's own, which no grant's socket makes.
+        let restoring = context.restoring && restore_runs && conn.grant.is_none();
         // While a saved session comes back, other requests wait for it,
         // so that none takes an id it asks for.
-        if restore_runs && !context.restoring {
-            conn.held = Some(Box::new((command, context)));
+        if restore_runs && !restoring {
+            conn.stage = Stage::Held(Box::new(Request { command, context }));
             return;
         }
         let crate::protocol::Context {
@@ -1649,10 +1657,8 @@ impl Server {
             server,
             env,
             client,
-            restoring,
+            ..
         } = context;
-        // A restore is the server's own, which no grant's socket makes.
-        let restoring = restoring && restore_runs && conn.grant.is_none();
         // A pane of another server's (FUX_PANE kept as FUX_SOCKET chose
         // this one) is not the caller's here.
         let ours = server.as_deref().is_none_or(|s| s == session.server_id);
