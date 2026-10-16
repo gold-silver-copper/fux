@@ -734,6 +734,8 @@ pub struct Session {
     made: Vec<AnyRef<WsId>>,
     /// The field the command under way read (`ls --get`), for its reply.
     value: Option<crate::protocol::Scalar>,
+    /// A reading's JSON, made from the same read as its text.
+    json: Option<String>,
     /// How the panes the command under way starts start.
     starting: Starting,
     /// A restore is under way (`Session::restore`): ids come back as they
@@ -976,50 +978,6 @@ pub fn json_failure(mut outcome: Outcome, code: Option<&str>) -> Outcome {
     outcome
 }
 
-/// A reading given as text (`capture`, `ls`, `info`, `capture-client`),
-/// asked as JSON.
-fn json_form(command: &Command) -> Option<Command> {
-    if let Command::Ls {
-        json: false,
-        target,
-        get: None,
-    } = command
-    {
-        return Some(Command::Ls {
-            json: true,
-            target: target.clone(),
-            get: None,
-        });
-    }
-    if let &Command::CapturePane {
-        target,
-        history,
-        view,
-        json: false,
-        ..
-    } = command
-    {
-        return Some(Command::CapturePane {
-            target,
-            history,
-            view,
-            json: true,
-            settle: None,
-        });
-    }
-    if let &Command::Client {
-        client,
-        action: ClientAction::Capture { json: false },
-    } = command
-    {
-        return Some(Command::Client {
-            client,
-            action: ClientAction::Capture { json: true },
-        });
-    }
-    None
-}
-
 /// A command that needed its caller's pane, tab or workspace, from a caller
 /// whose `FUX_PANE` is another server's pane: why it got none.
 fn stray(error: Error, origin: &Origin) -> Error {
@@ -1069,6 +1027,7 @@ impl Session {
             last_error: None,
             made: Vec::new(),
             value: None,
+            json: None,
             starting: Starting::default(),
             restoring: false,
             grants: Vec::new(),
@@ -2828,15 +2787,16 @@ impl Session {
     pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Outcome {
         self.made.clear();
         self.value = None;
+        self.json = None;
         let executed = self.execute(command, origin);
         let ids = std::mem::take(&mut self.made);
-        // A reading given as text keeps its JSON, read at the same moment:
+        // A reading given as text keeps its JSON, made from the same read:
         // `json` converts what was read, never a later read.
-        let json = match (&executed, json_form(command)) {
-            (Ok(_), Some(form)) => self.execute(&form, origin).unwrap_or_default(),
-            (Ok(_) | Err(_), _) => String::new(),
-        };
-        self.made.clear();
+        let json = self
+            .json
+            .take()
+            .filter(|_| executed.is_ok())
+            .unwrap_or_default();
         self.ids.unwant();
         let outcome = match executed {
             Ok(stdout) => Outcome {
@@ -2890,10 +2850,21 @@ impl Session {
                 match target {
                     Some(target) => {
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
+                        if !*json && get.is_none() {
+                            self.json = self.ls_one(target, true, None).ok();
+                        }
                         self.ls_one(target, *json, get.as_deref())
                     }
-                    None if *json => Ok(self.ls_json(scope)),
-                    None => Ok(self.ls_text(scope.map(AnyRef::Workspace))),
+                    None => {
+                        let all = self.ls_json(scope);
+                        match json {
+                            true => Ok(all),
+                            false => {
+                                self.json = Some(all);
+                                Ok(self.ls_text(scope.map(AnyRef::Workspace)))
+                            }
+                        }
+                    }
                 }
             }
             &Command::KillServer { force } => {
@@ -3416,7 +3387,10 @@ impl Session {
             } => {
                 let pane = self.pane(target, here)?;
                 let copying = self.copying(pane.id);
-                Ok(crate::capture::pane(pane, history, view, json, copying))
+                let read = |json| crate::capture::pane(pane, history, view, json, copying);
+                let (text, form) = (read(json), (!json).then(|| read(true)));
+                self.json = form;
+                Ok(text)
             }
             &Command::Reorder {
                 ref subject,
@@ -3524,6 +3498,7 @@ impl Session {
             ClientAction::Capture { json } => {
                 let mut grid = crate::render::Grid::new(0, 0);
                 crate::render::compose_view(self, view, &mut grid, &mut Placement::default());
+                self.json = (!json).then(|| crate::capture::client(view.id, &grid, true));
                 Ok(crate::capture::client(view.id, &grid, json))
             }
             ClientAction::Zoom => {
