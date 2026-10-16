@@ -185,7 +185,6 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
         }
         let journal = pane_now.map(|p| p.record.after(from));
         for entry in journal.into_iter().flatten() {
-            let number = |n: i64| Json::Number(n);
             events.push(match &entry.event {
                 Recorded::Bell => at("bell"),
                 Recorded::Notification(text) => {
@@ -193,21 +192,19 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
                 }
                 Recorded::Title(title) => at("title").with("title", Json::str(title.clone())),
                 Recorded::Done(status) => {
-                    at("done").with("status", status.map_or(Json::Null, |s| number(s.into())))
+                    at("done").with("status", status.map_or(Json::Null, Json::int))
                 }
                 Recorded::Resize(size) => (at("resized"))
-                    .with("cols", number(size.cols().into()))
-                    .with("rows", number(size.rows().into())),
+                    .with("cols", Json::int(size.cols()))
+                    .with("rows", Json::int(size.rows())),
                 Recorded::Output { .. } | Recorded::Input { .. } | Recorded::Action => continue,
             });
         }
         let was = old.panes.get(&pane).and_then(|w| w.ended);
         if let (Some(ended), true) = (now.ended, now.ended != was) {
             events.push(match ended {
-                Ended::Exited(code) => at("exited").with("status", Json::Number(i64::from(code))),
-                Ended::Signalled(signal) => {
-                    at("exited").with("signal", Json::Number(i64::from(signal)))
-                }
+                Ended::Exited(code) => at("exited").with("status", Json::int(code)),
+                Ended::Signalled(signal) => at("exited").with("signal", Json::int(signal)),
             });
         }
     }

@@ -303,7 +303,11 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         (crate::pane::Runs::Program(launch), None) => Some(launch.argv.clone()),
         (crate::pane::Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
     };
-    let exited = pane.process.exit_status();
+    let (exited, signal) = match pane.process.exit_status() {
+        Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
+        Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
+        None => (Json::Null, Json::Null),
+    };
     // A program a restore brought back, waiting for `respawn`.
     let paused = matches!(
         (&pane.process, &pane.runs),
@@ -314,24 +318,9 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         // reading, waiting, busy, exited 0, …: whether to look now.
         ("state", Json::str(crate::ready::state(pane, now).word())),
         ("paused", Json::Bool(paused)),
-        (
-            "exited",
-            match exited {
-                Some(crate::process::Ended::Exited(code)) => Json::Number(i64::from(code)),
-                _ => Json::Null,
-            },
-        ),
-        (
-            "signal",
-            match exited {
-                Some(crate::process::Ended::Signalled(signal)) => Json::Number(i64::from(signal)),
-                _ => Json::Null,
-            },
-        ),
-        (
-            "idle_ms",
-            Json::Number(i64::try_from(idle).unwrap_or(i64::MAX)),
-        ),
+        ("exited", exited),
+        ("signal", signal),
+        ("idle_ms", Json::int(idle)),
         ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
         (
             "mouse",
@@ -358,26 +347,18 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             Json::Array(screen.pictures().map(picture).collect()),
         ),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
-        ("history_lines", count(screen.history_len())),
+        ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
-        (
-            "revision",
-            count(usize::try_from(pane.revision).unwrap_or(usize::MAX)),
-        ),
+        ("revision", Json::int(pane.revision)),
         (
             "command_running",
             Json::Bool(commands.running && pane.process.exit_status().is_none()),
         ),
         (
             "last_status",
-            commands
-                .last_status
-                .map_or(Json::Null, |s| Json::Number(i64::from(s))),
+            commands.last_status.map_or(Json::Null, Json::int),
         ),
-        (
-            "bells",
-            count(usize::try_from(pane.alerts.count()).unwrap_or(usize::MAX)),
-        ),
+        ("bells", Json::int(pane.alerts.count())),
         (
             "notification",
             pane.alerts.last.clone().map_or(Json::Null, Json::str),
@@ -397,22 +378,17 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     ]
 }
 
-fn count(n: usize) -> Json<'static> {
-    Json::Number(i64::try_from(n).unwrap_or(i64::MAX))
-}
-
 /// Where a picture is, for `--json`: its top row (negative once scrolled
 /// above the screen), first column, the cells it covers, and its size in
 /// pixels.
 fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
-    let number = |n: u32| Json::Number(i64::from(n));
     Json::Object(vec![
         ("row", Json::Number(shown.row)),
-        ("col", number(u32::from(shown.col))),
-        ("rows", number(u32::from(shown.rows))),
-        ("cols", number(u32::from(shown.cols))),
-        ("width", number(shown.picture.width)),
-        ("height", number(shown.picture.height)),
+        ("col", Json::int(shown.col)),
+        ("rows", Json::int(shown.rows)),
+        ("cols", Json::int(shown.cols)),
+        ("width", Json::int(shown.picture.width)),
+        ("height", Json::int(shown.picture.height)),
     ])
 }
 
@@ -453,34 +429,27 @@ fn print(
             lines.pop();
         }
     };
-    let text = |line: &Cells<'_>| match view.marks {
-        true => marked(line, &highlighted),
-        false => line.iter().map(|(text, _)| *text).collect::<String>(),
-    };
+    let marks = view.marks.then_some(&highlighted);
+    let text = |line: &Cells<'_>, styles: bool| sgr_line(line, marks, styles);
     trim(&mut lines, view.styles);
-    let mut out = match view.styles {
-        true => {
-            let marks = view.marks.then_some(&highlighted);
-            let styled: Vec<String> = lines.iter().map(|l| sgr_line(l, marks)).collect();
-            styled.join("\n")
-        }
-        false => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
-    };
+    let shown: Vec<String> = lines.iter().map(|l| text(l, view.styles)).collect();
+    let mut out = shown.join("\n");
     out.push('\n');
     let json = state.map(|state| {
         trim(&mut lines, false);
         // On a row trimmed away, the cursor is on none printed.
         let cursor = cursor.filter(|(row, _)| usize::from(*row) < lines.len());
-        let number = |n: u16| Json::Number(i64::from(n));
-        let cursor = cursor.map_or(Json::Null, |(y, x)| Json::Array(vec![number(y), number(x)]));
+        let cursor = cursor.map_or(Json::Null, |(y, x)| {
+            Json::Array(vec![Json::int(y), Json::int(x)])
+        });
         let mut fields = vec![
             (key, Json::str(id)),
-            ("rows", number(rows)),
-            ("cols", number(cols)),
+            ("rows", Json::int(rows)),
+            ("cols", Json::int(cols)),
             ("cursor", cursor),
             (
                 "lines",
-                Json::Array(lines.iter().map(|l| Json::str(text(l))).collect()),
+                Json::Array(lines.iter().map(|l| Json::str(text(l, false))).collect()),
             ),
         ];
         if view.styles {
@@ -492,28 +461,15 @@ fn print(
     (out, json)
 }
 
-/// A line with what is highlighted, how programs draw a selection, between
-/// `⟦` and `⟧`: marks no program's output is likely to hold.
-fn marked(line: &Cells<'_>, highlighted: &impl Fn(&Attributes) -> bool) -> String {
-    let mut out = String::new();
-    let mut on = false;
-    for (text, attributes) in line {
-        if highlighted(attributes) != on {
-            on = !on;
-            out.push(if on { '⟦' } else { '⟧' });
-        }
-        out.push_str(text);
-    }
-    if on {
-        out.push('⟧');
-    }
-    out
-}
-
-/// A line in SGR: each change of attributes set from nothing, and reset at
-/// its end; with `marks`, what is highlighted between `⟦` and `⟧`, drawn
-/// outside it.
-fn sgr_line(line: &Cells<'_>, marks: Option<&impl Fn(&Attributes) -> bool>) -> String {
+/// A line, in SGR with `styles`: each change of attributes set from
+/// nothing, and reset at its end. With `marks`, what is highlighted, how
+/// programs draw a selection, is between `⟦` and `⟧` (drawn outside the
+/// SGR): marks no program's output is likely to hold.
+fn sgr_line(
+    line: &Cells<'_>,
+    marks: Option<&impl Fn(&Attributes) -> bool>,
+    styles: bool,
+) -> String {
     let mut out = Vec::new();
     let mut pen = Attributes::default();
     let mut on = false;
@@ -522,7 +478,7 @@ fn sgr_line(line: &Cells<'_>, marks: Option<&impl Fn(&Attributes) -> bool>) -> S
         if lit && !on {
             out.extend_from_slice("⟦".as_bytes());
         }
-        if *attributes != pen {
+        if styles && *attributes != pen {
             crate::render::sgr(&mut out, *attributes, true);
             pen = *attributes;
         }
@@ -549,8 +505,7 @@ fn runs(line: &Cells<'_>) -> Json<'static> {
     for group in line.chunk_by(|(_, a), (_, b)| a == b) {
         let len = group.len();
         if let Some((_, attributes)) = group.first().filter(|(_, a)| *a != Attributes::default()) {
-            let count = |n: usize| Json::Number(i64::try_from(n).unwrap_or(i64::MAX));
-            let mut fields = vec![("col", count(start)), ("len", count(len))];
+            let mut fields = vec![("col", Json::int(start)), ("len", Json::int(len))];
             fields.extend(described(*attributes));
             runs.push(Json::Object(fields));
         }
@@ -563,7 +518,7 @@ fn runs(line: &Cells<'_>) -> Json<'static> {
 /// and the attributes set.
 fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
     let colour = |c: Color| match c {
-        Color::Idx(n) => Some(Json::Number(i64::from(n))),
+        Color::Idx(n) => Some(Json::int(n)),
         Color::Rgb(Rgb { r, g, b }) => Some(Json::str(format!("#{r:02x}{g:02x}{b:02x}"))),
         // A kind of colour fux-vt does not know yet is told as the default.
         Color::Default | _ => None,

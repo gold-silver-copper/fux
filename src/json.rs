@@ -21,6 +21,11 @@ impl<'a> Json<'a> {
         Json::String(text.into())
     }
 
+    /// A whole number; one past `i64` is `i64::MAX`.
+    pub fn int(n: impl TryInto<i64>) -> Json<'a> {
+        Json::Number(n.try_into().unwrap_or(i64::MAX))
+    }
+
     pub fn render(&self) -> String {
         let mut out = String::new();
         self.write(&mut out);
