@@ -251,7 +251,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
 | `pane opts split`, `opts new-tab`, `opts new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane opts respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane opts … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (60) |
+| `pane opts … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
 | `pane keys … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
 | `pane opts … capture` | the pane's text, trimmed; `N history`, `all-history`, `joined`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
@@ -326,7 +326,10 @@ str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 | Setting | Value | Default |
 | --- | --- | --- |
 | `shell` | a program and its arguments | `$SHELL`, else `/bin/sh` |
-| `history-lines` | lines per pane, 0 to 250,000; a change applies to every pane | 10000 |
+| `history-bytes` | bytes of each pane's history, how far copy mode scrolls and `history capture` reads; past it, the oldest rows go; 0 to 1 GiB; a change applies to every pane | 8388608 (8 MiB) |
+| `wait-seconds` | how long an action, a capture or a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
+| `journal-bytes` | bytes of each pane's journal, 1 MiB to 2 GiB: everything it printed, in order, which waits and events read; past it, the oldest goes and a wait says text may have passed unseen | 33554432 (32 MiB) |
+| `journal-total` | bytes of all panes' journals together, 1 MiB to 2 GiB; past it, the largest lets its oldest go first, below `journal-bytes` if need be | 536870912 (512 MiB) |
 | `clipboard` | `on` or `off`: copies, fux's and programs', reach your terminal's clipboard | `on` |
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |

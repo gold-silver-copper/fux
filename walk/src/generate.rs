@@ -378,7 +378,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             .pick(&[
                 "str clipboard str off set",
                 "str clipboard str on set",
-                "str history-lines 100 set",
+                "str history-bytes 100000 set",
                 "str buffers 4 set",
             ])
             .copied()

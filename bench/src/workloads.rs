@@ -49,8 +49,8 @@ const KEYS: usize = 1 << 20;
 const KEYSTROKES: usize = 20_000;
 /// Keys encoded, over and over to this many.
 const STROKES: usize = 1 << 20;
-/// What fux keeps of a pane's history by default.
-const HISTORY: usize = 10_000;
+/// The bytes of a pane's history fux keeps by default.
+const HISTORY: usize = 8 << 20;
 /// The kitty flags fux pushes on a client's terminal (`outer`):
 /// disambiguate and alternate keys.
 const KITTY_CLIENT: u8 = 5;
@@ -352,7 +352,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 /// nothing: the run is the server's whole work for the keys.
 fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
     let config = fux::config::Config {
-        history_lines: HISTORY,
+        history_bytes: HISTORY,
         ..fux::config::Config::default()
     };
     let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
@@ -423,7 +423,7 @@ fn paint(
     total: usize,
 ) -> Result<Done, String> {
     let config = fux::config::Config {
-        history_lines: HISTORY,
+        history_bytes: HISTORY,
         ..fux::config::Config::default()
     };
     let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);

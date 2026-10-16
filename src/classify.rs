@@ -77,6 +77,9 @@ pub struct Classes {
     /// The text typed on the line since a key last submitted one: all an
     /// echo of an edit can show.
     line: String,
+    /// The text the last echo was of, shared by every run it may be the
+    /// echo of: one copy, however many runs a line editor draws.
+    shared: Option<std::sync::Arc<str>>,
 }
 
 impl Classes {
@@ -181,23 +184,26 @@ impl Classes {
     /// read, what was typed. An echo shows only what was typed: a text
     /// that is no part of it is output wherever it shows.
     pub fn echo(
-        &self,
+        &mut self,
         origin: Origin,
         print: &fux_vt::Print<'_>,
         line: impl FnOnce() -> fux_vt::RowId,
         reads: bool,
     ) -> Echo {
-        let ahead = || {
-            let ahead = self.ahead_text.concat();
+        let ahead = |classes: &mut Classes| {
+            if classes.ahead_text.is_empty() {
+                return Echo::Not;
+            }
+            let ahead = classes.ahead_text.concat();
             let drawn = reads && !ahead.trim().is_empty() && !print.text.trim().is_empty();
             match drawn {
-                true => Echo::Of(ahead.into()),
+                true => Echo::Of(classes.share(ahead)),
                 false => Echo::Not,
             }
         };
         match origin {
             Origin::Output { by: Source::Screen } => Echo::Not,
-            Origin::Output { .. } => ahead(),
+            Origin::Output { .. } => ahead(self),
             Origin::Echo { .. } => Echo::Is,
             // A shell fux marks draws the line it reads: all of it echo.
             Origin::Edited {
@@ -207,7 +213,18 @@ impl Classes {
             } if typed == Some(line()) => Echo::Is,
             // Wherever it lands (another line printed above the line typed
             // moves it down), an echo shows only what was typed.
-            Origin::Edited { .. } => Echo::Of(self.line.as_str().into()),
+            Origin::Edited { .. } => {
+                let line = self.line.clone();
+                Echo::Of(self.share(line))
+            }
+        }
+    }
+
+    /// `text`, as the last echo shared it if it is the same.
+    fn share(&mut self, text: String) -> std::sync::Arc<str> {
+        match &self.shared {
+            Some(shared) if **shared == *text => shared.clone(),
+            Some(_) | None => self.shared.insert(text.into()).clone(),
         }
     }
 

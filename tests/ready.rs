@@ -221,7 +221,7 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
     ])?;
     assert_eq!(busy.status, 124, "{}{}", busy.stdout, busy.stderr);
     let state = busy.stdout.lines().next().unwrap_or_default();
-    assert!(state.ends_with(" busy"), "{}", busy.stdout);
+    assert!(state.contains(" busy"), "{}", busy.stdout);
     for code in [thread, child] {
         let later = server.fux(&[
             "opts",

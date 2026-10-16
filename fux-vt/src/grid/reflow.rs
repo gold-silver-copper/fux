@@ -9,7 +9,7 @@ impl Grid {
     /// re-wrapped at `cols`, without splitting wide glyphs. The cursor stays
     /// on its character. When there are more rows than fit, blank lines
     /// below the cursor go first, then lines scroll into history, oldest
-    /// dropped first past the history limit; rows below the screen once
+    /// dropped first past its budget; rows below the screen once
     /// the cursor's row is at its top are dropped. The scroll region is
     /// reset, as xterm does on resize. Like `resized`, it builds replacement
     /// storage first, so allocation failure leaves this grid unchanged.
@@ -19,7 +19,7 @@ impl Grid {
     /// reflowed line keeps the identity of the line's k-th row before, if it
     /// had one; every row takes `version`.
     pub fn reflowed(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
-        Self::check_size(size, self.history_limit())?;
+        Self::check_size(size)?;
         let cols = size.cols();
         // The cursor and the saved cursor go with their characters; one
         // waiting to wrap is laid out one past its glyph.
@@ -49,7 +49,6 @@ impl Grid {
             .min(layout.rows.saturating_sub(cursor_row.saturating_add(1)));
         let total = layout.rows.saturating_sub(drop);
         let live_top = total.saturating_sub(screen).min(cursor_row);
-        let base = live_top.saturating_sub(self.history_limit());
         let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
         // A row on the screen, the first if above it, the last if below;
         // one past the last column of the text is the last column, waiting
@@ -82,7 +81,7 @@ impl Grid {
         replacement.reserve_screen()?;
         let mut copy = Fill {
             grid: &mut replacement,
-            rows: base..end,
+            rows: 0..end,
             screen: live_top,
             next,
             version,
@@ -621,6 +620,7 @@ impl Reflow for Fill<'_> {
             if !text.is_empty() || links.is_some() {
                 self.grid.history.attach(Some(text.exact()), links);
             }
+            self.grid.history.trim();
         } else {
             let mut meta = Meta::new(id, self.version, wrapped, used);
             meta.prompt = prompt;

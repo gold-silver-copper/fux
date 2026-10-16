@@ -189,7 +189,7 @@ fuzz_target!(|data: &[u8]| {
         .set(Feature::SettingReports, c & 0x40 != 0)
         .set(Feature::RectangleChecksums, c & 0x80 != 0);
     let size = Size::new(1 + u16::from(r % 16), 1 + u16::from(c % 24)).expect("one at least");
-    let Ok(mut whole) = Parser::with_options(size, usize::from(history % 16), options) else {
+    let Ok(mut whole) = Parser::with_options(size, usize::from(history % 16) * 64, options) else {
         return;
     };
     let mut split = whole.clone();

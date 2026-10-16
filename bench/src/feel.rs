@@ -50,6 +50,8 @@ const ROWS: u16 = 40;
 const COLS: u16 = 120;
 /// Rows of history a full pane has.
 const HISTORY: u64 = 10_000;
+/// Bytes for as many full rows in fux: 24 a row, 8 a cell.
+const HISTORY_BYTES: u64 = HISTORY * (24 + 8 * COLS as u64);
 /// How long a pane program may take to be ready, a workload to arrive.
 const READY_WAIT: Duration = Duration::from_secs(30);
 const LOAD_WAIT: Duration = Duration::from_secs(120);
@@ -425,7 +427,7 @@ fn start(
             std::fs::create_dir_all(config_home.join("fux")).map_err(|e| e.to_string())?;
             std::fs::write(
                 &config,
-                format!("str shell str /bin/sh set\nstr history-lines {HISTORY} set\n"),
+                format!("str shell str /bin/sh set\nstr history-bytes {HISTORY_BYTES} set\n"),
             )
             .map_err(|e| e.to_string())?;
             env.push((

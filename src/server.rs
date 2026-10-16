@@ -7,7 +7,7 @@ use crate::id::{ClientId, PaneId};
 use crate::json::Json;
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
-use crate::process::Leader;
+use crate::process::{Leader, Pid};
 use crate::protocol::{
     Attach, AttachedFrame, Decoder, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply, Request,
     Role, ServerFrame,
@@ -35,8 +35,6 @@ const PAINT: Duration = Duration::from_millis(16);
 /// `PAINT`. A program's output in a few bursts, as a screen redrawn is,
 /// shows when it ends; a flood, never quiet so long, keeps to `PAINT`.
 const QUIET: Duration = Duration::from_millis(1);
-/// A client's unsent output may grow to this before paints for it stop.
-const OUTPUT_CAP: usize = 4 << 20;
 /// A pane's read shorter than this, an echo's or a prompt's, is taken for
 /// all it had: the next is left to the poll.
 const SHORT_READ: usize = 512;
@@ -228,10 +226,11 @@ impl Stage {
 struct Attached {
     client: ClientId,
     tty: Option<TakenTerminal>,
-    /// What the client's terminal shows, for diffing, while `screen` is
-    /// `Shown`.
+    /// What the client's terminal shows, for diffing, while `known`.
     shown: Grid,
-    screen: Screen,
+    /// Whether `shown` is what the terminal shows: if not (a new client, a
+    /// resize), the next paint is a full one.
+    known: bool,
     /// The grid the next paint is composed into, then swapped with `shown`:
     /// the two are reused by every paint, as is the placement of its panes.
     spare: Grid,
@@ -240,27 +239,6 @@ struct Attached {
     clock: PaintClock,
     /// The pictures its terminal was last sent, as they show there.
     pictures: Vec<render::Visible>,
-}
-
-/// What is known of what an attached client's terminal shows.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Screen {
-    /// `Attached::shown`: the next paint is a diff against it.
-    Shown,
-    /// Not known: the next paint is a full one.
-    Unknown,
-    /// Not known, and its output was full: nothing is painted until what
-    /// waits is all written, then all of it is.
-    Starved,
-}
-
-impl Screen {
-    /// The terminal was resized: the next paint is a full one.
-    fn forget(&mut self) {
-        if *self == Screen::Shown {
-            *self = Screen::Unknown;
-        }
-    }
 }
 
 /// When a client may be painted next: `PAINT` after its last paint, as a
@@ -354,7 +332,7 @@ impl Attached {
             client,
             tty,
             shown: Grid::new(0, 0),
-            screen: Screen::Unknown,
+            known: false,
             spare: Grid::new(0, 0),
             placement: Placement::default(),
             pictures: Vec::new(),
@@ -399,28 +377,19 @@ impl Conn {
         }
     }
 
-    /// Bytes waiting for the client, in frames or for its terminal.
-    fn pending(&self) -> usize {
-        let tty = if let Stage::Attached(attached) = &self.stage {
-            attached.tty.as_ref().map_or(0, |tty| tty.out.len())
-        } else {
-            0
-        };
-        self.out.len().saturating_add(tty)
-    }
-
-    /// When the client attached here may be painted, if its view changed
-    /// and its terminal is not starved.
+    /// When the client attached here may be painted: if its view changed,
+    /// and once what was sent it before is all written. One frame is in
+    /// flight at most, so a client that reads slowly gets fewer, newer
+    /// frames, and one that stops reading has nothing more queued.
     fn paint_due(&self, session: &Session) -> Option<Instant> {
         let Stage::Attached(attached) = &self.stage else {
             return None;
         };
         let dirty = session.views.get(&attached.client)?.dirty;
+        let sent = self.out.is_empty() && attached.tty.as_ref().is_none_or(|t| t.out.is_empty());
         // A screen not known is painted whole, whether or not the view
         // changed: forgetting it is asking for that paint.
-        let unknown = attached.screen != Screen::Shown;
-        let starved = attached.screen == Screen::Starved && self.pending() != 0;
-        ((dirty || unknown) && !starved).then_some(attached.clock.due)
+        ((dirty || !attached.known) && sent).then_some(attached.clock.due)
     }
 
     /// Whether `client` is attached here.
@@ -842,21 +811,17 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Socket(error) => Some(error),
-            Error::Setup(error) => Some(error),
-            Error::Start(error) => Some(error),
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
 pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let listening = Listening::open(socket)?;
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
+    // Orphans the panes' programs leave stay the server's to read and reap.
+    if let Err(errno) = fuxix::process::adopt_orphans() {
+        log(&format!("adopting orphans: {errno}"));
+    }
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
     let mut session = Session::new(
@@ -1119,7 +1084,7 @@ impl Server {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
             };
-            let (lines, over) = subscription.told(&now);
+            let (lines, over) = subscription.told(&now, &self.session);
             if over {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
                 let status = crate::wait::GONE;
@@ -1329,19 +1294,9 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        let pending = conn.pending();
         let Stage::Attached(attached) = &mut conn.stage else {
             return;
         };
-        if pending > OUTPUT_CAP {
-            // A client that stops reading gets nothing more queued; once it
-            // drains, one full repaint.
-            attached.screen = Screen::Starved;
-            return;
-        }
-        if attached.screen == Screen::Starved {
-            attached.screen = Screen::Unknown;
-        }
         let client = attached.client;
         // The title and bell marks first: the bar shows the marks.
         let before = session.before_paint(client);
@@ -1360,7 +1315,7 @@ impl Server {
         // takes its pixels away; one whose cells this paint paints over, or
         // new, is sent after the text.
         let pictures = render::pictures(session, client, &attached.placement);
-        let known = attached.screen == Screen::Shown;
+        let known = attached.known;
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
             attached.shown.forget_area(gone.area);
         }
@@ -1371,7 +1326,7 @@ impl Server {
                     || !attached.spare.same_in(&attached.shown, p.area)
             })
             .collect();
-        let shown = (attached.screen == Screen::Shown).then_some(&attached.shown);
+        let shown = known.then_some(&attached.shown);
         // The same screen as the client shows: nothing to send, not even
         // the envelope, whose cursor hide and show would restart a blinking
         // cursor.
@@ -1380,7 +1335,7 @@ impl Server {
             render::paint_into(shown, &attached.spare, &mut self.paint_buffer);
             attached.paint(&mut conn.out, &self.paint_buffer);
             std::mem::swap(&mut attached.shown, &mut attached.spare);
-            attached.screen = Screen::Shown;
+            attached.known = true;
             attached.clock.painted(now);
             // Written now rather than when the next poll says it can be: a
             // keystroke's echo goes out a round sooner.
@@ -1756,7 +1711,7 @@ impl Server {
                 // what it shows even if the size it ends at is the same:
                 // forgotten, it is repainted in full either way.
                 Some(AttachedFrame::Resize { rows, cols }) => {
-                    attached.screen.forget();
+                    attached.known = false;
                     session.resize(attached.client, rows.get(), cols.get());
                 }
                 Some(AttachedFrame::Detach) => conn.end(session, &ServerFrame::Exit("detached")),
@@ -1942,9 +1897,17 @@ impl Server {
     }
 
     /// Checks every killed program and every pane's, since signals
-    /// coalesce.
+    /// coalesce, and reaps the orphans the server adopted, every child
+    /// that is no pane's leader.
     fn reap(&mut self) {
         self.reap_killed();
+        let session = &self.session;
+        let panes = session.panes.values().filter_map(|p| p.process.child());
+        let leaders: Vec<Pid> = (panes.chain(session.dying.values().map(|d| &d.child)))
+            .map(|child| child.leader.pid())
+            .chain(self.killed.iter().map(Leader::pid))
+            .collect();
+        fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
         let exited: Vec<(PaneId, crate::process::Ended)> = self
             .session
             .panes
@@ -2056,19 +2019,24 @@ mod tests {
     }
 
     /// A client whose screen is forgotten, as on a resize that ends at the
-    /// same size, is due a full paint though nothing it views changed.
+    /// same size, is due a full paint though nothing it views changed; but
+    /// not while its last frame is still being written.
     #[test]
-    fn a_forgotten_screen_is_due_a_paint() -> Result<(), String> {
+    fn a_forgotten_screen_is_due_a_paint_once_the_last_is_sent() -> Result<(), String> {
         let (mut session, mut conn, _peer, _far) = with_terminal()?;
         session.views.values_mut().for_each(|v| v.dirty = false);
         if let Some(attached) = conn.attached() {
-            attached.screen = Screen::Shown;
+            attached.known = true;
         }
         assert_eq!(conn.paint_due(&session), None, "nothing to paint");
         if let Some(attached) = conn.attached() {
-            attached.screen.forget();
+            attached.known = false;
         }
         assert!(conn.paint_due(&session).is_some());
+        if let Some(tty) = conn.attached().and_then(|a| a.tty.as_mut()) {
+            tty.out.push(b"the last frame");
+        }
+        assert_eq!(conn.paint_due(&session), None, "one frame in flight");
         Ok(())
     }
 

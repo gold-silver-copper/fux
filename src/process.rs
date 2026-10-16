@@ -29,15 +29,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Pty(error) => Some(error),
-            Error::Launcher(error) | Error::Start { source: error, .. } => Some(error),
-            Error::NoProgram => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 /// A pane's program: the leader of a session of its own, started by fux
 /// and not yet reaped. Unreaped, its pid is its group's and its session's
@@ -138,15 +130,23 @@ impl Leader {
     /// Signals its process group and every other process in its session.
     /// A background job started by dash sits in its own group, out of reach
     /// of the group signal, but stays in the session (bevy-final finding
-    /// 013).
+    /// 013). The session is looked for in the server's own tree, which
+    /// keeps the orphans its panes leave (`fuxix::process::tree`).
     pub fn hang_up(&self) {
+        // Found before any signal: once the group's leader dies, its
+        // children are on their way to this process, in no one's list.
+        let session = self.session();
         let _ = fuxix::process::kill_group(self.0, Signal::Hup);
-        // Checked just before each signal: a process that left is skipped.
-        for pid in fuxix::process::processes() {
-            if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
-                let _ = fuxix::process::kill(pid, Signal::Hup);
-            }
+        for pid in session {
+            let _ = fuxix::process::kill(pid, Signal::Hup);
         }
+    }
+
+    /// The other processes in its session, in the server's tree.
+    fn session(&self) -> Vec<Pid> {
+        (fuxix::process::tree().into_iter())
+            .filter(|pid| *pid != self.0 && fuxix::process::session(*pid) == Some(self.0))
+            .collect()
     }
 
     /// Ends its group and the rest of its session and reaps it, without
@@ -154,17 +154,14 @@ impl Leader {
     /// itself back if it has not exited yet, to try again once it has.
     /// Called after `hang_up` and a grace period, with the master closed.
     pub fn finish(self) -> Result<(), Leader> {
-        let _ = fuxix::process::kill_group(self.0, Signal::Kill);
         // Its pane closed by fux: as the hangup, every process left in its
         // session, a job in a group of its own that ignored the hangup
-        // (`nohup cmd &`) too. A program that ended by itself leaves those
-        // it meant to (`nohup job & exit`).
-        if self.1 {
-            for pid in fuxix::process::processes() {
-                if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
-                    let _ = fuxix::process::kill(pid, Signal::Kill);
-                }
-            }
+        // (`nohup cmd &`) too, found first. A program that ended by itself
+        // leaves those it meant to (`nohup job & exit`).
+        let session = if self.1 { self.session() } else { Vec::new() };
+        let _ = fuxix::process::kill_group(self.0, Signal::Kill);
+        for pid in session {
+            let _ = fuxix::process::kill(pid, Signal::Kill);
         }
         match fuxix::process::reap(self.0) {
             Ok(None) => Err(self),

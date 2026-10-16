@@ -14,7 +14,7 @@ fux opts str app name str './app --fast' command run    # start: answers %2 read
 fux %2 keys str y text str Enter key send-keys          # type: answers as run does
 fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
-fux %2 opts wait                                        # settle again (60s), what came since your input
+fux %2 opts wait                                        # settle again (30s), what came since your input
 fux %2 opts str 'listening on' wait-text wait           # wait for a text (case ignored)
 fux %2 opts all-history capture                         # read: the screen once settled
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
@@ -39,8 +39,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 %2 exited 3                    the program ended; what it printed since your input follows
 ```
 
-- **Time:** an action or `capture` settles within 10s; a `wait`, or an action given a
-  wait (`wait-text` …), within 60s; `SECS timeout` changes it. `0 timeout` acts and answers
+- **Time:** an action, a `capture` and a `wait` all wait 30s at most (the server's
+  `wait-seconds`); `SECS timeout` changes it for one. `0 timeout` acts and answers
   at once, the state as it is (start many programs so, then one `wait` on their tab or
   workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on.
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
@@ -71,7 +71,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   it reads its command line; a line editor's, drawn where you typed) is no
   output, whatever it reads like. What the program prints in reply is,
   though it repeats your words (`You said: NEEDLE`). A line drawn again to
-  read as it did before your input brings nothing new. **Status 7:** the
+  read as it did before your input brings nothing new, within the first
+  MiB of output after it; past that, in a flood, every line printed is. **Status 7:** the
   terminal's foreground
   program is blocked reading it, and the text has not come (`wait-gone`:
   not gone). This is fux's judgement from what the program is blocked in:
@@ -84,10 +85,9 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   (124), never 7. A read with the terminal's own time
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
   returns alone, so a text wait runs to its limit (124). The answer is the
-  screen (it starts `… earlier lines not kept (past history-lines)` if lines
-  written since were let go, or `… more came than fux keeps for a wait (1
-  MiB): text may have passed unseen`; past that, a wait reads the lines
-  changed since as they read now, and cannot tell an echo there). Status 3: the program exited first.
+  screen (it starts `… earlier lines not kept (past history-bytes)` if lines
+  written since were let go, or `… more came than the pane's journal keeps
+  (journal-bytes): text may have passed unseen`, 32 MiB by default). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
   status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`

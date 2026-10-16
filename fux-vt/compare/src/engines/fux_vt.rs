@@ -78,7 +78,10 @@ fn cell(c: &CellRef<'_>) -> Cell {
 
 pub fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
     let size = crate::vt_size(setup.rows, setup.cols)?;
-    let parser = Parser::with_options(size, setup.history, options(setup.reflow))
+    // Bytes for `setup.history` full rows: 24 a row, 8 a cell.
+    let row = usize::from(setup.cols).saturating_mul(8).saturating_add(24);
+    let history = setup.history.saturating_mul(row);
+    let parser = Parser::with_options(size, history, options(setup.reflow))
         .map_err(|e| format!("fux-vt: {e}"))?;
     Ok(Box::new(Vt {
         parser,

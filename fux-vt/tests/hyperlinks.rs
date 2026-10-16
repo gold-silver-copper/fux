@@ -120,10 +120,11 @@ fn wide_glyphs_blanks_and_marks() -> Result {
 /// Links go into history with their rows, and leave with them.
 #[test]
 fn links_scroll_with_their_rows() -> Result {
+    // Two rows of one cell: 24 bytes a row and 8 a cell.
     let p = parser(
         2,
         3,
-        2,
+        2 * 32,
         b"\x1b]8;;one\x07a\x1b]8;;\x07\r\nb\r\n\x1b]8;;two\x07c\r\nd",
     )?;
     let s = p.screen();
@@ -276,7 +277,7 @@ fn links_past_their_limits_are_not_opened() -> Result {
 /// theirs, and the newest still have theirs.
 #[test]
 fn links_are_bounded_and_history_loses_them_first() -> Result {
-    let mut p = Parser::with_options(Size::new(4, 4)?, 4000, LINKS)?;
+    let mut p = Parser::with_options(Size::new(4, 4)?, 4000 * 32, LINKS)?;
     let long: String = std::iter::repeat_n('u', 2000).collect();
     // About 2 KiB each: 3000 are past the 4 MiB a screen holds.
     for n in 0..3000 {

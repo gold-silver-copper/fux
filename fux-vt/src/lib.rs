@@ -306,6 +306,16 @@ impl Prints {
     pub fn len(&self) -> usize {
         self.text.len()
     }
+    /// The bytes it takes on the heap: its text and its runs.
+    pub fn heap(&self) -> usize {
+        let run = std::mem::size_of::<(RowId, std::ops::Range<u16>, std::ops::Range<usize>)>();
+        (self.text.capacity()).saturating_add(self.runs.capacity().saturating_mul(run))
+    }
+    /// Lets go of the room it grew into and does not use: for one kept.
+    pub fn shrink_to_fit(&mut self) {
+        self.text.shrink_to_fit();
+        self.runs.shrink_to_fit();
+    }
     /// Whether nothing was printed.
     pub fn is_empty(&self) -> bool {
         self.runs.is_empty()
@@ -519,10 +529,10 @@ impl<'a> Window<'a> {
     }
 }
 
-/// Whether a screen of `size` keeping `history` rows of history can be
-/// made: the most cells and rows one holds are bounded.
-pub fn fits(size: Size, history: usize) -> bool {
-    grid::Grid::check_size(size, history).is_ok()
+/// Whether a screen of `size` can be made: the most cells one holds are
+/// bounded.
+pub fn fits(size: Size) -> bool {
+    grid::Grid::check_size(size).is_ok()
 }
 
 #[cfg(test)]

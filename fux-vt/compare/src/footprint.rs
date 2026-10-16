@@ -31,10 +31,11 @@
 //!   engine gets the same pieces: as many as fux-vt, keeping 10,000 rows,
 //!   needs to fill its history (found here, before the children run).
 //!
-//! The history limits ([`HISTORY`] rows): fux-vt, alacritty, libvterm (the
-//! shim's history, which keeps each pushed row's cells), avt, wezterm and
-//! vt100 are each made to keep 10,000 rows, so each holds the same
-//! 10,000 rows. Ghostty's limit is in bytes, and prunes whole pages: it is
+//! The history limits ([`HISTORY`] rows): alacritty, libvterm (the shim's
+//! history, which keeps each pushed row's cells), avt, wezterm and vt100
+//! are each made to keep 10,000 rows, so each holds the same 10,000 rows.
+//! fux-vt's limit is in bytes: it is given enough for 10,000 full rows, so
+//! it keeps at least those. Ghostty's limit is in bytes, and prunes whole pages: it is
 //! given [`GHOSTTY_SCROLLBACK`], more than any measure here fills, so it
 //! keeps every row it is fed, a few more than 10,000 where the last piece
 //! pushes several. Each engine's figure per row is divided by the rows it
@@ -84,7 +85,7 @@ const IN_PROCESS: [&str; 7] = [
 const CONFIGURED: [(&str, &str); 7] = [
     (
         "fux-vt",
-        "10,000 rows of history, set up as fux sets up a pane",
+        "history in bytes for 10,000 full rows, set up as fux sets up a pane",
     ),
     (
         "ghostty",

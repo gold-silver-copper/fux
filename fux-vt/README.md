@@ -12,7 +12,7 @@ license is kept in `LICENSE`; the parser and grid are fux-vt's own.
 
 ```rust
 let size = fux_vt::Size::new(24, 80)?; // rows and columns, neither zero
-let mut parser = fux_vt::Parser::new(size, 10_000)?; // and history lines
+let mut parser = fux_vt::Parser::new(size, 8 << 20)?; // and bytes of history
 parser.process_with_replies(b"\x1b[1mhi\x1b[6n", |reply| send_to_program(reply))?;
 let cell = parser.screen().cell(0, 0).unwrap();
 assert_eq!((cell.contents(), cell.bold()), ("h", true));
@@ -239,12 +239,12 @@ row's slot, and history.
 - **Scrolling** the whole screen turns the ring and moves no cells. Each
   row records how far it may differ from blank, so erasing, recycling and
   taking a row into history touch only that far.
-- **History** holds at most `history_lines` rows (0: none). A row scrolled
-  off keeps its cells up to its last that is not a default blank, packed after the rows
-  before it in blocks of 4,096 cells (`history.rs`), with 24 bytes of
-  metadata, its text and links; past them it reads blank, at its original
-  width. History grows as it fills; at its limit, scrolling reuses the
-  blocks the oldest rows leave.
+- **History** holds at most `history_bytes` (0: none): 24 bytes a row, 8 a
+  cell, and its text. A row scrolled off keeps its cells up to its last that
+  is not a default blank, packed after the rows before it in blocks of 4,096
+  cells (`history.rs`), with its text and links; past them it reads blank, at
+  its original width. At its budget, the oldest rows go, and scrolling
+  reuses the blocks they leave.
 - **The alternate screen** has no history, and no cells until first shown;
   RIS and resizes keep an unmade one unmade.
 - **Identity.** Every row has a `RowId`, kept through edits and scrolling
@@ -253,8 +253,9 @@ row's slot, and history.
   changes its cells, links or soft wrap, and nothing else: erasing blanks,
   or rewriting a glyph as it was, keeps it; ICH and DCH always change it.
 - **Limits.** A `Size` has no zero to refuse: `Size::new` refuses one.
-  A screen whose rows plus history limit pass 1,048,576 rows or 64 Mi cells
-  is refused (`Error::Capacity`); text budgets and link bounds cover the rest.
+  A screen of more than 64 Mi cells is refused (`Error::Capacity`); history
+  keeps at most 1,048,576 rows and 64 Mi cells, whatever its budget; text
+  budgets and link bounds cover the rest.
   Arithmetic is checked. After an error the terminal stays usable: input
   already applied may stay, and a partial scroll still forces a refresh.
 - **Resize** builds the new grids first, so a failure changes nothing and

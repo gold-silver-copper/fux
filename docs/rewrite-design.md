@@ -222,8 +222,10 @@ Process lifecycle, from the lessons:
   (`exit`, Ctrl-D) or something kills it, never merely because a command
   run in it ended.
 - **Close:** SIGHUP to the leader's group and to every process in its session.
-  The session is found through `/proc` on Linux and `proc_listallpids` on macOS
-  (013), so a job started by dash survives only if it ignores the hangup, as
+  The session is looked for in the server's own process tree on Linux, where
+  the server adopts the orphans its panes leave (`PR_SET_CHILD_SUBREAPER`) and
+  reaps them, and among every process (`proc_listallpids`) on macOS, which has
+  no subreaper (013), so a job started by dash survives only if it ignores the hangup, as
   under a real terminal. Then a 100 ms timer on the loop, never a sleep, closes
   the master, SIGKILLs the group and reaps the leader. Only IDs of unreaped
   children are ever signalled: the leader stays unreaped until then, so its
@@ -356,12 +358,11 @@ Per client, on a 16 ms coalescing tick:
    plus separators and the bottom bar (workspace, tabs, focused pane, notice).
    Overlays are drawn on top.
 2. Diff it against the client's last grid, and emit only the changed runs,
-   wrapped in synchronized output (`?2026`). Cursor position and shape come
-   from the focused pane.
-3. If a client's socket stops draining, stop queueing paints for it. Each
-   client's output buffer is capped at 4 MiB. Once it drains again, send one
-   full repaint. A slow client never grows the server and never stalls the
-   loop.
+   wrapped in synchronized output (`?2026`). The cursor and the focused pane's
+   modes (`render::Modes`: mouse, cursor shape) are diffed the same way.
+3. One frame in flight per client: the next is composed only once the last
+   is written out. A slow client gets fewer, newer frames, never a backlog,
+   and never grows the server or stalls the loop.
 
 Pane titles (OSC 0/2) are shown in the bar; with `set titles on`, the outer
 terminal's title follows the focused pane's. A pane's bell rings the outer

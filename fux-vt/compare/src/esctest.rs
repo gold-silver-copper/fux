@@ -667,7 +667,7 @@ fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Resul
     let mut answer: Box<Answer<'_>> = match subject {
         Subject::FuxVt => {
             let mut parser =
-                fux_vt::Parser::with_options(crate::vt_size(ROWS, COLS)?, 10_000, options())
+                fux_vt::Parser::with_options(crate::vt_size(ROWS, COLS)?, 8 << 20, options())
                     .map_err(|e| format!("fux-vt: {e}"))?;
             Box::new(move |bytes| {
                 Ok(parse(&mut parser, bytes, |s: &mut Replies| {

@@ -4,7 +4,7 @@
 use super::{Ask, Fux, Host, Keys, Local, MouseEvent, Opts, Then, Waits};
 use crate::command::{
     AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize, Pick,
-    Resized, Sibling, Subject, SwapWith, Until, WAIT_TIMEOUT, Wait, WsRef,
+    Resized, Sibling, Subject, SwapWith, Until, Wait, WsRef,
 };
 use crate::id::WsId;
 use crate::keys::Direction;
@@ -89,7 +89,7 @@ pub const WORDS: &[Word] = &[
     word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
     word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
     word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most: an action or capture settles within 10, a wait or an action given a wait 60; 0 answers at once"),
+    word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once"),
     word("Waiting", "wait", 2, "x opts -- answer", "wait for the pane to settle, or as the options say, in a pane, or each pane of a tab or workspace"),
     // Input
     word("Input", "keys", 0, "-- keys", "empty input, for send-keys"),
@@ -182,7 +182,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "servers", 0, "-- listing", "the servers that answer in fux's directory"),
     word("Server", "kill-server", 0, "-- ", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", 0, "-- ", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", 2, "setting value -- ", "shell history-lines clipboard buffers bell titles shell-marks update-environment"),
+    word("Server", "set", 2, "setting value -- ", "shell history-bytes wait-seconds journal-bytes journal-total clipboard buffers bell titles shell-marks update-environment"),
     word("Server", "grant", 2, "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", 1, "socket -- ", "close a grant's socket"),
     word("Server", "version", 0, "-- text", "this fux's version"),
@@ -452,7 +452,7 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
     let instead = match *option {
         "json" => format!("json goes after it: {word} json"),
         "wait-text" | "wait-gone" | "wait-exit" | "wait-bell" if word == "capture" => {
-            "it reads once the pane settles (within timeout, 10s if not said); \
+            "it reads once the pane settles (within timeout, wait-seconds if not said); \
              to wait for something first: PANE opts … wait, then PANE opts capture"
                 .to_owned()
         }
@@ -528,25 +528,22 @@ fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failu
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
 
-/// How long an action waits for its pane to settle when it names nothing.
-pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// The wait an action makes, armed before it when `after`: what it names;
 /// or, from a command line (`settle`), for each pane to settle.
 fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
     let named = !waits.until.is_empty();
-    (named || settle).then(|| Box::new(waited(waits, after, SETTLE_TIMEOUT)))
+    (named || settle).then(|| Box::new(waited(waits, after)))
 }
 
 /// The wait the `wait` word makes, with a wait's time either way: on a
 /// tab or workspace, for each of its panes.
 fn own_wait(waits: &Waits) -> Wait {
-    waited(waits, false, WAIT_TIMEOUT)
+    waited(waits, false)
 }
 
-/// A wait for what `waits` names, else for the pane to settle (within
-/// `settle`, unless it says), said with what came.
-fn waited(waits: &Waits, after: bool, settle: Duration) -> Wait {
+/// A wait for what `waits` names, else for the pane to settle, said with
+/// what came.
+fn waited(waits: &Waits, after: bool) -> Wait {
     let settles = waits.until.is_empty();
     Wait {
         until: if settles {
@@ -554,7 +551,7 @@ fn waited(waits: &Waits, after: bool, settle: Duration) -> Wait {
         } else {
             waits.until.clone()
         },
-        timeout: (waits.timeout).unwrap_or(if settles { settle } else { WAIT_TIMEOUT }),
+        timeout: waits.timeout,
         print: waits.print || settles,
         after,
         marks: waits.marks,
@@ -1187,9 +1184,7 @@ impl fuxth::Host for Host<'_> {
                     Then::Answer("a capture")
                 };
                 // From a command line, read once the pane settles.
-                let settle = self
-                    .settle
-                    .then(|| built.waits.timeout.unwrap_or(SETTLE_TIMEOUT));
+                let settle = self.settle.then_some(built.waits.timeout);
                 later(ask(
                     Command::CapturePane {
                         target: Some(p),
@@ -1918,22 +1913,19 @@ mod tests {
         assert_eq!(send, Some(0..=1), "an outcome only with a wait");
     }
 
-    /// `wait` has a wait's time, settling or not; an action settles within
-    /// its own.
+    /// A wait and an action's wait leave how long to the server
+    /// (`wait-seconds`), unless they say: one deadline for both.
     #[test]
-    fn a_wait_of_its_own_has_a_waits_time() {
+    fn waits_leave_their_limit_to_the_server() {
         let settle = own_wait(&Waits::default());
-        assert_eq!(
-            (settle.until, settle.timeout),
-            (vec![Until::Settled], WAIT_TIMEOUT)
-        );
-        let text = Waits {
-            until: vec![Until::Text("x".into())],
+        assert_eq!((settle.until, settle.timeout), (vec![Until::Settled], None));
+        let action = wait(&Waits::default(), true, true).map(|w| w.timeout);
+        assert_eq!(action, Some(None));
+        let said = Waits {
+            timeout: Some(Duration::from_secs(5)),
             ..Waits::default()
         };
-        assert_eq!(own_wait(&text).timeout, WAIT_TIMEOUT);
-        let action = wait(&Waits::default(), true, true).map(|w| w.timeout);
-        assert_eq!(action, Some(SETTLE_TIMEOUT));
+        assert_eq!(own_wait(&said).limit(), Duration::from_secs(5));
     }
 
     /// An answer in a list is its object; one of several panes, an array of

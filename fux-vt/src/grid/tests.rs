@@ -21,7 +21,7 @@ fn heap(grid: &Grid) -> [usize; 4] {
 #[test]
 fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> Result<(), Error> {
     let mut next = 0;
-    let mut primary = Grid::new(Size::of(24, 80), 10_000, &mut next, 0)?;
+    let mut primary = Grid::new(Size::of(24, 80), 10_000 * 24, &mut next, 0)?;
     let alternate = Grid::new(Size::of(24, 80), 0, &mut next, 0)?;
     let initial_primary = heap(&primary);
     let initial_alternate = heap(&alternate);
@@ -202,7 +202,9 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         .with(crate::Feature::Hyperlinks)
         .with(crate::Feature::PromptMarks);
     let (rows, cols) = (r.small(7).saturating_add(1), r.small(12).saturating_add(1));
-    let mut p = crate::Parser::with_options(Size::of(rows, cols), r.below(30), options)?;
+    // Up to 30 rows of history, at 64 bytes a row.
+    let history = r.below(30).saturating_mul(64);
+    let mut p = crate::Parser::with_options(Size::of(rows, cols), history, options)?;
     for _ in 0..r.below(80) {
         match r.below(16) {
             0 => p.resize(Size::of(
@@ -279,7 +281,7 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
             m.used = cols;
         }
     }
-    if grid.history_limit() > 0 && r.chance(50) {
+    if grid.history_bytes() > 0 && r.chance(50) {
         let mut next = max_id(&grid).saturating_add(1);
         let (lines, rows) = (grid.size.lines(), grid.size.rows());
         grid.scroll(lines, r.small(rows), UP, 0, &mut next, 999)?;

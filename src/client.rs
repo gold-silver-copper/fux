@@ -26,14 +26,13 @@ use std::time::{Duration, Instant};
 /// Modes the attach client sets on the outer terminal: the alternate
 /// screen, normal cursor and keypad keys, bracketed paste, focus events, no
 /// autowrap; and it saves the terminal's title (xterm's title stack,
-/// `outer::TITLE_PUSH`), which fux may set. Mouse reporting is the server's to turn on and off in its
-/// paints, while a program asks for it (`render::mouse_level`). Public for fux-vt-compare's
-/// `transparency`, which writes it to its terminal as this client does.
+/// `outer::TITLE_PUSH`), which fux may set. The pane's modes are the server's
+/// to set (`render::Modes`). Public for fux-vt-compare's `transparency`.
 pub const ENTER: &str =
     "\x1b[22;0t\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
 /// And turns them off again, the title saved restored
 /// (`outer::TITLE_POP`), with what the server may have turned on in
-/// its paints: mouse reporting (`render::MOUSE_OFF`), colour-scheme
+/// its paints: the pane's modes (`render::Modes`), colour-scheme
 /// reports (mode 2031, `outer`), and the kitty
 /// keyboard flags it pushed, popped on the alternate screen they were
 /// pushed on, as the kitty spec says to leave. The client sends this
@@ -132,34 +131,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Socket(error) => Some(error),
-            Error::Protocol(error) => Some(error),
-            Error::Mismatch(mismatch) => Some(mismatch),
-            Error::Connect { source: error, .. }
-            | Error::Write(error)
-            | Error::Read(error)
-            | Error::Exe(error)
-            | Error::Log(error)
-            | Error::Spawn(error)
-            | Error::Signals(error)
-            | Error::WriteTerminal(error) => Some(error),
-            Error::Modes(errno)
-            | Error::RawMode(errno)
-            | Error::Poll(errno)
-            | Error::ReadTerminal(errno) => Some(errno),
-            Error::Refused(_)
-            | Error::NoAnswer
-            | Error::Timeout
-            | Error::Closed
-            | Error::Exited { .. }
-            | Error::NotStarted { .. }
-            | Error::NotATerminal => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 impl From<crate::socket::Error> for Error {
     fn from(error: crate::socket::Error) -> Error {

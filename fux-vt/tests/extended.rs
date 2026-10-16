@@ -638,7 +638,7 @@ fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
     // more history back above it: the rows land where a resize without
     // reflow puts them.
     for options in [REFLOW, Options::new()] {
-        let mut p = Parser::with_options(Size::new(2, 1)?, 3, options)?;
+        let mut p = Parser::with_options(Size::new(2, 1)?, 1 << 10, options)?;
         p.process(b"b9m\n\n\x1b[?1049l")?;
         p.resize(Size::new(4, 1)?)?;
         assert_eq!(lines(&p), ["9", "m", "", ""]);
@@ -661,7 +661,7 @@ fn reflow_to_one_column_leaves_wide_glyphs_out() -> Result {
 }
 
 #[test]
-fn reflow_resets_the_scroll_region_and_keeps_the_history_limit() -> Result {
+fn reflow_resets_the_scroll_region_and_keeps_the_history_budget() -> Result {
     let mut p = Parser::with_options(Size::new(10, 20)?, 0, REFLOW)?;
     p.process(b"\x1b[2;5r")?;
     p.resize(Size::new(10, 21)?)?;
@@ -670,7 +670,8 @@ fn reflow_resets_the_scroll_region_and_keeps_the_history_limit() -> Result {
     assert_eq!(lines(&p).get(8).map(String::as_str), Some("last"));
     assert_eq!(lines(&p).get(9).map(String::as_str), Some("after"));
 
-    let mut p = Parser::with_options(Size::new(2, 10)?, 3, REFLOW)?;
+    // Three rows of two cells: 24 bytes a row and 8 a cell.
+    let mut p = Parser::with_options(Size::new(2, 10)?, 3 * 40, REFLOW)?;
     p.process(b"0123456789\r\n0123456789\r\nabcdefghij\r\nend")?;
     p.resize(Size::new(2, 2)?)?;
     // Seventeen rows: the last two on screen and three of history, the
@@ -759,33 +760,28 @@ fn a_string_ended_by_st_leaves_nothing_unhandled() -> Result {
     Ok(())
 }
 
-/// The history limit changes on a live parser: lowered, the oldest rows go
-/// at once and readers read every row again; raised, rows gather again.
+/// The history budget changes on a live parser: lowered, the oldest rows
+/// go at once and readers read every row again; raised, rows gather again.
+/// A row of two cells holds 40 bytes: its 24-byte record and its cells.
 #[test]
-fn the_history_limit_changes_on_a_live_parser() -> Result {
-    let mut p = Parser::new(Size::new(2, 10)?, 100)?;
-    for n in 0..50 {
+fn the_history_budget_changes_on_a_live_parser() -> Result {
+    let mut p = Parser::new(Size::new(2, 10)?, 1 << 20)?;
+    for n in 10..60 {
         p.process(format!("{n}\r\n").as_bytes())?;
     }
     assert_eq!(p.screen().history_len(), 49);
     let mark = p.screen().mark();
-    p.set_history_lines(3)?;
+    p.set_history_bytes(3 * 40);
     assert!(p.screen().full_refresh_since(mark));
-    assert_eq!(window_lines(&p, 3), ["46", "47"], "the newest rows stay");
+    assert_eq!(window_lines(&p, 3), ["56", "57"], "the newest rows stay");
     assert_eq!(p.screen().history_len(), 3);
     p.process(b"x\r\ny\r\n")?;
-    assert_eq!(p.screen().history_len(), 3, "the limit holds");
-    p.set_history_lines(0)?;
+    assert_eq!(p.screen().history_len(), 3, "the budget holds");
+    p.set_history_bytes(0);
     assert_eq!(p.screen().history_len(), 0);
-    p.set_history_lines(10)?;
+    p.set_history_bytes(1 << 10);
     p.process(b"a\r\nb\r\n")?;
     assert_eq!(p.screen().history_len(), 2);
-    assert!(p.set_history_lines(usize::MAX).is_err());
-    assert_eq!(
-        p.screen().history_len(),
-        2,
-        "a refused limit changes nothing"
-    );
     Ok(())
 }
 

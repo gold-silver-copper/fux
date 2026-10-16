@@ -1,5 +1,5 @@
 //! A grid's history: the rows scrolled off the top of its screen, oldest
-//! first, at most a limit of them.
+//! first, as many as fit its budget of bytes.
 //!
 //! A row is kept as the cells it uses: those before its last cell that is
 //! not blank in the default attributes, which is all most rows need of
@@ -14,15 +14,15 @@
 //! A row scrolled off is the commonest thing a terminal does, so taking it
 //! in is a few loads and stores, its cells going after the newest block's;
 //! whatever else (a block to start or leave, text, links) is out of line.
-//! The grid keeps the count: the history lets its oldest row go when told
-//! (`pop`).
+//! The grid trims it to its budget of bytes once a row is in (`trim`): each
+//! row's record (`Kept`), the cells it keeps and its text count.
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasherDefault;
 use std::ops::Range;
 
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
-use crate::grid::SlotHasher;
+use crate::grid::{MAX_CELLS, MAX_ROWS, SlotHasher};
 use crate::link::RowLinks;
 use crate::{Error, RowId};
 
@@ -166,35 +166,57 @@ pub(crate) struct History {
     linked: ByRow<RowLinks>,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
-    /// The most rows the grid keeps, which `rows` grows no larger than
-    /// for long: the grid lets the oldest go once the newest is in.
-    limit: usize,
-    /// The newest version of a row let go past the limit.
+    /// The bytes of the rows' text.
+    text: usize,
+    /// The most bytes the rows hold (`bytes`) once trimmed.
+    budget: usize,
+    /// The newest version of a row let go past the budget.
     pub(crate) let_go: u64,
 }
 
 impl History {
-    pub(crate) fn new(limit: usize) -> Self {
+    pub(crate) fn new(budget: usize) -> Self {
         Self {
-            limit,
-            let_go: 0,
+            budget,
             ..Self::default()
         }
     }
     pub(crate) fn len(&self) -> usize {
         self.rows.len()
     }
-    pub(crate) fn limit(&self) -> usize {
-        self.limit
+    pub(crate) fn budget(&self) -> usize {
+        self.budget
     }
-    /// Keeps at most `limit` rows from now on, letting the oldest go at
-    /// once if it holds more.
-    pub(crate) fn set_limit(&mut self, limit: usize) {
-        self.limit = limit;
-        while self.rows.len() > limit {
+    /// The bytes the rows hold: each one's record, its cells and its text.
+    pub(crate) fn bytes(&self) -> usize {
+        (self.rows.len().saturating_mul(std::mem::size_of::<Kept>()))
+            .saturating_add(self.cells.saturating_mul(std::mem::size_of::<Compact>()))
+            .saturating_add(self.text)
+    }
+    /// The most rows the budget holds, and one more, as a row comes in
+    /// before the oldest goes.
+    fn most_rows(&self) -> usize {
+        (self.budget.checked_div(std::mem::size_of::<Kept>()))
+            .unwrap_or(0)
+            .min(MAX_ROWS)
+            .saturating_add(1)
+    }
+    /// Lets the oldest rows go while they hold more than the budget, or
+    /// more rows or cells than a grid may (`grid::MAX_ROWS`, `MAX_CELLS`).
+    #[inline]
+    pub(crate) fn trim(&mut self) {
+        while !self.rows.is_empty()
+            && (self.bytes() > self.budget || self.rows.len() > MAX_ROWS || self.cells > MAX_CELLS)
+        {
             self.pop();
         }
-        self.rows.shrink_to(limit.saturating_add(1));
+    }
+    /// Holds at most `budget` bytes from now on, letting the oldest rows
+    /// go at once if it holds more.
+    pub(crate) fn set_budget(&mut self, budget: usize) {
+        self.budget = budget;
+        self.trim();
+        self.rows.shrink_to(self.most_rows());
     }
     /// The cells the rows keep.
     pub(crate) fn kept_cells(&self) -> usize {
@@ -304,8 +326,8 @@ impl History {
     }
 
     /// Room for a row of `len` cells, if there is not: a row more in
-    /// `rows`, doubling, up to one past the limit, as a row comes in before
-    /// the oldest goes; and its cells: the newest block grows,
+    /// `rows`, doubling, up to the most the budget holds (`most_rows`);
+    /// and its cells: the newest block grows,
     /// doubling, until it holds a block; else a block to start, the spare
     /// if it holds the row, or a block, or for the first block as much as
     /// its first row needs.
@@ -316,7 +338,7 @@ impl History {
                 .len()
                 .saturating_add(1)
                 .saturating_mul(2)
-                .min(self.limit.max(self.rows.len()).saturating_add(1));
+                .min(self.most_rows().max(self.rows.len().saturating_add(1)));
             self.rows
                 .try_reserve_exact(capacity.saturating_sub(self.rows.len()))
                 .map_err(|_| Error::Capacity)?;
@@ -406,7 +428,7 @@ impl History {
     /// a row goes from a later block than the oldest, the blocks before
     /// that, which no row is in now.
     #[inline]
-    pub(crate) fn pop(&mut self) {
+    fn pop(&mut self) {
         let Some(gone) = self.rows.pop_front() else {
             return;
         };
@@ -441,8 +463,10 @@ impl History {
     #[cold]
     #[inline(never)]
     fn forget(&mut self, number: u64, flags: u8) {
-        if flags & TEXT != 0 {
-            self.texts.remove(&number);
+        if flags & TEXT != 0
+            && let Some(text) = self.texts.remove(&number)
+        {
+            self.text = self.text.saturating_sub(text.bytes());
         }
         if flags & LINKED != 0 {
             self.linked.remove(&number);
@@ -480,6 +504,7 @@ impl History {
             return;
         };
         if let Some(text) = text.filter(|text| !text.is_empty()) {
+            self.text = self.text.saturating_add(text.bytes());
             self.texts.insert(number, text);
             kept.set(TEXT, true);
         }

@@ -22,8 +22,8 @@ fuxth is a small Forth: words run left to right, each taking what the words
 before it left. A number is a value; `%2`, `@2`, `+1` alone are a pane, a tab,
 a workspace; `str WORD` pushes WORD as text, however it looks; any other bare
 word runs. What is left at the end is printed, a value a line. An action
-answers once its pane settles (10s at most; a wait, or an action given a
-wait, 60s; `SECS timeout` changes it, `0 timeout` answers at once). A
+answers once its pane settles (30s at most, as a wait waits: the server's
+`wait-seconds`; `SECS timeout` changes it, `0 timeout` answers at once). A
 failure prints `fux: CODE: MESSAGE` on stderr, with how the word is used
 (one of fux's own); an action's or a wait's status is the exit status (3
 exited first, 4 closed, 7 the program is blocked reading its terminal and
@@ -255,7 +255,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "bind" => "str 'g v' str 'me focused opts horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",
-        "set" => "fux str history-lines 50000 set",
+        "set" => "fux str history-bytes 16777216 set",
         "server" => "fux str test server start opts str ./app program run",
         "headless" => "fux 100 30 headless",
         "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",

@@ -206,22 +206,78 @@ pub fn reap(pid: Pid) -> Result<Option<Status>> {
     }))
 }
 
-/// Every process the system lists.
+/// Makes this process the reaper of its descendants' orphans: a program
+/// whose parent exits (a double fork, a daemon) becomes its child, not
+/// init's, so it stays in its [`tree`], where its system calls may be read,
+/// and this process must reap it ([`reap_orphans`]).
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn processes() -> Vec<Pid> {
-    std::fs::read_dir("/proc")
-        .map(|entries| {
-            entries
-                .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok())
-                .filter_map(Pid::from_raw)
-                .collect()
-        })
-        .unwrap_or_default()
+pub fn adopt_orphans() -> Result<()> {
+    // SAFETY: prctl with PR_SET_CHILD_SUBREAPER takes numbers and touches
+    // no memory.
+    check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }).map(drop)
 }
 
-/// Every process the system lists.
+/// Reaps every child of this process that has exited and that `kept` does
+/// not keep: the orphans it adopted ([`adopt_orphans`]). Its own children
+/// are kept, for whoever waits for them.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
+    for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
+        let _ = reap(pid);
+    }
+}
+
+/// macOS has no reaper of orphans but launchd: none are adopted.
 #[cfg(target_os = "macos")]
-pub fn processes() -> Vec<Pid> {
+pub fn adopt_orphans() -> Result<()> {
+    Ok(())
+}
+
+/// macOS: none were adopted ([`adopt_orphans`]), so none are reaped.
+#[cfg(target_os = "macos")]
+pub fn reap_orphans(_kept: impl Fn(Pid) -> bool) {}
+
+/// The processes this one started, those they started in turn, and the
+/// orphans it adopted ([`adopt_orphans`]); not itself. A runaway tree is
+/// cut short past 4,096.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn tree() -> Vec<Pid> {
+    below("self")
+}
+
+/// The processes under `root` (or `self`), by each one's threads'
+/// children: a runaway tree is cut short past 4,096.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn below(root: impl fmt::Display) -> Vec<Pid> {
+    let mut found = children(root);
+    let mut next = 0;
+    while let Some(pid) = found.get(next).copied()
+        && found.len() <= 4096
+    {
+        next = next.saturating_add(1);
+        found.extend(children(pid));
+    }
+    found
+}
+
+/// The children of `pid` (or `self`), by each of its threads'.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn children(pid: impl fmt::Display) -> Vec<Pid> {
+    let tasks = std::fs::read_dir(format!("/proc/{pid}/task"));
+    (tasks.into_iter().flatten().filter_map(|t| t.ok()))
+        .flat_map(|task| std::fs::read_to_string(task.path().join("children")))
+        .flat_map(|children| {
+            (children.split_whitespace())
+                .filter_map(|c| Pid::from_raw(c.parse().ok()?))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// macOS has no reaper of orphans but launchd: an orphan leaves this
+/// process's tree, so every process the system lists is taken to be in it.
+#[cfg(target_os = "macos")]
+pub fn tree() -> Vec<Pid> {
     // SAFETY: a null buffer asks only for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     // Room for processes started between the two calls.
@@ -438,19 +494,6 @@ mod tests {
         Ok(())
     }
 
-    /// Every process's session can be asked for, kernel threads included,
-    /// whose session is 0 (CI run 36031171126, under rustix's getsid).
-    #[test]
-    fn every_process_session_can_be_read() {
-        let pids = processes();
-        assert!(!pids.is_empty());
-        let own = Pid::from_raw(i32::try_from(std::process::id()).unwrap_or(0));
-        assert!(own.and_then(session).is_some());
-        for pid in pids {
-            let _ = session(pid);
-        }
-    }
-
     #[test]
     fn a_process_has_a_cwd() {
         let own = Pid::from_raw(i32::try_from(std::process::id()).unwrap_or(0));
@@ -519,8 +562,7 @@ pub enum Activity {
 /// fux is built: [`Host`].
 pub trait Probe {
     /// What the programs in foreground group `group` of the terminal at
-    /// `tty` do; `leader` is the first program the terminal started, whose
-    /// descendants are looked through first.
+    /// `tty` do: among `leader`'s own, else among this process's [`tree`].
     fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity;
     /// Whether process `pid` itself is blocked reading the terminal at
     /// `tty`.
@@ -796,7 +838,7 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
 /// do: busy if one is; else reading if one waits for the terminal, polling
 /// if one polls it, waiting if they wait on something else.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn activity(group: Pid, tty: &std::path::Path, root: Pid) -> Activity {
+fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
     let in_group = |pid: &Pid| {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
@@ -804,16 +846,17 @@ fn activity(group: Pid, tty: &std::path::Path, root: Pid) -> Activity {
                 == Some(group.as_raw())
         })
     };
-    // The group's processes among `root`'s own (a few files read), else
-    // among all (one that left its parent: a few hundred).
-    let mut members: Vec<Pid> = descendants(root).into_iter().filter(in_group).collect();
-    if members.is_empty() {
-        let all = processes();
-        if all.is_empty() {
-            return Activity::Unknown;
-        }
-        members = all.into_iter().filter(in_group).collect();
-    }
+    // The leader's own, and the orphans of the group this process adopted
+    // (`adopt_orphans`), its children beside the panes' leaders, with
+    // theirs: a few files read, not the whole tree.
+    let adopted = children("self")
+        .into_iter()
+        .filter(|p| *p != leader && in_group(p));
+    let roots: Vec<Pid> = std::iter::once(leader).chain(adopted).collect();
+    let members: Vec<Pid> = (roots.iter())
+        .flat_map(|root| std::iter::once(*root).chain(below(*root)))
+        .filter(in_group)
+        .collect();
     let seen: Vec<Activity> = (members.into_iter())
         .filter_map(|p| process_activity(p, tty))
         .collect();
@@ -831,33 +874,6 @@ fn activity(group: Pid, tty: &std::path::Path, root: Pid) -> Activity {
     .into_iter()
     .find(|a| seen.contains(a))
     .unwrap_or(Activity::Unknown)
-}
-
-/// `root` and the processes under it, by each thread's children.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn descendants(root: Pid) -> Vec<Pid> {
-    let mut found = vec![root];
-    let mut next = 0;
-    while let Some(pid) = found.get(next).copied() {
-        next = next.saturating_add(1);
-        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-            continue;
-        };
-        for task in tasks.filter_map(|t| t.ok()) {
-            let children =
-                std::fs::read_to_string(task.path().join("children")).unwrap_or_default();
-            found.extend(
-                (children.split_whitespace())
-                    .filter_map(|c| c.parse::<i32>().ok())
-                    .filter_map(Pid::from_raw),
-            );
-        }
-        // A runaway tree is cut short: the full scan is the fallback.
-        if found.len() > 4096 {
-            break;
-        }
-    }
-    found
 }
 
 /// Whether process `pid` itself is blocked reading the terminal at `tty`.

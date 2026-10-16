@@ -868,7 +868,7 @@ mod tests {
 
     fn screen(text: &[u8], rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
         let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
-        let mut parser = fux_vt::Parser::new(size, 100).map_err(|e| e.to_string())?;
+        let mut parser = fux_vt::Parser::new(size, 1 << 16).map_err(|e| e.to_string())?;
         parser.process(text).map_err(|e| e.to_string())?;
         Ok(parser)
     }
@@ -1079,7 +1079,7 @@ mod tests {
             .flatten()
             .copied()
             .collect();
-        let mut parser = fux_vt::Parser::new(fux_vt::Size::new(10, 100)?, 3000)?;
+        let mut parser = fux_vt::Parser::new(fux_vt::Size::new(10, 100)?, 1 << 20)?;
         parser.process(&lines)?;
         let s = parser.screen();
         let last = s.rows().next_back().ok_or("no rows")?;

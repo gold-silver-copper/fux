@@ -55,11 +55,12 @@ fn a_row_keeps_the_cells_before_its_blank_tail() {
 
 /// Rows of every length, none, one, many, and longer than a block, read
 /// back as they came, in order, through block after block, as the oldest
-/// go; and the cells counted are those the rows keep.
+/// go past the budget; and the bytes counted are those the rows keep: 24
+/// a row, 8 a cell.
 #[test]
 fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
-    let limit = 40;
-    let mut history = History::new(limit);
+    let budget = 64 << 10;
+    let mut history = History::new(budget);
     let mut expected = std::collections::VecDeque::new();
     for id in 0..3000u64 {
         // Rows end anywhere in a block, now and then one longer than a
@@ -82,8 +83,8 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
             width,
             cells,
         ));
-        if history.len() > limit {
-            history.pop();
+        history.trim();
+        while expected.len() > history.len() {
             expected.pop_front();
         }
         assert_eq!(
@@ -93,6 +94,8 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
         );
         let kept: usize = expected.iter().map(|row| row.5.len()).sum();
         assert_eq!(history.kept_cells(), kept);
+        assert_eq!(history.bytes(), expected.len() * 24 + kept * 8);
+        assert!(history.bytes() <= budget);
     }
     let last = history.len().saturating_sub(1);
     assert_eq!(history.position(RowId(2999)), Some(last));
@@ -101,19 +104,16 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
 }
 
 /// Blocks the rows have left are let go, but for the spare: the history's
-/// memory stops growing once it holds as many rows as its limit.
+/// memory stops growing once it holds as much as its budget.
 #[test]
-fn memory_stops_growing_at_the_limit() -> Result<(), Error> {
-    let limit = 500;
-    let mut history = History::new(limit);
+fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
+    let mut history = History::new(256 << 10);
     let mut most = 0;
     for round in 0..4 {
         for id in 0..2000u64 {
             let cells = row(usize::try_from(id % 120).unwrap_or(0), b'a', 0);
             history.push(arriving(id, &cells, 120))?;
-            if history.len() > limit {
-                history.pop();
-            }
+            history.trim();
         }
         if round == 0 {
             most = history.heap();

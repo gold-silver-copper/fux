@@ -50,7 +50,7 @@ fn text_controls_cursor_and_pending_wrap() -> Result {
 #[test]
 fn tiny_grids_wrap_and_drop_wide_glyphs_without_underflow() -> Result {
     for (rows, cols) in [(1, 1), (1, 2), (1, 8), (8, 1)] {
-        let mut p = Parser::new(Size::new(rows, cols)?, 2)?;
+        let mut p = Parser::new(Size::new(rows, cols)?, 1 << 10)?;
         p.process("界".as_bytes())?;
         if cols == 1 {
             assert_eq!(p.screen().cursor_position(), (0, 0));
@@ -138,7 +138,8 @@ fn sgr_defaults_resets_and_colour_parameter_forms() -> Result {
 
 #[test]
 fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
-    let mut p = Parser::new(Size::new(3, 8)?, 2)?;
+    // Two rows of up to five cells, not three: 24 bytes a row, 8 a cell.
+    let mut p = Parser::new(Size::new(3, 8)?, 2 * 64)?;
     p.process(b"one\r\ntwo\r\nthree")?;
     let id = p.screen().window().row(0).ok_or(Error::InvalidRange)?.id();
     let mark = p.screen().mark();
@@ -176,7 +177,7 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
 
 #[test]
 fn copying_widened_history_joins_original_row_extents_without_padding() -> Result {
-    let mut p = Parser::new(Size::new(2, 5)?, 2)?;
+    let mut p = Parser::new(Size::new(2, 5)?, 1 << 10)?;
     p.process(b"abcdefgh\r\nlast")?;
     assert_eq!(p.screen().history_len(), 1);
     p.resize(Size::new(2, 10)?)?;
@@ -244,11 +245,7 @@ fn height_only_resize_clears_live_wrap_metadata() -> Result {
 
 #[test]
 fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
-    assert_eq!(
-        Parser::new(Size::new(1, 1)?, usize::MAX).err(),
-        Some(Error::Capacity)
-    );
-    let mut p = Parser::new(Size::new(3, 5)?, 2)?;
+    let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;
     p.process(b"abcde\r\nfghij\r\nklmno\r\npqrst")?;
     let mark = p.screen().mark();
     assert_eq!(

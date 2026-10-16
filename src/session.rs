@@ -238,8 +238,8 @@ pub enum Error {
         row: u16,
         col: u16,
     },
-    /// A size no pane can have, with this much history.
-    TooBig(fux_vt::Size, usize),
+    /// A size no pane can have.
+    TooBig(fux_vt::Size),
     /// A size a tab's panes cannot all have.
     TooSmall(TabId, usize),
     /// A name several tabs have, and no workspace.
@@ -477,12 +477,9 @@ impl std::fmt::Display for Error {
                 f,
                 "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
             ),
-            Error::TooBig(size, history) => write!(
-                f,
-                "{}x{} is too big for a pane keeping {history} lines of history",
-                size.cols(),
-                size.rows()
-            ),
+            Error::TooBig(size) => {
+                write!(f, "{}x{} is too big for a pane", size.cols(), size.rows())
+            }
             Error::TooSmall(tab, panes) => write!(
                 f,
                 "{tab} cannot show its {panes} panes at that size; close some, or choose a bigger one"
@@ -556,79 +553,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Usage(error) => Some(error),
-            Error::Words(error) => Some(error),
-            Error::Pane(error) => Some(error),
-            Error::Process(error) => Some(error),
-            Error::Signal(error) => Some(error),
-            Error::Config(error) | Error::Reload(error) => Some(error),
-            Error::NoWorkspace(_)
-            | Error::NoWorkspaceNamed(_)
-            | Error::NoPaneGiven
-            | Error::NoPane(_)
-            | Error::NoTabGiven
-            | Error::NoTab(_)
-            | Error::NoWorkspaceGiven
-            | Error::StrayPane(_)
-            | Error::NoField { .. }
-            | Error::NotNamed(_)
-            | Error::Revoked
-            | Error::IdTaken(_)
-            | Error::IdKind(_)
-            | Error::IdTooHigh(_)
-            | Error::LayoutLine(..)
-            | Error::LayoutFile(..)
-            | Error::OutOfScope { .. }
-            | Error::NotGranted { .. }
-            | Error::OwnServer(_)
-            | Error::PeopleAttached(_)
-            | Error::KillNeedsTarget(_)
-            | Error::NoClientGiven
-            | Error::NoClient(_)
-            | Error::NoWorkspaces
-            | Error::NoBuffer(_)
-            | Error::NoConfigFile
-            | Error::NoLastPane
-            | Error::NoPaneToCopy
-            | Error::TabEmpty
-            | Error::OnlyOne(_)
-            | Error::AtEnd(_)
-            | Error::NoBorder { .. }
-            | Error::NoNeighbor { .. }
-            | Error::OnlyShell(_)
-            | Error::Exited { .. }
-            | Error::NoMouse(_)
-            | Error::NoMotion(_)
-            | Error::OnlyPresses(_)
-            | Error::MouseUnencodable { .. }
-            | Error::OutsidePane { .. }
-            | Error::NoRoom(_)
-            | Error::Named(_)
-            | Error::TooSmall(..)
-            | Error::TooBig(..)
-            | Error::CannotResize { .. }
-            | Error::WaitsOnlyFromCli
-            | Error::NotHeadless(_)
-            | Error::NotADirectory(_)
-            | Error::Log(..)
-            | Error::NotRun(_)
-            | Error::StillRunning(_)
-            | Error::NoRows
-            | Error::SelectionTooLarge
-            | Error::EmptyName
-            | Error::ControlInName
-            | Error::LongName
-            | Error::NameTaken(_)
-            | Error::TabNameTaken(..)
-            | Error::NameReadAsTarget(_)
-            | Error::IdsExhausted(_)
-            | Error::LineTooLong => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 impl From<crate::words::Error> for Error {
     fn from(error: crate::words::Error) -> Error {
@@ -734,6 +659,8 @@ pub struct Session {
     made: Vec<AnyRef<WsId>>,
     /// The field the command under way read (`ls --get`), for its reply.
     value: Option<crate::protocol::Scalar>,
+    /// A reading's JSON, made from the same read as its text.
+    json: Option<String>,
     /// How the panes the command under way starts start.
     starting: Starting,
     /// A restore is under way (`Session::restore`): ids come back as they
@@ -976,50 +903,6 @@ pub fn json_failure(mut outcome: Outcome, code: Option<&str>) -> Outcome {
     outcome
 }
 
-/// A reading given as text (`capture`, `ls`, `info`, `capture-client`),
-/// asked as JSON.
-fn json_form(command: &Command) -> Option<Command> {
-    if let Command::Ls {
-        json: false,
-        target,
-        get: None,
-    } = command
-    {
-        return Some(Command::Ls {
-            json: true,
-            target: target.clone(),
-            get: None,
-        });
-    }
-    if let &Command::CapturePane {
-        target,
-        history,
-        view,
-        json: false,
-        ..
-    } = command
-    {
-        return Some(Command::CapturePane {
-            target,
-            history,
-            view,
-            json: true,
-            settle: None,
-        });
-    }
-    if let &Command::Client {
-        client,
-        action: ClientAction::Capture { json: false },
-    } = command
-    {
-        return Some(Command::Client {
-            client,
-            action: ClientAction::Capture { json: true },
-        });
-    }
-    None
-}
-
 /// A command that needed its caller's pane, tab or workspace, from a caller
 /// whose `FUX_PANE` is another server's pane: why it got none.
 fn stray(error: Error, origin: &Origin) -> Error {
@@ -1069,6 +952,7 @@ impl Session {
             last_error: None,
             made: Vec::new(),
             value: None,
+            json: None,
             starting: Starting::default(),
             restoring: false,
             grants: Vec::new(),
@@ -1224,7 +1108,7 @@ impl Session {
             None => None,
         };
         let (child, nonce) = child.unzip();
-        let history = self.config.history_lines;
+        let history = self.config.history_bytes;
         let Some(pane) = self.panes.get_mut(&id) else {
             return Err(Error::NoPane(id));
         };
@@ -2144,13 +2028,32 @@ impl Session {
         true
     }
 
-    /// The settings changed: every pane keeps the history they say. A pane
-    /// whose history cannot be that long at its size keeps its own, as a
-    /// new pane of that size would fail.
+    /// The settings changed: every pane keeps the history they say.
     fn configured(&mut self) {
-        let lines = self.config.history_lines;
         for pane in self.panes.values_mut() {
-            let _ = pane.parser.set_history_lines(lines);
+            pane.parser.set_history_bytes(self.config.history_bytes);
+            pane.record.set_budget(self.config.journal_bytes);
+        }
+        self.keep_journals();
+    }
+
+    /// All panes' journals together keep at most `journal-total` bytes:
+    /// the largest lets its oldest entries go first.
+    fn keep_journals(&mut self) {
+        let total = self.config.journal_total;
+        let mut held: usize = self.panes.values().map(|p| p.record.held()).sum();
+        while held > total {
+            let Some(largest) = self.panes.values_mut().max_by_key(|p| p.record.held()) else {
+                break;
+            };
+            let had = largest.record.held();
+            largest
+                .record
+                .keep(had.saturating_sub(held.saturating_sub(total)));
+            held = held.saturating_sub(had.saturating_sub(largest.record.held()));
+            if largest.record.held() == had {
+                break;
+            }
         }
     }
 
@@ -2396,6 +2299,7 @@ impl Session {
         read(pane);
         pane.note_change(Instant::now());
         let dropped = pane.input.lost_reply();
+        self.keep_journals();
         self.read_into(id, place, dropped);
     }
 
@@ -2539,50 +2443,12 @@ impl Session {
                     Err(error) => return self.failed(error, origin),
                 };
                 let now = Instant::now();
-                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
                 waiting.capture = Some((history, view, json));
                 return match waiting.answer(self, now) {
                     Some(outcome) => Begun::Done(outcome),
                     None => Begun::Waiting(Box::new(waiting)),
                 };
-            }
-            command @ (Command::Ls { .. }
-            | Command::KillServer { .. }
-            | Command::NewWorkspace { .. }
-            | Command::NewTab { .. }
-            | Command::Split { .. }
-            | Command::Run { .. }
-            | Command::Respawn { .. }
-            | Command::Notify { .. }
-            | Command::Resize { .. }
-            | Command::SendMouse { .. }
-            | Command::KillPane { .. }
-            | Command::Signal { .. }
-            | Command::KillTab { .. }
-            | Command::KillWorkspace { .. }
-            | Command::Rename { .. }
-            | Command::MovePane { .. }
-            | Command::SwapPane { .. }
-            | Command::ResizePane { .. }
-            | Command::SendKeys { .. }
-            | Command::DumpLayout { .. }
-            | Command::Grant { .. }
-            | Command::Log { .. }
-            | Command::ClearHistory { .. }
-            | Command::CapturePane { .. }
-            | Command::Reorder { .. }
-            | Command::Set { .. }
-            | Command::Resolve { .. }
-            | Command::ListBuffers
-            | Command::ShowBuffer { .. }
-            | Command::PasteBuffer { .. }
-            | Command::Client { .. })
-                if command.acting_wait().is_some() =>
-            {
-                let Some((targets, wait)) = command.acting_wait() else {
-                    return Begun::Done(self.run_command(&command, origin));
-                };
-                (targets, wait, Some(command))
             }
             // Started, then waited for from its first output on.
             mut command @ (Command::Run { then: Some(_), .. }
@@ -2623,7 +2489,10 @@ impl Session {
             | Command::ListBuffers
             | Command::ShowBuffer { .. }
             | Command::PasteBuffer { .. }
-            | Command::Client { .. }) => return Begun::Done(self.run_command(&command, origin)),
+            | Command::Client { .. }) => match command.acting_wait() {
+                Some((targets, wait)) => (targets, wait, Some(command)),
+                None => return Begun::Done(self.run_command(&command, origin)),
+            },
         };
         let here = match self.here(origin) {
             Ok(here) => here,
@@ -2640,7 +2509,7 @@ impl Session {
         let now = Instant::now();
         // Armed before any keys go in: what the keys bring is what it sees.
         let mut waiting = match panes {
-            Ok(panes) => crate::wait::Waiting::new(&panes, wait, now),
+            Ok(panes) => crate::wait::Waiting::new(&panes, wait, now, self.config.wait()),
             Err(error) => return self.failed(error, origin),
         };
         match keys {
@@ -2667,91 +2536,29 @@ impl Session {
         if scope.is_empty() {
             return Err(Error::Revoked);
         }
+        // With no target, one that would act anywhere acts on the granted
+        // workspace.
+        let mut command = command;
         let place = || Some(WsRef::Name(scope.to_owned()));
-        let command = match command {
-            Command::Run {
-                workspace: None,
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                json,
-                log,
-                ids,
-                then,
-            } => Command::Run {
-                workspace: place(),
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                json,
-                log,
-                ids,
-                then,
-            },
-            Command::NewTab {
-                target: None,
-                name,
-                cmd,
-                size,
-                cwd,
-                env,
-                ids,
-                json,
-            } => Command::NewTab {
-                target: place(),
-                name,
-                cmd,
-                size,
-                cwd,
-                env,
-                ids,
-                json,
-            },
-            Command::Events { targets, json } if targets.is_empty() => Command::Events {
-                targets: vec![AnyRef::Workspace(WsRef::Name(scope.to_owned()))],
-                json,
-            },
-            Command::DumpLayout { target: None } => Command::DumpLayout {
-                target: Some(AnyRef::Workspace(WsRef::Name(scope.to_owned()))),
-            },
-            other @ (Command::Ls { .. }
-            | Command::KillServer { .. }
-            | Command::NewWorkspace { .. }
-            | Command::NewTab { .. }
-            | Command::Split { .. }
-            | Command::Run { .. }
-            | Command::Respawn { .. }
-            | Command::Notify { .. }
-            | Command::Resize { .. }
-            | Command::Wait { .. }
-            | Command::SendMouse { .. }
-            | Command::KillPane { .. }
-            | Command::Signal { .. }
-            | Command::KillTab { .. }
-            | Command::KillWorkspace { .. }
-            | Command::Rename { .. }
-            | Command::MovePane { .. }
-            | Command::SwapPane { .. }
-            | Command::ResizePane { .. }
-            | Command::SendKeys { .. }
-            | Command::Events { .. }
-            | Command::DumpLayout { .. }
-            | Command::Grant { .. }
-            | Command::Log { .. }
-            | Command::ClearHistory { .. }
-            | Command::CapturePane { .. }
-            | Command::Reorder { .. }
-            | Command::Set { .. }
-            | Command::Resolve { .. }
-            | Command::ListBuffers
-            | Command::ShowBuffer { .. }
-            | Command::PasteBuffer { .. }
-            | Command::Client { .. }) => other,
-        };
+        let whole = || Some(AnyRef::Workspace(WsRef::Name(scope.to_owned())));
+        if let Command::Run {
+            workspace: at @ None,
+            ..
+        }
+        | Command::NewTab {
+            target: at @ None, ..
+        } = &mut command
+        {
+            *at = place();
+        }
+        if let Command::DumpLayout { target: at @ None } = &mut command {
+            *at = whole();
+        }
+        if let Command::Events { targets, .. } = &mut command
+            && targets.is_empty()
+        {
+            targets.extend(whole());
+        }
         let reach = Reach {
             session: self,
             ws: self.resolve_ws(&WsRef::Name(scope.to_owned())).ok(),
@@ -2791,7 +2598,7 @@ impl Session {
             return Begun::Done(outcome);
         };
         let now = Instant::now();
-        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
         waiting.lead = outcome.stdout;
         waiting.made = outcome.ids;
         waiting.fresh = true;
@@ -2805,15 +2612,16 @@ impl Session {
     pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Outcome {
         self.made.clear();
         self.value = None;
+        self.json = None;
         let executed = self.execute(command, origin);
         let ids = std::mem::take(&mut self.made);
-        // A reading given as text keeps its JSON, read at the same moment:
+        // A reading given as text keeps its JSON, made from the same read:
         // `json` converts what was read, never a later read.
-        let json = match (&executed, json_form(command)) {
-            (Ok(_), Some(form)) => self.execute(&form, origin).unwrap_or_default(),
-            (Ok(_) | Err(_), _) => String::new(),
-        };
-        self.made.clear();
+        let json = self
+            .json
+            .take()
+            .filter(|_| executed.is_ok())
+            .unwrap_or_default();
         self.ids.unwant();
         let outcome = match executed {
             Ok(stdout) => Outcome {
@@ -2843,6 +2651,8 @@ impl Session {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
         }
+        // Input and resizes grow journals too.
+        self.keep_journals();
         self.settle();
         outcome
     }
@@ -2867,10 +2677,21 @@ impl Session {
                 match target {
                     Some(target) => {
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
+                        if !*json && get.is_none() {
+                            self.json = self.ls_one(target, true, None).ok();
+                        }
                         self.ls_one(target, *json, get.as_deref())
                     }
-                    None if *json => Ok(self.ls_json(scope)),
-                    None => Ok(self.ls_text(scope.map(AnyRef::Workspace))),
+                    None => {
+                        let all = self.ls_json(scope);
+                        match json {
+                            true => Ok(all),
+                            false => {
+                                self.json = Some(all);
+                                Ok(self.ls_text(scope.map(AnyRef::Workspace)))
+                            }
+                        }
+                    }
                 }
             }
             &Command::KillServer { force } => {
@@ -3067,12 +2888,11 @@ impl Session {
             Command::Resize { what, size } => {
                 match what {
                     Resized::Tabs(target) => {
-                        // A size no pane could have, with the history kept,
-                        // is refused, not left unmet.
+                        // A size no pane could have is refused, not left unmet.
                         if let Some(size) = size
-                            && !fux_vt::fits(*size, self.config.history_lines)
+                            && !fux_vt::fits(*size)
                         {
-                            return Err(Error::TooBig(*size, self.config.history_lines));
+                            return Err(Error::TooBig(*size));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
@@ -3393,7 +3213,10 @@ impl Session {
             } => {
                 let pane = self.pane(target, here)?;
                 let copying = self.copying(pane.id);
-                Ok(crate::capture::pane(pane, history, view, json, copying))
+                let read = |json| crate::capture::pane(pane, history, view, json, copying);
+                let (text, form) = (read(json), (!json).then(|| read(true)));
+                self.json = form;
+                Ok(text)
             }
             &Command::Reorder {
                 ref subject,
@@ -3501,6 +3324,7 @@ impl Session {
             ClientAction::Capture { json } => {
                 let mut grid = crate::render::Grid::new(0, 0);
                 crate::render::compose_view(self, view, &mut grid, &mut Placement::default());
+                self.json = (!json).then(|| crate::capture::client(view.id, &grid, true));
                 Ok(crate::capture::client(view.id, &grid, json))
             }
             ClientAction::Zoom => {
@@ -4124,7 +3948,8 @@ fn new_pane(
         .first()
         .map(|c| basename(c))
         .unwrap_or_else(|| basename(&shell_program));
-    let mut pane = Pane::new(id, name, runs, size, config.history_lines)?;
+    let mut pane = Pane::new(id, name, runs, size, config.history_bytes)?;
+    pane.record.set_budget(config.journal_bytes);
     // A program brought back by a restore waits for `respawn`.
     let paused = fresh.paused && matches!(start, Start::Program(..));
     if let Some(launcher) = launch.filter(|_| !paused) {
@@ -4287,7 +4112,7 @@ pub(crate) mod testing {
             let outcome = match session.begin(request.command.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
                 super::Begun::Waiting(mut waiting) => {
-                    let later = crate::after(std::time::Instant::now(), waiting.wait.timeout);
+                    let later = crate::after(std::time::Instant::now(), waiting.wait.limit());
                     waiting.answer(session, later).unwrap_or_default()
                 }
                 super::Begun::Events(_) => {
@@ -4407,47 +4232,17 @@ pub(crate) mod testing {
                 request: &crate::protocol::Request,
                 out: &mut dyn std::io::Write,
             ) -> Result<crate::protocol::Reply, crate::script::Failed> {
-                match &request.command {
-                    crate::command::Command::Resolve { .. } => self.0.ask(request, out),
-                    crate::command::Command::Client { action, .. } => {
-                        self.1.push(action.clone().here());
-                        Ok(crate::protocol::Reply::default())
-                    }
-                    other @ (crate::command::Command::Ls { .. }
-                    | crate::command::Command::KillServer { .. }
-                    | crate::command::Command::NewWorkspace { .. }
-                    | crate::command::Command::NewTab { .. }
-                    | crate::command::Command::Split { .. }
-                    | crate::command::Command::Run { .. }
-                    | crate::command::Command::Respawn { .. }
-                    | crate::command::Command::Notify { .. }
-                    | crate::command::Command::Resize { .. }
-                    | crate::command::Command::Wait { .. }
-                    | crate::command::Command::SendMouse { .. }
-                    | crate::command::Command::KillPane { .. }
-                    | crate::command::Command::Signal { .. }
-                    | crate::command::Command::KillTab { .. }
-                    | crate::command::Command::KillWorkspace { .. }
-                    | crate::command::Command::Rename { .. }
-                    | crate::command::Command::MovePane { .. }
-                    | crate::command::Command::SwapPane { .. }
-                    | crate::command::Command::ResizePane { .. }
-                    | crate::command::Command::SendKeys { .. }
-                    | crate::command::Command::Events { .. }
-                    | crate::command::Command::DumpLayout { .. }
-                    | crate::command::Command::Grant { .. }
-                    | crate::command::Command::Log { .. }
-                    | crate::command::Command::ClearHistory { .. }
-                    | crate::command::Command::CapturePane { .. }
-                    | crate::command::Command::Reorder { .. }
-                    | crate::command::Command::Set { .. }
-                    | crate::command::Command::ListBuffers
-                    | crate::command::Command::ShowBuffer { .. }
-                    | crate::command::Command::PasteBuffer { .. }) => {
-                        self.1.push(other.clone());
-                        Ok(crate::protocol::Reply::default())
-                    }
+                let command = &request.command;
+                if let crate::command::Command::Resolve { .. } = command {
+                    return self.0.ask(request, out);
                 }
+                let recorded = if let crate::command::Command::Client { action, .. } = command {
+                    action.clone().here()
+                } else {
+                    command.clone()
+                };
+                self.1.push(recorded);
+                Ok(crate::protocol::Reply::default())
             }
         }
         let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
@@ -4628,10 +4423,10 @@ mod tests {
     use super::testing::{attached, output, requests, run, started};
     use super::*;
 
-    /// `set history-lines` changes every pane's history, not only the next
+    /// `set history-bytes` changes every pane's history, not only the next
     /// pane's.
     #[test]
-    fn set_history_lines_applies_to_panes_there_are() -> Result<(), String> {
+    fn set_history_bytes_applies_to_panes_there_are() -> Result<(), String> {
         let (mut s, _) = attached(5, 20)?;
         s.output(
             PaneId::of(1),
@@ -4645,7 +4440,8 @@ mod tests {
                 .map(|p| p.screen().history_len())
         };
         assert!(history(&s) > Some(2));
-        run(&mut s, "str history-lines 2 set")?;
+        // Two rows of four cells: 24 bytes a row and 8 a cell.
+        run(&mut s, "str history-bytes 112 set")?;
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
@@ -4896,8 +4692,9 @@ mod tests {
     /// follows it ends copy mode when they go.
     #[test]
     fn output_that_drops_a_copy_modes_rows_ends_it() -> Result<(), Box<dyn std::error::Error>> {
+        // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started(Config {
-            history_lines: 2,
+            history_bytes: 2 * 32,
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
@@ -4924,8 +4721,9 @@ mod tests {
     #[test]
     fn copy_mode_ends_when_sizing_its_pane_drops_its_rows() -> Result<(), Box<dyn std::error::Error>>
     {
+        // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started(Config {
-            history_lines: 2,
+            history_bytes: 2 * 32,
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
@@ -5000,7 +4798,7 @@ mod tests {
             ("str %1 pane str left move-beside", "no pane left of %1".to_owned()),
             (
                 "str nope 1 set",
-                r#"no setting "nope"; the settings are shell, history-lines, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
+                r#"no setting "nope"; the settings are shell, history-bytes, wait-seconds, journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
             ),
             ("opts str '' name new-workspace", "a name cannot be empty or blank".to_owned()),
             (

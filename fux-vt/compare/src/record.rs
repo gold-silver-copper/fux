@@ -380,9 +380,12 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
     let (start, steps) = steps(&text)?;
     // As fux's panes are set up.
     let options = fux::pane::OPTIONS;
-    let parser =
-        fux_vt::Parser::with_options(crate::vt_size(request.rows, request.cols)?, 10_000, options)
-            .map_err(|e| format!("fux-vt: {e}"))?;
+    let parser = fux_vt::Parser::with_options(
+        crate::vt_size(request.rows, request.cols)?,
+        8 << 20,
+        options,
+    )
+    .map_err(|e| format!("fux-vt: {e}"))?;
     let (master, mut child) = spawn(request)?;
     let mut session = Session {
         master,

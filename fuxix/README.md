@@ -46,7 +46,8 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
 | `process::reap` | `waitpid(WNOHANG)` | the same | for a pid, not a `Child` |
-| `process::processes` | `/proc` | `proc_listallpids` | not offered |
+| `process::adopt_orphans`, `reap_orphans` | `prctl(PR_SET_CHILD_SUBREAPER)`; `waitpid(WNOHANG)` on each child in `/proc/self/task/*/children` not kept | nothing: macOS has no subreaper, so orphans go to launchd | not offered |
+| `process::tree` | this process's descendants, by `/proc/PID/task/*/children` | every process (`proc_listallpids`), as orphans leave the tree | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `echoes`, `line_mode` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, `ECHO` and `ICANON` in `c_lflag` | the same | not offered |

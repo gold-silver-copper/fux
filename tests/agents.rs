@@ -126,7 +126,7 @@ fn wait_answers_as_the_pane_shows_or_settles() -> Outcome {
         "what came since it started: no keys went in"
     );
     // Where fux is not told the program reads (not Linux), the text is
-    // waited for to the limit, 60s.
+    // waited for to the limit, wait-seconds (30s).
     if PROBED {
         let start = std::time::Instant::now();
         let never = server.fux(&[&p[..], &["str", "never", "wait-text", "wait"]].concat())?;
@@ -563,7 +563,7 @@ fn answers_say_what_the_program_does() -> Outcome {
         (at_work.status, at_work.stdout.as_str()),
         (
             if PROBED { 124 } else { 0 },
-            format!("{pane} {ASLEEP}\nlater\n").as_str()
+            format!("{pane} {}\nlater\n", asleep(&pane)).as_str()
         )
     );
     let since = server.ok(&[&p[..], &["str", "later", "wait-text", "wait"]].concat())?;
@@ -571,7 +571,7 @@ fn answers_say_what_the_program_does() -> Outcome {
     let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
     assert_eq!(
         (now.status, now.stdout.as_str()),
-        (0, format!("{pane} {ASLEEP}\nlater\n").as_str()),
+        (0, format!("{pane} {}\nlater\n", asleep(&pane)).as_str()),
         "what came since the keys"
     );
     assert_eq!(
@@ -1376,7 +1376,7 @@ fn the_rechecks_hold() -> Outcome {
     let status = if PROBED { 124 } else { 0 };
     assert_eq!(at_work.status, status, "{}", at_work.stderr);
     assert!(
-        head(&at_work.stdout).ends_with(&format!(" {ASLEEP}")),
+        head(&at_work.stdout).ends_with(&format!(" {}", asleep("%2"))),
         "{}",
         at_work.stdout
     );
@@ -1798,12 +1798,12 @@ fn a_signal_that_ends_the_program_says_so() -> Outcome {
 }
 
 /// A text wait sees every line written since it began, however fast they
-/// pass: past history's limit between two looks, or off the alternate
+/// pass: past history's budget between two looks, or off the alternate
 /// screen, which keeps none. Of several texts already shown, the one that
 /// came first answers. An answer whose start was let go says so.
 #[test]
 fn a_wait_misses_no_line_however_fast_it_passes() -> Outcome {
-    let server = Server::start("str history-lines 20 set")?;
+    let server = Server::start("str history-bytes 2000 set")?;
     let flood = "import os; os.write(1, b'FIRST_READY\\n' + b'filler\\n' * 5000); input()";
     let first = server.fux(&run(
         &["str", "FIRST_READY", "wait-text"],
@@ -2453,12 +2453,12 @@ fn keys_with_no_enter_are_their_echo() -> Outcome {
     Ok(())
 }
 
-/// A later text wait reads the lines let go past history's limit since
+/// A later text wait reads the lines let go past history's budget since
 /// the input too, as the pane kept them; past what it keeps, it says they
 /// were let go: the text may have come unseen.
 #[test]
 fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
-    let server = Server::start("str history-lines 20 set")?;
+    let server = Server::start("str history-bytes 2000 set  str journal-bytes 1048576 set")?;
     let wait = |pane: &str, text: &str| {
         let args = [
             "str",
@@ -2482,9 +2482,9 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
         "{}",
         found.stderr
     );
-    // Past the text the pane keeps for waits (1 MiB since the input).
-    let flood = "import sys; w = sys.stdout.write\nw(('filler ' * 10 + '\\n') * 20000)\n\
-                 w('LOST_LINE\\n' + 'after\\n' * 100 + 'END\\n'); sys.stdout.flush(); input()";
+    // Past what the pane's journal keeps (`journal-bytes`, 1 MiB here).
+    let flood = "import sys; w = sys.stdout.write\nw('LOST_LINE\\n')\n\
+                 w(('filler ' * 10 + '\\n') * 20000)\nw('END\\n'); sys.stdout.flush(); input()";
     let lost = id(&server.ok(&run(
         &["str", "END", "wait-text"],
         &["python3", "-c", flood],
@@ -2493,7 +2493,7 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
     assert_eq!(out.status, CANNOT_COME, "{}", out.stderr);
     // Told at once, the answer is the screen; at the limit, the error.
     let (said, why) = match PROBED {
-        true => (&out.stdout, "more came than fux keeps"),
+        true => (&out.stdout, "more came than the pane's journal keeps"),
         false => (&out.stderr, "may have come unseen"),
     };
     assert!(said.contains(why), "{}{}", out.stdout, out.stderr);

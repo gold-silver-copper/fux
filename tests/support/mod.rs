@@ -38,6 +38,15 @@ pub const UNCHANGED: &str = if PROBED {
 };
 /// The state of a program asleep, or still at work, once quiet.
 pub const ASLEEP: &str = if PROBED { "busy" } else { "settled" };
+
+/// The state line of pane `pane`'s program asleep, or still at work, once
+/// quiet: busy, with how to wait on.
+pub fn asleep(pane: &str) -> String {
+    match PROBED {
+        true => format!("busy · `{pane} opts wait` waits on"),
+        false => ASLEEP.to_owned(),
+    }
+}
 /// The status of a text wait on a program that reads its terminal, the
 /// text not come: told at once (7), else at the wait's limit (124).
 pub const CANNOT_COME: i32 = if PROBED { 7 } else { 124 };
@@ -174,6 +183,7 @@ impl Server {
                 .env("HOME", &dir)
                 .env("XDG_STATE_HOME", dir.join("state"))
                 .env_remove("FUX_PANE")
+                .env_remove("FUX_SERVER")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(log)
@@ -229,7 +239,8 @@ impl Server {
             .args(args)
             .env("FUX_SOCKET", &self.socket)
             .env("XDG_CONFIG_HOME", self.dir.join("config"))
-            .env_remove("FUX_PANE");
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER");
         for (k, v) in env {
             command.env(k, v);
         }
@@ -301,6 +312,8 @@ impl Drop for Server {
             let _ = Command::new(fux())
                 .args(["force-kill-server"])
                 .env("FUX_SOCKET", &self.socket)
+                .env_remove("FUX_PANE")
+                .env_remove("FUX_SERVER")
                 .output();
             let deadline = after(Duration::from_secs(3));
             while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
@@ -761,7 +774,9 @@ impl Terminal {
         Terminal::start(rows, cols, &argv, |command| {
             command
                 .env("FUX_SOCKET", &server.socket)
-                .env("XDG_CONFIG_HOME", server.dir.join("config"));
+                .env("XDG_CONFIG_HOME", server.dir.join("config"))
+                .env_remove("FUX_PANE")
+                .env_remove("FUX_SERVER");
         })
     }
 
@@ -779,7 +794,10 @@ impl Terminal {
             let _guard = SPAWN.lock().map_err(e)?;
             slave
                 .spawn(Path::new(fux()), argv, |command| {
-                    command.env("TERM", "xterm-256color").env_remove("FUX_PANE");
+                    command
+                        .env("TERM", "xterm-256color")
+                        .env_remove("FUX_PANE")
+                        .env_remove("FUX_SERVER");
                     setup(command);
                 })
                 .map_err(e)?
