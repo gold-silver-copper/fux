@@ -155,10 +155,18 @@ pub enum ListAct {
     Close,
 }
 
-/// What edits a line being typed (the prompt, a copy-mode search), made of
-/// the client's keys.
+/// What a line being typed (the prompt, a copy-mode search) is given, made
+/// of the client's keys: an edit, or Enter (`Submit`) or Esc (`Cancel`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LineAct {
+    Edit(Edit),
+    Submit,
+    Cancel,
+}
+
+/// An edit of a line being typed: text, a move or a deletion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Edit {
     Insert(String),
     Backspace,
     Delete,
@@ -166,8 +174,6 @@ pub enum LineAct {
     Right,
     Home,
     End,
-    Submit,
-    Cancel,
 }
 
 wire_enum!(MouseAction, "mouse action" {

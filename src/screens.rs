@@ -343,7 +343,7 @@ impl Screen {
 
     /// Text pasted while it is open: a line being typed takes it.
     pub fn paste(&mut self, text: &str) -> Vec<Effect> {
-        let insert = LineAct::Insert(text.to_owned());
+        let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
             Screen::Prompt(prompt) => self.prompt(prompt, insert),
             Screen::Copy(Some(search)) => self.copy_search(search, insert),
@@ -407,13 +407,7 @@ impl Screen {
                     .chain(code.map(Effect::Run))
                     .collect()
             }
-            edit @ (LineAct::Insert(_)
-            | LineAct::Backspace
-            | LineAct::Delete
-            | LineAct::Left
-            | LineAct::Right
-            | LineAct::Home
-            | LineAct::End) => {
+            LineAct::Edit(edit) => {
                 prompt.line.edit(&edit);
                 *self = Screen::Prompt(prompt);
                 self.panel()
@@ -465,13 +459,7 @@ impl Screen {
                 query: line.text(),
                 forward,
             },
-            edit @ (LineAct::Insert(_)
-            | LineAct::Backspace
-            | LineAct::Delete
-            | LineAct::Left
-            | LineAct::Right
-            | LineAct::Home
-            | LineAct::End) => {
+            LineAct::Edit(edit) => {
                 line.edit(&edit);
                 let typing = (forward, line.before().to_owned(), line.after().to_owned());
                 *self = Screen::Copy(Some((forward, line)));

@@ -5,7 +5,7 @@
 //!
 //! A binding runs fuxth: its code is compiled and run by the client, fresh,
 //! each time its keys are typed, the client itself its `me`.
-use crate::act::{Act, Column, ColumnEntry, CopyAct, LineAct, ListAct, Panel};
+use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Panel};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use crate::screens::Effect;
 
@@ -823,18 +823,19 @@ pub fn list_act(press: KeyPress) -> Option<ListAct> {
 
 /// A key in a line being typed: a one-line editor.
 pub fn line_act(press: KeyPress) -> Option<LineAct> {
+    let edit = |edit| Some(LineAct::Edit(edit));
     match press.key {
         Key::Escape => Some(LineAct::Cancel),
         Key::Enter => Some(LineAct::Submit),
-        Key::Backspace => Some(LineAct::Backspace),
-        Key::Delete => Some(LineAct::Delete),
-        Key::Arrow(Direction::Left) => Some(LineAct::Left),
-        Key::Arrow(Direction::Right) => Some(LineAct::Right),
-        Key::Home => Some(LineAct::Home),
-        Key::End => Some(LineAct::End),
+        Key::Backspace => edit(Edit::Backspace),
+        Key::Delete => edit(Edit::Delete),
+        Key::Arrow(Direction::Left) => edit(Edit::Left),
+        Key::Arrow(Direction::Right) => edit(Edit::Right),
+        Key::Home => edit(Edit::Home),
+        Key::End => edit(Edit::End),
         // Text: a letter with Ctrl or Alt types nothing.
         Key::Char(c) if !press.mods.ctrl && !press.mods.alt && !c.is_control() => {
-            Some(LineAct::Insert(c.to_string()))
+            edit(Edit::Insert(c.to_string()))
         }
         Key::Char(_)
         | Key::Tab
