@@ -8,7 +8,7 @@
 //! What a screen's entry does is fuxth, run as the client runs a binding.
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
-use crate::id::{PaneId, WsId};
+use crate::id::PaneId;
 use crate::keymap::{PAGE, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::KeyPress;
 use crate::protocol::{End, Reply, Scalar};
@@ -20,14 +20,14 @@ use crate::view::Line;
 /// a chooser's rows) by `Open::build`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Open {
-    Menu(AnyRef<WsId>),
+    Menu(AnyRef),
     /// The tabs of the client's workspace: to show one, or to move a pane to.
     ChooseTab(Option<PaneId>),
     ChooseWorkspace(Option<PaneId>),
     /// The other panes of a pane's tab, to swap it with.
     ChoosePane(PaneId),
-    Rename(AnyRef<WsId>),
-    Confirm(AnyRef<WsId>),
+    Rename(AnyRef),
+    Confirm(AnyRef),
     Prompt,
     Copy,
 }
@@ -41,7 +41,7 @@ pub enum Screen {
     Prompt(Prompt),
     Confirm {
         question: String,
-        about: AnyRef<WsId>,
+        about: AnyRef,
     },
     /// Copy mode, and the search line being typed in it, forward or back.
     Copy(Option<(bool, Line<1024>)>),
@@ -58,7 +58,7 @@ pub struct ListScreen {
     /// renames and `x` closes.
     pub chooser: bool,
     /// What it was opened for: the server closes it if that goes.
-    pub about: Option<AnyRef<WsId>>,
+    pub about: Option<AnyRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,7 +76,7 @@ pub struct Prompt {
     pub title: String,
     pub line: Line,
     /// None: the line is fuxth to run. Some: it is the new name of this.
-    pub rename: Option<AnyRef<WsId>>,
+    pub rename: Option<AnyRef>,
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
@@ -88,12 +88,12 @@ pub enum Effect {
 }
 
 /// The words that push a handle to `target`: `str %3 pane`.
-pub fn naming(target: AnyRef<WsId>) -> String {
+pub fn naming(target: AnyRef) -> String {
     format!("str {} {}", describe(target), target.kind().name())
 }
 
 /// What `target` is, as a title says it: `pane %3`.
-fn about(target: AnyRef<WsId>) -> String {
+fn about(target: AnyRef) -> String {
     format!("{} {}", target.kind().name(), describe(target))
 }
 
@@ -120,10 +120,10 @@ impl Open {
         &self,
         ask: &mut dyn FnMut(Command) -> Result<Reply, Failed>,
     ) -> Result<Screen, Failed> {
-        let mut name = |target: AnyRef<WsId>| -> Result<String, Failed> {
+        let mut name = |target: AnyRef| -> Result<String, Failed> {
             let get = Command::Ls {
                 json: false,
-                target: Some(target.map(crate::command::WsRef::Id)),
+                target: Some(target),
                 get: Some("name".to_owned()),
             };
             let reply = answered(ask(get)?)?;
@@ -182,7 +182,7 @@ fn answered(reply: Reply) -> Result<Reply, Failed> {
 }
 
 /// An action menu for a pane, tab or workspace: what has no default key.
-fn menu(target: AnyRef<WsId>) -> Vec<Item> {
+fn menu(target: AnyRef) -> Vec<Item> {
     let it = naming(target);
     let item = |label: &str, code: String| Item {
         label: label.to_owned(),

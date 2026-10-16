@@ -14,7 +14,7 @@ impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
     /// as a fuxth program; with `ids`, the ids to ask for, as a saved
     /// session keeps them.
-    pub(crate) fn dump_layout(&self, only: Option<AnyRef<WsId>>, ids: bool) -> String {
+    pub(crate) fn dump_layout(&self, only: Option<AnyRef>, ids: bool) -> String {
         let only = match only {
             Some(AnyRef::Pane(pane)) => self.locate(pane).map(|(_, tab)| AnyRef::Tab(tab)),
             other => other,

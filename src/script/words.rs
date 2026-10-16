@@ -6,7 +6,6 @@ use crate::command::{
     AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize, Pick,
     Resized, Sibling, SwapWith, Until, Wait, WsRef,
 };
-use crate::id::WsId;
 use crate::keys::Direction;
 use crate::keys::mouse::MouseButton;
 use crate::layout::Axis;
@@ -388,7 +387,7 @@ fn client(word: &str, value: &Value<Fux>) -> Result<crate::id::ClientId, Failure
 }
 
 /// A pane, tab or workspace.
-fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef<WsId>, Failure> {
+fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef, Failure> {
     if let Some(p) = as_pane(value) {
         Ok(AnyRef::Pane(p))
     } else if let Value::App(Fux::Tab(t)) = value {
@@ -601,7 +600,7 @@ pub fn opens(word: &str) -> bool {
 }
 
 /// The id `text` gives, for `id`.
-fn asked_id(text: &str) -> Result<crate::id::AnyId, Failure> {
+fn asked_id(text: &str) -> Result<crate::command::AnyRef, Failure> {
     let bad = || fail("bad_value", format!("{text:?} is not %N, @N or +N"));
     match text.chars().next() {
         Some('%') => text.parse().map(AnyRef::Pane).map_err(|_| bad()),
@@ -933,7 +932,7 @@ impl fuxth::Host for Host<'_> {
                 with(name, next()?, out, |w| w.until.push(until))
             }
             "wait" => {
-                let p = target(name, &next()?)?.map(WsRef::Id);
+                let p = target(name, &next()?)?;
                 let built = finished(name, next()?)?;
                 // With a wait's time either way: on a tab or workspace, for
                 // each of its panes.
@@ -1040,7 +1039,7 @@ impl fuxth::Host for Host<'_> {
                 } else {
                     let target = target(name, &to)
                         .map_err(|_| wrong(name, "a pane, tab, workspace or client", &to))?;
-                    (vec![target.map(WsRef::Id)], None)
+                    (vec![target], None)
                 };
                 later(ask(
                     Command::SendKeys {
@@ -1148,7 +1147,7 @@ impl fuxth::Host for Host<'_> {
             "ls" | "info" | "get" => {
                 let target = match name {
                     "ls" => None,
-                    _ => Some(target(name, &next()?)?.map(WsRef::Id)),
+                    _ => Some(target(name, &next()?)?),
                 };
                 let (get, then) = match name {
                     "get" => (Some(string(name, &next()?)?), Then::Value),
@@ -1180,7 +1179,7 @@ impl fuxth::Host for Host<'_> {
             },
             "events" | "events-json" | "events-of" | "events-of-json" => {
                 let targets = match name.starts_with("events-of") {
-                    true => vec![target(name, &next()?)?.map(WsRef::Id)],
+                    true => vec![target(name, &next()?)?],
                     false => Vec::new(),
                 };
                 let json = name.ends_with("json");
@@ -1189,16 +1188,16 @@ impl fuxth::Host for Host<'_> {
             "dump" | "dump-of" => {
                 let target = match name {
                     "dump" => None,
-                    _ => Some(target(name, &next()?)?.map(WsRef::Id)),
+                    _ => Some(target(name, &next()?)?),
                 };
                 later(ask(Command::DumpLayout { target }, Then::Text))
             }
             // ---------------------------------------------------- changing
             "kill" => tell(Command::Kill {
-                target: target(name, &next()?)?.map(WsRef::Id),
+                target: target(name, &next()?)?,
             }),
             "rename" | "notify" => {
-                let t = target(name, &next()?)?.map(WsRef::Id);
+                let t = target(name, &next()?)?;
                 let given = text(name, &next()?)?;
                 tell(match name {
                     "rename" => Command::Rename {
@@ -1216,7 +1215,7 @@ impl fuxth::Host for Host<'_> {
                 text: text(name, &next()?)?,
             }),
             "resize" | "resize-auto" => {
-                let what = Resized::Tabs(target(name, &next()?)?.map(WsRef::Id));
+                let what = Resized::Tabs(target(name, &next()?)?);
                 let size = match name {
                     "resize" => Some(laid_out(name, &next()?, &next()?)?),
                     _ => None,
@@ -1321,10 +1320,7 @@ impl fuxth::Host for Host<'_> {
             "reorder" => {
                 let t = target(name, &next()?)?;
                 let toward = sibling(name, &next()?)?;
-                tell(Command::Reorder {
-                    target: t.map(WsRef::Id),
-                    toward,
-                })
+                tell(Command::Reorder { target: t, toward })
             }
             "start-log" | "stop-log" => {
                 let target = pane(name, &next()?)?;

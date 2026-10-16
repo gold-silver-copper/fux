@@ -2,7 +2,7 @@
 //! the session's counters, [`Ids`]; any other is read from what a person
 //! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, and the session looks it up
 //! before acting on it. No code can make one from a number.
-use crate::command::{Kind, Usage};
+use crate::command::{AnyRef, Kind, Usage};
 use crate::session::Error;
 use std::fmt;
 use std::str::FromStr;
@@ -115,11 +115,11 @@ impl Ids {
     /// The next id of its kind is `id`: refused if one as high was ever
     /// given, which would give it twice, unless `again` (a restore, whose
     /// ids these were, and are free).
-    pub(crate) fn want(&mut self, id: AnyId, again: bool) -> Result<(), Error> {
+    pub(crate) fn want(&mut self, id: AnyRef, again: bool) -> Result<(), Error> {
         let (last, wanted, n) = match id {
-            AnyId::Pane(PaneId(n)) => (self.pane, &mut self.wanted.pane, n),
-            AnyId::Tab(TabId(n)) => (self.tab, &mut self.wanted.tab, n),
-            AnyId::Workspace(WsId(n)) => (self.workspace, &mut self.wanted.workspace, n),
+            AnyRef::Pane(PaneId(n)) => (self.pane, &mut self.wanted.pane, n),
+            AnyRef::Tab(TabId(n)) => (self.tab, &mut self.wanted.tab, n),
+            AnyRef::Workspace(WsId(n)) => (self.workspace, &mut self.wanted.workspace, n),
         };
         if n == 0 || (n <= last && !again) {
             return Err(Error::IdTaken(crate::session::describe(id)));
@@ -142,9 +142,6 @@ impl Ids {
 
 /// How far ahead of the last id given an asked-for one may be.
 const MAX_JUMP: u32 = 1 << 16;
-
-/// An id of any kind: what `--id` asks for.
-pub type AnyId = crate::command::AnyRef<WsId>;
 
 fn take(counter: &mut u32, wanted: &mut Option<u32>, what: &'static str) -> Result<u32, Error> {
     if let Some(n) = wanted.take() {

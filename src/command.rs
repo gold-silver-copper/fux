@@ -1,7 +1,7 @@
 //! The requests a client sends the server: typed actions, each built by
 //! fuxth words in a client (`crate::script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
-use crate::id::{AnyId, ClientId, PaneId, TabId, WsId};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -14,13 +14,13 @@ pub enum WsRef {
     Name(String),
 }
 
-/// Any target: `%N`, `@N`, `+N` or a workspace name; once found, a
-/// workspace by its ID (`AnyRef<WsId>`).
+/// Any target: a pane, a tab or a workspace (`%N`, `@N`, `+N`), as a
+/// client's words found it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AnyRef<W = WsRef> {
+pub enum AnyRef {
     Pane(PaneId),
     Tab(TabId),
-    Workspace(W),
+    Workspace(WsId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,20 +30,12 @@ pub enum Kind {
     Workspace,
 }
 
-impl<W> AnyRef<W> {
+impl AnyRef {
     pub fn kind(&self) -> Kind {
         match self {
             AnyRef::Pane(_) => Kind::Pane,
             AnyRef::Tab(_) => Kind::Tab,
             AnyRef::Workspace(_) => Kind::Workspace,
-        }
-    }
-    /// The same target, its workspace as `f` gives it.
-    pub fn map<V>(self, f: impl FnOnce(W) -> V) -> AnyRef<V> {
-        match self {
-            AnyRef::Pane(p) => AnyRef::Pane(p),
-            AnyRef::Tab(t) => AnyRef::Tab(t),
-            AnyRef::Workspace(w) => AnyRef::Workspace(f(w)),
         }
     }
 }
@@ -245,7 +237,7 @@ pub enum Command {
         cwd: Option<String>,
         env: Vec<(String, String)>,
         /// The ids it makes, if asked for (`--id`, as layout files have).
-        ids: Vec<AnyId>,
+        ids: Vec<AnyRef>,
         json: bool,
     },
     NewTab {
@@ -255,7 +247,7 @@ pub enum Command {
         size: Size,
         cwd: Option<String>,
         env: Vec<(String, String)>,
-        ids: Vec<AnyId>,
+        ids: Vec<AnyRef>,
         json: bool,
     },
     Split {
@@ -268,7 +260,7 @@ pub enum Command {
         /// `cmd` is the program, started in place of a shell, as `run`
         /// starts one.
         run: bool,
-        ids: Vec<AnyId>,
+        ids: Vec<AnyRef>,
         json: bool,
         /// Then waits on the new pane, armed before its program writes.
         then: Option<Box<Wait>>,
@@ -285,7 +277,7 @@ pub enum Command {
         json: bool,
         /// A file everything the program writes goes to too.
         log: Option<String>,
-        ids: Vec<AnyId>,
+        ids: Vec<AnyRef>,
         /// Then waits, armed before the program writes anything.
         then: Option<Box<Wait>>,
     },

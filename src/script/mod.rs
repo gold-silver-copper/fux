@@ -8,8 +8,8 @@
 //! words first (`library.fux`).
 mod words;
 
-use crate::command::{Command, Extent, Input, Kind, Mouse, Until, WsRef};
-use crate::id::{AnyId, ClientId, PaneId, TabId, WsId};
+use crate::command::{AnyRef, Command, Extent, Input, Kind, Mouse, Until, WsRef};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
 use crate::layout::Axis;
 use crate::protocol::{Context, End, Reply, Request, Scalar};
@@ -105,7 +105,7 @@ pub struct Opts {
     pub typed: Option<String>,
     pub axis: Option<Axis>,
     pub place: Option<WsRef>,
-    pub ids: Vec<AnyId>,
+    pub ids: Vec<AnyRef>,
     pub log: Option<String>,
     pub kill: bool,
     pub waits: Waits,
@@ -791,7 +791,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
 }
 
 /// A handle for `id`.
-pub fn handle(id: crate::command::AnyRef<WsId>) -> Fux {
+pub fn handle(id: crate::command::AnyRef) -> Fux {
     match id {
         crate::command::AnyRef::Pane(p) => Fux::Pane(p),
         crate::command::AnyRef::Tab(t) => Fux::Tab(t),

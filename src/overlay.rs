@@ -3,7 +3,7 @@
 //! knows; the room a panel has on a screen of a size; and a key the client
 //! sends as literal input to the pane it focuses.
 use crate::command::{AnyRef, Choices, Kind};
-use crate::id::{ClientId, WsId};
+use crate::id::ClientId;
 use crate::keys::Keystroke;
 use crate::layout::Tree;
 use crate::session::{Error, Session};
@@ -27,7 +27,7 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
 
 /// The rows of a chooser client `client` shows.
 pub struct Chosen {
-    pub ids: Vec<AnyRef<WsId>>,
+    pub ids: Vec<AnyRef>,
     pub labels: Vec<String>,
     /// The client's own: its tab or workspace.
     pub current: Option<usize>,

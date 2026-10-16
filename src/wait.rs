@@ -71,7 +71,7 @@ pub struct Waiting {
     /// with nothing known) it waits for something new.
     pub more: bool,
     /// What the command it follows made, for its reply.
-    pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
+    pub made: Vec<AnyRef>,
     /// What each pane said, once it has.
     answers: Vec<Option<Reply>>,
     /// A capture to give once the pane settles (`capture` from a command

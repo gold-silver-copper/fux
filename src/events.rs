@@ -221,7 +221,7 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
 /// A connection that streams events: which panes, tabs and workspaces it
 /// is told of (all without any), how, and what it has seen.
 pub struct Subscription {
-    pub targets: Vec<AnyRef<WsId>>,
+    pub targets: Vec<AnyRef>,
     pub json: bool,
     pub seen: Snapshot,
 }
@@ -252,7 +252,7 @@ impl Subscription {
             .filter(|e| self.wants(e))
             .map(|e| e.line(self.json))
             .collect();
-        let there = |target: &AnyRef<WsId>| match *target {
+        let there = |target: &AnyRef| match *target {
             AnyRef::Pane(p) => now.panes.contains_key(&p),
             AnyRef::Tab(t) => now.tabs.contains_key(&t),
             AnyRef::Workspace(w) => now.workspaces.contains_key(&w),

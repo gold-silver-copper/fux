@@ -6,7 +6,7 @@ use crate::command::{
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
-use crate::id::{AnyId, ClientId, Ids, PaneId, TabId, WsId};
+use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
@@ -341,7 +341,7 @@ pub struct Session {
     /// one repaints every client, input that runs none only its own.
     changes: u64,
     /// What the command under way made or found, for its reply.
-    made: Vec<AnyRef<WsId>>,
+    made: Vec<AnyRef>,
     /// The field the command under way read (`ls --get`), for its reply.
     value: Option<crate::protocol::Scalar>,
     /// A reading's JSON, made from the same read as its text.
@@ -471,7 +471,7 @@ impl Reach<'_> {
         match target {
             AnyRef::Pane(p) => self.pane(*p),
             AnyRef::Tab(t) => self.tab(*t),
-            AnyRef::Workspace(w) => self.workspace(w),
+            AnyRef::Workspace(w) => self.workspace(&WsRef::Id(*w)),
         }
     }
 
@@ -482,7 +482,7 @@ impl Reach<'_> {
             Command::Resolve { text, kind } => {
                 let found = self.session.resolve(text, *kind, self.here);
                 let found = found.map_err(|_| self.outside(format!("{text:?}")))?;
-                self.any(&found.map(WsRef::Id))
+                self.any(&found)
             }
             Command::KillServer { .. } => self.refuse("kill-server"),
             Command::NewWorkspace { .. } => self.refuse("new-workspace"),
@@ -711,7 +711,7 @@ impl Session {
         }
         .map(|w| w.id)
     }
-    pub fn exists(&self, what: AnyRef<WsId>) -> bool {
+    pub fn exists(&self, what: AnyRef) -> bool {
         match what {
             AnyRef::Pane(p) => self.panes.contains_key(&p),
             AnyRef::Tab(t) => self.tab(t).is_some(),
@@ -976,7 +976,7 @@ impl Session {
     /// The next ids made are `ids` (`--id`), each of a kind in `kinds`, at
     /// most one of each, and none that is there or (outside a restore)
     /// was ever given.
-    fn want(&mut self, ids: &[AnyId], kinds: &[Kind]) -> Result<(), Error> {
+    fn want(&mut self, ids: &[AnyRef], kinds: &[Kind]) -> Result<(), Error> {
         for (i, id) in ids.iter().enumerate() {
             let twice = ids.iter().take(i).any(|other| other.kind() == id.kind());
             if twice || !kinds.contains(&id.kind()) {
@@ -1020,7 +1020,7 @@ impl Session {
     /// What `text` names as a pane, tab or workspace, `kind`: its id (`%3`),
     /// or a tab's name (a pane, its tab's one pane); a workspace's name.
     /// Nothing given, the caller's own.
-    fn resolve(&self, text: &str, kind: Kind, here: Here) -> Result<AnyRef<WsId>, Error> {
+    fn resolve(&self, text: &str, kind: Kind, here: Here) -> Result<AnyRef, Error> {
         let tabs: Vec<&Tab> = (self.workspaces.iter())
             .flat_map(Workspace::tabs)
             .filter(|t| t.name == text)
@@ -1142,14 +1142,12 @@ impl Session {
             let found = match *target {
                 AnyRef::Pane(pane) => vec![self.pane(pane)?.id],
                 AnyRef::Tab(tab) => self.root(tab).ok_or(Error::NoTab(tab))?.panes(),
-                AnyRef::Workspace(ref ws) => {
-                    let ws = self.resolve_ws(ws)?;
-                    (self.workspace(ws).into_iter())
-                        .flat_map(Workspace::tabs)
-                        .filter_map(Tab::root)
-                        .flat_map(Tree::panes)
-                        .collect()
-                }
+                AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
+                    .tabs()
+                    .iter()
+                    .filter_map(Tab::root)
+                    .flat_map(Tree::panes)
+                    .collect(),
             };
             out.extend(
                 found
@@ -1325,33 +1323,15 @@ impl Session {
         }
     }
 
-    /// What `target` names, if it is there: a workspace by its ID, as it
-    /// is held from then on.
-    fn any_target(&self, target: &AnyRef, here: Here) -> Result<AnyRef<WsId>, Error> {
-        Ok(match target {
-            AnyRef::Pane(p) => AnyRef::Pane(self.pane(*p)?.id),
-            AnyRef::Tab(t) => AnyRef::Tab(self.tab_target(*t)?),
-            // A name no workspace has may be a tab's (`run -n NAME`).
-            AnyRef::Workspace(w) => match (self.ws_target(Some(w), here), w) {
-                // A workspace's name is the workspace's, before a tab's
-                // (`main` names both at first).
-                (Ok(ws), _) => AnyRef::Workspace(ws),
-                (Err(error), WsRef::Name(name)) => {
-                    let mut tabs = (self.workspaces.iter())
-                        .flat_map(Workspace::tabs)
-                        .filter(|t| t.name == *name);
-                    match (tabs.next(), tabs.next()) {
-                        (Some(tab), None) => AnyRef::Tab(tab.id),
-                        (Some(_), Some(_)) => {
-                            let message = format!("{name:?} names several tabs: use an id");
-                            return Err(fail("ambiguous", message));
-                        }
-                        _ => return Err(error),
-                    }
-                }
-                (Err(error), _) => return Err(error),
-            },
-        })
+    /// `target`, if it is there.
+    fn any_target(&self, target: &AnyRef) -> Result<AnyRef, Error> {
+        match *target {
+            AnyRef::Pane(p) => self.pane(p).map(|_| *target),
+            AnyRef::Tab(t) => self.tab_target(t).map(|_| *target),
+            AnyRef::Workspace(w) => {
+                (self.workspace(w).map(|_| *target)).ok_or(Error::NoWorkspace(w))
+            }
+        }
     }
 
     // ------------------------------------------------------------ creation
@@ -2060,9 +2040,8 @@ impl Session {
             return Ok(self.start_waiting(&command, *wait, origin));
         }
         if let Command::Events { targets, json } = command {
-            let here = self.here(origin)?;
-            let targets = (targets.into_iter())
-                .map(|t| self.any_target(&t, here))
+            let targets = (targets.iter())
+                .map(|t| self.any_target(t))
                 .collect::<Result<_, _>>()?;
             return Ok(Begun::Events(Box::new(crate::events::Subscription {
                 targets,
@@ -2140,8 +2119,13 @@ impl Session {
         // With no target, one that would act anywhere acts on the granted
         // workspace.
         let mut command = command;
+        let ws = self.resolve_ws(&WsRef::Name(scope.to_owned())).ok();
         let place = || Some(WsRef::Name(scope.to_owned()));
-        let whole = || Some(AnyRef::Workspace(WsRef::Name(scope.to_owned())));
+        // The granted workspace, which may be gone: then nothing.
+        let whole = || {
+            let gone = || fail("not_granted", format!("workspace {scope} (grant) is gone"));
+            ws.map(AnyRef::Workspace).ok_or_else(gone)
+        };
         if let Command::Run {
             workspace: at @ None,
             ..
@@ -2153,16 +2137,16 @@ impl Session {
             *at = place();
         }
         if let Command::DumpLayout { target: at @ None } = &mut command {
-            *at = whole();
+            *at = Some(whole()?);
         }
         if let Command::Events { targets, .. } = &mut command
             && targets.is_empty()
         {
-            targets.extend(whole());
+            targets.push(whole()?);
         }
         let reach = Reach {
             session: self,
-            ws: self.resolve_ws(&WsRef::Name(scope.to_owned())).ok(),
+            ws,
             scope,
             here: self.here(origin)?,
         };
@@ -2248,7 +2232,7 @@ impl Session {
                 // Its JSON, given as asked, or kept beside its text.
                 let (read, only) = match target {
                     Some(target) => {
-                        let target = self.any_target(target, here)?;
+                        let target = self.any_target(target)?;
                         let read = self.ls_one(target, get.as_deref())?;
                         if get.is_some() {
                             return Ok(read);
@@ -2411,7 +2395,7 @@ impl Session {
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
-                    Some(target) => match self.any_target(target, here)? {
+                    Some(target) => match self.any_target(target)? {
                         AnyRef::Pane(p) => self.viewers(self.locate(p).map(|(_, t)| t)),
                         AnyRef::Tab(t) => self.viewers(Some(t)),
                         AnyRef::Workspace(w) => self
@@ -2437,7 +2421,7 @@ impl Session {
                             return Err(fail("size", message));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                        let target = self.any_target(target, here)?;
+                        let target = self.any_target(target)?;
                         let tabs: Vec<TabId> = match target {
                             AnyRef::Tab(tab) => vec![tab],
                             AnyRef::Workspace(ws) => self.tab_ids(ws),
@@ -2488,7 +2472,7 @@ impl Session {
             }
             Command::DumpLayout { target } => {
                 let only = match target {
-                    Some(target) => Some(self.any_target(target, here)?),
+                    Some(target) => Some(self.any_target(target)?),
                     None => None,
                 };
                 Ok(self.dump_layout(only, false))
@@ -2628,7 +2612,7 @@ impl Session {
             // From the command line each says what it closed, so a script
             // or an agent knows; a key's close shows on the screen anyway.
             Command::Kill { target } => {
-                let gone = match self.any_target(target, here)? {
+                let gone = match self.any_target(target)? {
                     AnyRef::Pane(pane) => {
                         // A tab's last pane takes its tab, and a workspace's
                         // last tab its workspace: all of it is said.
@@ -2663,7 +2647,7 @@ impl Session {
                 Ok(closed(origin, &gone))
             }
             Command::Rename { target, name } => {
-                let target = self.any_target(target, here)?;
+                let target = self.any_target(target)?;
                 self.rename(target, name.clone()).map(|()| String::new())
             }
             &Command::MovePane { target, ref to } => self.move_pane(target, to, here),
@@ -2756,7 +2740,7 @@ impl Session {
                 Ok(text)
             }
             &Command::Reorder { ref target, toward } => {
-                let target = self.any_target(target, here)?;
+                let target = self.any_target(target)?;
                 self.reorder(target, toward).map(|()| String::new())
             }
             Command::Set { option, value } => {
@@ -2880,7 +2864,7 @@ impl Session {
         }
     }
 
-    fn rename(&mut self, target: AnyRef<WsId>, name: String) -> Result<(), Error> {
+    fn rename(&mut self, target: AnyRef, name: String) -> Result<(), Error> {
         check_name(&name)?;
         match target {
             AnyRef::Pane(p) => {
@@ -2988,7 +2972,7 @@ impl Session {
         Ok(format!("{tab}\n"))
     }
 
-    fn reorder(&mut self, target: AnyRef<WsId>, toward: Sibling) -> Result<(), Error> {
+    fn reorder(&mut self, target: AnyRef, toward: Sibling) -> Result<(), Error> {
         let moved = match target {
             AnyRef::Pane(p) => {
                 let panes = self.locate(p).and_then(|(_, t)| self.root(t));
@@ -3073,7 +3057,7 @@ impl Session {
 
     /// `ls`: everything, or with `only` that pane, tab or workspace and
     /// what is in it, a line each.
-    fn ls_text(&self, only: Option<AnyRef<WsId>>) -> String {
+    fn ls_text(&self, only: Option<AnyRef>) -> String {
         let mut out = String::new();
         let listed_ws = |ws: &&Workspace| match only {
             Some(AnyRef::Workspace(w)) => w == ws.id,
@@ -3184,7 +3168,7 @@ impl Session {
 
     /// `ls -t TARGET`: one pane, tab or workspace, as JSON, or one field of
     /// its JSON (`--get`), a string's text as it is.
-    fn ls_one(&mut self, target: AnyRef<WsId>, get: Option<&str>) -> Result<String, Error> {
+    fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<String, Error> {
         let now = Instant::now();
         let object = match target {
             AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
@@ -3297,7 +3281,7 @@ fn home() -> PathBuf {
 }
 
 /// `%3`, `@2` or `+1`.
-pub fn describe(target: AnyRef<WsId>) -> String {
+pub fn describe(target: AnyRef) -> String {
     match target {
         AnyRef::Pane(p) => p.to_string(),
         AnyRef::Tab(t) => t.to_string(),

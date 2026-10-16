@@ -12,7 +12,7 @@
 use crate::act::Act;
 use crate::bytes::ByteQueue;
 use crate::command::{AnyRef, Command};
-use crate::id::{ClientId, WsId};
+use crate::id::ClientId;
 use crate::wire::{Wire, wire_enum, wire_struct};
 use std::num::{NonZeroU8, NonZeroU16};
 
@@ -377,7 +377,7 @@ pub struct Reply {
     pub end: End,
     pub text: String,
     pub json: String,
-    pub ids: Vec<AnyRef<WsId>>,
+    pub ids: Vec<AnyRef>,
     pub value: Option<Scalar>,
 }
 

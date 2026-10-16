@@ -7,7 +7,6 @@
 //! screens (`Act::Show`), and the moves of copy mode, whose cursor is the
 //! server's as it alone holds the scrollback (`Act::Copy`).
 use crate::command::AnyRef;
-use crate::id::WsId;
 use crate::keys::colour::Scheme;
 use crate::keys::decode::Reply;
 use crate::keys::mouse::{MouseAction, MouseEvent};
@@ -52,13 +51,10 @@ pub enum Panel {
         title: String,
         before: String,
         after: String,
-        about: Option<AnyRef<WsId>>,
+        about: Option<AnyRef>,
     },
     /// A question answered y or n, about closing `about`.
-    Confirm {
-        question: String,
-        about: AnyRef<WsId>,
-    },
+    Confirm { question: String, about: AnyRef },
 }
 
 /// The command column as a client shows it.
@@ -94,7 +90,7 @@ pub struct List {
     pub selected: usize,
     pub chooser: bool,
     /// What it was opened for: if it goes, the server closes the list.
-    pub about: Option<AnyRef<WsId>>,
+    pub about: Option<AnyRef>,
 }
 
 /// What moves, selects and copies in copy mode.

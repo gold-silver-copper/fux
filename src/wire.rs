@@ -349,7 +349,7 @@ macro_rules! wire_struct {
 pub(crate) use wire_struct;
 
 wire_enum!(WsRef, "workspace" { 0 => Id(id), 1 => Name(name) });
-wire_enum!(AnyRef<W>, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
+wire_enum!(AnyRef, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
 wire_enum!(Pick<T>, "pick" { 0 => Step(s), 1 => Id(id) });
 wire_enum!(PanePick, "pane pick" { 0 => Step(s), 1 => Id(id), 2 => Last, 3 => Toward(d) });
 wire_enum!(MoveTo, "move" {
