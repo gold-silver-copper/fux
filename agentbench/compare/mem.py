@@ -28,9 +28,13 @@ def measure(bin_):
     e = {k: v for k, v in os.environ.items() if k not in ("FUX_SOCKET", "FUX_PANE", "FUX_SERVER")}
     e.update(XDG_RUNTIME_DIR=d, FUX_SOCKET=os.path.join(d, "s"), XDG_STATE_HOME=os.path.join(d, "st"))
     run(bin_, e, "start")
-    # 50,000 rows of 79 cells: 24 bytes a row and 8 a cell.
-    run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set")
-    pid = int(run(bin_, e, "str", "pid", "server", "get").stdout.strip() or 0) if False else None
+    # 50,000 rows of 79 cells: 24 bytes a row and 8 a cell; a fux before
+    # history-bytes counts rows.
+    set_ = run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set")
+    if set_.returncode != 0:
+        set_ = run(bin_, e, "str", "history-lines", "50000", "set")
+    if set_.returncode != 0:
+        sys.exit(f"{bin_}: history could not be set: {set_.stderr}")
     def server():
         for p in os.listdir("/proc"):
             try:

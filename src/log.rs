@@ -122,9 +122,6 @@ pub struct Entry {
 pub const JOURNAL_BYTES: usize = 32 << 20;
 /// What an entry costs beside what it holds: its number, time and kind.
 const ENTRY_COST: usize = std::mem::size_of::<Entry>();
-/// What a printed run costs beside its text: its row, columns, place in
-/// the text, echo and change.
-const RUN_COST: usize = 64;
 
 /// A pane's journal: everything that happened in it, in order, under one
 /// budget in bytes. Past it, the oldest entries go whole, and a reader
@@ -227,15 +224,21 @@ impl Log {
 fn held(event: &Event) -> usize {
     let own = match event {
         Event::Output { bytes, printed, .. } => {
+            // What it takes on the heap: what it printed, each run's echo
+            // and change, and the text an echo is of, shared by its runs,
+            // once.
             let printed = printed.as_ref().map_or(0, |p| {
-                // The text an echo is of, shared by its runs: once.
                 let echo = (p.echo.iter()).find_map(|e| match e {
                     crate::classify::Echo::Of(text) => Some(text.len()),
                     crate::classify::Echo::Not | crate::classify::Echo::Is => None,
                 });
-                (p.prints.len())
-                    .saturating_add(p.prints.iter().count().saturating_mul(RUN_COST))
+                let runs = std::mem::size_of::<crate::classify::Echo>()
+                    .saturating_mul(p.echo.capacity())
+                    .saturating_add(p.fresh.capacity().saturating_mul(16));
+                (p.prints.heap())
+                    .saturating_add(runs)
                     .saturating_add(echo.unwrap_or(0))
+                    .saturating_add(std::mem::size_of::<Printed>())
             });
             bytes.len().saturating_add(printed)
         }

@@ -820,6 +820,8 @@ impl Pane {
             if self.seen.len() > rows.len().saturating_mul(4) {
                 self.seen.retain(|id, _| rows.contains_key(id));
             }
+            let mut prints = prints;
+            prints.shrink_to_fit();
             Box::new(crate::log::Printed {
                 prints,
                 echo,
