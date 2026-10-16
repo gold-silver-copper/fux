@@ -147,12 +147,8 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
 /// at its area's top left, its crop of pixels.
 pub fn picture_into(picture: &Visible, out: &mut Vec<u8>) {
     let (row, col, _, _) = picture.area;
-    let _ = write!(
-        out,
-        "\x1b7\x1b[{};{}H",
-        row.saturating_add(1),
-        col.saturating_add(1)
-    );
+    out.extend_from_slice(b"\x1b7");
+    goto(out, row, col);
     fux_vt::sixel::encode(&picture.picture, picture.crop, out);
     out.extend_from_slice(b"\x1b8");
 }
@@ -417,14 +413,12 @@ impl Grid {
     /// Whether the cells of `area` (top row, first column, rows, columns)
     /// are the same as `other`'s.
     pub fn same_in(&self, other: &Grid, (row, col, rows, cols): (u16, u16, u16, u16)) -> bool {
+        fn shows(c: CellRef<'_>) -> (&str, Attributes) {
+            (c.contents(), c.attributes())
+        }
         (row..row.saturating_add(rows)).all(|y| {
-            (col..col.saturating_add(cols)).all(|x| match (self.get(y, x), other.get(y, x)) {
-                (Some(a), Some(b)) => {
-                    a.contents() == b.contents() && a.attributes() == b.attributes()
-                }
-                (None, None) => true,
-                (Some(_), None) | (None, Some(_)) => false,
-            })
+            (col..col.saturating_add(cols))
+                .all(|x| self.get(y, x).map(shows) == other.get(y, x).map(shows))
         })
     }
     /// Takes it that the cells of `area` show something no composed grid
@@ -470,6 +464,12 @@ impl Grid {
     /// compared by `Cells::range_eq`, without reading each cell's text.
     fn row_eq(&self, other: &Grid, y: u16) -> bool {
         self.cells.range_eq(&other.cells, self.span(y))
+    }
+    /// Whether the cell at (`y`, `x`) is the same as `other`'s, a grid of
+    /// its size, as `row_eq` compares them.
+    fn cell_eq(&self, other: &Grid, y: u16, x: u16) -> bool {
+        let i = cell_count(y, self.cols).saturating_add(usize::from(x));
+        self.cells.range_eq(&other.cells, i..i.saturating_add(1))
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
@@ -1433,7 +1433,7 @@ fn cluster(
 ) -> bool {
     let joins = text.len() > 1 && joins_the_glyph_before(grid, y, x, text);
     if joins || joined {
-        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(x));
+        goto(out, y, x);
     }
     let marks_at_the_edge = x.saturating_add(width).saturating_add(1) == grid.cols
         && text.chars().nth(1).is_some()
@@ -1451,6 +1451,11 @@ fn cluster(
 /// A row or column as the terminal counts it, from 1; exact in a u32.
 fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
+}
+
+/// Moves the cursor to row `y`, column `x`, both from 0.
+fn goto(out: &mut Vec<u8>, y: u16, x: u16) {
+    let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(x));
 }
 
 /// Turns every mouse tracking mode and SGR encoding off, as `client::LEAVE`
@@ -1497,13 +1502,16 @@ fn same_row(old: &Grid, new: &Grid, y: u16, links: bool) -> bool {
     old.row_eq(new, y) && (!links || (0..new.cols).all(|x| old.link(y, x) == new.link(y, x)))
 }
 
-/// The rows of two grids of a size that differ: those whose memo does not
-/// show them the same and whose cells or links differ.
-fn differing_rows<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
-    let links = !new.links.is_empty() || !old.links.is_empty();
-    let memo = SameFrame::of(old, new);
+/// The rows of `new` that differ from `old`, a grid of its size (every
+/// row, if there is none): those whose memo does not show them the same
+/// and whose cells or links differ.
+fn differing_rows<'a>(old: Option<&'a Grid>, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
+    let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
+    let memo = old.and_then(|o| SameFrame::of(o, new));
     (0..new.rows).filter(move |&y| {
-        !memo.as_ref().is_some_and(|m| m.same_row(y)) && !same_row(old, new, y, links)
+        // An unchanged row costs this one comparison.
+        !memo.as_ref().is_some_and(|m| m.same_row(y))
+            && old.is_none_or(|o| !same_row(o, new, y, links))
     })
 }
 
@@ -1529,18 +1537,14 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     if to == 0 || to >= new.cols {
         return false;
     }
-    let mut rows = differing_rows(old, new);
+    let mut rows = differing_rows(Some(old), new);
     if rows.next() != Some(y) || rows.next().is_some() {
         return false;
     }
     // The run is from the first changed cell of the row to the cursor's
     // cell; nothing after it changed. Cells in it that did not change are
     // written as they are.
-    let start = new.span(y).start;
-    let same = |x: u16| {
-        let i = start.saturating_add(usize::from(x));
-        old.cells.range_eq(&new.cells, i..i.saturating_add(1))
-    };
+    let same = |x: u16| old.cell_eq(new, y, x);
     let Some(from) = (0..new.cols).find(|&x| !same(x)) else {
         return false;
     };
@@ -1586,7 +1590,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     // To the run's first cell: from the cursor on its row by the shortest
     // way, else by row and column.
     if oy != y {
-        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(from));
+        goto(out, y, from);
     } else if from == 0 && ox != 0 {
         out.push(b'\r');
     } else if from != ox {
@@ -1628,28 +1632,15 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     let mut open = None;
     // Whether either grid has a link: if neither does, no cell's changed.
     let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
-    // Grids of one frame show the same cells on a pane row whose keys are
-    // the same in both (`Memo`): no comparison needed.
-    let memo = old.filter(|_| !full).and_then(|o| SameFrame::of(o, new));
     // What the client shows, unless all is painted whole: a grid of the same
-    // size, so the two index their cells alike.
+    // size, so the two index their cells alike. Grids of one frame show the
+    // same cells on a pane row whose keys are the same in both (`Memo`): no
+    // comparison needed.
     let before = old.filter(|_| !full);
-    for y in 0..new.rows {
-        if memo.as_ref().is_some_and(|m| m.same_row(y)) {
-            continue;
-        }
-        // An unchanged row costs this one comparison.
-        if before.is_some_and(|o| same_row(o, new, y, links)) {
-            continue;
-        }
+    for y in differing_rows(before, new) {
         let cell = |x: u16| new.get(y, x);
-        let row_start = new.span(y).start;
         let changed = |x: u16| {
-            before.is_none_or(|o| {
-                let i = row_start.saturating_add(usize::from(x));
-                !o.cells.range_eq(&new.cells, i..i.saturating_add(1))
-                    || links && o.link(y, x) != new.link(y, x)
-            })
+            before.is_none_or(|o| !o.cell_eq(new, y, x) || links && o.link(y, x) != new.link(y, x))
         };
         let mut x = 0u16;
         while x < new.cols {
@@ -1663,7 +1654,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             if cell(start).is_some_and(|c| c.is_wide_continuation()) {
                 start = start.saturating_sub(1);
             }
-            let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
+            goto(out, y, start);
             let mut cx = start;
             // Whether the glyph before was one the client's terminal may
             // have joined to the one before it (see `cluster`).
@@ -1717,7 +1708,8 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[0m");
     new.modes.diff(old.map(|o| &o.modes), out);
     if let Some((y, x)) = new.cursor {
-        let _ = write!(out, "\x1b[{};{}H\x1b[?25h", one_based(y), one_based(x));
+        goto(out, y, x);
+        out.extend_from_slice(b"\x1b[?25h");
     }
     out.extend_from_slice(b"\x1b[?2026l");
 }
