@@ -13,7 +13,7 @@ use crate::act::Act;
 use crate::bytes::ByteQueue;
 use crate::command::{AnyRef, Command};
 use crate::id::{ClientId, WsId};
-use crate::wire::Wire;
+use crate::wire::{Wire, wire_enum, wire_struct};
 use std::num::NonZeroU16;
 
 /// Bumped on any change to the frames below.
@@ -335,43 +335,27 @@ pub struct Request {
     pub context: Context,
 }
 
-impl crate::wire::Wire for Context {
-    fn put(&self, out: &mut Vec<u8>) {
-        self.cwd.put(out);
-        self.pane.put(out);
-        self.server.put(out);
-        self.env.put(out);
-        self.client.put(out);
-        self.restoring.put(out);
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        Ok(Context {
-            cwd: String::get(r)?,
-            pane: Option::get(r)?,
-            server: Option::get(r)?,
-            env: Vec::get(r)?,
-            client: Option::get(r)?,
-            restoring: bool::get(r)?,
-        })
-    }
-}
+wire_struct!(Context {
+    cwd,
+    pane,
+    server,
+    env,
+    client,
+    restoring
+});
+
+wire_struct!(Request { command, context });
 
 impl Frame<'_> for Request {
     fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
         expect(kind, kind::COMMAND)?;
-        let mut r = crate::wire::Reader::new(payload);
-        let request = (|| -> Result<Request, crate::wire::Error> {
-            Ok(Request {
-                command: crate::wire::Wire::get(&mut r)?,
-                context: crate::wire::Wire::get(&mut r)?,
-            })
-        })();
-        request.map_err(Error::Wire)
+        crate::wire::Reader::new(payload)
+            .whole()
+            .map_err(Error::Wire)
     }
 
     fn write(&self, out: &mut Vec<u8>) -> u8 {
-        self.command.put(out);
-        self.context.put(out);
+        self.put(out);
         kind::COMMAND
     }
 }
@@ -400,57 +384,17 @@ pub struct Reply {
     pub value: Option<Scalar>,
 }
 
-impl crate::wire::Wire for Scalar {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Scalar::Int(n) => {
-                out.push(0);
-                n.put(out);
-            }
-            Scalar::Bool(b) => {
-                out.push(1);
-                b.put(out);
-            }
-            Scalar::Str(s) => {
-                out.push(2);
-                s.put(out);
-            }
-            Scalar::Null => out.push(3),
-        }
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        Ok(match u8::get(r)? {
-            0 => Scalar::Int(i64::get(r)?),
-            1 => Scalar::Bool(bool::get(r)?),
-            2 => Scalar::Str(String::get(r)?),
-            3 => Scalar::Null,
-            other => return Err(crate::wire::Error::Tag("scalar", other)),
-        })
-    }
-}
+wire_enum!(Scalar, "scalar" { 0 => Int(n), 1 => Bool(b), 2 => Str(s), 3 => Null });
 
-impl crate::wire::Wire for Reply {
-    fn put(&self, out: &mut Vec<u8>) {
-        self.status.put(out);
-        self.code.put(out);
-        self.message.put(out);
-        self.text.put(out);
-        self.json.put(out);
-        self.ids.put(out);
-        self.value.put(out);
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        Ok(Reply {
-            status: u8::get(r)?,
-            code: Option::get(r)?,
-            message: String::get(r)?,
-            text: String::get(r)?,
-            json: String::get(r)?,
-            ids: Vec::get(r)?,
-            value: Option::get(r)?,
-        })
-    }
-}
+wire_struct!(Reply {
+    status,
+    code,
+    message,
+    text,
+    json,
+    ids,
+    value
+});
 
 /// The server's frames.
 #[derive(Clone, Debug, PartialEq, Eq)]

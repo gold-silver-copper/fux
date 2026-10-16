@@ -266,20 +266,25 @@ impl Wire for KeyPress {
 /// An enum of plain variants, as its index in `$all`.
 macro_rules! plain_wire {
     ($ty:ty, $what:literal, [$($variant:expr),+ $(,)?]) => {
-        impl Wire for $ty {
+        impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
                 let all = [$($variant),+];
                 let index = all.iter().position(|v| v == self).unwrap_or(0);
                 out.push(u8::try_from(index).unwrap_or(0));
             }
-            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+            fn get(
+                r: &mut $crate::wire::Reader<'_>,
+            ) -> Result<Self, $crate::wire::Error> {
                 let all = [$($variant),+];
-                let index = u8::get(r)?;
-                all.get(usize::from(index)).copied().ok_or(Error::Tag($what, index))
+                let index = <u8 as $crate::wire::Wire>::get(r)?;
+                all.get(usize::from(index))
+                    .copied()
+                    .ok_or($crate::wire::Error::Tag($what, index))
             }
         }
     };
 }
+pub(crate) use plain_wire;
 plain_wire!(
     Direction,
     "direction",
@@ -370,6 +375,7 @@ macro_rules! wire_enum {
         }
     };
 }
+pub(crate) use wire_enum;
 
 /// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields
 /// one after another, in the order listed (which is the wire's, not
@@ -388,6 +394,7 @@ macro_rules! wire_struct {
         }
     };
 }
+pub(crate) use wire_struct;
 
 wire_enum!(WsRef, "workspace" { 0 => Id(id), 1 => Name(name) });
 wire_enum!(AnyRef<W>, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
