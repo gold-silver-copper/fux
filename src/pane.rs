@@ -1167,11 +1167,6 @@ impl Pane {
         process: Option<Process>,
         history: usize,
     ) -> Result<Process, Error> {
-        let size = self.size();
-        let mut parser = fux_vt::Parser::with_options(size, history, OPTIONS)
-            .map_err(|source| Error::Terminal { size, source })?;
-        parser.require_mark_nonce(self.nonce.as_deref().map(str::as_bytes));
-        self.parser = recording(parser);
         // Named after its program, unless renamed.
         let named = |launch: &Launch| {
             launch.argv.first().map_or_else(String::new, |p| {
@@ -1180,28 +1175,26 @@ impl Pane {
                     .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
             })
         };
-        if matches!(&self.runs, Runs::Program(old) if named(old) == self.name) {
-            self.name = named(&launch);
-        }
-        self.title = Title::default();
-        self.input = InputQueue::default();
-        self.frame = None;
-        self.runs = Runs::Program(launch);
-        self.alerts = Alerts::default();
-        self.revision = self.revision.wrapping_add(1);
-        self.starts = self.starts.wrapping_add(1);
-        self.mouse_held = None;
-        self.changed_at = Instant::now();
-        self.written_at = None;
-        // A new program, its own journal: a wait counts from its start.
-        self.record = crate::log::Log::new(self.record.budget);
-        self.classes = crate::classify::Classes::default();
-        self.pace = Pace::default();
-        self.note_input();
-        Ok(std::mem::replace(
-            &mut self.process,
-            process.unwrap_or(Process::Absent),
-        ))
+        let name = match matches!(&self.runs, Runs::Program(old) if named(old) == self.name) {
+            true => named(&launch),
+            false => self.name.clone(),
+        };
+        let runs = Runs::Program(launch);
+        // A new program, its own pane: a wait counts from its start. Kept
+        // are what the session has yet to take from the old one (a bell, a
+        // copy), its colours, nonce, log and journal budget, and its counts.
+        let mut fresh = Pane::new(self.id, name, runs, self.size(), history)?;
+        fresh.mark_with(self.nonce.take());
+        fresh.record.set_budget(self.record.budget);
+        fresh.colours = std::mem::take(&mut self.colours);
+        fresh.bell = self.bell;
+        fresh.copied = self.copied.take();
+        fresh.log = self.log.take();
+        fresh.revision = self.revision.wrapping_add(1);
+        fresh.starts = self.starts.wrapping_add(1);
+        fresh.process = process.unwrap_or(Process::Absent);
+        fresh.note_input();
+        Ok(std::mem::replace(self, fresh).process)
     }
 
     /// Notes, after the screen was read into at `now`, whether what it
