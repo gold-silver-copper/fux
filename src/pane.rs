@@ -104,12 +104,9 @@ impl InputQueue {
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
-        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
-        let used = self.bytes.len().saturating_add(held);
-        if self.refusing {
-            0
-        } else {
-            INPUT_BYTES.saturating_sub(used)
+        match self.refusing {
+            true => 0,
+            false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
     /// Queues terminal replies, as `push`: a program that is not reading
