@@ -86,9 +86,11 @@ fn write_str(out: &mut String, text: &str) {
     out.push('"');
 }
 
+/// Standard base64's alphabet, each character's place its value.
+const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
 /// Standard base64 with padding, for OSC 52.
 pub fn base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     // A capacity hint only.
     let mut out = String::with_capacity(bytes.len().div_ceil(3).saturating_mul(4));
     // Three bytes at a time, and what is left over.
@@ -129,15 +131,8 @@ pub fn unbase64(text: &[u8]) -> Option<Vec<u8>> {
     {
         let mut n = 0u32;
         for (c, shift) in chunk.iter().zip([18u32, 12, 6, 0]) {
-            let value = match c {
-                b'A'..=b'Z' => c.wrapping_sub(b'A'),
-                b'a'..=b'z' => c.wrapping_sub(b'a').wrapping_add(26),
-                b'0'..=b'9' => c.wrapping_sub(b'0').wrapping_add(52),
-                b'+' => 62,
-                b'/' => 63,
-                _ => return None,
-            };
-            n |= u32::from(value) << shift;
+            let value = TABLE.iter().position(|t| t == c)?;
+            n |= u32::try_from(value).ok()? << shift;
         }
         // Four characters are three bytes, three two, two one; one is none.
         let bytes = n.to_be_bytes();
