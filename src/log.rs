@@ -86,8 +86,14 @@ pub enum Event {
     Input { unit: Unit, bytes: Box<[u8]> },
     /// An action's input began: what came since is what it brought.
     Action,
-    /// The program rang the bell, or sent a notification.
+    /// The program rang the bell.
     Bell,
+    /// The program sent a notification (OSC 9, 777): its text.
+    Notification(String),
+    /// The program set its title.
+    Title(String),
+    /// A shell command ended (OSC 133): its status, if the shell said.
+    Done(Option<i32>),
     /// The screen took a new size.
     Resize(fux_vt::Size),
 }
@@ -174,10 +180,10 @@ impl Log {
         self.bytes
     }
 
-    /// The first bell rung after `seq`, if one was.
+    /// The first bell rung, or notification sent, after `seq`, if one was.
     pub fn bell_after(&self, seq: Seq) -> Option<Seq> {
         self.after(seq)
-            .find(|e| matches!(e.event, Event::Bell))
+            .find(|e| matches!(e.event, Event::Bell | Event::Notification(_)))
             .map(|e| e.seq)
     }
 
@@ -187,11 +193,22 @@ impl Log {
         self.entries.iter().skip(from)
     }
 
+    /// The number of its newest entry: 0 if it holds none.
+    pub fn last(&self) -> Seq {
+        self.entries.back().map_or(Seq(0), |e| e.seq)
+    }
+
     /// What each piece of output after `seq` printed, oldest first.
     pub fn printed_after(&self, seq: Seq) -> impl Iterator<Item = (Seq, &Printed)> {
         self.after(seq).filter_map(|e| match &e.event {
             Event::Output { printed, .. } => printed.as_deref().map(|p| (e.seq, p)),
-            Event::Input { .. } | Event::Action | Event::Bell | Event::Resize(_) => None,
+            Event::Input { .. }
+            | Event::Action
+            | Event::Bell
+            | Event::Notification(_)
+            | Event::Title(_)
+            | Event::Done(_)
+            | Event::Resize(_) => None,
         })
     }
 
@@ -216,7 +233,8 @@ fn held(event: &Event) -> usize {
             bytes.len().saturating_add(printed)
         }
         Event::Input { bytes, .. } => bytes.len(),
-        Event::Action | Event::Bell | Event::Resize(_) => 0,
+        Event::Notification(text) | Event::Title(text) => text.len(),
+        Event::Action | Event::Bell | Event::Done(_) | Event::Resize(_) => 0,
     };
     own.saturating_add(ENTRY_COST)
 }

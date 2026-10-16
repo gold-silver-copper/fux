@@ -1,12 +1,14 @@
 //! `fux events`: what happens in the session, a line each as it happens,
-//! for a script that would otherwise poll `fux ls --json`. The server looks
-//! at the session after each round of what it read and did, and tells each
-//! subscriber what changed since it last looked: panes, tabs and workspaces
-//! made, closed, moved or renamed; a program's exit, restart, title, size,
-//! bells and notifications; a shell command's end.
+//! for a script that would otherwise poll `fux ls --json`. After each
+//! round of what the server read and did, each subscriber is told what
+//! happened since it last looked: what each pane's journal recorded, in
+//! order (a bell, a notification, a title, a shell command's end, a
+//! resize); and, from the session's layout, panes, tabs and workspaces
+//! made, closed, moved or renamed, a program's restart and exit.
 use crate::command::AnyRef;
 use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
+use crate::log::{Event as Recorded, Seq};
 use crate::process::Ended;
 use crate::session::Session;
 use std::collections::BTreeMap;
@@ -23,20 +25,15 @@ pub struct Snapshot {
     panes: BTreeMap<PaneId, Seen>,
 }
 
-/// What events tell of a pane.
+/// Where a pane is, how often its program started, how it ended, and the
+/// last entry of its journal: what events tell of it.
 #[derive(Clone, Debug, PartialEq)]
 struct Seen {
     ws: WsId,
     tab: TabId,
-    title: String,
-    size: (u16, u16),
     ended: Option<Ended>,
     starts: u64,
-    finished: u64,
-    last_status: Option<i32>,
-    bells: u64,
-    notifications: u64,
-    last_notification: Option<String>,
+    last: Seq,
 }
 
 impl Snapshot {
@@ -51,22 +48,14 @@ impl Snapshot {
                     let Some(pane) = session.panes.get(&id) else {
                         continue;
                     };
-                    let commands = pane.screen().commands();
-                    let size = pane.size();
                     snapshot.panes.insert(
                         id,
                         Seen {
                             ws: ws.id,
                             tab: tab.id,
-                            title: pane.title.as_str().to_owned(),
-                            size: (size.cols(), size.rows()),
                             ended: pane.process.exit_status(),
                             starts: pane.starts,
-                            finished: commands.finished,
-                            last_status: commands.last_status,
-                            bells: pane.alerts.bells,
-                            notifications: pane.alerts.notifications,
-                            last_notification: pane.alerts.last.clone(),
+                            last: pane.record.last(),
                         },
                     );
                 }
@@ -151,9 +140,10 @@ impl Event {
     }
 }
 
-/// What changed from `old` to `new`, in order: what was made, what happened
-/// to panes there all along, then what closed.
-pub fn between(old: &Snapshot, new: &Snapshot) -> Vec<Event> {
+/// What changed from `old` to `new` in `session`, in order: what was made,
+/// what happened to each pane (what its journal recorded since, in order),
+/// then what closed.
+pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> {
     let mut events = Vec::new();
     let name = |n: &str| Json::str(n.to_owned());
     for (&ws, ws_name) in &new.workspaces {
@@ -180,55 +170,47 @@ pub fn between(old: &Snapshot, new: &Snapshot) -> Vec<Event> {
     }
     for (&pane, now) in &new.panes {
         let at = |name| Event::new(name, now.ws, Some(now.tab), Some(pane));
-        let Some(was) = old.panes.get(&pane) else {
-            events.push(at("created"));
-            continue;
-        };
-        if (was.ws, was.tab) != (now.ws, now.tab) {
-            events.push(at("moved"));
+        // A pane new since, or its program started again: its journal from
+        // its start.
+        let mut from = Seq(0);
+        match old.panes.get(&pane) {
+            None => events.push(at("created")),
+            Some(was) => {
+                if (was.ws, was.tab) != (now.ws, now.tab) {
+                    events.push(at("moved"));
+                }
+                match now.starts == was.starts {
+                    true => from = was.last,
+                    false => events.push(at("respawned")),
+                }
+            }
         }
-        if now.starts != was.starts {
-            events.push(at("respawned"));
+        let journal = session.panes.get(&pane).map(|p| p.record.after(from));
+        for entry in journal.into_iter().flatten() {
+            let number = |n: i64| Json::Number(n);
+            events.push(match &entry.event {
+                Recorded::Bell => at("bell"),
+                Recorded::Notification(text) => {
+                    at("notification").with("text", Json::str(text.clone()))
+                }
+                Recorded::Title(title) => at("title").with("title", Json::str(title.clone())),
+                Recorded::Done(status) => {
+                    at("done").with("status", status.map_or(Json::Null, |s| number(s.into())))
+                }
+                Recorded::Resize(size) => (at("resized"))
+                    .with("cols", number(size.cols().into()))
+                    .with("rows", number(size.rows().into())),
+                Recorded::Output { .. } | Recorded::Input { .. } | Recorded::Action => continue,
+            });
         }
-        // Several of a kind in one look come as one line, with how many.
-        let counted = |event: Event, count: u64| match count {
-            0 | 1 => event,
-            n => event.with("count", Json::Number(i64::try_from(n).unwrap_or(i64::MAX))),
-        };
-        if now.finished > was.finished {
-            let status = now
-                .last_status
-                .map_or(Json::Null, |s| Json::Number(i64::from(s)));
-            let done = at("done").with("status", status);
-            events.push(counted(done, now.finished.saturating_sub(was.finished)));
-        }
-        if let (Some(ended), true) = (now.ended, now.ended != was.ended) {
-            let event = match ended {
+        let was = old.panes.get(&pane).and_then(|w| w.ended);
+        if let (Some(ended), true) = (now.ended, now.ended != was) {
+            events.push(match ended {
                 Ended::Exited(code) => at("exited").with("status", Json::Number(i64::from(code))),
                 Ended::Signalled(signal) => {
                     at("exited").with("signal", Json::Number(i64::from(signal)))
                 }
-            };
-            events.push(event);
-        }
-        if now.bells > was.bells {
-            events.push(counted(at("bell"), now.bells.saturating_sub(was.bells)));
-        }
-        if now.notifications > was.notifications {
-            let text = now.last_notification.clone().unwrap_or_default();
-            let notification = at("notification").with("text", Json::str(text));
-            events.push(counted(
-                notification,
-                now.notifications.saturating_sub(was.notifications),
-            ));
-        }
-        if now.title != was.title {
-            events.push(at("title").with("title", Json::str(now.title.clone())));
-        }
-        if now.size != was.size {
-            let (cols, rows) = now.size;
-            let event = at("resized").with("cols", Json::Number(i64::from(cols)));
-            events.push(event.with("rows", Json::Number(i64::from(rows))));
+            });
         }
     }
     for (&pane, was) in &old.panes {
@@ -273,11 +255,11 @@ impl Subscription {
     /// What it is told of what changed since it last looked, now that the
     /// session is `now`; and whether it is over, everything it watched
     /// gone (then its last line says so).
-    pub fn told(&mut self, now: &Snapshot) -> (String, bool) {
+    pub fn told(&mut self, now: &Snapshot, session: &Session) -> (String, bool) {
         if *now == self.seen {
             return (String::new(), false);
         }
-        let events = between(&self.seen, now);
+        let events = between(&self.seen, now, session);
         self.seen = now.clone();
         let mut lines: String = (events.iter())
             .filter(|e| self.wants(e))

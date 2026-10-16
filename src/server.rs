@@ -1115,7 +1115,7 @@ impl Server {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
             };
-            let (lines, over) = subscription.told(&now);
+            let (lines, over) = subscription.told(&now, &self.session);
             if over {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
                 let status = crate::wait::GONE;

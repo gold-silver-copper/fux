@@ -246,6 +246,8 @@ const TITLE_STACK: usize = 10;
 pub struct Title {
     now: String,
     pushed: VecDeque<String>,
+    /// How many times it changed.
+    changes: u64,
 }
 
 impl Title {
@@ -256,7 +258,13 @@ impl Title {
     /// characters of it.
     fn set(&mut self, title: &[u8]) {
         let text = String::from_utf8_lossy(title);
-        self.now = text.chars().filter(|c| !c.is_control()).take(256).collect();
+        self.become_(text.chars().filter(|c| !c.is_control()).take(256).collect());
+    }
+    fn become_(&mut self, title: String) {
+        if title != self.now {
+            self.now = title;
+            self.changes = self.changes.wrapping_add(1);
+        }
     }
     fn push(&mut self) {
         if self.pushed.len() >= TITLE_STACK {
@@ -267,7 +275,7 @@ impl Title {
     /// The title last pushed comes back; with none, nothing changes.
     fn pop(&mut self) {
         if let Some(title) = self.pushed.pop_back() {
-            self.now = title;
+            self.become_(title);
         }
     }
 }
@@ -767,7 +775,12 @@ impl Pane {
                     .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
                     .is_some_and(|t| !t.line_mode()),
             };
-        let bells = self.alerts.count();
+        let was = (
+            self.alerts.bells,
+            self.alerts.notifications,
+            self.screen().commands().finished,
+            self.title.changes,
+        );
         let begun = self.parse(run, until_frame);
         let seq = crate::log::Seq(self.screen().version());
         let prints = self.parser.take_prints();
@@ -821,9 +834,24 @@ impl Pane {
             printed,
         };
         self.record.push(seq, now, event);
-        if self.alerts.count() != bells {
-            let bell = crate::log::Seq(self.parser.tick());
-            self.record.push(bell, now, crate::log::Event::Bell);
+        // What else the piece did, each in its place after it.
+        let commands = self.screen().commands();
+        let mut happened = Vec::new();
+        if self.alerts.bells != was.0 {
+            happened.push(crate::log::Event::Bell);
+        }
+        if self.alerts.notifications != was.1 {
+            let text = self.alerts.last.clone().unwrap_or_default();
+            happened.push(crate::log::Event::Notification(text));
+        }
+        let ended = commands.finished.saturating_sub(was.2);
+        happened.extend((0..ended.min(16)).map(|_| crate::log::Event::Done(commands.last_status)));
+        if self.title.changes != was.3 {
+            happened.push(crate::log::Event::Title(self.title.now.clone()));
+        }
+        for event in happened {
+            let seq = crate::log::Seq(self.parser.tick());
+            self.record.push(seq, now, event);
         }
         begun
     }
@@ -1705,7 +1733,10 @@ mod tests {
                 }
                 crate::log::Event::Input { .. }
                 | crate::log::Event::Action
-                | crate::log::Event::Bell => {}
+                | crate::log::Event::Bell
+                | crate::log::Event::Notification(_)
+                | crate::log::Event::Title(_)
+                | crate::log::Event::Done(_) => {}
             }
         }
         let rows = |s: &fux_vt::Screen| s.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
