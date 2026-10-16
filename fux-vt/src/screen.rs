@@ -2530,6 +2530,21 @@ impl Screen {
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
+                // The flags' rows (`Attributes::FLAGS`), as literal arms the
+                // hot path jumps to; a test holds them to the rows. Bold and
+                // dim are kept apart, and both can be on, as in xterm; 22
+                // ends both (ECMA-48 8.3.117).
+                [1] => self.attributes.flags |= Attributes::BOLD,
+                [2] => self.attributes.flags |= Attributes::DIM,
+                [3] => self.attributes.flags |= Attributes::ITALIC,
+                [7] => self.attributes.flags |= Attributes::INVERSE,
+                [8] => self.attributes.flags |= Attributes::HIDDEN,
+                [9] => self.attributes.flags |= Attributes::STRIKEOUT,
+                [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
+                [23] => self.attributes.flags &= !Attributes::ITALIC,
+                [27] => self.attributes.flags &= !Attributes::INVERSE,
+                [28] => self.attributes.flags &= !Attributes::HIDDEN,
+                [29] => self.attributes.flags &= !Attributes::STRIKEOUT,
                 [4] => self.underline(UnderlineStyle::Single),
                 // Doubly underlined (ECMA-48 8.3.117, xterm's ctlseqs).
                 [21] => self.underline(UnderlineStyle::Double),
@@ -2567,17 +2582,7 @@ impl Screen {
                         self.set_colour(*selector, colour);
                     }
                 }
-                // Bold and dim are kept apart, and both can be on, as in
-                // xterm; 22 ends both (ECMA-48 8.3.117).
-                [n] => {
-                    for (bit, on, off, _) in Attributes::FLAGS {
-                        if *n == on {
-                            self.attributes.flags |= bit;
-                        } else if *n == off {
-                            self.attributes.flags &= !bit;
-                        }
-                    }
-                }
+
                 _ => {}
             }
         }

@@ -14,6 +14,20 @@ fn sgr_colour_parameters_name_the_sixteen_palette_colours() {
     }
 }
 
+/// SGR's flag arms are what `Attributes::FLAGS` says: each row's number
+/// sets its bit, and its other number clears it, alone.
+#[test]
+fn sgr_sets_and_clears_each_flag_as_its_row_says() -> Result<(), Error> {
+    let mut p = crate::Parser::with_options(Size::of(2, 10), 0, crate::Options::new())?;
+    for (bit, on, off, name) in Attributes::FLAGS {
+        p.process(format!("\x1b[0;{on}m").as_bytes())?;
+        assert_eq!(p.screen().attributes.flags, bit, "{name} on");
+        p.process(format!("\x1b[0;1;2;3;7;8;9;{off}m").as_bytes())?;
+        assert_eq!(p.screen().attributes.flags & bit, 0, "{name} off");
+    }
+    Ok(())
+}
+
 /// Recycling a slot clears only the cells before its `used` mark, so every
 /// edit must keep the cells past it blank: printing, wide glyphs and
 /// clusters, erasing in the pen's colours or not, inserting and deleting,
