@@ -18,14 +18,6 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seq(pub u64);
 
-/// The number of a piece of input fux wrote.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InputSeq(pub Seq);
-
-/// The number of a piece of output the screen took.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OutputSeq(pub Seq);
-
 /// What a piece of input is to the program that reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unit {
@@ -39,35 +31,22 @@ pub enum Unit {
     Submit,
 }
 
-/// How output that is no echo is known so.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// A full-screen program's: everything it draws is output.
-    Screen,
-    /// The shell's marks: a command's output, or what followed a line
-    /// submitted.
-    Marks,
-    /// The kernel echoes the keys and nothing else: the rest is output.
-    Kernel,
-    /// It followed input that was no edit, or none at all.
-    Order,
-}
-
 /// Where a piece of output came from. Each kind says how it is known:
-/// the kernel's echo for certain, output by its source, and what followed
+/// the kernel's echo for certain, output by what drew it, and what followed
 /// an edit by its time and place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
+    /// A full-screen program's: everything it draws is output.
+    Screen,
     /// The program's own output.
-    Output { by: Source },
+    Output,
     /// The kernel's echo of input (`ICANON`, `ECHO`), by its fixed rules,
     /// wherever it lands: certain.
-    Echo { of: InputSeq },
+    Echo,
     /// What the program drew after an edit, before the next input: the
     /// echo on the line typed on (`line`, its first row), output elsewhere;
     /// `shell`, a shell reading its command line, as its marks say.
     Edited {
-        of: InputSeq,
         line: Option<fux_vt::RowId>,
         shell: bool,
     },
@@ -276,7 +255,7 @@ mod tests {
     fn the_oldest_entries_go_first_and_are_told() {
         let mut log = Log::new(4096);
         let now = Instant::now();
-        let origin = Origin::Output { by: Source::Order };
+        let origin = Origin::Output;
         for n in 1..=3u64 {
             let bytes = vec![b'x'; 1500].into_boxed_slice();
             let printed = None;

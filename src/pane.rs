@@ -1136,17 +1136,12 @@ impl Pane {
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
             .map(|t| t.modes());
-        let seq = crate::log::InputSeq(crate::log::Seq(self.parser.tick()));
+        let seq = crate::log::Seq(self.parser.tick());
         if unit == crate::log::Unit::Submit {
             self.parser.note_submit();
         }
         let line = cursor_line(self.screen());
-        let input = crate::classify::Input {
-            seq,
-            unit,
-            line,
-            ahead,
-        };
+        let input = crate::classify::Input { unit, line, ahead };
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
         let _ = self.input.push(&bytes);
@@ -1154,7 +1149,7 @@ impl Pane {
             unit,
             bytes: bytes.into(),
         };
-        self.record.push(seq.0, now, event);
+        self.record.push(seq, now, event);
         let gap = if reading { TAKE } else { PACE };
         self.pace.written = Some((now, crate::after(now, gap), escape, exact));
         self.pace.until = Some(crate::after(now, if reading { POLL } else { PACE }));
