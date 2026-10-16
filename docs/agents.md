@@ -71,7 +71,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   it reads its command line; a line editor's, drawn where you typed) is no
   output, whatever it reads like. What the program prints in reply is,
   though it repeats your words (`You said: NEEDLE`). A line drawn again to
-  read as it did before your input brings nothing new. **Status 7:** the
+  read as it did before your input brings nothing new, within the first
+  MiB of output after it; past that, in a flood, every line printed is. **Status 7:** the
   terminal's foreground
   program is blocked reading it, and the text has not come (`wait-gone`:
   not gone). This is fux's judgement from what the program is blocked in:

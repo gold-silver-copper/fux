@@ -810,7 +810,8 @@ impl Pane {
                 tell.then(|| self.seen.get(&p.row).or(self.before.get(&p.row)))
                     .flatten()
             };
-            // Kept only if some run is no plain output (`Printed`).
+            // What each run changed, told only within `REDRAWS`: past it
+            // every run is whole (`Printed`).
             let fresh = match tell {
                 true => (prints.iter().zip(&echo))
                     .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
