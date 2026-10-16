@@ -735,11 +735,10 @@ fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
             let flags = text.parse::<u32>().ok()?;
             Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(u8::MAX)))
         }
-        b'n' => match text {
-            "997;1" => Some(Reply::Scheme(Scheme::Dark)),
-            "997;2" => Some(Reply::Scheme(Scheme::Light)),
-            _ => None,
-        },
+        // A scheme's report, but for its `CSI` and its `n`.
+        b'n' => (Scheme::ALL.into_iter())
+            .find(|s| s.report().get(2..).and_then(|r| r.strip_suffix(b"n")) == Some(params))
+            .map(Reply::Scheme),
         b'y' => {
             let (mode, status) = text.strip_suffix('$')?.split_once(';')?;
             let status = status.parse().ok()?;

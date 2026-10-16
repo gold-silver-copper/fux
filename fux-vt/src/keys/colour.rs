@@ -4,23 +4,17 @@
 
 use crate::Rgb;
 
-/// The terminal's colour scheme, as `CSI ? 997 ; 1|2 n` reports it
-/// (`references/modern/mode_2031_color_scheme_updates.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scheme {
-    /// A dark scheme: light text on a dark background.
-    Dark,
-    /// A light scheme: dark text on a light background.
-    Light,
-}
-
-impl Scheme {
-    /// The report: `CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light.
-    pub fn report(self) -> &'static [u8] {
-        match self {
-            Scheme::Dark => b"\x1b[?997;1n",
-            Scheme::Light => b"\x1b[?997;2n",
-        }
+closed! {
+    /// The terminal's colour scheme, as `CSI ? 997 ; 1|2 n` reports it
+    /// (`references/modern/mode_2031_color_scheme_updates.md`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Scheme {
+        /// The report, which a terminal sends and fux-vt decodes.
+        pub fn report(self) -> &'static [u8];
+        /// A dark scheme: light text on a dark background.
+        Dark => b"\x1b[?997;1n",
+        /// A light scheme: dark text on a light background.
+        Light => b"\x1b[?997;2n",
     }
 }
 
