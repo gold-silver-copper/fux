@@ -349,7 +349,6 @@ impl Fixture {
     /// long as `ls` takes to show it: the size it got.
     pub fn clamped(&self) -> Result<(u16, u16), String> {
         use fux::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
-        use std::num::NonZeroU16;
         let before = self.listed_clients()?;
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| e.to_string())?;
         let hello = Hello {
@@ -360,10 +359,9 @@ impl Fixture {
         stream
             .write_all(&hello.encode().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-        let size = NonZeroU16::new(9000).ok_or("9000 is not zero")?;
+        let size = fux_vt::Size::new(9000, 9000).map_err(|e| e.to_string())?;
         let attach = Attach {
-            rows: size,
-            cols: size,
+            size,
             workspace: None,
             read_only: false,
             env: Vec::new(),

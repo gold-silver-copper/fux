@@ -15,7 +15,7 @@ use crate::code::Code;
 use crate::command::{AnyRef, Command};
 use crate::id::{ClientId, PaneId};
 use crate::wire::{Wire, wire_enum, wire_struct};
-use std::num::{NonZeroU8, NonZeroU16};
+use std::num::NonZeroU8;
 
 /// Bumped on any change to the frames below.
 pub const PROTOCOL: u32 = 9;
@@ -221,16 +221,14 @@ impl OneKind for Hello {
 /// `update-environment` names from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attach {
-    pub rows: NonZeroU16,
-    pub cols: NonZeroU16,
+    pub size: fux_vt::Size,
     pub workspace: Option<String>,
     pub read_only: bool,
     pub env: Vec<(String, String)>,
 }
 
 wire_struct!(Attach {
-    rows,
-    cols,
+    size,
     workspace,
     read_only,
     env
@@ -244,7 +242,7 @@ impl OneKind for Attach {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttachedFrame {
     Act(Box<Act>),
-    Resize { rows: NonZeroU16, cols: NonZeroU16 },
+    Resize(fux_vt::Size),
     Detach,
 }
 
@@ -252,7 +250,7 @@ impl Frame<'_> for AttachedFrame {
     fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
         match kind {
             kind::ACT => read(payload).map(|act| AttachedFrame::Act(Box::new(act))),
-            kind::RESIZE => read(payload).map(|(rows, cols)| AttachedFrame::Resize { rows, cols }),
+            kind::RESIZE => read(payload).map(AttachedFrame::Resize),
             kind::DETACH => read(payload).map(|()| AttachedFrame::Detach),
             other => Err(Error::UnexpectedKind(other)),
         }
@@ -264,8 +262,8 @@ impl Frame<'_> for AttachedFrame {
                 act.put(out);
                 kind::ACT
             }
-            AttachedFrame::Resize { rows, cols } => {
-                (*rows, *cols).put(out);
+            AttachedFrame::Resize(size) => {
+                size.put(out);
                 kind::RESIZE
             }
             AttachedFrame::Detach => kind::DETACH,
@@ -620,10 +618,6 @@ mod tests {
     use crate::keys::Modifiers;
     use crate::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 
-    fn size(n: u16) -> NonZeroU16 {
-        NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
-    }
-
     /// `frame` encodes with kind byte `kind`, the wire format's, which a
     /// server and a client of another build read: pinned here as a
     /// number, apart from the names the code gives it. And it decodes to
@@ -656,14 +650,13 @@ mod tests {
         };
         round_trip!(Hello, 1, hello(Role::Attach));
         round_trip!(ServerFrame, 1, ServerFrame::Hello(hello(Role::Kill)));
-        let (rows, cols) = (size(24), size(80));
+        let size = crate::session::default_size();
         let workspace = Some("main".to_owned());
         round_trip!(
             Attach,
             2,
             Attach {
-                rows,
-                cols,
+                size,
                 workspace,
                 read_only: false,
                 env: Vec::new(),
@@ -674,8 +667,7 @@ mod tests {
             Attach,
             2,
             Attach {
-                rows,
-                cols,
+                size,
                 workspace,
                 read_only: true,
                 env: vec![("DISPLAY".into(), ":0".into())],
@@ -694,7 +686,7 @@ mod tests {
             });
             round_trip!(AttachedFrame, 3, AttachedFrame::Act(Box::new(act)));
         }
-        round_trip!(AttachedFrame, 4, AttachedFrame::Resize { rows, cols });
+        round_trip!(AttachedFrame, 4, AttachedFrame::Resize(size));
         round_trip!(AttachedFrame, 5, AttachedFrame::Detach);
         round_trip!(
             Request,

@@ -18,7 +18,6 @@ use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
 use std::io::{ErrorKind, Read, Write};
-use std::num::NonZeroU16;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -463,11 +462,9 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
 }
 
 /// The terminal's rows and columns; a server's default if it does not say.
-fn window_size() -> (NonZeroU16, NonZeroU16) {
+fn window_size() -> fux_vt::Size {
     fuxix::terminal::window_size(std::io::stdout())
-        .map_or(crate::session::default_size().nonzero(), |s| {
-            (s.rows, s.cols)
-        })
+        .map_or(crate::session::default_size(), |s| (s.rows, s.cols).into())
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
@@ -882,11 +879,10 @@ pub fn attach(
         Some(signals) => signals,
         None => Signals::new()?,
     };
-    let (rows, cols) = size.map_or_else(window_size, fux_vt::Size::nonzero);
+    let size = size.unwrap_or_else(window_size);
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
-        rows,
-        cols,
+        size,
         workspace: attaching.workspace.clone(),
         read_only: attaching.read_only,
         env: environment(),
@@ -1083,8 +1079,7 @@ fn attached(
         if is(WINCH) {
             crate::drain(winch);
             if terminal {
-                let (rows, cols) = window_size();
-                send(stream, &AttachedFrame::Resize { rows, cols })?;
+                send(stream, &AttachedFrame::Resize(window_size()))?;
             }
         }
         if let Some(keyboard) = &mut keyboard {

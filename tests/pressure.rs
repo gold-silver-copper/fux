@@ -402,8 +402,7 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
             role: Role::Attach,
         };
         let attach = Attach {
-            rows: nonzero(10)?,
-            cols: nonzero(40)?,
+            size: sized(10, 40)?,
             workspace: None,
             read_only: false,
             env: Vec::new(),

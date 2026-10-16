@@ -112,7 +112,7 @@ macro_rules! nonzero_wire {
         }
     )*};
 }
-nonzero_wire!(NonZeroU8 u8 "status", NonZeroU16 u16 "size");
+nonzero_wire!(NonZeroU8 u8 "status");
 
 /// Nothing: a value of no bytes, as an empty frame's payload.
 impl Wire for () {

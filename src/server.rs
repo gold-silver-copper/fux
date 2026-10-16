@@ -1526,8 +1526,7 @@ impl Server {
             }
             Stage::Attaching(passed, kind) => {
                 let Some(Attach {
-                    rows,
-                    cols,
+                    size,
                     workspace,
                     read_only,
                     env,
@@ -1536,7 +1535,7 @@ impl Server {
                     return Ok(false);
                 };
                 let (passed, kind) = (passed.take(), *kind);
-                match session.attach_as(kind, rows.get(), cols.get(), workspace.as_deref()) {
+                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_deref()) {
                     Ok(client) => {
                         if let Some(view) = session.views.get_mut(&client) {
                             view.read_only = read_only;
@@ -1567,9 +1566,9 @@ impl Server {
                 // The client's terminal was resized, which may have moved
                 // what it shows even if the size it ends at is the same:
                 // forgotten, it is repainted in full either way.
-                Some(AttachedFrame::Resize { rows, cols }) => {
+                Some(AttachedFrame::Resize(size)) => {
                     attached.known = false;
-                    session.resize(attached.client, rows.get(), cols.get());
+                    session.resize(attached.client, size.rows(), size.cols());
                 }
                 Some(AttachedFrame::Detach) => conn.end(session, &ServerFrame::Exit("detached")),
                 None => return Ok(false),

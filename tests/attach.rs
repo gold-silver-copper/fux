@@ -88,8 +88,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     let mut keep = server.attach(10, 40)?;
     keep.wait_for("$")?;
     let attach = Attach {
-        rows: nonzero(5)?,
-        cols: nonzero(20)?,
+        size: sized(5, 20)?,
         workspace: None,
         read_only: false,
         env: Vec::new(),
@@ -950,8 +949,7 @@ fn attach_with(
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
     let attach = Attach {
-        rows: nonzero(8)?,
-        cols: nonzero(30)?,
+        size: sized(8, 30)?,
         workspace: None,
         read_only: false,
         env: Vec::new(),
