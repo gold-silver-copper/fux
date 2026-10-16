@@ -32,60 +32,55 @@ impl fmt::Display for Pid {
     }
 }
 
-/// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
-/// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
-/// `Stop` stopped as "Stopped (signal)".
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Signal {
-    Hup,
-    Int,
-    Term,
-    Kill,
-    Stop,
-    Tstp,
-    Cont,
-    Winch,
-    Quit,
-    Usr1,
-    Usr2,
+/// Expands `/// doc, then Variant "NAME" SIGNAL, ...` to the enum `Signal` of those
+/// variants, `Signal::ALL` in that order, `raw` (each one's `libc::SIGNAL`)
+/// and `named` (the variant whose name, exactly as written, is given).
+macro_rules! signals {
+    ($(#[$doc:meta])* $($variant:ident $name:literal $raw:ident,)*) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Signal {
+            $($variant,)*
+        }
+
+        impl Signal {
+            /// Every signal, in the order they are declared.
+            pub const ALL: [Signal; [$($name),*].len()] = [$(Signal::$variant),*];
+
+            /// The signal's number.
+            pub fn raw(self) -> i32 {
+                match self {
+                    $(Signal::$variant => libc::$raw,)*
+                }
+            }
+
+            /// The signal a name names, written as `fux signal` takes it:
+            /// without `SIG`, in capitals (`TERM`).
+            pub fn named(name: &str) -> Option<Signal> {
+                match name {
+                    $($name => Some(Signal::$variant),)*
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-impl Signal {
-    pub fn raw(self) -> i32 {
-        match self {
-            Signal::Hup => libc::SIGHUP,
-            Signal::Int => libc::SIGINT,
-            Signal::Term => libc::SIGTERM,
-            Signal::Kill => libc::SIGKILL,
-            Signal::Stop => libc::SIGSTOP,
-            Signal::Tstp => libc::SIGTSTP,
-            Signal::Cont => libc::SIGCONT,
-            Signal::Winch => libc::SIGWINCH,
-            Signal::Quit => libc::SIGQUIT,
-            Signal::Usr1 => libc::SIGUSR1,
-            Signal::Usr2 => libc::SIGUSR2,
-        }
-    }
-
-    /// The signal a name names: `TERM`, `SIGTERM` or `term`.
-    pub fn named(name: &str) -> Option<Signal> {
-        let name = name.to_ascii_uppercase();
-        let bare = name.strip_prefix("SIG").unwrap_or(&name);
-        Some(match bare {
-            "HUP" => Signal::Hup,
-            "INT" => Signal::Int,
-            "TERM" => Signal::Term,
-            "KILL" => Signal::Kill,
-            "STOP" => Signal::Stop,
-            "TSTP" => Signal::Tstp,
-            "CONT" => Signal::Cont,
-            "WINCH" => Signal::Winch,
-            "QUIT" => Signal::Quit,
-            "USR1" => Signal::Usr1,
-            "USR2" => Signal::Usr2,
-            _ => return None,
-        })
-    }
+signals! {
+    /// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
+    /// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
+    /// `Stop` stopped as "Stopped (signal)".
+    Hup "HUP" SIGHUP,
+    Int "INT" SIGINT,
+    Term "TERM" SIGTERM,
+    Kill "KILL" SIGKILL,
+    Stop "STOP" SIGSTOP,
+    Tstp "TSTP" SIGTSTP,
+    Cont "CONT" SIGCONT,
+    Winch "WINCH" SIGWINCH,
+    Quit "QUIT" SIGQUIT,
+    Usr1 "USR1" SIGUSR1,
+    Usr2 "USR2" SIGUSR2,
 }
 
 /// Sends `signal` to the process `pid`.
