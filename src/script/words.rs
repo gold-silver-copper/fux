@@ -996,7 +996,12 @@ impl fuxth::Host for Host<'_> {
                             "send-keys to a client takes no wait: wait on the pane after (PANE opts … wait)",
                         ));
                     }
-                    return later(act(*c, ClientAction::Keys(built.inputs)));
+                    let keys = ClientAction::Keys(built.inputs);
+                    let typed = Command::Client {
+                        client: Some(*c),
+                        action: keys,
+                    };
+                    return later(ask(typed, answer));
                 }
                 let target = target(name, &to)
                     .map_err(|_| wrong(name, "a pane, tab, workspace or client", &to))?;

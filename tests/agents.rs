@@ -377,6 +377,8 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
         "q",
         "text",
         "send-keys",
+        // It leaves its answer, as send-keys to a pane does.
+        "drop",
     ])?;
     let mut terminal = server.attach(10, 40)?;
     terminal.ready()?;
