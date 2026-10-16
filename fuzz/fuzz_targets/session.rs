@@ -233,7 +233,7 @@ impl Run {
     fn ask(&mut self, request: Request) -> Reply {
         let origin = match request.context.client {
             Some(client) if self.s.views.contains_key(&client) => Origin::Client(client),
-            Some(_) | None => Origin::default(),
+            Some(_) | None => Origin::Cli(fux::session::Caller::default()),
         };
         match self.s.begin(request.command, &origin) {
             Begun::Done(outcome) => outcome,

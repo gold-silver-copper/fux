@@ -72,15 +72,12 @@ pub enum Timer {
 
 /// Where a command comes from, which says what it acts on when it names no
 /// pane, tab or workspace.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub enum Origin {
     /// A client's key, prompt or menu: where the client is.
     Client(ClientId),
     /// The CLI: who runs the command, and from where.
     Cli(Caller),
-    /// Nowhere: no client and no caller.
-    #[default]
-    Nowhere,
 }
 
 /// A command line's caller on the CLI.
@@ -722,7 +719,6 @@ impl Session {
                 let at = at.map(|(ws, tab)| Place { ws, tab, pane });
                 Ok(Here::Cli(pane, at, caller.cwd.as_deref()))
             }
-            Origin::Nowhere => Ok(Here::NOWHERE),
         }
     }
 
@@ -939,7 +935,6 @@ impl Session {
                 self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
                 None,
             ),
-            Origin::Nowhere => (&[][..], None),
         };
         let mut fresh = Starting {
             socket,
@@ -2160,7 +2155,7 @@ impl Session {
                 }
                 let reason = match origin {
                     Origin::Client(_) => "stopped by kill-server, from a key or the prompt",
-                    Origin::Cli(_) | Origin::Nowhere => "stopped by fux kill-server",
+                    Origin::Cli(_) => "stopped by fux kill-server",
                 };
                 self.outbox.push(Outgoing::Shutdown {
                     reason: reason.into(),
@@ -3219,7 +3214,7 @@ const SHELLS: &[&str] = &[
 fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
     match origin {
         Origin::Cli(_) => format!("closed {}\n", joined(ids, " ")),
-        Origin::Client(_) | Origin::Nowhere => String::new(),
+        Origin::Client(_) => String::new(),
     }
 }
 
@@ -3423,7 +3418,7 @@ pub(crate) mod testing {
             let session = &mut *self.0;
             let origin = match request.context.client {
                 Some(client) if session.views.contains_key(&client) => Origin::Client(client),
-                Some(_) | None => Origin::default(),
+                Some(_) | None => Origin::Cli(super::Caller::default()),
             };
             let outcome = match session.begin(request.command.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
