@@ -535,11 +535,10 @@ struct Saved {
     pending: bool,
     /// The workspaces, tabs and panes it was last saved with.
     shape: Shape,
-    /// A restore is under way: what there is is not saved over the file.
-    restoring: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// One was started, and its end is yet to be seen to
-    /// (`Server::after_restore`).
-    restored: bool,
+    /// A restore was started, and its end is yet to be seen to
+    /// (`Server::after_restore`); while it is under way, the flag is set and
+    /// what there is is not saved over the file.
+    restore: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The server stops: nothing more is saved (or what was, forgotten).
     done: bool,
 }
@@ -582,30 +581,28 @@ impl Saved {
             at: Instant::now(),
             pending: false,
             shape: Shape::default(),
-            restoring: std::sync::Arc::default(),
-            restored: false,
+            restore: None,
             done: false,
         })
     }
 
     /// Brings back the session saved, if there is one, by running it, a
     /// fuxth program, as a client of the server on `socket` does: on a
-    /// thread of its own, as the server serves it. Whether there is one.
-    /// It is not saved over while it comes back (`restoring`).
+    /// thread of its own, as the server serves it. If there is one, its
+    /// flag, set until it is over: it is not saved over while it comes back.
     fn restore(
         &self,
         socket: &SocketPath,
-        restoring: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> bool {
+    ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == ErrorKind::NotFound => return false,
+            Err(e) if e.kind() == ErrorKind::NotFound => return None,
             Err(e) => {
                 log!("{}: {e}; starting afresh", self.path.display());
-                return false;
+                return None;
             }
         };
-        restoring.store(true, std::sync::atomic::Ordering::SeqCst);
+        let restoring = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let (path, socket, done) = (self.path.clone(), socket.clone(), restoring.clone());
         let spawned = std::thread::Builder::new()
             .name("restore".into())
@@ -626,11 +623,10 @@ impl Saved {
                 done.store(false, std::sync::atomic::Ordering::SeqCst);
             });
         if let Err(error) = spawned {
-            restoring.store(false, std::sync::atomic::Ordering::SeqCst);
             log!("could not bring back {}: {error}", self.path.display());
-            return false;
+            return None;
         }
-        true
+        Some(restoring)
     }
 
     /// Saves the layout if it changed and `SAVE_EVERY` has passed since it
@@ -691,7 +687,7 @@ impl Saved {
 
     /// Whether a restore is under way.
     fn restoring(&self) -> bool {
-        self.restoring.load(std::sync::atomic::Ordering::SeqCst)
+        (self.restore.as_ref()).is_some_and(|r| r.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Saves nothing more: the server stops. With `keep`, the layout as it
@@ -818,8 +814,8 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
             false
         }
         Some(saved) => {
-            saved.restored = saved.restore(socket, &saved.restoring);
-            saved.restored
+            saved.restore = saved.restore(socket);
+            saved.restore.is_some()
         }
         None => false,
     };
@@ -999,7 +995,7 @@ impl Server {
         let Some(saved) = &mut self.saved else {
             return;
         };
-        if saved.restoring() || !std::mem::take(&mut saved.restored) {
+        if saved.restoring() || saved.restore.take().is_none() {
             return;
         }
         if self.session.workspaces.is_empty()
