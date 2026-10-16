@@ -9,8 +9,8 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, End, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply,
-    Request, Role, ServerFrame,
+    Attach, AttachedFrame, Decoder, End, Frame, Hello, MAX_PAYLOAD, Mismatch, Reply, Request, Role,
+    ServerFrame,
 };
 use crate::render::{self, Grid};
 use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer};
@@ -1581,11 +1581,7 @@ impl Server {
                     return Ok(false);
                 };
                 let passed = passed.take();
-                let ours = Hello {
-                    protocol: PROTOCOL,
-                    version: env!("CARGO_PKG_VERSION"),
-                    role: hello.role,
-                };
+                let ours = Hello::ours(hello.role);
                 // Refused before the answer, which a client reads as why.
                 if conn.grant.is_some() && hello.role != Role::Command {
                     let refused = "a socket `fux grant` made takes commands only: no client \
@@ -1593,8 +1589,9 @@ impl Server {
                     conn.end(session, &ServerFrame::Exit(refused));
                     return Ok(true);
                 }
+                let between = Mismatch::between(&hello, &ours);
                 conn.send(session, &ServerFrame::Hello(ours));
-                match (Mismatch::between(&hello, &ours), hello.role) {
+                match (between, hello.role) {
                     (Err(mismatch), _) => {
                         conn.end(session, &ServerFrame::Exit(&mismatch.to_string()));
                     }
@@ -1624,7 +1621,7 @@ impl Server {
                     return Ok(false);
                 };
                 let (passed, kind) = (passed.take(), *kind);
-                match session.attach_as(kind, rows.get(), cols.get(), workspace) {
+                match session.attach_as(kind, rows.get(), cols.get(), workspace.as_deref()) {
                     Ok(client) => {
                         if let Some(view) = session.views.get_mut(&client) {
                             view.read_only = read_only;

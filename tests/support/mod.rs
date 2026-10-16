@@ -360,14 +360,14 @@ impl Client {
         let mut stream = UnixStream::connect(&server.socket).map_err(e)?;
         let hello = Hello {
             protocol: PROTOCOL,
-            version: "test",
+            version: "test".into(),
             role: Role::Attach,
         };
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         let attach = Attach {
             rows: nonzero(rows)?,
             cols: nonzero(cols)?,
-            workspace,
+            workspace: workspace.map(str::to_owned),
             read_only,
             env: Vec::new(),
         };

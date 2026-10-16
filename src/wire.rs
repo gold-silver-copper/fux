@@ -13,7 +13,7 @@ use crate::layout::Axis;
 use fuxix::process::Signal;
 use std::time::Duration;
 
-/// Why bytes are not a request.
+/// Why bytes are not the value they should be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The bytes end before the value does.
@@ -31,11 +31,11 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Truncated => f.write_str("a request ends early"),
-            Error::Tag(what, tag) => write!(f, "a request's {what} has no variant {tag}"),
-            Error::NotUtf8 => f.write_str("a request's text is not UTF-8"),
-            Error::Bad(what) => write!(f, "a request's {what} is out of range"),
-            Error::Trailing => f.write_str("bytes after a request"),
+            Error::Truncated => f.write_str("the bytes end early"),
+            Error::Tag(what, tag) => write!(f, "no {what} has tag {tag}"),
+            Error::NotUtf8 => f.write_str("a text that is not UTF-8"),
+            Error::Bad(what) => write!(f, "{what} out of range"),
+            Error::Trailing => f.write_str("bytes after the value"),
         }
     }
 }
@@ -98,12 +98,27 @@ macro_rules! int_wire {
 }
 int_wire!(u8, u16, u32, u64, i64);
 
-impl Wire for std::num::NonZeroU8 {
-    fn put(&self, out: &mut Vec<u8>) {
-        self.get().put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Self::new(u8::get(r)?).ok_or(Error::Bad("status"))
+/// `nonzero_wire!(NonZeroU8 u8 "status", …)` expands to `impl Wire for
+/// NonZeroU8` and so on: the number's bytes, 0 refused as `Bad("status")`.
+macro_rules! nonzero_wire {
+    ($($ty:ident $int:ident $what:literal),*) => {$(
+        impl Wire for std::num::$ty {
+            fn put(&self, out: &mut Vec<u8>) {
+                self.get().put(out);
+            }
+            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+                Self::new($int::get(r)?).ok_or(Error::Bad($what))
+            }
+        }
+    )*};
+}
+nonzero_wire!(NonZeroU8 u8 "status", NonZeroU16 u16 "size");
+
+/// Nothing: a value of no bytes, as an empty frame's payload.
+impl Wire for () {
+    fn put(&self, _: &mut Vec<u8>) {}
+    fn get(_: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(())
     }
 }
 

@@ -354,7 +354,7 @@ impl Fixture {
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| e.to_string())?;
         let hello = Hello {
             protocol: PROTOCOL,
-            version: "walk",
+            version: "walk".into(),
             role: Role::Attach,
         };
         stream

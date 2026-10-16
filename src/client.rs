@@ -181,11 +181,7 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
 /// server's version.
 fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), Error> {
     let mut stream = open(socket)?;
-    let ours = Hello {
-        protocol: PROTOCOL,
-        version: env!("CARGO_PKG_VERSION"),
-        role,
-    };
+    let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
     let mut buffer = vec![0u8; 64 * 1024];
@@ -920,7 +916,7 @@ fn attach_as(
     let attach = Attach {
         rows,
         cols,
-        workspace: attaching.workspace.as_deref(),
+        workspace: attaching.workspace.clone(),
         read_only: attaching.read_only,
         env: environment(),
     };
@@ -1174,14 +1170,16 @@ mod tests {
         let mut decoder = Decoder::default();
         let mut buffer = [0u8; 256];
         let answer = read_frame(&mut client, &mut decoder, &mut buffer, Some(wait));
-        greeted(&OURS, answer, Ok(()))
+        greeted(&ours(), answer, Ok(()))
     }
 
-    const OURS: Hello = Hello {
-        protocol: PROTOCOL,
-        version: "0",
-        role: Role::Command,
-    };
+    fn ours() -> Hello {
+        Hello {
+            protocol: PROTOCOL,
+            version: "0".into(),
+            role: Role::Command,
+        }
+    }
 
     fn write(peer: &mut UnixStream, frame: &ServerFrame) {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
@@ -1192,12 +1190,12 @@ mod tests {
     #[test]
     fn the_client_tells_a_refusal_from_a_timeout() {
         let wait = Duration::from_millis(50);
-        assert!(answer(|peer| write(peer, &ServerFrame::Hello(OURS)), wait).is_ok());
+        assert!(answer(|peer| write(peer, &ServerFrame::Hello(ours())), wait).is_ok());
         // A server of another protocol is refused before anything else is
         // sent to it.
         let other = ServerFrame::Hello(Hello {
             protocol: PROTOCOL + 1,
-            ..OURS
+            ..ours()
         });
         let mismatched = answer(|peer| write(peer, &other), wait);
         assert!(matches!(&mismatched, Err(Error::Mismatch(m)) if m.protocol == PROTOCOL + 1));
@@ -1219,7 +1217,7 @@ mod tests {
             Err(Error::Protocol(crate::protocol::Error::UnexpectedKind(99)))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(&OURS, Ok(Some(ServerFrame::Exit("no"))), Err(no_answer()));
+        let both = greeted(&ours(), Ok(Some(ServerFrame::Exit("no"))), Err(no_answer()));
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }

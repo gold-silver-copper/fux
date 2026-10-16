@@ -86,7 +86,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
     let hello = Hello {
         protocol: PROTOCOL,
-        version: "0",
+        version: "0".into(),
         role: Role::Command,
     };
     let request = Request {

@@ -96,7 +96,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     };
     let hello = Hello {
         protocol: PROTOCOL,
-        version: "test",
+        version: "test".into(),
         role: Role::Attach,
     };
     for broken in [attach.encode().map_err(e)?, hello.encode().map_err(e)?] {
@@ -449,7 +449,7 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
     let hello = Hello {
         protocol: 999,
-        version: "0.0.0",
+        version: "0.0.0".into(),
         role: fux::protocol::Role::Attach,
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
@@ -510,7 +510,7 @@ fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
         let (mut stream, _) = listener.accept().map_err(e)?;
         let hello = ServerFrame::Hello(Hello {
             protocol: 999,
-            version: "9.9.9",
+            version: "9.9.9".into(),
             role: Role::Command,
         });
         let exit = ServerFrame::Exit("whatever the server says");
@@ -553,7 +553,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
         };
         let hello = ServerFrame::Hello(Hello {
             protocol: PROTOCOL,
-            version: "0",
+            version: "0".into(),
             role: Role::Attach,
         });
         std::io::Write::write_all(&mut stream, &hello.encode().map_err(e)?).map_err(e)?;
@@ -945,7 +945,7 @@ fn attach_with(
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
     let hello = Hello {
         protocol: PROTOCOL,
-        version: "test",
+        version: "test".into(),
         role: Role::Attach,
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
