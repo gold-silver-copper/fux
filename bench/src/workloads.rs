@@ -444,7 +444,10 @@ fn paint(
             ids: Vec::new(),
             then: None,
         };
-        s.run_command(&split, &fux::session::Origin::Cli(fux::session::Caller::default()));
+        s.run_command(
+            &split,
+            &fux::session::Origin::Cli(fux::session::Caller::default()),
+        );
     }
     let panes: Vec<_> = s.panes.keys().copied().collect();
     let mut shown = fux::render::Grid::new(0, 0);

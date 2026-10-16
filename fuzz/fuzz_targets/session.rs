@@ -550,9 +550,7 @@ impl Run {
     }
 
     fn screen_open(&self, client: ClientId) -> bool {
-        self.keys
-            .get(&client)
-            .is_some_and(|k| k.screen.is_open())
+        self.keys.get(&client).is_some_and(|k| k.screen.is_open())
     }
 
     /// What a screen's key or paste led to: actions sent, programs run.
