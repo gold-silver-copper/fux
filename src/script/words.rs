@@ -231,10 +231,7 @@ pub fn usage(word: &str) -> Option<String> {
             .find(|(name, ..)| *name == word)
             .map(|(_, effect, ..)| effect)
     };
-    let core = || {
-        let builtin = fuxth::Builtin::ALL.into_iter().find(|b| b.name() == word);
-        builtin.map(|b| b.effect())
-    };
+    let core = || fuxth::Builtin::named(word).map(fuxth::Builtin::effect);
     // Fux's, the prelude's or library's, or the core's; else the
     // language's own syntax, said as it is written.
     let effect = match WORDS.iter().find(|w| w.name == word) {

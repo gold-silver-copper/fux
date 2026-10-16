@@ -41,7 +41,7 @@ mod machine;
 pub mod token;
 mod value;
 
-pub use compile::{Builtin, Compiler, PARSING, Program, Vocabulary};
+pub use compile::{Builtin, Compiler, PARSING, Parsing, Program, Vocabulary};
 pub use error::{Code, Error, Failure};
 pub use machine::{Args, BUILT, Done, Host, LONGEST, Limits, Machine, Outcome};
 pub use token::{Place, Token};

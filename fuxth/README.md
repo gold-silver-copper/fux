@@ -131,6 +131,11 @@ with `contract` if a host gives otherwise. A word that is one step (`dup`
 is `0 pick`) is copied in where it is called, so a mistake in it is placed
 at the call.
 
+For help, [`Builtin`] and [`Parsing`] are the core's words and the parsing
+words: each has `ALL`, `name()` and `named(name)`, a built-in its `effect()`
+and `about()`, a parsing word its `syntax()`. A list's values are
+`List::items()`, read only, so its nesting and size limits hold.
+
 ## Tested
 
 - `tests/examples/`: programs, each with what it leaves or the error it ends
