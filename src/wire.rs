@@ -376,8 +376,8 @@ wire_enum!(MoveTo, "move" {
 });
 wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
 wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
-wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To { cols, rows } });
-wire_enum!(Resized, "resized" { 0 => Tabs(t), 1 => Client(c) });
+wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To(axis, extent) });
+wire_enum!(Resized, "resized" { 0 => Tabs(t, size), 1 => Client(c, size) });
 wire_enum!(Input, "input" { 0 => Key(k), 1 => Text(t), 2 => Paste(t) });
 wire_struct!(CaptureView {
     full,
@@ -427,7 +427,7 @@ wire_enum!(Command, "command" {
     5 => Run { workspace, name, size, cwd, env, argv, log, ids, then },
     6 => Respawn { target, kill, env, argv, then },
     7 => Notify { target, text },
-    8 => Resize { what, size },
+    8 => Resize(what),
     9 => Wait { target, wait },
     10 => SendMouse { target, mouse, row, col, then },
     11 => Kill { target },

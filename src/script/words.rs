@@ -1207,12 +1207,12 @@ impl fuxth::Host for Host<'_> {
                 text: text(name, &next()?)?,
             }),
             "resize" | "resize-auto" => {
-                let what = Resized::Tabs(target(name, &next()?)?);
+                let target = target(name, &next()?)?;
                 let size = match name {
                     "resize" => Some(laid_out(name, &next()?, &next()?)?),
                     _ => None,
                 };
-                tell(Command::Resize { what, size })
+                tell(Command::Resize(Resized::Tabs(target, size)))
             }
             "resize-client" => {
                 let c = client(name, &next()?)?;
@@ -1220,10 +1220,7 @@ impl fuxth::Host for Host<'_> {
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
                     .ok_or_else(|| out_of_range(name, "columns and rows each from 1"))?;
-                tell(Command::Resize {
-                    what: Resized::Client(c),
-                    size: Some(size),
-                })
+                tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
                 let p = pane(name, &next()?)?;
@@ -1234,16 +1231,11 @@ impl fuxth::Host for Host<'_> {
                         return Err(wrong(name, "cells or a percent", &other));
                     }
                 };
-                let by = match name {
-                    "resize-x" => PaneResize::To {
-                        cols: Some(extent),
-                        rows: None,
-                    },
-                    _ => PaneResize::To {
-                        cols: None,
-                        rows: Some(extent),
-                    },
+                let axis = match name {
+                    "resize-x" => Axis::Horizontal,
+                    _ => Axis::Vertical,
                 };
+                let by = PaneResize::To(axis, extent);
                 tell(Command::ResizePane { target: p, by })
             }
             "percent" => {

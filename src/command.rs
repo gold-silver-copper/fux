@@ -107,21 +107,18 @@ pub enum Extent {
 pub enum PaneResize {
     /// Moves the border toward `direction` by this many cells.
     Border(Direction, u16),
-    /// To a width, a height, or both.
-    To {
-        cols: Option<Extent>,
-        rows: Option<Extent>,
-    },
+    /// To a width (horizontal) or a height (vertical).
+    To(Axis, Extent),
 }
 
 /// What `resize` sizes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resized {
     /// A tab, or every tab of a workspace: what they are laid out on while
-    /// no client shows them.
-    Tabs(AnyRef),
+    /// no client shows them, or as the clients showing them are.
+    Tabs(AnyRef, Size),
     /// A headless client's screen.
-    Client(ClientId),
+    Client(ClientId, fux_vt::Size),
 }
 
 /// One thing `send-keys` sends.
@@ -292,10 +289,7 @@ pub enum Command {
         target: Option<AnyRef>,
         text: String,
     },
-    Resize {
-        what: Resized,
-        size: Size,
-    },
+    Resize(Resized),
     Wait {
         /// The pane, or a tab's or workspace's every pane, each of which
         /// answers.

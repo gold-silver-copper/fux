@@ -509,9 +509,9 @@ impl Reach<'_> {
                 Some(target) => self.any(target),
                 None => self.refuse("a notice to every client"),
             },
-            Command::Resize { what, .. } => match what {
-                Resized::Tabs(target) => self.any(target),
-                Resized::Client(_) => self.refuse("a client's size"),
+            Command::Resize(what) => match what {
+                Resized::Tabs(target, _) => self.any(target),
+                Resized::Client(..) => self.refuse("a client's size"),
             },
             Command::SendKeys { target, .. } | Command::Wait { target, .. } => self.any(target),
             Command::Events { target, .. } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
@@ -1229,7 +1229,8 @@ impl Session {
         &mut self,
         pane: PaneId,
         area: Rect,
-        (cols, rows): (Option<Extent>, Option<Extent>),
+        axis: Axis,
+        extent: Extent,
     ) -> Result<String, Error> {
         let cells = |extent: Extent, of: u16| match extent {
             Extent::Cells(n) => n,
@@ -1246,23 +1247,20 @@ impl Session {
         let now = layout::place(&root, area)
             .rect(pane)
             .ok_or(Error::NoPane(pane))?;
-        let want = (
-            cols.map_or(now.w(), |c| cells(c, area.w())),
-            rows.map_or(now.h(), |r| cells(r, area.h())),
-        );
+        let want = match axis {
+            Axis::Horizontal => (cells(extent, area.w()), now.h()),
+            Axis::Vertical => (now.w(), cells(extent, area.h())),
+        };
         let refused = || {
             let message = format!("{pane} cannot be made {}x{} in its tab", want.0, want.1);
             fail("size", message)
         };
-        for (axis, len, asked) in [
-            (Axis::Horizontal, want.0, cols),
-            (Axis::Vertical, want.1, rows),
-        ] {
-            if asked.is_some() {
-                root = layout::resize_to(&root, area, pane, axis, len).ok_or_else(refused)?;
-            }
-        }
-        // A width moved by the height's borders is not met.
+        let len = match axis {
+            Axis::Horizontal => want.0,
+            Axis::Vertical => want.1,
+        };
+        root = layout::resize_to(&root, area, pane, axis, len).ok_or_else(refused)?;
+        // A size the layout cannot give exactly is not met.
         let got = layout::place(&root, area)
             .rect(pane)
             .map(|r| (r.w(), r.h()));
@@ -2358,9 +2356,9 @@ impl Session {
                 }
                 Ok(String::new())
             }
-            Command::Resize { what, size } => {
+            Command::Resize(what) => {
                 match what {
-                    Resized::Tabs(target) => {
+                    Resized::Tabs(target, size) => {
                         // A size no pane could have is refused, not left unmet.
                         if let Some(size) = size
                             && !fux_vt::fits(*size)
@@ -2400,7 +2398,7 @@ impl Session {
                             tab.set_fit(fit);
                         }
                     }
-                    &Resized::Client(client) => {
+                    &Resized::Client(client, size) => {
                         let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
                         if view.kind != ClientKind::Headless {
                             let message = format!(
@@ -2408,9 +2406,7 @@ impl Session {
                             );
                             return Err(fail("not_headless", message));
                         }
-                        if let Some(size) = size {
-                            self.resize(client, size.rows(), size.cols());
-                        }
+                        self.resize(client, size.rows(), size.cols());
                     }
                 }
                 Ok(String::new())
@@ -2629,7 +2625,7 @@ impl Session {
                             Err(fail("nothing_there", message))
                         }
                     }
-                    PaneResize::To { cols, rows } => self.resize_pane_to(pane, area, (cols, rows)),
+                    PaneResize::To(axis, extent) => self.resize_pane_to(pane, area, axis, extent),
                 }
             }
             Command::Log { target, file } => {
