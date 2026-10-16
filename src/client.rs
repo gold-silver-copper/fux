@@ -53,16 +53,8 @@ pub enum Error {
     Refused(String),
     /// The server speaks another protocol.
     Mismatch(crate::protocol::Mismatch),
-    /// The server closed the connection before it answered.
-    NoAnswer,
-    /// The server closed the connection before the command was done.
-    Closed,
     Protocol(crate::protocol::Error),
-    Write(std::io::Error),
-    Read(std::io::Error),
     NotATerminal,
-    /// The pipes that carry signals could not be set up.
-    Signals(std::io::Error),
     /// Anything else that failed: why.
     Failed(String),
 }
@@ -75,13 +67,8 @@ impl Error {
             Error::Mismatch(_) => "mismatch",
             Error::Socket(_)
             | Error::Refused(_)
-            | Error::NoAnswer
-            | Error::Closed
             | Error::Protocol(_)
-            | Error::Write(_)
-            | Error::Read(_)
             | Error::NotATerminal
-            | Error::Signals(_)
             | Error::Failed(_) => "client",
         }
     }
@@ -107,13 +94,8 @@ impl std::fmt::Display for Error {
             }
             Error::Refused(reason) => f.write_str(reason),
             Error::Mismatch(mismatch) => mismatch.fmt(f),
-            Error::NoAnswer => f.write_str("the server did not answer"),
-            Error::Closed => f.write_str("the server closed the connection"),
             Error::Protocol(error) => error.fmt(f),
-            Error::Write(error) => write!(f, "writing to the server: {error}"),
-            Error::Read(error) => write!(f, "reading from the server: {error}"),
             Error::NotATerminal => f.write_str("fux attach needs a terminal on stdin"),
-            Error::Signals(error) => error.fmt(f),
             Error::Failed(why) => f.write_str(why),
         }
     }
@@ -124,6 +106,18 @@ impl std::error::Error for Error {}
 /// A failure while `doing` what its message begins with.
 fn failed<E: std::fmt::Display>(doing: &'static str) -> impl FnOnce(E) -> Error {
     move |e| Error::Failed(format!("{doing}: {e}"))
+}
+
+/// The server closed the connection before it answered.
+fn no_answer() -> Error {
+    Error::Failed("the server did not answer".to_owned())
+}
+
+/// A pipe or a thread of the client's own could not be made.
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Error {
+        Error::Failed(error.to_string())
+    }
 }
 
 impl From<crate::socket::Error> for Error {
@@ -183,7 +177,9 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
     .map_err(failed)
 }
 
-fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder), Error> {
+/// A connection to the server at `socket` as `role`, greeted, with the
+/// server's version.
+fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), Error> {
     let mut stream = open(socket)?;
     let ours = Hello {
         protocol: PROTOCOL,
@@ -201,36 +197,39 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder), Error> {
         &mut buffer,
         Some(Duration::from_secs(5)),
     );
-    greeted(&ours, answer, sent)?;
-    Ok((stream, decoder))
+    let version = greeted(&ours, answer, sent)?;
+    Ok((stream, decoder, version))
 }
 
 /// Whether the server's answer to our Hello, `ours`, and sending it, let
-/// the client go on: a refusal, which a server may make before reading the
-/// Hello, wins, and a server of another protocol is refused here, before
-/// anything it would not understand is sent.
+/// the client go on, and the server's version if so: a refusal, which a
+/// server may make before reading the Hello, wins, and a server of another
+/// protocol is refused here, before anything it would not understand is
+/// sent.
 fn greeted(
     ours: &Hello,
     answer: Result<Option<ServerFrame>, Error>,
     sent: Result<(), Error>,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     match (answer, sent) {
         (Ok(Some(ServerFrame::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
         // A server of another protocol says so, though it hung up before
         // reading the Hello.
         (Ok(Some(ServerFrame::Hello(theirs))), sent) => {
             Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
-            sent
+            sent.map(|()| theirs.version.to_owned())
         }
         (_, Err(error)) => Err(error),
         (Err(error), Ok(())) => Err(error),
-        (Ok(_), Ok(())) => Err(Error::NoAnswer),
+        (Ok(_), Ok(())) => Err(no_answer()),
     }
 }
 
 fn send<'a>(stream: &mut Link, frame: &impl Frame<'a>) -> Result<(), Error> {
     let bytes = frame.encode()?;
-    stream.write_all(&bytes).map_err(Error::Write)
+    stream
+        .write_all(&bytes)
+        .map_err(failed("writing to the server"))
 }
 
 fn read_frame<'d>(
@@ -249,7 +248,7 @@ fn read_frame<'d>(
                 let why = "the server did not answer in time";
                 return Err(Error::Failed(why.to_owned()));
             }
-            Err(e) => return Err(Error::Read(e)),
+            Err(e) => return Err(failed("reading from the server")(e)),
         }
     }
     Ok(decoder.frame()?)
@@ -268,7 +267,7 @@ pub struct Requests {
 
 impl Requests {
     pub fn open(socket: &SocketPath) -> Result<Requests, Error> {
-        let (stream, decoder) = connect(socket, Role::Command)?;
+        let (stream, decoder, _) = connect(socket, Role::Command)?;
         Ok(Requests {
             stream,
             decoder,
@@ -280,24 +279,22 @@ impl Requests {
     /// Sends `request`, and waits for its reply: what the server streams
     /// before it (`events`) goes to `out` as it comes.
     pub fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Error> {
-        self.send(request)?;
+        self.stream.set_read_timeout(None);
+        send(&mut self.stream, request)?;
         loop {
             if let Some(reply) = self.take(out)? {
                 return Ok(reply);
             }
             match self.stream.read(&mut self.buffer) {
-                Ok(0) => return Err(Error::Closed),
+                Ok(0) => {
+                    let closed = "the server closed the connection";
+                    return Err(Error::Failed(closed.to_owned()));
+                }
                 Ok(n) => self.decoder.push(self.buffer.get(..n).unwrap_or_default()),
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                Err(e) => return Err(Error::Read(e)),
+                Err(e) => return Err(failed("reading from the server")(e)),
             }
         }
-    }
-
-    /// Sends `request`, not waiting for its reply.
-    pub fn send(&mut self, request: &Request) -> Result<(), Error> {
-        self.stream.set_read_timeout(None);
-        send(&mut self.stream, request)
     }
 
     /// The reply read already, if it is whole: what comes before it goes to
@@ -363,7 +360,7 @@ pub fn environment() -> Vec<(String, String)> {
 
 /// Stops the server, whatever fux version it is.
 pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
-    let (mut stream, mut decoder) = connect(socket, Role::Kill)?;
+    let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         match read_frame(
@@ -394,14 +391,15 @@ pub enum Probe {
 /// Who answers on `socket`, asking only for its `Hello`, which every
 /// version answers.
 pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
-    let door = crate::door::path(socket.path());
-    match crate::socket::check_client_socket(socket) {
-        Err(crate::socket::Error::NoServer(_)) if !door.exists() => return Ok(Probe::Absent),
-        Err(crate::socket::Error::NoServer(_)) | Ok(()) => {}
-        Err(error) => return Err(error.into()),
-    }
-    let mut stream = match open(socket) {
-        Ok(stream) => stream,
+    match connect(socket, Role::Command) {
+        Ok((.., version)) => Ok(Probe::Server {
+            protocol: PROTOCOL,
+            version,
+        }),
+        Err(Error::Mismatch(Mismatch { protocol, version })) => {
+            Ok(Probe::Server { protocol, version })
+        }
+        Err(Error::Socket(crate::socket::Error::NoServer(_))) => Ok(Probe::Absent),
         // A socket or a door left by a server that is gone.
         Err(Error::Connect { source, .. })
             if matches!(
@@ -409,26 +407,9 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
                 ErrorKind::ConnectionRefused | ErrorKind::TimedOut
             ) =>
         {
-            return Ok(Probe::Left);
+            Ok(Probe::Left)
         }
-        Err(error) => return Err(error),
-    };
-    let ours = Hello {
-        protocol: PROTOCOL,
-        version: env!("CARGO_PKG_VERSION"),
-        role: Role::Command,
-    };
-    send(&mut stream, &ours)?;
-    let mut decoder = Decoder::default();
-    let mut buffer = vec![0u8; 4096];
-    let wait = Some(Duration::from_secs(5));
-    match read_frame(&mut stream, &mut decoder, &mut buffer, wait)? {
-        Some(ServerFrame::Hello(theirs)) => Ok(Probe::Server {
-            protocol: theirs.protocol,
-            version: theirs.version.to_owned(),
-        }),
-        Some(ServerFrame::Exit(reason)) => Err(Error::Refused(reason.to_owned())),
-        Some(_) | None => Err(Error::NoAnswer),
+        Err(error) => Err(error),
     }
 }
 
@@ -569,8 +550,8 @@ impl Keyboard {
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<Job>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
-        let (wake, mut poke) = std::io::pipe().map_err(Error::Signals)?;
-        fuxix::io::set_nonblocking(&wake, true).map_err(|e| Error::Signals(e.into()))?;
+        let (wake, mut poke) = std::io::pipe()?;
+        fuxix::io::set_nonblocking(&wake, true).map_err(std::io::Error::from)?;
         let path = socket.path().to_string_lossy().into_owned();
         let stop = crate::script::Stop::default();
         let stops = stop.clone();
@@ -588,7 +569,7 @@ impl Keyboard {
                     let _ = poke.write_all(b"!");
                 }
             });
-        spawned.map_err(Error::Signals)?;
+        spawned?;
         let mut decoder = crate::decode::Decoder::default();
         // The server asks the terminal about itself as the client attaches.
         decoder.expect(Instant::now());
@@ -651,13 +632,7 @@ impl Keyboard {
     /// A deadline passed (`Keyboard::deadline`): what waited is taken.
     pub fn timeout(&mut self) -> Vec<Act> {
         let mut inputs = Vec::new();
-        if self
-            .decoder
-            .deadline()
-            .is_some_and(|at| at <= Instant::now())
-        {
-            self.decoder.timeout(&mut inputs);
-        }
+        self.decoder.timeout(&mut inputs);
         self.inputs(inputs)
     }
 
@@ -897,38 +872,7 @@ fn run_job(
 
 /// Attaches this terminal to the server until detach or the server's end.
 pub fn attach(socket: &SocketPath, attaching: Attaching) -> Result<(), Error> {
-    let stdin = std::io::stdin();
-    if !std::io::IsTerminal::is_terminal(&stdin) {
-        return Err(Error::NotATerminal);
-    }
-    let (mut stream, mut decoder) = connect(socket, Role::Attach)?;
-    let (rows, cols) = window_size();
-    let raw = Raw::enter(Signals::new()?, &stdin)?;
-    // The terminal goes with the `Attach`, now that it is set up: if the
-    // server takes it, it writes the paints there itself. The keys are
-    // this client's to read either way.
-    let attach = Attach {
-        rows,
-        cols,
-        workspace: attaching.workspace.as_deref(),
-        read_only: attaching.read_only,
-        env: environment(),
-    };
-    let result = send_with_terminal(&mut stream, &attach, &stdin).and_then(|()| {
-        attached(
-            socket,
-            &mut stream,
-            &mut decoder,
-            &raw.signals,
-            &attaching,
-            true,
-        )
-    });
-    drop(raw);
-    // Why the client detached, on a terminal that may be gone: a hung-up
-    // one fails the write, and the detach is no less done.
-    let _ = writeln!(std::io::stdout(), "[{}]", result?);
-    Ok(())
+    attach_as(socket, attaching, None)
 }
 
 /// Attaches a client with no terminal, of `size`, until the server ends it
@@ -939,27 +883,66 @@ pub fn headless(
     attaching: Attaching,
     size: fux_vt::Size,
 ) -> Result<(), Error> {
-    let signals = Signals::new()?;
-    let (mut stream, mut decoder) = connect(socket, Role::Headless)?;
-    let fallback = NonZeroU16::MIN;
+    attach_as(socket, attaching, Some(size))
+}
+
+/// Attaches this terminal, or a client with no terminal of `size`, and
+/// says why it detached on stdout: on a terminal that may be gone, where a
+/// hung-up one fails the write, and the detach is no less done.
+fn attach_as(
+    socket: &SocketPath,
+    attaching: Attaching,
+    size: Option<fux_vt::Size>,
+) -> Result<(), Error> {
+    let stdin = std::io::stdin();
+    let terminal = size.is_none();
+    if terminal && !std::io::IsTerminal::is_terminal(&stdin) {
+        return Err(Error::NotATerminal);
+    }
+    // A client with no terminal answers signals from the start. A
+    // terminal's are caught once connected, so that ^C while connecting
+    // still ends fux, and before it goes raw, so that no wait there misses
+    // one.
+    let early = (!terminal).then(Signals::new).transpose()?;
+    let role = if terminal {
+        Role::Attach
+    } else {
+        Role::Headless
+    };
+    let (mut stream, mut decoder, _) = connect(socket, role)?;
+    let signals = match early {
+        Some(signals) => signals,
+        None => Signals::new()?,
+    };
+    let fallback = |n: u16| NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN);
+    let (rows, cols) = size.map_or_else(window_size, |s| (fallback(s.rows()), fallback(s.cols())));
+    let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
-        rows: NonZeroU16::new(size.rows()).unwrap_or(fallback),
-        cols: NonZeroU16::new(size.cols()).unwrap_or(fallback),
-        workspace: None,
-        read_only: false,
+        rows,
+        cols,
+        workspace: attaching.workspace.as_deref(),
+        read_only: attaching.read_only,
         env: environment(),
     };
-    send(&mut stream, &attach)?;
-    let reason = attached(
-        socket,
-        &mut stream,
-        &mut decoder,
-        &signals,
-        &attaching,
-        false,
-    )?;
-    // Why it detached, on its stdout.
-    let _ = writeln!(std::io::stdout(), "[{reason}]");
+    // The terminal goes with the `Attach`, now that it is set up: if the
+    // server takes it, it writes the paints there itself. The keys are
+    // this client's to read either way.
+    let sent = match terminal {
+        true => send_with_terminal(&mut stream, &attach, &stdin),
+        false => send(&mut stream, &attach),
+    };
+    let result = sent.and_then(|()| {
+        attached(
+            socket,
+            &mut stream,
+            &mut decoder,
+            &signals,
+            &attaching,
+            terminal,
+        )
+    });
+    drop(raw);
+    let _ = writeln!(std::io::stdout(), "[{}]", result?);
     Ok(())
 }
 
@@ -967,8 +950,7 @@ pub fn headless(
 const STOPPED: &str = "detached by a signal";
 
 /// The signals an attached client answers: a new size, and those that
-/// detach it. Made before the terminal goes raw, so that no wait in raw
-/// mode can miss one.
+/// detach it.
 struct Signals {
     winch: std::io::PipeReader,
     stops: std::io::PipeReader,
@@ -977,21 +959,18 @@ struct Signals {
 impl Signals {
     fn new() -> Result<Signals, Error> {
         Ok(Signals {
-            winch: crate::signal_pipe(&[SIGWINCH]).map_err(Error::Signals)?,
-            stops: crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT]).map_err(Error::Signals)?,
+            winch: crate::signal_pipe(&[SIGWINCH])?,
+            stops: crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT])?,
         })
     }
 }
 
-/// The terminal in raw mode on the alternate screen, which only the
-/// signals that end it can make, and which puts the terminal back as it
-/// was once dropped, however the attachment ends.
-struct Raw {
-    signals: Signals,
-}
+/// The terminal in raw mode on the alternate screen, which puts the
+/// terminal back as it was once dropped, however the attachment ends.
+struct Raw;
 
 impl Raw {
-    fn enter(signals: Signals, stdin: &std::io::Stdin) -> Result<Raw, Error> {
+    fn enter(stdin: &std::io::Stdin) -> Result<Raw, Error> {
         let original =
             fuxix::terminal::attributes(stdin).map_err(failed("reading terminal modes"))?;
         let mut raw = original.clone();
@@ -1005,7 +984,7 @@ impl Raw {
             previous(info);
         }));
         // Made before raw mode, so that failing to set it restores too.
-        let entered = Raw { signals };
+        let entered = Raw;
         fuxix::terminal::set_attributes(stdin, &raw).map_err(failed("setting raw mode"))?;
         let mut stdout = std::io::stdout();
         let _ = stdout.write_all(ENTER.as_bytes());
@@ -1037,12 +1016,12 @@ fn send_with_terminal<'a>(
         match fuxix::socket::send_with_fd(stream.output(), &bytes, &terminal) {
             Ok(n) => break n,
             Err(fuxix::Errno::INTR) => continue,
-            Err(errno) => return Err(Error::Write(errno.into())),
+            Err(errno) => return Err(failed("writing to the server")(errno)),
         }
     };
     stream
         .write_all(bytes.get(sent..).unwrap_or_default())
-        .map_err(Error::Write)
+        .map_err(failed("writing to the server"))
 }
 
 /// Holds the attachment until the server ends it, and says why: reads the
@@ -1085,7 +1064,7 @@ fn attached(
                 (ServerFrame::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
                 (ServerFrame::Stdout(said), None) => {
                     let said = String::from_utf8_lossy(said);
-                    let me = said.trim().parse().map_err(|_| Error::NoAnswer)?;
+                    let me = said.trim().parse().map_err(|_| no_answer())?;
                     if !terminal {
                         let _ = stdout
                             .write_all(said.as_bytes())
@@ -1166,7 +1145,7 @@ fn attached(
                 Ok(0) => return Ok("the server closed the connection".into()),
                 Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
                 Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
-                Err(e) => return Err(Error::Read(e)),
+                Err(e) => return Err(failed("reading from the server")(e)),
             }
         }
     }
@@ -1188,9 +1167,9 @@ mod tests {
 
     /// What the client makes of the server's answer to Hello, as read from
     /// a socket in `wait`.
-    fn answer(server: impl FnOnce(&mut UnixStream), wait: Duration) -> Result<(), Error> {
-        let (client, mut peer) = UnixStream::pair().map_err(Error::Signals)?;
-        let mut client = Link::socket(client).map_err(Error::Signals)?;
+    fn answer(server: impl FnOnce(&mut UnixStream), wait: Duration) -> Result<String, Error> {
+        let (client, mut peer) = UnixStream::pair()?;
+        let mut client = Link::socket(client)?;
         server(&mut peer);
         let mut decoder = Decoder::default();
         let mut buffer = [0u8; 256];
@@ -1230,14 +1209,17 @@ mod tests {
             Some("the server did not answer in time")
         );
         let gone = answer(|peer| drop(peer.shutdown(std::net::Shutdown::Write)), wait);
-        assert!(matches!(gone, Err(Error::NoAnswer)));
+        assert_eq!(
+            gone.err().map(|e| e.to_string()).as_deref(),
+            Some("the server did not answer")
+        );
         let garbled = answer(|peer| drop(peer.write_all(&[0, 0, 0, 1, 99])), wait);
         assert!(matches!(
             garbled,
             Err(Error::Protocol(crate::protocol::Error::UnexpectedKind(99)))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(&OURS, Ok(Some(ServerFrame::Exit("no"))), Err(Error::Closed));
+        let both = greeted(&OURS, Ok(Some(ServerFrame::Exit("no"))), Err(no_answer()));
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }
