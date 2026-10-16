@@ -1120,13 +1120,10 @@ impl fuxth::Host for Host<'_> {
                     opts.given.push(name);
                     now(out, Value::App(Fux::Opts(opts)))
                 }
-                Value::App(Fux::Answer(answer)) => match &answer.json {
-                    Some(json) => now(out, Value::str(json.clone())),
-                    None => now(
-                        out,
-                        Value::str(crate::json::Json::str(answer.text.clone()).render()),
-                    ),
-                },
+                // An answer's JSON as given: of several panes, a line each.
+                Value::App(Fux::Answer(answer)) if answer.json.is_some() => {
+                    now(out, Value::str(answer.json.unwrap_or_default()))
+                }
                 other @ (Value::Int(_)
                 | Value::Bool(_)
                 | Value::Str(_)
