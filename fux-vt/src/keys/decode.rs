@@ -576,8 +576,11 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
         // An answer only while one is expected: else `ESC P` is Alt-P at
         // once, and a string that began with it would be an answer read
-        // whole and keys read in pieces.
-        b'P' if answers && dcs_begun(bytes) => dcs(bytes, flush),
+        // whole and keys read in pieces. Its string ends with ST (`ESC \`);
+        // an answer fux uses becomes a `Reply`, and anything else, or
+        // anything cut short at the deadline or past `DCS_LIMIT`, is
+        // dropped, never typed.
+        b'P' if answers && dcs_begun(bytes) => answer(bytes, flush, false, DCS_LIMIT, dcs_reply),
         // What may yet begin an answer waits for the rest while one is
         // expected.
         b'P' if answers && !flush && matches!(bytes.get(2..), Some(b"" | b"0" | b"1")) => {
@@ -675,14 +678,6 @@ fn answer(
 /// `$` (DECRPSS) or `+` (XTGETTCAP).
 fn dcs_begun(bytes: &[u8]) -> bool {
     matches!(bytes.get(..4), Some([0x1b, b'P', b'0' | b'1', b'$' | b'+']))
-}
-
-/// A DCS answer begun (`dcs_begun`): its string, ended by ST (`ESC \`). An
-/// answer fux uses becomes a `Reply`; anything else, or anything cut short
-/// at the deadline or past `DCS_LIMIT`, is dropped, never typed.
-#[cold]
-fn dcs(bytes: &[u8], flush: bool) -> Step {
-    answer(bytes, flush, false, DCS_LIMIT, dcs_reply)
 }
 
 /// What a DCS answer says that fux uses: that the terminal draws underline

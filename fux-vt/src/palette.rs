@@ -24,8 +24,8 @@
 //! ([`crate::Event::ColorQuery`], as without the palette), which knows its
 //! terminal's; a special colour it has not set is not answered, xterm's
 //! default being the terminal's foreground, which fux-vt does not know.
-use crate::Rgb;
 use crate::parser::{Event, Sink};
+use crate::{Reply, Rgb};
 
 /// How many special colours xterm has (ctlseqs, OSC 5): bold, underline,
 /// blink, reverse and italic.
@@ -240,19 +240,19 @@ impl Rgb {
 /// Built byte by byte rather than formatted: zellij asks all 256 entries
 /// as it starts, and formatting cost more than the rest of the work.
 #[inline]
-pub(crate) fn answer(command: u16, index: Option<u16>, colour: Rgb, bel: bool) -> Answer {
+pub(crate) fn answer(command: u16, index: Option<u16>, colour: Rgb, bel: bool) -> Reply {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = Answer::default();
+    let mut out = Reply::default();
     out.push(b"\x1b]");
-    out.decimal(command);
+    decimal(&mut out, command);
     if let Some(index) = index {
-        out.byte(b';');
-        out.decimal(index);
+        out.push(b";");
+        decimal(&mut out, index);
     }
     out.push(b";rgb:");
     for (i, channel) in <[u8; 3]>::from(colour).into_iter().enumerate() {
         if i > 0 {
-            out.byte(b'/');
+            out.push(b"/");
         }
         let high = HEX.get(usize::from(channel >> 4)).copied().unwrap_or(b'0');
         let low = HEX.get(usize::from(channel & 0xf)).copied().unwrap_or(b'0');
@@ -262,44 +262,19 @@ pub(crate) fn answer(command: u16, index: Option<u16>, colour: Rgb, bel: bool) -
     out
 }
 
-/// An answer being built: the longest, `OSC 4 ; 260 ; rgb:`, three
-/// channels and ST, is 28 bytes.
-#[derive(Default)]
-pub(crate) struct Answer {
-    bytes: [u8; 32],
-    len: usize,
-}
-
-impl Answer {
-    /// The answer's bytes.
-    pub(crate) fn bytes(&self) -> &[u8] {
-        self.bytes.get(..self.len).unwrap_or_default()
+/// `n` in decimal: at most three digits, as every colour number is.
+fn decimal(out: &mut Reply, n: u16) {
+    let digit = |d: u16| {
+        let d = u8::try_from(d.checked_rem(10).unwrap_or(0)).unwrap_or(0);
+        b'0'.saturating_add(d)
+    };
+    if n >= 100 {
+        out.push(&[digit(n.checked_div(100).unwrap_or(0))]);
     }
-    fn byte(&mut self, b: u8) {
-        if let Some(slot) = self.bytes.get_mut(self.len) {
-            *slot = b;
-            self.len = self.len.saturating_add(1);
-        }
+    if n >= 10 {
+        out.push(&[digit(n.checked_div(10).unwrap_or(0))]);
     }
-    fn push(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.byte(b);
-        }
-    }
-    /// `n` in decimal: at most three digits, as every colour number is.
-    fn decimal(&mut self, n: u16) {
-        let digit = |d: u16| {
-            let d = u8::try_from(d.checked_rem(10).unwrap_or(0)).unwrap_or(0);
-            b'0'.saturating_add(d)
-        };
-        if n >= 100 {
-            self.byte(digit(n.checked_div(100).unwrap_or(0)));
-        }
-        if n >= 10 {
-            self.byte(digit(n.checked_div(10).unwrap_or(0)));
-        }
-        self.byte(digit(n));
-    }
+    out.push(&[digit(n)]);
 }
 
 /// The parameters of an OSC string, after its command.
@@ -381,7 +356,7 @@ fn pairs(
             // Answered in the form it was asked: OSC 5 by its own number.
             let asked = n.saturating_sub(offset);
             let command = if offset == 0 { 4 } else { 5 };
-            sink.reply(answer(command, Some(asked), colour, bel).bytes());
+            sink.reply(answer(command, Some(asked), colour, bel).as_bytes());
             continue;
         }
         let Some(colour) = Rgb::parse(spec) else {
@@ -445,7 +420,7 @@ fn dynamic(
         let number = i.saturating_add(10);
         if parameter == b"?" {
             match colours.as_ref().and_then(|c| c.dynamic(number)) {
-                Some(colour) => sink.reply(answer(u16::from(number), None, colour, bel).bytes()),
+                Some(colour) => sink.reply(answer(u16::from(number), None, colour, bel).as_bytes()),
                 None if events => sink.event(Event::ColorQuery { number, bel }),
                 None => {}
             }

@@ -63,6 +63,7 @@ pub enum Blink {
 /// (`references/modern/kitty_underlines.html`), numbered as they are there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[repr(u16)]
 pub enum UnderlineStyle {
     /// Not underlined (SGR 24, `4:0`).
     #[default]
@@ -95,14 +96,7 @@ impl UnderlineStyle {
     }
     /// Its number in kitty's `4:n`, 0 to 5.
     pub const fn number(self) -> u16 {
-        match self {
-            Self::None => 0,
-            Self::Single => 1,
-            Self::Double => 2,
-            Self::Curly => 3,
-            Self::Dotted => 4,
-            Self::Dashed => 5,
-        }
+        self as u16
     }
 }
 

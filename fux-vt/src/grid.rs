@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, trimmed};
-use crate::link::{Held, Hyperlink, Links, Pen, RowLinks};
+use crate::link::{Held, Hyperlink, Links, RowLinks};
 use crate::style::Styles;
 use crate::{Attributes, CellRef, Error, Row, RowId};
 
@@ -338,9 +338,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
-        self.cells
-            .try_reserve_exact(size)
-            .map_err(|_| Error::Capacity)?;
+        crate::reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
         Ok(())
@@ -407,18 +405,10 @@ impl Grid {
         // Within the limits: `check_size` came first.
         let rows = usize::from(self.size.rows());
         let cells = if self.unmade { 0 } else { self.size.cells() };
-        self.cells
-            .try_reserve_exact(cells.saturating_sub(self.cells.len()))
-            .map_err(|_| Error::Capacity)?;
-        self.meta
-            .try_reserve_exact(rows.saturating_sub(self.meta.len()))
-            .map_err(|_| Error::Capacity)?;
-        self.texts
-            .try_reserve_exact(rows.saturating_sub(self.texts.len()))
-            .map_err(|_| Error::Capacity)?;
-        self.linked
-            .try_reserve_exact(rows.saturating_sub(self.linked.len()))
-            .map_err(|_| Error::Capacity)?;
+        crate::reserve(&mut self.cells, cells)?;
+        crate::reserve(&mut self.meta, rows)?;
+        crate::reserve(&mut self.texts, rows)?;
+        crate::reserve(&mut self.linked, rows)?;
         self.order
             .try_reserve_exact(rows.saturating_sub(self.order.len()))?;
         Ok(())
@@ -458,6 +448,11 @@ impl Grid {
     }
     pub fn history_len(&self) -> usize {
         self.history.len()
+    }
+    /// The cursor's row, counted from the oldest row history keeps.
+    pub(crate) fn cursor_index(&self) -> Option<usize> {
+        self.history_len()
+            .checked_add(usize::from(self.cursor.row()))
     }
     /// The slot of the screen's row `row`, counted from 0 at the top.
     fn screen_slot(&self, row: usize) -> Option<usize> {
@@ -696,7 +691,7 @@ impl Grid {
         &mut self,
         row: u16,
         span: Range<usize>,
-        pen: Option<&Pen>,
+        pen: Option<&Hyperlink>,
         version: u64,
     ) {
         let link = match pen {
@@ -720,8 +715,8 @@ impl Grid {
     /// line, as printing makes it once.
     #[cold]
     #[inline(never)]
-    fn open(&mut self, pen: &Pen, version: u64) {
-        let link = self.intern(&pen.uri, pen.id.as_ref(), pen.key, version);
+    fn open(&mut self, pen: &Hyperlink, version: u64) {
+        let link = self.intern(pen, version);
         self.links.open = link.map_or(Held::Refused, Held::At);
     }
     /// Gives the cells `span` of live row `row` link `link`, or none.
@@ -794,7 +789,7 @@ impl Grid {
             }
         };
         self.cells.iter().for_each(&mut mark);
-        self.history.each_cell(mark);
+        self.history.each_cell_mut(|cell| mark(cell));
         let renumber = Arc::make_mut(&mut self.styles).retain(&used);
         let mut renumbered = |cell: &mut Compact| {
             if let Some(&new) = Styles::place(cell.style()).and_then(|i| renumber.get(i)) {
@@ -826,16 +821,11 @@ impl Grid {
         self.links = Links::default();
     }
 
-    /// The link of `uri` and `id`, made with `key` if no row has it. With
+    /// The grid's link of the one `opened`, made if no row has it. With
     /// no room for it, room is made (`make_room`), at most once in a while
     /// after that fails; `None` if there is still none.
-    pub fn intern(
-        &mut self,
-        uri: &Arc<str>,
-        id: Option<&Arc<str>>,
-        key: u64,
-        version: u64,
-    ) -> Option<Hyperlink> {
+    pub fn intern(&mut self, opened: &Hyperlink, version: u64) -> Option<Hyperlink> {
+        let (uri, id) = (&opened.uri, opened.id.as_ref());
         if let Some(id) = id
             && let Some(link) = self.links.find(uri, id)
         {
@@ -852,7 +842,7 @@ impl Grid {
                 return None;
             }
         }
-        self.links.insert(uri, id, key)
+        self.links.insert(opened)
     }
 
     /// Makes room for links: the rows' links are counted again
@@ -877,25 +867,17 @@ impl Grid {
         }
     }
 
-    /// Marks live row `row` as where a prompt starts (OSC 133 ; A).
     /// The newest version of a history row let go past the limit.
     pub(crate) fn let_go(&self) -> u64 {
         self.history.let_go
     }
-    pub fn mark_prompt(&mut self, row: u16) {
+    /// Marks live row `row` as where a prompt starts (OSC 133 ; A), or
+    /// not: ED erased it.
+    pub fn set_prompt(&mut self, row: u16, prompt: bool) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
         {
-            m.prompt = true;
-        }
-    }
-
-    /// Unmarks live row `row` as where a prompt starts: ED erased it.
-    pub fn clear_prompt(&mut self, row: u16) {
-        if let Some(slot) = self.slot(row)
-            && let Some(m) = self.meta.get_mut(slot)
-        {
-            m.prompt = false;
+            m.prompt = prompt;
         }
     }
 
@@ -1023,7 +1005,7 @@ impl Grid {
             for y in 0..self.size.rows() {
                 if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
                     found |= erase(self, y, 0, cols);
-                    self.clear_prompt(y);
+                    self.set_prompt(y, false);
                 }
             }
         }
@@ -1836,16 +1818,6 @@ impl Grid {
         } else {
             (self.size.lines(), self.size.columns())
         }
-    }
-    /// BS without reverse wraparound: back a column, stopping at the left
-    /// margin unless the cursor is already left of it (xterm's
-    /// `CursorBack`).
-    #[inline]
-    pub fn back(&mut self) {
-        if self.lr && self.cursor.col == self.columns.first() {
-            return;
-        }
-        self.cursor.col = self.cursor.col.saturating_sub(1);
     }
     /// CUF, or HPR (`absolute`, outside origin mode): the cursor `n`
     /// columns right, no further than the right margin, for CUF while the

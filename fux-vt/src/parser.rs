@@ -1329,16 +1329,7 @@ impl Parser {
         bel: bool,
         sink: &mut impl Sink,
     ) -> Result<(), Error> {
-        let (command, rest) = match payload.iter().position(|b| *b == b';') {
-            Some(i) => (
-                payload.get(..i).unwrap_or_default(),
-                payload
-                    .get(i..)
-                    .and_then(|r| r.get(1..))
-                    .unwrap_or_default(),
-            ),
-            None => (payload, &[][..]),
-        };
+        let (command, rest) = crate::split_semicolon(payload).unwrap_or((payload, &[]));
         match command {
             b"133" if self.options.has(Feature::PromptMarks) => {
                 return self.screen.prompt_osc(rest);
@@ -1382,19 +1373,14 @@ impl Parser {
                 }
             }
             b"99" => {
-                let text = rest
-                    .iter()
-                    .position(|b| *b == b';')
-                    .and_then(|i| rest.get(i..)?.get(1..));
+                let text = crate::split_semicolon(rest).map(|(_, text)| text);
                 sink.event(Event::Notification(text.unwrap_or_default()));
             }
             b"52" => {
-                if let Some(i) = rest.iter().position(|b| *b == b';') {
-                    let selection = rest.get(..i).unwrap_or_default();
-                    let data = rest.get(i..).and_then(|r| r.get(1..)).unwrap_or_default();
-                    if data != b"?" {
-                        sink.event(Event::Clipboard { selection, data });
-                    }
+                if let Some((selection, data)) = crate::split_semicolon(rest)
+                    && data != b"?"
+                {
+                    sink.event(Event::Clipboard { selection, data });
                 }
             }
             _ => color_queries(command, rest, bel, sink),

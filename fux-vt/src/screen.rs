@@ -1,5 +1,5 @@
 use crate::compact::{Compact, PROTECTED};
-use crate::link::{Held, Pen};
+use crate::link::Held;
 use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
 use crate::{
@@ -355,7 +355,7 @@ pub struct Screen {
     /// a cell of its own, as long as nothing but printing came after it.
     repeat: Option<char>,
     /// The hyperlink the program opened (OSC 8), which glyphs printed take.
-    link: Option<Pen>,
+    link: Option<Hyperlink>,
     /// Whether a link was opened since the screen was made or reset: until
     /// one is, no row has links, and printing, which asks this alone,
     /// leaves the links be.
@@ -437,7 +437,7 @@ fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
     width != 2
         || i.checked_add(1)
             .and_then(|j| cells.get(j))
-            .is_some_and(|c| c.same(&Compact::continuation()))
+            .is_some_and(|c| *c == Compact::continuation())
 }
 
 impl Screen {
@@ -737,7 +737,7 @@ impl Screen {
     /// The hyperlink the program has open (`OSC 8 ; params ; URI ST`), which
     /// glyphs printed now take: its URI and `id`.
     pub fn hyperlink(&self) -> Option<(&str, Option<&str>)> {
-        self.link.as_ref().map(|pen| (&*pen.uri, pen.id.as_deref()))
+        self.link.as_ref().map(|link| (link.uri(), link.id()))
     }
     /// Whether row `row` of the screen is where a prompt starts (see
     /// [`Row::starts_prompt`]).
@@ -787,7 +787,7 @@ impl Screen {
             let key = self.next_link;
             // Keys never run out in practice: one a link opened.
             self.next_link = key.checked_add(1)?;
-            Some(Pen {
+            Some(Hyperlink {
                 uri: uri.into(),
                 id: id.map(Into::into),
                 key,
@@ -841,7 +841,7 @@ impl Screen {
             let kind = parts.find_map(|option| option.strip_prefix(b"k="));
             if kind.is_none_or(|k| k == b"i") {
                 let row = self.grid().cursor.row();
-                self.grid_mut().mark_prompt(row);
+                self.grid_mut().set_prompt(row, true);
                 self.prompted();
             }
             return Ok(());
@@ -858,7 +858,7 @@ impl Screen {
         }
         if command != b"L" {
             let row = self.grid().cursor.row();
-            self.grid_mut().mark_prompt(row);
+            self.grid_mut().set_prompt(row, true);
             self.prompted();
         }
         Ok(())
@@ -1190,13 +1190,9 @@ impl Screen {
         // With margins, the line feed goes from the column the glyph did
         // not fit in, which says whether it scrolls, then to the left
         // margin (xterm's `WrapLine`).
-        if self.grid().lr() {
-            self.new_line_in_margins()?;
-            return Ok(self.grid().line_end());
-        }
-        self.grid_mut().set_col(0);
-        self.linefeed()?;
-        Ok(end)
+        self.new_line()?;
+        let g = self.grid();
+        Ok(if g.lr() { g.line_end() } else { end })
     }
 
     pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
@@ -1287,7 +1283,7 @@ impl Screen {
                 let Some(current) = cells.get(i) else {
                     return false;
                 };
-                if current.same(&glyph) && whole(cells, i, width) {
+                if *current == glyph && whole(cells, i, width) {
                     return false;
                 }
                 // An overwrite at either half removes the other half too.
@@ -1592,7 +1588,7 @@ impl Screen {
         match byte {
             // Back a column, stopping at the left margin unless the cursor
             // is already left of it (xterm's `CursorBack`).
-            8 => g.back(),
+            8 => g.backward(1),
             9 => self.tab(1, true),
             // LNM: a new line, the carriage returned too.
             10..=12 if new_line => self.new_line()?,
@@ -1859,30 +1855,21 @@ impl Screen {
         self.with_grid(|g, _, v| g.erase_unprotected(row, start, end, blank, v));
     }
 
-    /// ED, EL, DECSED or DECSEL while glyphs may be protected: DECSED and
-    /// DECSEL (`private`) leave them with any protection, ED and EL with
-    /// ISO's alone (xterm's `do_erase_display`). Whether it erased: ED and
-    /// EL under DEC protection erase every cell, as `csi` does without. Out
-    /// of line: inlined, the tmux recordings count up to 0.35% more
-    /// instructions (fux-bench).
+    /// ED or EL (`display`), or DECSED or DECSEL (`private`), in `mode`,
+    /// while glyphs may be protected: DECSED and DECSEL leave them with any
+    /// protection, ED and EL with ISO's alone (xterm's `do_erase_display`
+    /// and `do_erase_line`). Whether it erased: ED and EL under DEC
+    /// protection erase every cell, as `csi` does without. The rest is as
+    /// for ED and EL. As in xterm, an ED of the whole screen (2, or 0 from
+    /// the first cell, or 1 from the last) that finds no protected glyph
+    /// ends the protection: until the next DECSCA or SPA, erases leave
+    /// nothing. Out of line: inlined, the tmux recordings count up to 0.35%
+    /// more instructions (fux-bench).
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, mode: u16) -> bool {
-        if private || self.protection == Protection::Iso {
-            self.selective_erase(display, mode);
-            return true;
+        if !private && self.protection != Protection::Iso {
+            return false;
         }
-        false
-    }
-
-    /// ED or EL (`display`) in `mode` leaving protected glyphs: DECSED and
-    /// DECSEL with any protection, ED and EL with ISO's (xterm's
-    /// `do_erase_display` and `do_erase_line`). The rest is as for ED and
-    /// EL. As in xterm, an ED of the whole screen (2, or 0 from the first
-    /// cell, or 1 from the last) that finds no protected glyph ends the
-    /// protection: until the next DECSCA or SPA, erases leave nothing. Out
-    /// of line, as protection is rare and `csi` is on every CSI's way.
-    #[inline(never)]
-    fn selective_erase(&mut self, display: bool, mode: u16) {
         let blank = self.blank_style();
         let version = self.version;
         let g = self.grid_mut();
@@ -1896,6 +1883,7 @@ impl Screen {
         if display && whole && !found {
             self.protection = Protection::Off;
         }
+        true
     }
 
     /// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
@@ -1934,7 +1922,7 @@ impl Screen {
                 });
             }
             g.wrap(y, false, version);
-            g.clear_prompt(y);
+            g.set_prompt(y, false);
         }
     }
 

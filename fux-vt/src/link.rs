@@ -43,9 +43,9 @@ const STALL: u32 = 256;
 /// URI and `id` are shared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hyperlink {
-    key: u64,
-    uri: Arc<str>,
-    id: Option<Arc<str>>,
+    pub(crate) key: u64,
+    pub(crate) uri: Arc<str>,
+    pub(crate) id: Option<Arc<str>>,
 }
 
 impl Hyperlink {
@@ -278,7 +278,7 @@ pub(crate) struct Links {
     ids: HashMap<(Arc<str>, Arc<str>), Hyperlink>,
     /// Links still to refuse before making room is tried again.
     stalled: u32,
-    /// The link the program has open (`Pen`), as the grid has it.
+    /// The link the program has open (`Screen::link`), as the grid has it.
     pub(crate) open: Held,
 }
 
@@ -299,17 +299,9 @@ impl Links {
     }
     /// A new link, sharing the strings of the link opened; `None` if it
     /// does not fit.
-    pub(crate) fn insert(
-        &mut self,
-        uri: &Arc<str>,
-        id: Option<&Arc<str>>,
-        key: u64,
-    ) -> Option<Hyperlink> {
-        let link = Hyperlink {
-            key,
-            uri: Arc::clone(uri),
-            id: id.map(Arc::clone),
-        };
+    pub(crate) fn insert(&mut self, opened: &Hyperlink) -> Option<Hyperlink> {
+        let link = opened.clone();
+        let (uri, id) = (&link.uri, link.id.as_ref());
         if !self.fits(uri, link.id()) {
             return None;
         }
@@ -398,16 +390,6 @@ impl Links {
     }
 }
 
-/// A link a program opened (OSC 8), which the cells printed take until it
-/// is closed: its URI and `id`, and its key. Each grid it is printed in
-/// makes its own link of it (`Links::open`).
-#[derive(Clone, Debug)]
-pub(crate) struct Pen {
-    pub(crate) uri: Arc<str>,
-    pub(crate) id: Option<Arc<str>>,
-    pub(crate) key: u64,
-}
-
 /// What the open link is in one grid.
 #[derive(Clone, Debug, Default)]
 pub(crate) enum Held {
@@ -425,9 +407,7 @@ pub(crate) enum Held {
 /// printable ASCII (which the spec leaves undefined, and which could not be
 /// passed on to another terminal intact), opens nothing.
 pub(crate) fn parse(payload: &[u8]) -> Option<(&str, Option<&str>)> {
-    let split = payload.iter().position(|b| *b == b';')?;
-    let params = payload.get(..split)?;
-    let uri = payload.get(split.checked_add(1)?..)?;
+    let (params, uri) = crate::split_semicolon(payload)?;
     // `id=value` among `key=value` pairs separated by `:`; an empty id is
     // no id.
     let id = params

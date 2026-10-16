@@ -98,7 +98,7 @@ impl Screen {
         let col = self.grid().cursor.col();
         let width = self.size().cols();
         let across = cols.min(width.saturating_sub(col));
-        let Some(top) = self.cursor_row_id() else {
+        let Some(top) = self.cursor_mark().map(|mark| mark.row) else {
             return Ok(());
         };
         for row in 0..rows {
@@ -187,14 +187,6 @@ impl Screen {
         let index = grid.index_of(id).and_then(|i| i64::try_from(i).ok());
         let top = i64::try_from(grid.history_len()).unwrap_or(i64::MAX);
         index.map_or(i64::MIN, |i| i.saturating_sub(top))
-    }
-
-    fn cursor_row_id(&self) -> Option<RowId> {
-        let grid = self.grid();
-        let index = grid
-            .history_len()
-            .checked_add(usize::from(grid.cursor.row()))?;
-        grid.row_at(index).map(|row| row.id())
     }
 
     /// The pixel size of the text area, for a program's `CSI 14 t`.
