@@ -157,123 +157,37 @@ pub enum Error {
     NoTabGiven,
     NoTab(TabId),
     NoWorkspaceGiven,
-    /// The caller's `FUX_PANE`, a pane of another server.
-    StrayPane(String),
     /// A `-t NAME` that names no tab, or several: why.
     NotNamed(String),
-    /// A command through a socket whose grant was revoked.
-    Revoked,
     /// `--id` asked for an id given before, or one there is.
     IdTaken(String),
-    /// `--id` of a kind the command makes none of, or two of one kind.
-    IdKind(String),
     /// `--id` so far ahead that ids would run out after it.
     IdTooHigh(String),
-    /// A command from a granted socket that names something outside its
-    /// workspace.
-    OutOfScope {
-        what: String,
-        scope: String,
-    },
-    /// A command from a granted socket that reaches what is not its.
-    NotGranted {
-        what: &'static str,
-        scope: String,
-    },
-    /// `ls --get` of a field the target has not: those it has.
-    NoField {
-        target: String,
-        field: String,
-        fields: String,
-    },
-    /// `kill-server` from the CLI, run in one of the server's own panes.
-    OwnServer(Option<PaneId>),
-    /// `kill-server` from the CLI, with people's terminals attached.
-    PeopleAttached(usize),
     /// A kill from the CLI that names nothing, which would close the
     /// caller's own pane, tab or workspace: its usage.
     KillNeedsTarget(&'static str),
-    NoClientGiven,
     NoClient(ClientId),
-    NoWorkspaces,
     NoBuffer(usize),
-    // What the client's view has none of.
-    NoLastPane,
     /// The client focuses no pane.
     NoPaneToCopy,
-    /// The client's tab, its panes moved out.
-    TabEmpty,
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
     OnlyOne(Kind),
     AtEnd(Kind),
-    NoBorder {
-        pane: PaneId,
-        direction: Direction,
-    },
     NoNeighbor {
         from: PaneId,
         direction: Direction,
     },
-    /// Nothing runs in the pane but its shell.
-    OnlyShell(PaneId),
     /// The pane's program has exited: it takes no input.
     Exited {
         pane: PaneId,
         status: crate::process::Ended,
     },
-    /// The pane's program has not asked for mouse reports.
-    NoMouse(PaneId),
-    /// It asked for clicks, not for motion (with no button held, or at all).
-    NoMotion(PaneId),
-    /// It asked for X10 reports: presses alone.
-    OnlyPresses(PaneId),
-    /// A cell the encoding it asked for cannot say (legacy: past 223).
-    MouseUnencodable {
-        pane: PaneId,
-        row: u16,
-        col: u16,
-    },
-    /// A size no pane can have.
-    TooBig(fux_vt::Size),
-    /// A size a tab's panes cannot all have.
-    TooSmall(TabId, usize),
-    /// A name several tabs have, and no workspace.
-    Named(String),
-    /// A split that leaves no room for the new pane.
-    NoRoom(PaneId),
-    /// A cell outside the pane.
-    OutsidePane {
-        pane: PaneId,
-        rows: u16,
-        cols: u16,
-    },
-    /// No way of moving the pane's borders makes it this size.
-    CannotResize {
-        pane: PaneId,
-        cols: u16,
-        rows: u16,
-    },
-    /// A command that waits, from where nothing can wait for it.
-    WaitsOnlyFromCli,
-    /// A client with a terminal, which says its size itself.
-    NotHeadless(ClientId),
     NotADirectory(PathBuf),
-    /// A file `run --log` cannot make.
-    Log(PathBuf, std::io::Error),
-    /// A signal `fux signal` could not send.
-    Signal(fuxix::Errno),
-    /// A pane `respawn` cannot start again: a shell's, or a program that
-    /// still runs.
-    NotRun(PaneId),
-    StillRunning(PaneId),
     // What copy mode cannot do.
     NoRows,
     /// A selection of more than `MAX_CELLS` cells.
     SelectionTooLarge,
     // A name that cannot be given.
-    EmptyName,
-    ControlInName,
-    LongName,
     NameTaken(String),
     /// `run -n NAME` where a tab has the name: `-t NAME` would not know
     /// which, so the program is not started. The tab and its panes.
@@ -282,13 +196,26 @@ pub enum Error {
     NameReadAsTarget(String),
     /// A counter of IDs, never reused, that would wrap.
     IdsExhausted(&'static str),
-    LineTooLong,
     // What failed below the session.
     Usage(command::Usage),
     Words(crate::words::Error),
     Pane(crate::pane::Error),
     Process(crate::process::Error),
     Config(crate::config::Error),
+    /// Any other failure, made in one place and told apart by its code
+    /// alone: the code `--json` names, and why.
+    Failed {
+        code: &'static str,
+        message: String,
+    },
+}
+
+/// A failure of kind `code` (see [`Error::Failed`]).
+fn fail(code: &'static str, message: impl Into<String>) -> Error {
+    Error::Failed {
+        code,
+        message: message.into(),
+    }
 }
 
 impl Error {
@@ -296,61 +223,29 @@ impl Error {
     /// script to tell failures apart by.
     pub fn code(&self) -> &'static str {
         match self {
-            Error::NoWorkspace(_) | Error::NoWorkspaceNamed(_) | Error::NoWorkspaces => {
-                "no_workspace"
-            }
-            Error::NoPane(_) => "no_pane",
+            Error::NoWorkspace(_) | Error::NoWorkspaceNamed(_) => "no_workspace",
+            Error::NoPane(_) | Error::NoPaneToCopy => "no_pane",
             Error::NoTab(_) => "no_tab",
             Error::NoPaneGiven
             | Error::NoTabGiven
             | Error::NoWorkspaceGiven
-            | Error::NoClientGiven
+            | Error::NotNamed(_)
             | Error::KillNeedsTarget(_) => "no_target",
-            Error::StrayPane(_) => "stray_pane",
-            Error::NoField { .. } => "no_field",
-            Error::OutOfScope { .. } | Error::NotGranted { .. } | Error::Revoked => "not_granted",
-            Error::NotNamed(_) => "no_target",
-            Error::IdTaken(_) | Error::IdKind(_) | Error::IdTooHigh(_) => "id",
-            Error::OwnServer(_) => "own_server",
-            Error::PeopleAttached(_) => "people_attached",
+            Error::IdTaken(_) | Error::IdTooHigh(_) => "id",
             Error::NoClient(_) => "no_client",
-            Error::NotHeadless(_) => "not_headless",
             Error::NoBuffer(_) => "no_buffer",
-            Error::NoLastPane | Error::NoPaneToCopy | Error::TabEmpty => "no_pane",
-            Error::OnlyOne(_)
-            | Error::AtEnd(_)
-            | Error::NoBorder { .. }
-            | Error::NoNeighbor { .. } => "nothing_there",
-            Error::OnlyShell(_) => "only_shell",
+            Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => "nothing_there",
             Error::Exited { .. } => "exited",
-            Error::NoMouse(_)
-            | Error::NoMotion(_)
-            | Error::OnlyPresses(_)
-            | Error::MouseUnencodable { .. }
-            | Error::OutsidePane { .. } => "mouse",
-            Error::TooBig(..)
-            | Error::TooSmall(..)
-            | Error::NoRoom(_)
-            | Error::CannotResize { .. } => "size",
-            Error::Named(_) => "ambiguous",
-            Error::WaitsOnlyFromCli => "cli_only",
             Error::NotADirectory(_) => "not_a_directory",
-            Error::Log(..) => "log",
-            Error::Signal(_) => "signal",
-            Error::NotRun(_) => "not_run",
-            Error::StillRunning(_) => "still_running",
             Error::NoRows | Error::SelectionTooLarge => "selection",
-            Error::EmptyName
-            | Error::ControlInName
-            | Error::LongName
-            | Error::NameReadAsTarget(_) => "bad_name",
+            Error::NameReadAsTarget(_) => "bad_name",
             Error::NameTaken(_) | Error::TabNameTaken(..) => "name_taken",
             Error::IdsExhausted(_) => "ids_exhausted",
-            Error::LineTooLong => "too_long",
             Error::Usage(_) | Error::Words(_) => "usage",
             Error::Pane(crate::pane::Error::NotReading) => "not_reading",
             Error::Pane(_) | Error::Process(_) => "start",
             Error::Config(_) => "config",
+            Error::Failed { code, .. } => code,
         }
     }
 }
@@ -368,13 +263,7 @@ impl std::fmt::Display for Error {
                 "no workspace given: name one (`str NAME workspace`; for new-tab, the \
                      option `str NAME in`)",
             ),
-            Error::NoField {
-                target,
-                field,
-                fields,
-            } => write!(f, "{target} has no field {field:?}; it has {fields}"),
             Error::NotNamed(why) => f.write_str(why),
-            Error::Revoked => f.write_str("the grant this socket came through was revoked"),
             Error::IdTaken(id) => write!(
                 f,
                 "id {id}: that id, or a higher one, was given before, and ids are never given twice"
@@ -383,140 +272,30 @@ impl std::fmt::Display for Error {
                 f,
                 "id {id}: too far ahead of the ids given so far, which would run out after it"
             ),
-            Error::IdKind(id) => write!(
-                f,
-                "id {id}: not an id this command makes, or one of a kind given twice"
-            ),
-            Error::OutOfScope { what, scope } => write!(
-                f,
-                "{what} is not in workspace {scope}, the only one this socket reaches (grant)"
-            ),
-            Error::NotGranted { what, scope } => write!(
-                f,
-                "this socket reaches workspace {scope} alone (grant), not {what}"
-            ),
-            Error::OwnServer(Some(pane)) => write!(
-                f,
-                "this runs in {pane}, a pane of the server it would stop, with everything else \
-                 in it; force-kill-server stops it anyway"
-            ),
-            Error::OwnServer(None) => f.write_str(
-                "this runs in a pane of the server it would stop, with everything else in it; \
-                 force-kill-server stops it anyway",
-            ),
-            Error::PeopleAttached(1) => f.write_str(
-                "a person is attached to this server; force-kill-server stops it anyway",
-            ),
-            Error::PeopleAttached(n) => {
-                write!(
-                    f,
-                    "{n} people are attached to this server; force-kill-server stops it anyway"
-                )
-            }
             Error::KillNeedsTarget(usage) => write!(
                 f,
                 "from the command line, name what to close: {usage} (so that an empty variable \
                  closes nothing, nor the pane this runs in)"
             ),
-            Error::StrayPane(pane) => write!(
-                f,
-                "FUX_PANE {pane} is a pane of another fux server, not of this one, so it is not \
-                 acted on; name the pane"
-            ),
-            Error::NoClientGiven => f.write_str(
-                "this acts on a client's screen: name one (`str c1 client`; `fux ls` lists them)",
-            ),
             Error::NoClient(id) => write!(f, "no client {id}"),
-            Error::NoWorkspaces => f.write_str("the server has no workspace"),
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Error::NoLastPane => f.write_str("no previously focused pane"),
             Error::NoPaneToCopy => f.write_str("no pane to copy from"),
-            Error::TabEmpty => f.write_str("the tab is empty"),
             Error::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
             Error::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
-            Error::NoBorder { pane, direction } => {
-                write!(f, "{pane} has no border to move {}", direction.name())
-            }
             Error::NoNeighbor { from, direction } => {
                 write!(f, "no pane {} of {from}", direction.name())
             }
-            Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
-            Error::Exited { pane, status } => match status {
-                crate::process::Ended::Exited(_) => {
-                    write!(f, "the program in {pane} {}", crate::process::told(*status))
-                }
-                crate::process::Ended::Signalled(_) => {
-                    write!(
-                        f,
-                        "the program in {pane} was {}",
-                        crate::process::told(*status)
-                    )
-                }
-            },
-            Error::NoMotion(pane) => write!(
-                f,
-                "the program in {pane} takes no motion here: with no button pressed it asked for none, \
-                 and asking for clicks alone (mode 1000) it takes no drags either"
-            ),
-            Error::OnlyPresses(pane) => write!(
-                f,
-                "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
-            ),
-            Error::MouseUnencodable { pane, row, col } => write!(
-                f,
-                "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
-            ),
-            Error::TooBig(size) => {
-                write!(f, "{}x{} is too big for a pane", size.cols(), size.rows())
+            Error::Exited { pane, status } => {
+                let was = match status {
+                    crate::process::Ended::Exited(_) => "",
+                    crate::process::Ended::Signalled(_) => "was ",
+                };
+                let told = crate::process::told(*status);
+                write!(f, "the program in {pane} {was}{told}")
             }
-            Error::TooSmall(tab, panes) => write!(
-                f,
-                "{tab} cannot show its {panes} panes at that size; close some, or choose a bigger one"
-            ),
-            Error::Named(name) => write!(f, "{name:?} names several tabs: use an id"),
-            Error::NoRoom(pane) => write!(
-                f,
-                "{pane}'s tab has no room for another pane; make it bigger first (`TAB COLS ROWS resize`)"
-            ),
-            Error::OutsidePane { pane, rows, cols } => write!(
-                f,
-                "{pane} is {cols}x{rows}: rows count 0-{} and columns 0-{}",
-                rows.saturating_sub(1),
-                cols.saturating_sub(1)
-            ),
-            Error::NoMouse(pane) => {
-                write!(f, "the program in {pane} has not asked for mouse reports")
-            }
-            Error::CannotResize { pane, cols, rows } => {
-                write!(f, "{pane} cannot be made {cols}x{rows} in its tab")
-            }
-            Error::WaitsOnlyFromCli => {
-                f.write_str("wait, events and grant run from the command line")
-            }
-            Error::NotHeadless(client) => write!(
-                f,
-                "{client} has a terminal, which sets its size; resize sizes headless clients"
-            ),
             Error::NotADirectory(path) => write!(f, "{} is not a directory", path.display()),
-            Error::Log(path, error) => write!(f, "the log {}: {error}", path.display()),
-            Error::Signal(error) => write!(f, "sending the signal: {error}"),
-            Error::NotRun(pane) => write!(
-                f,
-                "{pane} runs a shell; respawn starts again what `fux run` started"
-            ),
-            Error::StillRunning(pane) => {
-                write!(
-                    f,
-                    "the program in {pane} still runs; `kill-first` ends it first"
-                )
-            }
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
-            Error::EmptyName => f.write_str("a name cannot be empty or blank"),
-            Error::ControlInName => {
-                f.write_str("a name cannot contain control or invisible characters")
-            }
-            Error::LongName => f.write_str("a name is at most 256 bytes"),
             Error::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
             Error::TabNameTaken(name, ids) => write!(
                 f,
@@ -531,16 +310,15 @@ impl std::fmt::Display for Error {
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
             ),
             Error::IdsExhausted(what) => write!(f, "no {what} IDs are left"),
-            Error::LineTooLong => f.write_str("the command line is too long to type"),
             Error::Usage(error) => error.fmt(f),
             Error::Words(error) => error.fmt(f),
             Error::Pane(error) => error.fmt(f),
             Error::Process(error) => error.fmt(f),
             Error::Config(error) => error.fmt(f),
+            Error::Failed { message, .. } => f.write_str(message),
         }
     }
 }
-
 impl std::error::Error for Error {}
 
 impl From<crate::words::Error> for Error {
@@ -708,7 +486,7 @@ fn shows_nothing_new(command: &Command) -> bool {
 /// the user's alone too.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let failed = |e| Error::Log(path.to_owned(), e);
+    let failed = |e| fail("log", format!("the log {}: {e}", path.display()));
     if path.is_symlink() {
         let link = std::io::Error::other("a symbolic link, which a log does not follow");
         return Err(failed(link));
@@ -737,16 +515,15 @@ struct Reach<'a> {
 
 impl Reach<'_> {
     fn outside(&self, what: String) -> Error {
-        Error::OutOfScope {
-            what,
-            scope: self.scope.to_owned(),
-        }
+        let scope = self.scope;
+        let message =
+            format!("{what} is not in workspace {scope}, the only one this socket reaches (grant)");
+        fail("not_granted", message)
     }
     fn refuse(&self, what: &'static str) -> Result<(), Error> {
-        Err(Error::NotGranted {
-            what,
-            scope: self.scope.to_owned(),
-        })
+        let scope = self.scope;
+        let message = format!("this socket reaches workspace {scope} alone (grant), not {what}");
+        Err(fail("not_granted", message))
     }
     fn pane(&self, id: Option<PaneId>) -> Result<(), Error> {
         let id = match self.session.pane(id, self.here) {
@@ -878,7 +655,13 @@ fn stray(error: Error, origin: &Origin) -> Error {
             Origin::Cli(Caller {
                 stray: Some(pane), ..
             }),
-        ) => Error::StrayPane(pane.clone()),
+        ) => fail(
+            "stray_pane",
+            format!(
+                "FUX_PANE {pane} is a pane of another fux server, not of this one, so it is not \
+                 acted on; name the pane"
+            ),
+        ),
         (error, _) => error,
     }
 }
@@ -1048,10 +831,12 @@ impl Session {
     ) -> Result<(), Error> {
         let pane = self.panes.get(&id).ok_or(Error::NoPane(id))?;
         let Runs::Program(launch) = &pane.runs else {
-            return Err(Error::NotRun(id));
+            let message = format!("{id} runs a shell; respawn starts again what `fux run` started");
+            return Err(fail("not_run", message));
         };
         if pane.process.child().is_some() && !kill {
-            return Err(Error::StillRunning(id));
+            let message = format!("the program in {id} still runs; `kill-first` ends it first");
+            return Err(fail("still_running", message));
         }
         let mut launch = launch.clone();
         if !argv.is_empty() {
@@ -1112,10 +897,10 @@ impl Session {
             }
             _ => None,
         };
-        pane.process
-            .job()
-            .or(program)
-            .ok_or(Error::OnlyShell(pane.id))
+        pane.process.job().or(program).ok_or_else(|| {
+            let message = format!("nothing is running in {} but its shell", pane.id);
+            fail("only_shell", message)
+        })
     }
 
     /// Refuses a name given to a tab (other than `except`, being renamed)
@@ -1236,7 +1021,11 @@ impl Session {
         for (i, id) in ids.iter().enumerate() {
             let twice = ids.iter().take(i).any(|other| other.kind() == id.kind());
             if twice || !kinds.contains(&id.kind()) {
-                return Err(Error::IdKind(describe(*id)));
+                let message = format!(
+                    "id {}: not an id this command makes, or one of a kind given twice",
+                    describe(*id)
+                );
+                return Err(fail("id", message));
             }
             if self.exists(*id) {
                 return Err(Error::IdTaken(describe(*id)));
@@ -1541,7 +1330,12 @@ impl Session {
         let rect = placed
             .rect(new)
             .filter(|_| shows_all)
-            .ok_or(Error::NoRoom(target))?;
+            .ok_or_else(|| {
+                let message = format!(
+                    "{target}'s tab has no room for another pane; make it bigger first (`TAB COLS ROWS resize`)"
+                );
+                fail("size", message)
+            })?;
         Ok(crate::pane::size(rect.h(), rect.w()))
     }
 
@@ -1572,10 +1366,9 @@ impl Session {
             cols.map_or(now.w(), |c| cells(c, area.w())),
             rows.map_or(now.h(), |r| cells(r, area.h())),
         );
-        let refused = || Error::CannotResize {
-            pane,
-            cols: want.0,
-            rows: want.1,
+        let refused = || {
+            let message = format!("{pane} cannot be made {}x{} in its tab", want.0, want.1);
+            fail("size", message)
         };
         for (axis, len, asked) in [
             (Axis::Horizontal, want.0, cols),
@@ -1626,7 +1419,10 @@ impl Session {
                         .filter(|t| t.name == *name);
                     match (tabs.next(), tabs.next()) {
                         (Some(tab), None) => AnyRef::Tab(tab.id),
-                        (Some(_), Some(_)) => return Err(Error::Named(name.clone())),
+                        (Some(_), Some(_)) => {
+                            let message = format!("{name:?} names several tabs: use an id");
+                            return Err(fail("ambiguous", message));
+                        }
                         _ => return Err(error),
                     }
                 }
@@ -1776,7 +1572,7 @@ impl Session {
                 self.workspaces
                     .first()
                     .map(|w| w.id)
-                    .ok_or(Error::NoWorkspaces)?
+                    .ok_or_else(|| fail("no_workspace", "the server has no workspace"))?
             }
         };
         let id = self.ids.client()?;
@@ -2498,7 +2294,8 @@ impl Session {
     /// clients, the server), is refused.
     fn scoped(&self, command: Command, scope: &str, origin: &Origin) -> Result<Command, Error> {
         if scope.is_empty() {
-            return Err(Error::Revoked);
+            let message = "the grant this socket came through was revoked";
+            return Err(fail("not_granted", message));
         }
         // With no target, one that would act anywhere acts on the granted
         // workspace.
@@ -2660,13 +2457,25 @@ impl Session {
                 if let (Origin::Cli(caller), false) = (origin, force) {
                     let pane = caller.pane.filter(|p| self.panes.contains_key(p));
                     if pane.is_some() || caller.inside {
-                        return Err(Error::OwnServer(pane));
+                        let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
+                        let message = format!(
+                            "this runs in{pane} a pane of the server it would stop, with everything \
+                             else in it; force-kill-server stops it anyway"
+                        );
+                        return Err(fail("own_server", message));
                     }
                     let people = (self.views.values())
                         .filter(|v| v.kind == ClientKind::Terminal)
                         .count();
                     if people > 0 {
-                        return Err(Error::PeopleAttached(people));
+                        let who = match people {
+                            1 => "a person is".to_owned(),
+                            n => format!("{n} people are"),
+                        };
+                        let message = format!(
+                            "{who} attached to this server; force-kill-server stops it anyway"
+                        );
+                        return Err(fail("people_attached", message));
                     }
                 }
                 let reason = match origin {
@@ -2854,7 +2663,9 @@ impl Session {
                         if let Some(size) = size
                             && !fux_vt::fits(*size)
                         {
-                            return Err(Error::TooBig(*size));
+                            let message =
+                                format!("{}x{} is too big for a pane", size.cols(), size.rows());
+                            return Err(fail("size", message));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
@@ -2877,7 +2688,11 @@ impl Session {
                                 };
                                 let placed = layout::place(root, area);
                                 if root.panes().iter().any(|p| placed.rect(*p).is_none()) {
-                                    return Err(Error::TooSmall(*tab, root.panes().len()));
+                                    let message = format!(
+                                        "{tab} cannot show its {} panes at that size; close some, or choose a bigger one",
+                                        root.panes().len()
+                                    );
+                                    return Err(fail("size", message));
                                 }
                             }
                         }
@@ -2888,7 +2703,10 @@ impl Session {
                     &Resized::Client(client) => {
                         let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
                         if view.kind != ClientKind::Headless {
-                            return Err(Error::NotHeadless(client));
+                            let message = format!(
+                                "{client} has a terminal, which sets its size; resize sizes headless clients"
+                            );
+                            return Err(fail("not_headless", message));
                         }
                         if let Some(size) = size {
                             self.resize(client, size.rows(), size.cols());
@@ -2898,7 +2716,8 @@ impl Session {
                 Ok(String::new())
             }
             Command::Wait { .. } | Command::Events { .. } | Command::Grant { .. } => {
-                Err(Error::WaitsOnlyFromCli)
+                let message = "wait, events and grant run from the command line";
+                Err(fail("cli_only", message))
             }
             Command::DumpLayout { target } => {
                 let only = match target {
@@ -2919,11 +2738,13 @@ impl Session {
                 let size = p.size();
                 if row >= size.rows() || col >= size.cols() {
                     let (rows, cols) = (size.rows(), size.cols());
-                    return Err(Error::OutsidePane {
-                        pane: p.id,
-                        rows,
-                        cols,
-                    });
+                    let message = format!(
+                        "{} is {cols}x{rows}: rows count 0-{} and columns 0-{}",
+                        p.id,
+                        rows.saturating_sub(1),
+                        cols.saturating_sub(1)
+                    );
+                    return Err(fail("mouse", message));
                 }
                 let mut report = Vec::new();
                 let event = |action, button| fux_vt::keys::mouse::MouseEvent {
@@ -2955,20 +2776,29 @@ impl Session {
                 // X10 reports presses alone: a click is its press, and a
                 // release or the wheel, which it cannot say, is refused.
                 if x10 && matches!(mouse, Mouse::Wheel(_) | Mouse::Release(_)) {
-                    return Err(Error::OnlyPresses(p.id));
+                    let message = format!(
+                        "the program in {} asked for X10 mouse reports: presses alone, no releases or wheel",
+                        p.id
+                    );
+                    return Err(fail("mouse", message));
                 }
                 for event in events {
                     let release = event.action == Release;
                     if !p.screen().encode_mouse(event, &mut report) && !(release && x10) {
-                        return Err(match (event.action, mode) {
-                            (_, fux_vt::MouseProtocolMode::None) => Error::NoMouse(p.id),
-                            (Motion, _) => Error::NoMotion(p.id),
-                            _ => Error::MouseUnencodable {
-                                pane: p.id,
-                                row,
-                                col,
-                            },
-                        });
+                        let pane = p.id;
+                        let message = match (event.action, mode) {
+                            (_, fux_vt::MouseProtocolMode::None) => {
+                                format!("the program in {pane} has not asked for mouse reports")
+                            }
+                            (Motion, _) => format!(
+                                "the program in {pane} takes no motion here: with no button pressed it asked for none, \
+                                 and asking for clicks alone (mode 1000) it takes no drags either"
+                            ),
+                            _ => format!(
+                                "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
+                            ),
+                        };
+                        return Err(fail("mouse", message));
                     }
                 }
                 p.note_input();
@@ -3036,7 +2866,8 @@ impl Session {
             }
             &Command::Signal { target, signal, .. } => {
                 let group = self.signalled(target, here)?;
-                fuxix::process::kill_group(group, signal).map_err(Error::Signal)?;
+                fuxix::process::kill_group(group, signal)
+                    .map_err(|e| fail("signal", format!("sending the signal: {e}")))?;
                 Ok(String::new())
             }
             // From the command line each says what it closed, so a script
@@ -3119,7 +2950,9 @@ impl Session {
                         if tab.edit(resize) {
                             Ok(String::new())
                         } else {
-                            Err(Error::NoBorder { pane, direction })
+                            let message =
+                                format!("{pane} has no border to move {}", direction.name());
+                            Err(fail("nothing_there", message))
                         }
                     }
                     PaneResize::To { cols, rows } => self.resize_pane_to(pane, area, (cols, rows)),
@@ -3234,7 +3067,12 @@ impl Session {
                 let (client, place) = match (client, here) {
                     (Some(c), _) => (c, self.place(c).ok_or(Error::NoClient(c))?),
                     (None, Here::Client(client, place)) => (client, place),
-                    (None, Here::Cli(..)) => return Err(Error::NoClientGiven),
+                    (None, Here::Cli(..)) => {
+                        return Err(fail(
+                            "no_target",
+                            "this acts on a client's screen: name one (`str c1 client`; `fux ls` lists them)",
+                        ));
+                    }
                 };
                 match action {
                     ClientAction::Choices(choices) => {
@@ -3460,9 +3298,12 @@ impl Session {
                 let next = round(&panes, index.unwrap_or(0), toward);
                 *next.ok_or(Error::OnlyOne(Kind::Pane))?
             }
-            PanePick::Last => last.ok_or(Error::NoLastPane)?,
+            PanePick::Last => last.ok_or_else(|| fail("no_pane", "no previously focused pane"))?,
             PanePick::Toward(direction) => {
-                let (root, from) = tab.root().zip(current).ok_or(Error::TabEmpty)?;
+                let (root, from) = tab
+                    .root()
+                    .zip(current)
+                    .ok_or_else(|| fail("no_pane", "the tab is empty"))?;
                 let placement = layout::place(root, Self::pane_area(view));
                 layout::neighbor(&placement, from, direction)
                     .ok_or(Error::NoNeighbor { from, direction })?
@@ -3683,11 +3524,9 @@ impl Session {
                 (scalar, format!("{}\n", value.render()))
             }
             None => {
-                return Err(Error::NoField {
-                    target: describe(target),
-                    field: field.to_owned(),
-                    fields: names.join(", "),
-                });
+                let (target, fields) = (describe(target), names.join(", "));
+                let message = format!("{target} has no field {field:?}; it has {fields}");
+                return Err(fail("no_field", message));
             }
         };
         drop(names);
@@ -3893,7 +3732,10 @@ fn new_pane(
             let mut line = crate::words::shell_line(cmd, fish)?.into_bytes();
             line.push(b'\r');
             let deadline = crate::after(Instant::now(), TYPE_WAIT);
-            Some(Typed::new(line, deadline).ok_or(Error::LineTooLong)?)
+            Some(
+                Typed::new(line, deadline)
+                    .ok_or_else(|| fail("too_long", "the command line is too long to type"))?,
+            )
         }
     };
     let id = ids.pane()?;
@@ -3921,16 +3763,17 @@ fn new_pane(
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
-        return Err(Error::EmptyName);
+        return Err(fail("bad_name", "a name cannot be empty or blank"));
     }
     // Control characters, and the invisible ones that change how text
     // around them shows (zero-width, direction overrides).
     let invisible = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
     if name.chars().any(|c| c.is_control() || invisible(c)) {
-        return Err(Error::ControlInName);
+        let message = "a name cannot contain control or invisible characters";
+        return Err(fail("bad_name", message));
     }
     if name.len() > 256 {
-        return Err(Error::LongName);
+        return Err(fail("bad_name", "a name is at most 256 bytes"));
     }
     Ok(())
 }
