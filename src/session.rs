@@ -907,12 +907,7 @@ impl Session {
         };
         let old = pane.respawned(launch, child.map(Process::Reading), history)?;
         pane.mark_with(nonce.flatten());
-        if let Process::Reading(mut child) | Process::HungUp(mut child) = old {
-            child.leader.closed();
-            child.leader.hang_up();
-            let deadline = crate::after(Instant::now(), GRACE);
-            self.dying.insert(id, Dying { child, deadline });
-        }
+        self.end(id, old, true);
         self.touch();
         Ok(())
     }
@@ -1022,7 +1017,6 @@ impl Session {
             .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
     }
 
-    /// `pane_mut`, for input: a pane whose program has exited takes none.
     /// What panes started for `origin` take of its environment: none of
     /// it for one that sent none (a test, a client of no terminal).
     fn starting_for(&self, origin: &Origin) -> Starting {
@@ -1036,19 +1030,12 @@ impl Session {
             Origin::Cli(caller) => caller.grant.clone(),
             Origin::Client(_) | Origin::Nowhere => None,
         };
-        if env.is_empty() {
-            return Starting {
-                paused,
-                socket,
-                ..Starting::default()
-            };
-        }
         let mut fresh = Starting {
             paused,
             socket,
             ..Starting::default()
         };
-        for name in &self.config.update_environment {
+        for name in (self.config.update_environment.iter()).filter(|_| !env.is_empty()) {
             match env.iter().rev().find(|(k, _)| k == name) {
                 Some((k, v)) => fresh.set.push((k.clone(), v.clone())),
                 None => fresh.unset.push(name.clone()),
@@ -1164,10 +1151,7 @@ impl Session {
                 move |n, ids| format!("{w} is a workspace of {n} {of}s ({ids}): use a {of}'s id")
             };
             return match kind {
-                Kind::Tab => {
-                    let tabs: Vec<TabId> = ws.tabs().iter().map(|t| t.id).collect();
-                    one(&tabs, many("tab")).map(AnyRef::Tab)
-                }
+                Kind::Tab => one(&self.tab_ids(w), many("tab")).map(AnyRef::Tab),
                 Kind::Pane | Kind::Workspace => {
                     let panes: Vec<PaneId> = ws.tabs().iter().flat_map(panes_of).collect();
                     one(&panes, many("pane")).map(AnyRef::Pane)
@@ -1318,6 +1302,7 @@ impl Session {
         Ok(())
     }
 
+    /// `pane_mut`, for input: a pane whose program has exited takes none.
     fn live_pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
         let pane = self.pane_mut(explicit, here)?;
         match pane.process.exit_status() {
@@ -1896,14 +1881,14 @@ impl Session {
     /// Hangs up a pane's process; it is killed and reaped after `GRACE`.
     /// `closed`: fux closed it (kill-pane, kill-server), not its program's
     /// end: the rest of its session goes too.
-    fn end(&mut self, pane: Pane, closed: bool) {
-        if let Process::Reading(mut child) | Process::HungUp(mut child) = pane.process {
+    fn end(&mut self, id: PaneId, process: Process, closed: bool) {
+        if let Process::Reading(mut child) | Process::HungUp(mut child) = process {
             if closed {
                 child.leader.closed();
             }
             child.leader.hang_up();
             let deadline = crate::after(Instant::now(), GRACE);
-            self.dying.insert(pane.id, Dying { child, deadline });
+            self.dying.insert(id, Dying { child, deadline });
         }
     }
 
@@ -1911,12 +1896,9 @@ impl Session {
     /// as does a workspace left with no tabs; a tab emptied by moving its
     /// panes out stays.
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>) {
-        let place = self.locate(id);
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
-        let viewers: Vec<ClientId> = (self.views.keys().copied())
-            .filter(|c| place.is_some_and(|(_, t)| self.shows(*c, t)))
-            .collect();
+        let viewers = self.viewers(self.locate(id).map(|(_, t)| t));
         let emptied = tab_of(&mut self.workspaces, id).ok().and_then(|t| {
             t.edit(|root| layout::remove(root, id));
             t.root().is_none().then_some(t.id)
@@ -1932,7 +1914,7 @@ impl Session {
                     self.info_to(*client, format!("{id} {} {why}", pane.label()));
                 }
             }
-            self.end(pane, closed);
+            self.end(id, pane.process, closed);
         }
         self.after_close();
     }
@@ -1955,21 +1937,29 @@ impl Session {
         // Its panes go with it.
         if let Some(root) = root {
             root.for_each_pane(&mut |pane| {
-                if let Some(pane) = self.panes.remove(&pane) {
-                    self.end(pane, true);
+                if let Some(gone) = self.panes.remove(&pane) {
+                    self.end(pane, gone.process, true);
                 }
             });
         }
     }
 
     fn remove_workspace(&mut self, ws: WsId) {
-        let tabs: Vec<TabId> = self
-            .workspace(ws)
-            .map(|w| w.tabs().iter().map(|t| t.id).collect())
-            .unwrap_or_default();
-        for tab in tabs {
+        for tab in self.tab_ids(ws) {
             self.remove_tab(tab);
         }
+    }
+
+    /// The tabs of workspace `ws`, in order.
+    fn tab_ids(&self, ws: WsId) -> Vec<TabId> {
+        let ws = self.workspace(ws).into_iter();
+        ws.flat_map(|w| w.tabs().iter().map(|t| t.id)).collect()
+    }
+
+    /// The clients showing tab `tab`.
+    fn viewers(&self, tab: Option<TabId>) -> Vec<ClientId> {
+        let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
+        self.views.keys().copied().filter(shows).collect()
     }
 
     fn after_close(&mut self) {
@@ -1994,19 +1984,10 @@ impl Session {
         let status = crate::process::shell_status(ended);
         // What a program wrote as it exited may still be on its terminal,
         // unread: its last screen is read whole before it is kept.
-        if self
-            .panes
-            .get(&id)
-            .is_some_and(|p| matches!(p.runs, Runs::Program(_)))
-        {
-            let left = self
-                .panes
-                .get(&id)
-                .map(|p| unread(&p.process))
-                .unwrap_or_default();
-            if !left.is_empty() {
-                self.output(id, &left);
-            }
+        let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
+        let left = program.map(|p| unread(&p.process)).unwrap_or_default();
+        if !left.is_empty() {
+            self.output(id, &left);
         }
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
@@ -2020,11 +2001,7 @@ impl Session {
                     let deadline = Instant::now();
                     self.dying.insert(id, Dying { child, deadline });
                 }
-                let place = self.locate(id);
-                let viewers: Vec<ClientId> = (self.views.keys().copied())
-                    .filter(|c| place.is_some_and(|(_, t)| self.shows(*c, t)))
-                    .collect();
-                for client in viewers {
+                for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
                     self.info_to(client, format!("{id} {}", crate::process::told(ended)));
                 }
                 self.touch();
@@ -2097,9 +2074,7 @@ impl Session {
         // it; none with `set clipboard off`.
         let copied = self.panes.get_mut(&id).and_then(|p| p.copied.take());
         if let Some(text) = copied.filter(|_| self.config.clipboard) {
-            let to: Vec<ClientId> = (self.views.keys().copied())
-                .filter(|&c| place.is_some_and(|(_, tab)| self.shows(c, tab)))
-                .collect();
+            let to = self.viewers(place.map(|(_, t)| t));
             self.copied(text, &to);
         }
         for view in self.views.values_mut() {
@@ -2139,7 +2114,7 @@ impl Session {
     /// Everything the server shuts down: every pane is hung up.
     pub fn shutdown(&mut self) {
         for pane in std::mem::take(&mut self.panes).into_values() {
-            self.end(pane, true);
+            self.end(pane.id, pane.process, true);
         }
     }
 
@@ -2535,25 +2510,16 @@ impl Session {
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
-                    Some(target) => {
-                        let tab = match self.any_target(&Subject::from(target.clone()), here)? {
-                            AnyRef::Pane(p) => self.locate(p).map(|(_, t)| t),
-                            AnyRef::Tab(t) => Some(t),
-                            AnyRef::Workspace(w) => {
-                                let ws = self.workspace(w);
-                                let shown = (self.views.keys().copied())
-                                    .filter(|c| ws.is_some_and(|w| w.viewers.contains(c)))
-                                    .collect::<Vec<_>>();
-                                for client in &shown {
-                                    self.info_to(*client, text.clone());
-                                }
-                                return Ok(String::new());
-                            }
-                        };
-                        (self.views.keys().copied())
-                            .filter(|c| tab.is_some_and(|t| self.shows(*c, t)))
-                            .collect()
-                    }
+                    Some(target) => match self.any_target(&Subject::from(target.clone()), here)? {
+                        AnyRef::Pane(p) => self.viewers(self.locate(p).map(|(_, t)| t)),
+                        AnyRef::Tab(t) => self.viewers(Some(t)),
+                        AnyRef::Workspace(w) => {
+                            let ws = self.workspace(w);
+                            (self.views.keys().copied())
+                                .filter(|c| ws.is_some_and(|w| w.viewers.contains(c)))
+                                .collect()
+                        }
+                    },
                 };
                 for client in to {
                     self.info_to(client, text.clone());
@@ -2575,9 +2541,7 @@ impl Session {
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
                         let tabs: Vec<TabId> = match target {
                             AnyRef::Tab(tab) => vec![tab],
-                            AnyRef::Workspace(ws) => (self.workspace(ws).into_iter())
-                                .flat_map(|w| w.tabs().iter().map(|t| t.id))
-                                .collect(),
+                            AnyRef::Workspace(ws) => self.tab_ids(ws),
                             AnyRef::Pane(pane) => {
                                 self.locate(pane).map(|(_, tab)| tab).into_iter().collect()
                             }
@@ -2637,8 +2601,7 @@ impl Session {
                 col,
                 ..
             } => {
-                let id = self.live_pane_mut(target, here)?.id;
-                let p = self.live_pane_mut(Some(id), here)?;
+                let p = self.live_pane_mut(target, here)?;
                 let size = p.size();
                 if row >= size.rows() || col >= size.cols() {
                     let (rows, cols) = (size.rows(), size.cols());
@@ -2805,10 +2768,7 @@ impl Session {
                     return Err(Error::KillNeedsTarget("str WS workspace kill"));
                 }
                 let ws = self.ws_target(target.as_ref(), here)?;
-                let tabs: Vec<TabId> = (self.workspace(ws).into_iter())
-                    .flat_map(|w| w.tabs().iter().map(|t| t.id))
-                    .collect();
-                let panes = self.panes_of_tabs(&tabs);
+                let panes = self.panes_of_tabs(&self.tab_ids(ws));
                 self.remove_workspace(ws);
                 self.after_close();
                 Ok(closed(origin, &[vec![ws.to_string()], panes].concat()))
