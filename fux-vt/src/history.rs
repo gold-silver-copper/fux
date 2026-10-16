@@ -43,7 +43,7 @@ type ByRow<T> = HashMap<u64, T, BuildHasherDefault<SlotHasher>>;
 /// (Fibonacci hashing), rather than by SipHash, which the default hasher
 /// spends on every lookup: it is no input a program chooses.
 #[derive(Clone, Copy, Debug, Default)]
-struct SlotHasher(u64);
+pub(crate) struct SlotHasher(u64);
 
 impl Hasher for SlotHasher {
     fn finish(&self) -> u64 {

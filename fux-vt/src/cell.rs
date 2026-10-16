@@ -128,12 +128,22 @@ impl Packed {
 
 /// Attributes are independent of glyph storage. An erase fills cells with
 /// the pen's colours alone (`erased`).
-#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Attributes {
     foreground: Packed,
     background: Packed,
     underline_color: Packed,
     pub(crate) flags: u16,
+}
+
+/// Hashed as `bits`, mixed so that every bit of them reaches the low bits
+/// a table picks a place by (a style table's, `style.rs`).
+impl std::hash::Hash for Attributes {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let (a, b) = self.bits();
+        let mixed = (a ^ b.rotate_left(23)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        state.write_u64(mixed.rotate_left(32));
+    }
 }
 
 impl std::fmt::Debug for Attributes {
@@ -286,7 +296,7 @@ impl Attributes {
         }
     }
     /// The attributes as two words, which differ where the attributes do:
-    /// what a style table hashes (`style.rs`).
+    /// what they hash as.
     pub(crate) fn bits(self) -> (u64, u64) {
         let word = |p: Packed| u64::from(u32::from_le_bytes(p.0));
         (
