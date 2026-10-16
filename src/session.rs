@@ -341,12 +341,6 @@ pub struct Session {
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
-    /// What the command under way made or found, for its reply.
-    made: Vec<AnyRef>,
-    /// The field the command under way read (`ls --get`), for its reply.
-    value: Option<crate::protocol::Scalar>,
-    /// A reading's JSON, made from the same read as its text.
-    json: Option<String>,
     /// How the panes the command under way starts start.
     starting: Starting,
     /// A restore is under way (`Session::restore`): ids come back as they
@@ -619,9 +613,6 @@ impl Session {
             placed: Placement::default(),
             ids: Ids::default(),
             changes: 0,
-            made: Vec::new(),
-            value: None,
-            json: None,
             starting: Starting::default(),
             restoring: false,
             grants: Vec::new(),
@@ -979,9 +970,11 @@ impl Session {
 
     /// What a command that makes a pane prints, `text`, the ids it names;
     /// the ids made go in its reply.
-    fn made_ids(&mut self, (ws, tab, pane): (WsId, TabId, PaneId), text: &[String]) -> String {
-        self.made = vec![AnyRef::Workspace(ws), AnyRef::Tab(tab), AnyRef::Pane(pane)];
-        format!("{}\n", text.join(" "))
+    fn made_ids((ws, tab, pane): (WsId, TabId, PaneId), text: &[String]) -> Reply {
+        Reply {
+            ids: vec![AnyRef::Workspace(ws), AnyRef::Tab(tab), AnyRef::Pane(pane)],
+            ..format!("{}\n", text.join(" ")).into()
+        }
     }
 
     /// What `text` names as a pane, tab or workspace, `kind`: its id (`%3`),
@@ -2134,29 +2127,10 @@ impl Session {
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
     pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Reply {
-        self.made.clear();
-        self.value = None;
-        self.json = None;
-        let executed = self.execute(command, origin);
-        let ids = std::mem::take(&mut self.made);
-        // A reading given as text keeps its JSON, made from the same read:
-        // `json` converts what was read, never a later read.
-        let json = self
-            .json
-            .take()
-            .filter(|_| executed.is_ok())
-            .unwrap_or_default();
+        let outcome = self
+            .execute(command, origin)
+            .unwrap_or_else(|error| failure(error, origin));
         self.ids.unwant();
-        let outcome = match executed {
-            Ok(text) => Reply {
-                text,
-                json,
-                ids,
-                value: self.value.take(),
-                ..Reply::default()
-            },
-            Err(error) => failure(error, origin),
-        };
         if !shows_nothing_new(command) {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
@@ -2172,7 +2146,7 @@ impl Session {
         self.changes
     }
 
-    fn execute(&mut self, command: &Command, origin: &Origin) -> Result<String, Error> {
+    fn execute(&mut self, command: &Command, origin: &Origin) -> Result<Reply, Error> {
         let here = self.here(origin)?;
         self.starting = self.starting_for(origin);
         match command {
@@ -2192,12 +2166,16 @@ impl Session {
                         if get.is_some() {
                             return Ok(read);
                         }
-                        (read, Some(target))
+                        (read.text, Some(target))
                     }
                     None => (self.ls_json(scope), scope.map(AnyRef::Workspace)),
                 };
-                self.json = Some(read);
-                Ok(self.ls_text(only))
+                // A reading given as text keeps its JSON, made from the same
+                // read: `json` converts what was read, never a later read.
+                Ok(Reply {
+                    json: read,
+                    ..self.ls_text(only).into()
+                })
             }
             &Command::KillServer { force } => {
                 if let (Origin::Cli(caller), false) = (origin, force) {
@@ -2232,7 +2210,7 @@ impl Session {
                     reason: reason.into(),
                     keep: false,
                 });
-                Ok(String::new())
+                Ok(Reply::default())
             }
             Command::NewWorkspace {
                 name,
@@ -2250,7 +2228,10 @@ impl Session {
                 let made = self.create_workspace((name.clone(), None), start, place)?;
                 let (ws, tab, pane) = made;
                 self.follow(here, ws, None, None);
-                Ok(self.made_ids(made, &[ws.to_string(), tab.to_string(), pane.to_string()]))
+                Ok(Self::made_ids(
+                    made,
+                    &[ws.to_string(), tab.to_string(), pane.to_string()],
+                ))
             }
             Command::NewTab {
                 target,
@@ -2277,7 +2258,10 @@ impl Session {
                     self.give_tab_name(tab, name.clone())?;
                 }
                 self.follow(here, ws, Some(tab), None);
-                Ok(self.made_ids((ws, tab, pane), &[tab.to_string(), pane.to_string()]))
+                Ok(Self::made_ids(
+                    (ws, tab, pane),
+                    &[tab.to_string(), pane.to_string()],
+                ))
             }
             Command::Run {
                 workspace,
@@ -2323,7 +2307,7 @@ impl Session {
                 if let Some(pane) = self.panes.get_mut(&made.2) {
                     pane.log = log;
                 }
-                Ok(self.made_ids(made, &[made.2.to_string()]))
+                Ok(Self::made_ids(made, &[made.2.to_string()]))
             }
             &Command::Respawn {
                 target,
@@ -2334,8 +2318,10 @@ impl Session {
             } => {
                 let id = self.pane(target)?.id;
                 self.respawn(id, kill, env, argv)?;
-                self.made = vec![AnyRef::Pane(id)];
-                Ok(format!("{id}\n"))
+                Ok(Reply {
+                    ids: vec![AnyRef::Pane(id)],
+                    ..format!("{id}\n").into()
+                })
             }
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
@@ -2352,7 +2338,7 @@ impl Session {
                 for client in to {
                     self.info_to(client, text.clone());
                 }
-                Ok(String::new())
+                Ok(Reply::default())
             }
             Command::Resize(what) => {
                 match what {
@@ -2407,7 +2393,7 @@ impl Session {
                         self.resize(client, size.rows(), size.cols());
                     }
                 }
-                Ok(String::new())
+                Ok(Reply::default())
             }
             Command::Wait { .. } | Command::Events { .. } | Command::Grant { .. } => {
                 let message = "wait, events and grant run from the command line";
@@ -2418,7 +2404,7 @@ impl Session {
                     Some(target) => Some(self.any_target(target)?),
                     None => None,
                 };
-                Ok(self.dump_layout(only, false))
+                Ok(self.dump_layout(only, false).into())
             }
             &Command::SendMouse {
                 target,
@@ -2497,7 +2483,7 @@ impl Session {
                 p.note_input();
                 p.send(vec![(report, crate::log::Unit::Submit)], Instant::now())?;
                 p.mouse_held = held;
-                Ok(String::new())
+                Ok(Reply::default())
             }
             &Command::Split {
                 axis,
@@ -2543,13 +2529,13 @@ impl Session {
                     view.zoom = false;
                 }
                 let at = self.locate(new).ok_or(Error::NoPane(new))?;
-                Ok(self.made_ids((at.0, at.1, new), &[new.to_string()]))
+                Ok(Self::made_ids((at.0, at.1, new), &[new.to_string()]))
             }
             &Command::Signal { target, signal, .. } => {
                 let group = self.signalled(target)?;
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))?;
-                Ok(String::new())
+                Ok(Reply::default())
             }
             // From the command line each says what it closed, so a script
             // or an agent knows; a key's close shows on the screen anyway.
@@ -2586,13 +2572,15 @@ impl Session {
                         [vec![ws.to_string()], panes].concat()
                     }
                 };
-                Ok(closed(origin, &gone))
+                Ok(closed(origin, &gone).into())
             }
             Command::Rename { target, name } => {
                 let target = self.any_target(target)?;
-                self.rename(target, name.clone()).map(|()| String::new())
+                self.rename(target, name.clone()).map(|()| Reply::default())
             }
-            &Command::MovePane { target, ref to } => self.move_pane(target, to, here),
+            &Command::MovePane { target, ref to } => {
+                self.move_pane(target, to, here).map(Reply::from)
+            }
             &Command::SwapPane { target, with } => {
                 let source = self.pane(target)?.id;
                 let other = match with {
@@ -2600,7 +2588,7 @@ impl Session {
                     SwapWith::Toward(direction) => self.neighbor(source, direction, here)?,
                 };
                 self.swap(source, other);
-                Ok(String::new())
+                Ok(Reply::default())
             }
             &Command::ResizePane { target, by } => {
                 let pane = self.pane(target)?.id;
@@ -2616,14 +2604,16 @@ impl Session {
                             })
                         };
                         if tab.edit(resize) {
-                            Ok(String::new())
+                            Ok(Reply::default())
                         } else {
                             let message =
                                 format!("{pane} has no border to move {}", direction.name());
                             Err(fail(Code::NothingThere, message))
                         }
                     }
-                    PaneResize::To(axis, extent) => self.resize_pane_to(pane, area, axis, extent),
+                    PaneResize::To(axis, extent) => self
+                        .resize_pane_to(pane, area, axis, extent)
+                        .map(Reply::from),
                 }
             }
             Command::Log { target, file } => {
@@ -2632,11 +2622,11 @@ impl Session {
                     None => None,
                 };
                 self.pane_mut(*target)?.log = log;
-                Ok(String::new())
+                Ok(Reply::default())
             }
             &Command::ClearHistory { target } => {
                 self.pane_mut(target)?.parser.clear_history();
-                Ok(String::new())
+                Ok(Reply::default())
             }
             &Command::SendKeys {
                 target, ref inputs, ..
@@ -2649,7 +2639,7 @@ impl Session {
                 for id in panes {
                     self.send_inputs(id, inputs)?;
                 }
-                Ok(String::new())
+                Ok(Reply::default())
             }
             &Command::CapturePane {
                 target,
@@ -2662,12 +2652,14 @@ impl Session {
                 let copying = self.copying(pane.id);
                 let read = crate::capture::pane(pane, history, view, true, copying);
                 let (text, form) = crate::capture::asked(read, json);
-                self.json = form;
-                Ok(text)
+                Ok(Reply {
+                    json: form.unwrap_or_default(),
+                    ..text.into()
+                })
             }
             &Command::Reorder { ref target, toward } => {
                 let target = self.any_target(target)?;
-                self.reorder(target, toward).map(|()| String::new())
+                self.reorder(target, toward).map(|()| Reply::default())
             }
             Command::Set { option, value } => {
                 // `run_command` marks every view to paint, as after any
@@ -2677,12 +2669,14 @@ impl Session {
                     .set(option, value)
                     .map_err(|m| fail(Code::Config, m))?;
                 self.configured();
-                Ok(String::new())
+                Ok(Reply::default())
             }
             Command::Resolve { text, kind } => {
                 let found = self.resolve(text, *kind, here)?;
-                self.made = vec![found];
-                Ok(format!("{}\n", describe(found)))
+                Ok(Reply {
+                    ids: vec![found],
+                    ..format!("{}\n", describe(found)).into()
+                })
             }
             &Command::ListBuffers => Ok(self
                 .buffers
@@ -2696,11 +2690,13 @@ impl Session {
                         .collect();
                     format!("{i}: {} bytes: {preview}\n", text.len())
                 })
-                .collect()),
+                .collect::<String>()
+                .into()),
             &Command::ShowBuffer { index } => self
                 .buffers
                 .get(index)
                 .cloned()
+                .map(Reply::from)
                 .ok_or(Error::NoBuffer(index)),
             &Command::PasteBuffer { index, target } => {
                 let text = self.buffers.get(index).cloned();
@@ -2711,7 +2707,7 @@ impl Session {
                 crate::encode::paste(&text, bracketed, &mut bytes);
                 p.note_input();
                 p.send(vec![(bytes, paste_unit(&text, bracketed))], Instant::now())?;
-                Ok(String::new())
+                Ok(Reply::default())
             }
             &Command::Client { client, ref action } => {
                 // The client `-c` names, else the one the command came from.
@@ -2731,35 +2727,42 @@ impl Session {
                 let picked = match *action {
                     ClientAction::Choices(choices) => {
                         let chosen = crate::overlay::choices(self, client, choices)?;
-                        self.made = chosen.ids;
-                        self.value = chosen
-                            .current
-                            .and_then(|i| i64::try_from(i).ok())
-                            .map(crate::protocol::Scalar::Int);
-                        return Ok(chosen.labels.iter().map(|l| format!("{l}\n")).collect());
+                        return Ok(Reply {
+                            ids: chosen.ids,
+                            value: (chosen.current.and_then(|i| i64::try_from(i).ok()))
+                                .map(crate::protocol::Scalar::Int),
+                            ..chosen
+                                .labels
+                                .iter()
+                                .map(|l| format!("{l}\n"))
+                                .collect::<String>()
+                                .into()
+                        });
                     }
                     ClientAction::Run(ref code) => {
                         self.outbox.push(Outgoing::Run(client, code.clone()));
-                        return Ok(String::new());
+                        return Ok(Reply::default());
                     }
                     // Taken as typed at its terminal: its bindings see them.
                     ClientAction::Keys(ref inputs) => {
                         self.outbox.push(Outgoing::Keys(client, inputs.clone()));
-                        return Ok(String::new());
+                        return Ok(Reply::default());
                     }
                     ClientAction::Detach => {
                         self.views.remove(&client);
                         self.workspaces.iter_mut().for_each(|w| w.forget(client));
                         self.outbox.push(Outgoing::Exit(client, "detached".into()));
-                        return Ok(String::new());
+                        return Ok(Reply::default());
                     }
                     ClientAction::Capture => {
                         let mut grid = crate::render::Grid::new(0, 0);
                         let placement = &mut Placement::default();
                         crate::render::compose_view(self, view()?, &mut grid, placement);
                         let (text, form) = crate::capture::client(client, &grid);
-                        self.json = form;
-                        return Ok(text);
+                        return Ok(Reply {
+                            json: form.unwrap_or_default(),
+                            ..text.into()
+                        });
                     }
                     ClientAction::Zoom => None,
                     ClientAction::SelectPane(pick) => Some(self.pick_pane(view()?, place, pick)?),
@@ -2775,7 +2778,7 @@ impl Session {
                         .into_iter()
                         .for_each(|v| v.zoom = !v.zoom),
                 }
-                Ok(String::new())
+                Ok(Reply::default())
             }
         }
     }
@@ -3086,7 +3089,7 @@ impl Session {
 
     /// `ls -t TARGET`: one pane, tab or workspace, as JSON, or one field of
     /// its JSON (`--get`), a string's text as it is.
-    fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<String, Error> {
+    fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
         let object = match target {
             AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
@@ -3099,10 +3102,10 @@ impl Session {
             AnyRef::Workspace(id) => Error::NoWorkspace(id),
         })?;
         let Some(field) = get else {
-            return Ok(format!("{}\n", object.render()));
+            return Ok(format!("{}\n", object.render()).into());
         };
         let Json::Object(mut fields) = object else {
-            return Ok(String::new());
+            return Ok(Reply::default());
         };
         // A tab of one pane (`run -n NAME`'s) stands for its pane, whose
         // fields it gives too.
@@ -3141,8 +3144,10 @@ impl Session {
             }
         };
         drop(names);
-        self.value = Some(scalar);
-        Ok(text)
+        Ok(Reply {
+            value: Some(scalar),
+            ..text.into()
+        })
     }
 
     /// `ls --json`: everything, or `only` that workspace, with no clients
@@ -4325,7 +4330,7 @@ mod tests {
         let (mut s, c) = attached(10, 40)?;
         let origin = Origin::Client(c);
         let mut run =
-            |code: &str| -> Result<Vec<Result<String, Error>>, Box<dyn std::error::Error>> {
+            |code: &str| -> Result<Vec<Result<Reply, Error>>, Box<dyn std::error::Error>> {
                 let commands = requests(&mut s, c, code)?;
                 Ok(commands
                     .iter()

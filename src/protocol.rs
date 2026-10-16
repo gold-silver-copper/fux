@@ -406,6 +406,16 @@ impl End {
     }
 }
 
+/// An answer of `text` alone.
+impl From<String> for Reply {
+    fn from(text: String) -> Reply {
+        Reply {
+            text,
+            ..Reply::default()
+        }
+    }
+}
+
 impl Reply {
     /// A failure of kind `code`, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Reply {
