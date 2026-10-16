@@ -147,7 +147,7 @@ fn value(v: &Value<Nothing>) -> V {
         Value::Int(n) => V::Int(*n),
         Value::Bool(b) => V::Bool(*b),
         Value::Str(s) => V::Str(s.to_string()),
-        Value::List(l) => V::List(l.items.iter().map(value).collect()),
+        Value::List(l) => V::List(l.items().iter().map(value).collect()),
         Value::App(_) => V::Str("nothing".to_owned()),
     }
 }

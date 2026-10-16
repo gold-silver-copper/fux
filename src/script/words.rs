@@ -292,7 +292,7 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
         Value::Bool(b) => Json::Bool(*b),
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
-        Value::List(list) => Json::Array(list.items.iter().map(json_of).collect()),
+        Value::List(list) => Json::Array(list.items().iter().map(json_of).collect()),
         // An answer of several panes, a line of JSON each, as an array.
         Value::App(Fux::Answer(answer)) => match &answer.json {
             Some(json) => {

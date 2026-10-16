@@ -202,7 +202,7 @@ pub const TOTAL: u64 = 16_000_000;
 /// much it holds in all ([`Value::weight`]).
 #[derive(Clone, Debug)]
 pub struct List<A> {
-    pub items: Vec<Value<A>>,
+    items: Vec<Value<A>>,
     depth: u8,
     weight: u64,
 }
@@ -215,6 +215,12 @@ impl<A: PartialEq> PartialEq for List<A> {
 }
 
 impl<A> List<A> {
+    /// Its values. Only `List`'s own ways change them, so how deep it
+    /// nests and how much it holds stay true.
+    pub fn items(&self) -> &[Value<A>] {
+        &self.items
+    }
+
     /// A list of `items`; `None` if it would nest deeper than [`NESTING`]
     /// or hold more than [`TOTAL`] in all.
     pub fn new(items: Vec<Value<A>>) -> Option<List<A>> {

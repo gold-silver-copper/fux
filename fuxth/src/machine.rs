@@ -690,7 +690,7 @@ impl<A: AppValue> Machine<A> {
                         Value::str(s.part(from, to))
                     }
                     Value::List(list) => {
-                        let items = list.items.iter().skip(from).take(n).cloned().collect();
+                        let items = list.items().iter().skip(from).take(n).cloned().collect();
                         self.list(items)?
                     }
                     Value::Int(_) | Value::Bool(_) | Value::App(_) => seq.clone(),
@@ -805,7 +805,7 @@ impl<A: AppValue> Machine<A> {
         let mut text = String::new();
         let mut items = Vec::new();
         let (mut strings, mut lists) = (false, false);
-        for item in &list.items {
+        for item in list.items() {
             match item {
                 Value::Str(s) => {
                     strings = true;
@@ -813,7 +813,7 @@ impl<A: AppValue> Machine<A> {
                 }
                 Value::List(l) => {
                     lists = true;
-                    items.extend(l.items.iter().cloned());
+                    items.extend(l.items().iter().cloned());
                 }
                 Value::Int(_) | Value::Bool(_) | Value::App(_) => {
                     return Err(self.type_error(format!(
@@ -838,12 +838,12 @@ impl<A: AppValue> Machine<A> {
     fn pushed(&mut self, seq: Value<A>, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Value::List(mut list), x) => {
-                if list.items.len() >= LONGEST {
+                if list.items().len() >= LONGEST {
                     return Err(self.too_long(format!("a list holds at most {LONGEST} elements")));
                 }
                 // Held elsewhere too, it is copied first: that is built.
                 let copied = if Rc::strong_count(&list) > 1 {
-                    list.items.len()
+                    list.items().len()
                 } else {
                     0
                 };
@@ -883,7 +883,7 @@ impl<A: AppValue> Machine<A> {
             (Value::List(mut list), x) => {
                 // Held elsewhere too, it is copied first: that is built.
                 let copied = if Rc::strong_count(&list) > 1 {
-                    list.items.len().saturating_sub(1)
+                    list.items().len().saturating_sub(1)
                 } else {
                     0
                 };
@@ -926,7 +926,7 @@ impl<A: AppValue> Machine<A> {
 fn element<A: Clone>(seq: &Value<A>, i: usize) -> Option<Value<A>> {
     match seq {
         Value::Str(s) => s.char_at(i).map(|c| Value::str(c.to_string())),
-        Value::List(list) => list.items.get(i).cloned(),
+        Value::List(list) => list.items().get(i).cloned(),
         Value::Int(_) | Value::Bool(_) | Value::App(_) => None,
     }
 }
@@ -938,7 +938,7 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
     let (mut a, mut b) = (a, b);
     // As deep as lists nest, at most `NESTING`.
     while let (Value::List(x), Value::List(y)) = (a, b) {
-        let next = (x.items.iter().zip(&y.items).enumerate())
+        let next = (x.items().iter().zip(y.items()).enumerate())
             .find(|(_, (p, q))| p != q && compare(p, q).is_none());
         let Some((i, (p, q))) = next else {
             break;
@@ -966,12 +966,12 @@ fn compare<A: PartialEq>(a: &Value<A>, b: &Value<A>) -> Option<Ordering> {
         (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
         (Value::Str(a), Value::Str(b)) => Some(a.as_ref().cmp(b.as_ref())),
         (Value::List(a), Value::List(b)) => {
-            for (x, y) in a.items.iter().zip(&b.items) {
+            for (x, y) in a.items().iter().zip(b.items()) {
                 if x != y {
                     return compare(x, y);
                 }
             }
-            Some(a.items.len().cmp(&b.items.len()))
+            Some(a.items().len().cmp(&b.items().len()))
         }
         (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_), _) => {
             None
