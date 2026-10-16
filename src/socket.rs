@@ -58,14 +58,6 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl Error {
-    /// Whether the system denied a socket at all (a sandbox that forbids
-    /// them): a door may serve instead (`crate::door`).
-    pub fn denied(&self) -> bool {
-        matches!(self, Error::Io { source, .. } if source.kind() == io::ErrorKind::PermissionDenied)
-    }
-}
-
 impl std::error::Error for Error {}
 
 /// An I/O error about `path`.
@@ -463,7 +455,11 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
         });
     let fd = match bound {
         Ok(fd) => fd,
-        Err(error) if error.denied() => return Ok((endpoint, None)),
+        // The system denies sockets at all (a sandbox that forbids them): a
+        // door may serve instead (`crate::door`).
+        Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::PermissionDenied => {
+            return Ok((endpoint, None));
+        }
         Err(error) => return Err(error),
     };
     endpoint.socket = Some(Pinned::new(path).map_err(io(path))?);

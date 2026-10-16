@@ -306,7 +306,7 @@ pub const TYPE_WAIT: Duration = Duration::from_secs(1);
 /// The size a pane starts at, until it is laid out on a client's screen.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
 
-fn default_size() -> fux_vt::Size {
+pub(crate) fn default_size() -> fux_vt::Size {
     crate::pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
 }
 

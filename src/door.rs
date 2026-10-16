@@ -268,8 +268,7 @@ pub fn served(socket: &Path) -> bool {
 /// to write, once the server has opened them.
 pub fn knock(socket: &Path) -> io::Result<Link> {
     let mut knocked = open_door(socket)?;
-    let door = path(socket);
-    let dir = door
+    let dir = socket
         .parent()
         .ok_or_else(|| io::Error::other("a door with no directory"))?;
     let hex = crate::marks::nonce().ok_or_else(|| io::Error::other("no random bytes"))?;

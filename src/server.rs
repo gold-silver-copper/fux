@@ -1735,14 +1735,14 @@ impl Server {
         }
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
-        if let Some(c) = client.filter(|c| scope.is_none() && !session.views.contains_key(c)) {
-            let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
-            conn.answer(session, outcome);
-            return;
-        }
         // A key's or the prompt's program acts where its client is; one
         // from a grant never does.
-        let origin = match client.filter(|c| scope.is_none() && session.views.contains_key(c)) {
+        let origin = match client.filter(|_| scope.is_none()) {
+            Some(c) if !session.views.contains_key(&c) => {
+                let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
+                conn.answer(session, outcome);
+                return;
+            }
             Some(client) => Origin::Client(client),
             None => Origin::Cli(Caller {
                 pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),

@@ -466,11 +466,12 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     }
 }
 
-/// The terminal's rows and columns; 24 by 80 if it does not say.
+/// The terminal's rows and columns; a server's default if it does not say.
 fn window_size() -> (NonZeroU16, NonZeroU16) {
-    let fallback = |n: u16| NonZeroU16::MIN.saturating_add(n.saturating_sub(1));
     fuxix::terminal::window_size(std::io::stdout())
-        .map_or((fallback(24), fallback(80)), |s| (s.rows, s.cols))
+        .map_or(crate::session::default_size().nonzero(), |s| {
+            (s.rows, s.cols)
+        })
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
