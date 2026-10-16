@@ -829,13 +829,7 @@ impl<A: AppValue> Machine<A> {
                 if list.items().len() >= LONGEST {
                     return Err(self.too_long(format!("a list holds at most {LONGEST} elements")));
                 }
-                // Held elsewhere too, it is copied first: that is built.
-                let copied = if Rc::strong_count(&list) > 1 {
-                    list.items().len()
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(1))?;
+                self.build(copied(&list, list.items().len()).saturating_add(1))?;
                 // In place when nothing else holds the list.
                 match Rc::make_mut(&mut list).push(x) {
                     Some(()) => Ok(Value::List(list)),
@@ -843,19 +837,8 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             (Value::Str(mut s), Value::Str(x)) => {
-                let n = s.chars_len().saturating_add(x.chars_len());
-                if n > LONGEST {
-                    return Err(
-                        self.too_long(format!("a string holds at most {LONGEST} characters"))
-                    );
-                }
-                // Held elsewhere too, it is copied first, as a list is.
-                let copied = if Rc::strong_count(&s) > 1 {
-                    s.chars_len()
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(x.chars_len()))?;
+                self.text_fits(s.chars_len().saturating_add(x.chars_len()))?;
+                self.build(copied(&s, s.chars_len()).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
             }
@@ -866,16 +849,19 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
+    /// Whether a string `n` characters long may be.
+    fn text_fits(&self, n: usize) -> Result<(), Error> {
+        if n > LONGEST {
+            return Err(self.too_long(format!("a string holds at most {LONGEST} characters")));
+        }
+        Ok(())
+    }
+
     fn put(&mut self, seq: Value<A>, i: usize, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Value::List(mut list), x) => {
-                // Held elsewhere too, it is copied first: that is built.
-                let copied = if Rc::strong_count(&list) > 1 {
-                    list.items().len().saturating_sub(1)
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(1))?;
+                let others = list.items().len().saturating_sub(1);
+                self.build(copied(&list, others).saturating_add(1))?;
                 match Rc::make_mut(&mut list).put(i, x) {
                     Some(()) => Ok(Value::List(list)),
                     None => Err(self.nested()),
@@ -883,22 +869,9 @@ impl<A: AppValue> Machine<A> {
             }
             (Value::Str(mut s), Value::Str(x)) => {
                 // One character replaced by x's.
-                let n = s
-                    .chars_len()
-                    .saturating_sub(1)
-                    .saturating_add(x.chars_len());
-                if n > LONGEST {
-                    return Err(
-                        self.too_long(format!("a string holds at most {LONGEST} characters"))
-                    );
-                }
-                // Held elsewhere too, it is copied first, as a list is.
-                let copied = if Rc::strong_count(&s) > 1 {
-                    s.chars_len().saturating_sub(1)
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(x.chars_len()))?;
+                let others = s.chars_len().saturating_sub(1);
+                self.text_fits(others.saturating_add(x.chars_len()))?;
+                self.build(copied(&s, others).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
@@ -908,6 +881,13 @@ impl<A: AppValue> Machine<A> {
             }
         }
     }
+}
+
+/// What changing a value held in `rc` copies first, of its `n` elements
+/// that stay: all of them when it is held elsewhere too, else none (it is
+/// changed in place). What is copied is built.
+fn copied<T>(rc: &Rc<T>, n: usize) -> usize {
+    if Rc::strong_count(rc) > 1 { n } else { 0 }
 }
 
 /// Element `i` of a string (a one-character string) or a list.
