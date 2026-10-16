@@ -1786,17 +1786,19 @@ impl Server {
     fn read_pane(&mut self, id: PaneId) {
         let mut total = 0;
         let mut buffer = [0u8; 16384];
-        let mut ended = false;
-        while total < PANE_READ {
+        let ended = loop {
+            if total >= PANE_READ {
+                break false;
+            }
             let Some(Process::Reading(child)) = self.session.panes.get(&id).map(|p| &p.process)
             else {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {
-                Ok(0) => {
-                    ended = true;
-                    break;
-                }
+                Err(fuxix::Errno::AGAIN) => break false,
+                Err(fuxix::Errno::INTR) => continue,
+                // EIO: the slave side is closed; the program is gone.
+                Ok(0) | Err(_) => break true,
                 Ok(n) => {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
@@ -1805,18 +1807,11 @@ impl Server {
                     // and the poll says when there is more, without a read
                     // to find none. A flood's reads are larger, and go on.
                     if n < SHORT_READ {
-                        break;
+                        break false;
                     }
                 }
-                Err(fuxix::Errno::AGAIN) => break,
-                Err(fuxix::Errno::INTR) => continue,
-                // EIO: the slave side is closed; the program is gone.
-                Err(_) => {
-                    ended = true;
-                    break;
-                }
             }
-        }
+        };
         if total > 0 {
             let now = Instant::now();
             for attached in self.conns.iter_mut().filter_map(Conn::attached) {
