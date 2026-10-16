@@ -33,7 +33,9 @@ impl Grid {
         // Blank lines below the cursor are dropped before any line scrolls
         // into history: a mostly empty screen keeps its text on screen.
         let screen = usize::from(size.rows());
-        let [cursor, saved] = layout.marks;
+        // A mark no line held goes to the start of the last row.
+        let last = Mark::Blank(layout.rows.saturating_sub(1), 0);
+        let [cursor, saved] = layout.marks.map(|mark| mark.unwrap_or(last));
         let cursor_row = cursor.row();
         // Only as many as the screen's own lines are past the new height:
         // rows in history stay there, and a resize never brings one back
@@ -115,11 +117,10 @@ impl Grid {
             marks,
             out: Reflowed {
                 rows: 0,
-                marks: [Mark::Text(0, 0); 2],
+                marks: [None; 2],
                 trailing_blank: 0,
                 screen_line: 0,
             },
-            found: [false; 2],
             target,
         };
         let mut start = 0;
@@ -135,13 +136,7 @@ impl Grid {
             self.lay_out_runs(start, end, &mut pass)?;
             start = end.saturating_add(1);
         }
-        let mut out = pass.out;
-        for (mark, found) in out.marks.iter_mut().zip(pass.found) {
-            if !found {
-                *mark = Mark::Blank(out.rows.saturating_sub(1), 0);
-            }
-        }
-        Ok(out)
+        Ok(pass.out)
     }
 
     /// Lays out the line of rows `start` through `end`, a run of cells at a
@@ -166,7 +161,6 @@ impl Grid {
             prompt: false,
             pending: false,
             offsets: [None; 2],
-            placed: [false; 2],
         };
         let first = pass.out.rows;
         let mut base = 0usize;
@@ -220,25 +214,15 @@ impl Grid {
         }
         line.prompt |= line.pending;
         let out = &mut pass.out;
-        for (((offset, mark), placed), found) in line
-            .offsets
-            .iter()
-            .zip(&mut out.marks)
-            .zip(&mut line.placed)
-            .zip(pass.found.iter_mut())
-        {
-            if let Some(offset) = offset
-                && !*placed
-            {
+        for (offset, mark) in line.offsets.iter_mut().zip(&mut out.marks) {
+            if let Some(offset) = offset.take() {
                 // At the end of the line's text, after its last glyph; or
                 // as far past it on the last row, in its blanks.
-                *mark = match offset.saturating_sub(length) {
+                *mark = Some(match offset.saturating_sub(length) {
                     0 => Mark::Text(out.rows, line.used),
                     past => Mark::Blank(out.rows, line.used.saturating_add(past)),
-                };
-                *placed = true;
+                });
             }
-            *found |= *placed;
         }
         let id = self.id_at(line.next, end);
         pass.target
@@ -406,12 +390,11 @@ trait Reflow {
 }
 
 /// A reflow under way: the width it lays out at, the marks it places, what
-/// it has laid out, which marks it has found, and where the rows go.
+/// it has laid out, and where the rows go.
 struct Pass<'a, T> {
     width: usize,
     marks: [Option<(usize, usize)>; 2],
     out: Reflowed,
-    found: [bool; 2],
     target: &'a mut T,
 }
 
@@ -428,9 +411,8 @@ struct Run {
     /// the next cell placed goes to.
     prompt: bool,
     pending: bool,
-    /// Where the marks are in the line, and whether they have been placed.
+    /// Where the marks are in the line, each taken once placed.
     offsets: [Option<usize>; 2],
-    placed: [bool; 2],
 }
 
 impl Run {
@@ -454,20 +436,12 @@ impl Run {
             .unwrap_or_default();
         let start = base.saturating_add(cells.start);
         let end = base.saturating_add(cells.end);
-        for ((offset, mark), placed) in self
-            .offsets
-            .iter()
-            .zip(&mut pass.out.marks)
-            .zip(&mut self.placed)
-        {
-            if let Some(offset) = *offset
-                && (start..end).contains(&offset)
-            {
-                *mark = Mark::Text(
+        for (offset, mark) in self.offsets.iter_mut().zip(&mut pass.out.marks) {
+            if let Some(offset) = offset.take_if(|offset| (start..end).contains(offset)) {
+                *mark = Some(Mark::Text(
                     pass.out.rows,
                     self.used.saturating_add(offset.saturating_sub(start)),
-                );
-                *placed = true;
+                ));
             }
         }
         self.prompt |= self.pending;
@@ -504,7 +478,8 @@ impl Mark {
 /// cursor are, and how many rows at the end hold blank lines.
 struct Reflowed {
     rows: usize,
-    marks: [Mark; 2],
+    /// `None` for a mark no line held.
+    marks: [Option<Mark>; 2],
     trailing_blank: usize,
     /// The laid-out row the screen's line begins on: the line holding the
     /// screen's first row before.
