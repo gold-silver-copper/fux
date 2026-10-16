@@ -34,7 +34,9 @@ def mcnemar(b, c):
 
 def wilcoxon(xs, ys):
     """Two-sided signed-rank test of paired samples; returns (p, median difference y - x, n used)."""
-    d = [y - x for x, y in zip(xs, ys) if y != x]
+    # Differences of means of repeats (thirds and the like) are rounded, so
+    # equal magnitudes tie, as they do in exact arithmetic.
+    d = [round(y - x, 9) for x, y in zip(xs, ys) if round(y - x, 9) != 0]
     n = len(d)
     diffs = sorted(y - x for x, y in zip(xs, ys))
     med = diffs[len(diffs) // 2] if diffs else 0.0
