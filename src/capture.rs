@@ -140,8 +140,7 @@ pub fn pane(
             }
         }
         wraps = view.join && row.wrapped();
-        padded = (row.cells().last())
-            .is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation());
+        padded = ends_padded(&row);
     }
     let (rows, cols) = screen.size().into();
     let cursor =
@@ -154,6 +153,13 @@ pub fn pane(
         (lines, view, screen_background(screen)),
         state,
     )
+}
+
+/// Whether `row` ends in a blank no glyph was written to: the cell a wide
+/// glyph left, not fitting at the row's end. Of a line wrapped on with that
+/// glyph, it is no part.
+pub(crate) fn ends_padded(row: &fux_vt::Row<'_>) -> bool {
+    (row.cells().last()).is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation())
 }
 
 /// The screen's own background, against which a highlight shows: the

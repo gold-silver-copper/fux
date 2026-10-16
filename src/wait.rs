@@ -1085,10 +1085,11 @@ fn normal_marked(text: &str, marked: &[bool]) -> (String, Vec<bool>) {
     (out, marks)
 }
 
-/// Rows as lines: soft-wrapped rows joined into the lines they wrap.
+/// Rows as lines: soft-wrapped rows joined into the lines they wrap, as
+/// capture joins them.
 fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let mut wraps = false;
+    let (mut wraps, mut padded) = (false, false);
     for row in rows {
         let text = row.cells_text();
         // A wrapped row's trailing blanks are part of its line.
@@ -1096,11 +1097,18 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<String> {
             true => text,
             false => text.trim_end_matches(' ').to_owned(),
         };
+        let wide = || row.cells().nth(1).is_some_and(|c| c.is_wide_continuation());
         match out.last_mut() {
-            Some(last) if wraps => last.push_str(&text),
+            Some(last) if wraps => {
+                if padded && wide() {
+                    last.pop();
+                }
+                last.push_str(&text);
+            }
             _ => out.push(text),
         }
         wraps = row.wrapped();
+        padded = crate::capture::ends_padded(&row);
     }
     out
 }
@@ -1310,6 +1318,17 @@ mod tests {
 
     /// A text waited for: case ignored, blanks as one, from a word's start,
     /// and `^`/`$` for a line's start and end.
+    /// A wide glyph that did not fit at a row's end wraps onto the next,
+    /// and the blank it left is no part of the line, as capture shows it.
+    #[test]
+    fn a_wide_glyph_wrapped_on_joins_its_line_as_capture_shows_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut parser = fux_vt::Parser::new(fux_vt::Size::new(3, 4)?, 0)?;
+        parser.process("aaa界".as_bytes())?;
+        assert!(super::on_screen(parser.screen(), "aaa界"));
+        Ok(())
+    }
+
     #[test]
     fn a_text_is_found_as_a_reader_would_find_it() {
         assert_eq!(found_in("Server READY on :8080", "ready"), 1);
