@@ -350,12 +350,14 @@ pub enum Command {
     DumpLayout {
         target: Option<AnyRef>,
     },
-    /// A socket whose commands reach workspace `workspace` alone; or with
-    /// `revoke`, that socket closed.
+    /// A socket whose commands reach workspace `workspace` alone.
     Grant {
-        workspace: Option<WsRef>,
+        workspace: WsRef,
         socket: String,
-        revoke: bool,
+    },
+    /// The socket a grant made, closed.
+    Revoke {
+        socket: String,
     },
     /// What the pane's program writes, kept in a file from now on; `None`
     /// stops it.

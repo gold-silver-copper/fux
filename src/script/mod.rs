@@ -1000,6 +1000,7 @@ impl Asks for Layout<'_> {
         let refused = match &request.command {
             C::KillServer { .. } => Some("kill-server"),
             C::Grant { .. } => Some("grant"),
+            C::Revoke { .. } => Some("revoke"),
             C::Set { .. } => Some("set"),
             C::Client { .. } => Some("a client's words"),
             C::Ls { .. }

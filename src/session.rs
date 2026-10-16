@@ -347,7 +347,7 @@ pub struct Session {
     restoring: bool,
     /// The sockets `fux grant` made, each with the workspace it reaches,
     /// for `ls` to list: the server holds them.
-    pub grants: Vec<(PathBuf, String)>,
+    pub grants: Vec<Grant>,
     /// In tests, each client's keys as its own client would read them
     /// (`Session::input`), and the keymap every client and run shares.
     #[cfg(test)]
@@ -539,7 +539,7 @@ impl Reach<'_> {
                 self.refuse("the paste buffers, which are everyone's")
             }
             Command::Client { .. } => self.refuse("a client's screen"),
-            Command::Grant { .. } => self.refuse("another grant"),
+            Command::Grant { .. } | Command::Revoke { .. } => self.refuse("another grant"),
             Command::DumpLayout { target } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
         }
     }
@@ -2380,7 +2380,10 @@ impl Session {
                 }
                 Ok(Reply::default())
             }
-            Command::Wait { .. } | Command::Events { .. } | Command::Grant { .. } => {
+            Command::Wait { .. }
+            | Command::Events { .. }
+            | Command::Grant { .. }
+            | Command::Revoke { .. } => {
                 let message = "wait, events and grant run from the command line";
                 Err(fail(Code::CliOnly, message))
             }
@@ -2992,8 +2995,9 @@ impl Session {
                 });
             }
         }
-        for (socket, ws) in self.grants.iter().filter(|_| only.is_none()) {
-            out.push_str(&format!("grant {} {ws}\n", socket.display()));
+        for grant in self.grants.iter().filter(|_| only.is_none()) {
+            let (socket, ws) = (grant.socket.display(), &grant.workspace);
+            out.push_str(&format!("grant {socket} {ws}\n"));
         }
         let shown = |id: Option<String>| id.unwrap_or_else(|| "-".into());
         for view in self.views.values().filter(|_| only.is_none()) {
@@ -3147,10 +3151,10 @@ impl Session {
             .collect();
         let grants = (self.grants.iter())
             .filter(|_| only.is_none())
-            .map(|(socket, ws)| {
+            .map(|grant| {
                 Json::Object(vec![
-                    ("socket", Json::str(socket.to_string_lossy())),
-                    ("workspace", Json::str(ws.as_str())),
+                    ("socket", Json::str(grant.socket.to_string_lossy())),
+                    ("workspace", Json::str(grant.workspace.as_str())),
                 ])
             })
             .collect();
@@ -3169,6 +3173,68 @@ impl Session {
 fn home() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     home.filter(|p| p.is_dir()).unwrap_or_else(|| "/".into())
+}
+
+/// A socket `fux grant` made: its commands reach `workspace` alone, the
+/// workspace of that name it was given, or the first that has it once
+/// there is one, whatever it is renamed after.
+pub struct Grant {
+    pub socket: PathBuf,
+    pub workspace: String,
+    pinned: Option<WsId>,
+}
+
+impl Session {
+    /// The name grant `socket`'s workspace has now: the one pinned, while
+    /// it is there, else the name it was granted, pinned once a workspace
+    /// has it. Empty if no grant made `socket` (it was revoked).
+    pub fn grant_scope(&mut self, socket: &Path) -> String {
+        let Some(at) = self.grants.iter().position(|g| g.socket == socket) else {
+            return String::new();
+        };
+        let pinned = self.grants.get(at).and_then(|g| g.pinned);
+        if let Some(ws) = pinned.and_then(|id| self.workspace(id)) {
+            return ws.name.clone();
+        }
+        let name = self
+            .grants
+            .get(at)
+            .map(|g| g.workspace.clone())
+            .unwrap_or_default();
+        let found = self.resolve_ws(&WsRef::Name(name.clone())).ok();
+        if let Some(grant) = self.grants.get_mut(at) {
+            grant.pinned = found;
+        }
+        name
+    }
+
+    /// The workspace's name a grant of `workspace` through `socket` would
+    /// reach (by its id, there; by its name, maybe later, as `run` makes
+    /// the one it names), or why there can be none.
+    pub fn grantable(&self, socket: &Path, workspace: &WsRef) -> Result<String, Error> {
+        if self.grants.iter().any(|g| g.socket == socket) {
+            let message = format!("a grant made {} already", socket.display());
+            return Err(fail(Code::Grant, message));
+        }
+        Ok(match workspace {
+            WsRef::Name(name) => name.clone(),
+            WsRef::Id(_) => {
+                let id = self.resolve_ws(workspace)?;
+                self.workspace(id)
+                    .map_or_else(String::new, |w| w.name.clone())
+            }
+        })
+    }
+
+    /// Grant `socket`, which reaches workspace `workspace` alone.
+    pub fn grant(&mut self, socket: PathBuf, workspace: String) {
+        let pinned = self.resolve_ws(&WsRef::Name(workspace.clone())).ok();
+        self.grants.push(Grant {
+            socket,
+            workspace,
+            pinned,
+        });
+    }
 }
 
 /// `%3`, `@2` or `+1`.

@@ -1459,21 +1459,12 @@ impl fuxth::Host for Host<'_> {
                 tell(Command::Set { option, value })
             }
             "grant" => {
-                let workspace = Some(workspace(name, &next()?)?);
+                let workspace = workspace(name, &next()?)?;
                 let socket = string(name, &next()?)?;
-                later(ask(
-                    Command::Grant {
-                        workspace,
-                        socket,
-                        revoke: false,
-                    },
-                    Then::Text,
-                ))
+                later(ask(Command::Grant { workspace, socket }, Then::Text))
             }
-            "revoke" => tell(Command::Grant {
-                workspace: None,
+            "revoke" => tell(Command::Revoke {
                 socket: string(name, &next()?)?,
-                revoke: true,
             }),
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
             // ------------------------------------------------------ config

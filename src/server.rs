@@ -159,29 +159,6 @@ struct Conn {
     held: Option<Box<(crate::command::Command, crate::protocol::Context)>>,
 }
 
-/// A socket `fux grant` made: its commands reach `workspace` alone, the
-/// workspace of that name it was given, or the first that has it once
-/// there is one, whatever it is renamed after.
-struct Grant {
-    listening: Listening,
-    socket: PathBuf,
-    workspace: String,
-    pinned: Option<crate::id::WsId>,
-}
-
-impl Grant {
-    /// The name its workspace has now: the one pinned, while it is there,
-    /// else the name it was granted, pinned once a workspace has it.
-    fn scope(&mut self, session: &Session) -> String {
-        if let Some(ws) = self.pinned.and_then(|id| session.workspace(id)) {
-            return ws.name.clone();
-        }
-        let named = crate::command::WsRef::Name(self.workspace.clone());
-        self.pinned = session.resolve_ws(&named).ok();
-        self.workspace.clone()
-    }
-}
-
 /// Where a connection is in its life, each stage holding what it alone
 /// uses. It goes from `Hello` to `Attaching` and `Attached`, or to
 /// `Command`, and ends `Closing` or `Dead`, the only stages it is closed
@@ -489,7 +466,9 @@ pub struct Server {
     session: Session,
     phase: Phase,
     conns: Vec<Conn>,
-    grants: Vec<Grant>,
+    /// The sockets `fux grant` made, which the session's grants reach
+    /// through.
+    grants: Vec<(PathBuf, Listening)>,
     /// A grant was revoked: what waits or streams through it ends.
     revoked: bool,
     /// Where the layout is saved, for a server after a crash to bring
@@ -702,41 +681,30 @@ impl Saved {
     }
 }
 
-/// `fux grant`: a socket made at `socket`, from the caller's directory
-/// `cwd`, whose commands reach `workspace` alone; or with `revoke`, the
-/// one made there closed, and what came through it reaching nothing more.
+/// `fux grant`: a socket made at `socket` (from the caller's directory
+/// `cwd`), whose commands reach `workspace` alone; or `fux revoke`, the one
+/// made there closed (and what came through it ends): whether it was.
 fn grant(
-    grants: &mut Vec<Grant>,
+    grants: &mut Vec<(PathBuf, Listening)>,
     session: &mut Session,
-    (workspace, socket, revoke): (Option<crate::command::WsRef>, String, bool),
+    (socket, workspace): (String, Option<crate::command::WsRef>),
     cwd: Option<PathBuf>,
-) -> Reply {
-    let failed = |stderr: String| Reply::failed(Code::Grant, stderr);
+) -> (Reply, bool) {
+    let failed = |stderr: String| (Reply::failed(Code::Grant, stderr), false);
     let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
-    if revoke {
+    let Some(workspace) = workspace else {
         let before = grants.len();
-        grants.retain(|g| g.socket != path);
-        session.grants.retain(|(s, _)| *s != path);
+        grants.retain(|(socket, _)| *socket != path);
+        session.grants.retain(|g| g.socket != path);
         return match grants.len() < before {
-            true => Reply::default(),
+            true => (Reply::default(), true),
             false => failed(format!("no grant made {}", path.display())),
         };
-    }
-    // A workspace by its id must be there; by its name it may be made later
-    // (`run` makes the one it names).
-    let workspace = match workspace {
-        Some(crate::command::WsRef::Name(name)) => name,
-        Some(ws @ crate::command::WsRef::Id(_)) => match session.resolve_ws(&ws) {
-            Ok(id) => session
-                .workspace(id)
-                .map_or_else(String::new, |w| w.name.clone()),
-            Err(error) => return failed(error.to_string()),
-        },
-        None => return failed("grant needs a workspace".to_owned()),
     };
-    if grants.iter().any(|g| g.socket == path) {
-        return failed(format!("a grant made {} already", path.display()));
-    }
+    let name = match session.grantable(&path, &workspace) {
+        Ok(name) => name,
+        Err(error) => return failed(error.to_string()),
+    };
     let checked = crate::socket::socket_path(crate::socket::Choice::Path(
         &path.to_string_lossy(),
         "grant",
@@ -748,20 +716,9 @@ fn grant(
         Ok(listening) => listening,
         Err(error) => return failed(error.to_string()),
     };
-    session.grants.push((path.clone(), workspace.clone()));
-    let pinned = session
-        .resolve_ws(&crate::command::WsRef::Name(workspace.clone()))
-        .ok();
-    grants.push(Grant {
-        listening,
-        socket: path.clone(),
-        workspace,
-        pinned,
-    });
-    Reply {
-        text: format!("{}\n", path.display()),
-        ..Reply::default()
-    }
+    session.grant(path.clone(), name);
+    grants.push((path.clone(), listening));
+    (format!("{}\n", path.display()).into(), false)
 }
 
 /// Why a server could not start.
@@ -1024,7 +981,7 @@ impl Server {
         if !std::mem::take(&mut self.revoked) {
             return;
         }
-        let live: Vec<&PathBuf> = self.grants.iter().map(|g| &g.socket).collect();
+        let live: Vec<&PathBuf> = self.grants.iter().map(|(socket, _)| socket).collect();
         for conn in &mut self.conns {
             let gone = conn.grant.as_ref().is_some_and(|g| !live.contains(&g));
             if gone && matches!(conn.stage, Stage::Waiting(_) | Stage::Events(_)) {
@@ -1100,7 +1057,7 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            let grants = (self.grants.iter().enumerate()).map(|(i, g)| (Some(i), &g.listening));
+            let grants = (self.grants.iter().enumerate()).map(|(i, (_, l))| (Some(i), l));
             for (grant, listening) in std::iter::once((None, listening)).chain(grants) {
                 if let Some(listener) = &listening.listener {
                     fds.push(PollFd::new(listener, PollFlags::IN));
@@ -1308,7 +1265,7 @@ impl Server {
             return None;
         };
         match grant {
-            Some(i) => (self.grants.get_mut(i)).map(|g| (&mut g.listening, Some(g.socket.clone()))),
+            Some(i) => (self.grants.get_mut(i)).map(|(socket, l)| (l, Some(socket.clone()))),
             None => Some((listening, None)),
         }
     }
@@ -1707,17 +1664,19 @@ impl Server {
         let cwd = Some(PathBuf::from(cwd)).filter(|p| p.is_dir());
         // Through a grant, the workspace it reaches; one revoked reaches
         // none.
-        let scope = conn.grant.as_ref().map(|socket| {
-            (self.grants.iter_mut())
-                .find(|g| &g.socket == socket)
-                .map_or_else(String::new, |g| g.scope(session))
-        });
-        if let crate::command::Command::Grant {
-            workspace,
-            socket,
-            revoke,
-        } = command
-        {
+        let scope = conn
+            .grant
+            .as_ref()
+            .map(|socket| session.grant_scope(socket));
+        use crate::command::Command;
+        let granting = if let Command::Grant { workspace, socket } = &command {
+            Some((socket.clone(), Some(workspace.clone())))
+        } else if let Command::Revoke { socket } = &command {
+            Some((socket.clone(), None))
+        } else {
+            None
+        };
+        if let Some(granting) = granting {
             let outcome = match scope {
                 // `fux grant` from a granted socket: refused.
                 Some(_) => Reply::failed(
@@ -1725,9 +1684,10 @@ impl Server {
                     "a socket `grant` made cannot grant another",
                 ),
                 None => {
+                    let (outcome, revoked) = grant(&mut self.grants, session, granting, cwd);
                     // What came through a revoked grant ends.
-                    self.revoked |= revoke;
-                    grant(&mut self.grants, session, (workspace, socket, revoke), cwd)
+                    self.revoked |= revoked;
+                    outcome
                 }
             };
             conn.answer(session, outcome);
