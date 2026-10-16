@@ -6,7 +6,7 @@ use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Rgb, Row,
     RowId, Rows, UnderlineStyle, Window,
     geometry::{Size, Span},
-    grid::{Cursor, Grid, Scroll, Written},
+    grid::{Cursor, Erase, Grid, Scroll, Written},
     parser::Parameters,
 };
 use std::collections::VecDeque;
@@ -1824,7 +1824,7 @@ impl Screen {
     /// nothing. Out of line: inlined, the tmux recordings count up to 0.35%
     /// more instructions (fux-bench).
     #[inline(never)]
-    fn erase_protected(&mut self, private: bool, display: bool, mode: u16) -> bool {
+    fn erase_protected(&mut self, private: bool, display: bool, part: Erase) -> bool {
         if !private && self.protection != Protection::Iso {
             return false;
         }
@@ -1832,12 +1832,14 @@ impl Screen {
         let version = self.version;
         let g = self.grid_mut();
         let ((row, col), size) = (g.cursor.at(), g.size());
-        let found = g.erase_in(display, mode, |g, y, start, end| {
+        let found = g.erase_in(display, part, |g, y, start, end| {
             g.erase_unprotected(y, start, end, blank, version)
         });
-        let whole = mode == 2
-            || (mode == 0 && (row, col) == (0, 0))
-            || (mode == 1 && (row, col) == (size.lines().last(), size.columns().last()));
+        let whole = match part {
+            Erase::Below => (row, col) == (0, 0),
+            Erase::Above => (row, col) == (size.lines().last(), size.columns().last()),
+            Erase::All => true,
+        };
         if display && whole && !found {
             self.protection = Protection::Off;
         }
@@ -2450,25 +2452,25 @@ impl Screen {
                     self.clear_history();
                     return Ok(Dispatch::Done);
                 }
-                if mode > 2 {
+                let Some(part) = Erase::ALL.into_iter().find(|e| e.number() == mode) else {
                     return Ok(Dispatch::Unhandled);
-                }
+                };
                 // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
                 // protected glyphs; ED and EL only ISO's (SPA), as xterm's
                 // `do_erase_display` has it.
                 if self.protection != Protection::Off
-                    && self.erase_protected(private, byte == b'J', mode)
+                    && self.erase_protected(private, byte == b'J', part)
                 {
                     return Ok(Dispatch::Done);
                 }
                 let a = self.blank_style();
                 self.with_grid(|g, _, v| {
-                    g.erase_in(byte == b'J', mode, |g, y, start, end| {
+                    g.erase_in(byte == b'J', part, |g, y, start, end| {
                         g.erase(y, start, end, a, v);
                         false
                     })
                 });
-                if byte == b'J' && mode == 2 {
+                if byte == b'J' && part == Erase::All {
                     self.screen_erased();
                 }
             }

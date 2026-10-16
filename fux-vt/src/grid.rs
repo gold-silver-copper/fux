@@ -222,6 +222,22 @@ impl Order {
     }
 }
 
+closed! {
+    /// What ED and EL erase: from the cursor to the end, from the start to
+    /// the cursor, or all.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Erase {
+        /// Its parameter.
+        pub(crate) fn number(self) -> u16;
+        /// The cursor's cell and what follows.
+        Below => 0,
+        /// What comes before, and the cursor's cell.
+        Above => 1,
+        /// All of it.
+        All => 2,
+    }
+}
+
 /// A grid: its screen, rows of `cols` cells in slots, `order` saying which
 /// slot each row is in; and its history (`history.rs`), the rows scrolled
 /// off the screen's top, each kept as the cells it uses. A row's place
@@ -973,16 +989,16 @@ impl Grid {
         }
     }
 
-    /// ED (`display`) or EL in `mode`, 0 to 2, from the cursor, ending a
-    /// pending wrap: `erase` erases each row's span, and says whether it
-    /// found something it left; whether any did. A row ED erases whole is
-    /// no prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
+    /// ED (`display`) or EL of `part`, from the cursor, ending a pending
+    /// wrap: `erase` erases each row's span, and says whether it found
+    /// something it left; whether any did. A row ED erases whole is no
+    /// prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
     /// leave the mark (a shell redrawing its prompt erases from it).
     #[inline]
     pub fn erase_in(
         &mut self,
         display: bool,
-        mode: u16,
+        part: Erase,
         mut erase: impl FnMut(&mut Self, u16, u16, u16) -> bool,
     ) -> bool {
         self.cursor.pending_wrap = false;
@@ -990,16 +1006,21 @@ impl Grid {
         let mut found = false;
         if display {
             for y in 0..self.size.rows() {
-                if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
+                let whole = match part {
+                    Erase::Below => y > row,
+                    Erase::Above => y < row,
+                    Erase::All => true,
+                };
+                if whole {
                     found |= erase(self, y, 0, cols);
                     self.set_prompt(y, false);
                 }
             }
         }
-        let (start, end) = match mode {
-            0 => (col, cols),
-            1 => (0, col.saturating_add(1).min(cols)),
-            _ => (0, cols),
+        let (start, end) = match part {
+            Erase::Below => (col, cols),
+            Erase::Above => (0, col.saturating_add(1).min(cols)),
+            Erase::All => (0, cols),
         };
         erase(self, row, start, end) | found
     }
