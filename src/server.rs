@@ -63,6 +63,9 @@ const REPORT_EVERY: Duration = Duration::from_secs(10);
 /// How long the listener rests after an `accept` failure that retrying at
 /// once would only repeat.
 const ACCEPT_REST: Duration = Duration::from_millis(100);
+/// How often a restore that has started is looked at, to see its thread
+/// end: it ends after its connection, which no descriptor then tells.
+const RESTORE_LOOK: Duration = Duration::from_millis(10);
 /// What a connection refused for want of descriptors is told.
 const NO_DESCRIPTORS: &str =
     "the fux server is out of file descriptors; it refuses new connections until some close";
@@ -146,6 +149,8 @@ enum Wake {
     Answer,
     /// The layout is saved, if it changed.
     Save,
+    /// A restore's thread is looked at again (`Server::after_restore`).
+    Restore,
 }
 
 /// A client's connection: its socket, and where it is in its life.
@@ -877,6 +882,8 @@ impl Server {
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
         let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Save)));
+        let restore = (self.saved.as_ref()).filter(|s| s.restore.is_some());
+        let restore = restore.map(|_| (crate::after(Instant::now(), RESTORE_LOOK), Wake::Restore));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| {
@@ -889,6 +896,7 @@ impl Server {
             .chain(grace)
             .chain(phase)
             .chain(save)
+            .chain(restore)
             .chain(answers)
             .chain(paints)
     }
@@ -918,7 +926,7 @@ impl Server {
             }
             // The loop answers waits and saves after every wake: these only
             // set when it wakes.
-            Wake::Answer | Wake::Save => {}
+            Wake::Answer | Wake::Save | Wake::Restore => {}
         }
         ControlFlow::Continue(())
     }
