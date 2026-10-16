@@ -1124,15 +1124,14 @@ impl Session {
             p.screen().mode(fux_vt::Mode::BracketedPaste),
         );
         let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
-        // Whether the last piece takes more: text or keys that edit, of
-        // the same kind.
+        // Whether the last piece takes more, an edit: text, or keys.
         let mut last: Option<bool> = None;
         for input in inputs {
             let mut bytes = Vec::new();
-            let (unit, text) = match input {
+            let unit = match input {
                 Input::Key(key) => {
                     crate::encode::key_bytes((*key).into(), mode, &mut bytes);
-                    (crate::command::unit(*key), false)
+                    crate::command::unit(*key)
                 }
                 Input::Text(text) => {
                     // A line end in text submits the line, read alone.
@@ -1140,7 +1139,7 @@ impl Session {
                     while let Some(at) = rest.find(['\r', '\n']) {
                         let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
                         if !part.is_empty() {
-                            push_piece(&mut units, &mut last, part.as_bytes(), Some(true));
+                            push_piece(&mut units, &mut last, part.as_bytes(), true);
                         }
                         let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
                         units.push((end.as_bytes().to_vec(), Unit::Submit));
@@ -1148,7 +1147,7 @@ impl Session {
                         rest = after;
                     }
                     if !rest.is_empty() {
-                        push_piece(&mut units, &mut last, rest.as_bytes(), Some(true));
+                        push_piece(&mut units, &mut last, rest.as_bytes(), true);
                     }
                     continue;
                 }
@@ -1159,13 +1158,11 @@ impl Session {
                     continue;
                 }
             };
-            let joins = (unit == Unit::Edit && bytes != b"\x1b").then_some(text);
-            match joins {
-                Some(kind) => push_piece(&mut units, &mut last, &bytes, Some(kind)),
-                None => {
-                    units.push((bytes, unit));
-                    last = None;
-                }
+            if unit == Unit::Edit && bytes != b"\x1b" {
+                push_piece(&mut units, &mut last, &bytes, false);
+            } else {
+                units.push((bytes, unit));
+                last = None;
             }
         }
         p.send(units, Instant::now())?;
@@ -3717,21 +3714,21 @@ fn paste_unit(text: &str, bracketed: bool) -> crate::log::Unit {
     }
 }
 
-/// Adds `bytes`, an edit of kind `kind` (text, or keys), to the last
+/// Adds `bytes`, an edit that is `text` typed or else keys, to the last
 /// piece if that is an edit of the same kind, else as a piece of its own.
 fn push_piece(
     units: &mut Vec<(Vec<u8>, crate::log::Unit)>,
     last: &mut Option<bool>,
     bytes: &[u8],
-    kind: Option<bool>,
+    text: bool,
 ) {
     match units.last_mut() {
-        Some((piece, crate::log::Unit::Edit)) if last.is_some() && *last == kind => {
+        Some((piece, crate::log::Unit::Edit)) if *last == Some(text) => {
             piece.extend_from_slice(bytes);
         }
         _ => units.push((bytes.to_vec(), crate::log::Unit::Edit)),
     }
-    *last = kind;
+    *last = Some(text);
 }
 
 #[cfg(test)]
