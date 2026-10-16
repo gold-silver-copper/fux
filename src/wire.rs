@@ -253,12 +253,6 @@ text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 
-wire_enum!(Direction, "direction" {
-    0 => Left,
-    1 => Right,
-    2 => Up,
-    3 => Down,
-});
 wire_enum!(Axis, "axis" {
     0 => Horizontal,
     1 => Vertical,
@@ -272,36 +266,28 @@ wire_enum!(Sibling, "sibling" {
     0 => Next,
     1 => Previous,
 });
-wire_enum!(MouseButton, "mouse button" {
-    0 => Left,
-    1 => Middle,
-    2 => Right,
-    3 => WheelUp,
-    4 => WheelDown,
-    5 => WheelLeft,
-    6 => WheelRight,
-    7 => Back,
-    8 => Forward,
-});
-wire_enum!(Signal, "signal" {
-    0 => Hup,
-    1 => Int,
-    2 => Term,
-    3 => Kill,
-    4 => Stop,
-    5 => Tstp,
-    6 => Cont,
-    7 => Winch,
-    8 => Quit,
-    9 => Usr1,
-    10 => Usr2,
-    11 => Ill,
-    12 => Abrt,
-    13 => Fpe,
-    14 => Segv,
-    15 => Pipe,
-    16 => Alrm,
-});
+
+/// `closed_wire!(Ty "what", …)` expands to `impl Wire for Ty`, for a
+/// fieldless enum whose `ALL` lists every variant in declaration order: a
+/// variant's tag is its place there. No variant can be missed, nor two share
+/// a tag; reordering the declaration (fux-vt's, fuxix's) changes the wire.
+macro_rules! closed_wire {
+    ($($ty:ty, $what:literal);* $(;)?) => {$(
+        impl $crate::wire::Wire for $ty {
+            fn put(&self, out: &mut Vec<u8>) {
+                out.push(*self as u8);
+            }
+            fn get(r: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Error> {
+                let tag = <u8 as $crate::wire::Wire>::get(r)?;
+                let all = Self::ALL.get(usize::from(tag)).copied();
+                all.ok_or($crate::wire::Error::Tag($what, tag))
+            }
+        }
+    )*};
+}
+pub(crate) use closed_wire;
+
+closed_wire!(Direction, "direction"; MouseButton, "mouse button"; Signal, "signal");
 
 impl Wire for fux_vt::Size {
     fn put(&self, out: &mut Vec<u8>) {
