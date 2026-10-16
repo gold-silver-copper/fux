@@ -166,9 +166,7 @@ impl Config {
         }
         Ok(())
     }
-}
 
-impl Config {
     /// How long an action or a wait waits at most, unless it says.
     pub fn wait(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.wait_seconds)
