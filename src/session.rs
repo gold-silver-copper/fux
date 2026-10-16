@@ -987,6 +987,36 @@ impl Session {
         }
     }
 
+    /// What `id`, written `text`, stands for as a `kind`: itself; a pane's
+    /// or tab's id, its tab or workspace; a tab or workspace of one pane, or
+    /// a workspace of one tab, that one.
+    fn stands_for(&self, id: AnyRef, text: &str, kind: Kind) -> Result<AnyRef, Error> {
+        let of = id.kind().name();
+        let many = |each: Kind| {
+            let each = each.name();
+            move |n, ids| format!("{text} is a {of} of {n} {each}s ({ids}): use a {each}'s id")
+        };
+        match (id, kind) {
+            (AnyRef::Pane(_), Kind::Pane)
+            | (AnyRef::Tab(_), Kind::Tab)
+            | (AnyRef::Workspace(_), Kind::Workspace) => self.there(id),
+            (AnyRef::Pane(p), Kind::Tab) => {
+                Ok(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1))
+            }
+            (AnyRef::Pane(p), Kind::Workspace) => {
+                Ok(AnyRef::Workspace(self.locate(p).ok_or(Error::NoPane(p))?.0))
+            }
+            (AnyRef::Tab(t), Kind::Workspace) => self.tab_workspace(t).map(AnyRef::Workspace),
+            (AnyRef::Tab(_) | AnyRef::Workspace(_), Kind::Pane) => {
+                one(&self.panes_of(id)?, many(Kind::Pane)).map(AnyRef::Pane)
+            }
+            (AnyRef::Workspace(w), Kind::Tab) => {
+                self.there(id)?;
+                one(&self.tab_ids(w), many(Kind::Tab)).map(AnyRef::Tab)
+            }
+        }
+    }
+
     /// What `text` names as a pane, tab or workspace, `kind`: its id (`%3`),
     /// or a tab's name (a pane, its tab's one pane); a workspace's name.
     /// Nothing given, the caller's own.
@@ -1019,81 +1049,45 @@ impl Session {
                 }
             }
         };
-        // A pane's or tab's id stands for its tab or workspace, and a tab
-        // of one pane for that pane.
-        let pane = text.parse::<PaneId>().ok();
-        let tab = text.parse::<TabId>().ok();
-        if let (Kind::Tab | Kind::Workspace, Some(p)) = (kind, pane) {
-            let (ws, tab) = self.locate(p).ok_or(Error::NoPane(p))?;
-            return Ok(match kind {
-                Kind::Tab => AnyRef::Tab(tab),
-                Kind::Pane | Kind::Workspace => AnyRef::Workspace(ws),
-            });
-        }
-        if let (Kind::Workspace, Some(t)) = (kind, tab) {
-            return self.tab_workspace(t).map(AnyRef::Workspace);
-        }
-        if let (Kind::Pane, Some(t)) = (kind, tab) {
-            let panes = self.root(t).map(Tree::panes).ok_or(Error::NoTab(t))?;
-            let many = |n, ids| format!("{t} is a tab of {n} panes ({ids}): use a pane's id");
-            return one(&panes, many).map(AnyRef::Pane);
-        }
-        // A workspace's id stands for its one tab, or its one pane.
-        if let (Kind::Pane | Kind::Tab, Ok(w)) = (kind, text.parse::<WsId>()) {
-            let ws = (self.workspaces.iter())
-                .find(|ws| ws.id == w)
-                .ok_or(Error::NoWorkspace(w))?;
-            let many = |of| {
-                move |n, ids| format!("{w} is a workspace of {n} {of}s ({ids}): use a {of}'s id")
-            };
-            return match kind {
-                Kind::Tab => one(&self.tab_ids(w), many("tab")).map(AnyRef::Tab),
-                Kind::Pane | Kind::Workspace => {
-                    let panes: Vec<PaneId> = ws.tabs().iter().flat_map(panes_of).collect();
-                    one(&panes, many("pane")).map(AnyRef::Pane)
-                }
-            };
+        let id = (text.parse().map(AnyRef::Pane))
+            .or_else(|_| text.parse().map(AnyRef::Tab))
+            .or_else(|_| text.parse().map(AnyRef::Workspace));
+        if let Ok(id) = id {
+            return self.stands_for(id, text, kind);
         }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id)),
-            Kind::Pane => match text.parse::<PaneId>() {
-                Ok(id) => Ok(AnyRef::Pane(self.pane(id)?.id)),
-                Err(_) => {
-                    // A tab's name, else a pane's own (what `rename` gave
-                    // it, or its program's), else the title its program
-                    // set, as `ls` shows it.
-                    let tab = match named() {
-                        Ok(tab) => tab,
-                        Err(no_tab) => {
-                            let with = |of: fn(&Pane) -> &str| {
-                                let mut panes: Vec<PaneId> = (self.panes.values())
-                                    .filter(|p| of(p) == text)
-                                    .map(|p| p.id)
-                                    .collect();
-                                panes.sort();
-                                panes
-                            };
-                            let mut panes = with(|p| p.name.as_str());
-                            if panes.is_empty() {
-                                panes = with(|p| p.title.as_str());
-                            }
-                            if panes.is_empty() {
-                                return Err(no_tab);
-                            }
-                            let many =
-                                |n, ids| format!("{text:?} names {n} panes ({ids}): use an id");
-                            return one(&panes, many).map(AnyRef::Pane);
+            Kind::Pane => {
+                // A tab's name, else a pane's own (what `rename` gave
+                // it, or its program's), else the title its program
+                // set, as `ls` shows it.
+                let tab = match named() {
+                    Ok(tab) => tab,
+                    Err(no_tab) => {
+                        let with = |of: fn(&Pane) -> &str| {
+                            let mut panes: Vec<PaneId> = (self.panes.values())
+                                .filter(|p| of(p) == text)
+                                .map(|p| p.id)
+                                .collect();
+                            panes.sort();
+                            panes
+                        };
+                        let mut panes = with(|p| p.name.as_str());
+                        if panes.is_empty() {
+                            panes = with(|p| p.title.as_str());
                         }
-                    };
-                    let many =
-                        |n, ids| format!("{text:?} is a tab of {n} panes ({ids}): use a pane's id");
-                    one(&panes_of(tab), many).map(AnyRef::Pane)
-                }
-            },
-            Kind::Tab => match text.parse::<TabId>() {
-                Ok(id) => self.there(AnyRef::Tab(id)),
-                Err(_) => named().map(|tab| AnyRef::Tab(tab.id)),
-            },
+                        if panes.is_empty() {
+                            return Err(no_tab);
+                        }
+                        let many = |n, ids| format!("{text:?} names {n} panes ({ids}): use an id");
+                        return one(&panes, many).map(AnyRef::Pane);
+                    }
+                };
+                let many =
+                    |n, ids| format!("{text:?} is a tab of {n} panes ({ids}): use a pane's id");
+                one(&panes_of(tab), many).map(AnyRef::Pane)
+            }
+            Kind::Tab => named().map(|tab| AnyRef::Tab(tab.id)),
             Kind::Workspace => {
                 let ws = command::parse_workspace(text).map_err(Error::Usage)?;
                 Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
