@@ -262,7 +262,8 @@ pub struct Ended {
     pub stack: Vec<Value<Fux>>,
 }
 
-/// A run's failure: its status (a wait's: 3, 4, 5, 6, 124; else 1), its
+/// A run's failure: its status (a wait's: 3, 4, 7, 124; a usage error's: 2;
+/// else 1), its
 /// stable code and its message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {

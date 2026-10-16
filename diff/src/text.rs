@@ -1,5 +1,5 @@
 //! Text, in the baseline and the current fux: lines split into the same
-//! words or errors, words quote and join alike, command lines for a shell
+//! words or errors, words quote alike, command lines for a shell
 //! are the same with and without fish; key names read and print alike;
 //! JSON strings and base64 are written the same. Config files are no longer
 //! compared: the baseline's grammar is gone, and a config is a fuxth

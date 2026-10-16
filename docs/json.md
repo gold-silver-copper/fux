@@ -29,7 +29,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `idle_ms` | how long its screen has shown no change |
 | `alt_screen` | its program holds the full screen |
 | `mouse` | its program asked for mouse reports |
-| `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, or `null` |
+| `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"other"` (a mode fux does not name), or `null` |
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, `width` by `height` pixels |
 | `cursor_visible` | the cursor shows |
@@ -167,10 +167,11 @@ language's: `type` (a word given the wrong kind of value), `stack_underflow`,
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.23.0","protocol":5,
- "server_version":"0.23.0","server_protocol":5,"compatible":true}
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.23.0","protocol":8,
+ "server_version":"0.23.0","server_protocol":8,"compatible":true}
 [{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.23.0","compatible":true}]
 ```
 
 With no server, `status` gives `running`, `socket`, `version` and `protocol`
-alone.
+alone, and `"left":true` when its socket is left from a server that
+stopped.

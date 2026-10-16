@@ -392,8 +392,6 @@ pub enum Command {
         targets: Vec<AnyRef>,
         json: bool,
     },
-    /// What a layout file says, made all or nothing: its new tabs go to
-    /// `workspace` unless they say where.
     /// What is there, as a layout file: everything, or one tab or
     /// workspace.
     DumpLayout {
@@ -416,7 +414,8 @@ pub enum Command {
     ClearHistory {
         target: Option<PaneId>,
     },
-    /// The prefix, sent to a pane as its program asked for keys.
+    /// What the pane shows, with up to `history` lines before it, as text
+    /// or JSON.
     CapturePane {
         target: Option<PaneId>,
         history: Option<usize>,
