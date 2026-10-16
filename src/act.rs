@@ -12,7 +12,7 @@ use crate::keys::colour::Scheme;
 use crate::keys::decode::Reply;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::keys::{Keystroke, Kitty, Modifiers};
-use crate::wire::{plain_wire, wire_enum, wire_struct};
+use crate::wire::{wire_enum, wire_struct};
 
 /// One action of an attached client.
 #[derive(Clone, Debug, PartialEq)]
@@ -173,16 +173,15 @@ pub enum LineAct {
     Cancel,
 }
 
-plain_wire!(
-    MouseAction,
-    "mouse action",
-    [
-        MouseAction::Press,
-        MouseAction::Release,
-        MouseAction::Motion
-    ]
-);
-plain_wire!(Scheme, "scheme", [Scheme::Light, Scheme::Dark]);
+wire_enum!(MouseAction, "mouse action" {
+    0 => Press,
+    1 => Release,
+    2 => Motion,
+});
+wire_enum!(Scheme, "scheme" {
+    0 => Light,
+    1 => Dark,
+});
 wire_struct!(Modifiers { ctrl, alt, shift });
 wire_struct!(Kitty {
     code,

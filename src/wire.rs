@@ -10,6 +10,7 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
+use fuxix::process::Signal;
 use std::time::Duration;
 
 /// Why bytes are not a request.
@@ -227,57 +228,49 @@ text_wire!(WsId, "workspace id");
 text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 
-/// An enum of plain variants, as its index in `$all`.
-macro_rules! plain_wire {
-    ($ty:ty, $what:literal, $all:expr) => {
-        impl $crate::wire::Wire for $ty {
-            fn put(&self, out: &mut Vec<u8>) {
-                let all = $all;
-                let index = all.iter().position(|v| v == self).unwrap_or(0);
-                out.push(u8::try_from(index).unwrap_or(0));
-            }
-            fn get(r: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Error> {
-                let all = $all;
-                let index = <u8 as $crate::wire::Wire>::get(r)?;
-                all.get(usize::from(index))
-                    .copied()
-                    .ok_or($crate::wire::Error::Tag($what, index))
-            }
-        }
-    };
-}
-pub(crate) use plain_wire;
-plain_wire!(
-    Direction,
-    "direction",
-    [
-        Direction::Left,
-        Direction::Right,
-        Direction::Up,
-        Direction::Down
-    ]
-);
-plain_wire!(Axis, "axis", [Axis::Horizontal, Axis::Vertical]);
-plain_wire!(Kind, "kind", [Kind::Pane, Kind::Tab, Kind::Workspace]);
-plain_wire!(Sibling, "sibling", [Sibling::Next, Sibling::Previous]);
-plain_wire!(
-    MouseButton,
-    "mouse button",
-    [
-        MouseButton::Left,
-        MouseButton::Middle,
-        MouseButton::Right,
-        MouseButton::WheelUp,
-        MouseButton::WheelDown,
-        MouseButton::WheelLeft,
-        MouseButton::WheelRight,
-    ]
-);
-plain_wire!(
-    fuxix::process::Signal,
-    "signal",
-    fuxix::process::Signal::ALL
-);
+wire_enum!(Direction, "direction" {
+    0 => Left,
+    1 => Right,
+    2 => Up,
+    3 => Down,
+});
+wire_enum!(Axis, "axis" {
+    0 => Horizontal,
+    1 => Vertical,
+});
+wire_enum!(Kind, "kind" {
+    0 => Pane,
+    1 => Tab,
+    2 => Workspace,
+});
+wire_enum!(Sibling, "sibling" {
+    0 => Next,
+    1 => Previous,
+});
+wire_enum!(MouseButton, "mouse button" {
+    0 => Left,
+    1 => Middle,
+    2 => Right,
+    3 => WheelUp,
+    4 => WheelDown,
+    5 => WheelLeft,
+    6 => WheelRight,
+    7 => Back,
+    8 => Forward,
+});
+wire_enum!(Signal, "signal" {
+    0 => Hup,
+    1 => Int,
+    2 => Term,
+    3 => Kill,
+    4 => Stop,
+    5 => Tstp,
+    6 => Cont,
+    7 => Winch,
+    8 => Quit,
+    9 => Usr1,
+    10 => Usr2,
+});
 
 impl Wire for fux_vt::Size {
     fn put(&self, out: &mut Vec<u8>) {

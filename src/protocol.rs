@@ -688,6 +688,8 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::Modifiers;
+    use crate::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 
     fn size(n: u16) -> NonZeroU16 {
         NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
@@ -752,6 +754,17 @@ mod tests {
         );
         let act = Act::Paste("界\n".into());
         round_trip!(AttachedFrame, 3, AttachedFrame::Act(Box::new(act)));
+        // Every mouse button, Back and Forward too, arrives as itself.
+        for button in [MouseButton::Back, MouseButton::Forward] {
+            let act = Act::Mouse(MouseEvent {
+                action: MouseAction::Press,
+                button: Some(button),
+                mods: Modifiers::default(),
+                row: 1,
+                col: 2,
+            });
+            round_trip!(AttachedFrame, 3, AttachedFrame::Act(Box::new(act)));
+        }
         round_trip!(AttachedFrame, 4, AttachedFrame::Resize { rows, cols });
         round_trip!(AttachedFrame, 5, AttachedFrame::Detach);
         round_trip!(
