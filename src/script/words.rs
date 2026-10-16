@@ -4,7 +4,7 @@
 use super::{Ask, Fux, Host, Keys, Local, MouseEvent, Opts, Then, Waits};
 use crate::command::{
     AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize, Pick,
-    Resized, Sibling, Subject, SwapWith, Until, Wait, WsRef,
+    Resized, Sibling, SwapWith, Until, Wait, WsRef,
 };
 use crate::id::WsId;
 use crate::keys::Direction;
@@ -406,10 +406,6 @@ fn workspace(word: &str, value: &Value<Fux>) -> Result<WsRef, Failure> {
         return Ok(WsRef::Id(*w));
     }
     string(word, value).map(WsRef::Name)
-}
-
-fn subject(target: AnyRef<WsId>) -> Subject {
-    Subject::from(target.map(WsRef::Id))
 }
 
 fn direction(word: &str, value: &Value<Fux>) -> Result<Direction, Failure> {
@@ -1336,7 +1332,7 @@ impl fuxth::Host for Host<'_> {
                 let t = target(name, &next()?)?;
                 let toward = sibling(name, &next()?)?;
                 tell(Command::Reorder {
-                    subject: subject(t),
+                    target: t.map(WsRef::Id),
                     toward,
                 })
             }

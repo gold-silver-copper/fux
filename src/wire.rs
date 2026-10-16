@@ -4,7 +4,7 @@
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
     AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
-    PanePick, PaneResize, Pick, Resized, Sibling, Subject, SwapWith, Until, Wait, WsRef,
+    PanePick, PaneResize, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
@@ -358,7 +358,6 @@ wire_enum!(MoveTo, "move" {
     4 => Beside(d),
 });
 wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
-wire_enum!(Subject, "subject" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
 wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
 wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To { cols, rows } });
 wire_enum!(Resized, "resized" { 0 => Tabs(t), 1 => Client(c) });
@@ -428,7 +427,7 @@ wire_enum!(Command, "command" {
     23 => Log { target, file },
     24 => ClearHistory { target },
     25 => CapturePane { target, history, view, json, settle },
-    26 => Reorder { subject, toward },
+    26 => Reorder { target, toward },
     27 => Set { option, value },
     28 => Resolve { text, kind },
     29 => ListBuffers,

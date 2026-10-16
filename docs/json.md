@@ -167,8 +167,8 @@ language's: `type` (a word given the wrong kind of value), `stack_underflow`,
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.23.0","protocol":8,
- "server_version":"0.23.0","server_protocol":8,"compatible":true}
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.23.0","protocol":9,
+ "server_version":"0.23.0","server_protocol":9,"compatible":true}
 [{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.23.0","compatible":true}]
 ```
 

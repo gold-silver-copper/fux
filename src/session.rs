@@ -2,7 +2,7 @@
 //! every command that changes them.
 use crate::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
-    Pick, Resized, Sibling, Subject, SwapWith, WsRef,
+    Pick, Resized, Sibling, SwapWith, WsRef,
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
@@ -559,10 +559,10 @@ impl Reach<'_> {
                     SwapWith::Toward(_) => Ok(()),
                 }
             }
-            Command::Reorder { subject, .. } => match subject {
-                Subject::Pane(pane) => self.pane(*pane),
-                Subject::Tab(tab) => self.tab(*tab),
-                Subject::Workspace(_) => self.refuse("reordering workspaces"),
+            Command::Reorder { target, .. } => match target {
+                AnyRef::Pane(pane) => self.pane(Some(*pane)),
+                AnyRef::Tab(tab) => self.tab(Some(*tab)),
+                AnyRef::Workspace(_) => self.refuse("reordering workspaces"),
             },
             Command::Set { .. } => self.refuse("the server's settings"),
             Command::ListBuffers | Command::ShowBuffer { .. } | Command::PasteBuffer { .. } => {
@@ -1347,18 +1347,18 @@ impl Session {
         }
     }
 
-    /// What `subject` names, or the command's own, if it is there: a
-    /// workspace by its ID, as it is held from then on.
-    fn any_target(&self, subject: &Subject, here: Here) -> Result<AnyRef<WsId>, Error> {
-        Ok(match subject {
-            Subject::Pane(p) => AnyRef::Pane(self.pane(*p, here)?.id),
-            Subject::Tab(t) => AnyRef::Tab(self.tab_target(*t, here)?),
+    /// What `target` names, if it is there: a workspace by its ID, as it
+    /// is held from then on.
+    fn any_target(&self, target: &AnyRef, here: Here) -> Result<AnyRef<WsId>, Error> {
+        Ok(match target {
+            AnyRef::Pane(p) => AnyRef::Pane(self.pane(Some(*p), here)?.id),
+            AnyRef::Tab(t) => AnyRef::Tab(self.tab_target(Some(*t), here)?),
             // A name no workspace has may be a tab's (`run -n NAME`).
-            Subject::Workspace(w) => match (self.ws_target(w.as_ref(), here), w) {
+            AnyRef::Workspace(w) => match (self.ws_target(Some(w), here), w) {
                 // A workspace's name is the workspace's, before a tab's
                 // (`main` names both at first).
                 (Ok(ws), _) => AnyRef::Workspace(ws),
-                (Err(error), Some(WsRef::Name(name))) => {
+                (Err(error), WsRef::Name(name)) => {
                     let mut tabs = (self.workspaces.iter())
                         .flat_map(Workspace::tabs)
                         .filter(|t| t.name == *name);
@@ -2084,7 +2084,7 @@ impl Session {
         if let Command::Events { targets, json } = command {
             let here = self.here(origin)?;
             let targets = (targets.into_iter())
-                .map(|t| self.any_target(&Subject::from(t), here))
+                .map(|t| self.any_target(&t, here))
                 .collect::<Result<_, _>>()?;
             return Ok(Begun::Events(Box::new(crate::events::Subscription {
                 targets,
@@ -2270,7 +2270,7 @@ impl Session {
                 // Its JSON, given as asked, or kept beside its text.
                 let (read, only) = match target {
                     Some(target) => {
-                        let target = self.any_target(&Subject::from(target.clone()), here)?;
+                        let target = self.any_target(target, here)?;
                         let read = self.ls_one(target, get.as_deref())?;
                         if get.is_some() {
                             return Ok(read);
@@ -2433,7 +2433,7 @@ impl Session {
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
-                    Some(target) => match self.any_target(&Subject::from(target.clone()), here)? {
+                    Some(target) => match self.any_target(target, here)? {
                         AnyRef::Pane(p) => self.viewers(self.locate(p).map(|(_, t)| t)),
                         AnyRef::Tab(t) => self.viewers(Some(t)),
                         AnyRef::Workspace(w) => self
@@ -2459,7 +2459,7 @@ impl Session {
                             return Err(fail("size", message));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                        let target = self.any_target(&Subject::from(target.clone()), here)?;
+                        let target = self.any_target(target, here)?;
                         let tabs: Vec<TabId> = match target {
                             AnyRef::Tab(tab) => vec![tab],
                             AnyRef::Workspace(ws) => self.tab_ids(ws),
@@ -2510,7 +2510,7 @@ impl Session {
             }
             Command::DumpLayout { target } => {
                 let only = match target {
-                    Some(target) => Some(self.any_target(&Subject::from(target.clone()), here)?),
+                    Some(target) => Some(self.any_target(target, here)?),
                     None => None,
                 };
                 Ok(self.dump_layout(only, false))
@@ -2692,7 +2692,7 @@ impl Session {
                 Ok(closed(origin, &[vec![ws.to_string()], panes].concat()))
             }
             Command::Rename { target, name } => {
-                let target = self.any_target(&Subject::from(target.clone()), here)?;
+                let target = self.any_target(target, here)?;
                 self.rename(target, name.clone()).map(|()| String::new())
             }
             &Command::MovePane { target, ref to } => self.move_pane(target, to, here),
@@ -2784,11 +2784,8 @@ impl Session {
                 self.json = form;
                 Ok(text)
             }
-            &Command::Reorder {
-                ref subject,
-                toward,
-            } => {
-                let target = self.any_target(subject, here)?;
+            &Command::Reorder { ref target, toward } => {
+                let target = self.any_target(target, here)?;
                 self.reorder(target, toward).map(|()| String::new())
             }
             Command::Set { option, value } => {

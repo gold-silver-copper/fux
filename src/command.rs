@@ -98,25 +98,6 @@ pub enum SwapWith {
     Toward(Direction),
 }
 
-/// A pane, tab or workspace a command acts on: the one given, or (`None`)
-/// the client's or the pane's own.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Subject {
-    Pane(Option<PaneId>),
-    Tab(Option<TabId>),
-    Workspace(Option<WsRef>),
-}
-
-impl From<AnyRef> for Subject {
-    fn from(target: AnyRef) -> Subject {
-        match target {
-            AnyRef::Pane(p) => Subject::Pane(Some(p)),
-            AnyRef::Tab(t) => Subject::Tab(Some(t)),
-            AnyRef::Workspace(w) => Subject::Workspace(Some(w)),
-        }
-    }
-}
-
 /// How a tab no client shows is laid out (`--size`, `fux resize`): `None`,
 /// on a client's screen.
 pub type Size = Option<fux_vt::Size>;
@@ -427,7 +408,7 @@ pub enum Command {
         settle: Option<Option<Duration>>,
     },
     Reorder {
-        subject: Subject,
+        target: AnyRef,
         toward: Sibling,
     },
     /// A server setting (`history-bytes`, `clipboard`, …), as its value's
