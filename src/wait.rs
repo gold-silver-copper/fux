@@ -891,9 +891,7 @@ impl Watch {
         let wanted: Vec<Vec<char>> = (texts.iter())
             .map(|t| folded(t.trim_start_matches('^').trim_end_matches('$')))
             .collect();
-        let runs = pieces.flat_map(|(seq, p)| {
-            (p.prints.iter().zip(&p.echo).zip(&p.fresh)).map(move |((r, e), f)| (seq, r, e, *f))
-        });
+        let runs = pieces.flat_map(|(seq, p)| p.runs().map(move |(r, e, f)| (seq, r, e, f)));
         for (seq, whole, echo, fresh) in runs {
             // Only what it changed is news: what it printed as its row held
             // it, just before or as the wait began, is drawn again.

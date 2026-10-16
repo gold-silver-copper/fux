@@ -191,6 +191,9 @@ impl Classes {
         reads: bool,
     ) -> Echo {
         let ahead = |classes: &mut Classes| {
+            if classes.ahead_text.is_empty() {
+                return Echo::Not;
+            }
             let ahead = classes.ahead_text.concat();
             let drawn = reads && !ahead.trim().is_empty() && !print.text.trim().is_empty();
             match drawn {

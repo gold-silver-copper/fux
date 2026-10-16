@@ -514,6 +514,9 @@ pub struct Pane {
     shown_rows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
     /// Where each piece of output came from (`crate::classify`).
     classes: crate::classify::Classes,
+    /// The bytes of output read since the last action's input, as far as
+    /// `REDRAWS`: within them, a line drawn again is told from news.
+    redraws: usize,
     /// The nonce its shell's marks carry, if fux marked its shell: then
     /// they are the authority on what it reads and runs.
     pub nonce: Option<String>,
@@ -572,6 +575,12 @@ pub struct Pace {
 /// pieces, lines of a startup message -- comes much closer together than
 /// this, while a person notices nothing shorter.
 pub const QUIET: Duration = Duration::from_millis(50);
+
+/// How many bytes of output after an input are read for lines drawn again
+/// as they read (each row printed on is read after each piece): a screen's
+/// redraws, many times over. Past them, in a flood, every run printed is
+/// news to a wait, and costs no more than recording it.
+const REDRAWS: usize = 1 << 20;
 
 /// A command line held until the new shell is ready for it: until its output
 /// has been quiet for `QUIET` after it first wrote, or at `deadline` if it
@@ -650,6 +659,7 @@ impl Pane {
             before_shows: std::collections::HashMap::new(),
             shown_rows: std::collections::HashMap::new(),
             classes: crate::classify::Classes::default(),
+            redraws: 0,
             nonce: None,
             revision: 0,
             starts: 0,
@@ -785,40 +795,58 @@ impl Pane {
         let prints = self.parser.take_prints();
         let printed = (!prints.is_empty()).then(|| {
             let screen = self.parser.screen();
-            let echo: Vec<_> = (prints.iter())
+            let mut echo: Vec<_> = (prints.iter())
                 .map(|print| {
                     let line = || first_row(screen, print.row).unwrap_or(print.row);
                     self.classes.echo(origin, &print, line, reads)
                 })
                 .collect();
-            let held = |p: &fux_vt::Print<'_>| self.seen.get(&p.row).or(self.before.get(&p.row));
-            let fresh = (prints.iter().zip(&echo))
-                .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
-                    let echo = *e != crate::classify::Echo::Not;
-                    held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
-                })
-                .collect();
-            // Each row printed on, once, as it reads now, if it is on the
-            // screen: one gone into history is not printed on again.
-            // The screen's rows, found once: a row in history is printed on
-            // no more, and finding one there would read all of history.
-            let window = screen.window();
-            let rows: std::collections::HashMap<_, _> = (0..window.rows())
-                .filter_map(|y| window.row(y))
-                .map(|row| (row.id(), row))
-                .collect();
-            let mut last = None;
-            for print in prints.iter() {
-                if last.replace(print.row) == Some(print.row) {
-                    continue;
-                }
-                if let Some(row) = rows.get(&print.row) {
-                    self.seen.insert(print.row, row_cells(row));
-                }
+            // A line drawn again as it read is no news, as far as the
+            // first `REDRAWS` bytes after an input tell: past them (a flood)
+            // every run is, and the rows it printed on are not read.
+            let tell = self.redraws < REDRAWS;
+            self.redraws = self.redraws.saturating_add(run.len());
+            let held = |p: &fux_vt::Print<'_>| {
+                tell.then(|| self.seen.get(&p.row).or(self.before.get(&p.row)))
+                    .flatten()
+            };
+            // Kept only if some run is no plain output (`Printed`).
+            let fresh = match tell {
+                true => (prints.iter().zip(&echo))
+                    .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
+                        let echo = *e != crate::classify::Echo::Not;
+                        held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
+                    })
+                    .collect(),
+                false => Vec::new(),
+            };
+            if echo.iter().all(|e| *e == crate::classify::Echo::Not) {
+                echo = Vec::new();
             }
-            // Rows scrolled off since are let go: nothing prints on them.
-            if self.seen.len() > rows.len().saturating_mul(4) {
-                self.seen.retain(|id, _| rows.contains_key(id));
+            // Each row printed on, once, as it reads now, if it is on the
+            // screen (found in one map of its rows: a row in history is
+            // printed on no more, and finding one there would read all of
+            // history); rows scrolled off since are let go.
+            if tell {
+                let window = screen.window();
+                let rows: std::collections::HashMap<_, _> = (0..window.rows())
+                    .filter_map(|y| window.row(y))
+                    .map(|row| (row.id(), row))
+                    .collect();
+                let mut last = None;
+                for print in prints.iter() {
+                    if last.replace(print.row) == Some(print.row) {
+                        continue;
+                    }
+                    if let Some(row) = rows.get(&print.row) {
+                        self.seen.entry(print.row).or_default().read(row);
+                    }
+                }
+                if self.seen.len() > rows.len().saturating_mul(4) {
+                    self.seen.retain(|id, _| rows.contains_key(id));
+                }
+            } else {
+                self.seen.clear();
             }
             let mut prints = prints;
             prints.shrink_to_fit();
@@ -974,6 +1002,7 @@ impl Pane {
         );
         self.record
             .push(self.since, Instant::now(), crate::log::Event::Action);
+        self.redraws = 0;
         self.before = rows_now(self.screen());
         let window = self.screen().window();
         self.before_shows = (0..window.rows())
@@ -1293,34 +1322,49 @@ fn osc_before(before: &[u8]) -> Option<usize> {
 
 /// A row's cells as they read: its text, a blank or placeholder a space,
 /// and where in it each column starts (a wide character's second cell
-/// where the next starts).
+/// where the next starts); none kept while each column is one byte, as in
+/// an ASCII row, column N starting at byte N.
 #[derive(Clone, Debug, Default)]
 pub struct Cells {
     text: String,
     at: Vec<usize>,
 }
 
+impl Cells {
+    /// Reads `row` into these cells, in the room they have.
+    fn read(&mut self, row: &fux_vt::Row<'_>) {
+        self.text.clear();
+        self.at.clear();
+        for (col, c) in row.cells().enumerate() {
+            let start = self.text.len();
+            if !self.at.is_empty() || start != col {
+                if self.at.is_empty() {
+                    self.at.extend(0..col);
+                }
+                self.at.push(start);
+            }
+            match c.contents() {
+                _ if c.is_wide_continuation() => {}
+                text if c.has_contents() && text != fux_vt::PLACEHOLDER => self.text.push_str(text),
+                _ => self.text.push(' '),
+            }
+        }
+    }
+}
+
 /// The cells of `row`.
 pub fn row_cells(row: &fux_vt::Row<'_>) -> Cells {
     let mut cells = Cells::default();
-    for c in row.cells() {
-        cells.at.push(cells.text.len());
-        match c.contents() {
-            _ if c.is_wide_continuation() => {}
-            text if c.has_contents() && text != fux_vt::PLACEHOLDER => cells.text.push_str(text),
-            _ => cells.text.push(' '),
-        }
-    }
+    cells.read(row);
     cells
 }
 
 /// The text of `row`'s cells from column `col` on.
 fn text_from(row: &Cells, col: u16) -> &str {
-    let at = row
-        .at
-        .get(usize::from(col))
-        .copied()
-        .unwrap_or(row.text.len());
+    let at = match row.at.is_empty() {
+        true => usize::from(col).min(row.text.len()),
+        false => (row.at.get(usize::from(col)).copied()).unwrap_or(row.text.len()),
+    };
     row.text.get(at..).unwrap_or_default()
 }
 

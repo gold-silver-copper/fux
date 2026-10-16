@@ -102,12 +102,27 @@ pub enum Event {
 /// (`crate::classify`), which a wait never takes, and of each, the
 /// characters it changed, those after the first and before the last it
 /// printed as its row held them just before (a line drawn again, the same,
-/// changes none: nothing new).
+/// changes none: nothing new). No echoes kept: none is; no changes kept:
+/// each run changed all it printed, as in a flood.
 #[derive(Clone, Debug)]
 pub struct Printed {
     pub prints: fux_vt::Prints,
     pub echo: Vec<crate::classify::Echo>,
     pub fresh: Vec<(usize, usize)>,
+}
+
+impl Printed {
+    /// Each run, what it may be the echo of, and the characters it changed.
+    pub fn runs(
+        &self,
+    ) -> impl Iterator<Item = (fux_vt::Print<'_>, &crate::classify::Echo, (usize, usize))> {
+        (self.prints.iter().enumerate()).map(|(i, print)| {
+            let echo = self.echo.get(i).unwrap_or(&crate::classify::Echo::Not);
+            let fresh =
+                (self.fresh.get(i).copied()).unwrap_or_else(|| (0, print.text.chars().count()));
+            (print, echo, fresh)
+        })
+    }
 }
 
 /// One thing that happened, and its number.
