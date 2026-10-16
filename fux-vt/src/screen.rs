@@ -366,25 +366,20 @@ fn palette(n: u16) -> Option<Color> {
     Some(Color::Idx(index.checked_add(bright)?))
 }
 
-/// The colour of 38, 48 or 58 in their colon form, `rest` being what
-/// follows the selector: `5:index`, `2:r:g:b`, or ITU-T T.416's
-/// `2:space:r:g:b`, its colour space ignored and empty, as xterm reads it,
-/// with anything after the blue ignored. `None` if the colour is out of
-/// range or of another kind.
+/// The colour of 38, 48 or 58, `rest` being what follows the selector:
+/// `5:index`, `2:r:g:b`, or ITU-T T.416's `2:space:r:g:b`, its colour
+/// space ignored and empty, as xterm reads it, with anything after the
+/// blue ignored. `None` if the colour is out of range or of another kind.
 fn colour_of(rest: &[u16]) -> Option<Color> {
     match rest {
         [5, index, ..] => u8::try_from(*index).ok().map(Color::Idx),
-        [2, r, g, b] | [2, _, r, g, b, ..] => rgb(*r, *g, *b),
+        [2, r, g, b] | [2, _, r, g, b, ..] => Some(Color::Rgb(Rgb {
+            r: u8::try_from(*r).ok()?,
+            g: u8::try_from(*g).ok()?,
+            b: u8::try_from(*b).ok()?,
+        })),
         _ => None,
     }
-}
-
-fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
-    Some(Color::Rgb(Rgb {
-        r: u8::try_from(r).ok()?,
-        g: u8::try_from(g).ok()?,
-        b: u8::try_from(b).ok()?,
-    }))
 }
 
 /// Sets a mouse mode or encoding `value` in `slot`, the latest set
@@ -2626,19 +2621,15 @@ impl Screen {
             5 => 1,
             _ => return None,
         };
-        let mut values = [0u16; 3];
-        for value in values.iter_mut().take(count) {
+        // Read as the colon form is: `5:index` or `2:r:g:b`.
+        let mut values = [kind, 0, 0, 0];
+        for value in values.iter_mut().skip(1).take(count) {
             let Some([n]) = groups.peek() else {
                 break;
             };
             *value = *n;
             groups.next();
         }
-        let [a, b, c] = values;
-        if kind == 5 {
-            u8::try_from(a).ok().map(Color::Idx)
-        } else {
-            rgb(a, b, c)
-        }
+        colour_of(&values)
     }
 }
