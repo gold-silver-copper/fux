@@ -1,0 +1,28 @@
+{
+  "id": "TW-028",
+  "title": "Reconstruct a large terminal audit archive",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Use only terminal observations to obtain challenges, receipts, and statuses; do not inspect or modify .fx records or fixture source. Start each named role as python3 -I {fixtures}/console.py {work} ROLE, replacing ROLE with its role name. Run index and archive concurrently. Archive prints its audit keys before more than one MiB of log output; retain enough terminal history to read them later. Keys appear inside long wrapped records, and the progress display later shows unrelated decoys. Complete index. Complete all 22 archive reconciliation prompts using the matching step key from the initial archive for steps 00 through 20, then use the index RESULT receipt for step 21. Read actual terminal history, including wrapped text. Prompts show every accepted action and its syntax. Submit a command only after its INPUT ready line, except the explicitly described quiet-drain command. Wrong commands or input while busy require restarting that program and any peers whose recorded identity it changes; earlier failed attempts are allowed. After all stages are complete, close each program using its displayed close command in reverse dependency order; leave no fixture processes running. Write {work}/answer.txt as exactly 2 lines, each ending with a newline, in this order: index, archive. Each line is exactly ROLE=<that role's observed RESULT receipt>. Use actual role names and observed values, with no angle brackets, spaces around =, headings, blank lines, or marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Input is checked only when submitted (backspace, Ctrl-U, CR/LF, and bracketed paste are normalized). Busy phases reject premature input. Atomic per-role records attest both terminal streams, concurrent live peers, final submitted commands, dependency readiness, receipts and clean closure; the checker independently derives every expected value from the fixed task seed and checks exact answer bytes. Latest successful attempts are accepted if all current peer identities agree. Traps: several-programs, long-horizon, echo-traps, overwritten-text, reading. Challenges differ by role and stage, imports must already be ready, and progress/cached output is not authoritative. A fixed short wait can hit startup or work-in-progress, and waiting alone cannot discover the challenge values or receipts. ",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "echo-traps",
+    "overwritten-text",
+    "reading"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "read-scrollback",
+    "read-wrapped",
+    "several-panes"
+  ]
+}

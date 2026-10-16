@@ -1,0 +1,31 @@
+{
+  "id": "TW-019",
+  "title": "Resume a crashed console around a persistent spooler",
+  "category": "sessions",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/spool.py {work} and python3 -I {fixtures}/console.py {work} in separate concurrent terminals. Recover the SPOOL_KEY from the spooler's diagnostic archive and open it. Queue and bind jobs 1 through 24 in order, following both programs' prompts. The console deliberately crashes after a durable checkpoint; leave the original spooler running throughout the crash, inspection, and resume. After the crash, find the spooler again by its terminal title, run python3 -I {fixtures}/inspect.py {work} in a third terminal, and complete its displayed inspection using the spooler's observed receipt. Let inspection exit, then restart the console as python3 -I {fixtures}/console.py {work} --resume. Finish the remaining jobs, close the spooler through its quit prompt, finish the console, and leave every fixture exited. Write {work}/answer.txt with exactly 24 lines in job order: job=<two-digit job number> checkpoint=<observed checkpoint proof>. Each line ends with a newline; omit RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "The console really exits nonzero after checkpoint nine. The same spool PID and terminal must survive both the inspection and the resumed console; a persistent atomic checkpoint proves continuity. Its queue key is buried in more than 1 MiB of history. Twenty-four ordered handoffs, independent inspection, and final shutdown are checked without comparing terminals whose lifetimes do not overlap.",
+  "kinds": [
+    "sessions",
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "reading"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "read-scrollback",
+    "read-wrapped",
+    "several-panes",
+    "title",
+    "pane-names",
+    "kill-pane"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "id": "TW-008",
+  "title": "Recover a wrapped vault record from a large audit history",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/console.py {work}` with enough retained scrollback to read its audit archive (over 1 MiB). Read the authoritative VAULT-RECORD between ARCHIVE-BEGIN and ARCHIVE-END, including its wrapped key field, and the coloured AUDIT-COUNT from far back in the archive. Ignore PREVIEW. Submit both values at the retrieval prompts, then retrieve each requested BOOKMARK key from the archive by its displayed slot and submit it at the corresponding bookmark prompt. Write {work}/answer.txt with exactly three newline-terminated lines: `vault=<observed authoritative key>`, `count=<observed audit count as plain decimal>`, `index=<observed final index>`. Include no marker lines or colour escapes. Input during BUSY invalidates an attempt. Failed attempts may be retried. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "14,500 audit rows exceed 1MiB; authoritative records are near the beginning and a 360-character record wraps. A coloured count must become plain decimal, while a plausible preview is explicitly non-authoritative. Twenty later bookmark gates request distinct buried keys in a nonsequential slot order and combine stale preview tokens, echo and overwritten progress. Exact terminal transcripts ensure real retrieval rather than merely writing a guessed answer. A 7.1-second load rejects early typing and all values are deterministic but absent from the goal. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "long-horizon",
+    "echo-traps",
+    "overwritten-text",
+    "reading"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "read-screen",
+    "read-scrollback",
+    "read-wrapped",
+    "read-colors",
+    "wait-exit"
+  ]
+}

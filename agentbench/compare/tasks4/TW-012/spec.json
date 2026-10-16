@@ -1,0 +1,30 @@
+{
+  "id": "TW-012",
+  "title": "Decode and sign parcels from a buried packet archive",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/pack.py {work}, python3 -I {fixtures}/decode.py {work}, and python3 -I {fixtures}/sign.py {work} in three concurrent terminals. Keep them alive through all eight packages. Recover the packet archive from the packer's history (more than 1 MiB), then open the packer. For each package in its displayed item order, submit that item's archived packet to the decoder, pass the observed decoded value to the signer, and attach the observed final signature at the packer. A signature preview is overwritten and is not the final signature. Leave all three running while you run python3 -I {fixtures}/visit.py {work} in a fourth terminal, submit its displayed visit completed instruction and let it exit; then find the packer again by its terminal title. Follow the final quit and finish prompts to leave the whole pipeline exited. Write {work}/answer.txt with exactly eight lines in package order: bundle=<two-digit package number> item=<two-digit observed item number> seal=<observed bundle seal>. Each line ends with a newline; omit RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Each package requests a seeded item order, and its packet needle is far back in a diagnostic flood. A decoder receipt feeds a separate signer before attachment is allowed. The signer replays its journal slowly and overwrites a preview signature. An independent terminal visit must occur inside the concurrent lifetimes of all three programs. Exact receipts and every causal transition are checked.",
+  "kinds": [
+    "several-programs",
+    "overwritten-text",
+    "reading",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "read-scrollback",
+    "read-wrapped",
+    "several-panes",
+    "side-by-side",
+    "title",
+    "pane-names"
+  ]
+}

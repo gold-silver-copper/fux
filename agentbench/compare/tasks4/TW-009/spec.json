@@ -1,0 +1,29 @@
+{
+  "id": "TW-009",
+  "title": "Revisit an unattended ledger and repair its suspension",
+  "category": "sessions",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/console.py {work} runner`, `python3 -I {fixtures}/console.py {work} inspector`, and `python3 -I {fixtures}/console.py {work} repairer` concurrently. Give the terminals recognizable names. Complete the runner's initial prompts, then submit its continue-unwatched instruction. Leave these programs running without an attached viewer until the unattended checkpoint is available (the checkpoint takes about 12 seconds; there is no deadline). Reconnect and find the runner again by its name or the program it runs; its terminal title changes at the checkpoint. Read the checkpoint ticket without restarting the suspended runner. Supply the inspector's requested ticket and complete inspection; use its diagnosis to complete repair. Resume the original runner through its remaining prompts and leave all three programs finished. Write {work}/answer.txt as exactly four newline-terminated lines: `checkpoint=<observed checkpoint ticket>`, `diagnosis=<observed diagnosis>`, `repair=<observed repair receipt>`, `ledger=<observed final ledger>`. No marker lines. Never type during BUSY. Failed attempts can be retried from the beginning. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "A named runner continues through an 11.3-second unattended checkpoint, changes title, then remains suspended until two other live programs complete a diagnosis/repair dependency chain. The 25-event runner/inspector/repairer transcript proves the original runner resumed rather than restarting after the checkpoint. Title lookup and viewer detachment are capability requirements; the portable checker verifies persistence through its durable checkpoint and original transcript, not a particular viewer implementation. Signed prompts, echoes and busy gates prevent guessed or premature continuation. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "several-panes",
+    "pane-names",
+    "detach-reattach",
+    "title"
+  ]
+}

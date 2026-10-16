@@ -1,0 +1,30 @@
+{
+  "id": "TW-001",
+  "title": "Recover a schema release across compiler, server and canary",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "In {work}, run `python3 -I {fixtures}/console.py {work} build`, `python3 -I {fixtures}/console.py {work} server`, and `python3 -I {fixtures}/console.py {work} canary` concurrently in three terminals. Each terminal needs at least 65 columns and 16 rows; resizing is required if smaller. Follow every displayed signed approval, deployment and verification prompt. Recover the compiler's deliberate crash using the restart invocation and receipt it prints, in the compiler terminal. Feed the completed artifact to the server and its endpoint to the canary, only when each asks. Complete all stages. Write {work}/answer.txt with exactly three newline-terminated lines, in order: `artifact=<observed artifact>`, `endpoint=<observed endpoint>`, `release=<observed release>`. Include no marker lines. Input during BUSY invalidates that attempt; failed attempts may be restarted. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Three dependency gates, 24 signed interactions, stale tokens, a real nonzero compiler crash, concurrent terminal size requirements and input-during-build traps. Each role records terminal evidence and exact accepted semantic lines atomically. Rebuild requires the crashed build record and displayed receipt. Delays include an 8.1-second compile; guessing or typing while busy invalidates that attempt, while waiting for READY works without a timing assumption. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text",
+    "layout-size"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "several-panes",
+    "side-by-side",
+    "resize",
+    "set-size"
+  ]
+}

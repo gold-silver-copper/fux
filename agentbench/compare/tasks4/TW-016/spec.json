@@ -1,0 +1,25 @@
+{
+  "id": "TW-016",
+  "title": "Compile and report actual interactive-shell statuses",
+  "category": "shell",
+  "difficulty": "hard",
+  "goal": "Use an interactive shell in a terminal, with {work} as the work directory. For n=1 through 24 in order, run python3 -I {fixtures}/jobs.py {work} job n \"$-\". Pass the shell's actual $- flags. Wait for that job to exit and observe its actual shell exit status and final JOB token; the displayed example status is a decoy. Resolve any compiler cache repair using the displayed instruction. Then run python3 -I {fixtures}/jobs.py {work} report n and submit the observed status and token as prompted. Complete that report before launching the next job. Fixture jobs deliberately exit nonzero, so keep the shell alive. Write {work}/answer.txt with exactly 24 lines in job order: job=<two-digit job number> status=<observed exit status in decimal> token=<observed job token>. Each line ends with a newline; omit RESULT markers. All job and report processes must have exited. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Every actual exit status is deterministic and nonzero; shell command echo and an example status are traps. A progress line contains an overwritten stale token, job six is slow, and job thirteen requires recovery. The checker independently derives all 24 statuses and tokens and requires terminal and interactive-shell flag evidence for each job.",
+  "kinds": [
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "exit-status",
+    "read-screen"
+  ]
+}

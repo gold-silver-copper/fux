@@ -1,0 +1,5 @@
+{"type":"object","additionalProperties":false,"required":["tasks","notes"],
+ "properties":{"tasks":{"type":"array","items":{"type":"object","additionalProperties":false,
+   "required":["id","category","self_test_passed","problem"],
+   "properties":{"id":{"type":"string"},"category":{"type":"string"},"self_test_passed":{"type":"boolean"},"problem":{"type":"string"}}}},
+  "notes":{"type":"string"}}}

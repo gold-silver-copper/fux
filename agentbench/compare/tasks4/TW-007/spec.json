@@ -1,0 +1,29 @@
+{
+  "id": "TW-007",
+  "title": "Wait through a degraded provider and authenticated fallback",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run these three programs concurrently: `python3 -I {fixtures}/console.py {work} primary`, `python3 -I {fixtures}/console.py {work} backup`, and `python3 -I {fixtures}/console.py {work} consumer`. Arm both providers at their prompts. Observe which provider becomes degraded and which supplies a viable READY ticket; retire the degraded provider as prompted. Finish replay on the viable provider, then request its status with Ctrl-C once at the parked prompt (it must remain running). Give the consumer the viable provider and its observed ticket when asked; complete consumption. Only after the consumer finishes, authenticate the provider shutdown. Write {work}/answer.txt with exactly four newline-terminated lines: `provider=<observed viable provider>`, `ticket=<observed ticket>`, `digest=<observed consumer digest>`, `primary=<observed primary outcome>`. No marker lines. There is no deadline: wait for actual prompts. Input during BUSY invalidates an attempt; failed attempts may be retried. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Providers synchronize an arming barrier then produce different outcomes after 6.4/9.7-second work phases. Status is overwritten by spinners; only the READY ticket is usable. Sixteen replay/consume stages carry tokens, Ctrl-C must leave the viable provider alive, and its shutdown is gated by successful consumption. Exact terminal transcripts verify the full order. Neither a short sleep nor a guessed readiness word works; all input gates wait indefinitely. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "special-keys",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "several-panes",
+    "signals"
+  ]
+}
