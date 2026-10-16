@@ -5,7 +5,7 @@
 //! application word that needs its host to do something first. It never
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
-use crate::compile::{Builtin, Op, Program, Steps};
+use crate::compile::{Builtin, Op, Program};
 use crate::error::{Code as ErrorCode, Error, Failure, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, Value};
@@ -209,18 +209,15 @@ impl<A: AppValue> Machine<A> {
     /// A call in last place, which took its caller's frame, still shows
     /// the call that began it.
     pub fn calls(&self) -> Vec<Token> {
-        let at = |code: Option<usize>, step: usize| {
-            self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
-        };
         let mut calls: Vec<Token> = (self.frames.iter())
             .flat_map(|frame| {
-                let via = frame.via.and_then(|(code, step)| at(code, step));
-                via.into_iter().chain(at(frame.code, frame.step))
+                let via = frame.via.and_then(|(code, step)| self.before(code, step));
+                via.into_iter().chain(self.before(frame.code, frame.step))
             })
             .collect();
         // The innermost: the step it really took last, a jump's too.
         if let Some(last) = self.taken() {
-            if (self.frames.last()).is_some_and(|f| at(f.code, f.step).is_some()) {
+            if (self.frames.last()).is_some_and(|f| self.before(f.code, f.step).is_some()) {
                 calls.pop();
             }
             calls.push(last);
@@ -235,7 +232,7 @@ impl<A: AppValue> Machine<A> {
         let frame = self.frames.last()?;
         let begun = frame.step == 0 && code != frame.code;
         let ours = depth == self.frames.len() && !begun;
-        ours.then(|| self.code(code)?.tokens.get(step).cloned())?
+        ours.then(|| self.program.token(code, step).cloned())?
     }
 
     /// The token the step just taken came from: where an error is, and
@@ -244,23 +241,18 @@ impl<A: AppValue> Machine<A> {
     /// just gone back), the call that began it, else the step about to be
     /// taken.
     pub fn at(&self) -> Option<Token> {
-        let at = |code: Option<usize>, step: usize| {
-            self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
-        };
         if let Some(taken) = self.taken() {
             return Some(taken);
         }
         let frame = self.frames.last()?;
-        at(frame.code, frame.step)
-            .or_else(|| frame.via.and_then(|(code, step)| at(code, step)))
-            .or_else(|| self.code(frame.code)?.tokens.get(frame.step).cloned())
+        self.before(frame.code, frame.step)
+            .or_else(|| frame.via.and_then(|(code, step)| self.before(code, step)))
+            .or_else(|| self.program.token(frame.code, frame.step).cloned())
     }
 
-    fn code(&self, code: Option<usize>) -> Option<&Steps<A>> {
-        match code {
-            None => Some(&self.program.main),
-            Some(i) => self.program.words.get(i),
-        }
+    /// The token of the step before `step` in `code`: none at its first.
+    fn before(&self, code: Option<usize>, step: usize) -> Option<Token> {
+        self.program.token(code, step.checked_sub(1)?).cloned()
     }
 
     fn fail(&self, code: ErrorCode, message: impl Into<String>) -> Error {
@@ -296,11 +288,7 @@ impl<A: AppValue> Machine<A> {
             let Some(frame) = self.frames.last_mut() else {
                 return Ok(Outcome::Finished);
             };
-            let code = match frame.code {
-                None => Some(&program.main),
-                Some(i) => program.words.get(i),
-            };
-            let Some(code) = code else {
+            let Some(code) = program.code(frame.code) else {
                 self.leave();
                 continue;
             };

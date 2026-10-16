@@ -208,6 +208,21 @@ pub struct Program<A> {
     pub(crate) vocabulary: Vocabulary,
 }
 
+impl<A> Program<A> {
+    /// A code by its index: `None` is the top level.
+    pub(crate) fn code(&self, code: Option<usize>) -> Option<&Steps<A>> {
+        match code {
+            None => Some(&self.main),
+            Some(i) => self.words.get(i),
+        }
+    }
+
+    /// The token step `step` of code `code` came from.
+    pub(crate) fn token(&self, code: Option<usize>, step: usize) -> Option<&Token> {
+        self.code(code)?.tokens.get(step)
+    }
+}
+
 /// What a name compiles to.
 #[derive(Clone, Copy, Debug)]
 enum Entry {
