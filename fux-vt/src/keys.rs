@@ -1,6 +1,5 @@
-//! Keys, their modifiers, and their names in `bind`, `send-keys` and
-//! `list-keys`: tmux's names (`C-x`, `M-x`, `S-Left`, `Enter`, `BTab`, …)
-//! plus any single character.
+//! Keys, their modifiers, and their names: tmux's names (`C-x`, `M-x`,
+//! `S-Left`, `Enter`, `BTab`, …) plus any single character.
 pub mod colour;
 pub mod decode;
 pub mod encode;
@@ -277,7 +276,7 @@ pub struct Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown key {:?}; `fux list-keys` lists them", self.name)
+        write!(f, "unknown key {:?}", self.name)
     }
 }
 
@@ -339,7 +338,7 @@ impl std::str::FromStr for KeyPress {
     }
 }
 
-/// Every key name, for `fux list-keys`.
+/// Every key name, as a host lists them.
 pub fn all_names() -> Vec<String> {
     let mut names: Vec<String> = NAMED.iter().map(|(n, _)| (*n).to_owned()).collect();
     names.push("BTab".into());
@@ -394,7 +393,7 @@ mod tests {
         }
         assert_eq!(
             "Nope".parse::<KeyPress>().map_err(|e| e.to_string()),
-            Err("unknown key \"Nope\"; `fux list-keys` lists them".to_owned())
+            Err("unknown key \"Nope\"".to_owned())
         );
         for name in all_names() {
             assert_eq!(parse(&name).map(|k| k.to_string()), Some(name.clone()));
