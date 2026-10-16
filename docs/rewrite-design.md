@@ -360,10 +360,9 @@ Per client, on a 16 ms coalescing tick:
 2. Diff it against the client's last grid, and emit only the changed runs,
    wrapped in synchronized output (`?2026`). Cursor position and shape come
    from the focused pane.
-3. If a client's socket stops draining, stop queueing paints for it. Each
-   client's output buffer is capped at 4 MiB. Once it drains again, send one
-   full repaint. A slow client never grows the server and never stalls the
-   loop.
+3. One frame in flight per client: the next is composed only once the last
+   is written out. A slow client gets fewer, newer frames, never a backlog,
+   and never grows the server or stalls the loop.
 
 Pane titles (OSC 0/2) are shown in the bar; with `set titles on`, the outer
 terminal's title follows the focused pane's. A pane's bell rings the outer

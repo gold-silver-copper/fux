@@ -254,9 +254,9 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
     Ok(())
 }
 
-/// A client that stops reading while a pane floods it gets nothing more
-/// queued once its share is full, and when it reads again it is brought up
-/// to date: its screen ends as the server composes it.
+/// A client that stops reading while a pane floods it gets no frame past
+/// the one in flight, and when it reads again it is brought up to date: its
+/// screen ends as the server composes it.
 #[test]
 fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Little history, so the memory measured is what waits for the client.
@@ -281,8 +281,7 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
         let composed = server.ok(&["str", "c1", "client", "capture-client"])?;
         Ok(composed.contains("caught-up") && client.text().trim_end() == composed.trim_end())
     })?;
-    // What was waiting for it stayed bounded (4 MiB, and the paint being
-    // built).
+    // What was waiting for it stayed bounded: one frame.
     assert!(
         memory < 64.0,
         "{memory:.0} MiB resident while it did not read"
