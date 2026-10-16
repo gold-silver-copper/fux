@@ -1972,7 +1972,7 @@ impl Session {
             };
             let pane = self.pane(target)?;
             let now = Instant::now();
-            let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
+            let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
             waiting.capture = Some((history, view));
             return Ok(self.wait_on(waiting, now));
         }
@@ -1988,7 +1988,7 @@ impl Session {
             .collect::<Result<Vec<_>, _>>()?;
         let now = Instant::now();
         // Armed before any keys go in: what the keys bring is what it sees.
-        let mut waiting = crate::wait::Waiting::new(&panes, wait, now, self.config.wait());
+        let mut waiting = crate::wait::Waiting::new(&panes, wait, now, self.config.wait);
         match keys {
             Some(command) => {
                 let outcome = self.run_command(&command, origin);
@@ -2073,7 +2073,7 @@ impl Session {
             return Begun::Done(outcome);
         };
         let now = Instant::now();
-        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
+        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
         waiting.lead = outcome.text;
         waiting.made = outcome.ids;
         waiting.fresh = true;

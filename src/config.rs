@@ -4,6 +4,7 @@
 use crate::log::JOURNAL_BYTES;
 use crate::words;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// `settings! { /// doc  field "name": Type = default, parse; … }` expands
 /// to the struct `Config` of those fields, its `Default`, `NAMES` (every
@@ -51,7 +52,7 @@ settings! {
     /// The bytes of history each pane keeps, for copy mode and `capture`.
     history_bytes "history-bytes": usize = 8 << 20, number(0, 1 << 30);
     /// How long an action or a wait waits at most, unless it says.
-    wait_seconds "wait-seconds": u64 = WAIT.as_secs(), number(0, MAX_WAIT_SECONDS);
+    wait "wait-seconds": Duration = WAIT, |v| number(0, MAX_WAIT)(v).map(Duration::from_secs);
     /// The bytes each pane's journal keeps (`crate::log`).
     journal_bytes "journal-bytes": usize = JOURNAL_BYTES, number(MIN_JOURNAL, MAX_JOURNAL);
     /// The bytes all panes' journals keep together.
@@ -88,9 +89,9 @@ pub const MAX_BUFFERS: usize = 1000;
 /// How long an action or a wait waits at most by default: a build or a
 /// program's startup is waited through, while a wait that cannot be met
 /// still answers well inside what a tool running a command waits for it.
-pub const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const WAIT: Duration = Duration::from_secs(30);
 /// The longest `wait-seconds`: a day.
-pub const MAX_WAIT_SECONDS: usize = 86_400;
+pub const MAX_WAIT: usize = 86_400;
 /// The most bytes journals may be given: each, or all together.
 pub const MAX_JOURNAL: usize = 1 << 31;
 /// The fewest bytes a journal may be given: waits and events read it.
@@ -162,13 +163,6 @@ fn names(value: &str) -> Result<Vec<String>, String> {
             "{bad:?} is no variable's name (letters, digits and _, not first a digit)"
         )),
         None => Ok(names),
-    }
-}
-
-impl Config {
-    /// How long an action or a wait waits at most, unless it says.
-    pub fn wait(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.wait_seconds)
     }
 }
 
