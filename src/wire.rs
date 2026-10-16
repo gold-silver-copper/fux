@@ -81,50 +81,21 @@ pub fn encode<T: Wire>(value: &T) -> Vec<u8> {
     out
 }
 
-impl Wire for u8 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.push(*self);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take::<1>().map(u8::from_be_bytes)
-    }
+/// `int_wire!(u16, …)` expands to `impl Wire for u16` and so on: the
+/// number's big-endian bytes.
+macro_rules! int_wire {
+    ($($ty:ty),*) => {$(
+        impl Wire for $ty {
+            fn put(&self, out: &mut Vec<u8>) {
+                out.extend_from_slice(&self.to_be_bytes());
+            }
+            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+                r.take().map(<$ty>::from_be_bytes)
+            }
+        }
+    )*};
 }
-
-impl Wire for u16 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(u16::from_be_bytes)
-    }
-}
-
-impl Wire for u32 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(u32::from_be_bytes)
-    }
-}
-
-impl Wire for u64 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(u64::from_be_bytes)
-    }
-}
-
-impl Wire for i64 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(i64::from_be_bytes)
-    }
-}
+int_wire!(u8, u16, u32, u64, i64);
 
 impl Wire for usize {
     fn put(&self, out: &mut Vec<u8>) {
@@ -236,8 +207,9 @@ impl Wire for Duration {
     }
 }
 
-/// An id: its number, read back through its text (`%3`).
-macro_rules! id_wire {
+/// `text_wire!(Ty, "what")` expands to `impl Wire for Ty`: its text
+/// (`%3`, `C-a`), read back through `FromStr` (else `Error::Bad("what")`).
+macro_rules! text_wire {
     ($ty:ty, $sigil:literal) => {
         impl Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
@@ -249,19 +221,11 @@ macro_rules! id_wire {
         }
     };
 }
-id_wire!(PaneId, "pane id");
-id_wire!(TabId, "tab id");
-id_wire!(WsId, "workspace id");
-id_wire!(ClientId, "client id");
-
-impl Wire for KeyPress {
-    fn put(&self, out: &mut Vec<u8>) {
-        self.to_string().put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        String::get(r)?.parse().map_err(|_| Error::Bad("key"))
-    }
-}
+text_wire!(PaneId, "pane id");
+text_wire!(TabId, "tab id");
+text_wire!(WsId, "workspace id");
+text_wire!(ClientId, "client id");
+text_wire!(KeyPress, "key");
 
 /// An enum of plain variants, as its index in `$all`.
 macro_rules! plain_wire {
