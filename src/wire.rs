@@ -229,17 +229,15 @@ text_wire!(KeyPress, "key");
 
 /// An enum of plain variants, as its index in `$all`.
 macro_rules! plain_wire {
-    ($ty:ty, $what:literal, [$($variant:expr),+ $(,)?]) => {
+    ($ty:ty, $what:literal, $all:expr) => {
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
-                let all = [$($variant),+];
+                let all = $all;
                 let index = all.iter().position(|v| v == self).unwrap_or(0);
                 out.push(u8::try_from(index).unwrap_or(0));
             }
-            fn get(
-                r: &mut $crate::wire::Reader<'_>,
-            ) -> Result<Self, $crate::wire::Error> {
-                let all = [$($variant),+];
+            fn get(r: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Error> {
+                let all = $all;
                 let index = <u8 as $crate::wire::Wire>::get(r)?;
                 all.get(usize::from(index))
                     .copied()
@@ -278,19 +276,7 @@ plain_wire!(
 plain_wire!(
     fuxix::process::Signal,
     "signal",
-    [
-        fuxix::process::Signal::Hup,
-        fuxix::process::Signal::Int,
-        fuxix::process::Signal::Term,
-        fuxix::process::Signal::Kill,
-        fuxix::process::Signal::Stop,
-        fuxix::process::Signal::Tstp,
-        fuxix::process::Signal::Cont,
-        fuxix::process::Signal::Winch,
-        fuxix::process::Signal::Quit,
-        fuxix::process::Signal::Usr1,
-        fuxix::process::Signal::Usr2,
-    ]
+    fuxix::process::Signal::ALL
 );
 
 impl Wire for fux_vt::Size {

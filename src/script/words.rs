@@ -1138,27 +1138,13 @@ impl fuxth::Host for Host<'_> {
             "signal" => {
                 let p = pane(name, &next()?)?;
                 let signal = string(name, &next()?)?;
-                use fuxix::process::Signal;
-                let signal = match signal.as_str() {
-                    "TERM" => Signal::Term,
-                    "KILL" => Signal::Kill,
-                    "INT" => Signal::Int,
-                    "HUP" => Signal::Hup,
-                    "QUIT" => Signal::Quit,
-                    "USR1" => Signal::Usr1,
-                    "USR2" => Signal::Usr2,
-                    "STOP" => Signal::Stop,
-                    "CONT" => Signal::Cont,
-                    "TSTP" => Signal::Tstp,
-                    "WINCH" => Signal::Winch,
-                    other => {
-                        return Err(fail(
-                            "bad_value",
-                            format!(
-                                "signal: {other:?} is not TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT, TSTP or WINCH"
-                            ),
-                        ));
-                    }
+                let Some(signal) = fuxix::process::Signal::named(&signal) else {
+                    return Err(fail(
+                        "bad_value",
+                        format!(
+                            "signal: {signal:?} is not TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT, TSTP or WINCH"
+                        ),
+                    ));
                 };
                 // From a command line: answers once the program exited or settled.
                 let then = wait(&Waits::default(), true, self.settle);
