@@ -597,23 +597,34 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         if old.is_empty() {
             return text;
         }
-        // Every spilled cell blanked first: until stored again, none may
-        // locate text in the new store, which a compaction would misread.
-        let mut spilled = Vec::new();
-        for (i, cell) in cells.iter_mut().map(AsMut::as_mut).enumerate() {
-            if cell.is_spilled() {
-                spilled.push((i, *cell));
-                *cell = cell.blanked();
-            }
-        }
+        let spilled: Vec<(usize, Compact)> = (cells.iter().map(|c| *c.as_ref()).enumerate())
+            .filter(|(_, cell)| cell.is_spilled())
+            .collect();
         let mut line = Line {
             cells,
             text: &mut text,
         };
-        for (i, cell) in spilled {
-            line.set(i, cell, old.of(&cell));
-        }
+        line.store_again(spilled.into_iter(), old);
         text
+    }
+
+    /// Stores the text of the cells `spilled` names again, left to right,
+    /// each by its place in the line and as it was, its text in `old`.
+    /// Every one is blanked first: until stored again, none may locate
+    /// text in this store, which a compaction would misread.
+    pub(crate) fn store_again(
+        &mut self,
+        spilled: impl Iterator<Item = (usize, Compact)> + Clone,
+        old: &Text,
+    ) {
+        for (i, cell) in spilled.clone() {
+            if let Some(stored) = self.cells.get_mut(i) {
+                *stored.as_mut() = cell.blanked();
+            }
+        }
+        for (i, cell) in spilled {
+            self.set(i, cell, old.of(&cell));
+        }
     }
 
     /// Cell `i`'s text.

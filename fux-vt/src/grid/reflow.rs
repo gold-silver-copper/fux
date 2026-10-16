@@ -530,24 +530,17 @@ impl Reflow for Fill<'_> {
         };
         self.written = self.written.max(col.saturating_add(cells.len()));
         crate::copy_from(dst, cells);
-        // The clusters held in the row's text are stored again, left to
-        // right, as placing the cells one at a time stores them: until
-        // then, a cell locates nothing in the new row's text.
-        if !text.is_empty() && cells.iter().any(Compact::is_spilled) {
-            for (cell, src) in dst.iter_mut().zip(cells) {
-                if src.is_spilled() {
-                    *cell = src.blanked();
-                }
-            }
+        // The clusters held in the row's text are stored again, as placing
+        // the cells one at a time stores them.
+        if !text.is_empty() {
+            let spilled = (cells.iter().enumerate())
+                .filter(|(_, cell)| cell.is_spilled())
+                .map(|(i, cell)| (col.saturating_add(i), *cell));
             let mut line = Line {
                 cells: &mut self.cells,
                 text: &mut self.text,
             };
-            for (i, cell) in cells.iter().enumerate() {
-                if cell.is_spilled() {
-                    line.set(col.saturating_add(i), *cell, text.of(cell));
-                }
-            }
+            line.store_again(spilled, text);
         }
         if let Some((links, from)) = links {
             for (at, link) in links.within(from) {
