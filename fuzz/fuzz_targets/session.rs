@@ -28,7 +28,7 @@ use fux::protocol::{Context, Reply, Request};
 use fux::render::{Grid, compose};
 use fux::screens::{Effect, Screen};
 use fux::script::{Ask, Failed, Host, Local};
-use fux::session::{Begun, Origin, Outcome, Outgoing, Session};
+use fux::session::{Begun, Origin, Outgoing, Session};
 use fux::view::Mode;
 use fuxth::Outcome as Ran;
 use libfuzzer_sys::fuzz_target;
@@ -237,8 +237,8 @@ impl Run {
             Some(_) | None => Origin::default(),
         };
         match self.s.begin(request.command, &origin) {
-            Begun::Done(outcome) => outcome.into(),
-            Begun::Waiting(_) | Begun::Events(_) => Outcome::default().into(),
+            Begun::Done(outcome) => outcome,
+            Begun::Waiting(_) | Begun::Events(_) => Reply::default(),
         }
     }
 
