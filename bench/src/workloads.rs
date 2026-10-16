@@ -313,7 +313,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let units = loads.iter().map(|l| l.bytes.len()).sum();
     let first = loads.first().ok_or("no bytes")?;
     let mut pane = fux::pane::Pane::new(
-        fux::command::parse_pane("%1").map_err(|e| e.to_string())?,
+        "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
         "bench".into(),
         fux::pane::Runs::Shell,
         fux::pane::size(first.rows, first.cols),

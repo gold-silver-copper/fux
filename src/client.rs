@@ -343,7 +343,7 @@ pub fn context() -> Context {
         cwd: std::env::current_dir()
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        pane: var("FUX_PANE"),
+        pane: var("FUX_PANE").and_then(|p| p.parse().ok()),
         server: var("FUX_SERVER"),
         env: environment(),
         client: None,

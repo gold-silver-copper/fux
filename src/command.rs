@@ -496,9 +496,6 @@ impl std::fmt::Display for Usage {
 
 impl std::error::Error for Usage {}
 
-pub fn parse_pane(text: &str) -> Result<PaneId, Usage> {
-    text.parse()
-}
 /// A workspace: `+N`, or its name.
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
     match text.parse::<WsId>() {

@@ -1679,7 +1679,7 @@ impl Server {
             }
             Some(client) => Origin::Client(client),
             None => Origin::Cli(Caller {
-                pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),
+                pane,
                 cwd,
                 stray,
                 env,

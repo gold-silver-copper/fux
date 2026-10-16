@@ -381,12 +381,13 @@ fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef, Failure> {
     }
 }
 
-/// A workspace, or its name.
+/// A workspace, or its name: `+N` read as its id, as `parse_workspace` reads it.
 fn workspace(word: &str, value: &Value<Fux>) -> Result<WsRef, Failure> {
     if let Value::App(Fux::Workspace(w)) = value {
         return Ok(WsRef::Id(*w));
     }
-    string(word, value).map(WsRef::Name)
+    crate::command::parse_workspace(&string(word, value)?)
+        .map_err(|e| fail(Code::BadValue, e.to_string()))
 }
 
 fn direction(word: &str, value: &Value<Fux>) -> Result<Direction, Failure> {
@@ -709,17 +710,7 @@ impl fuxth::Host for Host<'_> {
                         built.argv.push(text(name, &v)?);
                     }
                     "typed" => built.typed = Some(string(name, &v)?),
-                    "in" => {
-                        built.place = Some(match workspace(name, &v)? {
-                            // `+N` is a workspace's id, as `workspace` reads it.
-                            WsRef::Name(s) if s.starts_with('+') => {
-                                WsRef::Id(s.parse().map_err(|_| {
-                                    fail(Code::BadValue, format!("{s:?} is not +N"))
-                                })?)
-                            }
-                            place @ (WsRef::Id(_) | WsRef::Name(_)) => place,
-                        })
-                    }
+                    "in" => built.place = Some(workspace(name, &v)?),
                     "id" => {
                         let text = string(name, &v)?;
                         let bad = format!("{text:?} is not %N, @N or +N");

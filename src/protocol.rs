@@ -13,7 +13,7 @@ use crate::act::Act;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
 use crate::command::{AnyRef, Command};
-use crate::id::ClientId;
+use crate::id::{ClientId, PaneId};
 use crate::wire::{Wire, wire_enum, wire_struct};
 use std::num::{NonZeroU8, NonZeroU16};
 
@@ -281,7 +281,7 @@ impl Frame<'_> for AttachedFrame {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Context {
     pub cwd: String,
-    pub pane: Option<String>,
+    pub pane: Option<PaneId>,
     pub server: Option<String>,
     pub env: Vec<(String, String)>,
     pub client: Option<ClientId>,
@@ -706,7 +706,7 @@ mod tests {
                 },
                 context: Context {
                     cwd: "/somewhere".into(),
-                    pane: Some("%3".into()),
+                    pane: "%3".parse().ok(),
                     server: Some("1-2".into()),
                     env: vec![("K".into(), "V".into())],
                     client: "c2".parse().ok(),

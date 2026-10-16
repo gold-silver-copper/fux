@@ -89,7 +89,7 @@ pub struct Caller {
     pub cwd: Option<PathBuf>,
     /// The `FUX_PANE` it gave of another server's pane (its `FUX_SERVER`
     /// is not this server's), which nothing here is done to.
-    pub stray: Option<String>,
+    pub stray: Option<PaneId>,
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
     pub env: Vec<(String, String)>,
