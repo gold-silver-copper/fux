@@ -3196,32 +3196,21 @@ impl Session {
     /// what is in it, a line each.
     fn ls_text(&self, only: Option<AnyRef<WsId>>) -> String {
         let mut out = String::new();
-        let shows = |ws: WsId, tab: Option<TabId>, pane: Option<PaneId>| match only {
-            None => true,
-            Some(AnyRef::Workspace(w)) => w == ws,
-            Some(AnyRef::Tab(t)) => tab.is_none_or(|tab| tab == t),
-            Some(AnyRef::Pane(p)) => pane.is_none_or(|pane| pane == p),
+        let listed_ws = |ws: &&Workspace| match only {
+            Some(AnyRef::Workspace(w)) => w == ws.id,
+            None | Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => true,
         };
-        for ws in &self.workspaces {
-            let inside = |tab: TabId| match only {
-                Some(AnyRef::Pane(p)) => self.locate(p).is_some_and(|(_, t)| t == tab),
-                None | Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) => true,
-            };
-            let contains = ws
-                .tabs()
-                .iter()
-                .any(|t| inside(t.id) && shows(ws.id, Some(t.id), None));
-            if !shows(ws.id, None, None) && !contains {
-                continue;
-            }
+        let listed_tab = |tab: &&Tab| match only {
+            Some(AnyRef::Tab(t)) => t == tab.id,
+            Some(AnyRef::Pane(p)) => self.locate(p).is_some_and(|(_, t)| t == tab.id),
+            None | Some(AnyRef::Workspace(_)) => true,
+        };
+        let listed_pane = |pane: PaneId| !matches!(only, Some(AnyRef::Pane(p)) if p != pane);
+        for ws in self.workspaces.iter().filter(listed_ws) {
             if matches!(only, None | Some(AnyRef::Workspace(_))) {
                 out.push_str(&format!("{} {}\n", ws.id, ws.name));
             }
-            for tab in ws
-                .tabs()
-                .iter()
-                .filter(|t| inside(t.id) && shows(ws.id, Some(t.id), None))
-            {
+            for tab in ws.tabs().iter().filter(listed_tab) {
                 out.push_str(&format!(
                     "  {} {}{}\n",
                     tab.id,
@@ -3230,7 +3219,7 @@ impl Session {
                 ));
                 let Some(root) = tab.root() else { continue };
                 root.for_each_pane(&mut |pane| {
-                    if !shows(ws.id, Some(tab.id), Some(pane)) {
+                    if !listed_pane(pane) {
                         return;
                     }
                     if let Some(p) = self.panes.get(&pane) {
@@ -4126,6 +4115,26 @@ mod tests {
         run(&mut s, "str c1 client zoom")?;
         run(&mut s, "str c1 client str @1 tab show-tab")?;
         assert_eq!(size(&s, 2), Some(crate::pane::size(10, 40)));
+        Ok(())
+    }
+
+    /// `ls` of a workspace lists it whole; of a tab, that tab; of a pane,
+    /// its tab with that pane alone.
+    #[test]
+    fn ls_of_a_target_lists_what_is_in_it() -> Result<(), String> {
+        let (mut s, _) = attached(11, 40)?;
+        run(&mut s, "opts str +1 workspace in new-tab")?;
+        run(&mut s, "str %2 pane opts vertical split")?;
+        let ids = |only| {
+            let text = s.ls_text(Some(only));
+            let words = text.lines().filter_map(|l| l.split_whitespace().next());
+            words.map(str::to_owned).collect::<Vec<_>>().join(" ")
+        };
+        let ws = "+1".parse::<WsId>().map_err(|e| e.to_string())?;
+        let tab = "@2".parse::<TabId>().map_err(|e| e.to_string())?;
+        assert_eq!(ids(AnyRef::Workspace(ws)), "+1 @1 %1 @2 %2 %3");
+        assert_eq!(ids(AnyRef::Tab(tab)), "@2 %2 %3");
+        assert_eq!(ids(AnyRef::Pane(PaneId::of(3))), "@2 %3");
         Ok(())
     }
 
