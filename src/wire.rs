@@ -295,6 +295,12 @@ wire_enum!(Signal, "signal" {
     8 => Quit,
     9 => Usr1,
     10 => Usr2,
+    11 => Ill,
+    12 => Abrt,
+    13 => Fpe,
+    14 => Segv,
+    15 => Pipe,
+    16 => Alrm,
 });
 
 impl Wire for fux_vt::Size {

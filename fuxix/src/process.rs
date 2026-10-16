@@ -34,7 +34,9 @@ impl fmt::Display for Pid {
 
 /// Expands `/// doc, then Variant "NAME" SIGNAL, ...` to the enum `Signal` of those
 /// variants, `Signal::ALL` in that order, `raw` (each one's `libc::SIGNAL`)
-/// and `named` (the variant whose name, exactly as written, is given).
+/// and `from_raw` (the variant of a number), `name` (its `NAME`) and `named`
+/// (the variant whose name, exactly as written, is given): `Term "TERM"
+/// SIGTERM,` gives `Signal::Term`, raw `libc::SIGTERM`, named "TERM".
 macro_rules! signals {
     ($(#[$doc:meta])* $($variant:ident $name:literal $raw:ident,)*) => {
         $(#[$doc])*
@@ -54,6 +56,21 @@ macro_rules! signals {
                 }
             }
 
+            /// The signal numbered `raw`, if it is one of these.
+            pub fn from_raw(raw: i32) -> Option<Signal> {
+                match raw {
+                    $(libc::$raw => Some(Signal::$variant),)*
+                    _ => None,
+                }
+            }
+
+            /// Its name without `SIG`, as `named` takes it: `TERM`.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Signal::$variant => $name,)*
+                }
+            }
+
             /// The signal a name names, written as `fux signal` takes it:
             /// without `SIG`, in capitals (`TERM`).
             pub fn named(name: &str) -> Option<Signal> {
@@ -69,7 +86,8 @@ macro_rules! signals {
 signals! {
     /// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
     /// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
-    /// `Stop` stopped as "Stopped (signal)".
+    /// `Stop` stopped as "Stopped (signal)". The last six are those a
+    /// program dies of on its own, which fux names when it tells a death.
     Hup "HUP" SIGHUP,
     Int "INT" SIGINT,
     Term "TERM" SIGTERM,
@@ -81,6 +99,12 @@ signals! {
     Quit "QUIT" SIGQUIT,
     Usr1 "USR1" SIGUSR1,
     Usr2 "USR2" SIGUSR2,
+    Ill "ILL" SIGILL,
+    Abrt "ABRT" SIGABRT,
+    Fpe "FPE" SIGFPE,
+    Segv "SEGV" SIGSEGV,
+    Pipe "PIPE" SIGPIPE,
+    Alrm "ALRM" SIGALRM,
 }
 
 /// Sends `signal` to the process `pid`.
@@ -365,6 +389,17 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_signal_is_found_again_by_its_number_and_its_name() {
+        for signal in Signal::ALL {
+            assert_eq!(Signal::from_raw(signal.raw()), Some(signal));
+            assert_eq!(Signal::named(signal.name()), Some(signal));
+        }
+        assert_eq!(Signal::from_raw(libc::SIGSEGV), Some(Signal::Segv));
+        assert_eq!(Signal::Usr1.name(), "USR1");
+        assert_eq!(Signal::from_raw(0), None);
+    }
 
     /// Polls `ended` until it answers, or a few seconds pass.
     fn wait_ended(pid: Pid) -> Option<Status> {
