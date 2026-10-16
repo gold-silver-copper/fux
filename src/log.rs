@@ -193,15 +193,14 @@ impl Log {
 
     /// What each piece of output after `seq` printed, oldest first.
     pub fn printed_after(&self, seq: Seq) -> impl Iterator<Item = (Seq, &Printed)> {
-        self.after(seq).filter_map(|e| match &e.event {
-            Event::Output { printed, .. } => printed.as_deref().map(|p| (e.seq, p)),
-            Event::Input { .. }
-            | Event::Action
-            | Event::Bell
-            | Event::Notification(_)
-            | Event::Title(_)
-            | Event::Done(_)
-            | Event::Resize(_) => None,
+        self.after(seq).filter_map(|e| {
+            let Event::Output {
+                printed: Some(p), ..
+            } = &e.event
+            else {
+                return None;
+            };
+            Some((e.seq, &**p))
         })
     }
 
