@@ -11,8 +11,8 @@
 //!   as a config for a bounded number of steps, up to its first request
 //!   for the server.
 use fux::keymap::{Binding, Held, Keymap, Layer, Node};
-use fux::screens::Effect;
 use fux::keys::{KeyPress, Keystroke};
+use fux::screens::Effect;
 use fux::script::{Fux, Host};
 use fuxth::{Machine, Outcome};
 use libfuzzer_sys::fuzz_target;
