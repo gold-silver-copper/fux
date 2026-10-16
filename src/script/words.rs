@@ -835,7 +835,6 @@ impl fuxth::Host for Host<'_> {
                             cwd: built.cwd,
                             env: built.env,
                             argv: built.argv,
-                            json: false,
                             log: built.log,
                             ids: built.ids,
                             then: wait(&built.waits, false, self.settle),
@@ -849,7 +848,6 @@ impl fuxth::Host for Host<'_> {
                         cwd: built.cwd,
                         env: built.env,
                         ids: built.ids,
-                        json: false,
                     },
                     _ => Command::NewWorkspace {
                         name: built.name,
@@ -858,7 +856,6 @@ impl fuxth::Host for Host<'_> {
                         cwd: built.cwd,
                         env: built.env,
                         ids: built.ids,
-                        json: false,
                     },
                 };
                 later(ask(command, Then::Handle(Kind::Pane)))
@@ -881,7 +878,6 @@ impl fuxth::Host for Host<'_> {
                         env: built.env,
                         run,
                         ids: built.ids,
-                        json: false,
                         then: wait(&built.waits, false, self.settle),
                     },
                     Then::Handle(Kind::Pane),
@@ -1153,8 +1149,7 @@ impl fuxth::Host for Host<'_> {
                     "get" => (Some(string(name, &next()?)?), Then::Value),
                     _ => (None, Then::Answer("a listing")),
                 };
-                let json = false;
-                later(ask(Command::Ls { json, target, get }, then))
+                later(ask(Command::Ls { target, get }, then))
             }
             "json" => match next()? {
                 // Among the options, as after what they make: `opts json
@@ -1447,7 +1442,7 @@ impl fuxth::Host for Host<'_> {
                     c,
                     Command::Client {
                         client: Some(c),
-                        action: ClientAction::Capture { json: false },
+                        action: ClientAction::Capture,
                     },
                     Then::Answer("a capture"),
                 ))

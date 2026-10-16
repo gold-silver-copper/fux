@@ -91,7 +91,6 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     };
     let request = Request {
         command: Command::Ls {
-            json: false,
             target: None,
             get: None,
         },

@@ -218,7 +218,6 @@ pub enum Mouse {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Ls {
-        json: bool,
         /// One pane, tab or workspace only.
         target: Option<AnyRef>,
         /// One field of its JSON.
@@ -238,7 +237,6 @@ pub enum Command {
         env: Vec<(String, String)>,
         /// The ids it makes, if asked for (`--id`, as layout files have).
         ids: Vec<AnyRef>,
-        json: bool,
     },
     NewTab {
         target: Option<WsRef>,
@@ -248,7 +246,6 @@ pub enum Command {
         cwd: Option<String>,
         env: Vec<(String, String)>,
         ids: Vec<AnyRef>,
-        json: bool,
     },
     Split {
         axis: Axis,
@@ -261,7 +258,6 @@ pub enum Command {
         /// starts one.
         run: bool,
         ids: Vec<AnyRef>,
-        json: bool,
         /// Then waits on the new pane, armed before its program writes.
         then: Option<Box<Wait>>,
     },
@@ -274,7 +270,6 @@ pub enum Command {
         cwd: Option<String>,
         env: Vec<(String, String)>,
         argv: Vec<String>,
-        json: bool,
         /// A file everything the program writes goes to too.
         log: Option<String>,
         ids: Vec<AnyRef>,
@@ -432,9 +427,7 @@ pub enum ClientAction {
     Detach,
     /// What the client's terminal shows: the screen the server composes for
     /// it, bar and overlays included.
-    Capture {
-        json: bool,
-    },
+    Capture,
     /// The rows of a chooser the client shows: what each is, its label,
     /// and which is the client's current one.
     Choices(Choices),
@@ -537,15 +530,12 @@ impl Command {
 
     /// Takes the wait `run`, `split` or `respawn` does once it has started
     /// its program: the command then says only its pane, which the wait
-    /// answers of (as JSON too, if asked).
+    /// answers of.
     pub fn take_start_wait(&mut self) -> Option<Box<Wait>> {
-        if let Command::Run { json, then, .. } | Command::Split { json, then, .. } = self
-            && then.is_some()
+        if let Command::Run { then, .. }
+        | Command::Split { then, .. }
+        | Command::Respawn { then, .. } = self
         {
-            *json = false;
-            return then.take();
-        }
-        if let Command::Respawn { then, .. } = self {
             return then.take();
         }
         None

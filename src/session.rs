@@ -394,7 +394,7 @@ fn shows_nothing_new(command: &Command) -> bool {
             | Command::SendKeys { .. }
             | Command::Signal { .. }
             | Command::Client {
-                action: ClientAction::Capture { .. },
+                action: ClientAction::Capture,
                 ..
             }
     )
@@ -994,27 +994,11 @@ impl Session {
         Ok(())
     }
 
-    /// What a command that makes a pane prints, `text`, the ids it names,
-    /// or with `json` where the pane is; the ids made go in its reply.
-    fn made_ids(
-        &mut self,
-        (ws, tab, pane): (WsId, TabId, PaneId),
-        text: &[String],
-        json: bool,
-    ) -> String {
+    /// What a command that makes a pane prints, `text`, the ids it names;
+    /// the ids made go in its reply.
+    fn made_ids(&mut self, (ws, tab, pane): (WsId, TabId, PaneId), text: &[String]) -> String {
         self.made = vec![AnyRef::Workspace(ws), AnyRef::Tab(tab), AnyRef::Pane(pane)];
-        let mut out = if json {
-            Json::Object(vec![
-                ("workspace", Json::str(ws.to_string())),
-                ("tab", Json::str(tab.to_string())),
-                ("pane", Json::str(pane.to_string())),
-            ])
-            .render()
-        } else {
-            text.join(" ")
-        };
-        out.push('\n');
-        out
+        format!("{}\n", text.join(" "))
     }
 
     /// What `text` names as a pane, tab or workspace, `kind`: its id (`%3`),
@@ -2221,7 +2205,7 @@ impl Session {
         let here = self.here(origin)?;
         self.starting = self.starting_for(origin);
         match command {
-            Command::Ls { json, target, get } => {
+            Command::Ls { target, get } => {
                 // Through a grant, the granted workspace alone.
                 let scope = match origin {
                     Origin::Cli(Caller {
@@ -2241,9 +2225,6 @@ impl Session {
                     }
                     None => (self.ls_json(scope), scope.map(AnyRef::Workspace)),
                 };
-                if *json {
-                    return Ok(read);
-                }
                 self.json = Some(read);
                 Ok(self.ls_text(only))
             }
@@ -2289,7 +2270,6 @@ impl Session {
                 cwd,
                 env,
                 ids,
-                json,
             } => {
                 self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
@@ -2299,11 +2279,7 @@ impl Session {
                 let made = self.create_workspace((name.clone(), None), start, place)?;
                 let (ws, tab, pane) = made;
                 self.follow(here, ws, None, None);
-                Ok(self.made_ids(
-                    made,
-                    &[ws.to_string(), tab.to_string(), pane.to_string()],
-                    *json,
-                ))
+                Ok(self.made_ids(made, &[ws.to_string(), tab.to_string(), pane.to_string()]))
             }
             Command::NewTab {
                 target,
@@ -2313,7 +2289,6 @@ impl Session {
                 cwd,
                 env,
                 ids,
-                json,
             } => {
                 self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
                 if let Some(name) = name {
@@ -2331,7 +2306,7 @@ impl Session {
                     self.give_tab_name(tab, name.clone())?;
                 }
                 self.follow(here, ws, Some(tab), None);
-                Ok(self.made_ids((ws, tab, pane), &[tab.to_string(), pane.to_string()], *json))
+                Ok(self.made_ids((ws, tab, pane), &[tab.to_string(), pane.to_string()]))
             }
             Command::Run {
                 workspace,
@@ -2340,7 +2315,6 @@ impl Session {
                 cwd,
                 env,
                 argv,
-                json,
                 log,
                 ids,
                 ..
@@ -2378,7 +2352,7 @@ impl Session {
                 if let Some(pane) = self.panes.get_mut(&made.2) {
                     pane.log = log;
                 }
-                Ok(self.made_ids(made, &[made.2.to_string()], *json))
+                Ok(self.made_ids(made, &[made.2.to_string()]))
             }
             &Command::Respawn {
                 target,
@@ -2564,7 +2538,6 @@ impl Session {
                 ref env,
                 run,
                 ref ids,
-                json,
                 then: _,
             } => {
                 self.want(ids, &[Kind::Pane])?;
@@ -2601,7 +2574,7 @@ impl Session {
                     view.zoom = false;
                 }
                 let at = self.locate(new).ok_or(Error::NoPane(new))?;
-                Ok(self.made_ids((at.0, at.1, new), &[new.to_string()], json))
+                Ok(self.made_ids((at.0, at.1, new), &[new.to_string()]))
             }
             &Command::Signal { target, signal, .. } => {
                 let group = self.signalled(target)?;
@@ -2814,7 +2787,7 @@ impl Session {
                         return Ok(String::new());
                     }
                     ClientAction::Detach
-                    | ClientAction::Capture { .. }
+                    | ClientAction::Capture
                     | ClientAction::Zoom
                     | ClientAction::SelectPane(_)
                     | ClientAction::SelectTab(_)
@@ -2830,7 +2803,7 @@ impl Session {
                         self.outbox.push(Outgoing::Exit(client, "detached".into()));
                         return Ok(String::new());
                     }
-                    ClientAction::Capture { json } => {
+                    ClientAction::Capture => {
                         let mut grid = crate::render::Grid::new(0, 0);
                         crate::render::compose_view(
                             self,
@@ -2838,8 +2811,7 @@ impl Session {
                             &mut grid,
                             &mut Placement::default(),
                         );
-                        let read = crate::capture::client(client, &grid);
-                        let (text, form) = crate::capture::asked(read, json);
+                        let (text, form) = crate::capture::client(client, &grid);
                         self.json = form;
                         return Ok(text);
                     }

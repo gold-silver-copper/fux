@@ -122,7 +122,6 @@ impl Open {
     ) -> Result<Screen, Failed> {
         let mut name = |target: AnyRef| -> Result<String, Failed> {
             let get = Command::Ls {
-                json: false,
                 target: Some(target),
                 get: Some("name".to_owned()),
             };

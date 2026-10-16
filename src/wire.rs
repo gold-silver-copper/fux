@@ -393,7 +393,7 @@ wire_enum!(Mouse, "mouse" {
 wire_enum!(Choices, "choices" { 0 => Tabs, 1 => Workspaces, 2 => Panes(pane) });
 wire_enum!(ClientAction, "client action" {
     0 => Detach,
-    1 => Capture { json },
+    1 => Capture,
     2 => Choices(choices),
     3 => Run(code),
     10 => Zoom,
@@ -403,12 +403,12 @@ wire_enum!(ClientAction, "client action" {
 });
 
 wire_enum!(Command, "command" {
-    0 => Ls { json, target, get },
+    0 => Ls { target, get },
     1 => KillServer { force },
-    2 => NewWorkspace { name, cmd, size, cwd, env, ids, json },
-    3 => NewTab { target, name, cmd, size, cwd, env, ids, json },
-    4 => Split { axis, target, cmd, cwd, env, run, ids, json, then },
-    5 => Run { workspace, name, size, cwd, env, argv, json, log, ids, then },
+    2 => NewWorkspace { name, cmd, size, cwd, env, ids },
+    3 => NewTab { target, name, cmd, size, cwd, env, ids },
+    4 => Split { axis, target, cmd, cwd, env, run, ids, then },
+    5 => Run { workspace, name, size, cwd, env, argv, log, ids, then },
     6 => Respawn { target, kill, env, argv, then },
     7 => Notify { target, text },
     8 => Resize { what, size },
