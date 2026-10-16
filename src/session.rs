@@ -868,16 +868,7 @@ impl Session {
         if self.workspaces.iter().any(|w| w.name == name) {
             return Err(Error::NameTaken(name.to_owned()));
         }
-        let taken: Vec<TabId> = (self.workspaces.iter())
-            .flat_map(Workspace::tabs)
-            .filter(|t| t.given && t.name == name && Some(t.id) != except)
-            .map(|t| t.id)
-            .collect();
-        if taken.is_empty() {
-            return Ok(());
-        }
-        let panes = self.panes_of_tabs(&taken);
-        Err(Error::TabNameTaken(name.to_owned(), taken, panes))
+        no_tab_named(&self.workspaces, name, except)
     }
 
     /// Gives tab `id` the name `name`, checked. It takes it from each other
@@ -907,15 +898,6 @@ impl Session {
             }
         }
         Ok(())
-    }
-
-    /// The panes of `tabs`, as ids, in their order.
-    fn panes_of_tabs(&self, tabs: &[TabId]) -> Vec<PaneId> {
-        (self.workspaces.iter())
-            .flat_map(Workspace::tabs)
-            .filter(|t| tabs.contains(&t.id))
-            .flat_map(|t| t.root().map(Tree::panes).unwrap_or_default())
-            .collect()
     }
 
     /// Whether a client is in copy mode on pane `pane`: keys typed there
@@ -3329,15 +3311,32 @@ fn check_workspace_name<'a>(
         return Err(Error::NameTaken(name.to_owned()));
     }
     // A tab's name too: the workspace's would hide it from `str NAME tab`.
-    let tabs: Vec<TabId> = (others.iter())
-        .flat_map(|ws| ws.tabs())
-        .filter(|t| t.given && t.name == name)
-        .map(|t| t.id)
+    no_tab_named(others, name, None)
+}
+
+/// That no tab of `workspaces` but `except` was given the name `name`; else
+/// why not, with those tabs and their panes.
+fn no_tab_named<'a>(
+    workspaces: impl IntoIterator<Item = &'a Workspace>,
+    name: &str,
+    except: Option<TabId>,
+) -> Result<(), Error> {
+    let tabs: Vec<&Tab> = (workspaces.into_iter())
+        .flat_map(Workspace::tabs)
+        .filter(|t| t.given && t.name == name && Some(t.id) != except)
         .collect();
-    if !tabs.is_empty() {
-        return Err(Error::TabNameTaken(name.to_owned(), tabs, Vec::new()));
+    if tabs.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let panes = tabs
+        .iter()
+        .flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
+    let panes = panes.collect();
+    Err(Error::TabNameTaken(
+        name.to_owned(),
+        tabs.iter().map(|t| t.id).collect(),
+        panes,
+    ))
 }
 
 /// The item after the one at `index` among `items`, or before it, going
