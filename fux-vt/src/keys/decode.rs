@@ -46,7 +46,7 @@
 //! An answer's string longer than any answer (`OSC_LIMIT`, `DCS_LIMIT`) is
 //! dropped to its end as it arrives, none of it typed.
 use crate::keys::colour::Scheme;
-use crate::keys::encode::{PASTE_END, numbered_key};
+use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use crate::{ModeStatus, Rgb};
@@ -498,11 +498,10 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
 /// bytes it takes; none while it is incomplete.
 fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
     let first = *bytes.first()?;
+    if let Some(control) = Control::of(first.into()) {
+        return Some((1, KeyPress::plain(control.key())));
+    }
     let (key, mods) = match first {
-        0x0d => (Key::Enter, Modifiers::NONE),
-        0x09 => (Key::Tab, Modifiers::NONE),
-        0x7f => (Key::Backspace, Modifiers::NONE),
-        0x1b => (Key::Escape, Modifiers::NONE),
         0x00 => (Key::Char(' '), Modifiers::CTRL),
         // Ctrl-A to Ctrl-Z are the letters with bits 5 and 6 cleared.
         0x01..=0x1a => (Key::Char(char::from(first | 0x60)), Modifiers::CTRL),
@@ -960,21 +959,20 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
 /// character, as `char_of` reads it, unless it is another control, which
 /// names no key.
 fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> char) -> Option<KeyPress> {
-    let key = match code {
-        8 => {
-            let mods = Modifiers { ctrl: true, ..mods };
-            return Some(KeyPress::new(Key::Backspace, mods));
-        }
-        9 => Key::Tab,
-        13 => Key::Enter,
-        27 => Key::Escape,
-        127 => Key::Backspace,
-        0xe000..=0xf8ff => functional(code)?,
-        _ => Key::Char(
-            char::from_u32(code)
-                .map(char_of)
-                .filter(|c| !c.is_control())?,
-        ),
+    if code == u32::from(CTRL_BACKSPACE) {
+        let mods = Modifiers { ctrl: true, ..mods };
+        return Some(KeyPress::new(Key::Backspace, mods));
+    }
+    let key = match Control::of(code) {
+        Some(control) => control.key(),
+        None => match code {
+            0xe000..=0xf8ff => functional(code)?,
+            _ => Key::Char(
+                char::from_u32(code)
+                    .map(char_of)
+                    .filter(|c| !c.is_control())?,
+            ),
+        },
     };
     Some(KeyPress::new(key, mods))
 }

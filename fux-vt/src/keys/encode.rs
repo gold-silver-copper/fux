@@ -341,26 +341,39 @@ pub(crate) fn numbered_key(number: u8, last: char) -> Option<Key> {
         .find(|&key| matches!(Form::from(key), Form::Numbered(n, l) if (n, l) == (number, last)))
 }
 
-/// A key whose legacy bytes are a C0 control or DEL.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Control {
-    Enter,
-    Tab,
-    Escape,
-    Backspace,
+closed! {
+    /// A key whose legacy bytes are a C0 control or DEL.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Control {
+        /// Its byte unmodified, which is also its code in `CSI code u` and
+        /// in modifyOtherKeys's `CSI 27 ; mods ; code ~`.
+        pub(crate) fn code(self) -> u8;
+        Enter => 0x0d,
+        Tab => 0x09,
+        Escape => 0x1b,
+        Backspace => 0x7f,
+    }
 }
 
 impl Control {
-    /// Its byte unmodified, which is also its code in `CSI code u`.
-    fn code(self) -> u8 {
+    /// The control whose byte is `code`.
+    pub(crate) fn of(code: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| u32::from(c.code()) == code)
+    }
+    /// Its key.
+    pub(crate) fn key(self) -> Key {
         match self {
-            Control::Enter => 0x0d,
-            Control::Tab => 0x09,
-            Control::Escape => 0x1b,
-            Control::Backspace => 0x7f,
+            Control::Enter => Key::Enter,
+            Control::Tab => Key::Tab,
+            Control::Escape => Key::Escape,
+            Control::Backspace => Key::Backspace,
         }
     }
 }
+
+/// Ctrl-Backspace's byte, BS, as xterm, kitty's legacy encoding, VTE and
+/// Alacritty send it, and its code in modifyOtherKeys.
+pub(crate) const CTRL_BACKSPACE: u8 = 0x08;
 
 /// `CSI number ; modifier final`, the modifier left out when it is 1, none
 /// held, and then the number too if it is 1 (`CSI A`).
@@ -419,11 +432,11 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
     let state = Modifiers { shift, ..mods };
     let (sym, code) = match key {
-        Key::Enter => (Sym::Return, 13),
-        Key::Tab => (Sym::Tab, 9),
-        Key::Escape => (Sym::Escape, 27),
-        Key::Backspace if mods.ctrl => (Sym::BackSpace, 8),
-        Key::Backspace => (Sym::Delete, 127),
+        Key::Enter => (Sym::Return, Control::Enter.code().into()),
+        Key::Tab => (Sym::Tab, Control::Tab.code().into()),
+        Key::Escape => (Sym::Escape, Control::Escape.code().into()),
+        Key::Backspace if mods.ctrl => (Sym::BackSpace, CTRL_BACKSPACE.into()),
+        Key::Backspace => (Sym::Delete, Control::Backspace.code().into()),
         Key::Char(c) => {
             let c = if shift { c.to_ascii_uppercase() } else { c };
             (Sym::Char(c), u32::from(c))
@@ -583,9 +596,7 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
             // Z`, as a numbered key carries them.
             Control::Tab if shift && !ctrl && !alt => out.extend_from_slice(b"\x1b[Z"),
             Control::Tab if shift => numbered(out, 1, modifier, 'Z'),
-            // Ctrl-Backspace is BS, as xterm, kitty's legacy encoding, VTE
-            // and Alacritty send it, and as modifyOtherKeys's code says.
-            Control::Backspace if ctrl => out.push(0x08),
+            Control::Backspace if ctrl => out.push(CTRL_BACKSPACE),
             Control::Enter | Control::Tab | Control::Escape | Control::Backspace => {
                 out.push(control.code());
             }
@@ -597,8 +608,9 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     // Alt is an Escape before the key, unless the key is a sequence, which
     // carries Alt in its parameter; a lone ESC (Escape, Ctrl-[) takes one
     // too, as xterm sends Alt-Escape: ESC ESC.
-    if alt && !(out.get(start) == Some(&27) && out.len() > start.saturating_add(1)) {
-        out.push(27);
+    let escape = Control::Escape.code();
+    if alt && !(out.get(start) == Some(&escape) && out.len() > start.saturating_add(1)) {
+        out.push(escape);
         // The key's bytes and the Escape after them: at least one to turn.
         if let Some(key) = out.get_mut(start..) {
             key.rotate_right(1);
