@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -35,14 +35,14 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "fuxth"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "libc"
