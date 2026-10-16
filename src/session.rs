@@ -684,12 +684,14 @@ impl Session {
         }
         .map(|w| w.id)
     }
-    pub fn exists(&self, what: AnyRef) -> bool {
-        match what {
-            AnyRef::Pane(p) => self.panes.contains_key(&p),
-            AnyRef::Tab(t) => self.tab(t).is_some(),
-            AnyRef::Workspace(w) => self.workspace(w).is_some(),
-        }
+    /// `target`, if it is there; else why not.
+    pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
+        let there = match target {
+            AnyRef::Pane(p) => self.panes.get(&p).map(|_| ()).ok_or(Error::NoPane(p)),
+            AnyRef::Tab(t) => self.tab(t).map(|_| ()).ok_or(Error::NoTab(t)),
+            AnyRef::Workspace(w) => self.workspace(w).map(|_| ()).ok_or(Error::NoWorkspace(w)),
+        };
+        there.map(|()| target)
     }
 
     // ------------------------------------------------------------- targets
@@ -958,7 +960,7 @@ impl Session {
                 );
                 return Err(fail(Code::Id, message));
             }
-            if self.exists(*id) {
+            if self.there(*id).is_ok() {
                 return Err(Error::IdTaken(describe(*id)));
             }
             self.ids.want(*id, self.restoring)?;
@@ -1079,7 +1081,7 @@ impl Session {
                 }
             },
             Kind::Tab => match text.parse::<TabId>() {
-                Ok(id) => Ok(AnyRef::Tab(self.tab_target(id)?)),
+                Ok(id) => self.there(AnyRef::Tab(id)),
                 Err(_) => named().map(|tab| AnyRef::Tab(tab.id)),
             },
             Kind::Workspace => {
@@ -1255,25 +1257,10 @@ impl Session {
         Ok(format!("{pane} {}x{}\n", want.0, want.1))
     }
 
-    fn tab_target(&self, id: TabId) -> Result<TabId, Error> {
-        self.tab(id).map(|t| t.id).ok_or(Error::NoTab(id))
-    }
-
     fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsId, Error> {
         match explicit {
             Some(r) => self.resolve_ws(r),
             None => here.place().map(|p| p.ws).ok_or(Error::NoWorkspaceGiven),
-        }
-    }
-
-    /// `target`, if it is there.
-    fn any_target(&self, target: &AnyRef) -> Result<AnyRef, Error> {
-        match *target {
-            AnyRef::Pane(p) => self.pane(p).map(|_| *target),
-            AnyRef::Tab(t) => self.tab_target(t).map(|_| *target),
-            AnyRef::Workspace(w) => {
-                (self.workspace(w).map(|_| *target)).ok_or(Error::NoWorkspace(w))
-            }
         }
     }
 
@@ -1628,7 +1615,7 @@ impl Session {
                     about: Some(about), ..
                 }
                 | Panel::Confirm { about, .. },
-            ) if !self.exists(*about) => format!("closed: {} is gone", describe(*about)),
+            ) if self.there(*about).is_err() => format!("closed: {} is gone", describe(*about)),
             Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return false,
         };
         view.mode = Mode::Normal;
@@ -1983,7 +1970,7 @@ impl Session {
             return Ok(self.start_waiting(&command, *wait, origin));
         }
         if let Command::Events { target, json } = command {
-            let target = target.map(|t| self.any_target(&t)).transpose()?;
+            let target = target.map(|t| self.there(t)).transpose()?;
             return Ok(Begun::Events(Box::new(crate::events::Subscription {
                 target,
                 json,
@@ -2159,7 +2146,7 @@ impl Session {
                 // Its JSON, given as asked, or kept beside its text.
                 let (read, only) = match target {
                     Some(target) => {
-                        let target = self.any_target(target)?;
+                        let target = self.there(*target)?;
                         let read = self.ls_one(target, get.as_deref())?;
                         if get.is_some() {
                             return Ok(read);
@@ -2324,7 +2311,7 @@ impl Session {
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
-                    Some(target) => match self.any_target(target)? {
+                    Some(target) => match self.there(*target)? {
                         AnyRef::Pane(p) => self.viewers(self.locate(p).map(|(_, t)| t)),
                         AnyRef::Tab(t) => self.viewers(Some(t)),
                         AnyRef::Workspace(w) => self
@@ -2350,7 +2337,7 @@ impl Session {
                             return Err(fail(Code::Size, message));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                        let target = self.any_target(target)?;
+                        let target = self.there(*target)?;
                         let tabs: Vec<TabId> = match target {
                             AnyRef::Tab(tab) => vec![tab],
                             AnyRef::Workspace(ws) => self.tab_ids(ws),
@@ -2399,7 +2386,7 @@ impl Session {
             }
             Command::DumpLayout { target } => {
                 let only = match target {
-                    Some(target) => Some(self.any_target(target)?),
+                    Some(target) => Some(self.there(*target)?),
                     None => None,
                 };
                 Ok(self.dump_layout(only, false).into())
@@ -2538,42 +2525,41 @@ impl Session {
             // From the command line each says what it closed, so a script
             // or an agent knows; a key's close shows on the screen anyway.
             Command::Kill { target } => {
-                let gone = match self.any_target(target)? {
+                // What may go with it, said once gone: a pane's tab, if it
+                // was its last, and that tab's workspace; a tab's or a
+                // workspace's panes.
+                let mut may_go = vec![self.there(*target)?];
+                // A tab there with no panes (moved out) has none to go.
+                if let AnyRef::Tab(_) | AnyRef::Workspace(_) = target {
+                    let panes = self.panes_of(*target).unwrap_or_default();
+                    may_go.extend(panes.into_iter().map(AnyRef::Pane));
+                }
+                match *target {
                     AnyRef::Pane(pane) => {
-                        // A tab's last pane takes its tab, and a workspace's
-                        // last tab its workspace: all of it is said.
-                        let mut gone = vec![pane.to_string()];
-                        if let Some((ws, tab)) = self.locate(pane)
-                            && self.root(tab).is_some_and(|root| root.panes().len() == 1)
-                        {
-                            gone.push(tab.to_string());
-                            if self.workspace(ws).is_some_and(|w| w.tabs().len() == 1) {
-                                gone.push(ws.to_string());
-                            }
-                        }
+                        let place = self.locate(pane).into_iter();
+                        may_go.extend(
+                            place.flat_map(|(w, t)| [AnyRef::Tab(t), AnyRef::Workspace(w)]),
+                        );
                         self.close_pane(pane, None);
-                        gone
                     }
-                    AnyRef::Tab(tab) => {
-                        let panes = self.panes_of_tabs(&[tab]);
-                        self.remove_tab(tab);
-                        self.after_close();
-                        [vec![tab.to_string()], panes].concat()
-                    }
+                    AnyRef::Tab(tab) => self.remove_tab(tab),
                     AnyRef::Workspace(ws) => {
-                        let tabs = self.tab_ids(ws);
-                        let panes = self.panes_of_tabs(&tabs);
-                        for tab in tabs {
-                            self.remove_tab(tab);
-                        }
-                        self.after_close();
-                        [vec![ws.to_string()], panes].concat()
+                        self.tab_ids(ws)
+                            .into_iter()
+                            .for_each(|tab| self.remove_tab(tab));
                     }
-                };
+                }
+                if let AnyRef::Tab(_) | AnyRef::Workspace(_) = target {
+                    self.after_close();
+                }
+                let gone: Vec<String> = (may_go.into_iter())
+                    .filter(|it| self.there(*it).is_err())
+                    .map(describe)
+                    .collect();
                 Ok(closed(origin, &gone).into())
             }
             Command::Rename { target, name } => {
-                let target = self.any_target(target)?;
+                let target = self.there(*target)?;
                 self.rename(target, name.clone()).map(|()| Reply::default())
             }
             &Command::MovePane { target, ref to } => {
@@ -2656,7 +2642,7 @@ impl Session {
                 })
             }
             &Command::Reorder { ref target, toward } => {
-                let target = self.any_target(target)?;
+                let target = self.there(*target)?;
                 self.reorder(target, toward).map(|()| Reply::default())
             }
             Command::Set { option, value } => {
@@ -2698,14 +2684,9 @@ impl Session {
                 .ok_or(Error::NoBuffer(index)),
             &Command::PasteBuffer { index, target } => {
                 let text = self.buffers.get(index).cloned();
-                let text = text.ok_or(Error::NoBuffer(index))?;
-                let p = self.pane_mut(target)?;
-                let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
-                let mut bytes = Vec::new();
-                crate::encode::paste(&text, bracketed, &mut bytes);
-                p.note_input();
-                p.send(vec![(bytes, paste_unit(&text, bracketed))], Instant::now())?;
-                Ok(Reply::default())
+                let paste = Input::Paste(text.ok_or(Error::NoBuffer(index))?);
+                self.send_inputs(target, &[paste])
+                    .map(|()| Reply::default())
             }
             &Command::Client { client, ref action } => {
                 // The client `-c` names, else the one the command came from.
