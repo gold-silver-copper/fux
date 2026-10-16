@@ -153,16 +153,28 @@ its journal recorded them, one line each.
 ## Errors
 
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
-the file, line and word it came from. CODE stays: `no_server`, `mismatch`,
-`no_pane`, `no_tab`, `no_workspace`, `no_target`, `stray_pane`, `exited`,
-`still_running`, `not_run`, `own_server`, `people_attached`,
-`not_granted`, `name_taken`, `bad_name`, `ambiguous`, `size`, `mouse`,
-`no_field`, `id`, `not_reading`, `start`, `paste`, `timeout`, `closed`,
-`gone`, `no_buffer`, `not_a_key`, `no_program`,
-`no_keys`, `not_a_client`, `grant`, `config`, `unused`, `too_long`; and the
-language's: `type` (a word given the wrong kind of value), `stack_underflow`,
-`unknown_word`, `open_quote`, `unmatched`, `unclosed`, `range`, `bad_value`,
-`overflow`, `div_by_zero`, `call_depth`, and a few more for rarer failures.
+the file, line and word it came from. Its exit status is 1, a usage error's
+2, a wait's its own (below). CODE stays; every one fux gives
+(`src/code.rs` says what each means):
+
+- reaching a server: `no_server`, `mismatch`, `client`, `not_granted`,
+  `grant`;
+- what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,
+  `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
+  `selection`, `name_taken`, `id`, `ids_exhausted`, `bad_value`, `usage`;
+- what a command meets: `exited`, `still_running`, `not_run`, `only_shell`,
+  `not_reading`, `start`, `size`, `mouse`, `signal`, `log`,
+  `not_a_directory`, `not_headless`, `own_server`, `people_attached`,
+  `cli_only`;
+- how a wait ends: `exited` (3), `timeout` (124), `closed` (4), `gone` (4),
+  `lost`, `stopped` (7);
+- a program of words: `steps`, `not_here`, `not_layout`, `not_config`,
+  `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,
+  `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`, `failed`;
+- the language's own: `open_quote`, `unknown_word`, `missing_token`,
+  `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
+  `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
+  `unset`, `range`, `fail`, `too_long`, `contract`.
 
 ## `status json`, `servers json`
 

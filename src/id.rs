@@ -2,6 +2,7 @@
 //! the session's counters, [`Ids`]; any other is read from what a person
 //! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, and the session looks it up
 //! before acting on it. No code can make one from a number.
+use crate::code::Code;
 use crate::command::{AnyRef, Kind, Usage};
 use crate::session::Error;
 use std::fmt;
@@ -128,7 +129,7 @@ impl Ids {
         if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
             let id = crate::session::describe(id);
             let why = "too far ahead of the ids given so far, which would run out after it";
-            return Err(crate::session::fail("id", format!("id {id}: {why}")));
+            return Err(crate::session::fail(Code::Id, format!("id {id}: {why}")));
         }
         *wanted = Some(n);
         Ok(())
@@ -148,8 +149,9 @@ fn take(counter: &mut u32, wanted: &mut Option<u32>, what: &'static str) -> Resu
         *counter = (*counter).max(n);
         return Ok(n);
     }
-    *counter = (counter.checked_add(1))
-        .ok_or_else(|| crate::session::fail("ids_exhausted", format!("no {what} IDs are left")))?;
+    *counter = (counter.checked_add(1)).ok_or_else(|| {
+        crate::session::fail(Code::IdsExhausted, format!("no {what} IDs are left"))
+    })?;
     Ok(*counter)
 }
 

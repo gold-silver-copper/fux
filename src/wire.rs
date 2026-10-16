@@ -251,6 +251,7 @@ text_wire!(TabId, "tab id");
 text_wire!(WsId, "workspace id");
 text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
+text_wire!(crate::code::Code, "code");
 
 wire_enum!(Direction, "direction" {
     0 => Left,

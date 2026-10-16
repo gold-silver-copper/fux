@@ -8,6 +8,7 @@ pub mod act;
 pub mod capture;
 pub mod classify;
 pub mod client;
+pub mod code;
 pub mod command;
 pub mod config;
 pub mod copy;

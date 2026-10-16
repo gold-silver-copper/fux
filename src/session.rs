@@ -1,5 +1,6 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
+use crate::code::Code;
 use crate::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
     Pick, Resized, Sibling, SwapWith, WsRef,
@@ -187,15 +188,15 @@ pub enum Error {
     // What failed below the session.
     Usage(command::Usage),
     /// Any other failure, made in one place and told apart by its code
-    /// alone: the code `--json` names, and why.
+    /// alone: its code, and why.
     Failed {
-        code: &'static str,
+        code: Code,
         message: String,
     },
 }
 
 /// A failure of kind `code` (see [`Error::Failed`]).
-pub(crate) fn fail(code: &'static str, message: impl Into<String>) -> Error {
+pub(crate) fn fail(code: Code, message: impl Into<String>) -> Error {
     Error::Failed {
         code,
         message: message.into(),
@@ -205,21 +206,21 @@ pub(crate) fn fail(code: &'static str, message: impl Into<String>) -> Error {
 impl Error {
     /// What kind of failure it is, as `--json` names it: stable, for a
     /// script to tell failures apart by.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            Error::NoWorkspace(_) => "no_workspace",
-            Error::NoPane(_) | Error::NoPaneToCopy => "no_pane",
-            Error::NoTab(_) => "no_tab",
-            Error::NoPaneGiven | Error::NoWorkspaceGiven => "no_target",
-            Error::IdTaken(_) => "id",
-            Error::NoClient(_) => "no_client",
-            Error::NoBuffer(_) => "no_buffer",
-            Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => "nothing_there",
-            Error::NoRows | Error::SelectionTooLarge => "selection",
-            Error::NameReadAsTarget(_) => "bad_name",
-            Error::NameTaken(_) | Error::TabNameTaken(..) => "name_taken",
-            Error::Usage(_) => "usage",
-            Error::Failed { code, .. } => code,
+            Error::NoWorkspace(_) => Code::NoWorkspace,
+            Error::NoPane(_) | Error::NoPaneToCopy => Code::NoPane,
+            Error::NoTab(_) => Code::NoTab,
+            Error::NoPaneGiven | Error::NoWorkspaceGiven => Code::NoTarget,
+            Error::IdTaken(_) => Code::Id,
+            Error::NoClient(_) => Code::NoClient,
+            Error::NoBuffer(_) => Code::NoBuffer,
+            Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => Code::NothingThere,
+            Error::NoRows | Error::SelectionTooLarge => Code::Selection,
+            Error::NameReadAsTarget(_) => Code::BadName,
+            Error::NameTaken(_) | Error::TabNameTaken(..) => Code::NameTaken,
+            Error::Usage(_) => Code::Usage,
+            Error::Failed { code, .. } => *code,
         }
     }
 }
@@ -272,8 +273,8 @@ impl std::error::Error for Error {}
 impl From<crate::pane::Error> for Error {
     fn from(error: crate::pane::Error) -> Error {
         let code = match error {
-            crate::pane::Error::NotReading => "not_reading",
-            crate::pane::Error::Terminal { .. } => "start",
+            crate::pane::Error::NotReading => Code::NotReading,
+            crate::pane::Error::Terminal { .. } => Code::Start,
         };
         fail(code, error.to_string())
     }
@@ -286,7 +287,7 @@ fn ended(pane: PaneId, status: crate::process::Ended) -> Error {
         crate::process::Ended::Signalled(_) => "was ",
     };
     let told = crate::process::told(status);
-    fail("exited", format!("the program in {pane} {was}{told}"))
+    fail(Code::Exited, format!("the program in {pane} {was}{told}"))
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
@@ -406,7 +407,7 @@ fn shows_nothing_new(command: &Command) -> bool {
 /// the user's alone too.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let failed = |e| fail("log", format!("the log {}: {e}", path.display()));
+    let failed = |e| fail(Code::Log, format!("the log {}: {e}", path.display()));
     if path.is_symlink() {
         let link = std::io::Error::other("a symbolic link, which a log does not follow");
         return Err(failed(link));
@@ -438,12 +439,12 @@ impl Reach<'_> {
         let scope = self.scope;
         let message =
             format!("{what} is not in workspace {scope}, the only one this socket reaches (grant)");
-        fail("not_granted", message)
+        fail(Code::NotGranted, message)
     }
     fn refuse(&self, what: &'static str) -> Result<(), Error> {
         let scope = self.scope;
         let message = format!("this socket reaches workspace {scope} alone (grant), not {what}");
-        Err(fail("not_granted", message))
+        Err(fail(Code::NotGranted, message))
     }
     fn pane(&self, id: PaneId) -> Result<(), Error> {
         match self.session.locate(id) {
@@ -561,7 +562,7 @@ fn one<T: Copy + std::fmt::Display>(
         [item] => Ok(*item),
         items => {
             let ids: Vec<String> = items.iter().map(ToString::to_string).collect();
-            Err(fail("no_target", many(items.len(), ids.join(" "))))
+            Err(fail(Code::NoTarget, many(items.len(), ids.join(" "))))
         }
     }
 }
@@ -578,7 +579,7 @@ fn failure(error: Error, origin: &Origin) -> Reply {
                 stray: Some(pane), ..
             }),
         ) => fail(
-            "stray_pane",
+            Code::StrayPane,
             format!(
                 "FUX_PANE {pane} is a pane of another fux server, not of this one, so it is not \
                  acted on; name the pane"
@@ -586,15 +587,7 @@ fn failure(error: Error, origin: &Origin) -> Reply {
         ),
         (error, _) => error,
     };
-    let status = if matches!(error, Error::Usage(_)) {
-        2
-    } else {
-        1
-    };
-    Reply {
-        end: End::failed(status, error.code(), error.to_string()),
-        ..Reply::default()
-    }
+    Reply::failed(error.code(), error.to_string())
 }
 
 fn basename(program: &str) -> String {
@@ -697,7 +690,7 @@ impl Session {
         match r {
             WsRef::Id(id) => self.workspace(*id).ok_or(Error::NoWorkspace(*id)),
             WsRef::Name(name) => (self.workspaces.iter().find(|w| w.name == *name))
-                .ok_or_else(|| fail("no_workspace", format!("no workspace named {name:?}"))),
+                .ok_or_else(|| fail(Code::NoWorkspace, format!("no workspace named {name:?}"))),
         }
         .map(|w| w.id)
     }
@@ -793,7 +786,7 @@ impl Session {
             .collect();
         unset.extend(marks.unset.iter().cloned());
         let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)
-            .map_err(|m| fail("start", m))?;
+            .map_err(|m| fail(Code::Start, m))?;
         Ok(Some((child, nonce)))
     }
 
@@ -810,11 +803,11 @@ impl Session {
         let pane = self.panes.get(&id).ok_or(Error::NoPane(id))?;
         let Runs::Program(launch) = &pane.runs else {
             let message = format!("{id} runs a shell; respawn starts again what `fux run` started");
-            return Err(fail("not_run", message));
+            return Err(fail(Code::NotRun, message));
         };
         if pane.process.child().is_some() && !kill {
             let message = format!("the program in {id} still runs; `kill-first` ends it first");
-            return Err(fail("still_running", message));
+            return Err(fail(Code::StillRunning, message));
         }
         let mut launch = launch.clone();
         if !argv.is_empty() {
@@ -858,7 +851,7 @@ impl Session {
         };
         pane.process.job().or(program).ok_or_else(|| {
             let message = format!("nothing is running in {} but its shell", pane.id);
-            fail("only_shell", message)
+            fail(Code::OnlyShell, message)
         })
     }
 
@@ -974,7 +967,7 @@ impl Session {
                     "id {}: not an id this command makes, or one of a kind given twice",
                     describe(*id)
                 );
-                return Err(fail("id", message));
+                return Err(fail(Code::Id, message));
             }
             if self.exists(*id) {
                 return Err(Error::IdTaken(describe(*id)));
@@ -1005,7 +998,7 @@ impl Session {
             match tabs.as_slice() {
                 [tab] => Ok(*tab),
                 [] => Err(fail(
-                    "no_target",
+                    Code::NoTarget,
                     format!("no {} named {text:?}", kind.name()),
                 )),
                 many => {
@@ -1013,7 +1006,7 @@ impl Session {
                         .map(|t| format!("{} {}", t.id, ids(&panes_of(t)).join(" ")))
                         .collect();
                     Err(fail(
-                        "no_target",
+                        Code::NoTarget,
                         format!(
                             "{text:?} names {} tabs ({}): use an id",
                             many.len(),
@@ -1218,7 +1211,7 @@ impl Session {
                 let message = format!(
                     "{target}'s tab has no room for another pane; make it bigger first (`TAB COLS ROWS resize`)"
                 );
-                fail("size", message)
+                fail(Code::Size, message)
             })?;
         Ok(crate::pane::size(rect.h(), rect.w()))
     }
@@ -1253,7 +1246,7 @@ impl Session {
         };
         let refused = || {
             let message = format!("{pane} cannot be made {}x{} in its tab", want.0, want.1);
-            fail("size", message)
+            fail(Code::Size, message)
         };
         let len = match axis {
             Axis::Horizontal => want.0,
@@ -1322,7 +1315,7 @@ impl Session {
         match cwd.is_dir() {
             true => Ok(cwd),
             false => Err(fail(
-                "not_a_directory",
+                Code::NotADirectory,
                 format!("{} is not a directory", cwd.display()),
             )),
         }
@@ -1435,7 +1428,7 @@ impl Session {
                 self.workspaces
                     .first()
                     .map(|w| w.id)
-                    .ok_or_else(|| fail("no_workspace", "the server has no workspace"))?
+                    .ok_or_else(|| fail(Code::NoWorkspace, "the server has no workspace"))?
             }
         };
         let id = self.ids.client()?;
@@ -2070,7 +2063,7 @@ impl Session {
     fn scoped(&self, command: Command, scope: &str, origin: &Origin) -> Result<Command, Error> {
         if scope.is_empty() {
             let message = "the grant this socket came through was revoked";
-            return Err(fail("not_granted", message));
+            return Err(fail(Code::NotGranted, message));
         }
         // With no target, one that would act anywhere acts on the granted
         // workspace.
@@ -2079,7 +2072,12 @@ impl Session {
         let place = || Some(WsRef::Name(scope.to_owned()));
         // The granted workspace, which may be gone: then nothing.
         let whole = || {
-            let gone = || fail("not_granted", format!("workspace {scope} (grant) is gone"));
+            let gone = || {
+                fail(
+                    Code::NotGranted,
+                    format!("workspace {scope} (grant) is gone"),
+                )
+            };
             ws.map(AnyRef::Workspace).ok_or_else(gone)
         };
         if let Command::Run {
@@ -2210,7 +2208,7 @@ impl Session {
                             "this runs in{pane} a pane of the server it would stop, with everything \
                              else in it; force-kill-server stops it anyway"
                         );
-                        return Err(fail("own_server", message));
+                        return Err(fail(Code::OwnServer, message));
                     }
                     let people = (self.views.values())
                         .filter(|v| v.kind == ClientKind::Terminal)
@@ -2223,7 +2221,7 @@ impl Session {
                         let message = format!(
                             "{who} attached to this server; force-kill-server stops it anyway"
                         );
-                        return Err(fail("people_attached", message));
+                        return Err(fail(Code::PeopleAttached, message));
                     }
                 }
                 let reason = match origin {
@@ -2365,7 +2363,7 @@ impl Session {
                         {
                             let message =
                                 format!("{}x{} is too big for a pane", size.cols(), size.rows());
-                            return Err(fail("size", message));
+                            return Err(fail(Code::Size, message));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
                         let target = self.any_target(target)?;
@@ -2390,7 +2388,7 @@ impl Session {
                                         "{tab} cannot show its {} panes at that size; close some, or choose a bigger one",
                                         root.panes().len()
                                     );
-                                    return Err(fail("size", message));
+                                    return Err(fail(Code::Size, message));
                                 }
                             }
                         }
@@ -2404,7 +2402,7 @@ impl Session {
                             let message = format!(
                                 "{client} has a terminal, which sets its size; resize sizes headless clients"
                             );
-                            return Err(fail("not_headless", message));
+                            return Err(fail(Code::NotHeadless, message));
                         }
                         self.resize(client, size.rows(), size.cols());
                     }
@@ -2413,7 +2411,7 @@ impl Session {
             }
             Command::Wait { .. } | Command::Events { .. } | Command::Grant { .. } => {
                 let message = "wait, events and grant run from the command line";
-                Err(fail("cli_only", message))
+                Err(fail(Code::CliOnly, message))
             }
             Command::DumpLayout { target } => {
                 let only = match target {
@@ -2439,7 +2437,7 @@ impl Session {
                         rows.saturating_sub(1),
                         cols.saturating_sub(1)
                     );
-                    return Err(fail("mouse", message));
+                    return Err(fail(Code::Mouse, message));
                 }
                 let mut report = Vec::new();
                 let event = |action, button| fux_vt::keys::mouse::MouseEvent {
@@ -2475,7 +2473,7 @@ impl Session {
                         "the program in {} asked for X10 mouse reports: presses alone, no releases or wheel",
                         p.id
                     );
-                    return Err(fail("mouse", message));
+                    return Err(fail(Code::Mouse, message));
                 }
                 for event in events {
                     let release = event.action == Release;
@@ -2493,7 +2491,7 @@ impl Session {
                                 "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
                             ),
                         };
-                        return Err(fail("mouse", message));
+                        return Err(fail(Code::Mouse, message));
                     }
                 }
                 p.note_input();
@@ -2550,7 +2548,7 @@ impl Session {
             &Command::Signal { target, signal, .. } => {
                 let group = self.signalled(target)?;
                 fuxix::process::kill_group(group, signal)
-                    .map_err(|e| fail("signal", format!("sending the signal: {e}")))?;
+                    .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))?;
                 Ok(String::new())
             }
             // From the command line each says what it closed, so a script
@@ -2622,7 +2620,7 @@ impl Session {
                         } else {
                             let message =
                                 format!("{pane} has no border to move {}", direction.name());
-                            Err(fail("nothing_there", message))
+                            Err(fail(Code::NothingThere, message))
                         }
                     }
                     PaneResize::To(axis, extent) => self.resize_pane_to(pane, area, axis, extent),
@@ -2677,7 +2675,7 @@ impl Session {
                 // each client's next paint.
                 self.config
                     .set(option, value)
-                    .map_err(|m| fail("config", m))?;
+                    .map_err(|m| fail(Code::Config, m))?;
                 self.configured();
                 Ok(String::new())
             }
@@ -2722,7 +2720,7 @@ impl Session {
                     (None, Here::Client(client, place)) => (client, place),
                     (None, Here::Cli(..)) => {
                         return Err(fail(
-                            "no_target",
+                            Code::NoTarget,
                             "this acts on a client's screen: name one (`str c1 client`; `fux ls` lists them)",
                         ));
                     }
@@ -2928,12 +2926,14 @@ impl Session {
                 let next = round(&panes, index.unwrap_or(0), toward);
                 *next.ok_or(Error::OnlyOne(Kind::Pane))?
             }
-            PanePick::Last => last.ok_or_else(|| fail("no_pane", "no previously focused pane"))?,
+            PanePick::Last => {
+                last.ok_or_else(|| fail(Code::NoPane, "no previously focused pane"))?
+            }
             PanePick::Toward(direction) => {
                 let (root, from) = tab
                     .root()
                     .zip(current)
-                    .ok_or_else(|| fail("no_pane", "the tab is empty"))?;
+                    .ok_or_else(|| fail(Code::NoPane, "the tab is empty"))?;
                 let placement = layout::place(root, Self::pane_area(view));
                 layout::neighbor(&placement, from, direction)
                     .ok_or(Error::NoNeighbor { from, direction })?
@@ -3137,7 +3137,7 @@ impl Session {
             None => {
                 let (target, fields) = (describe(target), names.join(", "));
                 let message = format!("{target} has no field {field:?}; it has {fields}");
-                return Err(fail("no_field", message));
+                return Err(fail(Code::NoField, message));
             }
         };
         drop(names);
@@ -3279,13 +3279,13 @@ fn new_pane(
         Start::Shell(cmd, _) => {
             let fish = basename(&shell_program) == "fish";
             let mut line = crate::words::shell_line(cmd, fish)
-                .map_err(|m| fail("usage", m))?
+                .map_err(|m| fail(Code::Usage, m))?
                 .into_bytes();
             line.push(b'\r');
             let deadline = crate::after(Instant::now(), TYPE_WAIT);
             Some(
                 Typed::new(line, deadline)
-                    .ok_or_else(|| fail("too_long", "the command line is too long to type"))?,
+                    .ok_or_else(|| fail(Code::TooLong, "the command line is too long to type"))?,
             )
         }
     };
@@ -3313,17 +3313,17 @@ fn new_pane(
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
-        return Err(fail("bad_name", "a name cannot be empty or blank"));
+        return Err(fail(Code::BadName, "a name cannot be empty or blank"));
     }
     // Control characters, and the invisible ones that change how text
     // around them shows (zero-width, direction overrides).
     let invisible = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
     if name.chars().any(|c| c.is_control() || invisible(c)) {
         let message = "a name cannot contain control or invisible characters";
-        return Err(fail("bad_name", message));
+        return Err(fail(Code::BadName, message));
     }
     if name.len() > 256 {
-        return Err(fail("bad_name", "a name is at most 256 bytes"));
+        return Err(fail(Code::BadName, "a name is at most 256 bytes"));
     }
     Ok(())
 }
@@ -4338,7 +4338,7 @@ mod tests {
         ));
         assert!(matches!(
             run("str nope 1 set")?.as_slice(),
-            [Err(e)] if e.code() == "config"
+            [Err(e)] if e.code() == Code::Config
         ));
         let kill = Command::Kill {
             target: AnyRef::Pane(PaneId::of(9)),
@@ -4349,7 +4349,7 @@ mod tests {
         ));
         assert!(matches!(
             s.attach(10, 40, Some("%1")),
-            Err(e) if e.code() == "no_workspace"
+            Err(e) if e.code() == Code::NoWorkspace
         ));
         assert!(matches!(
             s.attach(10, 40, Some("+x")),

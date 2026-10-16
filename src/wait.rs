@@ -13,6 +13,7 @@
 //! though drawn over since. A match counts only if it holds text the
 //! program printed since, never only the echo of what was typed
 //! (`crate::classify`).
+use crate::code::Code;
 use crate::command::{AnyRef, CaptureView, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
@@ -21,6 +22,7 @@ use crate::pane::{Pane, Start};
 use crate::process::Ended;
 use crate::protocol::{End, Reply};
 use crate::session::Session;
+use std::num::NonZeroU8;
 use std::time::Instant;
 
 /// The exit statuses a wait ends with, besides 0 (what it waited for came)
@@ -271,10 +273,15 @@ impl Waiting {
                 End::Done | End::Answered { .. } => None,
             })
             .collect();
-        let end = match first.map(|a| (a.end.status(), a.end.code().unwrap_or_default())) {
+        let first = first.and_then(|a| Some((NonZeroU8::new(a.end.status())?, a.end.code()?)));
+        let end = match first {
             None => End::Done,
-            Some((status, code)) if why.is_empty() => End::answered(status, code),
-            Some((status, code)) => End::failed(status, code, why),
+            Some((status, code)) if why.is_empty() => End::Answered { status, code },
+            Some((status, code)) => End::Failed {
+                status,
+                code,
+                message: why,
+            },
         };
         Some(Reply {
             end,
@@ -298,21 +305,21 @@ enum Told {
 }
 
 impl Told {
-    /// The status a wait that ended so ends with, and the code that names
-    /// it.
-    fn status(&self) -> (u8, &'static str) {
+    /// The status a wait that ended so ends with, if not 0, and the code
+    /// that names it.
+    fn status(&self) -> Option<(u8, Code)> {
         match self {
             // As timeout(1): the program's own status, once it exits.
             Told::Found(Found::Exit(ended)) => {
                 let status = crate::process::shell_status(*ended);
-                (u8::try_from(status).unwrap_or(u8::MAX), "exited")
+                Some((u8::try_from(status).unwrap_or(u8::MAX), Code::Exited))
             }
-            Told::Found(Found::Stopped) => (STOPPED, "stopped"),
+            Told::Found(Found::Stopped) => Some((STOPPED, Code::Stopped)),
             Told::Found(Found::Text { .. } | Found::Gone | Found::Bell(_) | Found::Settled(_)) => {
-                (0, "")
+                None
             }
-            Told::Exited(..) | Told::Replaced => (EXITED, "exited"),
-            Told::TimedOut(_) => (TIMED_OUT, "timeout"),
+            Told::Exited(..) | Told::Replaced => Some((EXITED, Code::Exited)),
+            Told::TimedOut(_) => Some((TIMED_OUT, Code::Timeout)),
         }
     }
 }
@@ -323,16 +330,12 @@ impl Wait {
     /// wait's a failure.
     fn gone(&self, id: PaneId) -> Reply {
         if !self.until.contains(&Until::Settled) {
-            return failed(
-                id,
-                (GONE, "closed"),
-                String::new(),
-                format!("{id}: the pane closed"),
-            );
+            let message = format!("{id}: the pane closed");
+            return failed(id, (GONE, Code::Closed), String::new(), message);
         }
         let stdout = format!("{id} closed\n");
         let state = vec![("state", Json::str("closed"))];
-        answer(id, (GONE, "closed"), stdout, state, None)
+        answer(id, Some((GONE, Code::Closed)), stdout, state, None)
     }
 
     /// The outcome of a wait that ended so in `pane`.
@@ -368,7 +371,7 @@ impl Wait {
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
                 let state = crate::ready::state(pane, now);
                 let calm = self.limit().is_zero() || state != State::Busy;
-                return settled(state, if calm { (0, "") } else { status }, asked());
+                return settled(state, status.filter(|_| !calm), asked());
             }
             Told::Found(Found::Text { text, line }) => {
                 let fields = vec![
@@ -452,7 +455,8 @@ impl Wait {
                 let screen = screen.map(|screen| ("screen", Json::str(screen)));
                 answer(id, status, stdout, fields, screen)
             }
-            Err(message) => failed(id, status, stdout, message),
+            // A failure always has a status: its told one.
+            Err(message) => failed(id, status.unwrap_or((1, Code::Failed)), stdout, message),
         }
     }
 
@@ -461,7 +465,7 @@ impl Wait {
         &self,
         pane: &Pane,
         state: crate::ready::State,
-        status: (u8, &'static str),
+        status: Option<(u8, Code)>,
         body: String,
         since: Since,
     ) -> Reply {
@@ -476,9 +480,14 @@ impl Wait {
 
 /// A wait's failure in pane `id`, with its status and code: why, on
 /// stderr, beside what it prints. It leaves no answer, so no JSON.
-fn failed(id: PaneId, (status, code): (u8, &str), text: String, message: String) -> Reply {
+fn failed(id: PaneId, (status, code): (u8, Code), text: String, message: String) -> Reply {
+    let status = NonZeroU8::new(status).unwrap_or(NonZeroU8::MIN);
     Reply {
-        end: End::failed(status, code, message),
+        end: End::Failed {
+            status,
+            code,
+            message,
+        },
         text,
         ids: vec![AnyRef::Pane(id)],
         ..Reply::default()
@@ -489,17 +498,20 @@ fn failed(id: PaneId, (status, code): (u8, &str), text: String, message: String)
 /// then `last`, if any.
 fn answer(
     id: PaneId,
-    (status, code): (u8, &str),
+    status: Option<(u8, Code)>,
     stdout: String,
     fields: Vec<(&'static str, Json<'static>)>,
     last: Option<(&'static str, Json<'static>)>,
 ) -> Reply {
     let mut all = vec![("pane", Json::str(id.to_string()))];
     all.extend(fields);
-    all.push(("status", Json::Number(i64::from(status))));
+    all.push((
+        "status",
+        Json::Number(i64::from(status.map_or(0, |(s, _)| s))),
+    ));
     all.extend(last);
     Reply {
-        end: End::answered(status, code),
+        end: status.map_or(End::Done, |(status, code)| End::answered(status, code)),
         text: stdout,
         json: format!("{}\n", Json::Object(all).render()),
         ids: vec![AnyRef::Pane(id)],

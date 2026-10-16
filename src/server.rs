@@ -2,6 +2,7 @@
 //! macOS), one `poll` loop over the listening socket, a signal pipe, every
 //! client and every pane's PTY.
 use crate::bytes::ByteQueue;
+use crate::code::Code;
 use crate::events::{Event, Snapshot, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::json::Json;
@@ -716,7 +717,7 @@ fn grant(
     (workspace, socket, revoke): (Option<crate::command::WsRef>, String, bool),
     cwd: Option<PathBuf>,
 ) -> Reply {
-    let failed = |stderr: String| Reply::failed("grant", stderr);
+    let failed = |stderr: String| Reply::failed(Code::Grant, stderr);
     let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
     if revoke {
         let before = grants.len();
@@ -1062,11 +1063,12 @@ impl Server {
             if over {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
                 let gone = Reply {
-                    end: End::failed(
-                        crate::wait::GONE,
-                        "gone",
-                        "everything it watched has closed",
-                    ),
+                    end: End::Failed {
+                        status: std::num::NonZeroU8::new(crate::wait::GONE)
+                            .unwrap_or(std::num::NonZeroU8::MIN),
+                        code: Code::Gone,
+                        message: "everything it watched has closed".into(),
+                    },
                     ..Reply::default()
                 };
                 conn.answer(&mut self.session, gone);
@@ -1078,7 +1080,7 @@ impl Server {
             if conn.out.len() > crate::events::BACKLOG {
                 let lost = Event::stream("lost", Vec::new()).line(subscription.json);
                 ServerFrame::split_into(lost.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let lost = Reply::failed("lost", "events: the reader fell too far behind");
+                let lost = Reply::failed(Code::Lost, "events: the reader fell too far behind");
                 conn.answer(&mut self.session, lost);
                 continue;
             }
@@ -1727,9 +1729,10 @@ impl Server {
         {
             let outcome = match scope {
                 // `fux grant` from a granted socket: refused.
-                Some(_) => {
-                    Reply::failed("not_granted", "a socket `grant` made cannot grant another")
-                }
+                Some(_) => Reply::failed(
+                    Code::NotGranted,
+                    "a socket `grant` made cannot grant another",
+                ),
                 None => {
                     // What came through a revoked grant ends.
                     self.revoked |= revoke;
@@ -1742,7 +1745,7 @@ impl Server {
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         if let Some(c) = client.filter(|c| scope.is_none() && !session.views.contains_key(c)) {
-            let outcome = Reply::failed("no_client", format!("no client {c}"));
+            let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
             conn.answer(session, outcome);
             return;
         }

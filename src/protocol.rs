@@ -11,6 +11,7 @@
 
 use crate::act::Act;
 use crate::bytes::ByteQueue;
+use crate::code::Code;
 use crate::command::{AnyRef, Command};
 use crate::id::ClientId;
 use crate::wire::{Wire, wire_enum, wire_struct};
@@ -364,29 +365,26 @@ pub enum End {
     /// failure: a wait met by its program's exit (its status), or a pane
     /// said as it stands (4 closed, 7 reading short of the text, 124 still
     /// busy).
-    Answered { status: NonZeroU8, code: String },
-    /// Failed, with its status, its stable code and why.
+    Answered { status: NonZeroU8, code: Code },
+    /// Failed, with its status, its code and why.
     Failed {
         status: NonZeroU8,
-        code: String,
+        code: Code,
         message: String,
     },
 }
 
 impl End {
     /// An answer with exit status `status`, which `code` names.
-    pub fn answered(status: u8, code: &str) -> End {
-        NonZeroU8::new(status).map_or(End::Done, |status| End::Answered {
-            status,
-            code: code.to_owned(),
-        })
+    pub fn answered(status: u8, code: Code) -> End {
+        NonZeroU8::new(status).map_or(End::Done, |status| End::Answered { status, code })
     }
 
-    /// A failure with exit status `status` (1 if 0 is given), of kind `code`.
-    pub fn failed(status: u8, code: &str, message: impl Into<String>) -> End {
+    /// A failure of kind `code`, with its exit status.
+    pub fn failed(code: Code, message: impl Into<String>) -> End {
         End::Failed {
-            status: NonZeroU8::new(status).unwrap_or(NonZeroU8::MIN),
-            code: code.to_owned(),
+            status: code.status(),
+            code,
             message: message.into(),
         }
     }
@@ -400,19 +398,19 @@ impl End {
     }
 
     /// The code that names its status, if it has one.
-    pub fn code(&self) -> Option<&str> {
+    pub fn code(&self) -> Option<Code> {
         match self {
             End::Done => None,
-            End::Answered { code, .. } | End::Failed { code, .. } => Some(code),
+            End::Answered { code, .. } | End::Failed { code, .. } => Some(*code),
         }
     }
 }
 
 impl Reply {
-    /// A failure of kind `code`: status 1, and why.
-    pub fn failed(code: &str, message: impl Into<String>) -> Reply {
+    /// A failure of kind `code`, and why.
+    pub fn failed(code: Code, message: impl Into<String>) -> Reply {
         Reply {
-            end: End::failed(1, code, message),
+            end: End::failed(code, message),
             ..Reply::default()
         }
     }

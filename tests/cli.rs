@@ -68,7 +68,8 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    assert_eq!(refused.status, 1);
+    // A usage error, as its code says: status 2.
+    assert_eq!(refused.status, 2);
     assert!(
         refused.stderr.contains("control character"),
         "{}",

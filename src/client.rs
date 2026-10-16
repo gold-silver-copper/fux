@@ -3,6 +3,7 @@
 //! painting its terminal (or relaying the paints, if it did not take it);
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
+use crate::code::Code;
 use crate::decode::Input;
 use crate::door::Link;
 use crate::keymap::{Held, Keymap};
@@ -61,15 +62,17 @@ pub enum Error {
 
 impl Error {
     /// What kind of failure it is, as `--json` names it.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            Error::Socket(crate::socket::Error::NoServer(_)) | Error::Connect { .. } => "no_server",
-            Error::Mismatch(_) => "mismatch",
+            Error::Socket(crate::socket::Error::NoServer(_)) | Error::Connect { .. } => {
+                Code::NoServer
+            }
+            Error::Mismatch(_) => Code::Mismatch,
             Error::Socket(_)
             | Error::Refused(_)
             | Error::Protocol(_)
             | Error::NotATerminal
-            | Error::Failed(_) => "client",
+            | Error::Failed(_) => Code::Client,
         }
     }
 }

@@ -18,6 +18,9 @@ macro_rules! codes {
         }
 
         impl Code {
+            /// Every code but a host's, in order.
+            pub const ALL: &[Code] = &[$(Code::$variant),*];
+
             /// The code's name.
             pub fn name(self) -> &'static str {
                 match self {
