@@ -51,6 +51,17 @@ impl std::fmt::Display for AnyRef {
     }
 }
 
+/// `%N`, `@N` or `+N`: the id of the kind its sigil says.
+impl std::str::FromStr for AnyRef {
+    type Err = ();
+    fn from_str(text: &str) -> Result<AnyRef, ()> {
+        (text.parse().map(AnyRef::Pane))
+            .or_else(|_| text.parse().map(AnyRef::Tab))
+            .or_else(|_| text.parse().map(AnyRef::Workspace))
+            .map_err(drop)
+    }
+}
+
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {

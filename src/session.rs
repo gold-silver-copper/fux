@@ -1026,10 +1026,7 @@ impl Session {
                 }
             }
         };
-        let id = (text.parse().map(AnyRef::Pane))
-            .or_else(|_| text.parse().map(AnyRef::Tab))
-            .or_else(|_| text.parse().map(AnyRef::Workspace));
-        if let Ok(id) = id {
+        if let Ok(id) = text.parse() {
             return self.stands_for(id, text, kind);
         }
         match kind {

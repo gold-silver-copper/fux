@@ -592,17 +592,6 @@ pub fn opens(word: &str) -> bool {
     )
 }
 
-/// The id `text` gives, for `id`.
-fn asked_id(text: &str) -> Result<crate::command::AnyRef, Failure> {
-    let bad = || fail(Code::BadValue, format!("{text:?} is not %N, @N or +N"));
-    match text.chars().next() {
-        Some('%') => text.parse().map(AnyRef::Pane).map_err(|_| bad()),
-        Some('@') => text.parse().map(AnyRef::Tab).map_err(|_| bad()),
-        Some('+') => text.parse().map(AnyRef::Workspace).map_err(|_| bad()),
-        _ => Err(bad()),
-    }
-}
-
 impl fuxth::Host for Host<'_> {
     type Value = Fux;
     type Request = Ask;
@@ -742,7 +731,13 @@ impl fuxth::Host for Host<'_> {
                             place @ (WsRef::Id(_) | WsRef::Name(_)) => place,
                         })
                     }
-                    "id" => built.ids.push(asked_id(&string(name, &v)?)?),
+                    "id" => {
+                        let text = string(name, &v)?;
+                        let bad = format!("{text:?} is not %N, @N or +N");
+                        built
+                            .ids
+                            .push(text.parse().map_err(|()| fail(Code::BadValue, bad))?);
+                    }
                     "log-to" => built.log = Some(string(name, &v)?),
                     _ => built.history = Some(count(name, &v)?),
                 }

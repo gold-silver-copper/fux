@@ -368,32 +368,27 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     let mut out = Vec::with_capacity(tokens.len());
     let mut after: Option<&str> = None;
     for token in tokens {
-        let word = match token.text.chars().next() {
-            Some('%') => "pane",
-            Some('@') => "tab",
-            Some('+') => "workspace",
-            Some(_) | None => "",
-        };
-        let id = token.text.len() > 1 && token.text.chars().skip(1).all(|c| c.is_ascii_digit());
-        let handle = id && !word.is_empty();
-        match after {
-            Some("define" | "let") if handle => {
+        let id = token.text.parse::<AnyRef>().ok();
+        match (after, id) {
+            (Some("define" | "let"), Some(id)) => {
                 return Err(Failed::new(
                     Code::BadName,
                     format!(
-                        "{}: {}: cannot be defined: it names a {word}",
-                        token.place, token.text
+                        "{}: {}: cannot be defined: it names a {}",
+                        token.place,
+                        token.text,
+                        id.kind().name()
                     ),
                 ));
             }
-            None if handle => {
+            (None, Some(id)) => {
                 let at = |text: &str| Token {
                     text: text.into(),
                     place: token.place.clone(),
                 };
-                out.extend([at("str"), token.clone(), at(word)]);
+                out.extend([at("str"), token.clone(), at(id.kind().name())]);
             }
-            Some(_) | None => out.push(token.clone()),
+            (Some(_) | None, _) => out.push(token.clone()),
         }
         after = match (&*token.text, after) {
             (text @ ("str" | "define" | "let"), None) => Some(text),
