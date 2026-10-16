@@ -199,11 +199,6 @@ fn in_directory(name: &str) -> Result<SocketPath, Error> {
     checked(&path.to_string_lossy(), "the socket's directory")
 }
 
-/// Longest socket path, in bytes, that `sockaddr_un` holds with its NUL.
-pub fn max_path_bytes() -> usize {
-    if cfg!(target_os = "linux") { 107 } else { 103 }
-}
-
 fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     if value.is_empty() {
         return Err(Error::Refused(format!(
@@ -241,7 +236,7 @@ fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
             "{from} is {value:?}; it must name a socket file in a directory below /"
         ));
     };
-    let limit = max_path_bytes();
+    let limit = fuxix::socket::max_path_len();
     if path.as_os_str().len() > limit {
         return refused(format!(
             "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
@@ -508,7 +503,7 @@ mod tests {
         assert!(checked("/s.sock", "X").is_err());
         let long: String = "/d/"
             .chars()
-            .chain(std::iter::repeat_n('a', max_path_bytes()))
+            .chain(std::iter::repeat_n('a', fuxix::socket::max_path_len()))
             .collect();
         let too_long = checked(&long, "X");
         assert!(too_long.is_err_and(|e| e.to_string().contains("limit")));

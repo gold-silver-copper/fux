@@ -22,8 +22,16 @@ pub fn stream() -> Result<OwnedFd> {
     Ok(socket)
 }
 
+/// The longest path a socket address holds, in bytes: its `sun_path`, less
+/// the path's NUL (107 on Linux and Android, 103 on macOS).
+pub fn max_path_len() -> usize {
+    // SAFETY: an all-zero sockaddr_un is a valid, empty one.
+    let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_path.len().saturating_sub(1)
+}
+
 /// `path` as a socket address, and the address's length. A path with a
-/// NUL, or too long for the address, is refused.
+/// NUL, or longer than [`max_path_len`], is refused.
 fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.contains(&0) {
@@ -31,8 +39,7 @@ fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
     }
     // SAFETY: an all-zero sockaddr_un is a valid, empty one.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    // The path and its NUL must fit.
-    if bytes.len() >= address.sun_path.len() {
+    if bytes.len() > max_path_len() {
         return Err(Errno::NAMETOOLONG);
     }
     address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| Errno::INVAL)?;

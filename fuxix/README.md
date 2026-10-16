@@ -53,7 +53,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `echoes`, `line_mode` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, `ECHO` and `ICANON` in `c_lflag` | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
-| `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
+| `socket::stream`, `bind`, `listen`, `connect`, `max_path_len` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
 | `socket::peer_uid` | `SO_PEERCRED` | `getpeereid` | `peer_cred` is unstable |
 | `file::pin` | `open(O_PATH \| O_NOFOLLOW)` | none | `O_PATH` has no name in std |
 
