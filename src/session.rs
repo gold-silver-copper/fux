@@ -2769,13 +2769,8 @@ impl Session {
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
-                let side = match direction {
-                    Direction::Right | Direction::Down => Side::After,
-                    Direction::Left | Direction::Up => Side::Before,
-                };
-                let axis = Axis::of(direction);
                 tab_of(&mut self.workspaces, pane)?
-                    .edit(|root| layout::move_beside(root, pane, destination, axis, side));
+                    .edit(|root| layout::move_beside(root, pane, destination, direction));
                 return Ok(String::new());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),

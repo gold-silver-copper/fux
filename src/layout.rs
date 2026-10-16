@@ -382,6 +382,16 @@ pub enum Side {
     After,
 }
 
+impl Side {
+    /// The side `direction` points to, along its axis.
+    pub fn of(direction: Direction) -> Side {
+        match direction {
+            Direction::Left | Direction::Up => Side::Before,
+            Direction::Right | Direction::Down => Side::After,
+        }
+    }
+}
+
 impl Tree {
     /// Adds `new` beside `target`, on `side` of it, along `axis`. A split
     /// already along `axis` takes it as a sibling sharing the target's
@@ -399,14 +409,14 @@ impl Tree {
     }
 }
 
-/// Moves `pane` beside `target`, as `Tree::split` puts a new one, in a
-/// tree holding both. False, the tree as it was, otherwise.
+/// Moves `pane` beside `target`, on the side `direction` points to, as
+/// `Tree::split` puts a new one, in a tree holding both. False, the tree as
+/// it was, otherwise.
 pub fn move_beside(
     root: &mut Option<Tree>,
     pane: PaneId,
     target: PaneId,
-    axis: Axis,
-    side: Side,
+    direction: Direction,
 ) -> bool {
     let both = root
         .as_ref()
@@ -417,7 +427,7 @@ pub fn move_beside(
     // `target` is left, so the tree is too.
     remove(root, pane);
     root.as_mut()
-        .is_some_and(|r| r.split(target, pane, axis, side))
+        .is_some_and(|r| r.split(target, pane, Axis::of(direction), Side::of(direction)))
 }
 
 /// Removes a pane. A split left with one child becomes that child, merging
@@ -702,19 +712,12 @@ pub fn resize_to(root: &Tree, area: Rect, pane: PaneId, axis: Axis, len: u16) ->
         // side of its own to give from.
         let placed = place(&tree, area);
         let growing = directions.iter().map(|&direction| (pane, direction));
-        let neighbours = directions
-            .iter()
+        // Each of the axis's directions with the other, back from it.
+        let [start, end] = directions;
+        let neighbours = [(start, end), (end, start)]
+            .into_iter()
             .filter(|_| now > len)
-            .filter_map(|&direction| {
-                let other = neighbor(&placed, pane, direction)?;
-                let back = match direction {
-                    Direction::Left => Direction::Right,
-                    Direction::Right => Direction::Left,
-                    Direction::Up => Direction::Down,
-                    Direction::Down => Direction::Up,
-                };
-                Some((other, back))
-            });
+            .filter_map(|(direction, back)| Some((neighbor(&placed, pane, direction)?, back)));
         let tried = growing.chain(neighbours).filter_map(|(which, direction)| {
             let mut moved = tree.clone();
             resize(&mut moved, area, which, direction, amount).then_some(())?;
@@ -769,7 +772,7 @@ impl Split {
         if below == Some(true) || axis != Axis::of(direction) {
             return below;
         }
-        let toward_start = matches!(direction, Direction::Left | Direction::Up);
+        let toward_start = Side::of(direction) == Side::Before;
         // Grow toward the direction, taking from the siblings that way,
         // nearest first, each down to its least; else shrink from the far
         // side, moving the other border the same way.
@@ -993,45 +996,15 @@ mod tests {
     #[test]
     fn moving_beside_needs_both_panes_in_the_tree() {
         let mut root = Some(tree());
-        assert!(move_beside(
-            &mut root,
-            p(0),
-            p(1),
-            Axis::Vertical,
-            Side::After
-        ));
+        assert!(move_beside(&mut root, p(0), p(1), Direction::Down));
         assert_eq!(root.as_ref().map(Tree::panes), Some(vec![p(1), p(0)]));
         let before = root.clone();
-        assert!(!move_beside(
-            &mut root,
-            p(0),
-            p(9),
-            Axis::Vertical,
-            Side::After
-        ));
-        assert!(!move_beside(
-            &mut root,
-            p(9),
-            p(0),
-            Axis::Vertical,
-            Side::After
-        ));
-        assert!(!move_beside(
-            &mut root,
-            p(0),
-            p(0),
-            Axis::Vertical,
-            Side::After
-        ));
+        assert!(!move_beside(&mut root, p(0), p(9), Direction::Down));
+        assert!(!move_beside(&mut root, p(9), p(0), Direction::Down));
+        assert!(!move_beside(&mut root, p(0), p(0), Direction::Down));
         assert_eq!(root, before);
         let mut empty = None;
-        assert!(!move_beside(
-            &mut empty,
-            p(0),
-            p(1),
-            Axis::Vertical,
-            Side::After
-        ));
+        assert!(!move_beside(&mut empty, p(0), p(1), Direction::Down));
         assert_eq!(empty, None);
     }
 
