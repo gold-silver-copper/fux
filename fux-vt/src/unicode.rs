@@ -39,44 +39,35 @@ pub fn continues_cluster(cluster: &str, c: char) -> bool {
     Cluster::of(cluster).push(c)
 }
 
-/// Grapheme_Cluster_Break, numbered as the generated tables store it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Break {
-    #[default]
-    Other,
-    Cr,
-    Lf,
-    Control,
-    Extend,
-    Zwj,
-    RegionalIndicator,
-    Prepend,
-    SpacingMark,
-    L,
-    V,
-    T,
-    Lv,
-    Lvt,
+closed! {
+    /// Grapheme_Cluster_Break, numbered as the generated tables store it:
+    /// in the order declared, which is `fux-vt/gen`'s `BREAKS`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum Break {
+        #[default]
+        Other,
+        Cr,
+        Lf,
+        Control,
+        Extend,
+        Zwj,
+        RegionalIndicator,
+        Prepend,
+        SpacingMark,
+        L,
+        V,
+        T,
+        Lv,
+        Lvt,
+    }
 }
 
 impl Break {
+    /// The kind the low four bits of `bits` number; a number past the last
+    /// is `Other`.
     fn of(bits: u8) -> Self {
-        match bits & 0x0f {
-            1 => Self::Cr,
-            2 => Self::Lf,
-            3 => Self::Control,
-            4 => Self::Extend,
-            5 => Self::Zwj,
-            6 => Self::RegionalIndicator,
-            7 => Self::Prepend,
-            8 => Self::SpacingMark,
-            9 => Self::L,
-            10 => Self::V,
-            11 => Self::T,
-            12 => Self::Lv,
-            13 => Self::Lvt,
-            _ => Self::Other,
-        }
+        let kind = Self::ALL.get(usize::from(bits & 0x0f));
+        kind.copied().unwrap_or_default()
     }
 }
 
