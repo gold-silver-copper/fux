@@ -867,8 +867,7 @@ pub fn configure(
 /// server.
 pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| Failed::new(Code::Read, format!("{shown}: {e}")))?;
+    let text = read_file(path, SOURCE_MAX)?;
     let context = crate::client::context();
     let mut keymap = Keymap::default();
     run_quiet(
@@ -1017,14 +1016,12 @@ impl Asks for Layout<'_> {
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     let tokens = match args {
         [] => fuxth::token::arguments(&["attach"]),
-        // A program read whole, at most `SOURCE_MAX` bytes of it.
+        // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
-            fuxth::token::source("stdin", &source("stdin", std::io::stdin())?)?
+            fuxth::token::source("stdin", &read_text("stdin", std::io::stdin(), SOURCE_MAX)?)?
         }
         [file] if file.contains('/') || file.ends_with(".fux") => {
-            let opened =
-                std::fs::File::open(file).map_err(|e| read_failed(file, &e.to_string()))?;
-            fuxth::token::source(file, &source(file, opened)?)?
+            fuxth::token::source(file, &read_file(file.as_ref(), SOURCE_MAX)?)?
         }
         // A whole program in one word, as a shell passes `fux 'ls json'`.
         [line] if line.contains(char::is_whitespace) => fuxth::token::source("command line", line)?,
@@ -1078,28 +1075,37 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     }
 }
 
-/// The most a program read from a file or stdin may be.
-const SOURCE_MAX: u64 = 16 << 20;
+/// The most a program read from a file or stdin may be, and how that is
+/// said.
+const SOURCE_MAX: (usize, &str) = (16 << 20, "16 MiB: no program is that long");
 
 fn read_failed(name: &str, why: &str) -> Failed {
     Failed::new(Code::Read, format!("{name}: {why}"))
 }
 
-/// A program's text from `from`, which may be anything (`/dev/zero`): at
-/// most `SOURCE_MAX` bytes of UTF-8.
-fn source(name: &str, from: impl std::io::Read) -> Result<String, Failed> {
+/// The text read from `from`, which `name` names and which may be anything
+/// (`/dev/zero`): at most `limit` bytes of UTF-8, `said` saying how many.
+fn read_text(
+    name: &str,
+    from: impl std::io::Read,
+    (limit, said): (usize, &str),
+) -> Result<String, Failed> {
     let mut bytes = Vec::new();
     use std::io::Read;
-    from.take(SOURCE_MAX.saturating_add(1))
+    (from.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1)))
         .read_to_end(&mut bytes)
         .map_err(|e| read_failed(name, &e.to_string()))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > SOURCE_MAX {
-        return Err(read_failed(
-            name,
-            "more than 16 MiB: no program is that long",
-        ));
+    if bytes.len() > limit {
+        return Err(read_failed(name, &format!("more than {said}")));
     }
-    String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text: no fuxth program"))
+    String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
+}
+
+/// The text of the file at `path`, as `read_text` reads it.
+fn read_file(path: &std::path::Path, most: (usize, &str)) -> Result<String, Failed> {
+    let name = path.display().to_string();
+    let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
+    read_text(&name, file, most)
 }
 
 /// Output that keeps its first failure, so that a run whose output cannot

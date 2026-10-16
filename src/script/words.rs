@@ -206,17 +206,6 @@ pub const WORDS: &[Word] = &[
     word("Help", "check", 1, "file -- ", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),
 ];
 
-/// At most `limit` bytes of the file at `path`, and one more if it has
-/// them: never more is read, whatever it is (`/dev/zero`).
-fn bounded(path: &str, limit: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut read = Vec::new();
-    std::fs::File::open(path)?
-        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
-        .read_to_end(&mut read)?;
-    Ok(read)
-}
-
 /// A failure of a word's own: its code and why.
 fn fail(code: Code, message: impl Into<String>) -> Failure {
     Failure::new(code.into(), message)
@@ -949,16 +938,9 @@ impl fuxth::Host for Host<'_> {
                     "paste" => built.inputs.push(Input::Paste(string(name, &v)?)),
                     "paste-file" => {
                         let path = string(name, &v)?;
-                        let read = bounded(&path, INPUT_MAX)
-                            .map_err(|e| fail(Code::Paste, format!("{path}: {e}")))?;
-                        if read.len() > INPUT_MAX {
-                            return Err(fail(
-                                Code::Paste,
-                                format!("{path}: more than 900 KiB, the most one paste takes"),
-                            ));
-                        }
-                        let text = String::from_utf8(read)
-                            .map_err(|_| fail(Code::Paste, format!("{path}: not UTF-8 text")))?;
+                        let most = (INPUT_MAX, "900 KiB, the most one paste takes");
+                        let text = super::read_file(path.as_ref(), most)
+                            .map_err(|f| fail(Code::Paste, f.message))?;
                         built.inputs.push(Input::Paste(text));
                     }
                     // The input just before it, n times in all.
@@ -1493,9 +1475,7 @@ impl fuxth::Host for Host<'_> {
             "check" => {
                 let path = string(name, &next()?)?;
                 // Read as running it reads it, and refused alike.
-                let text = std::fs::File::open(&path)
-                    .map_err(|e| super::read_failed(&path, &e.to_string()))
-                    .and_then(|file| super::source(&path, file))
+                let text = super::read_file(path.as_ref(), super::SOURCE_MAX)
                     .map_err(|f| fail(Code::Read, f.message))?;
                 let tokens = fuxth::token::source(&path, &text)
                     .map_err(|e| fail(Code::Check, e.to_string()))?;
