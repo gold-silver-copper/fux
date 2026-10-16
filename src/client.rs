@@ -869,35 +869,19 @@ fn run_job(
     }
 }
 
-/// Attaches this terminal to the server until detach or the server's end.
-pub fn attach(socket: &SocketPath, attaching: Attaching) -> Result<(), Error> {
-    attach_as(socket, attaching, None)
-}
-
-/// Attaches a client with no terminal, of `size`, until the server ends it
-/// or a signal detaches it: its id goes to stdout as it attaches. It reads
-/// no keys, but takes those sent it (`send-keys` to a client) as typed.
-pub fn headless(
-    socket: &SocketPath,
-    attaching: Attaching,
-    size: fux_vt::Size,
-) -> Result<(), Error> {
-    attach_as(socket, attaching, Some(size))
-}
-
-/// Attaches this terminal, or a client with no terminal of `size`, and
-/// says why it detached on stdout: on a terminal that may be gone, where a
-/// hung-up one fails the write, and the detach is no less done.
-fn attach_as(
+/// Attaches this terminal (stdin, a terminal), or a client with no
+/// terminal of `size`, until detach or the server's end, and says why it
+/// detached on stdout: on a terminal that may be gone, where a hung-up one
+/// fails the write, and the detach is no less done. A client with no
+/// terminal says its id as it attaches; it reads no keys, but takes those
+/// sent it (`send-keys` to a client) as typed.
+pub fn attach(
     socket: &SocketPath,
     attaching: Attaching,
     size: Option<fux_vt::Size>,
 ) -> Result<(), Error> {
     let stdin = std::io::stdin();
     let terminal = size.is_none();
-    if terminal && !std::io::IsTerminal::is_terminal(&stdin) {
-        return Err(Error::NotATerminal);
-    }
     // A client with no terminal answers signals from the start. A
     // terminal's are caught once connected, so that ^C while connecting
     // still ends fux, and before it goes raw, so that no wait there misses
@@ -913,8 +897,7 @@ fn attach_as(
         Some(signals) => signals,
         None => Signals::new()?,
     };
-    let fallback = |n: u16| NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN);
-    let (rows, cols) = size.map_or_else(window_size, |s| (fallback(s.rows()), fallback(s.cols())));
+    let (rows, cols) = size.map_or_else(window_size, fux_vt::Size::nonzero);
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
         rows,

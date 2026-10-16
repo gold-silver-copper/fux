@@ -1347,14 +1347,18 @@ impl fuxth::Host for Host<'_> {
                 local(Local::Attach {
                     workspace,
                     read_only,
+                    size: None,
                 })
             }
             "headless" => {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
-                if cols == 0 || rows == 0 {
-                    return Err(out_of_range(name, "a size of at least 1 by 1"));
-                }
-                local(Local::Headless { cols, rows })
+                let size = fux_vt::Size::new(rows, cols)
+                    .map_err(|_| out_of_range(name, "a size of at least 1 by 1"))?;
+                local(Local::Attach {
+                    workspace: None,
+                    read_only: false,
+                    size: Some(size),
+                })
             }
             "focus" => {
                 let c = client(name, &next()?)?;

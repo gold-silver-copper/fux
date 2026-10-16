@@ -204,13 +204,11 @@ pub enum Then {
 /// What the client does itself.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Local {
+    /// This terminal, or a client of no terminal of `size`.
     Attach {
         workspace: Option<String>,
         read_only: bool,
-    },
-    Headless {
-        cols: u16,
-        rows: u16,
+        size: Option<fux_vt::Size>,
     },
     /// The server for what follows: its socket, by name or path.
     Server(Chosen),
@@ -811,14 +809,15 @@ fn local(
         Local::Attach {
             workspace,
             read_only,
+            size,
         } => {
-            if std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
+            if size.is_none() && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 let why = "this is a fux pane: attaching here would show fux inside itself \
                            (unset FUX_PANE to do it anyway)";
                 return Err(Failed::new(Code::Nested, why));
             }
             // Before a server is started for it, which would be left behind.
-            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            if size.is_none() && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 return Err(client_failed(crate::client::Error::NotATerminal));
             }
             let socket = started(server)?;
@@ -829,20 +828,7 @@ fn local(
                 keymap,
                 problem,
             };
-            crate::client::attach(&socket, attach).map_err(client_failed)?;
-        }
-        Local::Headless { cols, rows } => {
-            let socket = started(server)?;
-            let (keymap, problem) = configured(server);
-            let size = fux_vt::Size::new(*rows, *cols)
-                .map_err(|_| Failed::new(Code::Range, "headless: a size from 1 by 1"))?;
-            let attach = crate::client::Attaching {
-                workspace: None,
-                read_only: false,
-                keymap,
-                problem,
-            };
-            crate::client::headless(&socket, attach, size).map_err(client_failed)?;
+            crate::client::attach(&socket, attach, *size).map_err(client_failed)?;
         }
         Local::Start => {
             started(server)?;
@@ -977,8 +963,8 @@ impl Asks for Settings<'_> {
 /// key's, a saved session's.
 pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let word = match what {
-        Local::Attach { .. } => "attach",
-        Local::Headless { .. } => "headless",
+        Local::Attach { size: None, .. } => "attach",
+        Local::Attach { size: Some(_), .. } => "headless",
         Local::Server(_) => "server",
         Local::Start => "start",
         Local::Status => "status",
