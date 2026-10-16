@@ -466,11 +466,10 @@ struct Unit<'a, A> {
     code: &'a Steps<A>,
     /// The stack where the code starts: empty at the top level.
     start: State,
-    /// Whether it is the top level, whose `let` names it follows.
-    top: bool,
     /// What each definition does, worked out so far.
     known: &'a Known,
     /// The definition it is, if one: a call to itself uses its summary.
+    /// None is the top level, whose `let` names it follows.
     own: Option<usize>,
     /// The steps where a block starts: the first, every jump's target, and
     /// each step after a jump.
@@ -492,12 +491,10 @@ impl<'a, A> Unit<'a, A> {
                 starts.insert(at.saturating_add(1));
             }
         }
-        let top = std::ptr::eq(code, &program.main);
         Unit {
             program,
             code,
             start,
-            top,
             known,
             own,
             starts,
@@ -856,12 +853,12 @@ impl<'a, A> Unit<'a, A> {
             Op::GetLocal(slot) => state.push(named(&state.names, *slot)),
             Op::SetGlobal(slot) => {
                 let kinds = state.pop1()?;
-                if self.top {
+                if self.own.is_none() {
                     name(&mut state.globals, *slot, kinds);
                 }
             }
             Op::GetGlobal(slot) => {
-                let kinds = if self.top {
+                let kinds = if self.own.is_none() {
                     named(&state.globals, *slot)
                 } else {
                     ANY
