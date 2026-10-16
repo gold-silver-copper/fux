@@ -156,21 +156,16 @@ fn restore() {
 fn open(socket: &SocketPath) -> Result<Link, Error> {
     let door = crate::door::path(socket.path());
     // Said of the socket chosen, which a hint starts again.
-    let by_door = || {
-        crate::door::knock(socket.path()).map_err(|source| Error::Connect {
-            path: socket.path().to_owned(),
-            source,
-        })
+    let failed = |source| Error::Connect {
+        path: socket.path().to_owned(),
+        source,
     };
+    let by_door = || crate::door::knock(socket.path()).map_err(failed);
     match crate::socket::check_client_socket(socket) {
         Err(crate::socket::Error::NoServer(_)) if door.exists() => return by_door(),
         Err(error) => return Err(error.into()),
         Ok(()) => {}
     }
-    let failed = |source| Error::Connect {
-        path: socket.path().to_owned(),
-        source,
-    };
     let stream = match UnixStream::connect(socket.path()) {
         Ok(stream) => stream,
         Err(e) if e.kind() == ErrorKind::PermissionDenied && door.exists() => return by_door(),
