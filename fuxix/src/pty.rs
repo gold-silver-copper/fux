@@ -266,10 +266,10 @@ fn granted_master() -> Result<OwnedFd, Error> {
         }
         // SAFETY: grantpt takes a descriptor and touches no memory.
         let grant = || check(unsafe { libc::grantpt(master.as_raw_fd()) });
-        match watched(master.as_fd(), GRANT_LIMIT, grant) {
-            Watched::Done(granted) => return granted.map(|_| master).map_err(at("grantpt")),
-            // The master is /dev/null now; dropping it closes that.
-            Watched::Stalled => {}
+        let null = || std::fs::File::open("/dev/null");
+        // Stalled, the master is /dev/null now; dropping it closes that.
+        if let Some(granted) = watched(master.as_fd(), GRANT_LIMIT, null, grant) {
+            return granted.map(|_| master).map_err(at("grantpt"));
         }
     }
     Err(Error {
@@ -288,47 +288,28 @@ const ALLOCATE_TRIES: u32 = 4;
 #[cfg(target_os = "macos")]
 const GRANT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// What `watched` saw of its call.
-#[cfg(any(target_os = "macos", test))]
-enum Watched<T> {
-    /// It returned within the limit, and this is what it returned.
-    Done(T),
-    /// It had not returned within the limit, so `fd` was replaced with
-    /// `/dev/null`; whatever it returned is from `/dev/null`.
-    Stalled,
-}
-
 /// Runs `call`, a call on `fd` that could otherwise never return: if it has not
 /// returned within `limit`, a watchdog thread replaces `fd` with `/dev/null`, so
 /// the call, which the kernel keeps restarting, fails with `/dev/null`'s error
 /// and returns. The descriptor stays open throughout, as the caller holds it;
-/// only the file behind it changes.
+/// only the file behind it changes. What it returned within the limit; `None`
+/// if it stalled, whatever it returned being from `/dev/null`.
 ///
-/// `/dev/null` is opened before the call: a process out of descriptors, as
-/// one whose PTY allocation stalls may be, could not open it after. If it
-/// cannot be opened, or the watchdog cannot be started, `call` runs
-/// unwatched.
+/// `/dev/null` is opened, by `null`, before the call: a process out of
+/// descriptors, as one whose PTY allocation stalls may be, could not open it
+/// after. If it cannot be opened, or the watchdog cannot be started, `call`
+/// runs unwatched.
 #[cfg(any(target_os = "macos", test))]
 fn watched<T>(
     fd: std::os::fd::BorrowedFd<'_>,
     limit: std::time::Duration,
-    call: impl FnOnce() -> T,
-) -> Watched<T> {
-    watched_with(fd, limit, || std::fs::File::open("/dev/null"), call)
-}
-
-/// `watched`, with `/dev/null` opened by `null`, before `call` runs.
-#[cfg(any(target_os = "macos", test))]
-fn watched_with<T>(
-    fd: std::os::fd::BorrowedFd<'_>,
-    limit: std::time::Duration,
     null: impl FnOnce() -> std::io::Result<std::fs::File>,
     call: impl FnOnce() -> T,
-) -> Watched<T> {
+) -> Option<T> {
     use std::sync::{Arc, Condvar, Mutex, PoisonError};
     let raw = fd.as_raw_fd();
     let Ok(null) = null() else {
-        return Watched::Done(call());
+        return Some(call());
     };
     // (the call returned, fd was replaced), and the watchdog's wake-up.
     let shared = Arc::new((Mutex::new((false, false)), Condvar::new()));
@@ -363,11 +344,7 @@ fn watched_with<T>(
     if let Ok(watchdog) = watchdog {
         let _ = watchdog.join();
     }
-    if replaced {
-        Watched::Stalled
-    } else {
-        Watched::Done(result)
-    }
+    (!replaced).then_some(result)
 }
 
 /// Makes the descriptor `raw` refer to `null`, `/dev/null` opened already,
@@ -647,6 +624,10 @@ mod tests {
         Ok((meta.file_type().is_char_device(), meta.rdev()))
     }
 
+    fn null() -> std::io::Result<std::fs::File> {
+        std::fs::File::open("/dev/null")
+    }
+
     fn dev_null() -> std::result::Result<(bool, u64), String> {
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
         let meta = std::fs::metadata("/dev/null").map_err(|e| e.to_string())?;
@@ -659,8 +640,13 @@ mod tests {
     fn a_call_that_returns_in_time_keeps_its_descriptor() -> std::result::Result<(), String> {
         let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let before = behind(reader.as_fd())?;
-        let seen = watched(reader.as_fd(), std::time::Duration::from_secs(5), || 42);
-        assert!(matches!(seen, Watched::Done(42)));
+        let seen = watched(
+            reader.as_fd(),
+            std::time::Duration::from_secs(5),
+            null,
+            || 42,
+        );
+        assert_eq!(seen, Some(42));
         assert_eq!(behind(reader.as_fd())?, before);
         assert_ne!(before, dev_null()?);
         Ok(())
@@ -673,7 +659,7 @@ mod tests {
     fn dev_null_is_opened_before_the_call() -> std::result::Result<(), String> {
         let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let order = std::cell::RefCell::new(Vec::new());
-        let seen = watched_with(
+        let seen = watched(
             reader.as_fd(),
             std::time::Duration::from_millis(20),
             || {
@@ -685,16 +671,16 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(300));
             },
         );
-        assert!(matches!(seen, Watched::Stalled));
+        assert_eq!(seen, None);
         assert_eq!(*order.borrow(), ["open /dev/null", "call"]);
         // Unable to open it, the call runs unwatched.
-        let seen = watched_with(
+        let seen = watched(
             reader.as_fd(),
             std::time::Duration::from_millis(20),
             || Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
             || 7,
         );
-        assert!(matches!(seen, Watched::Done(7)));
+        assert_eq!(seen, Some(7));
         Ok(())
     }
 
@@ -704,11 +690,16 @@ mod tests {
     fn a_call_that_stalls_has_its_descriptor_replaced_with_dev_null()
     -> std::result::Result<(), String> {
         let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
-        let seen = watched(reader.as_fd(), std::time::Duration::from_millis(20), || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            42
-        });
-        assert!(matches!(seen, Watched::Stalled));
+        let seen = watched(
+            reader.as_fd(),
+            std::time::Duration::from_millis(20),
+            null,
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                42
+            },
+        );
+        assert_eq!(seen, None);
         assert_eq!(behind(reader.as_fd())?, dev_null()?);
         Ok(())
     }
