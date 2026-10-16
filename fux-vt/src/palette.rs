@@ -408,7 +408,7 @@ fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
 /// specification fux-vt cannot read leaves its colour and goes on to the
 /// next, as in xterm. A colour the program set is answered here; one it has
 /// not is asked of the host, with `events`.
-fn dynamic(
+pub(crate) fn dynamic(
     colours: &mut Option<Box<Colours>>,
     first: u8,
     rest: &[u8],

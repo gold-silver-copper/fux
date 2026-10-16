@@ -588,24 +588,6 @@ pub enum Event<'a> {
     },
 }
 
-/// The colour queries of an OSC 10 to 19, `command` its number and `rest`
-/// what follows it: each parameter is the next colour, and each `?` among
-/// them asks for that one (ctlseqs, "Operating System Commands").
-fn color_queries(command: &[u8], rest: &[u8], bel: bool, sink: &mut impl Sink) {
-    let Some(first) = std::str::from_utf8(command)
-        .ok()
-        .and_then(|n| n.parse::<u8>().ok())
-        .filter(|n| (10..=19).contains(n))
-    else {
-        return;
-    };
-    for (number, parameter) in (first..=19).zip(rest.split(|b| *b == b';')) {
-        if parameter == b"?" {
-            sink.event(Event::ColorQuery { number, bel });
-        }
-    }
-}
-
 /// A complete sequence fux-vt parsed but does not implement, so a host can
 /// log or answer it. Sequences cut short by their bounds (too many
 /// parameters or intermediates) are dropped without being reported.
@@ -1383,7 +1365,16 @@ impl Parser {
                     sink.event(Event::Clipboard { selection, data });
                 }
             }
-            _ => color_queries(command, rest, bel, sink),
+            // OSC 10 to 19 the palette did not read (it is off, or the
+            // number is written `010`) still ask the host for their
+            // colours; what they set is kept nowhere.
+            _ => {
+                let number = std::str::from_utf8(command).ok();
+                let number = number.and_then(|n| n.parse::<u8>().ok());
+                if let Some(first) = number.and_then(|n| n.checked_sub(10)).filter(|n| *n < 10) {
+                    crate::palette::dynamic(&mut None, first, rest, bel, true, sink);
+                }
+            }
         }
         Ok(())
     }
