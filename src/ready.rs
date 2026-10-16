@@ -1,7 +1,7 @@
 //! Whether a pane's program waits for its terminal: the moment an agent
 //! driving it should look. A program that wants input stops and reads its
 //! terminal, and fux, which runs it, can see that, as far as the system
-//! says (`fuxix::process::Host`, chosen when fux is built):
+//! says (`fuxix::process::activity`, as built for the system):
 //! - Linux and Android name what each thread of the terminal's foreground
 //!   group is blocked in: reading the terminal, polling it, waiting on
 //!   something else, or busy.
@@ -12,7 +12,7 @@
 //!   is taken as settled after a longer while, and said to be a guess.
 use crate::pane::{Pane, Process};
 use crate::process::Ended;
-use fuxix::process::{Activity, Host, Probe};
+use fuxix::process::Activity;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -97,7 +97,7 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         && commands.finished > 0
         && tty
             .as_deref()
-            .is_some_and(|tty| Host::reads_terminal(child.leader.pid(), tty));
+            .is_some_and(|tty| fuxix::process::reads_terminal(child.leader.pid(), tty));
     let activity = if left { Activity::Reading } else { activity };
     match activity {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Reading,
@@ -142,7 +142,7 @@ fn activity(
         };
         t.timed_reads(since)
     };
-    match tty.map(|tty| Host::activity(group, tty, leader)) {
+    match tty.map(|tty| fuxix::process::activity(group, tty, leader)) {
         // A read with a time limit is a poll: the program goes on alone
         // when it runs out.
         Some(Activity::Reading)

@@ -558,33 +558,6 @@ pub enum Activity {
     Unknown,
 }
 
-/// How the system tells what a terminal's programs are doing, chosen when
-/// fux is built: [`Host`].
-pub trait Probe {
-    /// What the programs in foreground group `group` of the terminal at
-    /// `tty` do: among `leader`'s own, else among this process's [`tree`].
-    fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity;
-    /// Whether process `pid` itself is blocked reading the terminal at
-    /// `tty`.
-    fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool;
-}
-
-/// The probe of Linux and Android: by each thread's system call.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub struct Linux;
-
-/// The probe of macOS: by whether each thread runs.
-#[cfg(target_os = "macos")]
-pub struct Macos;
-
-/// The probe of the system fux is built for.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub type Host = Linux;
-
-/// The probe of the system fux is built for.
-#[cfg(target_os = "macos")]
-pub type Host = Macos;
-
 /// What a blocked thread waits in, by its system call.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -835,10 +808,13 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
 }
 
 /// What the programs in foreground group `group` of the terminal at `tty`
-/// do: busy if one is; else reading if one waits for the terminal, polling
-/// if one polls it, waiting if they wait on something else.
+/// do, among `leader`'s own, else among this process's [`tree`]: busy if
+/// one is; else reading if one waits for the terminal, polling if one polls
+/// it, waiting if they wait on something else. Linux and Android tell by
+/// what each thread is blocked in, its system call
+/// (`/proc/PID/task/TID/syscall`).
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
+pub fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
     let in_group = |pid: &Pid| {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
@@ -878,60 +854,47 @@ fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
 
 /// Whether process `pid` itself is blocked reading the terminal at `tty`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
+pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
     process_activity(pid, tty) == Some(Activity::Reading)
-}
-
-/// Linux and Android: what each thread is blocked in, by its system call
-/// (`/proc/PID/task/TID/syscall`).
-#[cfg(any(target_os = "linux", target_os = "android"))]
-impl Probe for Linux {
-    fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
-        activity(group, tty, leader)
-    }
-
-    fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
-        reads_terminal(pid, tty)
-    }
 }
 
 /// macOS keeps what a thread is blocked in to itself, but says whether
 /// each runs or waits: busy while one of the group's runs (or waits on the
 /// disk, uninterruptible), idle once every one waits.
 #[cfg(target_os = "macos")]
-impl Probe for Macos {
-    fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
-        let mut pids: Vec<libc::pid_t> = vec![0; 1024];
-        let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
-            return Activity::Unknown;
-        };
-        // SAFETY: the buffer is `bytes` long and writable; the call says
-        // how many IDs it wrote.
-        let listed =
-            unsafe { libc::proc_listpgrppids(group.as_raw(), pids.as_mut_ptr().cast(), bytes) };
-        let Ok(listed) = usize::try_from(listed) else {
-            return Activity::Unknown;
-        };
-        pids.truncate(listed);
-        let seen: Vec<Option<bool>> = (pids.into_iter())
-            .filter_map(Pid::from_raw)
-            .filter_map(running)
-            .collect();
-        // None in the group (it is changing hands: a program starting or
-        // ending), or one runs: at work.
-        if seen.is_empty() || seen.contains(&Some(true)) {
-            Activity::Busy
-        } else if seen.contains(&None) {
-            Activity::Unknown
-        } else {
-            Activity::Idle
-        }
+pub fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
+    let mut pids: Vec<libc::pid_t> = vec![0; 1024];
+    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
+        return Activity::Unknown;
+    };
+    // SAFETY: the buffer is `bytes` long and writable; the call says
+    // how many IDs it wrote.
+    let listed =
+        unsafe { libc::proc_listpgrppids(group.as_raw(), pids.as_mut_ptr().cast(), bytes) };
+    let Ok(listed) = usize::try_from(listed) else {
+        return Activity::Unknown;
+    };
+    pids.truncate(listed);
+    let seen: Vec<Option<bool>> = (pids.into_iter())
+        .filter_map(Pid::from_raw)
+        .filter_map(running)
+        .collect();
+    // None in the group (it is changing hands: a program starting or
+    // ending), or one runs: at work.
+    if seen.is_empty() || seen.contains(&Some(true)) {
+        Activity::Busy
+    } else if seen.contains(&None) {
+        Activity::Unknown
+    } else {
+        Activity::Idle
     }
+}
 
-    /// What a waiting thread waits on is not said: never known to read.
-    fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
-        false
-    }
+/// Whether process `pid` itself is blocked reading the terminal at `tty`:
+/// never known on macOS, which does not say what a waiting thread waits on.
+#[cfg(target_os = "macos")]
+pub fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
+    false
 }
 
 /// A thread's recent use of the processor, in tenths of a percent, from
