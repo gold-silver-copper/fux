@@ -1,4 +1,4 @@
-//! What `capture-pane` and `capture-client` print: a screen's text, trimmed,
+//! What `capture` and `capture-client` print: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state if asked.
 use crate::command::CaptureView;
@@ -15,7 +15,7 @@ type Cells<'a> = Vec<(&'a str, Attributes)>;
 /// A capture as text, and as JSON if it was asked for too: read once.
 type Read = (String, Option<String>);
 
-/// A capture's form `--json` asks for: its JSON alone, or its text with
+/// A capture's form `json` asks for: its JSON alone, or its text with
 /// its JSON beside it.
 pub fn asked((text, form): Read, json: bool) -> Read {
     match json {
@@ -194,7 +194,7 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
 }
 
 /// The rows a capture reads, each with the columns of it it reads: the
-/// screen and `history` rows above it (of the main screen with `--main`), or
+/// screen and `history` rows above it (of the main screen with `main-screen`), or
 /// the last command's output between its marks: while one runs, its output
 /// so far, to the cursor.
 fn rows_of(
@@ -285,7 +285,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
     )
 }
 
-/// What a pane's program is doing, for `--json`: its foreground program,
+/// What a pane's program is doing, for `json`: its foreground program,
 /// the status it exited with, how long its screen has shown no change, and
 /// the modes
 /// that say how it takes input.
@@ -378,7 +378,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     ]
 }
 
-/// Where a picture is, for `--json`: its top row (negative once scrolled
+/// Where a picture is, for `json`: its top row (negative once scrolled
 /// above the screen), first column, the cells it covers, and its size in
 /// pixels.
 fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
@@ -393,7 +393,7 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
 }
 
 /// A capture as it is printed: its lines, trimmed unless `view.full`, in
-/// SGR with `view.styles`; and with `state` given, as `--json` prints it,
+/// SGR with `view.styles`; and with `state` given, as `json` prints it,
 /// an object naming what was captured, with its size, cursor, lines, their
 /// style runs with `view.styles`, and the state.
 fn print(
@@ -406,8 +406,8 @@ fn print(
     // What a selection is drawn with: reverse video, or a background
     // other than the screen's own.
     let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
-    // Blanks are trimmed, unless they show: highlighted with --marks,
-    // styled with --styles (as SGR; JSON's lines read alike either way, so
+    // Blanks are trimmed, unless they show: highlighted with `marks`,
+    // styled with `styles` (as SGR; JSON's lines read alike either way, so
     // the text's lines, trimmed again, are the JSON's). `view.full` keeps
     // them all.
     let trim = |lines: &mut Vec<Cells<'_>>, styled: bool| {
@@ -514,7 +514,7 @@ fn runs(line: &Cells<'_>) -> Json<'static> {
     Json::Array(runs)
 }
 
-/// Attributes as `--json` names them: the colours other than the default,
+/// Attributes as `json` names them: the colours other than the default,
 /// and the attributes set.
 fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
     let colour = |c: Color| match c {

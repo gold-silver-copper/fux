@@ -1,4 +1,4 @@
-//! A small JSON writer for `--json` output. Output only: fux never reads JSON.
+//! A small JSON writer for what `json` gives. Output only: fux never reads JSON.
 use std::borrow::Cow;
 use std::fmt::Write;
 

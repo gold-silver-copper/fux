@@ -123,8 +123,8 @@ pub enum Mode {
 pub enum ClientKind {
     /// A terminal, which says its size and sends keys.
     Terminal,
-    /// Nowhere a person sees (`fux attach --headless`): its size is set by
-    /// `fux resize -c`, and it sends no keys.
+    /// Nowhere a person sees (`COLS ROWS headless`): its size is set by
+    /// `resize-client`, and it sends no keys.
     Headless,
 }
 

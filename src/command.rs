@@ -58,14 +58,14 @@ pub enum Sibling {
     Previous,
 }
 
-/// Which tab or workspace `select-tab` or `select-workspace` picks.
+/// Which tab or workspace `show-tab` or `show-workspace` picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick<T> {
     Step(Sibling),
     Id(T),
 }
 
-/// Which pane `select-pane` picks.
+/// Which pane `focus` picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanePick {
     Step(Sibling),
@@ -90,11 +90,11 @@ pub enum SwapWith {
     Toward(Direction),
 }
 
-/// How a tab no client shows is laid out (`--size`, `fux resize`): `None`,
+/// How a tab no client shows is laid out (`size`, `resize`): `None`,
 /// on a client's screen.
 pub type Size = Option<fux_vt::Size>;
 
-/// A pane's new width or height (`resize-pane -x`, `-y`).
+/// A pane's new width or height (`resize-x`, `resize-y`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Extent {
     Cells(u16),
@@ -102,7 +102,7 @@ pub enum Extent {
     Percent(u8),
 }
 
-/// How `resize-pane` resizes a pane.
+/// How `resize-x`, `resize-y` and `move-border` resize a pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneResize {
     /// Moves the border toward `direction` by this many cells.
@@ -132,7 +132,7 @@ pub enum Input {
     Paste(String),
 }
 
-/// Which part of a pane's screen `capture-pane` prints, and how.
+/// Which part of a pane's screen `capture` prints, and how.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CaptureView {
     /// Every row as it is, blank rows at the end and all, rather than
@@ -144,7 +144,7 @@ pub struct CaptureView {
     pub rows: Option<(u16, u16)>,
     /// Columns `start..=end`, from 0.
     pub cols: Option<(u16, u16)>,
-    /// Colours and attributes, as SGR escapes, or with `--json` as runs.
+    /// Colours and attributes, as SGR escapes, or with `json` as runs.
     pub styles: bool,
     /// The main screen and its history, though a program holds the
     /// alternate one: what was printed before it took the screen.
@@ -232,7 +232,7 @@ pub enum Command {
         /// Where its shell starts (default: the caller's directory).
         cwd: Option<String>,
         env: Vec<(String, String)>,
-        /// The ids it makes, if asked for (`--id`, as layout files have).
+        /// The ids it makes, if asked for (`id`, as saved sessions have).
         ids: Vec<AnyRef>,
     },
     NewTab {

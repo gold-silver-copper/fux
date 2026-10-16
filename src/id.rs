@@ -80,7 +80,7 @@ impl FromStr for ClientId {
 /// one that would wrap round is refused. A copy taken for something being
 /// made is committed back once it is made, so that a failure part way uses
 /// none up.
-/// The last id of each kind given out, and the next asked for (`--id`):
+/// The last id of each kind given out, and the next asked for (`id`):
 /// ids count up, and none is given twice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Ids {

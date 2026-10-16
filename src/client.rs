@@ -61,7 +61,7 @@ pub enum Error {
 }
 
 impl Error {
-    /// What kind of failure it is, as `--json` names it.
+    /// What kind of failure it is: its code.
     pub fn code(&self) -> Code {
         match self {
             Error::Socket(crate::socket::Error::NoServer(_)) | Error::Connect { .. } => {

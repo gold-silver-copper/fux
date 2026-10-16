@@ -8,9 +8,9 @@ use std::ops::Range;
 /// How a split arranges its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
-    /// Side by side, divided by vertical separators (`split -h`).
+    /// Side by side, divided by vertical separators (`horizontal split`).
     Horizontal,
-    /// Stacked, divided by horizontal separators (`split -v`).
+    /// Stacked, divided by horizontal separators (`vertical split`).
     Vertical,
 }
 

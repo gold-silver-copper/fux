@@ -745,7 +745,7 @@ fn grant(
     }
     let checked = crate::socket::socket_path(crate::socket::Choice::Path(
         &path.to_string_lossy(),
-        "grant --socket",
+        "grant",
     ));
     let listening = match checked
         .map_err(Error::Socket)

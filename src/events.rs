@@ -1,5 +1,5 @@
 //! `fux events`: what happens in the session, a line each as it happens,
-//! for a script that would otherwise poll `fux ls --json`. After each
+//! for a script that would otherwise poll `fux ls json`. After each
 //! round of what the server read and did, each subscriber is told what
 //! happened since it last looked: what each pane's journal recorded, in
 //! order (a bell, a notification, a title, a shell command's end, a
@@ -65,7 +65,7 @@ impl Snapshot {
     }
 }
 
-/// One thing that happened: its name, where (for `-t` to choose by), and
+/// One thing that happened: its name, where (for `events-of` to choose by), and
 /// what else it says.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {

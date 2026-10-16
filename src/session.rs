@@ -161,7 +161,7 @@ pub enum Error {
     NoPane(PaneId),
     NoTab(TabId),
     NoWorkspaceGiven,
-    /// `--id` asked for an id given before, or one there is.
+    /// `id` asked for an id given before, or one there is.
     IdTaken(String),
     NoClient(ClientId),
     NoBuffer(usize),
@@ -180,8 +180,7 @@ pub enum Error {
     SelectionTooLarge,
     // A name that cannot be given.
     NameTaken(String),
-    /// `run -n NAME` where a tab has the name: `-t NAME` would not know
-    /// which, so the program is not started. The tab and its panes.
+    /// `run` with a name a tab has: `str NAME tab` would not know which, so the program is not started. The tab and its panes.
     TabNameTaken(String, String),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
@@ -204,7 +203,7 @@ pub(crate) fn fail(code: Code, message: impl Into<String>) -> Error {
 }
 
 impl Error {
-    /// What kind of failure it is, as `--json` names it: stable, for a
+    /// What kind of failure it is, its code: stable, for a
     /// script to tell failures apart by.
     pub fn code(&self) -> Code {
         match self {
@@ -561,7 +560,7 @@ fn one<T: Copy + std::fmt::Display>(
     }
 }
 
-/// A command that failed, told with its code for `--json`: a usage error's
+/// A command that failed, told with its code: a usage error's
 /// status is 2.
 fn failure(error: Error, origin: &Origin) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
@@ -847,12 +846,11 @@ impl Session {
     }
 
     /// Refuses a name given to a tab (other than `except`, being renamed)
-    /// that `-t NAME` could not find it by: one a target reads as an id, or
+    /// that `str NAME tab` could not find it by: one a target reads as an id, or
     /// one another tab has.
     fn check_tab_name(&self, name: &str, except: Option<TabId>) -> Result<(), Error> {
         check_name(name)?;
-        // One `-t` would read as an id (a name like `-x`, read as a flag,
-        // is only one -t cannot give).
+        // One a target would read as an id.
         if name.starts_with(['%', '@', '+']) {
             return Err(Error::NameReadAsTarget(name.to_owned()));
         }
@@ -947,7 +945,7 @@ impl Session {
         fresh
     }
 
-    /// The next ids made are `ids` (`--id`), each of a kind in `kinds`, at
+    /// The next ids made are `ids` (`id`), each of a kind in `kinds`, at
     /// most one of each, and none that is there or (outside a restore)
     /// was ever given.
     fn want(&mut self, ids: &[AnyRef], kinds: &[Kind]) -> Result<(), Error> {
@@ -1724,7 +1722,7 @@ impl Session {
     // ------------------------------------------------------------- closing
 
     /// Hangs up a pane's process; it is killed and reaped after `GRACE`.
-    /// `closed`: fux closed it (kill-pane, kill-server), not its program's
+    /// `closed`: fux closed it (`kill`, `kill-server`), not its program's
     /// end: the rest of its session goes too.
     fn end(&mut self, id: PaneId, process: Process, closed: bool) {
         if let Process::Reading(mut child) | Process::HungUp(mut child) = process {
@@ -2283,7 +2281,7 @@ impl Session {
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 // Its place is out of every client's way: no client follows.
                 let place = (fit, self.start_size(fit, Here::Cli(None, None, None)));
-                // A name given is one `-t NAME` finds: it must be the only one.
+                // A name given is one `str NAME tab` finds: it must be the only one.
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
@@ -2916,7 +2914,7 @@ impl Session {
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
     }
 
-    /// The pane `select-pane` picks for client `view`, which is at `at`.
+    /// The pane `focus` picks for client `view`, which is at `at`.
     fn pick_pane(&self, view: &View, at: Place, pick: PanePick) -> Result<Picked, Error> {
         let client = view.id;
         let tab = self.tab(at.tab).ok_or(Error::NoTab(at.tab))?;
@@ -2946,7 +2944,7 @@ impl Session {
         Ok((ws, Some(tab), Some(target)))
     }
 
-    /// The tab `select-tab` picks for a client at `at`.
+    /// The tab `show-tab` picks for a client at `at`.
     fn pick_tab(&self, at: Place, to: Pick<TabId>) -> Result<Picked, Error> {
         let (ws, target) = match to {
             Pick::Id(t) => (self.tab_workspace(t)?, t),
@@ -2960,7 +2958,7 @@ impl Session {
         Ok((ws, Some(target), None))
     }
 
-    /// The workspace `select-workspace` picks for client `view`.
+    /// The workspace `show-workspace` picks for client `view`.
     fn pick_ws(&self, view: &View, pick: &Pick<WsRef>) -> Result<Picked, Error> {
         let ws = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
@@ -3043,7 +3041,7 @@ impl Session {
         out
     }
 
-    /// A pane's state, as `ls --json` has it.
+    /// A pane's state, as `ls json` has it.
     fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Json<'a> {
         let mut fields = vec![
             ("id", Json::str(p.id.to_string())),
@@ -3062,7 +3060,7 @@ impl Session {
         Json::Object(fields)
     }
 
-    /// A tab and its panes, as `ls --json` has them.
+    /// A tab and its panes, as `ls json` has them.
     fn tab_json<'a>(&'a self, t: &'a Tab, now: Instant) -> Json<'a> {
         let panes = (t.root().map(Tree::panes).unwrap_or_default().into_iter())
             .filter_map(|id| self.panes.get(&id))
@@ -3075,7 +3073,7 @@ impl Session {
         ])
     }
 
-    /// A workspace, its tabs and their panes, as `ls --json` has them.
+    /// A workspace, its tabs and their panes, as `ls json` has them.
     fn ws_json<'a>(&'a self, ws: &'a Workspace, now: Instant) -> Json<'a> {
         Json::Object(vec![
             ("id", Json::str(ws.id.to_string())),
@@ -3087,8 +3085,8 @@ impl Session {
         ])
     }
 
-    /// `ls -t TARGET`: one pane, tab or workspace, as JSON, or one field of
-    /// its JSON (`--get`), a string's text as it is.
+    /// `info` and `get`: one pane, tab or workspace, as JSON, or one field
+    /// of its JSON (`get`), a string's text as it is.
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
         let object = match target {
@@ -3107,7 +3105,7 @@ impl Session {
         let Json::Object(mut fields) = object else {
             return Ok(Reply::default());
         };
-        // A tab of one pane (`run -n NAME`'s) stands for its pane, whose
+        // A tab of one pane (`run`'s) stands for its pane, whose
         // fields it gives too.
         let single = match target {
             AnyRef::Tab(id) => self.root(id).map(Tree::panes).filter(|p| p.len() == 1),
@@ -3150,7 +3148,7 @@ impl Session {
         })
     }
 
-    /// `ls --json`: everything, or `only` that workspace, with no clients
+    /// `ls json`: everything, or `only` that workspace, with no clients
     /// or grants (what a granted socket sees).
     fn ls_json(&self, only: Option<WsId>) -> String {
         let now = Instant::now();
@@ -3352,7 +3350,7 @@ fn check_workspace_name<'a>(
     if others.iter().any(|ws| ws.name == name) {
         return Err(Error::NameTaken(name.to_owned()));
     }
-    // A tab's name too: the workspace's would hide it from `-t NAME`.
+    // A tab's name too: the workspace's would hide it from `str NAME tab`.
     let tabs: Vec<String> = (others.iter())
         .flat_map(|ws| ws.tabs())
         .filter(|t| t.given && t.name == name)

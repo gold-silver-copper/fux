@@ -1,6 +1,6 @@
 //! Where the server's socket lives, and the rules that keep it private.
 //!
-//! - The path is `-S PATH` (`server --socket`), or `-L NAME`'s
+//! - The path is `str PATH socket`'s, or `str NAME server`'s
 //!   `NAME.sock` in fux's directory, else `FUX_SOCKET`, else `server.sock`
 //!   there: fux's directory is `$XDG_RUNTIME_DIR/fux`, else `$TMPDIR/fux`.
 //! - Its directory is owned by the user, mode 0700, reached only through
@@ -106,7 +106,7 @@ impl SocketPath {
     }
 }
 
-/// Which server a command names, before the command: `-S PATH`, `-L NAME`,
+/// Which server a command names, before the command: `str PATH socket`, `str NAME server`,
 /// or neither.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Choice<'a> {
@@ -137,7 +137,7 @@ pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
                 && (name.chars()).all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
             if !valid {
                 return Err(Error::Refused(format!(
-                    "-L {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
+                    "server {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
                      not starting with '.' or '-'"
                 )));
             }

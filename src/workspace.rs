@@ -42,7 +42,7 @@ pub enum Fit {
     /// A client's screen, any attached client's: with none attached, its
     /// panes keep their sizes.
     Clients,
-    /// A screen of this size, client or none: `--size` and `fux resize`.
+    /// A screen of this size, client or none: `size` and `resize`.
     Fixed(fux_vt::Size),
 }
 
@@ -64,7 +64,7 @@ pub struct Seat {
     shown: bool,
     /// The pane it focuses, one of the tab's, unless the tab is empty.
     focus: Option<PaneId>,
-    /// The pane it focused before (`select-pane --last`), another of the
+    /// The pane it focused before (`str last focus`), another of the
     /// tab's.
     last: Option<PaneId>,
     /// The bell rang here while it was shown another tab, marked in its bar
@@ -210,7 +210,7 @@ impl Workspace {
         let viewed = self.viewers.remove(&client);
         for tab in &mut self.tabs {
             // A tab the client showed is laid out again on its own fit (its
-            // `--size`), not left at the client's.
+            // `size`), not left at the client's.
             tab.changed |= viewed && tab.shown_to(client);
             tab.seats.remove(&client);
             tab.typist = tab.typist.filter(|t| *t != client);
