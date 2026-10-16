@@ -246,10 +246,6 @@ pub(crate) struct Grid {
     /// whenever styles are numbered anew, each holds the default attributes,
     /// which are no style of the table.
     recent: [(Attributes, u32); RECENT],
-    /// Changed whenever a style's number may have changed: a sweep, the
-    /// grid started again. A number got with one epoch is a style's while
-    /// the epoch lasts, and a resize, which keeps the numbers, keeps it.
-    epoch: u64,
     /// The slot of each row of the screen, top to bottom.
     order: Order,
     history: History,
@@ -374,7 +370,6 @@ impl Grid {
             links: Links::default(),
             styles: Arc::default(),
             recent: [(Attributes::default(), 0); RECENT],
-            epoch: 0,
             order: Order::default(),
             history: History::new(history_bytes),
             size,
@@ -394,7 +389,6 @@ impl Grid {
         Self {
             styles: Arc::clone(&self.styles),
             recent: self.recent,
-            epoch: self.epoch,
             unmade: self.unmade,
             ..Self::bare(size, self.history_bytes())
         }
@@ -799,13 +793,6 @@ impl Grid {
         self.cells.iter_mut().for_each(&mut renumbered);
         self.history.each_cell_mut(renumbered);
         self.recent = [(Attributes::default(), 0); RECENT];
-        self.epoch = self.epoch.wrapping_add(1);
-    }
-
-    /// The styles' epoch (`Grid::epoch`).
-    #[inline]
-    pub fn epoch(&self) -> u64 {
-        self.epoch
     }
 
     /// How many styles the grid's table holds, in use or not.
@@ -1648,7 +1635,6 @@ impl Grid {
             // has open (`Screen::link_cells`), and finds it by its `id`.
             let mut grid = Self::made(self.size, self.history_bytes(), next, version, self.unmade)?;
             grid.links = std::mem::take(&mut self.links);
-            grid.epoch = self.epoch.wrapping_add(1);
             *self = grid;
             return Ok(());
         }
@@ -1681,7 +1667,6 @@ impl Grid {
         // No cell has a style but the default now.
         self.styles = Arc::default();
         self.recent = [(Attributes::default(), 0); RECENT];
-        self.epoch = self.epoch.wrapping_add(1);
         self.cursor = Cursor::default();
         self.saved = Cursor::default();
         self.reset_margins();

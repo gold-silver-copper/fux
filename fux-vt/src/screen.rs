@@ -309,16 +309,10 @@ pub struct Screen {
     /// the same in either grid; else `TABLED`. The pen's is found when the
     /// pen changes (`pen_changed`); the colours' is `UNKNOWN` until it is
     /// first asked for after that. So printing and erasing in the pen look
-    /// nothing up.
+    /// nothing up but a `TABLED` style, which the grid finds among those it
+    /// found lately (`Grid::table_style`).
     pen_style: u32,
     blank_style: u32,
-    /// The number each of those has in the grid's table, if it is
-    /// `TABLED` and its number was found since it changed: with whether
-    /// the grid was the alternate screen's, and the grid's styles' epoch
-    /// then (`Grid::epoch`). The number holds while both are still so
-    /// (`still`).
-    pen_table: Option<(u32, bool, u64)>,
-    blank_table: Option<(u32, bool, u64)>,
     saved_attributes: Attributes,
     charsets: Charsets,
     /// The character sets DECSC saved, which DECRC restores.
@@ -459,8 +453,6 @@ impl Screen {
             attributes: Attributes::default(),
             pen_style: 0,
             blank_style: 0,
-            pen_table: None,
-            blank_table: None,
             saved_attributes: Attributes::default(),
             charsets: Charsets::default(),
             saved_charsets: Charsets::default(),
@@ -533,15 +525,6 @@ impl Screen {
     fn pen_changed(&mut self) {
         self.pen_style = self.attributes.inline_style().unwrap_or(TABLED);
         self.blank_style = UNKNOWN;
-        self.pen_table = None;
-        self.blank_table = None;
-    }
-    /// The number `table`, of the table of the grid shown, if it is still
-    /// that grid's and its epoch's.
-    #[inline]
-    fn still(&self, table: Option<(u32, bool, u64)>) -> Option<u32> {
-        let (id, alternate, epoch) = table?;
-        (alternate == self.alternate_active && epoch == self.grid().epoch()).then_some(id)
     }
     /// The number of the pen's style in the grid shown.
     #[inline]
@@ -551,49 +534,23 @@ impl Screen {
         if style < TABLED {
             return style;
         }
-        if let Some(id) = self.still(self.pen_table) {
-            return id;
-        }
-        self.find_pen_style(false)
+        let attributes = self.attributes;
+        self.grid_mut().table_style(attributes)
     }
     /// The number, in the grid shown, of the style of the pen's colours
     /// alone, which erasing, scrolling and inserting fill cells with (`bce`).
     #[inline]
     fn blank_style(&mut self) -> u32 {
+        let attributes = self.attributes.erased();
+        if self.blank_style == UNKNOWN {
+            self.blank_style = attributes.inline_style().unwrap_or(TABLED);
+        }
         let style = self.blank_style;
-        debug_assert!(style >= TABLED || Some(style) == self.attributes.erased().inline_style());
+        debug_assert!(style >= TABLED || Some(style) == attributes.inline_style());
         if style < TABLED {
             return style;
         }
-        if let Some(id) = self.still(self.blank_table) {
-            return id;
-        }
-        self.find_pen_style(true)
-    }
-    /// `pen_style`, or `blank_style` if `blank`, when it is not known to
-    /// be a number of its own: found, and kept if it is one.
-    #[inline(never)]
-    fn find_pen_style(&mut self, blank: bool) -> u32 {
-        let (attributes, known) = if blank {
-            (self.attributes.erased(), &mut self.blank_style)
-        } else {
-            (self.attributes, &mut self.pen_style)
-        };
-        if *known == UNKNOWN {
-            *known = attributes.inline_style().unwrap_or(TABLED);
-        }
-        if *known < TABLED {
-            return *known;
-        }
-        let id = self.grid_mut().table_style(attributes);
-        // After the search, which may have swept the styles.
-        let found = Some((id, self.alternate_active, self.grid().epoch()));
-        if blank {
-            self.blank_table = found;
-        } else {
-            self.pen_table = found;
-        }
-        id
+        self.grid_mut().table_style(attributes)
     }
     /// A new version, for what is processed next: like identities, 64 bits
     /// counted up by one do not run out.
