@@ -489,7 +489,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         // Unlike `set`, the cell keeps what it has if the row has no room,
         // even compacted: an append never loses text.
         if self.text.long.len().saturating_add(joined.len()) > limit {
-            self.compact_long();
+            self.compact(true);
         }
         let long = &mut self.text.long;
         let (Ok(start), Ok(len)) = (u32::try_from(long.len()), u8::try_from(joined.len())) else {
@@ -534,7 +534,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
-            self.compact_long();
+            self.compact(true);
         }
         let long = &mut self.text.long;
         let start = u32::try_from(long.len());
@@ -571,7 +571,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
-            self.compact_short();
+            self.compact(false);
         }
         let short = &mut self.text.short;
         if let (Ok(start), Ok(len), Some(slot)) = (
@@ -589,15 +589,20 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         }
     }
 
-    /// Keeps only the text of long clusters, relocating their cells.
-    fn compact_long(&mut self) {
-        let old = std::mem::take(&mut self.text.long);
-        let long = &mut self.text.long;
+    /// Keeps only the text of long clusters (`long`), or of short ones,
+    /// relocating their cells.
+    fn compact(&mut self, long: bool) {
+        let store = if long {
+            &mut self.text.long
+        } else {
+            &mut self.text.short
+        };
+        let old = std::mem::take(store);
         for cell in self.cells.iter_mut().map(AsMut::as_mut) {
-            let Some(range) = cell.long() else {
+            let Some(range) = (if long { cell.long() } else { cell.short() }) else {
                 continue;
             };
-            let (Some(text), Ok(start)) = (old.get(range), u32::try_from(long.len())) else {
+            let (Some(text), Ok(start)) = (old.get(range), u32::try_from(store.len())) else {
                 *cell = cell.blanked();
                 continue;
             };
@@ -607,30 +612,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
                 *cell = cell.blanked();
                 continue;
             };
-            long.extend_from_slice(text);
-            *cell = cell.with_spilled(start, len);
-        }
-    }
-
-    /// Keeps only the text of short clusters, relocating their cells.
-    fn compact_short(&mut self) {
-        let old = std::mem::take(&mut self.text.short);
-        let short = &mut self.text.short;
-        for cell in self.cells.iter_mut().map(AsMut::as_mut) {
-            let Some(range) = cell.short() else {
-                continue;
-            };
-            let (Some(text), Ok(start)) = (old.get(range), u32::try_from(short.len())) else {
-                *cell = cell.blanked();
-                continue;
-            };
-            // Never: the range's length was a `u8`. Blanked as above, so
-            // that no cell points into the text just taken.
-            let Ok(len) = u8::try_from(text.len()) else {
-                *cell = cell.blanked();
-                continue;
-            };
-            short.extend_from_slice(text);
+            store.extend_from_slice(text);
             *cell = cell.with_spilled(start, len);
         }
     }
