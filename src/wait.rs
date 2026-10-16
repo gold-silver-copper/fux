@@ -785,6 +785,8 @@ impl Watch {
         (began, now): (Instant, Instant),
         (fresh, more): (bool, bool),
     ) -> Option<Found> {
+        // Any wait's answer reads the journal: past its budget, it says so.
+        self.missed |= pane.record.lost_after(self.looked);
         if !texts.is_empty() && self.found.is_none() {
             self.read_prints(pane, texts);
         }

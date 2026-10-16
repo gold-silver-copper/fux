@@ -329,7 +329,7 @@ str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 | `history-bytes` | bytes of each pane's history, how far copy mode scrolls and `history capture` reads; past it, the oldest rows go; 0 to 1 GiB; a change applies to every pane | 8388608 (8 MiB) |
 | `wait-seconds` | how long an action, a capture or a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
 | `journal-bytes` | bytes of each pane's journal, 1 MiB to 2 GiB: everything it printed, in order, which waits and events read; past it, the oldest goes and a wait says text may have passed unseen | 33554432 (32 MiB) |
-| `journal-total` | bytes of all panes' journals together, 1 MiB to 2 GiB; past it, the largest lets its oldest go first | 536870912 (512 MiB) |
+| `journal-total` | bytes of all panes' journals together, 1 MiB to 2 GiB; past it, the largest lets its oldest go first, below `journal-bytes` if need be | 536870912 (512 MiB) |
 | `clipboard` | `on` or `off`: copies, fux's and programs', reach your terminal's clipboard | `on` |
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |

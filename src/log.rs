@@ -205,9 +205,11 @@ impl Log {
         self.entries.iter().skip(from)
     }
 
-    /// The number of its newest entry: 0 if it holds none.
+    /// The number of its newest entry, or of the last it let go: 0 if it
+    /// held none.
     pub fn last(&self) -> Seq {
-        self.entries.back().map_or(Seq(0), |e| e.seq)
+        let held = self.entries.back().map_or(Seq(0), |e| e.seq);
+        held.max(self.dropped.unwrap_or(Seq(0)))
     }
 
     /// What each piece of output after `seq` printed, oldest first.
@@ -295,5 +297,7 @@ mod tests {
         assert_eq!(log.after(Seq(0)).count(), 3);
         log.keep(0);
         assert_eq!(log.after(Seq(0)).count(), 0);
+        // Emptied, it still reads as told up to the last it let go.
+        assert!(!log.lost_after(log.last()));
     }
 }

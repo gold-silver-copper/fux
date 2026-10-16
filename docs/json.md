@@ -147,7 +147,7 @@ its journal recorded them, one line each.
 | `title` | `title` |
 | `resized` | `cols`, `rows` |
 | `lost` | last: the reader fell behind (status 1) |
-| `missed` | a pane's events were let go before they were told (past `journal-bytes`) |
+| `missed` | a pane's events were let go before they were told (past `journal-bytes` or `journal-total`) |
 | `stopped` | last: `reason`, the server stopped |
 
 ## Errors
