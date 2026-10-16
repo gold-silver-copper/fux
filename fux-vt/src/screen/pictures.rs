@@ -107,8 +107,8 @@ impl Screen {
             }
             self.grid_mut().set_col(col);
             self.grid_mut().cursor.pending_wrap = false;
-            for _ in 0..across {
-                self.print('\u{10EEEE}')?;
+            for c in std::iter::repeat_n(PLACEHOLDER, usize::from(across)).flat_map(str::chars) {
+                self.print(c)?;
             }
         }
         self.linefeed()?;
