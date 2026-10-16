@@ -353,12 +353,6 @@ impl Screen {
         }
     }
 
-    /// The server ended it by itself: copy mode whose rows or pane went, a
-    /// screen whose subject closed.
-    pub fn ended(&mut self) {
-        *self = Screen::None;
-    }
-
     fn list(&mut self, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
         let (at, last) = (list.selected, list.items.len().saturating_sub(1));
         let chosen = list.items.get(at);

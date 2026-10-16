@@ -419,7 +419,7 @@ impl Run {
             Outgoing::Run(client, code) => self.run_as(client, &code),
             Outgoing::Ended(client) => {
                 if let Some(keys) = self.keys.get_mut(&client) {
-                    keys.screen.ended();
+                    keys.screen = Screen::None;
                 }
             }
             Outgoing::Keys(client, typed) => {

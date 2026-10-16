@@ -671,7 +671,7 @@ impl Keyboard {
     /// (`send-keys` to it).
     pub fn frame(&mut self, frame: ServerFrame<'_>) -> Vec<Act> {
         match frame {
-            ServerFrame::Ended => self.screen.ended(),
+            ServerFrame::Ended => self.screen = Screen::None,
             ServerFrame::Run(code) => self.run(code.to_owned()),
             ServerFrame::Keys(typed) => self.typed(typed),
             ServerFrame::Hello(_)

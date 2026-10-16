@@ -3498,7 +3498,7 @@ pub(crate) mod testing {
                 super::Outgoing::Run(client, code) => session.run_as(client, &code),
                 super::Outgoing::Ended(client) => {
                     if let Some(keys) = session.test_keys.get_mut(&client) {
-                        keys.screen.ended();
+                        keys.screen = crate::screens::Screen::None;
                     }
                 }
                 super::Outgoing::Keys(client, inputs) => {
