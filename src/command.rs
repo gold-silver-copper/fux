@@ -297,9 +297,9 @@ pub enum Command {
         size: Size,
     },
     Wait {
-        /// The panes, any of which answers it (a tab's or workspace's
-        /// every pane): the caller's without one.
-        targets: Vec<AnyRef>,
+        /// The pane, or a tab's or workspace's every pane, each of which
+        /// answers.
+        target: AnyRef,
         wait: Wait,
     },
     SendMouse {
@@ -339,20 +339,16 @@ pub enum Command {
         by: PaneResize,
     },
     SendKeys {
-        /// The panes: each `-t`, a pane or every pane of a tab; the
-        /// caller's without one.
-        targets: Vec<AnyRef>,
-        /// A client to send them to instead, as typed at its terminal: its
-        /// bindings, overlays and prompts take them as a person's keys.
-        client: Option<ClientId>,
+        /// The pane, or a tab's or workspace's every pane.
+        target: AnyRef,
         inputs: Vec<Input>,
         /// A wait for the program to go quiet once they are sent.
         then: Option<Box<Wait>>,
     },
     /// What happens, a line each as it happens, until the client goes:
-    /// where the targets are, or anywhere without any.
+    /// where the target is, or anywhere without one.
     Events {
-        targets: Vec<AnyRef>,
+        target: Option<AnyRef>,
         json: bool,
     },
     /// What is there, as a layout file: everything, or one tab or
@@ -434,6 +430,9 @@ pub enum ClientAction {
     /// fuxth for the client to run as its own: what opens one of its
     /// screens (a menu, the prompt, copy mode), asked from elsewhere.
     Run(String),
+    /// Keys as typed at its terminal: its bindings, overlays and prompts
+    /// take them as a person's keys.
+    Keys(Vec<Input>),
     Zoom,
     SelectPane(PanePick),
     SelectTab(Pick<TabId>),
@@ -502,15 +501,14 @@ pub fn shell_name(name: &str) -> bool {
 impl Command {
     /// The pane a command acts on and the wait it then does, armed before
     /// it acts: send-keys', send-mouse's and signal's.
-    pub fn acting_wait(&self) -> Option<(Vec<AnyRef>, Wait)> {
+    pub fn acting_wait(&self) -> Option<(AnyRef, Wait)> {
         if let Command::SendKeys {
-            targets,
-            client: None,
+            target,
             then: Some(wait),
             ..
         } = self
         {
-            return Some((targets.clone(), (**wait).clone()));
+            return Some((*target, (**wait).clone()));
         }
         if let Command::SendMouse {
             target,
@@ -523,7 +521,7 @@ impl Command {
             ..
         } = self
         {
-            return Some((vec![AnyRef::Pane(*target)], (**wait).clone()));
+            return Some((AnyRef::Pane(*target), (**wait).clone()));
         }
         None
     }

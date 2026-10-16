@@ -513,18 +513,8 @@ impl Reach<'_> {
                 Resized::Tabs(target) => self.any(target),
                 Resized::Client(_) => self.refuse("a client's size"),
             },
-            Command::Wait { targets, .. } if targets.is_empty() => {
-                self.pane(self.here.caller_pane()?)
-            }
-            Command::SendKeys {
-                client: Some(_), ..
-            } => self.refuse("a client's keys"),
-            Command::SendKeys { targets, .. } if targets.is_empty() => {
-                self.pane(self.here.caller_pane()?)
-            }
-            Command::SendKeys { targets, .. }
-            | Command::Events { targets, .. }
-            | Command::Wait { targets, .. } => targets.iter().try_for_each(|t| self.any(t)),
+            Command::SendKeys { target, .. } | Command::Wait { target, .. } => self.any(target),
+            Command::Events { target, .. } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
             Command::Rename { target, .. } => match target {
                 AnyRef::Workspace(_) => self.refuse("renaming the workspace"),
                 AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
@@ -1115,32 +1105,19 @@ impl Session {
         }
     }
 
-    /// The panes `targets` name, a tab's every pane, in order and each
-    /// once; the caller's without any.
-    fn panes_of(&self, targets: &[AnyRef], here: Here) -> Result<Vec<PaneId>, Error> {
-        if targets.is_empty() {
-            return Ok(vec![self.pane(here.caller_pane()?)?.id]);
-        }
-        let mut out: Vec<PaneId> = Vec::new();
-        for target in targets {
-            let found = match *target {
-                AnyRef::Pane(pane) => vec![self.pane(pane)?.id],
-                AnyRef::Tab(tab) => self.root(tab).ok_or(Error::NoTab(tab))?.panes(),
-                AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
-                    .tabs()
-                    .iter()
-                    .filter_map(Tab::root)
-                    .flat_map(Tree::panes)
-                    .collect(),
-            };
-            out.extend(
-                found
-                    .into_iter()
-                    .filter(|p| !out.contains(p))
-                    .collect::<Vec<_>>(),
-            );
-        }
-        Ok(out)
+    /// The panes `target` names: a pane, or a tab's or workspace's every
+    /// pane, in order.
+    fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
+        Ok(match target {
+            AnyRef::Pane(pane) => vec![self.pane(pane)?.id],
+            AnyRef::Tab(tab) => self.root(tab).ok_or(Error::NoTab(tab))?.panes(),
+            AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
+                .tabs()
+                .iter()
+                .filter_map(Tab::root)
+                .flat_map(Tree::panes)
+                .collect(),
+        })
     }
 
     /// Sends `inputs` to pane `id`'s program, a piece at a time
@@ -2023,12 +2000,10 @@ impl Session {
         if let Some(wait) = command.take_start_wait() {
             return Ok(self.start_waiting(&command, *wait, origin));
         }
-        if let Command::Events { targets, json } = command {
-            let targets = (targets.iter())
-                .map(|t| self.any_target(t))
-                .collect::<Result<_, _>>()?;
+        if let Command::Events { target, json } = command {
+            let target = target.map(|t| self.any_target(&t)).transpose()?;
             return Ok(Begun::Events(Box::new(crate::events::Subscription {
-                targets,
+                target,
                 json,
                 seen: crate::events::Snapshot::of(self),
             })));
@@ -2056,15 +2031,14 @@ impl Session {
             waiting.capture = Some((history, view, json));
             return Ok(self.wait_on(waiting, now));
         }
-        let (targets, wait, keys) = if let Command::Wait { targets, wait } = command {
-            (targets, wait, None)
-        } else if let Some((targets, wait)) = command.acting_wait() {
-            (targets, wait, Some(command))
+        let (target, wait, keys) = if let Command::Wait { target, wait } = command {
+            (target, wait, None)
+        } else if let Some((target, wait)) = command.acting_wait() {
+            (target, wait, Some(command))
         } else {
             return Ok(Begun::Done(self.run_command(&command, origin)));
         };
-        let here = self.here(origin)?;
-        let panes = (self.panes_of(&targets, here)?.into_iter())
+        let panes = (self.panes_of(target)?.into_iter())
             .map(|id| self.pane(id))
             .collect::<Result<Vec<_>, _>>()?;
         let now = Instant::now();
@@ -2123,10 +2097,11 @@ impl Session {
         if let Command::DumpLayout { target: at @ None } = &mut command {
             *at = Some(whole()?);
         }
-        if let Command::Events { targets, .. } = &mut command
-            && targets.is_empty()
+        if let Command::Events {
+            target: at @ None, ..
+        } = &mut command
         {
-            targets.push(whole()?);
+            *at = Some(whole()?);
         }
         let reach = Reach {
             session: self,
@@ -2670,25 +2645,9 @@ impl Session {
                 Ok(String::new())
             }
             &Command::SendKeys {
-                client: Some(client),
-                ref inputs,
-                ..
+                target, ref inputs, ..
             } => {
-                if !self.views.contains_key(&client) {
-                    return Err(Error::NoClient(client));
-                }
-                // The client takes them as typed at its terminal: its
-                // bindings see them.
-                self.outbox.push(Outgoing::Keys(client, inputs.clone()));
-                Ok(String::new())
-            }
-            &Command::SendKeys {
-                ref targets,
-                ref inputs,
-                client: None,
-                ..
-            } => {
-                let panes = self.panes_of(targets, here)?;
+                let panes = self.panes_of(target)?;
                 // Every pane must take them, or none is sent them.
                 for &id in &panes {
                     self.live_pane_mut(id)?;
@@ -2772,9 +2731,12 @@ impl Session {
                         ));
                     }
                 };
-                match action {
+                // A command on a client's screen. Targets it leaves out are
+                // the client's own.
+                let view = || self.views.get(&client).ok_or(Error::NoClient(client));
+                let picked = match *action {
                     ClientAction::Choices(choices) => {
-                        let chosen = crate::overlay::choices(self, client, *choices)?;
+                        let chosen = crate::overlay::choices(self, client, choices)?;
                         self.made = chosen.ids;
                         self.value = chosen
                             .current
@@ -2782,21 +2744,15 @@ impl Session {
                             .map(crate::protocol::Scalar::Int);
                         return Ok(chosen.labels.iter().map(|l| format!("{l}\n")).collect());
                     }
-                    ClientAction::Run(code) => {
+                    ClientAction::Run(ref code) => {
                         self.outbox.push(Outgoing::Run(client, code.clone()));
                         return Ok(String::new());
                     }
-                    ClientAction::Detach
-                    | ClientAction::Capture
-                    | ClientAction::Zoom
-                    | ClientAction::SelectPane(_)
-                    | ClientAction::SelectTab(_)
-                    | ClientAction::SelectWorkspace(_) => {}
-                }
-                // A command on a client's screen. Targets it leaves out are
-                // the client's own.
-                let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
-                let picked = match *action {
+                    // Taken as typed at its terminal: its bindings see them.
+                    ClientAction::Keys(ref inputs) => {
+                        self.outbox.push(Outgoing::Keys(client, inputs.clone()));
+                        return Ok(String::new());
+                    }
                     ClientAction::Detach => {
                         self.views.remove(&client);
                         self.workspaces.iter_mut().for_each(|w| w.forget(client));
@@ -2805,22 +2761,16 @@ impl Session {
                     }
                     ClientAction::Capture => {
                         let mut grid = crate::render::Grid::new(0, 0);
-                        crate::render::compose_view(
-                            self,
-                            view,
-                            &mut grid,
-                            &mut Placement::default(),
-                        );
+                        let placement = &mut Placement::default();
+                        crate::render::compose_view(self, view()?, &mut grid, placement);
                         let (text, form) = crate::capture::client(client, &grid);
                         self.json = form;
                         return Ok(text);
                     }
                     ClientAction::Zoom => None,
-                    ClientAction::SelectPane(pick) => Some(self.pick_pane(view, place, pick)?),
+                    ClientAction::SelectPane(pick) => Some(self.pick_pane(view()?, place, pick)?),
                     ClientAction::SelectTab(pick) => Some(self.pick_tab(place, pick)?),
-                    ClientAction::SelectWorkspace(ref pick) => Some(self.pick_ws(view, pick)?),
-                    // Answered above.
-                    ClientAction::Choices(_) | ClientAction::Run(_) => return Ok(String::new()),
+                    ClientAction::SelectWorkspace(ref pick) => Some(self.pick_ws(view()?, pick)?),
                 };
                 // A select shows the client where it picked, unzoomed.
                 match picked {

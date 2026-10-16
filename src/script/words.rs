@@ -934,7 +934,7 @@ impl fuxth::Host for Host<'_> {
                 // each of its panes.
                 later(ask(
                     Command::Wait {
-                        targets: vec![p],
+                        target: p,
                         wait: waited(&built.waits, false),
                     },
                     Then::Outcome { waited: true },
@@ -1022,7 +1022,7 @@ impl fuxth::Host for Host<'_> {
                     ));
                 }
                 let (then, answer) = acted(&built.waits, self.settle);
-                let (targets, to_client) = if let Value::App(Fux::Client(c)) = &to {
+                if let Value::App(Fux::Client(c)) = &to {
                     // Typed at its terminal: whatever pane they reach is the
                     // client's to choose, so there is none to wait on here.
                     if then.is_some() && !self.settle {
@@ -1031,16 +1031,13 @@ impl fuxth::Host for Host<'_> {
                             "send-keys to a client takes no wait: wait on the pane after (PANE opts … wait)",
                         ));
                     }
-                    (Vec::new(), Some(*c))
-                } else {
-                    let target = target(name, &to)
-                        .map_err(|_| wrong(name, "a pane, tab, workspace or client", &to))?;
-                    (vec![target], None)
-                };
+                    return later(act(*c, ClientAction::Keys(built.inputs)));
+                }
+                let target = target(name, &to)
+                    .map_err(|_| wrong(name, "a pane, tab, workspace or client", &to))?;
                 later(ask(
                     Command::SendKeys {
-                        targets,
-                        client: to_client,
+                        target,
                         inputs: built.inputs,
                         then,
                     },
@@ -1173,12 +1170,12 @@ impl fuxth::Host for Host<'_> {
                 | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
             },
             "events" | "events-json" | "events-of" | "events-of-json" => {
-                let targets = match name.starts_with("events-of") {
-                    true => vec![target(name, &next()?)?],
-                    false => Vec::new(),
+                let target = match name.starts_with("events-of") {
+                    true => Some(target(name, &next()?)?),
+                    false => None,
                 };
                 let json = name.ends_with("json");
-                tell(Command::Events { targets, json })
+                tell(Command::Events { target, json })
             }
             "dump" | "dump-of" => {
                 let target = match name {
