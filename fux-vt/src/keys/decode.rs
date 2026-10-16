@@ -640,7 +640,21 @@ fn osc(bytes: &[u8], flush: bool) -> Step {
         Some(first) if first.is_ascii_digit() => {}
         _ => return alt_bracket(),
     }
-    let end = body.iter().position(|b| matches!(b, 0x07 | 0x1b));
+    answer(bytes, flush, true, OSC_LIMIT, colour_reply)
+}
+
+/// The string of an answer in `bytes`, after its two-byte opening: ended
+/// by ST (`ESC \`), or by BEL too if `bel`; what `reply` reads in it, if
+/// it is at most `limit` bytes.
+fn answer(
+    bytes: &[u8],
+    flush: bool,
+    bel: bool,
+    limit: usize,
+    reply: fn(&[u8]) -> Option<Reply>,
+) -> Step {
+    let body = bytes.get(2..).unwrap_or_default();
+    let end = body.iter().position(|b| *b == 0x1b || bel && *b == 0x07);
     let (payload, consumed) = match end.map(|i| (i, body.get(i).copied())) {
         Some((i, Some(0x07))) => (body.get(..i), i.checked_add(3)),
         Some((i, _)) => match body.get(i.saturating_add(1)) {
@@ -654,15 +668,15 @@ fn osc(bytes: &[u8], flush: bool) -> Step {
         // Cut short: dropped.
         None if flush => return Step::Done(bytes.len(), None),
         // Longer than any answer: dropped, the rest of it as it comes.
-        None if body.len() > OSC_LIMIT => return Step::Overlong { bel: true },
+        None if body.len() > limit => return Step::Overlong { bel },
         None => return Step::Incomplete,
     };
     // Within `bytes`: the string, its two-byte opening and its end.
     let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
     // A string past the limit is no answer, whether it came whole or not.
     let reply = payload
-        .filter(|p| p.len() <= OSC_LIMIT)
-        .and_then(colour_reply)
+        .filter(|p| p.len() <= limit)
+        .and_then(reply)
         .map(Input::Reply);
     Step::Done(consumed, reply)
 }
@@ -678,27 +692,7 @@ fn dcs_begun(bytes: &[u8]) -> bool {
 /// at the deadline or past `DCS_LIMIT`, is dropped, never typed.
 #[cold]
 fn dcs(bytes: &[u8], flush: bool) -> Step {
-    let body = bytes.get(2..).unwrap_or_default();
-    let (payload, consumed) = match body.iter().position(|b| *b == 0x1b) {
-        Some(i) => match body.get(i.saturating_add(1)) {
-            Some(b'\\') => (body.get(..i), i.checked_add(4)),
-            // ESC and something else: the string ends there, unfinished,
-            // and the ESC begins what comes next.
-            Some(_) => return Step::Done(i.saturating_add(2), None),
-            None if flush => return Step::Done(bytes.len(), None),
-            None => return Step::Incomplete,
-        },
-        None if flush => return Step::Done(bytes.len(), None),
-        None if body.len() > DCS_LIMIT => return Step::Overlong { bel: false },
-        None => return Step::Incomplete,
-    };
-    // Within `bytes`: the string, its two-byte opening and its end.
-    let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
-    let reply = payload
-        .filter(|p| p.len() <= DCS_LIMIT)
-        .and_then(dcs_reply)
-        .map(Input::Reply);
-    Step::Done(consumed, reply)
+    answer(bytes, flush, false, DCS_LIMIT, dcs_reply)
 }
 
 /// What a DCS answer says that fux uses: that the terminal draws underline
