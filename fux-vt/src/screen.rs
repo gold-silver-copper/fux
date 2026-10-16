@@ -352,18 +352,19 @@ pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;
 
-/// The palette colour an SGR parameter names: 30–37 and 40–47 are colours
-/// 0–7, and 90–97 and 100–107 their bright forms 8–15.
-fn palette(n: u16) -> Option<Color> {
-    let (base, bright) = match n {
-        30..=37 => (30, 0),
-        40..=47 => (40, 0),
-        90..=97 => (90, 8),
-        100..=107 => (100, 8),
+/// The palette colour an SGR parameter names, and the selector of the
+/// layer it colours (38 the foreground, 48 the background): 30–37 and
+/// 40–47 are colours 0–7, and 90–97 and 100–107 their bright forms 8–15.
+fn palette(n: u16) -> Option<(u16, Color)> {
+    let (selector, base, bright) = match n {
+        30..=37 => (38, 30, 0),
+        40..=47 => (48, 40, 0),
+        90..=97 => (38, 90, 8),
+        100..=107 => (48, 100, 8),
         _ => return None,
     };
     let index = u8::try_from(n.checked_sub(base)?).ok()?;
-    Some(Color::Idx(index.checked_add(bright)?))
+    Some((selector, Color::Idx(index.checked_add(bright)?)))
 }
 
 /// The colour of 38, 48 or 58, `rest` being what follows the selector:
@@ -2544,14 +2545,9 @@ impl Screen {
                 [39] => self.attributes = self.attributes.with_foreground(Color::Default),
                 [49] => self.attributes = self.attributes.with_background(Color::Default),
                 [59] => self.attributes = self.attributes.with_underline_color(Color::Default),
-                [n @ (30..=37 | 90..=97)] => {
-                    if let Some(color) = palette(*n) {
-                        self.attributes = self.attributes.with_foreground(color);
-                    }
-                }
-                [n @ (40..=47 | 100..=107)] => {
-                    if let Some(color) = palette(*n) {
-                        self.attributes = self.attributes.with_background(color);
+                [n @ (30..=37 | 40..=47 | 90..=97 | 100..=107)] => {
+                    if let Some((selector, colour)) = palette(*n) {
+                        self.set_colour(selector, colour);
                     }
                 }
                 // Underline styles (`references/modern/kitty_underlines.html`):
