@@ -326,8 +326,9 @@ impl Grid {
         match index.checked_sub(self.history.len()) {
             None => self.history.kept(index).is_some_and(|kept| kept.wrapped()),
             Some(row) => self
-                .screen_slot(row)
-                .and_then(|slot| self.meta.get(slot))
+                .order
+                .get(row)
+                .and_then(|slot| self.meta.get(*slot))
                 .is_some_and(|m| m.wrapped),
         }
     }
@@ -350,7 +351,7 @@ impl Grid {
         let Some(row) = index.checked_sub(self.history.len()) else {
             return self.history.kept(index).map_or(0, |kept| kept.len());
         };
-        let Some(slot) = self.screen_slot(row) else {
+        let Some(&slot) = self.order.get(row) else {
             return 0;
         };
         let used = self.meta.get(slot).map_or(0, |m| usize::from(m.used));

@@ -531,10 +531,6 @@ impl Grid {
         self.history_len()
             .checked_add(usize::from(self.cursor.row()))
     }
-    /// The slot of the screen's row `row`, counted from 0 at the top.
-    fn screen_slot(&self, row: usize) -> Option<usize> {
-        self.order.get(row).copied()
-    }
     pub fn retained_len(&self) -> usize {
         self.history.len().saturating_add(self.order.len())
     }
@@ -604,7 +600,7 @@ impl Grid {
                 links: found.links,
             });
         };
-        self.slot_row(self.screen_slot(row)?, row)
+        self.slot_row(*self.order.get(row)?, row)
     }
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.index_of(id).and_then(|index| self.row_at(index))
@@ -627,11 +623,10 @@ impl Grid {
     pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
         self.slot_row(self.slot(row)?, usize::from(row))
     }
+    /// The slot of the screen's row `row`, counted from 0 at the top. The
+    /// order holds the screen's rows, exactly, once the grid is made.
     #[inline]
     fn slot(&self, row: u16) -> Option<usize> {
-        if row >= self.size.rows() {
-            return None;
-        }
         self.order.get(usize::from(row)).copied()
     }
     /// A live row's cell, found without making its `Row`: printing asks
