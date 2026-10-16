@@ -17,7 +17,7 @@ use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
 use std::io::Write;
 use std::time::Duration;
 
-pub use words::{WORDS, Word, usage};
+pub use words::{WORDS, Word, opens, usage};
 
 /// The bundled words, written in fuxth.
 pub const LIBRARY: &str = include_str!("library.fux");
@@ -1024,8 +1024,9 @@ pub fn restore(
     .map(drop)
 }
 
-/// The most steps a program the client runs for itself takes (a config, a
-/// saved session): one that loops without end fails.
+/// The most steps a program the client runs takes (a config, a saved
+/// session, a key's or a screen's): one that loops without end fails rather
+/// than spinning the client.
 pub const PROGRAM_STEPS: u64 = 10_000_000;
 
 /// What a saved session's requests go to: those that make and shape panes,

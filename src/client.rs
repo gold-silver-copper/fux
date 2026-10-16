@@ -507,39 +507,20 @@ pub struct Attaching {
     pub problem: Option<String>,
 }
 
-/// The words that open one of a client's screens: a program that has one
-/// may open a screen the keys typed after its key go to, so they wait for
-/// it; any other runs while the keys go on.
-const OPENS: [&str; 10] = [
-    "menu",
-    "choose-tab",
-    "choose-workspace",
-    "choose-tab-for",
-    "choose-workspace-for",
-    "choose-pane",
-    "rename-prompt",
-    "confirm-close",
-    "command-prompt",
-    "copy-mode",
-];
-
 /// Whether a key's program may open a screen: a word that opens one, other
-/// than the text `str` takes.
+/// than the text `str` takes. The keys typed after its key wait for it; any
+/// other program runs while the keys go on.
 fn may_open(code: &str) -> bool {
     let Ok(tokens) = fuxth::token::source("key", code) else {
         return false;
     };
     let mut quoted = false;
     tokens.iter().any(|token| {
-        let opens = !quoted && OPENS.contains(&&*token.text);
+        let opens = !quoted && crate::script::opens(&token.text);
         quoted = &*token.text == "str" && !quoted;
         opens
     })
 }
-
-/// The most steps a key's or a screen's program takes: one that loops
-/// without end fails rather than spinning the client.
-const KEY_STEPS: u64 = 10_000_000;
 
 /// A program a client's key or prompt runs, on its worker, in order.
 struct Job {
@@ -903,7 +884,7 @@ fn run_job(
             &mut machine,
             &mut host,
             &mut asks,
-            Some(KEY_STEPS),
+            Some(crate::script::PROGRAM_STEPS),
             Some(stop),
         )
     })();
