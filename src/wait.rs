@@ -1044,8 +1044,7 @@ impl Line {
     fn holds(&self, text: &str) -> Option<usize> {
         let (line, printed) = normal_marked(&self.text, &self.printed);
         found_at_normal(&line, text).into_iter().find(|at| {
-            let end =
-                at.saturating_add(normal(text.trim_start_matches('^').trim_end_matches('$')).len());
+            let end = at.saturating_add(normal(bare(text)).len());
             printed.get(*at..end).is_some_and(|p| p.iter().any(|b| *b))
         })
     }
@@ -1329,6 +1328,12 @@ mod tests {
         assert_eq!(found_in("NOT_READY slot=3", "READY"), 0);
         assert_eq!(found_in("NOT READY slot=3", "READY"), 1);
         assert_eq!(found_in("Plan  [fast/safe]>", "plan [fast"), 1);
+        // `^^x` waits for a line starting `^x`: met by its `x` just printed.
+        let line = super::Line {
+            text: "^x".into(),
+            printed: vec![false, true],
+        };
+        assert_eq!(line.holds("^^x"), Some(0));
         assert_eq!(found_in("[history] READY", "^READY"), 0);
         assert_eq!(found_in("READY now", "^ready"), 1);
         assert_eq!(found_in("Recovery key >", "key >$"), 1);
