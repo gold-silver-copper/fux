@@ -13,7 +13,6 @@ use crate::keymap::{PAGE, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::KeyPress;
 use crate::protocol::{End, Reply, Scalar};
 use crate::script::Failed;
-use crate::session::describe;
 use crate::view::Line;
 
 /// A screen a word asks to open: built with what the server knows (names,
@@ -89,12 +88,12 @@ pub enum Effect {
 
 /// The words that push a handle to `target`: `str %3 pane`.
 pub fn naming(target: AnyRef) -> String {
-    format!("str {} {}", describe(target), target.kind().name())
+    format!("str {} {}", target, target.kind().name())
 }
 
 /// What `target` is, as a title says it: `pane %3`.
 fn about(target: AnyRef) -> String {
-    format!("{} {}", target.kind().name(), describe(target))
+    format!("{} {}", target.kind().name(), target)
 }
 
 impl Open {

@@ -171,7 +171,7 @@ pub enum Error {
     NoTab(TabId),
     NoWorkspaceGiven,
     /// `id` asked for an id given before, or one there is.
-    IdTaken(String),
+    IdTaken(AnyRef),
     NoClient(ClientId),
     NoBuffer(usize),
     /// The client focuses no pane.
@@ -190,7 +190,7 @@ pub enum Error {
     // A name that cannot be given.
     NameTaken(String),
     /// `run` with a name a tab has: `str NAME tab` would not know which, so the program is not started. The tab and its panes.
-    TabNameTaken(String, String),
+    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
     // What failed below the session.
@@ -259,14 +259,16 @@ impl std::fmt::Display for Error {
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Error::TabNameTaken(name, ids) => write!(
-                f,
-                "a tab is named {name:?} already ({ids}); close it (`fux str {} tab kill`) or choose another name",
-                ids.split(' ')
-                    .filter(|id| id.starts_with('@'))
-                    .collect::<Vec<_>>()
-                    .join(" tab kill`, `fux str ")
-            ),
+            Error::TabNameTaken(name, tabs, panes) => {
+                let tabs_then_panes = (tabs.iter().map(|t| AnyRef::Tab(*t)))
+                    .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
+                let ids = joined(tabs_then_panes, " ");
+                let kills = joined(tabs, " tab kill`, `fux str ");
+                write!(
+                    f,
+                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
+                )
+            }
             Error::NameReadAsTarget(name) => write!(
                 f,
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
@@ -566,11 +568,14 @@ fn one<T: Copy + std::fmt::Display>(
 ) -> Result<T, Error> {
     match items {
         [item] => Ok(*item),
-        items => {
-            let ids: Vec<String> = items.iter().map(ToString::to_string).collect();
-            Err(fail(Code::NoTarget, many(items.len(), ids.join(" "))))
-        }
+        items => Err(fail(Code::NoTarget, many(items.len(), joined(items, " ")))),
     }
+}
+
+/// `items`, each as it displays, with `between` between them.
+fn joined<T: std::fmt::Display>(items: impl IntoIterator<Item = T>, between: &str) -> String {
+    let items: Vec<String> = items.into_iter().map(|item| item.to_string()).collect();
+    items.join(between)
 }
 
 /// A JSON object's fields, in order.
@@ -878,11 +883,8 @@ impl Session {
         if taken.is_empty() {
             return Ok(());
         }
-        let ids = [
-            taken.iter().map(ToString::to_string).collect(),
-            self.panes_of_tabs(&taken),
-        ];
-        Err(Error::TabNameTaken(name.to_owned(), ids.concat().join(" ")))
+        let panes = self.panes_of_tabs(&taken);
+        Err(Error::TabNameTaken(name.to_owned(), taken, panes))
     }
 
     /// Gives tab `id` the name `name`, checked. It takes it from each other
@@ -915,12 +917,11 @@ impl Session {
     }
 
     /// The panes of `tabs`, as ids, in their order.
-    fn panes_of_tabs(&self, tabs: &[TabId]) -> Vec<String> {
+    fn panes_of_tabs(&self, tabs: &[TabId]) -> Vec<PaneId> {
         (self.workspaces.iter())
             .flat_map(Workspace::tabs)
             .filter(|t| tabs.contains(&t.id))
             .flat_map(|t| t.root().map(Tree::panes).unwrap_or_default())
-            .map(|p| p.to_string())
             .collect()
     }
 
@@ -963,14 +964,12 @@ impl Session {
         for (i, id) in ids.iter().enumerate() {
             let twice = ids.iter().take(i).any(|other| other.kind() == id.kind());
             if twice || !kinds.contains(&id.kind()) {
-                let message = format!(
-                    "id {}: not an id this command makes, or one of a kind given twice",
-                    describe(*id)
-                );
+                let message =
+                    format!("id {id}: not an id this command makes, or one of a kind given twice");
                 return Err(fail(Code::Id, message));
             }
             if self.there(*id).is_ok() {
-                return Err(Error::IdTaken(describe(*id)));
+                return Err(Error::IdTaken(*id));
             }
             self.ids.want(*id, self.restoring)?;
         }
@@ -981,12 +980,10 @@ impl Session {
     /// one of `from`'s kind down; all of them go in its reply.
     fn made_ids((ws, tab, pane): (WsId, TabId, PaneId), from: Kind) -> Reply {
         let ids = vec![AnyRef::Workspace(ws), AnyRef::Tab(tab), AnyRef::Pane(pane)];
-        let said: Vec<String> = (ids.iter().skip_while(|id| id.kind() != from))
-            .map(|id| describe(*id))
-            .collect();
+        let said = joined(ids.iter().skip_while(|id| id.kind() != from), " ");
         Reply {
             ids,
-            ..format!("{}\n", said.join(" ")).into()
+            ..format!("{said}\n").into()
         }
     }
 
@@ -1029,7 +1026,6 @@ impl Session {
             .filter(|t| t.name == text)
             .collect();
         let panes_of = |tab: &Tab| tab.root().map(Tree::panes).unwrap_or_default();
-        let ids = |panes: &[PaneId]| panes.iter().map(ToString::to_string).collect::<Vec<_>>();
         let named = || -> Result<&Tab, Error> {
             match tabs.as_slice() {
                 [tab] => Ok(*tab),
@@ -1039,7 +1035,7 @@ impl Session {
                 )),
                 many => {
                     let each: Vec<String> = (many.iter())
-                        .map(|t| format!("{} {}", t.id, ids(&panes_of(t)).join(" ")))
+                        .map(|t| format!("{} {}", t.id, joined(panes_of(t), " ")))
                         .collect();
                     Err(fail(
                         Code::NoTarget,
@@ -1612,7 +1608,7 @@ impl Session {
                     about: Some(about), ..
                 }
                 | Panel::Confirm { about, .. },
-            ) if self.there(*about).is_err() => format!("closed: {} is gone", describe(*about)),
+            ) if self.there(*about).is_err() => format!("closed: {} is gone", about),
             Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return false,
         };
         view.mode = Mode::Normal;
@@ -2538,9 +2534,8 @@ impl Session {
                 if let AnyRef::Tab(_) | AnyRef::Workspace(_) = target {
                     self.after_close();
                 }
-                let gone: Vec<String> = (may_go.into_iter())
+                let gone: Vec<AnyRef> = (may_go.into_iter())
                     .filter(|it| self.there(*it).is_err())
-                    .map(describe)
                     .collect();
                 Ok(closed(origin, &gone).into())
             }
@@ -2643,7 +2638,7 @@ impl Session {
                 let found = self.resolve(text, *kind, here)?;
                 Ok(Reply {
                     ids: vec![found],
-                    ..format!("{}\n", describe(found)).into()
+                    ..format!("{}\n", found).into()
                 })
             }
             &Command::ListBuffers => Ok(self
@@ -3084,7 +3079,7 @@ impl Session {
                 (scalar, format!("{}\n", value.render()))
             }
             None => {
-                let (target, fields) = (describe(target), names.join(", "));
+                let (target, fields) = (target, names.join(", "));
                 let message = format!("{target} has no field {field:?}; it has {fields}");
                 return Err(fail(Code::NoField, message));
             }
@@ -3212,14 +3207,6 @@ impl Session {
 }
 
 /// `%3`, `@2` or `+1`.
-pub fn describe(target: AnyRef) -> String {
-    match target {
-        AnyRef::Pane(p) => p.to_string(),
-        AnyRef::Tab(t) => t.to_string(),
-        AnyRef::Workspace(w) => w.to_string(),
-    }
-}
-
 /// What a program's terminal holds, unread, up to a mebibyte: read as it
 /// exits, so that its last screen is whole.
 fn unread(process: &Process) -> Vec<u8> {
@@ -3243,9 +3230,9 @@ const SHELLS: &[&str] = &[
 ];
 
 /// What a close from the command line prints: `closed` and the ids gone.
-fn closed(origin: &Origin, ids: &[String]) -> String {
+fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
     match origin {
-        Origin::Cli(_) => format!("closed {}\n", ids.join(" ")),
+        Origin::Cli(_) => format!("closed {}\n", joined(ids, " ")),
         Origin::Client(_) | Origin::Nowhere => String::new(),
     }
 }
@@ -3361,13 +3348,13 @@ fn check_workspace_name<'a>(
         return Err(Error::NameTaken(name.to_owned()));
     }
     // A tab's name too: the workspace's would hide it from `str NAME tab`.
-    let tabs: Vec<String> = (others.iter())
+    let tabs: Vec<TabId> = (others.iter())
         .flat_map(|ws| ws.tabs())
         .filter(|t| t.given && t.name == name)
-        .map(|t| t.id.to_string())
+        .map(|t| t.id)
         .collect();
     if !tabs.is_empty() {
-        return Err(Error::TabNameTaken(name.to_owned(), tabs.join(" ")));
+        return Err(Error::TabNameTaken(name.to_owned(), tabs, Vec::new()));
     }
     Ok(())
 }

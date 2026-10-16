@@ -40,6 +40,17 @@ impl AnyRef {
     }
 }
 
+/// An id as it is written: `%3`, `@2`, `+1`.
+impl std::fmt::Display for AnyRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnyRef::Pane(id) => id.fmt(f),
+            AnyRef::Tab(id) => id.fmt(f),
+            AnyRef::Workspace(id) => id.fmt(f),
+        }
+    }
+}
+
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {

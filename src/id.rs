@@ -123,11 +123,10 @@ impl Ids {
             AnyRef::Workspace(WsId(n)) => (self.workspace, &mut self.wanted.workspace, n),
         };
         if n == 0 || (n <= last && !again) {
-            return Err(Error::IdTaken(crate::session::describe(id)));
+            return Err(Error::IdTaken(id));
         }
         // An id far ahead would leave none after it: the ids would run out.
         if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
-            let id = crate::session::describe(id);
             let why = "too far ahead of the ids given so far, which would run out after it";
             return Err(crate::session::fail(Code::Id, format!("id {id}: {why}")));
         }
