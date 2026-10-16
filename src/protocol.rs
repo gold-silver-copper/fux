@@ -311,13 +311,13 @@ impl OneKind for Request {
     const KIND: u8 = kind::COMMAND;
 }
 
-/// A field's value, as its JSON has it.
+/// A field's value, as its JSON has it, if it is a number, a bool or a
+/// string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scalar {
     Int(i64),
     Bool(bool),
     Str(String),
-    Null,
 }
 
 /// The server's answer to a request: how it ended; what it says as text,
@@ -397,7 +397,7 @@ impl Reply {
     }
 }
 
-wire_enum!(Scalar, "scalar" { 0 => Int(n), 1 => Bool(b), 2 => Str(s), 3 => Null });
+wire_enum!(Scalar, "scalar" { 0 => Int(n), 1 => Bool(b), 2 => Str(s) });
 
 wire_enum!(End, "end" {
     0 => Done,

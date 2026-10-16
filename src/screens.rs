@@ -236,7 +236,7 @@ fn chooser(
     })?)?;
     let current = match reply.value {
         Some(Scalar::Int(n)) => usize::try_from(n).ok(),
-        Some(Scalar::Bool(_) | Scalar::Str(_) | Scalar::Null) | None => None,
+        Some(Scalar::Bool(_) | Scalar::Str(_)) | None => None,
     };
     let items = (reply.ids.iter())
         .zip(reply.text.lines())

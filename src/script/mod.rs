@@ -765,9 +765,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             Some(Scalar::Str(s)) => Value::str(s),
             // JSON that is no one value of fuxth's: `null`, a list, an
             // object, as text that `json` gives as it is.
-            Some(Scalar::Null) | None => {
-                Answer::value(text.clone(), Some(text), "a JSON value", None)
-            }
+            None => Answer::value(text.clone(), Some(text), "a JSON value", None),
         }],
         Then::Outcome { waited: false } => Vec::new(),
         Then::Outcome { waited: true } => vec![action(text, json)],

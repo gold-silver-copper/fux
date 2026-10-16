@@ -3019,16 +3019,18 @@ impl Session {
         let value = fields.into_iter().find(|(name, _)| *name == field);
         use crate::protocol::Scalar;
         let (scalar, text) = match value {
-            Some((_, Json::String(text))) => (Scalar::Str(text.to_string()), format!("{text}\n")),
+            Some((_, Json::String(text))) => {
+                (Some(Scalar::Str(text.to_string())), format!("{text}\n"))
+            }
             Some((_, value)) => {
                 let scalar = match &value {
-                    Json::Number(n) => Scalar::Int(*n),
-                    Json::Bool(b) => Scalar::Bool(*b),
+                    Json::Number(n) => Some(Scalar::Int(*n)),
+                    Json::Bool(b) => Some(Scalar::Bool(*b)),
                     Json::Null
                     | Json::String(_)
                     | Json::Array(_)
                     | Json::Object(_)
-                    | Json::Raw(_) => Scalar::Null,
+                    | Json::Raw(_) => None,
                 };
                 (scalar, format!("{}\n", value.render()))
             }
@@ -3040,7 +3042,7 @@ impl Session {
         };
         drop(names);
         Ok(Reply {
-            value: Some(scalar),
+            value: scalar,
             ..text.into()
         })
     }
