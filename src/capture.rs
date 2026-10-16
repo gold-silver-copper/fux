@@ -30,7 +30,7 @@ pub fn pane(
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
     };
     let mut lines: Vec<Cells<'_>> = Vec::new();
-    // A soft-wrapped row goes on in the next, joined with `-J`.
+    // A soft-wrapped row goes on in the next, joined with `joined`.
     let mut wraps = false;
     let read = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the

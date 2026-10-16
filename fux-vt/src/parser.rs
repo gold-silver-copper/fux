@@ -240,7 +240,7 @@ enum State {
     /// Sixel data (`DCS P1 ; P2 ; P3 q … ST`), decoded as it comes by the
     /// parser's decoder; its end places the picture.
     Sixel,
-    /// A DECRQSS (`DCS $ q Pt ST`) with [`Options::setting_reports`]: its
+    /// A DECRQSS (`DCS $ q Pt ST`) with [`Feature::SettingReports`]: its
     /// request so far, `None` once it ran past any setting fux-vt knows.
     Request(Option<Bytes<REQUEST_LIMIT>>),
     /// An OSC string, its payload the parser's: `whole` until it ran past

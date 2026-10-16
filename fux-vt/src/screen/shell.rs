@@ -5,7 +5,7 @@
 //! on the row after the line last submitted, as the host said
 //! (`Parser::note_submit`), else after the line of the prompt it was
 //! typed at. A host reads them to know when a command typed into a shell is done, its
-//! status, and its output ([`Screen::commands`], [`Screen::last_output`]).
+//! status, and its output ([`Screen::commands`], [`Commands::last_output`]).
 
 use super::Screen;
 use crate::RowId;

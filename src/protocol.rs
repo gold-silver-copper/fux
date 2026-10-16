@@ -119,7 +119,7 @@ pub enum Role {
     /// One command, then its output.
     Command,
     /// Stop the server. Accepted whatever the protocol version, so that
-    /// `fux kill-server` can always stop a server from another fux version:
+    /// `fux force-kill-server` can always stop a server from another fux version:
     /// for that, a `Hello`'s frame and payload never change.
     Kill,
     /// A client with no terminal (`COLS ROWS headless`): `Attach`, then

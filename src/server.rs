@@ -1400,7 +1400,7 @@ impl Server {
         }
     }
 
-    /// A client's connection is ready, as found at `now`.
+    /// A client's connection is ready, as `poll` found it (`flags`).
     fn serve_conn(&mut self, index: usize, flags: PollFlags) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
@@ -1512,7 +1512,7 @@ impl Server {
                     }
                     (Ok(()), Role::Kill) => {
                         conn.end(session, &ServerFrame::Done { status: 0 });
-                        self.stop("stopped by fux kill-server".into(), false);
+                        self.stop("stopped by fux force-kill-server".into(), false);
                     }
                     (Ok(()), Role::Attach) => {
                         conn.enter(session, Stage::Attaching(passed, ClientKind::Terminal));

@@ -99,7 +99,8 @@ pub fn main() -> ExitCode {
 }
 
 /// How a client starts a server, in the background: `fux __serve SOCKET`,
-/// with `fresh` to forget what the last one held. No person types it.
+/// with `fresh` to forget what the last one held. A client types it; no
+/// help lists it, though a person can type it too.
 pub const SERVE: &str = "__serve";
 
 /// A server, started by a client: it leaves the client's session first, so

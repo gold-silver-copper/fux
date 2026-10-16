@@ -490,7 +490,7 @@ impl Reach<'_> {
             Command::KillServer { .. } => self.refuse("kill-server"),
             Command::NewWorkspace { .. } => self.refuse("new-workspace"),
             Command::Kill { target } => match target {
-                AnyRef::Workspace(_) => self.refuse("kill-workspace"),
+                AnyRef::Workspace(_) => self.refuse("killing the workspace"),
                 AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
             },
             Command::NewTab { target, .. } => target.as_ref().map_or(Ok(()), |w| self.workspace(w)),
@@ -1087,7 +1087,7 @@ impl Session {
     /// Sends `inputs` to pane `id`'s program, a piece at a time
     /// (`crate::log::Unit`): text typed in a row is one piece, keys that
     /// edit the line in a row another, and each other key, a lone Escape
-    /// and a paste each their own. So in `--text msg Enter` the Enter is
+    /// and a paste each their own. So in `keys str msg text str Enter key` the Enter is
     /// read alone, as a submit, not as a newline pasted with the text, and
     /// what follows each piece is told apart (`crate::classify`).
     fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
@@ -2628,7 +2628,7 @@ impl Session {
                     .map(|()| Reply::default())
             }
             &Command::Client { client, ref action } => {
-                // The client `-c` names, else the one the command came from.
+                // The client named (`str c1 client`), else the one the command came from.
                 let (client, place) = match (client, here) {
                     (Some(c), _) => (c, self.place(c).ok_or(Error::NoClient(c))?),
                     (None, Here::Client(client, place)) => (client, place),

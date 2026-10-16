@@ -73,7 +73,8 @@ impl Kind {
 }
 
 /// Which way `reorder` moves a pane, tab or workspace among its siblings,
-/// or `select-…` steps from the current one.
+/// or `focus`, `next-tab` and `next-workspace` (or `previous-…`) step from
+/// the current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sibling {
     Next,
@@ -419,7 +420,7 @@ pub enum Command {
         index: usize,
         target: PaneId,
     },
-    /// A command on one client's screen: the client `-c` names, or the one
+    /// A command on one client's screen: the client named (`str c1 client`), or the one
     /// whose key, menu or prompt ran it.
     Client {
         client: Option<ClientId>,

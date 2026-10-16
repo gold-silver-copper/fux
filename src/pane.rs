@@ -461,7 +461,7 @@ pub struct Alerts {
 }
 
 impl Alerts {
-    /// Bells and notifications together, as `wait --bell` counts them.
+    /// Bells and notifications together, as `wait-bell` counts them.
     pub fn count(&self) -> u64 {
         self.bells.saturating_add(self.notifications)
     }
@@ -535,7 +535,7 @@ pub struct Pane {
     /// screen of its own: a wait on the program before ends with it.
     pub starts: u64,
     pub alerts: Alerts,
-    /// Where everything the program writes is kept too (`fux run --log`).
+    /// Where everything the program writes is kept too (`log-to`, `start-log`).
     pub log: Option<std::fs::File>,
 }
 
