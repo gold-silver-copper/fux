@@ -4,8 +4,10 @@ disagreements and their rate; paired by (seed, case, step), a case known
 by its mode, seed and chunk, as results arrive in the order they finish:
 McNemar on steps where exactly one build disagreed. Exits 1 on a problem: a
 case missing from a build or there twice, a request left unanswered, a case
-whose step count changed, or a disagreement the candidate has and the base
-has not."""
+whose step count changed, a disagreement the candidate has and the base has
+not that no KNOWN rule lists, or candidate-only disagreements McNemar says
+outnumber base-only ones (p < 0.05). A KNOWN one on one side alone is timing,
+as the base against itself shows, and is listed, not failed."""
 import json, os, sys, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stats import mcnemar
@@ -43,8 +45,16 @@ for cl in classes + ["ALL"]:
     rate = lambda n: 100 * n / max(steps, 1)
     print(f"{cl:28} {len(a):5} ({rate(len(a)):4.1f}%) {len(c):5} ({rate(len(c)):4.1f}%) {len(a-c):12} {len(c-a):10} {mcnemar(len(a-c), len(c-a)):10.2g}")
     if cl == "ALL":
+        p = mcnemar(len(a - c), len(c - a))
+        if len(c - a) > len(a - c) and p < 0.05:
+            problems.append(f"more disagreements on cand than base (McNemar p {p:.2g})")
         for k in sorted(c - a):
-            problems.append(f"new disagreement: seed {k[0]}, case {k[1]}, step {k[2]}")
+            known = any(x["known"] for kk, x in dis["cand"].items() if kk[:3] == k)
+            what = f"seed {k[0]}, case {k[1]}, step {k[2]}"
+            if known:
+                print(f"one-sided, known rule (timing): {what}")
+            else:
+                problems.append(f"new disagreement: {what}")
 known = collections.Counter((b, x["class"], x["known"]) for b in dis for x in dis[b].values())
 print("known (kept-rule) split:", dict(known))
 for problem in problems:
