@@ -55,32 +55,36 @@ pub enum Error {
     Mismatch(crate::protocol::Mismatch),
     /// The server closed the connection before it answered.
     NoAnswer,
-    Timeout,
     /// The server closed the connection before the command was done.
     Closed,
     Protocol(crate::protocol::Error),
     Write(std::io::Error),
     Read(std::io::Error),
-    // Starting a server.
-    Exe(std::io::Error),
-    Log(std::io::Error),
-    Spawn(std::io::Error),
-    Exited {
-        status: std::process::ExitStatus,
-        log: PathBuf,
-    },
-    NotStarted {
-        log: PathBuf,
-    },
-    // Attaching this terminal.
     NotATerminal,
-    Modes(fuxix::Errno),
-    RawMode(fuxix::Errno),
     /// The pipes that carry signals could not be set up.
     Signals(std::io::Error),
-    Poll(fuxix::Errno),
-    ReadTerminal(fuxix::Errno),
-    WriteTerminal(std::io::Error),
+    /// Anything else that failed: why.
+    Failed(String),
+}
+
+impl Error {
+    /// What kind of failure it is, as `--json` names it.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::Socket(crate::socket::Error::NoServer(_)) | Error::Connect { .. } => "no_server",
+            Error::Mismatch(_) => "mismatch",
+            Error::Socket(_)
+            | Error::Refused(_)
+            | Error::NoAnswer
+            | Error::Closed
+            | Error::Protocol(_)
+            | Error::Write(_)
+            | Error::Read(_)
+            | Error::NotATerminal
+            | Error::Signals(_)
+            | Error::Failed(_) => "client",
+        }
+    }
 }
 
 impl std::fmt::Display for Error {
@@ -104,34 +108,23 @@ impl std::fmt::Display for Error {
             Error::Refused(reason) => f.write_str(reason),
             Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::NoAnswer => f.write_str("the server did not answer"),
-            Error::Timeout => f.write_str("the server did not answer in time"),
             Error::Closed => f.write_str("the server closed the connection"),
             Error::Protocol(error) => error.fmt(f),
             Error::Write(error) => write!(f, "writing to the server: {error}"),
             Error::Read(error) => write!(f, "reading from the server: {error}"),
-            Error::Exe(error) => write!(f, "finding the fux binary: {error}"),
-            Error::Log(error) => write!(f, "the log file: {error}"),
-            Error::Spawn(error) => write!(f, "starting a server: {error}"),
-            Error::Exited { status, log } => {
-                write!(f, "the server exited ({status}); see {}", log.display())
-            }
-            Error::NotStarted { log } => write!(
-                f,
-                "the server did not start within 2 s; see {}",
-                log.display()
-            ),
             Error::NotATerminal => f.write_str("fux attach needs a terminal on stdin"),
-            Error::Modes(errno) => write!(f, "reading terminal modes: {errno}"),
-            Error::RawMode(errno) => write!(f, "setting raw mode: {errno}"),
             Error::Signals(error) => error.fmt(f),
-            Error::Poll(errno) => write!(f, "poll: {errno}"),
-            Error::ReadTerminal(errno) => write!(f, "reading the terminal: {errno}"),
-            Error::WriteTerminal(error) => write!(f, "writing the terminal: {error}"),
+            Error::Failed(why) => f.write_str(why),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+/// A failure while `doing` what its message begins with.
+fn failed<E: std::fmt::Display>(doing: &'static str) -> impl FnOnce(E) -> Error {
+    move |e| Error::Failed(format!("{doing}: {e}"))
+}
 
 impl From<crate::socket::Error> for Error {
     fn from(error: crate::socket::Error) -> Error {
@@ -258,7 +251,8 @@ fn read_frame<'d>(
             Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                return Err(Error::Timeout);
+                let why = "the server did not answer in time";
+                return Err(Error::Failed(why.to_owned()));
             }
             Err(e) => return Err(Error::Read(e)),
         }
@@ -452,14 +446,14 @@ pub fn answers(socket: &SocketPath) -> bool {
 /// Starts a server in the background, in a new session with its output in
 /// `fux.log` beside the socket, and waits for it to answer.
 pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
-    let exe = std::env::current_exe().map_err(Error::Exe)?;
+    let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     crate::socket::prepare_directory(socket)?;
     let log = socket.directory().join("fux.log");
     let output = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log)
-        .map_err(Error::Log)?;
+        .map_err(failed("the log file"))?;
     let mut command = std::process::Command::new(exe);
     command
         .arg(crate::SERVE)
@@ -467,7 +461,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(output);
-    let mut child = command.spawn().map_err(Error::Spawn)?;
+    let mut child = command.spawn().map_err(failed("starting a server"))?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {
         if answers(socket) {
@@ -482,10 +476,16 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
             if answers(socket) {
                 return Ok(());
             }
-            return Err(Error::Exited { status, log });
+            let log = log.display();
+            return Err(Error::Failed(format!(
+                "the server exited ({status}); see {log}"
+            )));
         }
         if Instant::now() > deadline {
-            return Err(Error::NotStarted { log });
+            let log = log.display();
+            return Err(Error::Failed(format!(
+                "the server did not start within 2 s; see {log}"
+            )));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1029,7 +1029,8 @@ struct Raw {
 
 impl Raw {
     fn enter(signals: Signals, stdin: &std::io::Stdin) -> Result<Raw, Error> {
-        let original = fuxix::terminal::attributes(stdin).map_err(Error::Modes)?;
+        let original =
+            fuxix::terminal::attributes(stdin).map_err(failed("reading terminal modes"))?;
         let mut raw = original.clone();
         raw.make_raw();
         if let Ok(mut saved) = SAVED.lock() {
@@ -1042,7 +1043,7 @@ impl Raw {
         }));
         // Made before raw mode, so that failing to set it restores too.
         let entered = Raw { signals };
-        fuxix::terminal::set_attributes(stdin, &raw).map_err(Error::RawMode)?;
+        fuxix::terminal::set_attributes(stdin, &raw).map_err(failed("setting raw mode"))?;
         let mut stdout = std::io::stdout();
         let _ = stdout.write_all(ENTER.as_bytes());
         let _ = stdout.flush();
@@ -1112,7 +1113,9 @@ fn attached(
             match (frame, &mut keyboard) {
                 (ServerFrame::Paint(bytes), _) => {
                     if terminal {
-                        stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
+                        stdout
+                            .write_all(bytes)
+                            .map_err(failed("writing the terminal"))?;
                     }
                 }
                 (ServerFrame::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
@@ -1159,7 +1162,7 @@ fn attached(
         let timeout = deadline.map(|at| at.saturating_duration_since(Instant::now()));
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
-            Err(e) => return Err(Error::Poll(e)),
+            Err(e) => return Err(failed("poll")(e)),
         }
         let ready: Vec<bool> = fds.iter().map(|fd| !fd.revents().is_empty()).collect();
         drop(fds);
@@ -1191,7 +1194,7 @@ fn attached(
                     }
                     Ok(n) => acts.extend(keyboard.bytes(buffer.get(..n).unwrap_or_default(), now)),
                     Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
-                    Err(e) => return Err(Error::ReadTerminal(e)),
+                    Err(e) => return Err(failed("reading the terminal")(e)),
                 }
             }
         }
@@ -1259,7 +1262,6 @@ mod tests {
         let refused = answer(|peer| write(peer, &ServerFrame::Exit("busy")), wait);
         assert!(matches!(&refused, Err(Error::Refused(reason)) if reason == "busy"));
         let silent = answer(|_| {}, wait);
-        assert!(matches!(silent, Err(Error::Timeout)));
         assert_eq!(
             silent.err().map(|e| e.to_string()).as_deref(),
             Some("the server did not answer in time")

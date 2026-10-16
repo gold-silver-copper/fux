@@ -479,32 +479,7 @@ impl Server {
 }
 
 fn client_failed(error: crate::client::Error) -> Failed {
-    let code = match &error {
-        crate::client::Error::Socket(crate::socket::Error::NoServer(_))
-        | crate::client::Error::Connect { .. } => "no_server",
-        crate::client::Error::Mismatch(_) => "mismatch",
-        crate::client::Error::Socket(_)
-        | crate::client::Error::Refused(_)
-        | crate::client::Error::NoAnswer
-        | crate::client::Error::Timeout
-        | crate::client::Error::Closed
-        | crate::client::Error::Protocol(_)
-        | crate::client::Error::Write(_)
-        | crate::client::Error::Read(_)
-        | crate::client::Error::Exe(_)
-        | crate::client::Error::Log(_)
-        | crate::client::Error::Spawn(_)
-        | crate::client::Error::Exited { .. }
-        | crate::client::Error::NotStarted { .. }
-        | crate::client::Error::NotATerminal
-        | crate::client::Error::Modes(_)
-        | crate::client::Error::RawMode(_)
-        | crate::client::Error::Signals(_)
-        | crate::client::Error::Poll(_)
-        | crate::client::Error::ReadTerminal(_)
-        | crate::client::Error::WriteTerminal(_) => "client",
-    };
-    Failed::new(code, error.to_string())
+    Failed::new(error.code(), error.to_string())
 }
 
 /// What a program's requests go to, and what does what the client does
