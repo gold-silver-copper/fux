@@ -172,7 +172,7 @@ fn answered(reply: Reply) -> Result<Reply, Failed> {
             code,
             message,
         } => Err(Failed {
-            status: status.get(),
+            status,
             code,
             message,
         }),

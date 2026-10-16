@@ -266,7 +266,7 @@ pub struct Ended {
 /// else 1), its code and its message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
-    pub status: u8,
+    pub status: std::num::NonZeroU8,
     pub code: Code,
     pub message: String,
 }
@@ -275,7 +275,7 @@ impl Failed {
     /// A failure of kind `code`, with its status, and why.
     pub fn new(code: Code, message: impl Into<String>) -> Failed {
         Failed {
-            status: code.status().get(),
+            status: code.status(),
             code,
             message: message.into(),
         }
@@ -694,7 +694,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             (message, _) => message,
         };
         return Err(Failed {
-            status: status.get(),
+            status,
             code,
             message: message.to_owned(),
         });
