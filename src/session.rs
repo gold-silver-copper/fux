@@ -2536,91 +2536,29 @@ impl Session {
         if scope.is_empty() {
             return Err(Error::Revoked);
         }
+        // With no target, one that would act anywhere acts on the granted
+        // workspace.
+        let mut command = command;
         let place = || Some(WsRef::Name(scope.to_owned()));
-        let command = match command {
-            Command::Run {
-                workspace: None,
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                json,
-                log,
-                ids,
-                then,
-            } => Command::Run {
-                workspace: place(),
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                json,
-                log,
-                ids,
-                then,
-            },
-            Command::NewTab {
-                target: None,
-                name,
-                cmd,
-                size,
-                cwd,
-                env,
-                ids,
-                json,
-            } => Command::NewTab {
-                target: place(),
-                name,
-                cmd,
-                size,
-                cwd,
-                env,
-                ids,
-                json,
-            },
-            Command::Events { targets, json } if targets.is_empty() => Command::Events {
-                targets: vec![AnyRef::Workspace(WsRef::Name(scope.to_owned()))],
-                json,
-            },
-            Command::DumpLayout { target: None } => Command::DumpLayout {
-                target: Some(AnyRef::Workspace(WsRef::Name(scope.to_owned()))),
-            },
-            other @ (Command::Ls { .. }
-            | Command::KillServer { .. }
-            | Command::NewWorkspace { .. }
-            | Command::NewTab { .. }
-            | Command::Split { .. }
-            | Command::Run { .. }
-            | Command::Respawn { .. }
-            | Command::Notify { .. }
-            | Command::Resize { .. }
-            | Command::Wait { .. }
-            | Command::SendMouse { .. }
-            | Command::KillPane { .. }
-            | Command::Signal { .. }
-            | Command::KillTab { .. }
-            | Command::KillWorkspace { .. }
-            | Command::Rename { .. }
-            | Command::MovePane { .. }
-            | Command::SwapPane { .. }
-            | Command::ResizePane { .. }
-            | Command::SendKeys { .. }
-            | Command::Events { .. }
-            | Command::DumpLayout { .. }
-            | Command::Grant { .. }
-            | Command::Log { .. }
-            | Command::ClearHistory { .. }
-            | Command::CapturePane { .. }
-            | Command::Reorder { .. }
-            | Command::Set { .. }
-            | Command::Resolve { .. }
-            | Command::ListBuffers
-            | Command::ShowBuffer { .. }
-            | Command::PasteBuffer { .. }
-            | Command::Client { .. }) => other,
-        };
+        let whole = || Some(AnyRef::Workspace(WsRef::Name(scope.to_owned())));
+        if let Command::Run {
+            workspace: at @ None,
+            ..
+        }
+        | Command::NewTab {
+            target: at @ None, ..
+        } = &mut command
+        {
+            *at = place();
+        }
+        if let Command::DumpLayout { target: at @ None } = &mut command {
+            *at = whole();
+        }
+        if let Command::Events { targets, .. } = &mut command
+            && targets.is_empty()
+        {
+            targets.extend(whole());
+        }
         let reach = Reach {
             session: self,
             ws: self.resolve_ws(&WsRef::Name(scope.to_owned())).ok(),
