@@ -949,15 +949,11 @@ impl Server {
         let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Save)));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
-        let answers = self.conns.iter().filter_map(|conn| match &conn.stage {
-            Stage::Waiting(waiting) => Some((waiting.due(), Wake::Answer)),
-            Stage::Hello(_)
-            | Stage::Attaching(..)
-            | Stage::Attached(_)
-            | Stage::Command
-            | Stage::Events(_)
-            | Stage::Closing
-            | Stage::Dead => None,
+        let answers = self.conns.iter().filter_map(|conn| {
+            let Stage::Waiting(waiting) = &conn.stage else {
+                return None;
+            };
+            Some((waiting.due(), Wake::Answer))
         });
         session
             .chain(grace)
@@ -1096,15 +1092,8 @@ impl Server {
     /// Drops every connection that is dead, or closing with nothing left to
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
-        self.conns.retain(|conn| match conn.stage {
-            Stage::Dead => false,
-            Stage::Closing => !conn.out.is_empty(),
-            Stage::Hello(_)
-            | Stage::Attaching(..)
-            | Stage::Attached(_)
-            | Stage::Command
-            | Stage::Waiting(_)
-            | Stage::Events(_) => true,
+        self.conns.retain(|conn| {
+            conn.stage.reads() || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
         });
     }
 
@@ -1204,60 +1193,50 @@ impl Server {
         // left of the session.
         let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
-            match conn.stage {
-                // A stream says why it ends, as one of its lines, and ends
-                // as a command that is done.
-                Stage::Events(ref subscription) => {
-                    let reason = Json::str(reason.clone());
-                    let stopped = Event::stream("stopped", vec![("reason", reason)]);
-                    let line = stopped.line(subscription.json);
-                    ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                    conn.answer(&mut self.session, Outcome::default());
-                    conn.end(&mut self.session, &ServerFrame::Exit(&exit));
-                }
-                Stage::Hello(_)
-                | Stage::Attaching(..)
-                | Stage::Attached(_)
-                | Stage::Command
-                | Stage::Waiting(_) => {
-                    conn.end(&mut self.session, &ServerFrame::Exit(&exit));
-                }
-                Stage::Closing | Stage::Dead => {}
+            // A stream says why it ends, as one of its lines, and ends as a
+            // command that is done.
+            if let Stage::Events(subscription) = &conn.stage {
+                let reason = Json::str(reason.clone());
+                let stopped = Event::stream("stopped", vec![("reason", reason)]);
+                let line = stopped.line(subscription.json);
+                ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                conn.answer(&mut self.session, Outcome::default());
+            }
+            if conn.stage.reads() {
+                conn.end(&mut self.session, &ServerFrame::Exit(&exit));
             }
         }
     }
 
     fn flush_outbox(&mut self) {
         for outgoing in std::mem::take(&mut self.session.outbox) {
+            let client = match outgoing {
+                Outgoing::Shutdown { reason, keep } => {
+                    self.stop(reason, keep);
+                    continue;
+                }
+                Outgoing::Bytes(client, _)
+                | Outgoing::Exit(client, _)
+                | Outgoing::Run(client, _)
+                | Outgoing::Keys(client, _)
+                | Outgoing::Ended(client) => client,
+            };
+            let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) else {
+                continue;
+            };
+            let session = &mut self.session;
             match outgoing {
-                Outgoing::Bytes(client, bytes) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client))
-                        && let Stage::Attached(attached) = &mut conn.stage
-                    {
+                Outgoing::Bytes(_, bytes) => {
+                    if let Stage::Attached(attached) = &mut conn.stage {
                         attached.paint(&mut conn.out, &bytes);
                     }
                 }
-                Outgoing::Exit(client, reason) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.end(&mut self.session, &ServerFrame::Exit(&reason));
-                    }
-                }
-                Outgoing::Run(client, code) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.send(&mut self.session, &ServerFrame::Run(&code));
-                    }
-                }
-                Outgoing::Keys(client, keys) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.send(&mut self.session, &ServerFrame::Keys(keys));
-                    }
-                }
-                Outgoing::Ended(client) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.send(&mut self.session, &ServerFrame::Ended);
-                    }
-                }
-                Outgoing::Shutdown { reason, keep } => self.stop(reason, keep),
+                Outgoing::Exit(_, reason) => conn.end(session, &ServerFrame::Exit(&reason)),
+                Outgoing::Run(_, code) => conn.send(session, &ServerFrame::Run(&code)),
+                Outgoing::Keys(_, keys) => conn.send(session, &ServerFrame::Keys(keys)),
+                Outgoing::Ended(_) => conn.send(session, &ServerFrame::Ended),
+                // Stopped above.
+                Outgoing::Shutdown { .. } => {}
             }
         }
     }
@@ -1577,15 +1556,10 @@ impl Server {
             // A command client that shut its side still gets the answers
             // to what it asked.
             if closed {
-                let next = match conn.stage {
-                    Stage::Command => Stage::Closing,
-                    Stage::Hello(_)
-                    | Stage::Attaching(..)
-                    | Stage::Attached(_)
-                    | Stage::Waiting(_)
-                    | Stage::Events(_)
-                    | Stage::Closing
-                    | Stage::Dead => Stage::Dead,
+                let next = if matches!(conn.stage, Stage::Command) {
+                    Stage::Closing
+                } else {
+                    Stage::Dead
                 };
                 conn.enter(&mut self.session, next);
             }
@@ -1697,15 +1671,11 @@ impl Server {
                 };
                 self.request(index, command, context);
             }
-            // Nothing more is asked of a waiting command, or a stream.
-            Stage::Waiting(_) | Stage::Events(_) => {
-                *decoder = Decoder::default();
-                return Ok(false);
-            }
-            // A connection that is ending has had its last word: what came
+            // Nothing more is asked of a waiting command, or a stream. A
+            // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
-            Stage::Closing | Stage::Dead => {
+            Stage::Waiting(_) | Stage::Events(_) | Stage::Closing | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
             }
