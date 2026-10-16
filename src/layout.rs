@@ -148,7 +148,7 @@ impl Rect {
         (inside(y, self.y, self.h), inside(x, self.x, self.w))
     }
     /// Its length along `axis`.
-    fn len(&self, axis: Axis) -> u16 {
+    pub fn len(&self, axis: Axis) -> u16 {
         match axis {
             Axis::Horizontal => self.w,
             Axis::Vertical => self.h,

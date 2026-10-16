@@ -792,7 +792,7 @@ impl Session {
         env: &[(String, String)],
         argv: &[String],
     ) -> Result<(), Error> {
-        let pane = self.panes.get(&id).ok_or(Error::NoPane(id))?;
+        let pane = self.pane(id)?;
         let Runs::Program(launch) = &pane.runs else {
             let message = format!("{id} runs a shell; respawn starts again what `fux run` started");
             return Err(fail(Code::NotRun, message));
@@ -813,7 +813,7 @@ impl Session {
         let (child, nonce) =
             (self.spawn(id, (&launch.argv, &launch.env), &launch.cwd, size)?).unzip();
         let history = self.config.history_bytes;
-        let pane = self.panes.get_mut(&id).ok_or(Error::NoPane(id))?;
+        let pane = self.pane_mut(id)?;
         let old = pane.respawned(launch, child.map(Process::Reading), history)?;
         pane.mark_with(nonce.flatten());
         self.end(id, old, true);
@@ -925,14 +925,13 @@ impl Session {
     /// What panes started for `origin` take of its environment: none of
     /// it for one that sent none (a test, a client of no terminal).
     fn starting_for(&self, origin: &Origin) -> Starting {
-        let env = match origin {
-            Origin::Cli(caller) => caller.env.as_slice(),
-            Origin::Client(client) => self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
-            Origin::Nowhere => &[],
-        };
-        let socket = match origin {
-            Origin::Cli(caller) => caller.grant.clone(),
-            Origin::Client(_) | Origin::Nowhere => None,
+        let (env, socket) = match origin {
+            Origin::Cli(caller) => (caller.env.as_slice(), caller.grant.clone()),
+            Origin::Client(client) => (
+                self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
+                None,
+            ),
+            Origin::Nowhere => (&[][..], None),
         };
         let mut fresh = Starting {
             socket,
@@ -968,12 +967,16 @@ impl Session {
         Ok(())
     }
 
-    /// What a command that makes a pane prints, `text`, the ids it names;
-    /// the ids made go in its reply.
-    fn made_ids((ws, tab, pane): (WsId, TabId, PaneId), text: &[String]) -> Reply {
+    /// What a command that makes a pane prints: the ids it made, from
+    /// one of `from`'s kind down; all of them go in its reply.
+    fn made_ids((ws, tab, pane): (WsId, TabId, PaneId), from: Kind) -> Reply {
+        let ids = vec![AnyRef::Workspace(ws), AnyRef::Tab(tab), AnyRef::Pane(pane)];
+        let said: Vec<String> = (ids.iter().skip_while(|id| id.kind() != from))
+            .map(|id| describe(*id))
+            .collect();
         Reply {
-            ids: vec![AnyRef::Workspace(ws), AnyRef::Tab(tab), AnyRef::Pane(pane)],
-            ..format!("{}\n", text.join(" ")).into()
+            ids,
+            ..format!("{}\n", said.join(" ")).into()
         }
     }
 
@@ -1114,7 +1117,7 @@ impl Session {
     /// what follows each piece is told apart (`crate::classify`).
     fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
         use crate::log::Unit;
-        let p = self.panes.get_mut(&id).ok_or(Error::NoPane(id))?;
+        let p = self.pane_mut(id)?;
         p.note_input();
         let (mode, bracketed) = (
             p.screen().key_mode(),
@@ -1233,17 +1236,14 @@ impl Session {
         let now = layout::place(&root, area)
             .rect(pane)
             .ok_or(Error::NoPane(pane))?;
+        let len = cells(extent, area.len(axis));
         let want = match axis {
-            Axis::Horizontal => (cells(extent, area.w()), now.h()),
-            Axis::Vertical => (now.w(), cells(extent, area.h())),
+            Axis::Horizontal => (len, now.h()),
+            Axis::Vertical => (now.w(), len),
         };
         let refused = || {
             let message = format!("{pane} cannot be made {}x{} in its tab", want.0, want.1);
             fail(Code::Size, message)
-        };
-        let len = match axis {
-            Axis::Horizontal => want.0,
-            Axis::Vertical => want.1,
         };
         root = layout::resize_to(&root, area, pane, axis, len).ok_or_else(refused)?;
         // A size the layout cannot give exactly is not met.
@@ -2068,10 +2068,8 @@ impl Session {
         {
             *at = place();
         }
-        if let Command::DumpLayout { target: at @ None } = &mut command {
-            *at = Some(whole()?);
-        }
-        if let Command::Events {
+        if let Command::DumpLayout { target: at @ None }
+        | Command::Events {
             target: at @ None, ..
         } = &mut command
         {
@@ -2211,12 +2209,8 @@ impl Session {
                 let start = (Start::Shell(cmd, env), cwd.as_path());
                 let place = (fit, self.start_size(fit, here));
                 let made = self.create_workspace((name.clone(), None), start, place)?;
-                let (ws, tab, pane) = made;
-                self.follow(here, ws, None, None);
-                Ok(Self::made_ids(
-                    made,
-                    &[ws.to_string(), tab.to_string(), pane.to_string()],
-                ))
+                self.follow(here, made.0, None, None);
+                Ok(Self::made_ids(made, Kind::Workspace))
             }
             Command::NewTab {
                 target,
@@ -2243,10 +2237,7 @@ impl Session {
                     self.give_tab_name(tab, name.clone())?;
                 }
                 self.follow(here, ws, Some(tab), None);
-                Ok(Self::made_ids(
-                    (ws, tab, pane),
-                    &[tab.to_string(), pane.to_string()],
-                ))
+                Ok(Self::made_ids((ws, tab, pane), Kind::Tab))
             }
             Command::Run {
                 workspace,
@@ -2292,7 +2283,7 @@ impl Session {
                 if let Some(pane) = self.panes.get_mut(&made.2) {
                     pane.log = log;
                 }
-                Ok(Self::made_ids(made, &[made.2.to_string()]))
+                Ok(Self::made_ids(made, Kind::Pane))
             }
             &Command::Respawn {
                 target,
@@ -2517,7 +2508,7 @@ impl Session {
                     view.zoom = false;
                 }
                 let at = self.locate(new).ok_or(Error::NoPane(new))?;
-                Ok(Self::made_ids((at.0, at.1, new), &[new.to_string()]))
+                Ok(Self::made_ids((at.0, at.1, new), Kind::Pane))
             }
             &Command::Signal { target, signal, .. } => {
                 let group = self.signalled(target)?;
@@ -2758,7 +2749,7 @@ impl Session {
         check_name(&name)?;
         match target {
             AnyRef::Pane(p) => {
-                self.panes.get_mut(&p).ok_or(Error::NoPane(p))?.name = name;
+                self.pane_mut(p)?.name = name;
             }
             AnyRef::Tab(t) => {
                 self.check_tab_name(&name, Some(t))?;
