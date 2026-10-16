@@ -1409,7 +1409,7 @@ impl Session {
         self.views.insert(id, view);
         self.workspaces.iter_mut().for_each(|w| w.attach(id));
         self.show(id, ws, None, None);
-        self.ask_terminal(id);
+        self.ask(id, crate::outer::QUERIES);
         self.settle();
         Ok(id)
     }

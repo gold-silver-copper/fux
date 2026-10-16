@@ -178,15 +178,10 @@ impl Terminal {
 impl Session {
     /// Asks client `client`'s terminal `queries`, which end with DA1, in its
     /// paint stream; the client's decoder expects the answers.
-    fn ask(&mut self, client: ClientId, queries: &[u8]) {
+    pub(crate) fn ask(&mut self, client: ClientId, queries: &[u8]) {
         if self.views.contains_key(&client) {
             self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
         }
-    }
-
-    /// Asks a newly attached client's terminal what fux wants to know of it.
-    pub(crate) fn ask_terminal(&mut self, client: ClientId) {
-        self.ask(client, QUERIES);
     }
 
     /// An answer or report from client `client`'s terminal.
