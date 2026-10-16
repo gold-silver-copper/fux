@@ -757,7 +757,8 @@ impl Session {
     pub fn start(&mut self) -> Result<(), Error> {
         let home = home();
         let start = (Start::Shell(&[], &[]), home.as_path());
-        self.create_workspace(Some(MAIN.into()), start, (Fit::Clients, default_size()))
+        let names = (Some(MAIN.into()), None);
+        self.create_workspace(names, start, (Fit::Clients, default_size()))
             .map(|_| ())
     }
 
@@ -1465,39 +1466,40 @@ impl Session {
             .unwrap_or_else(home)
     }
 
-    /// The name a workspace gets when none is given: `workspace-N` after
-    /// its ID, or the next number up that no workspace is named.
-    /// Where a new tab's or workspace's shell starts: `dir`, from the
-    /// caller's directory, or that directory itself.
-    fn start_dir(&self, here: Here, dir: Option<&str>) -> Result<PathBuf, Error> {
-        let cwd = self.cwd_for(here, None);
-        let cwd = dir.map_or_else(|| cwd.clone(), |dir| cwd.join(dir));
+    /// Where a new pane's program starts: `dir`, from the caller's
+    /// directory, or with none the directory of the caller, or of `near`.
+    fn start_dir(
+        &self,
+        here: Here,
+        dir: Option<&str>,
+        near: Option<PaneId>,
+    ) -> Result<PathBuf, Error> {
+        let cwd = match dir {
+            Some(dir) => self.cwd_for(here, None).join(dir),
+            None => self.cwd_for(here, near),
+        };
         match cwd.is_dir() {
             true => Ok(cwd),
             false => Err(Error::NotADirectory(cwd)),
         }
     }
 
+    /// The name a workspace gets when none is given: `workspace-N` after
+    /// its ID, or the next number up that no workspace is named.
     fn workspace_name(&self, id: WsId) -> String {
-        let mut n = id.number();
-        loop {
-            let name = format!("workspace-{n}");
-            if !self.workspaces.iter().any(|ws| ws.name == name) {
-                return name;
-            }
-            match n.checked_add(1) {
-                Some(next) => n = next,
-                None => return name,
-            }
-        }
+        let free = |name: &String| !self.workspaces.iter().any(|ws| ws.name == *name);
+        let mut names = (id.number()..=u32::MAX).map(|n| format!("workspace-{n}"));
+        names
+            .find(free)
+            .unwrap_or_else(|| format!("workspace-{}", u32::MAX))
     }
 
     /// A workspace with one tab, laid out on `fit`, holding one pane that
     /// starts what `start` says, `size` to begin with.
     fn create_workspace(
         &mut self,
-        name: Option<String>,
-        (start, cwd): (Start<'_>, &Path),
+        (name, tab_name): (Option<String>, Option<String>),
+        start: (Start<'_>, &Path),
         (fit, size): (Fit, fux_vt::Size),
     ) -> Result<(WsId, TabId, PaneId), Error> {
         if let Some(name) = &name {
@@ -1508,54 +1510,51 @@ impl Session {
         let mut ids = self.ids;
         let id = ids.workspace()?;
         let tab = ids.tab()?;
-        let launch = self.launch.as_ref();
-        let pane = new_pane(
-            &self.config,
-            (launch, &self.starting),
-            &mut ids,
-            start,
-            cwd,
-            size,
-        )?;
+        let pane = new_pane(self, &mut ids, start, size)?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
         let made = (id, tab, pane.id);
         let root = Some(Tree::Pane(pane.id));
         let clients = self.views.keys().copied();
+        let tab = (tab, tab_name.unwrap_or_else(|| MAIN.into()));
         (self.workspaces).push(Workspace::new(id, name, tab, (root, fit), clients));
         self.panes.insert(pane.id, pane);
         Ok(made)
     }
 
-    /// Adds a tab to workspace `ws`, laid out on `fit`, holding one pane that
-    /// starts what `start` says, `size` to begin with.
+    /// Adds a tab named `name` to workspace `ws`, laid out on `fit`,
+    /// holding one pane that starts what `start` says, `size` to begin with.
+    /// A workspace not there that `wanted` names by its name is made, the
+    /// tab its first.
     fn create_tab(
         &mut self,
-        ws: WsId,
+        (ws, wanted): (Result<WsId, Error>, Option<&WsRef>),
         name: Option<String>,
-        (start, cwd): (Start<'_>, &Path),
-        (fit, size): (Fit, fux_vt::Size),
-    ) -> Result<(TabId, PaneId), Error> {
+        start: (Start<'_>, &Path),
+        place: (Fit, fux_vt::Size),
+    ) -> Result<(WsId, TabId, PaneId), Error> {
+        let ws = match (ws, wanted) {
+            (Ok(ws), _) => ws,
+            (Err(_), Some(WsRef::Name(ws_name))) => {
+                return self.create_workspace((Some(ws_name.clone()), name), start, place);
+            }
+            (Err(error), _) => return Err(error),
+        };
         if let Some(name) = &name {
             check_name(name)?;
         }
-        let workspace = self.workspaces.iter_mut().find(|w| w.id == ws);
-        let workspace = workspace.ok_or(Error::NoWorkspace(ws))?;
-        // As for a workspace: the ID first, committed after the pane.
+        // Found before its pane's program starts, which nothing can then
+        // leave running. As for a workspace: the ID first, committed after
+        // the pane.
+        let at = self.workspaces.iter().position(|w| w.id == ws);
+        let at = at.ok_or(Error::NoWorkspace(ws))?;
         let mut ids = self.ids;
         let id = ids.tab()?;
-        let launch = self.launch.as_ref();
-        let pane = new_pane(
-            &self.config,
-            (launch, &self.starting),
-            &mut ids,
-            start,
-            cwd,
-            size,
-        )?;
+        let pane = new_pane(self, &mut ids, start, place.1)?;
+        let workspace = self.workspaces.get_mut(at).ok_or(Error::NoWorkspace(ws))?;
         self.ids = ids;
-        let made = (id, pane.id);
-        workspace.add_tab(id, name, (Some(Tree::Pane(pane.id)), fit));
+        let made = (ws, id, pane.id);
+        workspace.add_tab(id, name, (Some(Tree::Pane(pane.id)), place.0));
         self.panes.insert(pane.id, pane);
         Ok(made)
     }
@@ -2433,11 +2432,11 @@ impl Session {
                 json,
             } => {
                 self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
-                let cwd = self.start_dir(here, cwd.as_deref())?;
+                let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 let start = (Start::Shell(cmd, env), cwd.as_path());
-                let made =
-                    self.create_workspace(name.clone(), start, (fit, self.start_size(fit, here)))?;
+                let place = (fit, self.start_size(fit, here));
+                let made = self.create_workspace((name.clone(), None), start, place)?;
                 let (ws, tab, pane) = made;
                 self.follow(here, ws, None, None);
                 Ok(self.made_ids(
@@ -2460,22 +2459,14 @@ impl Session {
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let cwd = self.start_dir(here, cwd.as_deref())?;
+                let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 let start = (Start::Shell(cmd, env), cwd.as_path());
                 let place = (fit, self.start_size(fit, here));
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
-                let (ws, tab, pane) = match (self.ws_target(target.as_ref(), here), target) {
-                    (Ok(ws), _) => {
-                        let (tab, pane) = self.create_tab(ws, None, start, place)?;
-                        (ws, tab, pane)
-                    }
-                    (Err(_), Some(WsRef::Name(ws_name))) => {
-                        self.create_workspace(Some(ws_name.clone()), start, place)?
-                    }
-                    (Err(error), _) => return Err(error),
-                };
+                let ws = (self.ws_target(target.as_ref(), here), target.as_ref());
+                let (ws, tab, pane) = self.create_tab(ws, None, start, place)?;
                 if let Some(name) = name {
                     self.give_tab_name(tab, name.clone())?;
                 }
@@ -2495,18 +2486,11 @@ impl Session {
                 ..
             } => {
                 self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
-                let here_cwd = self.cwd_for(here, None);
                 let log = log
                     .as_ref()
-                    .map(|p| open_log(&here_cwd.join(p)))
+                    .map(|p| open_log(&self.cwd_for(here, None).join(p)))
                     .transpose()?;
-                let cwd = match cwd {
-                    Some(dir) => here_cwd.join(dir),
-                    None => here_cwd,
-                };
-                if !cwd.is_dir() {
-                    return Err(Error::NotADirectory(cwd));
-                }
+                let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 // Its place is out of every client's way: no client follows.
                 let place = (fit, self.start_size(fit, Here::Cli(None, None, None)));
@@ -2525,23 +2509,8 @@ impl Session {
                 let workspace = workspace
                     .clone()
                     .unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
-                let made = match (self.resolve_ws(&workspace), workspace) {
-                    (Ok(ws), _) => {
-                        let (tab, pane) = self.create_tab(ws, name, start, place)?;
-                        (ws, tab, pane)
-                    }
-                    (Err(_), WsRef::Name(ws_name)) => {
-                        let (ws, tab, pane) = self.create_workspace(Some(ws_name), start, place)?;
-                        if let Some(tab) = (self.workspaces.iter_mut())
-                            .find(|w| w.id == ws)
-                            .and_then(|w| w.tabs_mut().first_mut())
-                        {
-                            tab.name = name.unwrap_or_else(|| MAIN.into());
-                        }
-                        (ws, tab, pane)
-                    }
-                    (Err(error), WsRef::Id(_)) => return Err(error),
-                };
+                let ws = (self.resolve_ws(&workspace), Some(&workspace));
+                let made = self.create_tab(ws, name, start, place)?;
                 if let Some(given) = given {
                     self.give_tab_name(made.1, given)?;
                 }
@@ -2754,13 +2723,7 @@ impl Session {
             } => {
                 self.want(ids, &[Kind::Pane])?;
                 let target = self.pane(target, here)?.id;
-                let cwd = match cwd {
-                    Some(dir) => self.cwd_for(here, None).join(dir),
-                    None => self.cwd_for(here, Some(target)),
-                };
-                if !cwd.is_dir() {
-                    return Err(Error::NotADirectory(cwd));
-                }
+                let cwd = self.start_dir(here, cwd.as_deref(), Some(target))?;
                 // The splitting client follows the new pane; from the CLI, the
                 // clients that focus the split one.
                 let shown = |c: &ClientId| self.focused(*c) == Some(target);
@@ -2769,21 +2732,16 @@ impl Session {
                     Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
                 };
                 let size = self.split_size(target, axis, here)?;
-                let tab = tab_of(&mut self.workspaces, target)?;
+                // Its tab found before the program starts, which nothing
+                // can then leave running.
+                tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
-                let launch = self.launch.as_ref();
                 let start = match run {
                     true => Start::Program(cmd, env),
                     false => Start::Shell(cmd, env),
                 };
-                let pane = new_pane(
-                    &self.config,
-                    (launch, &self.starting),
-                    &mut ids,
-                    start,
-                    &cwd,
-                    size,
-                )?;
+                let pane = new_pane(self, &mut ids, (start, &cwd), size)?;
+                let tab = tab_of(&mut self.workspaces, target)?;
                 self.ids = ids;
                 let new = pane.id;
                 tab.edit(|root| {
@@ -3172,13 +3130,9 @@ impl Session {
                 self.ids = ids;
                 let name = self.workspace_name(id);
                 let clients = self.views.keys().copied();
-                (self.workspaces).push(Workspace::new(
-                    id,
-                    name,
-                    tab,
-                    (None, Fit::Clients),
-                    clients,
-                ));
+                let first = (tab, MAIN.into());
+                let layout = (None, Fit::Clients);
+                (self.workspaces).push(Workspace::new(id, name, first, layout, clients));
                 (id, tab)
             }
         };
@@ -3633,15 +3587,15 @@ enum Start<'a> {
     Program(&'a [String], &'a [(String, String)]),
 }
 
-/// A new pane running what `start` says.
+/// A new pane of `session` running what `start` says, in `cwd`, its ID
+/// taken from `ids`.
 fn new_pane(
-    config: &Config,
-    (launch, fresh): (Option<&Launcher>, &Starting),
+    session: &Session,
     ids: &mut Ids,
-    start: Start<'_>,
-    cwd: &Path,
+    (start, cwd): (Start<'_>, &Path),
     size: fux_vt::Size,
 ) -> Result<Pane, Error> {
+    let (config, launch, fresh) = (&session.config, session.launch.as_ref(), &session.starting);
     let shell_program = config
         .shell
         .first()
