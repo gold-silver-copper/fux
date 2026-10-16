@@ -508,8 +508,8 @@ struct Ran {
     opened: Option<Screen>,
 }
 
-/// An attached client's own keys: its keymap, what its keys are in the
-/// middle of, the screen it has open, the decoder its terminal's bytes go
+/// An attached client's own keys: its keymap, the screen it has open or
+/// what its keys are in the middle of, the decoder its terminal's bytes go
 /// through, and the worker that runs the programs its bindings and screens
 /// give, one after another, as the client. What each takes, it turns into
 /// the actions to send the server.
@@ -519,7 +519,6 @@ struct Ran {
 /// while one runs wait for it, and go to the screen it opened, if any.
 pub struct Keyboard {
     keymap: Keymap,
-    held: Held,
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
@@ -571,8 +570,7 @@ impl Keyboard {
         decoder.expect(Instant::now());
         Ok(Keyboard {
             keymap,
-            held: Held::default(),
-            screen: Screen::None,
+            screen: Screen::default(),
             read_only,
             decoder,
             jobs,
@@ -671,7 +669,9 @@ impl Keyboard {
     /// (`send-keys` to it).
     pub fn frame(&mut self, frame: ServerFrame<'_>) -> Vec<Act> {
         match frame {
-            ServerFrame::Ended => self.screen = Screen::None,
+            // A screen it ended, if the client has not left it already.
+            ServerFrame::Ended if self.screen.is_open() => self.screen = Screen::default(),
+            ServerFrame::Ended => {}
             ServerFrame::Run(code) => self.run(code.to_owned()),
             ServerFrame::Keys(typed) => self.typed(typed),
             ServerFrame::Hello(_)
@@ -717,7 +717,6 @@ impl Keyboard {
             acts.push(Act::Notice { text, error: true });
             return;
         }
-        self.held = Held::Normal;
         if let Screen::Copy(_) = self.screen {
             acts.push(Act::Copy(crate::act::CopyAct::Leave));
         }
@@ -729,15 +728,12 @@ impl Keyboard {
     /// right after the prefix also stops a program its key ran, if one runs.
     fn press(&mut self, stroke: crate::keys::Keystroke, acts: &mut Vec<Act>) {
         let escape = KeyPress::new(crate::keys::Key::Escape, crate::keys::Modifiers::NONE);
-        let column = matches!(&self.held, Held::Column { path, .. } if path.is_empty());
+        let column =
+            matches!(&self.screen, Screen::Keys(Held::Column { path, .. }) if path.is_empty());
         if column && stroke.press == escape {
             self.stop(acts);
         }
-        let effects = if self.screen == Screen::None {
-            self.held.press(&self.keymap, stroke, self.read_only)
-        } else {
-            self.screen.key(stroke.press)
-        };
+        let effects = self.screen.key(&self.keymap, stroke, self.read_only);
         self.apply(effects, acts);
     }
 
@@ -770,17 +766,9 @@ impl Keyboard {
             | Input::FocusOut
             | Input::Mouse(_)
                 if self.read_only => {}
-            Input::Paste(text) if self.screen != Screen::None => {
+            Input::Paste(text) => {
                 let effects = self.screen.paste(&text);
                 self.apply(effects, acts);
-            }
-            Input::Paste(text) => {
-                // A paste is the pane's: the column or a repeat mode ends.
-                if self.held != Held::Normal {
-                    self.held = Held::Normal;
-                    acts.push(Act::Hide);
-                }
-                acts.push(Act::Paste(text));
             }
             Input::PasteTooLong => {
                 let limit = crate::decode::PASTE_LIMIT / 1024;
@@ -791,7 +779,7 @@ impl Keyboard {
             Input::FocusOut => acts.push(Act::Focus(false)),
             // The mouse is a program's, while the client shows none of its
             // own screens.
-            Input::Mouse(_) if self.screen != Screen::None => {}
+            Input::Mouse(_) if self.screen.is_open() => {}
             Input::Mouse(event) => acts.push(Act::Mouse(event)),
         }
     }

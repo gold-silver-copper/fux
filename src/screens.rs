@@ -9,8 +9,8 @@
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::PaneId;
-use crate::keymap::{confirm_act, copy_act, letter, line_act, list_act};
-use crate::keys::KeyPress;
+use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
+use crate::keys::{KeyPress, Keystroke};
 use crate::protocol::{End, Reply, Scalar};
 use crate::script::Failed;
 use crate::view::Line;
@@ -31,11 +31,12 @@ pub enum Open {
     Copy,
 }
 
-/// One of a client's screens, or none.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One of a client's screens, or none: its keys then go through its
+/// bindings, in the middle of what `Held` says. So nothing is held for the
+/// bindings while a screen is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Screen {
-    #[default]
-    None,
+    Keys(Held),
     List(ListScreen),
     Prompt(Prompt),
     Confirm {
@@ -271,12 +272,23 @@ fn chooser(
     }))
 }
 
+impl Default for Screen {
+    fn default() -> Screen {
+        Screen::Keys(Held::Normal)
+    }
+}
+
 impl Screen {
+    /// Whether it is one of the client's screens, not its bindings.
+    pub fn is_open(&self) -> bool {
+        !matches!(self, Screen::Keys(_))
+    }
+
     /// What opening it sends the server: the panel to draw, or copy mode's
     /// start.
     pub fn opened(&self) -> Option<Act> {
         match self {
-            Screen::None => None,
+            Screen::Keys(_) => None,
             Screen::Copy(_) => Some(Act::Copy(CopyAct::Enter)),
             Screen::List(_) | Screen::Prompt(_) | Screen::Confirm { .. } => {
                 self.panel().map(Act::Show)
@@ -287,7 +299,7 @@ impl Screen {
     /// What the server draws of it.
     pub fn panel(&self) -> Option<Panel> {
         match self {
-            Screen::None | Screen::Copy(_) => None,
+            Screen::Keys(_) | Screen::Copy(_) => None,
             Screen::List(list) => Some(Panel::List(List {
                 title: list.title.clone(),
                 items: list.items.iter().map(|i| i.label.clone()).collect(),
@@ -309,11 +321,16 @@ impl Screen {
         }
     }
 
-    /// A key typed while it is open: what it leads to. It closes itself
-    /// (`Screen::None`) as the key says.
-    pub fn key(&mut self, press: KeyPress) -> Vec<Effect> {
+    /// A key typed: what it leads to, through the bindings of `keymap` if
+    /// no screen is open (`read_only`: the client only watches). A screen
+    /// closes itself (`Screen::default`) as the key says.
+    pub fn key(&mut self, keymap: &Keymap, stroke: Keystroke, read_only: bool) -> Vec<Effect> {
+        if let Screen::Keys(held) = self {
+            return held.press(keymap, stroke, read_only);
+        }
+        let press = stroke.press;
         match std::mem::take(self) {
-            Screen::None => Vec::new(),
+            Screen::Keys(_) => Vec::new(),
             Screen::List(list) => self.list(list, press),
             Screen::Prompt(prompt) => match line_act(press) {
                 Some(act) => self.prompt(prompt, act),
@@ -337,13 +354,18 @@ impl Screen {
         }
     }
 
-    /// Text pasted while it is open: a line being typed takes it.
+    /// Text pasted: a line being typed takes it; with no screen open, the
+    /// pane does, and the column or a repeat mode ends.
     pub fn paste(&mut self, text: &str) -> Vec<Effect> {
         let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
+            Screen::Keys(Held::Normal) => vec![Effect::Send(Act::Paste(text.to_owned()))],
+            Screen::Keys(_) => [Act::Hide, Act::Paste(text.to_owned())]
+                .map(Effect::Send)
+                .into(),
             Screen::Prompt(prompt) => self.prompt(prompt, insert),
             Screen::Copy(Some(search)) => self.copy_search(search, insert),
-            other @ (Screen::None | Screen::List(_) | Screen::Confirm { .. } | Screen::Copy(_)) => {
+            other @ (Screen::List(_) | Screen::Confirm { .. } | Screen::Copy(_)) => {
                 *self = other;
                 Vec::new()
             }
@@ -453,8 +475,10 @@ impl Screen {
 mod tests {
     use super::*;
 
-    fn press(name: &str) -> Result<KeyPress, String> {
-        crate::keymap::key(name)
+    /// Key `name` typed at `screen`, with the default bindings.
+    fn key(screen: &mut Screen, name: &str) -> Result<Vec<Effect>, String> {
+        let stroke = crate::keymap::key(name)?.into();
+        Ok(screen.key(&Keymap::default(), stroke, false))
     }
 
     fn list() -> Screen {
@@ -478,28 +502,28 @@ mod tests {
     #[test]
     fn a_list_is_the_clients() -> Result<(), String> {
         let mut screen = list();
-        let shown = screen.key(press("j")?);
+        let shown = key(&mut screen, "j")?;
         assert!(
             matches!(shown.as_slice(), [Effect::Send(Act::Show(Panel::List(l)))] if l.selected == 1)
         );
         assert_eq!(
-            screen.key(press("Enter")?),
+            key(&mut screen, "Enter")?,
             [
                 Effect::Send(Act::Hide),
                 Effect::Run("me str @2 tab show-tab".into())
             ]
         );
-        assert_eq!(screen, Screen::None);
+        assert_eq!(screen, Screen::default());
         let mut screen = list();
         assert_eq!(
-            screen.key(press("x")?),
+            key(&mut screen, "x")?,
             [
                 Effect::Send(Act::Hide),
                 Effect::Run("me str @1 tab confirm-close".into())
             ]
         );
         let mut screen = list();
-        assert_eq!(screen.key(press("Escape")?), [Effect::Send(Act::Hide)]);
+        assert_eq!(key(&mut screen, "Escape")?, [Effect::Send(Act::Hide)]);
         Ok(())
     }
 
@@ -513,7 +537,7 @@ mod tests {
         });
         screen.paste("it's -x");
         assert_eq!(
-            screen.key(press("Enter")?),
+            key(&mut screen, "Enter")?,
             [
                 Effect::Send(Act::Hide),
                 Effect::Run("str %1 pane str 'it'\\''s -x' rename".into())
@@ -527,9 +551,9 @@ mod tests {
     #[test]
     fn copy_mode_searches_from_the_clients_line() -> Result<(), String> {
         let mut screen = Screen::Copy(None);
-        screen.key(press("f")?);
-        screen.key(press("a")?);
-        let found = screen.key(press("Enter")?);
+        key(&mut screen, "f")?;
+        key(&mut screen, "a")?;
+        let found = key(&mut screen, "Enter")?;
         assert_eq!(
             found,
             [Effect::Send(Act::Copy(CopyAct::Find {
@@ -539,10 +563,10 @@ mod tests {
         );
         assert_eq!(screen, Screen::Copy(None));
         assert_eq!(
-            screen.key(press("q")?),
+            key(&mut screen, "q")?,
             [Effect::Send(Act::Copy(CopyAct::Leave))]
         );
-        assert_eq!(screen, Screen::None);
+        assert_eq!(screen, Screen::default());
         Ok(())
     }
 }

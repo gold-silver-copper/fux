@@ -3490,8 +3490,10 @@ pub(crate) mod testing {
             match outgoing {
                 super::Outgoing::Run(client, code) => session.run_as(client, &code),
                 super::Outgoing::Ended(client) => {
-                    if let Some(keys) = session.test_keys.get_mut(&client) {
-                        keys.screen = crate::screens::Screen::None;
+                    if let Some(keys) = session.test_keys.get_mut(&client)
+                        && keys.screen.is_open()
+                    {
+                        keys.screen = crate::screens::Screen::default();
                     }
                 }
                 super::Outgoing::Keys(client, inputs) => {
@@ -3569,11 +3571,10 @@ pub(crate) mod testing {
         Ok(recorder.1)
     }
 
-    /// A client's keys, as its client reads them: its decoder, what its
-    /// keys are in the middle of, and the screen it has open.
+    /// A client's keys, as its client reads them: its decoder, and the
+    /// screen it has open or what its keys are in the middle of.
     #[derive(Default)]
     pub(crate) struct Keys {
-        held: crate::keymap::Held,
         decoder: crate::decode::Decoder,
         pub(crate) screen: crate::screens::Screen,
     }
@@ -3606,7 +3607,6 @@ pub(crate) mod testing {
         /// Opens a screen on client `client`, as its client does.
         pub(crate) fn open_screen(&mut self, client: ClientId, screen: crate::screens::Screen) {
             let keys = self.test_keys.entry(client).or_default();
-            keys.held = crate::keymap::Held::Normal;
             let mut acts = Vec::new();
             if let crate::screens::Screen::Copy(_) = keys.screen {
                 acts.push(crate::act::Act::Copy(crate::act::CopyAct::Leave));
@@ -3642,22 +3642,15 @@ pub(crate) mod testing {
         pub(crate) fn inputs(&mut self, client: ClientId, inputs: Vec<crate::decode::Input>) {
             use crate::act::Act;
             use crate::decode::Input;
-            use crate::screens::Screen;
             for input in inputs {
                 let Some(read_only) = self.views.get(&client).map(|v| v.read_only) else {
                     return;
                 };
                 let keys = self.test_keys.entry(client).or_default();
-                let open = keys.screen != Screen::None;
+                let open = keys.screen.is_open();
                 let act = match input {
-                    Input::Key(stroke) if open => {
-                        let effects = keys.screen.key(stroke.press);
-                        self.effects(client, effects);
-                        continue;
-                    }
                     Input::Key(stroke) => {
-                        let keymap = self.test_keymap.clone();
-                        let effects = keys.held.press(&keymap, stroke, read_only);
+                        let effects = keys.screen.key(&self.test_keymap, stroke, read_only);
                         self.effects(client, effects);
                         continue;
                     }
@@ -3671,12 +3664,11 @@ pub(crate) mod testing {
                     {
                         continue;
                     }
-                    Input::Paste(text) if open => {
+                    Input::Paste(text) => {
                         let effects = keys.screen.paste(&text);
                         self.effects(client, effects);
                         continue;
                     }
-                    Input::Paste(text) => Act::Paste(text),
                     Input::PasteTooLong => {
                         let limit = crate::decode::PASTE_LIMIT / 1024;
                         let text = format!("paste exceeds {limit} KiB; discarded");
