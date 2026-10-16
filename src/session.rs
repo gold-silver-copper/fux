@@ -2724,18 +2724,7 @@ impl Session {
                 let view = || self.views.get(&client).ok_or(Error::NoClient(client));
                 let picked = match *action {
                     ClientAction::Choices(choices) => {
-                        let chosen = crate::overlay::choices(self, client, choices)?;
-                        return Ok(Reply {
-                            ids: chosen.ids,
-                            value: (chosen.current.and_then(|i| i64::try_from(i).ok()))
-                                .map(crate::protocol::Scalar::Int),
-                            ..chosen
-                                .labels
-                                .iter()
-                                .map(|l| format!("{l}\n"))
-                                .collect::<String>()
-                                .into()
-                        });
+                        return crate::overlay::choices(self, client, choices);
                     }
                     ClientAction::Run(ref code) => {
                         self.outbox.push(Outgoing::Run(client, code.clone()));

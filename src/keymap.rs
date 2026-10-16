@@ -194,10 +194,6 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
     }
 }
 
-fn is_escape(press: &KeyPress) -> bool {
-    press.key == Key::Escape && !press.mods.ctrl && !press.mods.alt
-}
-
 /// A client's prefix and bindings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keymap {
@@ -390,7 +386,7 @@ impl Keymap {
         binding: Binding,
         repeat: bool,
     ) -> Result<(), String> {
-        if keys.iter().any(is_escape) {
+        if keys.iter().any(|k| k.plain_key() == Some(Key::Escape)) {
             return Err("Escape after the prefix closes the column; it cannot be bound".to_owned());
         }
         self.bindings
@@ -472,7 +468,7 @@ impl Keymap {
     /// last; right after the prefix, the bindings without it follow.
     pub fn column(&self, path: &[KeyPress], selected: usize) -> Option<Column> {
         let layer = self.bindings.layer(path)?;
-        let mut entries: Vec<(bool, ColumnEntry)> = (layer.iter())
+        let mut entries: Vec<ColumnEntry> = (layer.iter())
             .filter_map(|(key, node)| {
                 // A layer is titled, and listed, by its first binding's
                 // group: `t` is `Tabs…`.
@@ -485,16 +481,13 @@ impl Keymap {
                         (group.clone(), group, true)
                     }
                 };
-                Some((
-                    false,
-                    ColumnEntry {
-                        key: key.to_string(),
-                        label,
-                        group,
-                        layer,
-                        root: false,
-                    },
-                ))
+                Some(ColumnEntry {
+                    key: key.to_string(),
+                    label,
+                    group,
+                    layer,
+                    root: false,
+                })
             })
             .collect();
         if path.is_empty() {
@@ -503,46 +496,38 @@ impl Keymap {
                     "" => ROOT_GROUP.to_owned(),
                     group => group.to_owned(),
                 };
-                (
-                    true,
-                    ColumnEntry {
-                        key: key.to_string(),
-                        label: binding.label.clone(),
-                        group,
-                        layer: false,
-                        root: true,
-                    },
-                )
+                ColumnEntry {
+                    key: key.to_string(),
+                    label: binding.label.clone(),
+                    group,
+                    layer: false,
+                    root: true,
+                }
             }));
         }
         let mut groups: Vec<(bool, String)> = GROUPS.map(|g| (false, g.to_owned())).to_vec();
-        for (root, entry) in &entries {
-            let group = (*root, entry.group.clone());
+        for entry in &entries {
+            let group = (entry.root, entry.group.clone());
             if !groups.contains(&group) && group != (false, "Other".to_owned()) {
                 groups.push(group);
             }
         }
         groups.push((false, "Other".to_owned()));
-        entries.sort_by_key(|(root, e)| {
-            let group = groups.iter().position(|(r, g)| r == root && *g == e.group);
-            (*root, group)
+        entries.sort_by_key(|e| {
+            let group = groups
+                .iter()
+                .position(|(r, g)| *r == e.root && *g == e.group);
+            (e.root, group)
         });
+        let keys = keys_text(&[&[self.prefix][..], path].concat());
         let title = match path.is_empty() {
             true => "Commands".to_owned(),
-            false => format!(
-                "{} {}: {}",
-                self.prefix,
-                keys_text(path),
-                layer.first().map_or("", |b| b.group.as_str())
-            ),
+            false => format!("{keys}: {}", layer.first().map_or("", |b| b.group.as_str())),
         };
-        let entries: Vec<ColumnEntry> = entries.into_iter().map(|(_, e)| e).collect();
         let selected = selected.min(entries.len().saturating_sub(1));
-        let keys =
-            std::iter::once(self.prefix.to_string()).chain(path.iter().map(KeyPress::to_string));
         Some(Column {
             title,
-            keys: keys.collect::<Vec<_>>().join(" "),
+            keys,
             entries,
             selected,
         })
@@ -696,7 +681,7 @@ impl Held {
         stroke: Keystroke,
     ) -> Vec<Effect> {
         let press = stroke.press;
-        if is_escape(&press) {
+        if press.plain_key() == Some(Key::Escape) {
             return vec![Effect::Send(Act::Hide)];
         }
         if keymap

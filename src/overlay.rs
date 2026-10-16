@@ -6,6 +6,7 @@ use crate::command::{AnyRef, Choices, Kind};
 use crate::id::ClientId;
 use crate::keys::Keystroke;
 use crate::layout::Tree;
+use crate::protocol::{Reply, Scalar};
 use crate::session::{Error, Session};
 
 /// The names of the panes in `roots`, for a chooser row, shortened.
@@ -25,17 +26,9 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
     }
 }
 
-/// The rows of a chooser client `client` shows.
-pub struct Chosen {
-    pub ids: Vec<AnyRef>,
-    pub labels: Vec<String>,
-    /// The client's own: its tab or workspace.
-    pub current: Option<usize>,
-}
-
-/// A chooser's rows for client `client`: what each is, its label, and
-/// which one is the client's own.
-pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<Chosen, Error> {
+/// A chooser's rows for client `client`: what each is (its ids), its label
+/// (a line of text each), and which one is the client's own (its value).
+pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<Reply, Error> {
     let mut rows = Vec::new();
     let mut current = None;
     match choices {
@@ -84,11 +77,12 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
             }
         }
     }
-    let (ids, labels) = rows.into_iter().unzip();
-    Ok(Chosen {
+    let (ids, labels): (_, Vec<String>) = rows.into_iter().unzip();
+    Ok(Reply {
         ids,
-        labels,
-        current,
+        text: labels.iter().map(|l| format!("{l}\n")).collect(),
+        value: (current.and_then(|i| i64::try_from(i).ok())).map(Scalar::Int),
+        ..Reply::default()
     })
 }
 
