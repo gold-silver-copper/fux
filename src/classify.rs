@@ -234,7 +234,7 @@ impl Classes {
             return Origin::Output;
         };
         let commands = screen.commands();
-        let reading = marked && commands.prompt && !commands.running;
+        let reading = marked && commands.prompt && !commands.running();
         match (reading, written.input.unit) {
             // The kernel echoes the keys and nothing else: the rest is output.
             (false, _) if written.kernel => Origin::Output,

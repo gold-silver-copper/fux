@@ -23,19 +23,25 @@ pub struct Mark {
 /// What the shell's marks say of its commands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Commands {
-    /// A command's output began (`C`) and has not ended (`D`).
-    pub running: bool,
     /// How many commands have ended (`D`): a host waits for it to grow.
     pub finished: u64,
     /// The status the last command ended with, if the shell said it.
     pub last_status: Option<i32>,
     /// Where the last command's output began and ended.
     pub last_output: Option<(Mark, Mark)>,
-    /// Where the running command's output began.
+    /// Where the running command's output began (`C`); `None` once it
+    /// ended (`D`), and before any began.
     pub output_start: Option<Mark>,
     /// The shell drew a prompt (`A`) and has started no command since
     /// (`C`): it is reading its command line.
     pub prompt: bool,
+}
+
+impl Commands {
+    /// Whether a command's output began (`C`) and has not ended (`D`).
+    pub fn running(&self) -> bool {
+        self.output_start.is_some()
+    }
 }
 
 impl Screen {
@@ -55,7 +61,6 @@ impl Screen {
         match command {
             b"C" => {
                 let late = option == Some(&b"late"[..]);
-                self.commands.running = true;
                 self.commands.prompt = false;
                 let submitted = self.submitted.take().and_then(|s| self.after_line(s.row));
                 self.commands.output_start = Some(match late {
@@ -74,7 +79,6 @@ impl Screen {
                     self.commands.last_status = status;
                     self.commands.finished = self.commands.finished.wrapping_add(1);
                 }
-                self.commands.running = false;
             }
             _ => {}
         }
@@ -85,7 +89,7 @@ impl Screen {
     /// alternate screen erased (a full-screen program the command ran) is
     /// none of it: the marks are the main screen's.
     pub(crate) fn screen_erased(&mut self) {
-        if !self.commands.running || self.mode(crate::Mode::AlternateScreen) {
+        if !self.commands.running() || self.mode(crate::Mode::AlternateScreen) {
             return;
         }
         let grid = self.grid();

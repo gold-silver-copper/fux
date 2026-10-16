@@ -86,14 +86,14 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();
     let commands = screen.commands();
-    let command = commands.running && !screen.mode(fux_vt::Mode::AlternateScreen);
+    let command = commands.running() && !screen.mode(fux_vt::Mode::AlternateScreen);
     // A shell back at its prompt, reading, its last command ended: what
     // else runs in its group is a job it left there (job control off, or
     // fish's disowned start-up work), not the agent's command.
     let left = matches!(
         activity,
         Activity::Busy | Activity::Polling | Activity::Waiting
-    ) && !commands.running
+    ) && !commands.running()
         && commands.finished > 0
         && tty
             .as_deref()

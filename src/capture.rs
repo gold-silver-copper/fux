@@ -207,7 +207,7 @@ fn rows_of(
         let commands = screen.commands();
         let (row, col) = screen.cursor_position();
         let cursor = (screen.window().row(row)).map(|r| fux_vt::CommandMark { row: r.id(), col });
-        let running = (commands.output_start.filter(|_| commands.running)).zip(cursor);
+        let running = commands.output_start.zip(cursor);
         let Some((start, end)) = running.or(commands.last_output) else {
             return Vec::new();
         };
@@ -352,7 +352,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ("revision", Json::int(pane.revision)),
         (
             "command_running",
-            Json::Bool(commands.running && pane.process.exit_status().is_none()),
+            Json::Bool(commands.running() && pane.process.exit_status().is_none()),
         ),
         (
             "last_status",

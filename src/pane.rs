@@ -1100,7 +1100,7 @@ impl Pane {
     /// its command line, as its marks say.
     fn at_prompt(&self) -> bool {
         let commands = self.screen().commands();
-        commands.prompt && !commands.running
+        commands.prompt && !commands.running()
     }
 
     /// Whether the program took the input written at `at`, by `now`: every
