@@ -558,25 +558,18 @@ impl Wait {
     }
 }
 
-/// A pane's last `n` lines with text: of its screen, or once a full-screen
-/// program has left and the screen is blank, of what it last drew.
+/// A pane's last `n` lines with text, as a capture reads them: of its
+/// screen, or once a full-screen program has left and the screen is blank,
+/// of what it last drew.
 fn tail(pane: &Pane, n: usize) -> Vec<String> {
-    let screen = pane.screen();
-    let last = |rows: fux_vt::Rows<'_>| -> Vec<String> {
-        let all = lines(rows);
-        let kept: Vec<String> = (all.iter().rev())
-            .map(|l| l.trim_end().to_owned())
-            .filter(|l| !l.is_empty())
-            .take(n)
-            .collect();
-        kept.into_iter().rev().collect()
-    };
-    let shown = last(screen.rows());
-    if shown.is_empty() {
-        last(screen.alternate_rows())
-    } else {
-        shown
-    }
+    let text = text(pane, false, false);
+    let lines: Vec<&str> = (text.lines().map(str::trim_end))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let last = lines
+        .get(lines.len().saturating_sub(n)..)
+        .unwrap_or_default();
+    last.iter().map(|l| (*l).to_owned()).collect()
 }
 
 impl Until {
