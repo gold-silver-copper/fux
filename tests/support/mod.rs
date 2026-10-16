@@ -216,7 +216,7 @@ impl Server {
     /// Its socket, as fux takes it.
     pub fn socket_path(&self) -> Result<fux::socket::SocketPath, String> {
         let path = self.socket.to_string_lossy();
-        fux::socket::socket_path(fux::socket::Choice::Path(&path, "socket")).map_err(e)
+        fux::socket::socket_path(&fux::socket::Choice::Path(path.to_string())).map_err(e)
     }
 
     /// The server's process id, while it runs.

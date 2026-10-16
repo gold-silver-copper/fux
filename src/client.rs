@@ -554,7 +554,7 @@ impl Keyboard {
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
-                let chosen = crate::script::Chosen::Path(path);
+                let chosen = crate::socket::Choice::Path(path);
                 let mut server = crate::script::Server::stoppable(chosen, stops.clone());
                 for job in todo {
                     stops.reset();

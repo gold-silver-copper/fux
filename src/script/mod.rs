@@ -14,6 +14,7 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
 use crate::layout::Axis;
 use crate::protocol::{Context, End, Reply, Request, Scalar};
+use crate::socket::Choice;
 use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
 use std::io::Write;
 use std::time::Duration;
@@ -211,7 +212,7 @@ pub enum Local {
         size: Option<fux_vt::Size>,
     },
     /// The server for what follows: its socket, by name or path.
-    Server(Chosen),
+    Server(Choice),
     Start,
     Status,
     Servers,
@@ -405,20 +406,10 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     Ok(out)
 }
 
-/// The server a program names: the default (`FUX_SOCKET`, else
-/// `server.sock`), one by name, or a socket's path.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Chosen {
-    #[default]
-    Default,
-    Name(String),
-    Path(String),
-}
-
 /// Where a program's requests go: a connection made when the first is.
 #[derive(Default)]
 pub struct Server {
-    chosen: Chosen,
+    chosen: Choice,
     requests: Option<crate::client::Requests>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
@@ -454,7 +445,7 @@ impl Stop {
 }
 
 impl Server {
-    pub fn new(chosen: Chosen) -> Server {
+    pub fn new(chosen: Choice) -> Server {
         Server {
             chosen,
             requests: None,
@@ -463,7 +454,7 @@ impl Server {
     }
 
     /// A server whose runs `stop` can stop.
-    pub fn stoppable(chosen: Chosen, stop: Stop) -> Server {
+    pub fn stoppable(chosen: Choice, stop: Stop) -> Server {
         Server {
             stop: Some(stop),
             ..Server::new(chosen)
@@ -471,19 +462,14 @@ impl Server {
     }
 
     /// The server for what follows.
-    pub fn choose(&mut self, chosen: Chosen) {
+    pub fn choose(&mut self, chosen: Choice) {
         self.chosen = chosen;
         self.requests = None;
     }
 
     /// Its socket.
     pub fn socket(&self) -> Result<crate::socket::SocketPath, Failed> {
-        let choice = match &self.chosen {
-            Chosen::Default => crate::socket::Choice::Default,
-            Chosen::Name(name) => crate::socket::Choice::Name(name),
-            Chosen::Path(path) => crate::socket::Choice::Path(path, "socket"),
-        };
-        crate::socket::socket_path(choice).map_err(|e| client_failed(e.into()))
+        crate::socket::socket_path(&self.chosen).map_err(|e| client_failed(e.into()))
     }
 }
 
@@ -891,7 +877,7 @@ pub fn configure(
     path: &std::path::Path,
     socket: &crate::socket::SocketPath,
 ) -> Result<Keymap, Failed> {
-    let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
+    let mut server = Server::new(Choice::Path(socket.path().to_string_lossy().into_owned()));
     run_file(path, Some(&mut server))
 }
 
@@ -983,7 +969,7 @@ pub fn restore(
     context.restoring = true;
     // Its panes are its own, not a pane's it runs in.
     (context.pane, context.server) = (None, None);
-    let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
+    let mut server = Server::new(Choice::Path(socket.path().to_string_lossy().into_owned()));
     let name = path.display().to_string();
     run_quiet(&name, text, context, None, &mut Layout(&mut server))
 }

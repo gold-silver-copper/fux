@@ -100,29 +100,21 @@ impl SocketPath {
 
 /// Which server a command names, before the command: `str PATH socket`, `str NAME server`,
 /// or neither.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Choice<'a> {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Choice {
     #[default]
     Default,
-    /// A socket's path, and the flag that gave it.
-    Path(&'a str, &'static str),
+    /// A socket's path (`socket`).
+    Path(String),
     /// A server's name: its socket is `NAME.sock` in fux's directory.
-    Name(&'a str),
-}
-
-impl Choice<'_> {
-    /// Whether the command named its server, rather than taking it from
-    /// the environment.
-    pub fn named(&self) -> bool {
-        !matches!(self, Choice::Default)
-    }
+    Name(String),
 }
 
 /// The socket a command uses: the one `choice` names, else `FUX_SOCKET`,
 /// else `server.sock` in fux's directory.
-pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
+pub fn socket_path(choice: &Choice) -> Result<SocketPath, Error> {
     match choice {
-        Choice::Path(path, from) => checked(path, from),
+        Choice::Path(path) => checked(path, "socket"),
         Choice::Name(name) => {
             let valid = (1..=64).contains(&name.len())
                 && !name.starts_with(['.', '-'])
@@ -148,7 +140,7 @@ pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
 /// What starts the server at `path`: `fux start` the default's (or
 /// `FUX_SOCKET`'s), the command that names its socket another's.
 pub fn start_hint(path: &Path) -> String {
-    let default = socket_path(Choice::Default).is_ok_and(|s| s.path == path);
+    let default = socket_path(&Choice::Default).is_ok_and(|s| s.path == path);
     if default {
         return "`fux` in a terminal starts one, or `fux start` one with no terminal".into();
     }
@@ -205,7 +197,7 @@ fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     Ok(Path::new(value).join("fux"))
 }
 
-fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
+pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
     let refused = |why: String| Err(Error::Refused(why));
     if value.is_empty() {
         return refused(format!(

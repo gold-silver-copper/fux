@@ -114,7 +114,7 @@ fn serve(args: &[String]) -> ExitCode {
     let fresh = args.get(1).is_some_and(|a| a == "fresh");
     // Fails only for a session leader already, which is as good.
     let _ = fuxix::process::setsid();
-    let socket = match socket::socket_path(socket::Choice::Path(path, "socket")) {
+    let socket = match socket::checked(path, "socket") {
         Ok(socket) => socket,
         Err(error) => return fail(error.to_string()),
     };
@@ -185,7 +185,7 @@ pub(crate) fn servers() -> Result<(String, String), socket::Error> {
     let mut lines = Vec::new();
     let mut objects = Vec::new();
     for name in names {
-        let Ok(socket) = socket::socket_path(socket::Choice::Name(&name)) else {
+        let Ok(socket) = socket::socket_path(&socket::Choice::Name(name.clone())) else {
             continue;
         };
         let Ok(client::Probe::Server { protocol, version }) = client::probe(&socket) else {

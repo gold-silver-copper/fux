@@ -1445,8 +1445,14 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             // ------------------------------------------------------ server
-            "server" => local(Local::Server(super::Chosen::Name(string(name, &next()?)?))),
-            "socket" => local(Local::Server(super::Chosen::Path(string(name, &next()?)?))),
+            "server" => local(Local::Server(crate::socket::Choice::Name(string(
+                name,
+                &next()?,
+            )?))),
+            "socket" => local(Local::Server(crate::socket::Choice::Path(string(
+                name,
+                &next()?,
+            )?))),
             "start" => local(Local::Start),
             "status" => local(Local::Status),
             "servers" => local(Local::Servers),

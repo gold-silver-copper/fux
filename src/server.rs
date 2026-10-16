@@ -705,10 +705,7 @@ fn grant(
         Ok(name) => name,
         Err(error) => return failed(error.to_string()),
     };
-    let checked = crate::socket::socket_path(crate::socket::Choice::Path(
-        &path.to_string_lossy(),
-        "grant",
-    ));
+    let checked = crate::socket::checked(&path.to_string_lossy(), "grant");
     let listening = match checked
         .map_err(Error::Socket)
         .and_then(|s| Listening::open(&s))
@@ -1873,11 +1870,7 @@ mod tests {
         }
         let path = dir.join("fux").join("s.sock");
         std::fs::write(crate::door::path(&path), "").map_err(|x| e(&x))?;
-        let socket = crate::socket::socket_path(crate::socket::Choice::Path(
-            &path.to_string_lossy(),
-            "test",
-        ))
-        .map_err(|x| e(&x))?;
+        let socket = crate::socket::checked(&path.to_string_lossy(), "test").map_err(|x| e(&x))?;
         let listening = Listening::open(&socket).map_err(|x| e(&x))?;
         assert!(listening.listener.is_some(), "the socket serves");
         assert!(listening.door.is_none(), "with no door");
