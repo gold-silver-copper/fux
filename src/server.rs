@@ -120,7 +120,9 @@ enum Phase {
     /// retrying at once would repeat: then the listener, which stays
     /// readable meanwhile, rests until `resting`.
     Serving {
-        listening: Listening,
+        /// The server's own socket first, then those `fux grant` made, each
+        /// with its path, which its connections reach through.
+        listening: Vec<(Option<PathBuf>, Listening)>,
         resting: Option<Instant>,
     },
     /// Stopping, its socket gone: the server waits for its clients and
@@ -468,9 +470,6 @@ pub struct Server {
     session: Session,
     phase: Phase,
     conns: Vec<Conn>,
-    /// The sockets `fux grant` made, which the session's grants reach
-    /// through.
-    grants: Vec<(PathBuf, Listening)>,
     /// Where the layout is saved, for a server after a crash to bring
     /// back; none if there is nowhere to.
     saved: Option<Saved>,
@@ -686,7 +685,7 @@ impl Saved {
 /// made there closed (and what came through it ends): the socket of the
 /// grant it revoked.
 fn grant(
-    grants: &mut Vec<(PathBuf, Listening)>,
+    listening: &mut Vec<(Option<PathBuf>, Listening)>,
     session: &mut Session,
     (socket, workspace): (String, Option<crate::command::WsRef>),
     cwd: Option<PathBuf>,
@@ -694,10 +693,10 @@ fn grant(
     let failed = |stderr: String| (Reply::failed(Code::Grant, stderr), None);
     let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
     let Some(workspace) = workspace else {
-        let before = grants.len();
-        grants.retain(|(socket, _)| *socket != path);
+        let before = listening.len();
+        listening.retain(|(socket, _)| socket.as_ref() != Some(&path));
         session.grants.retain(|g| g.socket != path);
-        return match grants.len() < before {
+        return match listening.len() < before {
             true => (Reply::default(), Some(path)),
             false => failed(format!("no grant made {}", path.display())),
         };
@@ -707,15 +706,15 @@ fn grant(
         Err(error) => return failed(error.to_string()),
     };
     let checked = crate::socket::checked(&path.to_string_lossy(), "grant");
-    let listening = match checked
+    let opened = match checked
         .map_err(Error::Socket)
         .and_then(|s| Listening::open(&s))
     {
-        Ok(listening) => listening,
+        Ok(opened) => opened,
         Err(error) => return failed(error.to_string()),
     };
     session.grant(path.clone(), name);
-    grants.push((path.clone(), listening));
+    listening.push((Some(path.clone()), opened));
     (format!("{}\n", path.display()).into(), None)
 }
 
@@ -775,11 +774,10 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let mut server = Server {
         session,
         phase: Phase::Serving {
-            listening,
+            listening: vec![(None, listening)],
             resting: None,
         },
         conns: Vec::new(),
-        grants: Vec::new(),
         saved,
         children,
         killed: Vec::new(),
@@ -802,11 +800,10 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
 /// with `get_mut`, as the lints ask.
 #[derive(Clone, Copy)]
 enum Slot {
-    /// The server's socket, or with an index into `grants` one `fux grant`
-    /// made.
-    Listener(Option<usize>),
+    /// A socket listened on, by its place among them (`Phase::Serving`).
+    Listener(usize),
     /// The door beside it: knocks waiting.
-    Door(Option<usize>),
+    Door(usize),
     Children,
     Stops,
     Conn(usize),
@@ -1038,8 +1035,7 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            let grants = (self.grants.iter().enumerate()).map(|(i, (_, l))| (Some(i), l));
-            for (grant, listening) in std::iter::once((None, listening)).chain(grants) {
+            for (grant, (_, listening)) in listening.iter().enumerate() {
                 if let Some(listener) = &listening.listener {
                     fds.push(PollFd::new(listener, PollFlags::IN));
                     slots.push(Slot::Listener(grant));
@@ -1114,7 +1110,6 @@ impl Server {
         }
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
-        self.grants.clear();
         self.session.grants.clear();
         self.session.shutdown();
         // Every connection still open ends, so no command runs on what is
@@ -1238,22 +1233,19 @@ impl Server {
         }
     }
 
-    /// What the server listens on while it serves, or with `grant` what
-    /// that grant does, and the grant's socket, which its connections
-    /// reach through.
-    fn listening(&mut self, grant: Option<usize>) -> Option<(&mut Listening, Option<PathBuf>)> {
+    /// The `at`th socket the server listens on while it serves, and the
+    /// grant's socket, if a grant made it, which its connections reach
+    /// through.
+    fn listening(&mut self, at: usize) -> Option<(&mut Listening, Option<PathBuf>)> {
         let Phase::Serving { listening, .. } = &mut self.phase else {
             return None;
         };
-        match grant {
-            Some(i) => (self.grants.get_mut(i)).map(|(socket, l)| (l, Some(socket.clone()))),
-            None => Some((listening, None)),
-        }
+        (listening.get_mut(at)).map(|(socket, l)| (l, socket.clone()))
     }
 
     /// Accepts the connections waiting on the server's socket, or with
     /// `grant` on that socket `fux grant` made.
-    fn accept(&mut self, grant: Option<usize>) {
+    fn accept(&mut self, grant: usize) {
         // Accept until the backlog is empty, so one tick drains it.
         loop {
             // The spare makes room for this accept, and is taken back after
@@ -1350,7 +1342,7 @@ impl Server {
     /// end of a pair relayed to a client's FIFOs, whose owner the door
     /// checked, as the socket's peer check does. With `grant`, the door
     /// beside that grant's socket.
-    fn open_door(&mut self, grant: Option<usize>) {
+    fn open_door(&mut self, grant: usize) {
         let Some((
             Listening {
                 door: Some(door), ..
@@ -1662,7 +1654,12 @@ impl Server {
                     let why = "a socket `grant` made cannot grant another";
                     (Reply::failed(Code::NotGranted, why), None)
                 }
-                None => grant(&mut self.grants, session, granting, cwd),
+                None => match &mut self.phase {
+                    Phase::Serving { listening, .. } => grant(listening, session, granting, cwd),
+                    Phase::Stopping(_) => {
+                        (Reply::failed(Code::Grant, "the server is stopping"), None)
+                    }
+                },
             };
             conn.answer(session, outcome);
             // What waits or streams through a grant revoked ends.
