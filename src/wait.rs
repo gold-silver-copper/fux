@@ -132,7 +132,7 @@ enum Found {
         text: String,
         line: String,
     },
-    Gone(String),
+    Gone,
     Exit(Ended),
     Bell(Option<String>),
     /// The pane settled, so.
@@ -243,11 +243,15 @@ impl Waiting {
             if answer.is_some() {
                 continue;
             }
-            let pane = session.panes.get(&watch.pane);
-            if let Some((told, since)) = watch.verdict(pane, wait, texts, window, mode) {
-                *answer = Some(wait.told(watch.pane, pane, told, several, since));
+            let Some(pane) = session.panes.get(&watch.pane) else {
+                *answer = Some(wait.gone(watch.pane));
+                continue;
+            };
+            if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
+                *answer = Some(wait.told(pane, told, several, watch.since(pane)));
             } else if late {
-                *answer = Some(watch.timed_out(session, wait, texts, several));
+                let told = Told::TimedOut(watch.hint(pane, texts));
+                *answer = Some(wait.told(pane, told, several, watch.since(pane)));
             }
         }
         let answers: Vec<&Reply> = self
@@ -276,14 +280,13 @@ impl Waiting {
     }
 }
 
-/// How a wait ended, to be told.
+/// How a wait in a pane still there ended, to be told.
 enum Told {
     Found(Found),
     /// With why the text it waited for may have gone unseen, if it may.
     Exited(Ended, Option<&'static str>),
     /// The program was started again (`respawn`) before.
     Replaced,
-    Gone,
     /// With why the wait may never be met, if a reason shows.
     TimedOut(Option<&'static str>),
 }
@@ -297,154 +300,120 @@ impl Told {
                 u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
             }
             Told::Found(Found::Stopped) => STOPPED,
-            Told::Found(
-                Found::Text { .. } | Found::Gone(_) | Found::Bell(_) | Found::Settled(_),
-            ) => 0,
+            Told::Found(Found::Text { .. } | Found::Gone | Found::Bell(_) | Found::Settled(_)) => 0,
             Told::Exited(..) | Told::Replaced => EXITED,
-            Told::Gone => GONE,
             Told::TimedOut(_) => TIMED_OUT,
         }
     }
 }
 
 impl Wait {
-    /// The outcome of a wait that ended so in pane `id`.
-    fn told(
-        &self,
-        id: PaneId,
-        pane: Option<&Pane>,
-        told: Told,
-        several: bool,
-        since: Since,
-    ) -> Reply {
-        let prefix = if several {
-            format!("{id} ")
-        } else {
-            String::new()
-        };
-        // A settling action, or a wait the program stopped short of: its
-        // state, then what came since it began.
-        let settles = self.until.contains(&Until::Settled);
-        let now = Instant::now();
-        let state = match (&told, pane) {
-            (Told::Found(Found::Settled(state)), _) => Some(*state),
-            (Told::Found(Found::Stopped), _) => Some(crate::ready::State::Reading),
-            // An exit waited for is a state too: said as one, with what
-            // came before it.
-            (Told::Found(Found::Exit(ended)), _) => Some(crate::ready::State::Exited(*ended)),
-            // A text gone, or a settling wait's limit, leaves the pane as
-            // it is: said with its state.
-            (Told::Found(Found::Gone(_)), Some(pane)) => Some(crate::ready::state(pane, now)),
-            (Told::TimedOut(_), Some(pane)) if settles => Some(crate::ready::state(pane, now)),
-            (
-                Told::Found(_) | Told::Exited(..) | Told::Replaced | Told::Gone | Told::TimedOut(_),
-                _,
-            ) => None,
-        };
-        // At its limit a settling wait fails (124) only while busy; `0
-        // timeout` answers at once, as it is, and never fails.
-        let calm = self.limit().is_zero() || state.is_some_and(|s| s != crate::ready::State::Busy);
-        let status = match settles && calm && matches!(told, Told::TimedOut(_)) {
-            true => 0,
-            false => told.status(),
-        };
-        // A settling action whose pane closed (a shell that exited): said,
-        // with status 4, not a failure.
-        if settles && matches!(told, Told::Gone) {
-            let stdout = format!("{id} closed\n");
-            let state = vec![("state", Json::str("closed"))];
-            return answer(id, GONE, (stdout, String::new()), state, None);
+    /// The outcome of a wait whose pane `id` closed: a settling action's
+    /// (a shell that exited) said with status 4, not a failure; any other
+    /// wait's a failure.
+    fn gone(&self, id: PaneId) -> Reply {
+        if !self.until.contains(&Until::Settled) {
+            return failed(id, GONE, String::new(), format!("{id}: the pane closed"));
         }
-        if let (Some(state), Some(pane)) = (state, pane) {
-            let (line, notes) = self.state_line(id, pane, state, since);
+        let stdout = format!("{id} closed\n");
+        let state = vec![("state", Json::str("closed"))];
+        answer(id, GONE, (stdout, String::new()), state, None)
+    }
+
+    /// The outcome of a wait that ended so in `pane`.
+    fn told(&self, pane: &Pane, told: Told, several: bool, since: Since) -> Reply {
+        use crate::ready::State;
+        let (id, now) = (pane.id, Instant::now());
+        let status = told.status();
+        // A settling action, a wait the program stopped short of, an exit
+        // or a text gone: its state, then what came since it began, if asked.
+        let settled = |state, status, body| self.settled(pane, state, status, body, since);
+        let came = || since_text(pane, since, self.marks);
+        let asked = || match self.print {
+            true => came(),
+            false => String::new(),
+        };
+        let (said, met) = match told {
             // A text that cannot come: the screen, to act on what is there.
-            // Else what came, if asked or of an exit or a text gone.
-            let came = self.print || matches!(told, Told::Found(Found::Exit(_) | Found::Gone(_)));
-            let body = if matches!(told, Told::Found(Found::Stopped)) {
+            Told::Found(Found::Stopped) => {
                 let cut = since.cut.unwrap_or_default();
-                format!("{cut}{}", text(pane, self.marks, false))
-            } else if came {
-                since_text(pane, since, self.marks)
-            } else {
-                String::new()
-            };
-            // Said on stdout, with its status: still busy (124), stopped
-            // short of the text (7). Not a failure: the answer is the screen.
-            let mut fields = vec![("state", Json::str(state.word()))];
-            fields.extend(notes);
-            let stdout = format!("{line}\n{body}");
-            let output = Some(("output", Json::str(body)));
-            return answer(id, status, (stdout, String::new()), fields, output);
-        }
-        let screen = pane
-            .filter(|_| self.print)
-            .map(|p| text(p, self.marks, false));
-        let (said, problem, json) = match told {
-            Told::Found(found) => {
-                let (said, json) = found.said();
-                (said, None, json)
+                let screen = format!("{cut}{}", text(pane, self.marks, false));
+                return settled(State::Reading, status, screen);
+            }
+            Told::Found(Found::Exit(ended)) => {
+                return settled(State::Exited(ended), status, came());
+            }
+            // A text gone leaves the pane as it is.
+            Told::Found(Found::Gone) => {
+                return settled(crate::ready::state(pane, now), status, came());
+            }
+            Told::Found(Found::Settled(state)) => return settled(state, status, asked()),
+            // At its limit a settling wait fails (124) only while busy; `0
+            // timeout` answers at once, as it is, and never fails.
+            Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
+                let state = crate::ready::state(pane, now);
+                let calm = self.limit().is_zero() || state != State::Busy;
+                return settled(state, if calm { 0 } else { status }, asked());
+            }
+            Told::Found(Found::Text { text, line }) => {
+                let fields = vec![
+                    ("met", Json::str("text")),
+                    ("text", Json::str(text)),
+                    ("line", Json::str(line.clone())),
+                ];
+                (line, Ok(fields))
+            }
+            Told::Found(Found::Bell(notification)) => {
+                let said = notification
+                    .as_ref()
+                    .map_or_else(|| "bell".to_owned(), |n| format!("notification: {n}"));
+                let notification = notification.map_or(Json::Null, Json::str);
+                let fields = vec![("met", Json::str("bell")), ("notification", notification)];
+                (said, Ok(fields))
             }
             Told::Exited(ended, hint) => {
-                let what = self.describe();
                 // Its last words, which an agent would otherwise ask for next:
                 // a crash says why.
-                let last = pane.map(|p| tail(p, 3)).unwrap_or_default();
                 let mut message = format!(
-                    "{id}: its program {} while waiting for {what}",
-                    crate::process::told(ended)
+                    "{id}: its program {} while waiting for {}",
+                    crate::process::told(ended),
+                    self.describe()
                 );
-                for line in &last {
+                for line in tail(pane, 3) {
                     message.push_str(&format!("\n  {line}"));
                 }
                 if let Some(hint) = hint {
                     message.push_str(&format!("\n({hint})"));
                 }
-                let mut json = ended_json("exited", ended);
-                json.push((
-                    "last_lines",
-                    Json::Array(last.into_iter().map(Json::str).collect()),
-                ));
-                (String::new(), Some(message), json)
+                (String::new(), Err(message))
             }
-            Told::Gone => (
-                String::new(),
-                Some(format!("{id}: the pane closed")),
-                vec![("met", Json::str("closed"))],
-            ),
-            Told::Replaced => (
-                String::new(),
-                Some(format!(
+            Told::Replaced => {
+                let message = format!(
                     "{id}: its program was started again (respawn) while waiting for {}",
                     self.describe()
-                )),
-                vec![("met", Json::str("respawned"))],
-            ),
+                );
+                (String::new(), Err(message))
+            }
             Told::TimedOut(hint) => {
                 // What the pane is doing, so the next step is clear: still
                 // busy, or settled on a prompt that will not change.
-                let seconds = self.limit().as_secs_f64();
-                let idle = pane.map(|p| Instant::now().saturating_duration_since(p.changed_at));
-                let last = pane.and_then(|p| tail(p, 1).pop());
+                let state = crate::ready::state(pane, now);
+                let idle = now.saturating_duration_since(pane.changed_at).as_secs();
                 let mut message = format!(
-                    "{id}: timed out after {seconds}s waiting for {}",
+                    "{id}: timed out after {}s waiting for {}",
+                    self.limit().as_secs_f64(),
                     self.describe()
                 );
                 // What it does: reading its terminal, waiting, busy…
-                if let (Some(idle), Some(pane)) = (idle, pane) {
-                    let state = crate::ready::state(pane, Instant::now());
-                    message.push_str(&format!(
-                        "; {id} {}, the screen unchanged for {}s",
-                        state.word(),
-                        idle.as_secs()
-                    ));
-                    if state == crate::ready::State::Busy {
-                        message.push_str("; still busy: the same wait waits on");
-                    }
+                let word = state.word();
+                message.push_str(&format!("; {id} {word}, the screen unchanged for {idle}s"));
+                if state == State::Busy {
+                    message.push_str("; still busy: the same wait waits on");
                 }
-                if let Some(line) = &last {
+                if let Some(line) = tail(pane, 1).pop() {
                     message.push_str(&format!("; last line: `{line}`"));
                 }
-                let queued = pane.map_or(0, Pane::input_queued);
+                let queued = pane.input_queued();
                 if queued > 0 {
                     message.push_str(&format!(
                         "; {queued} bytes of input not yet read by the program"
@@ -453,34 +422,52 @@ impl Wait {
                 if let Some(hint) = hint {
                     message.push_str(&format!("\n  {hint}"));
                 }
-                let millis = |d: std::time::Duration| {
-                    Json::Number(i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-                };
-                (
-                    String::new(),
-                    Some(message),
-                    vec![
-                        ("met", Json::str("timeout")),
-                        ("idle_ms", idle.map_or(Json::Null, millis)),
-                        ("last_line", last.map_or(Json::Null, Json::str)),
-                    ],
-                )
+                (String::new(), Err(message))
             }
         };
-        let said = if said.is_empty() {
-            said
-        } else {
-            format!("{prefix}{said}\n")
+        let screen = self.print.then(|| text(pane, self.marks, false));
+        let said = match (said.is_empty(), several) {
+            (true, _) => said,
+            (false, true) => format!("{id} {said}\n"),
+            (false, false) => format!("{said}\n"),
         };
         let stdout = format!("{said}{}", screen.as_deref().unwrap_or_default());
-        let screen = screen.map(|screen| ("screen", Json::str(screen)));
-        answer(
-            id,
-            status,
-            (stdout, problem.unwrap_or_default()),
-            json,
-            screen,
-        )
+        match met {
+            Ok(fields) => {
+                let screen = screen.map(|screen| ("screen", Json::str(screen)));
+                answer(id, status, (stdout, String::new()), fields, screen)
+            }
+            Err(message) => failed(id, status, stdout, message),
+        }
+    }
+
+    /// A settled pane's answer: its state line, then `body`.
+    fn settled(
+        &self,
+        pane: &Pane,
+        state: crate::ready::State,
+        status: u8,
+        body: String,
+        since: Since,
+    ) -> Reply {
+        let (line, notes) = self.state_line(pane.id, pane, state, since);
+        let mut fields = vec![("state", Json::str(state.word()))];
+        fields.extend(notes);
+        let stdout = format!("{line}\n{body}");
+        let output = Some(("output", Json::str(body)));
+        answer(pane.id, status, (stdout, String::new()), fields, output)
+    }
+}
+
+/// A wait's failure in pane `id`: why, on stderr, beside what it prints.
+/// It leaves no answer, so no JSON.
+fn failed(id: PaneId, status: u8, text: String, message: String) -> Reply {
+    Reply {
+        status,
+        text,
+        message,
+        ids: vec![AnyRef::Pane(id)],
+        ..Reply::default()
     }
 }
 
@@ -591,60 +578,6 @@ impl Until {
     }
 }
 
-impl Found {
-    /// What the wait prints, and its fields as JSON.
-    fn said(&self) -> (String, Vec<(&'static str, Json<'static>)>) {
-        let settled = |state: crate::ready::State| {
-            let fields = vec![
-                ("met", Json::str("settled")),
-                ("state", Json::str(state.word())),
-            ];
-            (state.word(), fields)
-        };
-        match self {
-            Found::Text { text, line } => (
-                line.clone(),
-                vec![
-                    ("met", Json::str("text")),
-                    ("text", Json::str(text.clone())),
-                    ("line", Json::str(line.clone())),
-                ],
-            ),
-            Found::Gone(text) => (
-                String::new(),
-                vec![
-                    ("met", Json::str("gone")),
-                    ("text", Json::str(text.clone())),
-                ],
-            ),
-            Found::Exit(ended) => (crate::process::told(*ended), ended_json("exit", *ended)),
-            Found::Settled(state) => settled(*state),
-            Found::Stopped => settled(crate::ready::State::Reading),
-            Found::Bell(notification) => (
-                notification
-                    .as_ref()
-                    .map_or_else(|| "bell".to_owned(), |n| format!("notification: {n}")),
-                vec![
-                    ("met", Json::str("bell")),
-                    (
-                        "notification",
-                        notification.clone().map_or(Json::Null, Json::str),
-                    ),
-                ],
-            ),
-        }
-    }
-}
-
-/// An end as JSON: what it met, and its status or signal.
-fn ended_json(met: &'static str, ended: Ended) -> Vec<(&'static str, Json<'static>)> {
-    let (key, n) = match ended {
-        Ended::Exited(code) => ("exit", code),
-        Ended::Signalled(signal) => ("signal", signal),
-    };
-    vec![("met", Json::str(met)), (key, Json::Number(i64::from(n)))]
-}
-
 impl Watch {
     /// How `pane` stands as a wait begins: one armed before an action
     /// (`after`) counts from now, any other from the last action's input to
@@ -679,15 +612,12 @@ impl Watch {
     /// for, or why that can no longer come; and what came since it began.
     fn verdict(
         &mut self,
-        pane: Option<&Pane>,
+        pane: &Pane,
         wait: &Wait,
         texts: &[String],
         window: (Instant, Instant),
         mode: (bool, bool),
-    ) -> Option<(Told, Since)> {
-        let Some(pane) = pane else {
-            return Some((Told::Gone, self.since(None)));
-        };
+    ) -> Option<Told> {
         // An action's wait answers once all its keys went in: what the
         // first brought is no answer to the rest.
         if wait.after && pane.starts == self.starts && pane.holds_keys() {
@@ -701,21 +631,7 @@ impl Watch {
                 None => Told::Exited(pane.process.exit_status()?, self.unseen()),
             }
         };
-        Some((told, self.since(Some(pane))))
-    }
-
-    /// The wait's answer at its limit: what the pane is doing, and why
-    /// the wait may never be met, if a reason shows.
-    fn timed_out(&self, session: &Session, wait: &Wait, texts: &[String], several: bool) -> Reply {
-        let pane = session.panes.get(&self.pane);
-        let hint = pane.and_then(|p| self.hint(p, texts));
-        wait.told(
-            self.pane,
-            pane,
-            Told::TimedOut(hint),
-            several,
-            self.since(pane),
-        )
+        Some(told)
     }
 
     /// Why a wait that timed out may never have been met: a text on the
@@ -797,7 +713,7 @@ impl Watch {
                     let last = seen.copied().flatten();
                     let had = !fresh || seen.is_some();
                     if !present && had && gone.is_none() {
-                        gone = Some((Found::Gone(text.clone()), last.unwrap_or(self.start.from)));
+                        gone = Some((Found::Gone, last.unwrap_or(self.start.from)));
                     }
                 }
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
@@ -998,15 +914,15 @@ impl Watch {
         }
     }
 
-    fn since(&self, pane: Option<&Pane>) -> Since {
+    fn since(&self, pane: &Pane) -> Since {
         Since {
             start: self.start,
             revision: self.revision,
-            cut: pane.and_then(|p| match (self.missed, p.cut()) {
+            cut: match (self.missed, pane.cut()) {
                 (true, _) => Some(MORE_THAN_KEPT),
                 (false, true) => Some(CUT),
                 (false, false) => None,
-            }),
+            },
         }
     }
 }
