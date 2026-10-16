@@ -461,26 +461,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         }
         // Unlike `set`, the cell keeps what it has if the row has no room,
         // even compacted: an append never loses text.
-        if self.text.long.len().saturating_add(joined.len()) > limit {
-            self.compact(true);
-        }
-        let long = &mut self.text.long;
-        let (Ok(start), Ok(len)) = (u32::try_from(long.len()), u8::try_from(joined.len())) else {
-            return false;
-        };
-        if long.len().saturating_add(joined.len()) > limit {
-            return false;
-        }
-        long.extend_from_slice(joined);
-        match self.cells.get_mut(i).map(AsMut::as_mut) {
-            // Compaction may have moved it; its halves and style are as
-            // they were.
-            Some(slot) => {
-                *slot = slot.with_spilled(start, len);
-                true
-            }
-            None => false,
-        }
+        self.store_long(i, cell, joined, false)
     }
 
     /// Sets cell `i` to `cell`'s halves and style holding `text`: inline
@@ -501,30 +482,39 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             self.store_short(i, cell, text.as_bytes());
             return true;
         }
+        if self.store_long(i, cell, text.as_bytes(), true) {
+            return true;
+        }
+        self.store_short(i, cell, floor(text, SHORT).as_bytes());
+        false
+    }
+
+    /// Sets cell `i` to `cell`'s halves and style holding `text`, a long
+    /// cluster, in the row's long text, compacting it first if it is out
+    /// of room. If `replace`, the text the cell had goes before that: it
+    /// is being replaced. Whether the row had room.
+    fn store_long(&mut self, i: usize, cell: Compact, text: &[u8], replace: bool) -> bool {
         let limit = Text::long_limit(self.cells.len());
         if self.text.long.len().saturating_add(text.len()) > limit {
-            // The text the cell had goes too: it is being replaced.
-            if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
+            if replace && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
             self.compact(true);
         }
         let long = &mut self.text.long;
-        let start = u32::try_from(long.len());
-        let len = u8::try_from(text.len());
+        let (Ok(start), Ok(len)) = (u32::try_from(long.len()), u8::try_from(text.len())) else {
+            return false;
+        };
         let room = long.len().saturating_add(text.len()) <= limit;
-        match (start, len) {
-            (Ok(start), Ok(len)) if room => {
-                long.extend_from_slice(text.as_bytes());
-                if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
-                    *slot = cell.with_spilled(start, len);
-                }
+        match self.cells.get_mut(i).map(AsMut::as_mut) {
+            Some(slot) if room => {
+                long.extend_from_slice(text);
+                // Compaction may have moved the text the cell had; its
+                // halves and style are `cell`'s.
+                *slot = cell.with_spilled(start, len);
                 true
             }
-            _ => {
-                self.store_short(i, cell, floor(text, SHORT).as_bytes());
-                false
-            }
+            _ => false,
         }
     }
 
