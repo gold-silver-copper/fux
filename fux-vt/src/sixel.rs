@@ -27,14 +27,17 @@ impl Picture {
         if x >= self.width {
             return None;
         }
-        let at = u64::from(y)
-            .saturating_mul(u64::from(self.width))
-            .saturating_add(u64::from(x));
-        let at = usize::try_from(at).ok()?;
-        let at = at.checked_mul(4)?;
+        let at = offset(x, y, self.width)?;
         let bytes = self.rgba.get(at..at.checked_add(4)?)?;
         bytes.try_into().ok()
     }
+}
+
+/// Where the pixel at `x`, `y` of a picture `width` wide starts in its RGBA
+/// bytes.
+fn offset(x: u32, y: u32, width: u32) -> Option<usize> {
+    let at = u64::from(y).checked_mul(u64::from(width))?;
+    usize::try_from(at.checked_add(u64::from(x))?.checked_mul(4)?).ok()
 }
 
 /// Where the decoder is in its data: a run of digits after `!`, `#` or
@@ -171,9 +174,7 @@ impl Decoder {
                 }
                 let y = self.y.saturating_add(bit);
                 for x in self.x..right {
-                    let at = u64::from(y).saturating_mul(u64::from(self.width));
-                    let at = at.saturating_add(u64::from(x)).saturating_mul(4);
-                    let at = usize::try_from(at).unwrap_or(usize::MAX);
+                    let at = offset(x, y, self.width).unwrap_or(usize::MAX);
                     if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
                         pixel.copy_from_slice(&[r, g, b, 255]);
                     }
