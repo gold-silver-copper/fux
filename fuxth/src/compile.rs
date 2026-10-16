@@ -228,11 +228,11 @@ enum Open {
     Each { head: usize, at: Token },
 }
 
-/// The definition being compiled: its index, its steps, and its own `let`
-/// names.
+/// The definition being compiled: its steps, and its own `let` names. It
+/// goes into `words` at its `end`; until then nothing else can, so its index
+/// is the next one there.
 #[derive(Clone)]
 struct Current<A> {
-    id: usize,
     code: Steps<A>,
     locals: HashMap<Rc<str>, usize>,
 }
@@ -305,12 +305,10 @@ impl<A: Clone> Compiler<A> {
                     self.top_level(token)?;
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
                     self.check_name(name, false)?;
-                    let id = self.words.len();
                     // Visible from here on, its own body included.
-                    self.names.insert(Rc::clone(&name.text), Entry::Word(id));
-                    self.words.push(Steps::new());
+                    let id = Entry::Word(self.words.len());
+                    self.names.insert(Rc::clone(&name.text), id);
                     self.current = Some(Current {
-                        id,
                         code: Steps::new(),
                         locals: HashMap::new(),
                     });
@@ -318,11 +316,7 @@ impl<A: Clone> Compiler<A> {
                 }
                 "end" => match self.open.pop() {
                     Some(Open::Define { .. }) => {
-                        if let Some(current) = self.current.take()
-                            && let Some(slot) = self.words.get_mut(current.id)
-                        {
-                            *slot = current.code;
-                        }
+                        self.words.extend(self.current.take().map(|c| c.code))
                     }
                     Some(Open::List { .. }) => self.code().push(Op::Gather, token),
                     Some(Open::Each { head, .. }) => {
@@ -466,6 +460,8 @@ impl<A: Clone> Compiler<A> {
             Some(Entry::Builtin(b)) => self.code().push(Op::Builtin(b), token),
             Some(Entry::App(id)) => self.code().push(Op::App(id), token),
             Some(Entry::Word(id)) => {
+                // A word in its own body isn't in `words` until its `end`:
+                // a call.
                 let body = self.words.get(id).filter(|w| w.leaf()).cloned();
                 match body {
                     // Short and straight: copied in, each step named by the
