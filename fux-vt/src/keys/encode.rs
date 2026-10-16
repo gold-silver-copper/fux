@@ -5,7 +5,9 @@
 //! [`crate::Screen::encode_focus`] read them from the program's screen,
 //! [`key_bytes`] and [`paste`] take them given. Mouse reports are
 //! [`crate::keys::mouse`]'s.
-use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
+use crate::keys::{
+    CAPS_LOCK_BIT, Direction, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT, SHIFT_BIT,
+};
 use std::io::Write;
 
 /// How a pane's program asked for its keys: one of the protocols fux
@@ -103,7 +105,7 @@ const ALTERNATE_KEYS: u8 = 4;
 const ALL_KEYS: u8 = 8;
 const TEXT: u8 = 16;
 /// The kitty protocol's lock modifiers, Caps Lock and Num Lock.
-const LOCKS: u8 = 64 | 128;
+const LOCKS: u8 = CAPS_LOCK_BIT | NUM_LOCK_BIT;
 
 /// What a bracketed paste begins with (`CSI 200 ~`).
 pub const PASTE_START: &[u8] = b"\x1b[200~";
@@ -207,7 +209,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
     let exact = stroke.kitty;
     let all = report != Report::Disambiguated;
     let capital = matches!(key, Key::Char(c) if c.is_ascii_uppercase()) && exact.is_none();
-    let bits = exact.map_or_else(|| mods.bits() | u8::from(capital), |k| k.mods);
+    let bits = exact.map_or_else(|| mods.bits() | (SHIFT_BIT * u8::from(capital)), |k| k.mods);
     let held = bits & !LOCKS;
     let modifier = u16::from(bits).saturating_add(1);
     // `;mods`, left out when there are none; empty if a parameter follows,
@@ -230,7 +232,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
     }
     match Form::from(key) {
         Form::Text(c) => {
-            let types_text = held & !1 == 0;
+            let types_text = held & !SHIFT_BIT == 0;
             if types_text && !all {
                 return out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
             }
@@ -246,7 +248,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
             });
             let _ = write!(out, "\x1b[{code}");
             if alternate {
-                let shifted = shifted.filter(|_| bits & 1 != 0);
+                let shifted = shifted.filter(|_| bits & SHIFT_BIT != 0);
                 let base = exact.and_then(|k| k.base);
                 match (shifted, base) {
                     (Some(s), Some(b)) => drop(write!(out, ":{s}:{b}")),
@@ -428,7 +430,7 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 /// backarrow toggle leaves BS.
 fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     let KeyPress { key, mods } = stroke.press;
-    let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & 1 != 0);
+    let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & SHIFT_BIT != 0);
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
     let state = Modifiers { shift, ..mods };
     let (sym, code) = match key {

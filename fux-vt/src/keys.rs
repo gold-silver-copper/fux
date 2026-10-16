@@ -68,17 +68,27 @@ pub struct Modifiers {
     pub shift: bool,
 }
 
+// The modifier bits of xterm's and kitty's protocols, one less than their
+// modifier parameter, as `Kitty::mods` holds them.
+pub(crate) const SHIFT_BIT: u8 = 1;
+pub(crate) const ALT_BIT: u8 = 2;
+pub(crate) const CTRL_BIT: u8 = 4;
+pub(crate) const CAPS_LOCK_BIT: u8 = 64;
+pub(crate) const NUM_LOCK_BIT: u8 = 128;
+
 impl Modifiers {
-    /// As xterm's and kitty's modifier bits: Shift 1, Alt 2, Ctrl 4.
+    /// As xterm's and kitty's modifier bits.
     pub(crate) fn bits(self) -> u8 {
-        u8::from(self.shift) | u8::from(self.alt) << 1 | u8::from(self.ctrl) << 2
+        let bit = |on: bool, bit: u8| if on { bit } else { 0 };
+        bit(self.shift, SHIFT_BIT) | bit(self.alt, ALT_BIT) | bit(self.ctrl, CTRL_BIT)
     }
     /// The modifiers xterm's and kitty's modifier `bits` hold.
     pub(crate) fn from_bits(bits: u32) -> Self {
+        let on = |bit: u8| bits & u32::from(bit) != 0;
         Self {
-            shift: bits & 1 != 0,
-            alt: bits & 2 != 0,
-            ctrl: bits & 4 != 0,
+            shift: on(SHIFT_BIT),
+            alt: on(ALT_BIT),
+            ctrl: on(CTRL_BIT),
         }
     }
     /// No modifier.

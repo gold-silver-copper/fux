@@ -48,7 +48,10 @@
 use crate::keys::colour::Scheme;
 use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
-use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
+use crate::keys::{
+    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Key, KeyPress, Keystroke, Kitty, Modifiers,
+    SHIFT_BIT,
+};
 use crate::{ModeStatus, Rgb};
 use std::borrow::Cow;
 use std::num::NonZeroU8;
@@ -939,13 +942,15 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // Modifiers beyond xterm's three (Super, Hyper, Meta, the locks) are
     // kept for a pane in the kitty protocol.
     let input = match input {
-        Some(Input::Key(stroke)) if bits & !7 != 0 => Some(Input::Key(Keystroke {
-            kitty: Some(Kitty {
-                mods: bits,
-                ..Kitty::default()
-            }),
-            ..stroke
-        })),
+        Some(Input::Key(stroke)) if bits & !(SHIFT_BIT | ALT_BIT | CTRL_BIT) != 0 => {
+            Some(Input::Key(Keystroke {
+                kitty: Some(Kitty {
+                    mods: bits,
+                    ..Kitty::default()
+                }),
+                ..stroke
+            }))
+        }
         other => other,
     };
     Step::Done(consumed, input)
@@ -987,10 +992,10 @@ fn typed(c: char, kitty: &Kitty) -> char {
         .base
         .and_then(char::from_u32)
         .filter(char::is_ascii)
-        .filter(|_| kitty.mods & 6 != 0 && !c.is_ascii());
-    let shift = kitty.mods & 1 != 0;
+        .filter(|_| kitty.mods & (ALT_BIT | CTRL_BIT) != 0 && !c.is_ascii());
+    let shift = kitty.mods & SHIFT_BIT != 0;
     // Caps Lock capitalizes a letter, as in a legacy terminal's bytes.
-    let caps = kitty.mods & 64 != 0;
+    let caps = kitty.mods & CAPS_LOCK_BIT != 0;
     let letter = |c: char| {
         if shift != caps {
             c.to_ascii_uppercase()
