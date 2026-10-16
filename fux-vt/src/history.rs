@@ -257,14 +257,17 @@ impl History {
     fn number(&self, index: usize) -> Option<u64> {
         self.first_row.checked_add(u64::try_from(index).ok()?)
     }
+    /// Where the block numbered `block` is, if it is held, given the
+    /// first's number and how many are older than the newest: its index in
+    /// `older`, or `older`'s length for the newest.
+    fn block_at(first: u16, older: usize, block: u16) -> Option<usize> {
+        let at = usize::from(block.wrapping_sub(first));
+        (at <= older).then_some(at)
+    }
     /// The block numbered `block`, if it is held.
     fn block(&self, block: u16) -> Option<&Vec<Compact>> {
-        let at = usize::from(block.wrapping_sub(self.first_block));
-        match at.checked_sub(self.older.len()) {
-            None => self.older.get(at),
-            Some(0) => Some(&self.newest),
-            Some(_) => None,
-        }
+        let at = Self::block_at(self.first_block, self.older.len(), block)?;
+        Some(self.older.get(at).unwrap_or(&self.newest))
     }
     /// Where row `kept`'s cells are in its block.
     fn cells_of(kept: &Kept) -> Option<Range<usize>> {
@@ -314,12 +317,8 @@ impl History {
     pub(crate) fn each_cell_mut(&mut self, mut f: impl FnMut(&mut Compact)) {
         let (older, newest) = (&mut self.older, &mut self.newest);
         for kept in &self.rows {
-            let at = usize::from(kept.block().wrapping_sub(self.first_block));
-            let block = match at.checked_sub(older.len()) {
-                None => older.get_mut(at),
-                Some(0) => Some(&mut *newest),
-                Some(_) => None,
-            };
+            let at = Self::block_at(self.first_block, older.len(), kept.block());
+            let block = at.map(|at| older.get_mut(at).unwrap_or(&mut *newest));
             if let Some(cells) =
                 Self::cells_of(kept).and_then(|cells| block.and_then(|b| b.get_mut(cells)))
             {
