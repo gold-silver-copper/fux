@@ -13,6 +13,7 @@ use crate::keymap::{confirm_act, copy_act, line_act, list_act};
 use crate::keys::{Key, KeyPress};
 use crate::protocol::{Reply, Scalar};
 use crate::script::Failed;
+use crate::session::describe;
 use crate::view::Line;
 
 /// A screen a word asks to open: built with what the server knows (names,
@@ -105,27 +106,12 @@ pub fn quote(word: &str) -> String {
 
 /// The words that push a handle to `target`: `str %3 pane`.
 pub fn naming(target: AnyRef<WsId>) -> String {
-    match target {
-        AnyRef::Pane(p) => format!("str {p} pane"),
-        AnyRef::Tab(t) => format!("str {t} tab"),
-        AnyRef::Workspace(w) => format!("str {w} workspace"),
-    }
+    format!("str {} {}", describe(target), target.kind().name())
 }
 
-fn kind(target: AnyRef<WsId>) -> &'static str {
-    match target {
-        AnyRef::Pane(_) => "pane",
-        AnyRef::Tab(_) => "tab",
-        AnyRef::Workspace(_) => "workspace",
-    }
-}
-
-fn shown(target: AnyRef<WsId>) -> String {
-    match target {
-        AnyRef::Pane(p) => p.to_string(),
-        AnyRef::Tab(t) => t.to_string(),
-        AnyRef::Workspace(w) => w.to_string(),
-    }
+/// What `target` is, as a title says it: `pane %3`.
+fn about(target: AnyRef<WsId>) -> String {
+    format!("{} {}", target.kind().name(), describe(target))
 }
 
 impl Open {
@@ -162,7 +148,7 @@ impl Open {
         };
         Ok(match *self {
             Open::Menu(target) => {
-                let title = format!("{} {} {}", kind(target), shown(target), name(target)?);
+                let title = format!("{} {}", about(target), name(target)?);
                 Screen::List(ListScreen {
                     title,
                     items: menu(target),
@@ -173,17 +159,12 @@ impl Open {
                 })
             }
             Open::Rename(target) => Screen::Prompt(Prompt {
-                title: format!("rename {} {}", kind(target), shown(target)),
+                title: format!("rename {}", about(target)),
                 line: Line::new(name(target)?),
                 rename: Some(target),
             }),
             Open::Confirm(target) => Screen::Confirm {
-                question: format!(
-                    "close {} {} {}?",
-                    kind(target),
-                    shown(target),
-                    name(target)?
-                ),
+                question: format!("close {} {}?", about(target), name(target)?),
                 about: target,
             },
             Open::Prompt => Screen::Prompt(Prompt {
