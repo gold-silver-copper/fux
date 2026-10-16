@@ -1,5 +1,6 @@
 //! Why a program could not be read or run: a stable code, what went wrong,
 //! and where.
+use crate::compile::Builtin;
 use crate::token::{Place, Token};
 use std::rc::Rc;
 
@@ -113,6 +114,67 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// What a step takes, as a value of another kind is told it: the same
+/// words whether the checker finds it before the run or the machine during
+/// it.
+#[derive(Clone, Copy)]
+pub(crate) enum Wants {
+    /// What `if` and `until` take.
+    Flag,
+    /// What `each` walks.
+    Each,
+    /// A string or a list, for the word.
+    Seq(Builtin),
+    /// An integer, for the word.
+    Int(Builtin),
+    /// Arithmetic's two values.
+    Ints,
+    /// `lt`'s two values.
+    Ordered,
+    /// What `concat` joins.
+    Concat,
+    /// What is pushed onto a string.
+    PushText,
+    /// What is put into a string.
+    PutText,
+    /// What `code` takes.
+    Char,
+}
+
+impl Wants {
+    /// "each walks a string or a list, not an integer": `got`, the kinds
+    /// found.
+    pub(crate) fn not(self, got: impl std::fmt::Display) -> String {
+        match self {
+            Wants::Flag => format!("takes a boolean (from eq or lt), not {got}"),
+            Wants::Each => format!("each walks a string or a list, not {got}"),
+            Wants::Seq(word) => format!("{} takes a string or a list, not {got}", word.name()),
+            Wants::Int(word) => format!("{} takes an integer, not {got}", word.name()),
+            Wants::Ints => format!("takes two integers, not {got}"),
+            Wants::Ordered => {
+                format!("lt compares two integers, two strings or two lists, not {got}")
+            }
+            Wants::Concat => format!("concat takes a list of strings or of lists, not {got}"),
+            Wants::PushText => format!("push onto a string takes a string, not {got}"),
+            Wants::PutText => format!("put into a string takes a string, not {got}"),
+            Wants::Char => format!("code takes a one-character string, not {got}"),
+        }
+    }
+}
+
+/// What too few values says, the checker's and the machine's alike: "takes
+/// 2 values, and the stack has 1". `takes` says how it takes them ("takes",
+/// "needs at least"), `has` how many the stack has.
+pub(crate) fn underflow(takes: &str, n: usize, has: &str, inside: bool) -> String {
+    let values = if n == 1 { "value" } else { "values" };
+    let inside = if inside {
+        " (inside list … end, which starts with an empty stack)"
+    } else {
+        ""
+    };
+    format!("{takes} {n} {values}, and the stack has {has}{inside}")
+}
 
 /// What an application word gives when it fails: its code and why.
 #[derive(Clone, Debug, PartialEq, Eq)]

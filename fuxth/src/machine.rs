@@ -6,7 +6,7 @@
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
 use crate::compile::{Builtin, Op, Program, Steps};
-use crate::error::{Code as ErrorCode, Error, Failure};
+use crate::error::{Code as ErrorCode, Error, Failure, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, Value};
 use std::cmp::Ordering;
@@ -411,9 +411,7 @@ impl<A: AppValue> Machine<A> {
                     match seq {
                         Value::Str(_) | Value::List(_) => self.iters.push((seq, 0)),
                         other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => {
-                            let message =
-                                format!("each walks a string or a list, not {}", other.kind());
-                            return Err(self.fail(ErrorCode::Type, message));
+                            return Err(self.type_error(Wants::Each.not(other.kind())));
                         }
                     }
                 }
@@ -480,13 +478,7 @@ impl<A: AppValue> Machine<A> {
         if has >= n {
             return Ok(self.stack.len().saturating_sub(n));
         }
-        let values = if n == 1 { "value" } else { "values" };
-        let inside = if self.marks.is_empty() {
-            ""
-        } else {
-            " (inside list … end, which starts with an empty stack)"
-        };
-        let message = format!("takes {n} {values}, and the stack has {has}{inside}");
+        let message = underflow("takes", n, &has.to_string(), !self.marks.is_empty());
         Err(self.fail(ErrorCode::StackUnderflow, message))
     }
 
@@ -510,8 +502,7 @@ impl<A: AppValue> Machine<A> {
         match self.pop()? {
             Value::Bool(flag) => Ok(flag),
             other @ (Value::Int(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                let message = format!("takes a boolean (from eq or lt), not {}", other.kind());
-                Err(self.fail(ErrorCode::Type, message))
+                Err(self.type_error(Wants::Flag.not(other.kind())))
             }
         }
     }
@@ -520,8 +511,8 @@ impl<A: AppValue> Machine<A> {
         match self.pop2()? {
             (Value::Int(a), Value::Int(b)) => Ok((a, b)),
             (a, b) => {
-                let message = format!("takes two integers, not {} and {}", a.kind(), b.kind());
-                Err(self.fail(ErrorCode::Type, message))
+                let got = format!("{} and {}", a.kind(), b.kind());
+                Err(self.type_error(Wants::Ints.not(got)))
             }
         }
     }
@@ -539,12 +530,13 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Takes a count: an integer, 0 or more.
-    fn count(&mut self, what: &str) -> Result<usize, Error> {
+    fn count(&mut self, word: Builtin) -> Result<usize, Error> {
         match self.pop()? {
-            Value::Int(n) => usize::try_from(n)
-                .map_err(|_| self.range_error(format!("{what} takes a count from 0, not {n}"))),
+            Value::Int(n) => usize::try_from(n).map_err(|_| {
+                self.range_error(format!("{} takes a count from 0, not {n}", word.name()))
+            }),
             other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                Err(self.type_error(format!("{what} takes an integer, not {}", other.kind())))
+                Err(self.type_error(Wants::Int(word).not(other.kind())))
             }
         }
     }
@@ -628,11 +620,11 @@ impl<A: AppValue> Machine<A> {
         match builtin {
             Builtin::Drop => self.pop().map(|_| ()),
             Builtin::Pick => {
-                let n = self.count("pick")?;
+                let n = self.count(builtin)?;
                 self.pick(n)
             }
             Builtin::Roll => {
-                let n = self.count("roll")?;
+                let n = self.count(builtin)?;
                 self.roll(n)
             }
             Builtin::Add => self.arithmetic(i64::checked_add),
@@ -654,14 +646,14 @@ impl<A: AppValue> Machine<A> {
             }
             Builtin::Len => {
                 let seq = self.pop()?;
-                let n = self.seq_len(&seq, "len")?;
+                let n = self.seq_len(&seq, builtin)?;
                 self.push(Value::Int(i64::try_from(n).unwrap_or(i64::MAX)))
             }
             Builtin::At => {
                 let i = self.pop()?;
                 let seq = self.pop()?;
-                let len = self.seq_len(&seq, "at")?;
-                let i = self.index(&i, len, "at")?;
+                let len = self.seq_len(&seq, builtin)?;
+                let i = self.index(&i, len, builtin)?;
                 if let Value::Str(s) = &seq
                     && !s.is_ascii()
                 {
@@ -676,7 +668,7 @@ impl<A: AppValue> Machine<A> {
                 let to = self.pop()?;
                 let from = self.pop()?;
                 let seq = self.pop()?;
-                let len = self.seq_len(&seq, "slice")?;
+                let len = self.seq_len(&seq, builtin)?;
                 let (Value::Int(a), Value::Int(b)) = (&from, &to) else {
                     return Err(self.type_error(format!(
                         "slice takes two integers after the sequence, not {} and {}",
@@ -708,10 +700,7 @@ impl<A: AppValue> Machine<A> {
             Builtin::Concat => {
                 let list = self.pop()?;
                 let Value::List(list) = list else {
-                    return Err(self.type_error(format!(
-                        "concat takes a list of strings or of lists, not {}",
-                        list.kind()
-                    )));
+                    return Err(self.type_error(Wants::Concat.not(list.kind())));
                 };
                 let joined = self.concat(&list)?;
                 self.push(joined)
@@ -726,8 +715,8 @@ impl<A: AppValue> Machine<A> {
                 let x = self.pop()?;
                 let i = self.pop()?;
                 let seq = self.pop()?;
-                let len = self.seq_len(&seq, "put")?;
-                let i = self.index(&i, len, "put")?;
+                let len = self.seq_len(&seq, builtin)?;
+                let i = self.index(&i, len, builtin)?;
                 let put = self.put(seq, i, x)?;
                 self.push(put)
             }
@@ -742,22 +731,17 @@ impl<A: AppValue> Machine<A> {
                 };
                 match one {
                     Some(ch) => self.push(Value::Int(i64::from(u32::from(ch)))),
-                    None => Err(self.type_error(format!(
-                        "code takes a one-character string, not {}",
-                        match &c {
-                            Value::Str(s) if s.is_empty() => "an empty one",
-                            Value::Str(_) => "a longer one",
-                            Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => {
-                                c.kind()
-                            }
-                        }
-                    ))),
+                    None => Err(self.type_error(Wants::Char.not(match &c {
+                        Value::Str(s) if s.is_empty() => "an empty one",
+                        Value::Str(_) => "a longer one",
+                        Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => c.kind(),
+                    }))),
                 }
             }
             Builtin::Char => {
                 let n = self.pop()?;
                 let Value::Int(n) = n else {
-                    return Err(self.type_error(format!("char takes an integer, not {}", n.kind())));
+                    return Err(self.type_error(Wants::Int(builtin).not(n.kind())));
                 };
                 match u32::try_from(n).ok().and_then(char::from_u32) {
                     Some(ch) => self.push(Value::str(ch.to_string())),
@@ -795,25 +779,24 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// How many elements `seq` has, if it is a string or list.
-    fn seq_len(&self, seq: &Value<A>, word: &str) -> Result<usize, Error> {
+    fn seq_len(&self, seq: &Value<A>, word: Builtin) -> Result<usize, Error> {
         match seq {
             Value::Str(_) | Value::List(_) => Ok(seq.size()),
-            Value::Int(_) | Value::Bool(_) | Value::App(_) => Err(self.type_error(format!(
-                "{word} takes a string or a list, not {}",
-                seq.kind()
-            ))),
+            Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+                Err(self.type_error(Wants::Seq(word).not(seq.kind())))
+            }
         }
     }
 
     /// An index into something `len` long.
-    fn index(&self, i: &Value<A>, len: usize, word: &str) -> Result<usize, Error> {
+    fn index(&self, i: &Value<A>, len: usize, word: Builtin) -> Result<usize, Error> {
         match i {
             Value::Int(n) => usize::try_from(*n)
                 .ok()
                 .filter(|i| *i < len)
                 .ok_or_else(|| self.range_error(format!("index {n}, and it has {len}"))),
             Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => {
-                Err(self.type_error(format!("{word} takes an integer index, not {}", i.kind())))
+                Err(self.type_error(Wants::Int(word).not(i.kind())))
             }
         }
     }
@@ -888,12 +871,9 @@ impl<A: AppValue> Machine<A> {
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
             }
-            (Value::Str(_), x) => Err(self.type_error(format!(
-                "push onto a string takes a string, not {}",
-                x.kind()
-            ))),
+            (Value::Str(_), x) => Err(self.type_error(Wants::PushText.not(x.kind()))),
             (seq @ (Value::Int(_) | Value::Bool(_) | Value::App(_)), _) => {
-                Err(self.type_error(format!("push takes a string or a list, not {}", seq.kind())))
+                Err(self.type_error(Wants::Seq(Builtin::Push).not(seq.kind())))
             }
         }
     }
@@ -934,12 +914,9 @@ impl<A: AppValue> Machine<A> {
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
-            (Value::Str(_), x) => Err(self.type_error(format!(
-                "put into a string takes a string, not {}",
-                x.kind()
-            ))),
+            (Value::Str(_), x) => Err(self.type_error(Wants::PutText.not(x.kind()))),
             (seq @ (Value::Int(_) | Value::Bool(_) | Value::App(_)), _) => {
-                Err(self.type_error(format!("put takes a string or a list, not {}", seq.kind())))
+                Err(self.type_error(Wants::Seq(Builtin::Put).not(seq.kind())))
             }
         }
     }
@@ -970,11 +947,7 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
         (a, b) = (p, q);
     }
     if path.is_empty() {
-        format!(
-            "lt compares two integers, two strings or two lists, not {} and {}",
-            a.kind(),
-            b.kind()
-        )
+        Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()))
     } else {
         format!(
             "lt compares lists element by element, and at {} it finds {} and {}",
