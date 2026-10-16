@@ -27,6 +27,15 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// Writes to the server's log, its stderr: `log!("…", args)` expands to
+/// `writeln!(stderr(), "fux server: {}", format_args!("…", args))`. A log
+/// that cannot be written, a full disk, say, loses the line and stops nothing.
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(std::io::stderr(), "fux server: {}", format_args!($($arg)*));
+    }};
+}
+
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`PaintClock::echo`) and panes gone quiet (`QUIET`) are
 /// painted sooner.
@@ -91,7 +100,7 @@ impl Listening {
             Ok(door) => Some(door),
             Err(error) if listener.is_none() => return Err(Error::Setup(error)),
             Err(error) => {
-                log(&format!("no door beside the socket: {error}"));
+                log!("no door beside the socket: {error}");
                 None
             }
         };
@@ -592,7 +601,7 @@ impl Saved {
             Ok(text) => text,
             Err(e) if e.kind() == ErrorKind::NotFound => return false,
             Err(e) => {
-                log(&format!("{}: {e}; starting afresh", self.path.display()));
+                log!("{}: {e}; starting afresh", self.path.display());
                 return false;
             }
         };
@@ -602,26 +611,23 @@ impl Saved {
             .name("restore".into())
             .spawn(move || {
                 match crate::script::restore(&socket, &path, &text) {
-                    Ok(()) => log(&format!("brought back the session in {}", path.display())),
+                    Ok(()) => log!("brought back the session in {}", path.display()),
                     Err(error) => {
                         // Kept aside, not saved over, for a person to look at.
                         let aside = path.with_extension("layout.failed");
                         let _ = std::fs::rename(&path, &aside);
-                        log(&format!(
+                        log!(
                             "could not bring back {}: {error}; the file kept as {}",
                             path.display(),
                             aside.display()
-                        ));
+                        );
                     }
                 }
                 done.store(false, std::sync::atomic::Ordering::SeqCst);
             });
         if let Err(error) = spawned {
             restoring.store(false, std::sync::atomic::Ordering::SeqCst);
-            log(&format!(
-                "could not bring back {}: {error}",
-                self.path.display()
-            ));
+            log!("could not bring back {}: {error}", self.path.display());
             return false;
         }
         true
@@ -658,10 +664,7 @@ impl Saved {
         }
         match self.write(&text) {
             Ok(()) => self.written = text,
-            Err(e) => log(&format!(
-                "saving the layout to {}: {e}",
-                self.path.display()
-            )),
+            Err(e) => log!("saving the layout to {}: {e}", self.path.display()),
         }
     }
 
@@ -770,12 +773,6 @@ fn grant(
     }
 }
 
-/// Writes to the server's log, its stderr. A log that cannot be written,
-/// a full disk, say, loses the line and stops nothing.
-fn log(message: &str) {
-    let _ = writeln!(std::io::stderr(), "fux server: {message}");
-}
-
 /// Why a server could not start.
 #[derive(Debug)]
 pub enum Error {
@@ -805,7 +802,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
     // Orphans the panes' programs leave stay the server's to read and reap.
     if let Err(errno) = fuxix::process::adopt_orphans() {
-        log(&format!("adopting orphans: {errno}"));
+        log!("adopting orphans: {errno}");
     }
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
@@ -1008,7 +1005,7 @@ impl Server {
         if self.session.workspaces.is_empty()
             && let Err(error) = self.session.start()
         {
-            log(&format!("starting afresh: {error}"));
+            log!("starting afresh: {error}");
         }
         for index in 0..self.conns.len() {
             if let Some((command, context)) = self
@@ -1163,7 +1160,7 @@ impl Server {
         }
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
-            Err(error) => log(&format!("poll: {error}")),
+            Err(error) => log!("poll: {error}"),
         }
         ready.extend(
             fds.iter()
@@ -1180,7 +1177,7 @@ impl Server {
         if let Phase::Stopping(_) = self.phase {
             return;
         }
-        log(&reason);
+        log!("{reason}");
         if let Some(saved) = &mut self.saved {
             saved.stop(&self.session, keep);
         }
@@ -1357,24 +1354,24 @@ impl Server {
                 }
                 Ok((stream, _)) => {
                     if let Some(shortage) = self.shortage.take() {
-                        log(&format!(
+                        log!(
                             "file descriptors available again; {} connections were refused while they were short",
                             shortage.refused
-                        ));
+                        );
                     }
                     let euid = fuxix::process::geteuid();
                     match fuxix::socket::peer_uid(&stream) {
                         Ok(uid) if uid == euid => {}
                         Ok(uid) => {
-                            log(&format!(
+                            log!(
                                 "refused a connection from uid {uid}; only uid {euid} may use this server"
-                            ));
+                            );
                             continue;
                         }
                         Err(error) => {
-                            log(&format!(
+                            log!(
                                 "refused a connection whose peer could not be identified: {error}"
-                            ));
+                            );
                             continue;
                         }
                     }
@@ -1407,10 +1404,10 @@ impl Server {
                         .is_none_or(|at| now.duration_since(at) >= REPORT_EVERY)
                     {
                         self.accept_logged = Some(now);
-                        log(&format!(
+                        log!(
                             "accept: {e}; listening again in {} ms",
                             ACCEPT_REST.as_millis()
-                        ));
+                        );
                     }
                     return;
                 }
@@ -1454,7 +1451,7 @@ impl Server {
         drop(stream);
         let now = Instant::now();
         let shortage = self.shortage.get_or_insert_with(|| {
-            log("out of file descriptors: new connections are refused, each told why, until some close");
+            log!("out of file descriptors: new connections are refused, each told why, until some close");
             Shortage {
                 reported: (now, 0),
                 refused: 0,
@@ -1463,11 +1460,11 @@ impl Server {
         shortage.refused = shortage.refused.saturating_add(1);
         let (at, then) = shortage.reported;
         if now.duration_since(at) >= REPORT_EVERY {
-            log(&format!(
+            log!(
                 "still out of file descriptors: {} connections refused in the last {} s",
                 shortage.refused.saturating_sub(then),
                 now.duration_since(at).as_secs()
-            ));
+            );
             shortage.reported = (now, shortage.refused);
         }
     }
@@ -1536,7 +1533,7 @@ impl Server {
                             Ok(true) => frames = frames.saturating_add(1),
                             Ok(false) => break,
                             Err(error) => {
-                                log(&format!("a client sent a bad frame: {error}"));
+                                log!("a client sent a bad frame: {error}");
                                 break 'read true;
                             }
                         }
