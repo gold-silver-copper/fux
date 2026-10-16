@@ -293,19 +293,16 @@ impl Links {
     pub(crate) fn find(&self, uri: &Arc<str>, id: &Arc<str>) -> Option<&Hyperlink> {
         self.ids.get(&(Arc::clone(id), Arc::clone(uri)))
     }
-    /// Whether a link of `uri` and `id` fits without making room.
-    pub(crate) fn fits(&self, uri: &str, id: Option<&str>) -> bool {
-        self.held.saturating_add(cost(uri, id)) <= LINK_BYTES
-    }
     /// A new link, sharing the strings of the link opened; `None` if it
-    /// does not fit.
+    /// does not fit without making room.
     pub(crate) fn insert(&mut self, opened: &Hyperlink) -> Option<Hyperlink> {
         let link = opened.clone();
         let (uri, id) = (&link.uri, link.id.as_ref());
-        if !self.fits(uri, link.id()) {
+        let held = self.held.saturating_add(link.cost());
+        if held > LINK_BYTES {
             return None;
         }
-        self.held = self.held.saturating_add(link.cost());
+        self.held = held;
         if let Some(id) = id {
             self.ids
                 .insert((Arc::clone(id), Arc::clone(uri)), link.clone());

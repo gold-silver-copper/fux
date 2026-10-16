@@ -895,18 +895,18 @@ impl Grid {
         {
             return Some(link.clone());
         }
-        let id_text = id.map(|id| &**id);
-        if !self.links.fits(uri, id_text) {
-            if !self.links.may_make_room() {
-                return None;
-            }
-            self.make_room(version);
-            if !self.links.fits(uri, id_text) {
-                self.links.stall();
-                return None;
-            }
+        if let Some(link) = self.links.insert(opened) {
+            return Some(link);
         }
-        self.links.insert(opened)
+        if !self.links.may_make_room() {
+            return None;
+        }
+        self.make_room(version);
+        let link = self.links.insert(opened);
+        if link.is_none() {
+            self.links.stall();
+        }
+        link
     }
 
     /// Makes room for links: the rows' links are counted again
