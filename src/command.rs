@@ -107,24 +107,6 @@ pub enum Subject {
     Workspace(Option<WsRef>),
 }
 
-impl Subject {
-    pub fn kind(&self) -> Kind {
-        match self {
-            Subject::Pane(_) => Kind::Pane,
-            Subject::Tab(_) => Kind::Tab,
-            Subject::Workspace(_) => Kind::Workspace,
-        }
-    }
-    /// The client's or the pane's own of `kind`.
-    pub fn own(kind: Kind) -> Subject {
-        match kind {
-            Kind::Pane => Subject::Pane(None),
-            Kind::Tab => Subject::Tab(None),
-            Kind::Workspace => Subject::Workspace(None),
-        }
-    }
-}
-
 impl From<AnyRef> for Subject {
     fn from(target: AnyRef) -> Subject {
         match target {
@@ -525,8 +507,6 @@ pub enum Usage {
     /// A word that is not the pane, tab or workspace it must be.
     Not(Kind, String),
     NotClient(String),
-    /// What is wrong, said whole.
-    Needs(&'static str),
 }
 
 impl std::fmt::Display for Usage {
@@ -534,7 +514,6 @@ impl std::fmt::Display for Usage {
         match self {
             Usage::Not(kind, text) => write!(f, "{text:?} is not a {}", kind.name()),
             Usage::NotClient(text) => write!(f, "{text:?} is not a client: clients are cN"),
-            Usage::Needs(what) => f.write_str(what),
         }
     }
 }
@@ -544,9 +523,6 @@ impl std::error::Error for Usage {}
 pub fn parse_pane(text: &str) -> Result<PaneId, Usage> {
     text.parse()
 }
-pub fn parse_tab(text: &str) -> Result<TabId, Usage> {
-    text.parse()
-}
 /// A workspace: `+N`, or its name.
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
     match text.parse::<WsId>() {
@@ -554,9 +530,6 @@ pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
         Err(_) if text.starts_with('+') => Err(Usage::Not(Kind::Workspace, text.to_owned())),
         Err(_) => Ok(WsRef::Name(text.to_owned())),
     }
-}
-pub fn parse_client(text: &str) -> Result<ClientId, Usage> {
-    text.parse()
 }
 
 /// Whether `name` is a variable's name a shell takes: letters, digits and
@@ -612,46 +585,6 @@ impl Command {
             return then.take();
         }
         None
-    }
-}
-
-/// Whether a word that is no key name looks like one mistyped, as a person
-/// sending keys means it: a modifier before something that is no key
-/// (`C-Ent`), a key name in another case (`enter`), or a capitalised word a
-/// letter off one or the start of one (`Entr`, `Esc`). Typed as text, it would
-/// go to the program unnoticed.
-pub fn looks_like_a_key(word: &str) -> bool {
-    if word.len() > 2 && ["C-", "M-", "S-"].iter().any(|m| word.starts_with(m)) {
-        return true;
-    }
-    let capital = word.chars().next().is_some_and(char::is_uppercase);
-    let lower = word.to_lowercase();
-    crate::keys::all_names().iter().any(|name| {
-        let name = name.to_lowercase();
-        lower == name
-            || capital && word.len() >= 3 && (name.starts_with(&lower) || one_off(&lower, &name))
-    })
-}
-
-/// Whether two words are a letter apart: one changed, added or dropped.
-fn one_off(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let (short, long) = if a.len() <= b.len() {
-        (&a, &b)
-    } else {
-        (&b, &a)
-    };
-    match long.len().checked_sub(short.len()) {
-        Some(0) => short.iter().zip(long).filter(|(x, y)| x != y).count() == 1,
-        Some(1) => (0..long.len()).any(|skip| {
-            let rest = long
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != skip)
-                .map(|(_, c)| c);
-            rest.eq(short.iter())
-        }),
-        _ => false,
     }
 }
 
