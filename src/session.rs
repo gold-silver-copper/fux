@@ -96,9 +96,6 @@ pub struct Caller {
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
     pub env: Vec<(String, String)>,
-    /// The workspace it may reach, and nothing else, if it came through a
-    /// socket `fux grant` made.
-    pub scope: Option<String>,
     /// It runs in one of this server's panes (its `FUX_SERVER` is this
     /// server's), whether or not it gave the pane.
     pub inside: bool,
@@ -1948,11 +1945,9 @@ impl Session {
 
     /// `begin`'s work: what fails before a command runs is its error.
     fn begin_command(&mut self, command: Command, origin: &Origin) -> Result<Begun, Error> {
-        let mut command = match origin {
-            Origin::Cli(Caller {
-                scope: Some(scope), ..
-            }) => self.scoped(command, scope, origin)?,
-            Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => command,
+        let mut command = match self.scope(origin)? {
+            Some(scope) => self.scoped(command, &scope, origin)?,
+            None => command,
         };
         // Started, then waited for from its first output on.
         if let Some(wait) = command.take_start_wait() {
@@ -2027,10 +2022,6 @@ impl Session {
     /// outside it, or reaches what is everyone's (the config, the buffers,
     /// clients, the server), is refused.
     fn scoped(&self, command: Command, scope: &str, origin: &Origin) -> Result<Command, Error> {
-        if scope.is_empty() {
-            let message = "the grant this socket came through was revoked";
-            return Err(fail(Code::NotGranted, message));
-        }
         // With no target, one that would act anywhere acts on the granted
         // workspace.
         let mut command = command;
@@ -2123,12 +2114,8 @@ impl Session {
         match command {
             Command::Ls { target, get } => {
                 // Through a grant, the granted workspace alone.
-                let scope = match origin {
-                    Origin::Cli(Caller {
-                        scope: Some(scope), ..
-                    }) => Some(self.resolve_ws(&WsRef::Name(scope.clone()))?),
-                    Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => None,
-                };
+                let scope = self.scope(origin)?;
+                let scope = (scope.map(|name| self.resolve_ws(&WsRef::Name(name)))).transpose()?;
                 // Its JSON, given as asked, or kept beside its text.
                 let (read, only) = match target {
                     Some(target) => {
@@ -3151,16 +3138,25 @@ pub struct Grant {
 }
 
 impl Session {
-    /// The name grant `socket`'s workspace has now: the one pinned, while
-    /// it is there, else the name it was granted, pinned once a workspace
-    /// has it. Empty if no grant made `socket` (it was revoked).
-    pub fn grant_scope(&mut self, socket: &Path) -> String {
-        let Some(at) = self.grants.iter().position(|g| g.socket == socket) else {
-            return String::new();
+    /// The workspace's name a caller from `origin` may reach, and nothing
+    /// else, if it came through a socket `fux grant` made: the one pinned,
+    /// while it is there, else the name it was granted, pinned once a
+    /// workspace has it. Through a grant revoked, nothing.
+    fn scope(&mut self, origin: &Origin) -> Result<Option<String>, Error> {
+        let Origin::Cli(Caller {
+            grant: Some(socket),
+            ..
+        }) = origin
+        else {
+            return Ok(None);
+        };
+        let Some(at) = self.grants.iter().position(|g| g.socket == *socket) else {
+            let message = "the grant this socket came through was revoked";
+            return Err(fail(Code::NotGranted, message));
         };
         let pinned = self.grants.get(at).and_then(|g| g.pinned);
         if let Some(ws) = pinned.and_then(|id| self.workspace(id)) {
-            return ws.name.clone();
+            return Ok(Some(ws.name.clone()));
         }
         let name = self
             .grants
@@ -3171,7 +3167,7 @@ impl Session {
         if let Some(grant) = self.grants.get_mut(at) {
             grant.pinned = found;
         }
-        name
+        Ok(Some(name))
     }
 
     /// The workspace's name a grant of `workspace` through `socket` would

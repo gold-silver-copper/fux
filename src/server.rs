@@ -1659,12 +1659,6 @@ impl Server {
         let inside = server.as_deref() == Some(session.server_id.as_str());
         let (pane, stray) = if ours { (pane, None) } else { (None, pane) };
         let cwd = Some(PathBuf::from(cwd)).filter(|p| p.is_dir());
-        // Through a grant, the workspace it reaches; one revoked reaches
-        // none.
-        let scope = conn
-            .grant
-            .as_ref()
-            .map(|socket| session.grant_scope(socket));
         use crate::command::Command;
         let granting = if let Command::Grant { workspace, socket } = &command {
             Some((socket.clone(), Some(workspace.clone())))
@@ -1674,7 +1668,7 @@ impl Server {
             None
         };
         if let Some(granting) = granting {
-            let outcome = match scope {
+            let outcome = match conn.grant {
                 // `fux grant` from a granted socket: refused.
                 Some(_) => Reply::failed(
                     Code::NotGranted,
@@ -1694,7 +1688,7 @@ impl Server {
         // that must be there.
         // A key's or the prompt's program acts where its client is; one
         // from a grant never does.
-        let origin = match client.filter(|_| scope.is_none()) {
+        let origin = match client.filter(|_| conn.grant.is_none()) {
             Some(c) if !session.views.contains_key(&c) => {
                 let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
                 conn.answer(session, outcome);
@@ -1706,7 +1700,6 @@ impl Server {
                 cwd,
                 stray,
                 env,
-                scope,
                 inside,
                 grant: conn.grant.clone(),
                 restoring,
