@@ -145,28 +145,21 @@ impl Event {
 /// then what closed.
 pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> {
     let mut events = Vec::new();
-    let name = |n: &str| Json::str(n.to_owned());
-    for (&ws, ws_name) in &new.workspaces {
-        match old.workspaces.get(&ws) {
-            None => events.push(Event::new("created", ws, None, None).with("name", name(ws_name))),
-            Some(was) if was != ws_name => {
-                events.push(Event::new("renamed", ws, None, None).with("name", name(ws_name)));
-            }
-            Some(_) => {}
-        }
+    // A workspace or tab made since, or named otherwise.
+    let named = |ws, tab, was: Option<&String>, name: &String| {
+        let what = match was {
+            None => "created",
+            Some(was) if was != name => "renamed",
+            Some(_) => return None,
+        };
+        Some(Event::new(what, ws, tab, None).with("name", Json::str(name.clone())))
+    };
+    for (&ws, name) in &new.workspaces {
+        events.extend(named(ws, None, old.workspaces.get(&ws), name));
     }
-    for (&tab, (ws, tab_name)) in &new.tabs {
-        match old.tabs.get(&tab) {
-            None => {
-                let event = Event::new("created", *ws, Some(tab), None);
-                events.push(event.with("name", name(tab_name)));
-            }
-            Some((_, was)) if was != tab_name => {
-                let event = Event::new("renamed", *ws, Some(tab), None);
-                events.push(event.with("name", name(tab_name)));
-            }
-            Some(_) => {}
-        }
+    for (&tab, (ws, name)) in &new.tabs {
+        let was = old.tabs.get(&tab).map(|(_, was)| was);
+        events.extend(named(*ws, Some(tab), was, name));
     }
     for (&pane, now) in &new.panes {
         let at = |name| Event::new(name, now.ws, Some(now.tab), Some(pane));
