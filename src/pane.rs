@@ -788,25 +788,25 @@ impl Pane {
                 .collect();
             // Each row printed on, once, as it reads now, if it is on the
             // screen: one gone into history is not printed on again.
+            // The screen's rows, found once: a row in history is printed on
+            // no more, and finding one there would read all of history.
             let window = screen.window();
+            let rows: std::collections::HashMap<_, _> = (0..window.rows())
+                .filter_map(|y| window.row(y))
+                .map(|row| (row.id(), row))
+                .collect();
             let mut last = None;
             for print in prints.iter() {
                 if last.replace(print.row) == Some(print.row) {
                     continue;
                 }
-                let row = screen
-                    .row_by_id(print.row)
-                    .filter(|r| window.place(r).is_some());
-                if let Some(row) = row {
-                    self.seen.insert(print.row, row_cells(&row));
+                if let Some(row) = rows.get(&print.row) {
+                    self.seen.insert(print.row, row_cells(row));
                 }
             }
             // Rows scrolled off since are let go: nothing prints on them.
-            if self.seen.len() > usize::from(window.rows()).saturating_mul(4) {
-                let on_screen = |id: &fux_vt::RowId| {
-                    (screen.row_by_id(*id)).is_some_and(|r| window.place(&r).is_some())
-                };
-                self.seen.retain(|id, _| on_screen(id));
+            if self.seen.len() > rows.len().saturating_mul(4) {
+                self.seen.retain(|id, _| rows.contains_key(id));
             }
             Box::new(crate::log::Printed {
                 prints,
@@ -1042,7 +1042,7 @@ impl Pane {
     /// Whether rows of the main screen written since the last input were
     /// let go (past history-bytes, or out of a scroll region): what came
     /// since is not all on the screen or in history. What they printed is
-    /// kept in `prints`.
+    /// in the journal (`record`).
     pub fn cut(&self) -> bool {
         self.screen().let_go() > self.since.0
     }

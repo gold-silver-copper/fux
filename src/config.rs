@@ -94,7 +94,9 @@ pub const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The longest `wait-seconds`: a day.
 pub const MAX_WAIT_SECONDS: usize = 86_400;
 /// The most bytes journals may be given: each, or all together.
-pub const MAX_JOURNAL: usize = 1 << 34;
+pub const MAX_JOURNAL: usize = 1 << 31;
+/// The fewest bytes a journal may be given: waits and events read it.
+pub const MIN_JOURNAL: usize = 1 << 20;
 
 /// The user's login shell from `/etc/passwd`, for when `SHELL` is unset
 /// (a service, a sandbox, a cleared environment): bash or zsh there marks
@@ -188,8 +190,8 @@ impl Config {
             "wait-seconds" => {
                 self.wait_seconds = u64::try_from(number(0, MAX_WAIT_SECONDS)?).unwrap_or(0)
             }
-            "journal-bytes" => self.journal_bytes = number(0, MAX_JOURNAL)?,
-            "journal-total" => self.journal_total = number(0, MAX_JOURNAL)?,
+            "journal-bytes" => self.journal_bytes = number(MIN_JOURNAL, MAX_JOURNAL)?,
+            "journal-total" => self.journal_total = number(MIN_JOURNAL, MAX_JOURNAL)?,
             "clipboard" => self.clipboard = on()?,
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,

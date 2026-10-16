@@ -132,8 +132,8 @@ as text, `json` or not (`%3 READY`).
 ## `events-json`, `X events-of-json`
 
 One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
-`pane` and `tab` only where they apply. `bell`, `notification` and `done`
-that came several times in one round of the server's carry `count`.
+`pane` and `tab` only where they apply. A pane's events come in the order
+its journal recorded them, one line each.
 
 | `event` | Also |
 | --- | --- |

@@ -242,7 +242,14 @@ pub fn reap_orphans(_kept: impl Fn(Pid) -> bool) {}
 /// cut short past 4,096.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn tree() -> Vec<Pid> {
-    let mut found = children("self");
+    below("self")
+}
+
+/// The processes under `root` (or `self`), by each one's threads'
+/// children: a runaway tree is cut short past 4,096.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn below(root: impl fmt::Display) -> Vec<Pid> {
+    let mut found = children(root);
     let mut next = 0;
     while let Some(pid) = found.get(next).copied()
         && found.len() <= 4096
@@ -555,8 +562,8 @@ pub enum Activity {
 /// fux is built: [`Host`].
 pub trait Probe {
     /// What the programs in foreground group `group` of the terminal at
-    /// `tty` do, among this process's [`tree`].
-    fn activity(group: Pid, tty: &std::path::Path) -> Activity;
+    /// `tty` do: among `leader`'s own, else among this process's [`tree`].
+    fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity;
     /// Whether process `pid` itself is blocked reading the terminal at
     /// `tty`.
     fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool;
@@ -831,7 +838,7 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
 /// do: busy if one is; else reading if one waits for the terminal, polling
 /// if one polls it, waiting if they wait on something else.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn activity(group: Pid, tty: &std::path::Path) -> Activity {
+fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
     let in_group = |pid: &Pid| {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
@@ -839,9 +846,16 @@ fn activity(group: Pid, tty: &std::path::Path) -> Activity {
                 == Some(group.as_raw())
         })
     };
-    // An orphan the terminal's programs left is in the tree too: this
-    // process adopted it (`adopt_orphans`).
-    let seen: Vec<Activity> = (tree().into_iter().filter(in_group))
+    // The leader's own, and the orphans of the group this process adopted
+    // (`adopt_orphans`), its children beside the panes' leaders, with
+    // theirs: a few files read, not the whole tree.
+    let adopted = children("self").into_iter().filter(|p| *p != leader && in_group(p));
+    let roots: Vec<Pid> = std::iter::once(leader).chain(adopted).collect();
+    let members: Vec<Pid> = (roots.iter())
+        .flat_map(|root| std::iter::once(*root).chain(below(*root)))
+        .filter(in_group)
+        .collect();
+    let seen: Vec<Activity> = (members.into_iter())
         .filter_map(|p| process_activity(p, tty))
         .collect();
     // None in the group (it is changing hands: a program starting or
@@ -870,8 +884,8 @@ fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
 /// (`/proc/PID/task/TID/syscall`).
 #[cfg(any(target_os = "linux", target_os = "android"))]
 impl Probe for Linux {
-    fn activity(group: Pid, tty: &std::path::Path) -> Activity {
-        activity(group, tty)
+    fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
+        activity(group, tty, leader)
     }
 
     fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
@@ -884,7 +898,7 @@ impl Probe for Linux {
 /// disk, uninterruptible), idle once every one waits.
 #[cfg(target_os = "macos")]
 impl Probe for Macos {
-    fn activity(group: Pid, _tty: &std::path::Path) -> Activity {
+    fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
         let mut pids: Vec<libc::pid_t> = vec![0; 1024];
         let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
             return Activity::Unknown;

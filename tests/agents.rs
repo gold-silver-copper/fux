@@ -126,7 +126,7 @@ fn wait_answers_as_the_pane_shows_or_settles() -> Outcome {
         "what came since it started: no keys went in"
     );
     // Where fux is not told the program reads (not Linux), the text is
-    // waited for to the limit, 60s.
+    // waited for to the limit, wait-seconds (30s).
     if PROBED {
         let start = std::time::Instant::now();
         let never = server.fux(&[&p[..], &["str", "never", "wait-text", "wait"]].concat())?;
@@ -2458,7 +2458,7 @@ fn keys_with_no_enter_are_their_echo() -> Outcome {
 /// were let go: the text may have come unseen.
 #[test]
 fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
-    let server = Server::start("str history-bytes 2000 set  str journal-bytes 200000 set")?;
+    let server = Server::start("str history-bytes 2000 set  str journal-bytes 1048576 set")?;
     let wait = |pane: &str, text: &str| {
         let args = [
             "str",
@@ -2482,7 +2482,7 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
         "{}",
         found.stderr
     );
-    // Past what the pane's journal keeps (`journal-bytes`, 200 kB here).
+    // Past what the pane's journal keeps (`journal-bytes`, 1 MiB here).
     let flood = "import sys; w = sys.stdout.write\nw('LOST_LINE\\n')\n\
                  w(('filler ' * 10 + '\\n') * 20000)\nw('END\\n'); sys.stdout.flush(); input()";
     let lost = id(&server.ok(&run(

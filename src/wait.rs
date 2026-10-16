@@ -99,8 +99,10 @@ struct Watch {
     /// What came after this is new to it.
     from: Seq,
     on_full: bool,
-    /// The last piece of output it read from the pane's journal.
+    /// The last piece of output it read from the pane's journal, and
+    /// whether pieces it had not read yet were let go.
     read: Seq,
+    missed: bool,
     /// The screen's rows as they read when it began, if it began after the
     /// last action (else the pane's, `Pane::before`).
     before: Option<std::collections::HashMap<fux_vt::RowId, crate::pane::Cells>>,
@@ -112,6 +114,11 @@ struct Watch {
     stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
     /// The `wait-gone` texts seen since the wait began, for a fresh program.
     appeared: Vec<String>,
+    /// How far it read the journal for texts gone and bells, and the last
+    /// piece that printed each text gone: each look reads only what is new.
+    looked: Seq,
+    printed: Vec<(String, Seq)>,
+    bell: Option<Seq>,
     /// A text was found in the echo of what was typed alone.
     echo_skipped: bool,
     finished: u64,
@@ -669,10 +676,14 @@ impl Watch {
             from,
             on_full,
             read: from,
+            missed: false,
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
             stream: std::collections::HashMap::new(),
             appeared: Vec::new(),
+            looked: from,
+            printed: Vec::new(),
+            bell: None,
             echo_skipped: false,
             finished,
             revision: pane.revision,
@@ -705,7 +716,7 @@ impl Watch {
         } else {
             match self.look(pane, wait, texts, window, mode) {
                 Some(found) => Told::Found(found),
-                None => Told::Exited(pane.process.exit_status()?, self.unseen(Some(pane))),
+                None => Told::Exited(pane.process.exit_status()?, self.unseen()),
             }
         };
         Some((told, self.since(Some(pane))))
@@ -735,7 +746,7 @@ impl Watch {
     /// screen that nothing printed since the wait began, or one that came
     /// unseen.
     fn hint(&self, pane: &Pane, texts: &[String]) -> Option<&'static str> {
-        if let Some(why) = self.unseen(Some(pane)) {
+        if let Some(why) = self.unseen() {
             return Some(why);
         }
         let screen = pane.screen();
@@ -752,8 +763,8 @@ impl Watch {
 
     /// Why a text may have come unseen: more came than the pane keeps, or
     /// the text was in the echo of what was typed alone.
-    fn unseen(&self, pane: Option<&Pane>) -> Option<&'static str> {
-        if pane.is_some_and(|p| p.record.lost_after(self.from)) {
+    fn unseen(&self) -> Option<&'static str> {
+        if self.missed {
             return Some(
                 "more was written since the wait began than the pane's journal keeps \
                  (journal-bytes): the text may have come unseen",
@@ -777,6 +788,22 @@ impl Watch {
         if !texts.is_empty() && self.found.is_none() {
             self.read_prints(pane, texts);
         }
+        // What came since the last look: the pieces that printed a text
+        // waited to go, and the first bell.
+        for (seq, p) in pane.record.printed_after(self.looked) {
+            for until in &wait.until {
+                if let Until::Gone(text) = until
+                    && p.prints.iter().any(|r| found_in(r.text, text) > 0)
+                {
+                    self.printed.retain(|(t, _)| t != text);
+                    self.printed.push((text.clone(), seq));
+                }
+            }
+        }
+        if self.bell.is_none() {
+            self.bell = pane.record.bell_after(self.looked);
+        }
+        self.looked = pane.record.last();
         let screen = pane.screen();
         let mut gone = None;
         let mut exit = None;
@@ -791,10 +818,9 @@ impl Watch {
                     // Shown between two looks (drawn over, erased, scrolled
                     // away): printed since, though gone now.
                     // It went no earlier than the last piece that printed it.
-                    let last = (pane.record.printed_after(self.from))
-                        .filter(|(_, p)| p.prints.iter().any(|r| found_in(r.text, text) > 0))
-                        .map(|(seq, _)| seq)
-                        .last();
+                    let last = (self.printed.iter())
+                        .find(|(t, _)| t == text)
+                        .map(|(_, seq)| *seq);
                     if (present || last.is_some()) && !self.appeared.contains(text) {
                         self.appeared.push(text.clone());
                     }
@@ -805,7 +831,7 @@ impl Watch {
                 }
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
                 Until::Settled => settled = self.settled(pane, (began, now), more),
-                Until::Bell => bell = pane.record.bell_after(self.from),
+                Until::Bell => bell = self.bell,
             }
         }
         // Of a text, a bell and a text gone, the first to come; in one
@@ -848,6 +874,7 @@ impl Watch {
     /// the first of `texts` that a piece of output printed, on its line or
     /// in the piece itself, is found.
     fn read_prints(&mut self, pane: &Pane, texts: &[String]) {
+        self.missed |= pane.record.lost_after(self.read);
         let pieces = pane.record.printed_after(self.read.max(self.from));
         self.read = Seq(pane.screen().version());
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
@@ -1008,7 +1035,7 @@ impl Watch {
             on_full: self.on_full,
             finished: self.finished,
             revision: self.revision,
-            cut: pane.and_then(|p| match (p.record.lost_after(self.from), p.cut()) {
+            cut: pane.and_then(|p| match (self.missed, p.cut()) {
                 (true, _) => Some(MORE_THAN_KEPT),
                 (false, true) => Some(CUT),
                 (false, false) => None,
