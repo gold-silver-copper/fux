@@ -786,7 +786,7 @@ fn local(
             if size.is_none() && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 return Err(client_failed(crate::client::Error::NotATerminal));
             }
-            let socket = started(server)?;
+            let (socket, _) = started(server)?;
             let (keymap, problem) = configured(server);
             let attach = crate::client::Attaching {
                 workspace: workspace.clone(),
@@ -797,7 +797,11 @@ fn local(
             crate::client::attach(&socket, attach, *size).map_err(client_failed)?;
         }
         Local::Start => {
-            started(server)?;
+            if started(server)?.1
+                && let (_, Some(problem)) = configured(server)
+            {
+                let _ = writeln!(std::io::stderr(), "fux: {problem}");
+            }
         }
         Local::ForceKill => {
             let socket = server.socket()?;
@@ -825,17 +829,16 @@ fn answer(text: &str, json: &str, kind: &'static str) -> Value<Fux> {
     Answer::value(text, Some(json), kind, None)
 }
 
-/// The server, started in the background if none answers: its socket. One
-/// started has the config's settings (`set`) at once.
-fn started(server: &mut Server) -> Result<crate::socket::SocketPath, Failed> {
+/// The server, started in the background if none answers: its socket, and
+/// whether it was started, for the config's settings (`set`) to go to it at
+/// once.
+fn started(server: &mut Server) -> Result<(crate::socket::SocketPath, bool), Failed> {
     let socket = server.socket()?;
-    if !crate::client::answers(&socket) {
+    let start = !crate::client::answers(&socket);
+    if start {
         crate::client::start_server(&socket).map_err(client_failed)?;
-        if let (_, Some(problem)) = configured(server) {
-            let _ = writeln!(std::io::stderr(), "fux: {problem}");
-        }
     }
-    Ok(socket)
+    Ok((socket, start))
 }
 
 /// The client's keymap, its config run on the defaults; and what was wrong
