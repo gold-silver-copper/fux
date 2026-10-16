@@ -143,24 +143,13 @@ impl Parameters {
 
 /// The non-ASCII character a valid UTF-8 sequence at the start of `bytes`
 /// encodes, and its length; `None` for ASCII, and for a sequence invalid or
-/// cut short, which the byte-by-byte path reads. The checks are the ones
-/// `Parser::ground` makes: no overlong forms, surrogates or code points
-/// past U+10FFFF.
+/// cut short, which the byte-by-byte path reads. The checks are `lead`'s,
+/// which that path makes too.
 fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     let &first = bytes.first()?;
-    let (length, mut code) = match first {
-        0xc2..=0xdf => (2, u32::from(first & 0x1f)),
-        0xe0..=0xef => (3, u32::from(first & 0x0f)),
-        0xf0..=0xf4 => (4, u32::from(first & 0x07)),
-        _ => return None,
-    };
-    let (low, high) = match first {
-        0xe0 => (0xa0, 0xbf),
-        0xed => (0x80, 0x9f),
-        0xf0 => (0x90, 0xbf),
-        0xf4 => (0x80, 0x8f),
-        _ => (0x80, 0xbf),
-    };
+    let (length, low, high) = lead(first)?;
+    // The lead byte's own bits: 5, 4 or 3.
+    let mut code = u32::from(first) & 0x7f_u32.checked_shr(u32::try_from(length).ok()?)?;
     let continuation = bytes.get(1..length)?;
     for (i, &byte) in continuation.iter().enumerate() {
         let (low, high) = if i == 0 { (low, high) } else { (0x80, 0xbf) };
@@ -170,6 +159,24 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
         code = code.checked_shl(6)? | u32::from(byte & 0x3f);
     }
     Some((char::from_u32(code)?, length))
+}
+
+/// What a UTF-8 lead byte begins: the sequence's length, and the range its
+/// second byte is in, which rules out overlong forms, surrogates and code
+/// points past U+10FFFF (Unicode 17, table 3-7); `None` for a byte that
+/// leads none. Every later byte is 0x80 to 0xbf.
+#[inline(always)]
+const fn lead(first: u8) -> Option<(usize, u8, u8)> {
+    Some(match first {
+        0xc2..=0xdf => (2, 0x80, 0xbf),
+        0xe0 => (3, 0xa0, 0xbf),
+        0xed => (3, 0x80, 0x9f),
+        0xe1..=0xef => (3, 0x80, 0xbf),
+        0xf0 => (4, 0x90, 0xbf),
+        0xf4 => (4, 0x80, 0x8f),
+        0xf1..=0xf3 => (4, 0x80, 0xbf),
+        _ => return None,
+    })
 }
 
 /// How many bytes `bytes` begins with are printable ASCII, 0x20 to 0x7e,
@@ -1003,21 +1010,15 @@ impl Parser {
         byte: u8,
         sink: &mut impl Sink,
     ) -> Result<(), Error> {
-        let [lead, ..] = read.bytes;
-        let valid = (0x80..=0xbf).contains(&byte)
-            && (read.len != 1
-                || match lead {
-                    0xe0 => byte >= 0xa0,
-                    0xed => byte < 0xa0,
-                    0xf0 => byte >= 0x90,
-                    0xf4 => byte < 0x90,
-                    _ => true,
-                });
-        let need = match lead {
-            0xc2..=0xdf => 2,
-            0xe0..=0xef => 3,
-            _ => 4,
+        let [first, ..] = read.bytes;
+        // Only a lead byte begins a character's bytes (`ground`).
+        let (need, low, high) = lead(first).unwrap_or((1, 0xff, 0));
+        let (low, high) = if read.len == 1 {
+            (low, high)
+        } else {
+            (0x80, 0xbf)
         };
+        let valid = (low..=high).contains(&byte);
         self.state = State::Ground;
         match read.push(byte).filter(|_| valid) {
             Some(read) if usize::from(read.len) < need => self.state = State::Utf8(read),
