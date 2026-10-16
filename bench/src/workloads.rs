@@ -436,7 +436,7 @@ fn paint(
     if split {
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
-            target: s.panes.keys().next().copied(),
+            target: *s.panes.keys().next().ok_or("no pane")?,
             cmd: Vec::new(),
             cwd: None,
             env: Vec::new(),

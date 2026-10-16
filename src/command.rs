@@ -260,7 +260,7 @@ pub enum Command {
     },
     Split {
         axis: Axis,
-        target: Option<PaneId>,
+        target: PaneId,
         cmd: Vec<String>,
         /// Where its shell starts (default: where the split pane's is).
         cwd: Option<String>,
@@ -291,7 +291,7 @@ pub enum Command {
     },
     /// The program `run` started, started again in its pane.
     Respawn {
-        target: Option<PaneId>,
+        target: PaneId,
         /// Ends it first if it still runs.
         kill: bool,
         env: Vec<(String, String)>,
@@ -316,44 +316,39 @@ pub enum Command {
         wait: Wait,
     },
     SendMouse {
-        target: Option<PaneId>,
+        target: PaneId,
         mouse: Mouse,
         row: u16,
         col: u16,
         /// Then waits, armed before the event goes in, as send-keys' does.
         then: Option<Box<Wait>>,
     },
-    KillPane {
-        target: Option<PaneId>,
+    /// Closes a pane, a tab or a workspace.
+    Kill {
+        target: AnyRef,
     },
     /// A signal to what runs in the pane's foreground, what its terminal's
     /// keys reach (a job its shell runs, or the program `run` started), never
     /// a shell itself: for a program that ignores Ctrl-C and hangups.
     Signal {
-        target: Option<PaneId>,
+        target: PaneId,
         signal: fuxix::process::Signal,
         then: Option<Box<Wait>>,
-    },
-    KillTab {
-        target: Option<TabId>,
-    },
-    KillWorkspace {
-        target: Option<WsRef>,
     },
     Rename {
         target: AnyRef,
         name: String,
     },
     MovePane {
-        target: Option<PaneId>,
+        target: PaneId,
         to: MoveTo,
     },
     SwapPane {
-        target: Option<PaneId>,
+        target: PaneId,
         with: SwapWith,
     },
     ResizePane {
-        target: Option<PaneId>,
+        target: PaneId,
         by: PaneResize,
     },
     SendKeys {
@@ -388,17 +383,17 @@ pub enum Command {
     /// What the pane's program writes, kept in a file from now on; `None`
     /// stops it.
     Log {
-        target: Option<PaneId>,
+        target: PaneId,
         file: Option<String>,
     },
     /// The pane's history, dropped.
     ClearHistory {
-        target: Option<PaneId>,
+        target: PaneId,
     },
     /// What the pane shows, with up to `history` lines before it, as text
     /// or JSON.
     CapturePane {
-        target: Option<PaneId>,
+        target: PaneId,
         history: Option<usize>,
         view: CaptureView,
         json: bool,
@@ -429,7 +424,7 @@ pub enum Command {
     },
     PasteBuffer {
         index: usize,
-        target: Option<PaneId>,
+        target: PaneId,
     },
     /// A command on one client's screen: the client `-c` names, or the one
     /// whose key, menu or prompt ran it.
@@ -543,10 +538,7 @@ impl Command {
             ..
         } = self
         {
-            return Some((
-                target.map(AnyRef::Pane).into_iter().collect(),
-                (**wait).clone(),
-            ));
+            return Some((vec![AnyRef::Pane(*target)], (**wait).clone()));
         }
         None
     }

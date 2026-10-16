@@ -876,7 +876,7 @@ impl fuxth::Host for Host<'_> {
                 later(ask(
                     Command::Split {
                         axis: built.axis.unwrap_or(Axis::Horizontal),
-                        target: Some(p),
+                        target: p,
                         cmd,
                         cwd: built.cwd,
                         env: built.env,
@@ -893,7 +893,7 @@ impl fuxth::Host for Host<'_> {
                 let built = finished(name, next()?)?;
                 later(ask(
                     Command::Respawn {
-                        target: Some(p),
+                        target: p,
                         kill: built.kill,
                         env: built.env,
                         argv: built.argv,
@@ -1092,7 +1092,7 @@ impl fuxth::Host for Host<'_> {
                 let (then, answer) = acted(&m.waits, self.settle);
                 later(ask(
                     Command::SendMouse {
-                        target: Some(p),
+                        target: p,
                         mouse: m.mouse,
                         row: m.row,
                         col: m.col,
@@ -1116,7 +1116,7 @@ impl fuxth::Host for Host<'_> {
                 let (then, answer) = acted(&Waits::default(), self.settle);
                 later(ask(
                     Command::Signal {
-                        target: Some(p),
+                        target: p,
                         signal,
                         then,
                     },
@@ -1136,7 +1136,7 @@ impl fuxth::Host for Host<'_> {
                 let settle = self.settle.then_some(built.waits.timeout);
                 later(ask(
                     Command::CapturePane {
-                        target: Some(p),
+                        target: p,
                         history: built.history,
                         view: built.view,
                         json: built.json,
@@ -1194,12 +1194,8 @@ impl fuxth::Host for Host<'_> {
                 later(ask(Command::DumpLayout { target }, Then::Text))
             }
             // ---------------------------------------------------- changing
-            "kill" => tell(match target(name, &next()?)? {
-                AnyRef::Pane(p) => Command::KillPane { target: Some(p) },
-                AnyRef::Tab(t) => Command::KillTab { target: Some(t) },
-                AnyRef::Workspace(w) => Command::KillWorkspace {
-                    target: Some(WsRef::Id(w)),
-                },
+            "kill" => tell(Command::Kill {
+                target: target(name, &next()?)?.map(WsRef::Id),
             }),
             "rename" | "notify" => {
                 let t = target(name, &next()?)?.map(WsRef::Id);
@@ -1257,10 +1253,7 @@ impl fuxth::Host for Host<'_> {
                         rows: Some(extent),
                     },
                 };
-                tell(Command::ResizePane {
-                    target: Some(p),
-                    by,
-                })
+                tell(Command::ResizePane { target: p, by })
             }
             "percent" => {
                 let n = int(name, &next()?)?;
@@ -1277,7 +1270,7 @@ impl fuxth::Host for Host<'_> {
                 let way = direction(name, &next()?)?;
                 let cells = count::<u16>(name, &next()?)?;
                 tell(Command::ResizePane {
-                    target: Some(p),
+                    target: p,
                     by: PaneResize::Border(way, cells),
                 })
             }
@@ -1300,23 +1293,20 @@ impl fuxth::Host for Host<'_> {
                         ));
                     }
                 };
-                tell(Command::MovePane {
-                    target: Some(p),
-                    to,
-                })
+                tell(Command::MovePane { target: p, to })
             }
             "move-beside" => {
                 let p = pane(name, &next()?)?;
                 let way = direction(name, &next()?)?;
                 tell(Command::MovePane {
-                    target: Some(p),
+                    target: p,
                     to: MoveTo::Beside(way),
                 })
             }
             "swap-panes" => {
                 let (a, b) = (pane(name, &next()?)?, pane(name, &next()?)?);
                 tell(Command::SwapPane {
-                    target: Some(a),
+                    target: a,
                     with: SwapWith::Pane(b),
                 })
             }
@@ -1324,7 +1314,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let way = direction(name, &next()?)?;
                 tell(Command::SwapPane {
-                    target: Some(p),
+                    target: p,
                     with: SwapWith::Toward(way),
                 })
             }
@@ -1337,7 +1327,7 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "start-log" | "stop-log" => {
-                let target = Some(pane(name, &next()?)?);
+                let target = pane(name, &next()?)?;
                 let file = match name {
                     "start-log" => Some(string(name, &next()?)?),
                     _ => None,
@@ -1345,7 +1335,7 @@ impl fuxth::Host for Host<'_> {
                 tell(Command::Log { target, file })
             }
             "clear-history" => tell(Command::ClearHistory {
-                target: Some(pane(name, &next()?)?),
+                target: pane(name, &next()?)?,
             }),
             "buffers" => later(ask(Command::ListBuffers, Then::Text)),
             "buffer" => later(ask(
@@ -1357,10 +1347,7 @@ impl fuxth::Host for Host<'_> {
             "paste-buffer" => {
                 let p = pane(name, &next()?)?;
                 let index = count(name, &next()?)?;
-                tell(Command::PasteBuffer {
-                    index,
-                    target: Some(p),
-                })
+                tell(Command::PasteBuffer { index, target: p })
             }
             // ----------------------------------------------------- clients
             "attach" | "watch" | "attach-to" => {

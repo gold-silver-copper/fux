@@ -145,6 +145,10 @@ impl Here<'_> {
             Here::Cli(pane, ..) => pane,
         }
     }
+    /// The caller's pane, for a command that acts on it when none is named.
+    fn caller_pane(self) -> Result<PaneId, Error> {
+        self.pane().ok_or(Error::NoPaneGiven)
+    }
 }
 
 /// Why a command, or attaching a client, failed: exit status 1.
@@ -154,14 +158,10 @@ pub enum Error {
     NoWorkspace(WsId),
     NoPaneGiven,
     NoPane(PaneId),
-    NoTabGiven,
     NoTab(TabId),
     NoWorkspaceGiven,
     /// `--id` asked for an id given before, or one there is.
     IdTaken(String),
-    /// A kill from the CLI that names nothing, which would close the
-    /// caller's own pane, tab or workspace: its usage.
-    KillNeedsTarget(&'static str),
     NoClient(ClientId),
     NoBuffer(usize),
     /// The client focuses no pane.
@@ -210,10 +210,7 @@ impl Error {
             Error::NoWorkspace(_) => "no_workspace",
             Error::NoPane(_) | Error::NoPaneToCopy => "no_pane",
             Error::NoTab(_) => "no_tab",
-            Error::NoPaneGiven
-            | Error::NoTabGiven
-            | Error::NoWorkspaceGiven
-            | Error::KillNeedsTarget(_) => "no_target",
+            Error::NoPaneGiven | Error::NoWorkspaceGiven => "no_target",
             Error::IdTaken(_) => "id",
             Error::NoClient(_) => "no_client",
             Error::NoBuffer(_) => "no_buffer",
@@ -233,7 +230,6 @@ impl std::fmt::Display for Error {
             Error::NoWorkspace(id) => write!(f, "no workspace {id}"),
             Error::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
             Error::NoPane(id) => write!(f, "no pane {id}"),
-            Error::NoTabGiven => f.write_str("no tab given: name one (`str @N tab`)"),
             Error::NoTab(id) => write!(f, "no tab {id}"),
             Error::NoWorkspaceGiven => f.write_str(
                 "no workspace given: name one (`str NAME workspace`; for new-tab, the \
@@ -242,11 +238,6 @@ impl std::fmt::Display for Error {
             Error::IdTaken(id) => write!(
                 f,
                 "id {id}: that id, or a higher one, was given before, and ids are never given twice"
-            ),
-            Error::KillNeedsTarget(usage) => write!(
-                f,
-                "from the command line, name what to close: {usage} (so that an empty variable \
-                 closes nothing, nor the pane this runs in)"
             ),
             Error::NoClient(id) => write!(f, "no client {id}"),
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
@@ -454,23 +445,13 @@ impl Reach<'_> {
         let message = format!("this socket reaches workspace {scope} alone (grant), not {what}");
         Err(fail("not_granted", message))
     }
-    fn pane(&self, id: Option<PaneId>) -> Result<(), Error> {
-        let id = match self.session.pane(id, self.here) {
-            Ok(pane) => pane.id,
-            Err(Error::NoPane(id)) => return Err(self.outside(id.to_string())),
-            Err(error) => return Err(error),
-        };
+    fn pane(&self, id: PaneId) -> Result<(), Error> {
         match self.session.locate(id) {
             Some((ws, _)) if Some(ws) == self.ws => Ok(()),
             Some(_) | None => Err(self.outside(id.to_string())),
         }
     }
-    fn tab(&self, id: Option<TabId>) -> Result<(), Error> {
-        let tab = match self.session.tab_target(id, self.here) {
-            Ok(tab) => tab,
-            Err(Error::NoTab(tab)) => return Err(self.outside(tab.to_string())),
-            Err(error) => return Err(error),
-        };
+    fn tab(&self, tab: TabId) -> Result<(), Error> {
         match self.session.tab_workspace(tab) {
             Ok(ws) if Some(ws) == self.ws => Ok(()),
             Ok(_) | Err(_) => Err(self.outside(tab.to_string())),
@@ -488,8 +469,8 @@ impl Reach<'_> {
     }
     fn any(&self, target: &AnyRef) -> Result<(), Error> {
         match target {
-            AnyRef::Pane(p) => self.pane(Some(*p)),
-            AnyRef::Tab(t) => self.tab(Some(*t)),
+            AnyRef::Pane(p) => self.pane(*p),
+            AnyRef::Tab(t) => self.tab(*t),
             AnyRef::Workspace(w) => self.workspace(w),
         }
     }
@@ -505,7 +486,10 @@ impl Reach<'_> {
             }
             Command::KillServer { .. } => self.refuse("kill-server"),
             Command::NewWorkspace { .. } => self.refuse("new-workspace"),
-            Command::KillWorkspace { .. } => self.refuse("kill-workspace"),
+            Command::Kill { target } => match target {
+                AnyRef::Workspace(_) => self.refuse("kill-workspace"),
+                AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
+            },
             Command::NewTab { target, .. } => target.as_ref().map_or(Ok(()), |w| self.workspace(w)),
             Command::Run { workspace, .. } => match workspace {
                 // Run makes the workspace it names if it is not there.
@@ -516,13 +500,11 @@ impl Reach<'_> {
             Command::Split { target, .. }
             | Command::Respawn { target, .. }
             | Command::SendMouse { target, .. }
-            | Command::KillPane { target }
             | Command::Signal { target, .. }
             | Command::ResizePane { target, .. }
             | Command::Log { target, .. }
             | Command::ClearHistory { target }
             | Command::CapturePane { target, .. } => self.pane(*target),
-            Command::KillTab { target } => self.tab(*target),
             Command::Notify { target, .. } => match target {
                 Some(target) => self.any(target),
                 None => self.refuse("a notice to every client"),
@@ -531,11 +513,15 @@ impl Reach<'_> {
                 Resized::Tabs(target) => self.any(target),
                 Resized::Client(_) => self.refuse("a client's size"),
             },
-            Command::Wait { targets, .. } if targets.is_empty() => self.pane(None),
+            Command::Wait { targets, .. } if targets.is_empty() => {
+                self.pane(self.here.caller_pane()?)
+            }
             Command::SendKeys {
                 client: Some(_), ..
             } => self.refuse("a client's keys"),
-            Command::SendKeys { targets, .. } if targets.is_empty() => self.pane(None),
+            Command::SendKeys { targets, .. } if targets.is_empty() => {
+                self.pane(self.here.caller_pane()?)
+            }
             Command::SendKeys { targets, .. }
             | Command::Events { targets, .. }
             | Command::Wait { targets, .. } => targets.iter().try_for_each(|t| self.any(t)),
@@ -546,7 +532,7 @@ impl Reach<'_> {
             Command::MovePane { target, to } => {
                 self.pane(*target)?;
                 match to {
-                    MoveTo::Tab(tab) => self.tab(Some(*tab)),
+                    MoveTo::Tab(tab) => self.tab(*tab),
                     MoveTo::Workspace(ws) => self.workspace(ws),
                     MoveTo::NewTab | MoveTo::Beside(_) => Ok(()),
                     MoveTo::NewWorkspace => self.refuse("a new workspace"),
@@ -555,13 +541,13 @@ impl Reach<'_> {
             Command::SwapPane { target, with } => {
                 self.pane(*target)?;
                 match with {
-                    SwapWith::Pane(pane) => self.pane(Some(*pane)),
+                    SwapWith::Pane(pane) => self.pane(*pane),
                     SwapWith::Toward(_) => Ok(()),
                 }
             }
             Command::Reorder { target, .. } => match target {
-                AnyRef::Pane(pane) => self.pane(Some(*pane)),
-                AnyRef::Tab(tab) => self.tab(Some(*tab)),
+                AnyRef::Pane(pane) => self.pane(*pane),
+                AnyRef::Tab(tab) => self.tab(*tab),
                 AnyRef::Workspace(_) => self.refuse("reordering workspaces"),
             },
             Command::Set { .. } => self.refuse("the server's settings"),
@@ -597,7 +583,7 @@ fn failure(error: Error, origin: &Origin) -> Reply {
     // caller whose `FUX_PANE` is another server's pane: why it got none.
     let error = match (error, origin) {
         (
-            Error::NoPaneGiven | Error::NoTabGiven | Error::NoWorkspaceGiven,
+            Error::NoPaneGiven | Error::NoWorkspaceGiven,
             Origin::Cli(Caller {
                 stray: Some(pane), ..
             }),
@@ -762,13 +748,11 @@ impl Session {
         Some(Place { ws, tab, pane })
     }
 
-    fn pane(&self, explicit: Option<PaneId>, here: Here) -> Result<&Pane, Error> {
-        let id = explicit.or(here.pane()).ok_or(Error::NoPaneGiven)?;
+    fn pane(&self, id: PaneId) -> Result<&Pane, Error> {
         self.panes.get(&id).ok_or(Error::NoPane(id))
     }
 
-    fn pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
-        let id = explicit.or(here.pane()).ok_or(Error::NoPaneGiven)?;
+    fn pane_mut(&mut self, id: PaneId) -> Result<&mut Pane, Error> {
         self.panes.get_mut(&id).ok_or(Error::NoPane(id))
     }
 
@@ -864,8 +848,8 @@ impl Session {
 
     /// The process group `fux signal` signals in a pane: the job its shell
     /// runs in the foreground, or the program `run` started; never a shell.
-    fn signalled(&self, target: Option<PaneId>, here: Here) -> Result<crate::process::Pid, Error> {
-        let pane = self.pane(target, here)?;
+    fn signalled(&self, target: PaneId) -> Result<crate::process::Pid, Error> {
+        let pane = self.pane(target)?;
         if let Some(status) = pane.process.exit_status() {
             return Err(ended(pane.id, status));
         }
@@ -1101,9 +1085,9 @@ impl Session {
             };
         }
         match kind {
-            Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(None, here)?.id)),
+            Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id)),
             Kind::Pane => match text.parse::<PaneId>() {
-                Ok(id) => Ok(AnyRef::Pane(self.pane(Some(id), here)?.id)),
+                Ok(id) => Ok(AnyRef::Pane(self.pane(id)?.id)),
                 Err(_) => {
                     // A tab's name, else a pane's own (what `rename` gave
                     // it, or its program's), else the title its program
@@ -1136,14 +1120,10 @@ impl Session {
                     one(&panes_of(tab), many).map(AnyRef::Pane)
                 }
             },
-            Kind::Tab if text.is_empty() => Ok(AnyRef::Tab(self.tab_target(None, here)?)),
             Kind::Tab => match text.parse::<TabId>() {
-                Ok(id) => Ok(AnyRef::Tab(self.tab_target(Some(id), here)?)),
+                Ok(id) => Ok(AnyRef::Tab(self.tab_target(id)?)),
                 Err(_) => named().map(|tab| AnyRef::Tab(tab.id)),
             },
-            Kind::Workspace if text.is_empty() => {
-                Ok(AnyRef::Workspace(self.ws_target(None, here)?))
-            }
             Kind::Workspace => {
                 let ws = command::parse_workspace(text).map_err(Error::Usage)?;
                 Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
@@ -1155,12 +1135,12 @@ impl Session {
     /// once; the caller's without any.
     fn panes_of(&self, targets: &[AnyRef], here: Here) -> Result<Vec<PaneId>, Error> {
         if targets.is_empty() {
-            return Ok(vec![self.pane(None, here)?.id]);
+            return Ok(vec![self.pane(here.caller_pane()?)?.id]);
         }
         let mut out: Vec<PaneId> = Vec::new();
         for target in targets {
             let found = match *target {
-                AnyRef::Pane(pane) => vec![self.pane(Some(pane), here)?.id],
+                AnyRef::Pane(pane) => vec![self.pane(pane)?.id],
                 AnyRef::Tab(tab) => self.root(tab).ok_or(Error::NoTab(tab))?.panes(),
                 AnyRef::Workspace(ref ws) => {
                     let ws = self.resolve_ws(ws)?;
@@ -1245,8 +1225,8 @@ impl Session {
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
-    fn live_pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
-        let pane = self.pane_mut(explicit, here)?;
+    fn live_pane_mut(&mut self, id: PaneId) -> Result<&mut Pane, Error> {
+        let pane = self.pane_mut(id)?;
         match pane.process.exit_status() {
             Some(status) => Err(ended(pane.id, status)),
             None => Ok(pane),
@@ -1334,9 +1314,7 @@ impl Session {
         Ok(format!("{pane} {}x{}\n", want.0, want.1))
     }
 
-    fn tab_target(&self, explicit: Option<TabId>, here: Here) -> Result<TabId, Error> {
-        let id = explicit.or(here.place().map(|p| p.tab));
-        let id = id.ok_or(Error::NoTabGiven)?;
+    fn tab_target(&self, id: TabId) -> Result<TabId, Error> {
         self.tab(id).map(|t| t.id).ok_or(Error::NoTab(id))
     }
 
@@ -1351,8 +1329,8 @@ impl Session {
     /// is held from then on.
     fn any_target(&self, target: &AnyRef, here: Here) -> Result<AnyRef<WsId>, Error> {
         Ok(match target {
-            AnyRef::Pane(p) => AnyRef::Pane(self.pane(Some(*p), here)?.id),
-            AnyRef::Tab(t) => AnyRef::Tab(self.tab_target(Some(*t), here)?),
+            AnyRef::Pane(p) => AnyRef::Pane(self.pane(*p)?.id),
+            AnyRef::Tab(t) => AnyRef::Tab(self.tab_target(*t)?),
             // A name no workspace has may be a tab's (`run -n NAME`).
             AnyRef::Workspace(w) => match (self.ws_target(Some(w), here), w) {
                 // A workspace's name is the workspace's, before a tab's
@@ -2109,7 +2087,7 @@ impl Session {
                 after: false,
                 marks: false,
             };
-            let pane = self.pane(target, self.here(origin)?)?;
+            let pane = self.pane(target)?;
             let now = Instant::now();
             let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
             waiting.capture = Some((history, view, json));
@@ -2124,7 +2102,7 @@ impl Session {
         };
         let here = self.here(origin)?;
         let panes = (self.panes_of(&targets, here)?.into_iter())
-            .map(|id| self.pane(Some(id), here))
+            .map(|id| self.pane(id))
             .collect::<Result<Vec<_>, _>>()?;
         let now = Instant::now();
         // Armed before any keys go in: what the keys bring is what it sees.
@@ -2425,7 +2403,7 @@ impl Session {
                 ref argv,
                 ..
             } => {
-                let id = self.pane(target, here)?.id;
+                let id = self.pane(target)?.id;
                 self.respawn(id, kill, env, argv)?;
                 self.made = vec![AnyRef::Pane(id)];
                 Ok(format!("{id}\n"))
@@ -2522,7 +2500,7 @@ impl Session {
                 col,
                 ..
             } => {
-                let p = self.live_pane_mut(target, here)?;
+                let p = self.live_pane_mut(target)?;
                 let size = p.size();
                 if row >= size.rows() || col >= size.cols() {
                     let (rows, cols) = (size.rows(), size.cols());
@@ -2606,7 +2584,7 @@ impl Session {
                 then: _,
             } => {
                 self.want(ids, &[Kind::Pane])?;
-                let target = self.pane(target, here)?.id;
+                let target = self.pane(target)?.id;
                 let cwd = self.start_dir(here, cwd.as_deref(), Some(target))?;
                 // The splitting client follows the new pane; from the CLI, the
                 // clients that focus the split one.
@@ -2642,54 +2620,47 @@ impl Session {
                 Ok(self.made_ids((at.0, at.1, new), &[new.to_string()], json))
             }
             &Command::Signal { target, signal, .. } => {
-                let group = self.signalled(target, here)?;
+                let group = self.signalled(target)?;
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail("signal", format!("sending the signal: {e}")))?;
                 Ok(String::new())
             }
             // From the command line each says what it closed, so a script
             // or an agent knows; a key's close shows on the screen anyway.
-            &Command::KillPane { target } => {
-                if let (Origin::Cli(_), None) = (origin, target) {
-                    return Err(Error::KillNeedsTarget("str %N pane kill"));
-                }
-                let pane = self.pane(target, here)?.id;
-                // A tab's last pane takes its tab, and a workspace's last
-                // tab its workspace: all of it is said.
-                let mut gone = vec![pane.to_string()];
-                if let Some((ws, tab)) = self.locate(pane)
-                    && self.root(tab).is_some_and(|root| root.panes().len() == 1)
-                {
-                    gone.push(tab.to_string());
-                    if self.workspace(ws).is_some_and(|w| w.tabs().len() == 1) {
-                        gone.push(ws.to_string());
+            Command::Kill { target } => {
+                let gone = match self.any_target(target, here)? {
+                    AnyRef::Pane(pane) => {
+                        // A tab's last pane takes its tab, and a workspace's
+                        // last tab its workspace: all of it is said.
+                        let mut gone = vec![pane.to_string()];
+                        if let Some((ws, tab)) = self.locate(pane)
+                            && self.root(tab).is_some_and(|root| root.panes().len() == 1)
+                        {
+                            gone.push(tab.to_string());
+                            if self.workspace(ws).is_some_and(|w| w.tabs().len() == 1) {
+                                gone.push(ws.to_string());
+                            }
+                        }
+                        self.close_pane(pane, None);
+                        gone
                     }
-                }
-                self.close_pane(pane, None);
+                    AnyRef::Tab(tab) => {
+                        let panes = self.panes_of_tabs(&[tab]);
+                        self.remove_tab(tab);
+                        self.after_close();
+                        [vec![tab.to_string()], panes].concat()
+                    }
+                    AnyRef::Workspace(ws) => {
+                        let tabs = self.tab_ids(ws);
+                        let panes = self.panes_of_tabs(&tabs);
+                        for tab in tabs {
+                            self.remove_tab(tab);
+                        }
+                        self.after_close();
+                        [vec![ws.to_string()], panes].concat()
+                    }
+                };
                 Ok(closed(origin, &gone))
-            }
-            &Command::KillTab { target } => {
-                if let (Origin::Cli(_), None) = (origin, target) {
-                    return Err(Error::KillNeedsTarget("str @N tab kill"));
-                }
-                let tab = self.tab_target(target, here)?;
-                let panes = self.panes_of_tabs(&[tab]);
-                self.remove_tab(tab);
-                self.after_close();
-                Ok(closed(origin, &[vec![tab.to_string()], panes].concat()))
-            }
-            Command::KillWorkspace { target } => {
-                if let (Origin::Cli(_), None) = (origin, target) {
-                    return Err(Error::KillNeedsTarget("str WS workspace kill"));
-                }
-                let ws = self.ws_target(target.as_ref(), here)?;
-                let tabs = self.tab_ids(ws);
-                let panes = self.panes_of_tabs(&tabs);
-                for tab in tabs {
-                    self.remove_tab(tab);
-                }
-                self.after_close();
-                Ok(closed(origin, &[vec![ws.to_string()], panes].concat()))
             }
             Command::Rename { target, name } => {
                 let target = self.any_target(target, here)?;
@@ -2697,16 +2668,16 @@ impl Session {
             }
             &Command::MovePane { target, ref to } => self.move_pane(target, to, here),
             &Command::SwapPane { target, with } => {
-                let source = self.pane(target, here)?.id;
+                let source = self.pane(target)?.id;
                 let other = match with {
-                    SwapWith::Pane(p) => self.pane(Some(p), here)?.id,
+                    SwapWith::Pane(p) => self.pane(p)?.id,
                     SwapWith::Toward(direction) => self.neighbor(source, direction, here)?,
                 };
                 self.swap(source, other);
                 Ok(String::new())
             }
             &Command::ResizePane { target, by } => {
-                let pane = self.pane(target, here)?.id;
+                let pane = self.pane(target)?.id;
                 let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
                 let area = self.reference_area(tab, here);
                 match by {
@@ -2734,11 +2705,11 @@ impl Session {
                     Some(file) => Some(open_log(&self.cwd_for(here, None).join(file))?),
                     None => None,
                 };
-                self.pane_mut(*target, here)?.log = log;
+                self.pane_mut(*target)?.log = log;
                 Ok(String::new())
             }
             &Command::ClearHistory { target } => {
-                self.pane_mut(target, here)?.parser.clear_history();
+                self.pane_mut(target)?.parser.clear_history();
                 Ok(String::new())
             }
             &Command::SendKeys {
@@ -2763,7 +2734,7 @@ impl Session {
                 let panes = self.panes_of(targets, here)?;
                 // Every pane must take them, or none is sent them.
                 for &id in &panes {
-                    self.live_pane_mut(Some(id), here)?;
+                    self.live_pane_mut(id)?;
                 }
                 for id in panes {
                     self.send_inputs(id, inputs)?;
@@ -2777,7 +2748,7 @@ impl Session {
                 json,
                 ..
             } => {
-                let pane = self.pane(target, here)?;
+                let pane = self.pane(target)?;
                 let copying = self.copying(pane.id);
                 let read = crate::capture::pane(pane, history, view, true, copying);
                 let (text, form) = crate::capture::asked(read, json);
@@ -2824,7 +2795,7 @@ impl Session {
             &Command::PasteBuffer { index, target } => {
                 let text = self.buffers.get(index).cloned();
                 let text = text.ok_or(Error::NoBuffer(index))?;
-                let p = self.pane_mut(target, here)?;
+                let p = self.pane_mut(target)?;
                 let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
                 let mut bytes = Vec::new();
                 crate::encode::paste(&text, bracketed, &mut bytes);
@@ -2962,13 +2933,8 @@ impl Session {
         }
     }
 
-    fn move_pane(
-        &mut self,
-        target: Option<PaneId>,
-        to: &MoveTo,
-        here: Here,
-    ) -> Result<String, Error> {
-        let pane = self.pane(target, here)?.id;
+    fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<String, Error> {
+        let pane = self.pane(target)?.id;
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
@@ -4472,8 +4438,8 @@ mod tests {
             run("str nope 1 set")?.as_slice(),
             [Err(e)] if e.code() == "config"
         ));
-        let kill = Command::KillPane {
-            target: Some(PaneId::of(9)),
+        let kill = Command::Kill {
+            target: AnyRef::Pane(PaneId::of(9)),
         };
         assert!(matches!(
             s.execute(&kill, &origin),

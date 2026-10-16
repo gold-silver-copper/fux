@@ -1036,10 +1036,8 @@ impl Asks for Layout<'_> {
             | C::Resize { .. }
             | C::Wait { .. }
             | C::SendMouse { .. }
-            | C::KillPane { .. }
+            | C::Kill { .. }
             | C::Signal { .. }
-            | C::KillTab { .. }
-            | C::KillWorkspace { .. }
             | C::Rename { .. }
             | C::MovePane { .. }
             | C::SwapPane { .. }
