@@ -13,7 +13,7 @@ use crate::protocol::{
     Role, ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Begun, Caller, Dying, Origin, Outcome, Outgoing, Session, Timer};
+use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer};
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
@@ -26,6 +26,15 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+/// Writes to the server's log, its stderr: `log!("…", args)` expands to
+/// `writeln!(stderr(), "fux server: {}", format_args!("…", args))`. A log
+/// that cannot be written, a full disk, say, loses the line and stops nothing.
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(std::io::stderr(), "fux server: {}", format_args!($($arg)*));
+    }};
+}
 
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`PaintClock::echo`) and panes gone quiet (`QUIET`) are
@@ -91,7 +100,7 @@ impl Listening {
             Ok(door) => Some(door),
             Err(error) if listener.is_none() => return Err(Error::Setup(error)),
             Err(error) => {
-                log(&format!("no door beside the socket: {error}"));
+                log!("no door beside the socket: {error}");
                 None
             }
         };
@@ -429,8 +438,7 @@ impl Conn {
     }
 
     /// Answers a request with its outcome, and takes the next.
-    fn answer(&mut self, session: &mut Session, outcome: Outcome) {
-        let reply = Reply::from(outcome);
+    fn answer(&mut self, session: &mut Session, reply: Reply) {
         let bytes = crate::wire::encode(&reply);
         if bytes.len() < MAX_PAYLOAD {
             self.send(session, &ServerFrame::Reply(Box::new(reply)));
@@ -526,11 +534,10 @@ struct Saved {
     pending: bool,
     /// The workspaces, tabs and panes it was last saved with.
     shape: Shape,
-    /// A restore is under way: what there is is not saved over the file.
-    restoring: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// One was started, and its end is yet to be seen to
-    /// (`Server::after_restore`).
-    restored: bool,
+    /// A restore was started, and its end is yet to be seen to
+    /// (`Server::after_restore`); while it is under way, the flag is set and
+    /// what there is is not saved over the file.
+    restore: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The server stops: nothing more is saved (or what was, forgotten).
     done: bool,
 }
@@ -573,58 +580,52 @@ impl Saved {
             at: Instant::now(),
             pending: false,
             shape: Shape::default(),
-            restoring: std::sync::Arc::default(),
-            restored: false,
+            restore: None,
             done: false,
         })
     }
 
     /// Brings back the session saved, if there is one, by running it, a
     /// fuxth program, as a client of the server on `socket` does: on a
-    /// thread of its own, as the server serves it. Whether there is one.
-    /// It is not saved over while it comes back (`restoring`).
+    /// thread of its own, as the server serves it. If there is one, its
+    /// flag, set until it is over: it is not saved over while it comes back.
     fn restore(
         &self,
         socket: &SocketPath,
-        restoring: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> bool {
+    ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == ErrorKind::NotFound => return false,
+            Err(e) if e.kind() == ErrorKind::NotFound => return None,
             Err(e) => {
-                log(&format!("{}: {e}; starting afresh", self.path.display()));
-                return false;
+                log!("{}: {e}; starting afresh", self.path.display());
+                return None;
             }
         };
-        restoring.store(true, std::sync::atomic::Ordering::SeqCst);
+        let restoring = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let (path, socket, done) = (self.path.clone(), socket.clone(), restoring.clone());
         let spawned = std::thread::Builder::new()
             .name("restore".into())
             .spawn(move || {
                 match crate::script::restore(&socket, &path, &text) {
-                    Ok(()) => log(&format!("brought back the session in {}", path.display())),
+                    Ok(()) => log!("brought back the session in {}", path.display()),
                     Err(error) => {
                         // Kept aside, not saved over, for a person to look at.
                         let aside = path.with_extension("layout.failed");
                         let _ = std::fs::rename(&path, &aside);
-                        log(&format!(
+                        log!(
                             "could not bring back {}: {error}; the file kept as {}",
                             path.display(),
                             aside.display()
-                        ));
+                        );
                     }
                 }
                 done.store(false, std::sync::atomic::Ordering::SeqCst);
             });
         if let Err(error) = spawned {
-            restoring.store(false, std::sync::atomic::Ordering::SeqCst);
-            log(&format!(
-                "could not bring back {}: {error}",
-                self.path.display()
-            ));
-            return false;
+            log!("could not bring back {}: {error}", self.path.display());
+            return None;
         }
-        true
+        Some(restoring)
     }
 
     /// Saves the layout if it changed and `SAVE_EVERY` has passed since it
@@ -652,16 +653,14 @@ impl Saved {
             return;
         }
         self.pending = false;
-        let text = session.saved_layout();
+        // Everything, as it is now, its ids kept.
+        let text = session.dump_layout(None, true);
         if text == self.written {
             return;
         }
         match self.write(&text) {
             Ok(()) => self.written = text,
-            Err(e) => log(&format!(
-                "saving the layout to {}: {e}",
-                self.path.display()
-            )),
+            Err(e) => log!("saving the layout to {}: {e}", self.path.display()),
         }
     }
 
@@ -688,7 +687,7 @@ impl Saved {
 
     /// Whether a restore is under way.
     fn restoring(&self) -> bool {
-        self.restoring.load(std::sync::atomic::Ordering::SeqCst)
+        (self.restore.as_ref()).is_some_and(|r| r.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Saves nothing more: the server stops. With `keep`, the layout as it
@@ -708,16 +707,6 @@ impl Saved {
     }
 }
 
-/// `fux grant` from a granted socket: refused.
-fn refused_grant() -> Outcome {
-    Outcome {
-        status: 1,
-        stderr: "a socket `grant` made cannot grant another".to_owned(),
-        code: Some("not_granted"),
-        ..Outcome::default()
-    }
-}
-
 /// `fux grant`: a socket made at `socket`, from the caller's directory
 /// `cwd`, whose commands reach `workspace` alone; or with `revoke`, the
 /// one made there closed, and what came through it reaching nothing more.
@@ -726,20 +715,15 @@ fn grant(
     session: &mut Session,
     (workspace, socket, revoke): (Option<crate::command::WsRef>, String, bool),
     cwd: Option<PathBuf>,
-) -> Outcome {
-    let failed = |stderr: String| Outcome {
-        status: 1,
-        stderr,
-        code: Some("grant"),
-        ..Outcome::default()
-    };
+) -> Reply {
+    let failed = |stderr: String| Reply::failed("grant", stderr);
     let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
     if revoke {
         let before = grants.len();
         grants.retain(|g| g.socket != path);
         session.grants.retain(|(s, _)| *s != path);
         return match grants.len() < before {
-            true => Outcome::default(),
+            true => Reply::default(),
             false => failed(format!("no grant made {}", path.display())),
         };
     }
@@ -779,16 +763,10 @@ fn grant(
         workspace,
         pinned,
     });
-    Outcome {
-        stdout: format!("{}\n", path.display()),
-        ..Outcome::default()
+    Reply {
+        text: format!("{}\n", path.display()),
+        ..Reply::default()
     }
-}
-
-/// Writes to the server's log, its stderr. A log that cannot be written,
-/// a full disk, say, loses the line and stops nothing.
-fn log(message: &str) {
-    let _ = writeln!(std::io::stderr(), "fux server: {message}");
 }
 
 /// Why a server could not start.
@@ -820,7 +798,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
     // Orphans the panes' programs leave stay the server's to read and reap.
     if let Err(errno) = fuxix::process::adopt_orphans() {
-        log(&format!("adopting orphans: {errno}"));
+        log!("adopting orphans: {errno}");
     }
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
@@ -836,8 +814,8 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
             false
         }
         Some(saved) => {
-            saved.restored = saved.restore(socket, &saved.restoring);
-            saved.restored
+            saved.restore = saved.restore(socket);
+            saved.restore.is_some()
         }
         None => false,
     };
@@ -964,15 +942,11 @@ impl Server {
         let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Save)));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
-        let answers = self.conns.iter().filter_map(|conn| match &conn.stage {
-            Stage::Waiting(waiting) => Some((waiting.due(), Wake::Answer)),
-            Stage::Hello(_)
-            | Stage::Attaching(..)
-            | Stage::Attached(_)
-            | Stage::Command
-            | Stage::Events(_)
-            | Stage::Closing
-            | Stage::Dead => None,
+        let answers = self.conns.iter().filter_map(|conn| {
+            let Stage::Waiting(waiting) = &conn.stage else {
+                return None;
+            };
+            Some((waiting.due(), Wake::Answer))
         });
         session
             .chain(grace)
@@ -1021,13 +995,13 @@ impl Server {
         let Some(saved) = &mut self.saved else {
             return;
         };
-        if saved.restoring() || !std::mem::take(&mut saved.restored) {
+        if saved.restoring() || saved.restore.take().is_none() {
             return;
         }
         if self.session.workspaces.is_empty()
             && let Err(error) = self.session.start()
         {
-            log(&format!("starting afresh: {error}"));
+            log!("starting afresh: {error}");
         }
         for index in 0..self.conns.len() {
             if let Some((command, context)) = self
@@ -1087,17 +1061,11 @@ impl Server {
             let (lines, over) = subscription.told(&now, &self.session);
             if over {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let status = crate::wait::GONE;
-                let code = Some("gone");
-                conn.answer(
-                    &mut self.session,
-                    Outcome {
-                        status,
-                        code,
-                        stderr: "everything it watched has closed".to_owned(),
-                        ..Outcome::default()
-                    },
-                );
+                let gone = Reply {
+                    status: crate::wait::GONE,
+                    ..Reply::failed("gone", "everything it watched has closed")
+                };
+                conn.answer(&mut self.session, gone);
                 continue;
             }
             if lines.is_empty() {
@@ -1106,12 +1074,7 @@ impl Server {
             if conn.out.len() > crate::events::BACKLOG {
                 let lost = Event::stream("lost", Vec::new()).line(subscription.json);
                 ServerFrame::split_into(lost.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let lost = Outcome {
-                    status: 1,
-                    code: Some("lost"),
-                    stderr: "events: the reader fell too far behind".to_owned(),
-                    ..Outcome::default()
-                };
+                let lost = Reply::failed("lost", "events: the reader fell too far behind");
                 conn.answer(&mut self.session, lost);
                 continue;
             }
@@ -1122,15 +1085,8 @@ impl Server {
     /// Drops every connection that is dead, or closing with nothing left to
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
-        self.conns.retain(|conn| match conn.stage {
-            Stage::Dead => false,
-            Stage::Closing => !conn.out.is_empty(),
-            Stage::Hello(_)
-            | Stage::Attaching(..)
-            | Stage::Attached(_)
-            | Stage::Command
-            | Stage::Waiting(_)
-            | Stage::Events(_) => true,
+        self.conns.retain(|conn| {
+            conn.stage.reads() || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
         });
     }
 
@@ -1200,7 +1156,7 @@ impl Server {
         }
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
-            Err(error) => log(&format!("poll: {error}")),
+            Err(error) => log!("poll: {error}"),
         }
         ready.extend(
             fds.iter()
@@ -1217,7 +1173,7 @@ impl Server {
         if let Phase::Stopping(_) = self.phase {
             return;
         }
-        log(&reason);
+        log!("{reason}");
         if let Some(saved) = &mut self.saved {
             saved.stop(&self.session, keep);
         }
@@ -1230,60 +1186,50 @@ impl Server {
         // left of the session.
         let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
-            match conn.stage {
-                // A stream says why it ends, as one of its lines, and ends
-                // as a command that is done.
-                Stage::Events(ref subscription) => {
-                    let reason = Json::str(reason.clone());
-                    let stopped = Event::stream("stopped", vec![("reason", reason)]);
-                    let line = stopped.line(subscription.json);
-                    ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                    conn.answer(&mut self.session, Outcome::default());
-                    conn.end(&mut self.session, &ServerFrame::Exit(&exit));
-                }
-                Stage::Hello(_)
-                | Stage::Attaching(..)
-                | Stage::Attached(_)
-                | Stage::Command
-                | Stage::Waiting(_) => {
-                    conn.end(&mut self.session, &ServerFrame::Exit(&exit));
-                }
-                Stage::Closing | Stage::Dead => {}
+            // A stream says why it ends, as one of its lines, and ends as a
+            // command that is done.
+            if let Stage::Events(subscription) = &conn.stage {
+                let reason = Json::str(reason.clone());
+                let stopped = Event::stream("stopped", vec![("reason", reason)]);
+                let line = stopped.line(subscription.json);
+                ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                conn.answer(&mut self.session, Reply::default());
+            }
+            if conn.stage.reads() {
+                conn.end(&mut self.session, &ServerFrame::Exit(&exit));
             }
         }
     }
 
     fn flush_outbox(&mut self) {
         for outgoing in std::mem::take(&mut self.session.outbox) {
+            let client = match outgoing {
+                Outgoing::Shutdown { reason, keep } => {
+                    self.stop(reason, keep);
+                    continue;
+                }
+                Outgoing::Bytes(client, _)
+                | Outgoing::Exit(client, _)
+                | Outgoing::Run(client, _)
+                | Outgoing::Keys(client, _)
+                | Outgoing::Ended(client) => client,
+            };
+            let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) else {
+                continue;
+            };
+            let session = &mut self.session;
             match outgoing {
-                Outgoing::Bytes(client, bytes) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client))
-                        && let Stage::Attached(attached) = &mut conn.stage
-                    {
+                Outgoing::Bytes(_, bytes) => {
+                    if let Stage::Attached(attached) = &mut conn.stage {
                         attached.paint(&mut conn.out, &bytes);
                     }
                 }
-                Outgoing::Exit(client, reason) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.end(&mut self.session, &ServerFrame::Exit(&reason));
-                    }
-                }
-                Outgoing::Run(client, code) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.send(&mut self.session, &ServerFrame::Run(&code));
-                    }
-                }
-                Outgoing::Keys(client, keys) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.send(&mut self.session, &ServerFrame::Keys(keys));
-                    }
-                }
-                Outgoing::Ended(client) => {
-                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                        conn.send(&mut self.session, &ServerFrame::Ended);
-                    }
-                }
-                Outgoing::Shutdown { reason, keep } => self.stop(reason, keep),
+                Outgoing::Exit(_, reason) => conn.end(session, &ServerFrame::Exit(&reason)),
+                Outgoing::Run(_, code) => conn.send(session, &ServerFrame::Run(&code)),
+                Outgoing::Keys(_, keys) => conn.send(session, &ServerFrame::Keys(keys)),
+                Outgoing::Ended(_) => conn.send(session, &ServerFrame::Ended),
+                // Stopped above.
+                Outgoing::Shutdown { .. } => {}
             }
         }
     }
@@ -1404,24 +1350,24 @@ impl Server {
                 }
                 Ok((stream, _)) => {
                     if let Some(shortage) = self.shortage.take() {
-                        log(&format!(
+                        log!(
                             "file descriptors available again; {} connections were refused while they were short",
                             shortage.refused
-                        ));
+                        );
                     }
                     let euid = fuxix::process::geteuid();
                     match fuxix::socket::peer_uid(&stream) {
                         Ok(uid) if uid == euid => {}
                         Ok(uid) => {
-                            log(&format!(
+                            log!(
                                 "refused a connection from uid {uid}; only uid {euid} may use this server"
-                            ));
+                            );
                             continue;
                         }
                         Err(error) => {
-                            log(&format!(
+                            log!(
                                 "refused a connection whose peer could not be identified: {error}"
-                            ));
+                            );
                             continue;
                         }
                     }
@@ -1454,10 +1400,10 @@ impl Server {
                         .is_none_or(|at| now.duration_since(at) >= REPORT_EVERY)
                     {
                         self.accept_logged = Some(now);
-                        log(&format!(
+                        log!(
                             "accept: {e}; listening again in {} ms",
                             ACCEPT_REST.as_millis()
-                        ));
+                        );
                     }
                     return;
                 }
@@ -1501,7 +1447,7 @@ impl Server {
         drop(stream);
         let now = Instant::now();
         let shortage = self.shortage.get_or_insert_with(|| {
-            log("out of file descriptors: new connections are refused, each told why, until some close");
+            log!("out of file descriptors: new connections are refused, each told why, until some close");
             Shortage {
                 reported: (now, 0),
                 refused: 0,
@@ -1510,11 +1456,11 @@ impl Server {
         shortage.refused = shortage.refused.saturating_add(1);
         let (at, then) = shortage.reported;
         if now.duration_since(at) >= REPORT_EVERY {
-            log(&format!(
+            log!(
                 "still out of file descriptors: {} connections refused in the last {} s",
                 shortage.refused.saturating_sub(then),
                 now.duration_since(at).as_secs()
-            ));
+            );
             shortage.reported = (now, shortage.refused);
         }
     }
@@ -1583,7 +1529,7 @@ impl Server {
                             Ok(true) => frames = frames.saturating_add(1),
                             Ok(false) => break,
                             Err(error) => {
-                                log(&format!("a client sent a bad frame: {error}"));
+                                log!("a client sent a bad frame: {error}");
                                 break 'read true;
                             }
                         }
@@ -1603,15 +1549,10 @@ impl Server {
             // A command client that shut its side still gets the answers
             // to what it asked.
             if closed {
-                let next = match conn.stage {
-                    Stage::Command => Stage::Closing,
-                    Stage::Hello(_)
-                    | Stage::Attaching(..)
-                    | Stage::Attached(_)
-                    | Stage::Waiting(_)
-                    | Stage::Events(_)
-                    | Stage::Closing
-                    | Stage::Dead => Stage::Dead,
+                let next = if matches!(conn.stage, Stage::Command) {
+                    Stage::Closing
+                } else {
+                    Stage::Dead
                 };
                 conn.enter(&mut self.session, next);
             }
@@ -1723,15 +1664,11 @@ impl Server {
                 };
                 self.request(index, command, context);
             }
-            // Nothing more is asked of a waiting command, or a stream.
-            Stage::Waiting(_) | Stage::Events(_) => {
-                *decoder = Decoder::default();
-                return Ok(false);
-            }
-            // A connection that is ending has had its last word: what came
+            // Nothing more is asked of a waiting command, or a stream. A
+            // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
-            Stage::Closing | Stage::Dead => {
+            Stage::Waiting(_) | Stage::Events(_) | Stage::Closing | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
             }
@@ -1788,7 +1725,10 @@ impl Server {
         } = command
         {
             let outcome = match scope {
-                Some(_) => refused_grant(),
+                // `fux grant` from a granted socket: refused.
+                Some(_) => {
+                    Reply::failed("not_granted", "a socket `grant` made cannot grant another")
+                }
                 None => {
                     // What came through a revoked grant ends.
                     self.revoked |= revoke;
@@ -1801,12 +1741,7 @@ impl Server {
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         if let Some(c) = client.filter(|c| scope.is_none() && !session.views.contains_key(c)) {
-            let outcome = Outcome {
-                status: 1,
-                stderr: format!("no client {c}"),
-                code: Some("no_client"),
-                ..Outcome::default()
-            };
+            let outcome = Reply::failed("no_client", format!("no client {c}"));
             conn.answer(session, outcome);
             return;
         }
@@ -1851,17 +1786,19 @@ impl Server {
     fn read_pane(&mut self, id: PaneId) {
         let mut total = 0;
         let mut buffer = [0u8; 16384];
-        let mut ended = false;
-        while total < PANE_READ {
+        let ended = loop {
+            if total >= PANE_READ {
+                break false;
+            }
             let Some(Process::Reading(child)) = self.session.panes.get(&id).map(|p| &p.process)
             else {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {
-                Ok(0) => {
-                    ended = true;
-                    break;
-                }
+                Err(fuxix::Errno::AGAIN) => break false,
+                Err(fuxix::Errno::INTR) => continue,
+                // EIO: the slave side is closed; the program is gone.
+                Ok(0) | Err(_) => break true,
                 Ok(n) => {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
@@ -1870,18 +1807,11 @@ impl Server {
                     // and the poll says when there is more, without a read
                     // to find none. A flood's reads are larger, and go on.
                     if n < SHORT_READ {
-                        break;
+                        break false;
                     }
                 }
-                Err(fuxix::Errno::AGAIN) => break,
-                Err(fuxix::Errno::INTR) => continue,
-                // EIO: the slave side is closed; the program is gone.
-                Err(_) => {
-                    ended = true;
-                    break;
-                }
             }
-        }
+        };
         if total > 0 {
             let now = Instant::now();
             for attached in self.conns.iter_mut().filter_map(Conn::attached) {

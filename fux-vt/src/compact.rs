@@ -188,13 +188,6 @@ impl Compact {
         }
         self.word == other.word && text.of(self) == other_text.of(other)
     }
-    /// Whether the cell equals `other`: every cell is held one way only,
-    /// so the same cells are the same bytes. Two spilled cells are the same
-    /// if they locate the same text of one row.
-    #[inline]
-    pub(crate) fn same(&self, other: &Self) -> bool {
-        self == other
-    }
     /// Whether the cell is `blank(style)`: no text, neither half of a wide
     /// glyph, and that style.
     #[inline]
@@ -246,14 +239,10 @@ impl Compact {
         let start = usize::try_from(u32::from_le_bytes([a, b, c, 0])).ok()?;
         Some((start, usize::from(len)))
     }
-    /// Where a long cluster's text is in its row's long text.
-    fn long(&self) -> Option<std::ops::Range<usize>> {
-        let (start, len) = self.locator().filter(|(_, len)| *len > SHORT)?;
-        Some(start..start.checked_add(len)?)
-    }
-    /// Where a short cluster's text is in its row's short text.
-    fn short(&self) -> Option<std::ops::Range<usize>> {
-        let (start, len) = self.locator().filter(|(_, len)| *len <= SHORT)?;
+    /// Where a long cluster's text is in its row's long text (`long`), or
+    /// a short one's in its short text.
+    fn spilled(&self, long: bool) -> Option<std::ops::Range<usize>> {
+        let (start, len) = self.locator().filter(|(_, len)| (*len > SHORT) == long)?;
         Some(start..start.checked_add(len)?)
     }
     /// The cell, keeping its halves and style, holding `text` inline: at
@@ -429,67 +418,51 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         };
         let mut encoded = [0; 4];
         let encoded = c.encode_utf8(&mut encoded).as_bytes();
-        // A short cluster is never out of room.
-        if end <= SHORT {
-            // In place, when the cluster is the last short text the row
-            // keeps.
-            if let Some(range) = cell.short()
-                && range.end == self.text.short.len()
-                && let (Ok(start), Ok(len)) = (u32::try_from(range.start), u8::try_from(end))
-            {
-                self.text.short.extend_from_slice(encoded);
-                if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
-                    *slot = cell.with_spilled(start, len);
-                }
-                return true;
-            }
-            // Whole UTF-8 then a character's encoding is whole UTF-8.
-            let mut buffer = [0u8; SHORT];
-            if let Some(joined) = buffer.get_mut(..end)
-                && let Some((head, tail)) = joined.split_at_mut_checked(current.len())
-                && crate::copy_from(head, current.as_bytes())
-                    .and_then(|()| crate::copy_from(tail, encoded))
-                    .is_some()
-            {
-                self.store_short(i, cell, joined);
-                return true;
-            }
-            return false;
-        }
+        // Whole UTF-8 then a character's encoding is whole UTF-8.
         let mut buffer = [0u8; CLUSTER_CAPACITY];
-        let Some(joined) = buffer.get_mut(..end) else {
+        let Some((head, tail)) = buffer
+            .get_mut(..end)
+            .and_then(|joined| joined.split_at_mut_checked(current.len()))
+        else {
             return false;
         };
-        let (head, tail) = joined
-            .split_at_mut_checked(current.len())
-            .unwrap_or_default();
         if crate::copy_from(head, current.as_bytes())
             .and_then(|()| crate::copy_from(tail, encoded))
             .is_none()
         {
             return false;
         }
-        let Ok(joined) = std::str::from_utf8(joined) else {
+        let Some(joined) = buffer.get(..end) else {
             return false;
         };
+        let long = end > SHORT;
         let limit = Text::long_limit(self.cells.len());
-        let long = &mut self.text.long;
-        // In place, when the cluster is the last long text the row keeps.
-        if let Some(range) = cell.long()
-            && range.end == long.len()
-            && long.len().saturating_add(encoded.len()) <= limit
+        // In place, when the cluster is the last text of its length the
+        // row keeps. A short cluster is never out of room.
+        let (store, room) = if long {
+            (&mut self.text.long, limit)
+        } else {
+            (&mut self.text.short, usize::MAX)
+        };
+        if let Some(range) = cell.spilled(long)
+            && range.end == store.len()
+            && store.len().saturating_add(encoded.len()) <= room
             && let (Ok(start), Ok(len)) = (u32::try_from(range.start), u8::try_from(end))
         {
-            long.extend_from_slice(encoded);
+            store.extend_from_slice(encoded);
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = cell.with_spilled(start, len);
             }
             return true;
         }
+        if !long {
+            self.store_short(i, cell, joined);
+            return true;
+        }
         // Unlike `set`, the cell keeps what it has if the row has no room,
         // even compacted: an append never loses text.
         if self.text.long.len().saturating_add(joined.len()) > limit {
-            self.compact_long();
+            self.compact(true);
         }
         let long = &mut self.text.long;
         let (Ok(start), Ok(len)) = (u32::try_from(long.len()), u8::try_from(joined.len())) else {
@@ -498,7 +471,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         if long.len().saturating_add(joined.len()) > limit {
             return false;
         }
-        long.extend_from_slice(joined.as_bytes());
+        long.extend_from_slice(joined);
         match self.cells.get_mut(i).map(AsMut::as_mut) {
             // Compaction may have moved it; its halves and style are as
             // they were.
@@ -534,7 +507,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
-            self.compact_long();
+            self.compact(true);
         }
         let long = &mut self.text.long;
         let start = u32::try_from(long.len());
@@ -571,7 +544,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
-            self.compact_short();
+            self.compact(false);
         }
         let short = &mut self.text.short;
         if let (Ok(start), Ok(len), Some(slot)) = (
@@ -589,15 +562,20 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         }
     }
 
-    /// Keeps only the text of long clusters, relocating their cells.
-    fn compact_long(&mut self) {
-        let old = std::mem::take(&mut self.text.long);
-        let long = &mut self.text.long;
+    /// Keeps only the text of long clusters (`long`), or of short ones,
+    /// relocating their cells.
+    fn compact(&mut self, long: bool) {
+        let store = if long {
+            &mut self.text.long
+        } else {
+            &mut self.text.short
+        };
+        let old = std::mem::take(store);
         for cell in self.cells.iter_mut().map(AsMut::as_mut) {
-            let Some(range) = cell.long() else {
+            let Some(range) = cell.spilled(long) else {
                 continue;
             };
-            let (Some(text), Ok(start)) = (old.get(range), u32::try_from(long.len())) else {
+            let (Some(text), Ok(start)) = (old.get(range), u32::try_from(store.len())) else {
                 *cell = cell.blanked();
                 continue;
             };
@@ -607,30 +585,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
                 *cell = cell.blanked();
                 continue;
             };
-            long.extend_from_slice(text);
-            *cell = cell.with_spilled(start, len);
-        }
-    }
-
-    /// Keeps only the text of short clusters, relocating their cells.
-    fn compact_short(&mut self) {
-        let old = std::mem::take(&mut self.text.short);
-        let short = &mut self.text.short;
-        for cell in self.cells.iter_mut().map(AsMut::as_mut) {
-            let Some(range) = cell.short() else {
-                continue;
-            };
-            let (Some(text), Ok(start)) = (old.get(range), u32::try_from(short.len())) else {
-                *cell = cell.blanked();
-                continue;
-            };
-            // Never: the range's length was a `u8`. Blanked as above, so
-            // that no cell points into the text just taken.
-            let Ok(len) = u8::try_from(text.len()) else {
-                *cell = cell.blanked();
-                continue;
-            };
-            short.extend_from_slice(text);
+            store.extend_from_slice(text);
             *cell = cell.with_spilled(start, len);
         }
     }

@@ -17,9 +17,10 @@ use crate::command::{AnyRef, CaptureView, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
 use crate::log::Seq;
-use crate::pane::Pane;
+use crate::pane::{Pane, Start};
 use crate::process::Ended;
-use crate::session::{Outcome, Session};
+use crate::protocol::Reply;
+use crate::session::Session;
 use std::time::Instant;
 
 /// The exit statuses a wait ends with, besides 0 (what it waited for came)
@@ -72,7 +73,7 @@ pub struct Waiting {
     /// What the command it follows made, for its reply.
     pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
     /// What each pane said, once it has.
-    answers: Vec<Option<Outcome>>,
+    answers: Vec<Option<Reply>>,
     /// A capture to give once the pane settles (`capture` from a command
     /// line): its history, view and whether as JSON.
     pub capture: Option<(Option<usize>, CaptureView, bool)>,
@@ -83,10 +84,7 @@ pub struct Waiting {
 /// revision.
 #[derive(Clone, Copy)]
 struct Since {
-    from: Seq,
-    /// The full screen was in use then.
-    on_full: bool,
-    finished: u64,
+    start: Start,
     revision: u64,
     /// What came since was more than the pane keeps, and which notice
     /// says so: some was let go before the wait read it.
@@ -97,11 +95,8 @@ struct Since {
 struct Watch {
     pane: PaneId,
     /// What came after this is new to it.
-    from: Seq,
-    on_full: bool,
-    /// The last piece of output it read from the pane's journal, and
-    /// whether pieces it had not read yet were let go.
-    read: Seq,
+    start: Start,
+    /// Pieces of output it had not read yet were let go.
     missed: bool,
     /// The screen's rows as they read when it began, if it began after the
     /// last action (else the pane's, `Pane::before`).
@@ -112,16 +107,15 @@ struct Watch {
     /// joined, though printed in several pieces and between others: where
     /// it starts and ends, and the text.
     stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
-    /// The `wait-gone` texts seen since the wait began, for a fresh program.
-    appeared: Vec<String>,
-    /// How far it read the journal for texts gone and bells, and the last
-    /// piece that printed each text gone: each look reads only what is new.
+    /// The `wait-gone` texts seen since the wait began, for a fresh
+    /// program, and the last piece that printed each, if one did.
+    appeared: std::collections::HashMap<String, Option<Seq>>,
+    /// How far it read the journal, for texts, texts gone and bells: each
+    /// look reads only what is new.
     looked: Seq,
-    printed: Vec<(String, Seq)>,
     bell: Option<Seq>,
     /// A text was found in the echo of what was typed alone.
     echo_skipped: bool,
-    finished: u64,
     revision: u64,
     /// The program's start (`Pane::starts`) the wait watches.
     starts: u64,
@@ -200,26 +194,27 @@ impl Waiting {
     /// Its answer, if it has one at `now`: in each of its panes, what it
     /// waited for came, its program exited first, it went, or its time is
     /// up.
-    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
+    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let mut outcome = self.look(session, now)?;
         // A capture asked to settle first: its state line, then the capture.
         if let (Some((history, view, json)), Some(watch)) = (self.capture, self.watches.first())
             && let Some(pane) = session.panes.get(&watch.pane)
         {
             let copying = session.copying(pane.id);
-            let read = crate::capture::pane(pane, history, view, json, copying);
-            outcome.stdout = if json {
-                read
-            } else {
+            let read = crate::capture::pane(pane, history, view, true, copying);
+            outcome.text = match crate::capture::asked(read, json) {
+                (read, None) => read,
                 // Its JSON, read at the same moment, for `json` to give.
-                outcome.json = crate::capture::pane(pane, history, view, true, copying);
-                let line = outcome.stdout.lines().next().unwrap_or_default();
-                format!("{line}\n{read}")
+                (read, Some(form)) => {
+                    outcome.json = form;
+                    let line = outcome.text.lines().next().unwrap_or_default();
+                    format!("{line}\n{read}")
+                }
             };
         }
         // An answer that starts with the pane's state names the pane itself.
         let named = self.lead.trim_end();
-        let lead = if !named.is_empty() && outcome.stdout.starts_with(&format!("{named} ")) {
+        let lead = if !named.is_empty() && outcome.text.starts_with(&format!("{named} ")) {
             ""
         } else {
             self.lead.as_str()
@@ -228,8 +223,8 @@ impl Waiting {
         // is that pane.
         let mut ids = self.made.clone();
         ids.extend(outcome.ids.iter().filter(|id| !self.made.contains(id)));
-        Some(Outcome {
-            stdout: format!("{lead}{}", outcome.stdout),
+        Some(Reply {
+            text: format!("{lead}{}", outcome.text),
             ids,
             ..outcome
         })
@@ -239,7 +234,7 @@ impl Waiting {
     /// wait once every one has: a line from each, in order, with the first
     /// failing status. At the limit, each pane yet to answer is said as it
     /// is.
-    fn look(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
+    fn look(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let several = self.watches.len() > 1;
         let (wait, texts) = (&self.wait, self.texts.as_slice());
         let (window, mode) = ((self.began, now), (self.fresh, self.more));
@@ -255,7 +250,7 @@ impl Waiting {
                 *answer = Some(watch.timed_out(session, wait, texts, several));
             }
         }
-        let answers: Vec<&Outcome> = self
+        let answers: Vec<&Reply> = self
             .answers
             .iter()
             .map(Option::as_ref)
@@ -264,19 +259,19 @@ impl Waiting {
             return Some((*one).clone());
         }
         let mut stderr = String::new();
-        for answer in answers.iter().filter(|a| !a.stderr.is_empty()) {
-            stderr.push_str(answer.stderr.trim_end());
+        for answer in answers.iter().filter(|a| !a.message.is_empty()) {
+            stderr.push_str(answer.message.trim_end());
             stderr.push('\n');
         }
-        Some(Outcome {
+        Some(Reply {
             status: (answers.iter().map(|a| a.status))
                 .find(|s| *s != 0)
                 .unwrap_or(0),
-            stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
-            stderr,
+            text: answers.iter().map(|a| a.text.as_str()).collect(),
+            message: stderr,
             json: answers.iter().map(|a| a.json.as_str()).collect(),
             ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
-            ..Outcome::default()
+            ..Reply::default()
         })
     }
 }
@@ -321,7 +316,7 @@ impl Wait {
         told: Told,
         several: bool,
         since: Since,
-    ) -> Outcome {
+    ) -> Reply {
         let prefix = if several {
             format!("{id} ")
         } else {
@@ -356,21 +351,9 @@ impl Wait {
         // A settling action whose pane closed (a shell that exited): said,
         // with status 4, not a failure.
         if settles && matches!(told, Told::Gone) {
-            return Outcome {
-                status: GONE,
-                stdout: format!("{id} closed\n"),
-                json: format!(
-                    "{}\n",
-                    Json::Object(vec![
-                        ("pane", Json::str(id.to_string())),
-                        ("state", Json::str("closed")),
-                        ("status", Json::Number(i64::from(GONE))),
-                    ])
-                    .render()
-                ),
-                ids: vec![AnyRef::Pane(id)],
-                ..Outcome::default()
-            };
+            let stdout = format!("{id} closed\n");
+            let state = vec![("state", Json::str("closed"))];
+            return answer(id, GONE, (stdout, String::new()), state, None);
         }
         if let (Some(state), Some(pane)) = (state, pane) {
             let (line, notes) = self.state_line(id, pane, state, since);
@@ -387,21 +370,11 @@ impl Wait {
             };
             // Said on stdout, with its status: still busy (124), stopped
             // short of the text (7). Not a failure: the answer is the screen.
-            let mut fields = vec![
-                ("pane", Json::str(id.to_string())),
-                ("state", Json::str(state.word())),
-            ];
+            let mut fields = vec![("state", Json::str(state.word()))];
             fields.extend(notes);
-            fields.push(("status", Json::Number(i64::from(status))));
-            fields.push(("output", Json::str(body.clone())));
-            let json = Json::Object(fields);
-            return Outcome {
-                status,
-                stdout: format!("{line}\n{body}"),
-                json: format!("{}\n", json.render()),
-                ids: vec![AnyRef::Pane(id)],
-                ..Outcome::default()
-            };
+            let stdout = format!("{line}\n{body}");
+            let output = Some(("output", Json::str(body)));
+            return answer(id, status, (stdout, String::new()), fields, output);
         }
         let screen = pane
             .filter(|_| self.print)
@@ -494,26 +467,43 @@ impl Wait {
                 )
             }
         };
-        let mut fields = vec![("pane", Json::str(id.to_string()))];
-        fields.extend(json);
-        fields.push(("status", Json::Number(i64::from(status))));
-        if let Some(screen) = &screen {
-            fields.push(("screen", Json::str(screen.clone())));
-        }
-        let json = format!("{}\n", Json::Object(fields).render());
         let said = if said.is_empty() {
             said
         } else {
             format!("{prefix}{said}\n")
         };
-        Outcome {
+        let stdout = format!("{said}{}", screen.as_deref().unwrap_or_default());
+        let screen = screen.map(|screen| ("screen", Json::str(screen)));
+        answer(
+            id,
             status,
-            stdout: format!("{said}{}", screen.unwrap_or_default()),
-            stderr: problem.unwrap_or_default(),
+            (stdout, problem.unwrap_or_default()),
             json,
-            ids: vec![AnyRef::Pane(id)],
-            ..Outcome::default()
-        }
+            screen,
+        )
+    }
+}
+
+/// A wait's answer of pane `id`: its JSON the pane, `fields`, the status,
+/// then `last`, if any.
+fn answer(
+    id: PaneId,
+    status: u8,
+    (stdout, stderr): (String, String),
+    fields: Vec<(&'static str, Json<'static>)>,
+    last: Option<(&'static str, Json<'static>)>,
+) -> Reply {
+    let mut all = vec![("pane", Json::str(id.to_string()))];
+    all.extend(fields);
+    all.push(("status", Json::Number(i64::from(status))));
+    all.extend(last);
+    Reply {
+        status,
+        text: stdout,
+        message: stderr,
+        json: format!("{}\n", Json::Object(all).render()),
+        ids: vec![AnyRef::Pane(id)],
+        ..Reply::default()
     }
 }
 
@@ -531,7 +521,7 @@ impl Wait {
         let mut line = format!("{id} {}", state.word());
         let mut fields = Vec::new();
         let commands = pane.screen().commands();
-        if commands.finished > since.finished {
+        if commands.finished > since.start.finished {
             let status = commands.last_status;
             match status {
                 Some(status) => line.push_str(&format!(" · done {status}")),
@@ -574,7 +564,7 @@ fn tail(pane: &Pane, n: usize) -> Vec<String> {
     let last = |rows: fux_vt::Rows<'_>| -> Vec<String> {
         let all = lines(rows);
         let kept: Vec<String> = (all.iter().rev())
-            .map(|l| l.text.trim_end().to_owned())
+            .map(|l| l.trim_end().to_owned())
             .filter(|l| !l.is_empty())
             .take(n)
             .collect();
@@ -661,31 +651,23 @@ impl Watch {
     /// the pane, or its program's start.
     fn new(pane: &Pane, after: bool) -> Watch {
         let screen = pane.screen();
-        let (from, (finished, on_full)) = match after {
-            true => (
-                Seq(screen.version()),
-                (
-                    screen.commands().finished,
-                    screen.mode(fux_vt::Mode::AlternateScreen),
-                ),
-            ),
-            false => (pane.since, pane.since_was),
+        let start = match after {
+            true => Start::at(Seq(screen.version()), screen),
+            false => pane.since,
         };
         Watch {
             pane: pane.id,
-            from,
-            on_full,
-            read: from,
+            start,
+
             missed: false,
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
             stream: std::collections::HashMap::new(),
-            appeared: Vec::new(),
-            looked: from,
-            printed: Vec::new(),
+            appeared: std::collections::HashMap::new(),
+            looked: start.from,
+
             bell: None,
             echo_skipped: false,
-            finished,
             revision: pane.revision,
             starts: pane.starts,
             reading_since: None,
@@ -724,13 +706,7 @@ impl Watch {
 
     /// The wait's answer at its limit: what the pane is doing, and why
     /// the wait may never be met, if a reason shows.
-    fn timed_out(
-        &self,
-        session: &Session,
-        wait: &Wait,
-        texts: &[String],
-        several: bool,
-    ) -> Outcome {
+    fn timed_out(&self, session: &Session, wait: &Wait, texts: &[String], several: bool) -> Reply {
         let pane = session.panes.get(&self.pane);
         let hint = pane.and_then(|p| self.hint(p, texts));
         wait.told(
@@ -749,11 +725,7 @@ impl Watch {
         if let Some(why) = self.unseen() {
             return Some(why);
         }
-        let screen = pane.screen();
-        let shown = lines(screen.rows().skip(screen_top(screen)));
-        let there = shown
-            .iter()
-            .any(|l| texts.iter().any(|t| found_in(&l.text, t) > 0));
+        let there = texts.iter().any(|t| on_screen(pane.screen(), t));
         there.then_some(
             "the text is on the screen, but on a line that reads as it did when the wait \
              began (nothing printed it since; drawn again the same, it brings nothing new); \
@@ -797,8 +769,7 @@ impl Watch {
                 if let Until::Gone(text) = until
                     && p.prints.iter().any(|r| found_in(r.text, text) > 0)
                 {
-                    self.printed.retain(|(t, _)| t != text);
-                    self.printed.push((text.clone(), seq));
+                    self.appeared.insert(text.clone(), Some(seq));
                 }
             }
         }
@@ -815,20 +786,18 @@ impl Watch {
             match until {
                 Until::Text(_) => {}
                 Until::Gone(text) => {
-                    let shown = lines(screen.rows().skip(screen_top(screen)));
-                    let present = shown.iter().any(|l| found_in(&l.text, text) > 0);
+                    let present = on_screen(screen, text);
+                    if present {
+                        self.appeared.entry(text.clone()).or_default();
+                    }
                     // Shown between two looks (drawn over, erased, scrolled
                     // away): printed since, though gone now.
                     // It went no earlier than the last piece that printed it.
-                    let last = (self.printed.iter())
-                        .find(|(t, _)| t == text)
-                        .map(|(_, seq)| *seq);
-                    if (present || last.is_some()) && !self.appeared.contains(text) {
-                        self.appeared.push(text.clone());
-                    }
-                    let had = !fresh || self.appeared.contains(text);
+                    let seen = self.appeared.get(text);
+                    let last = seen.copied().flatten();
+                    let had = !fresh || seen.is_some();
                     if !present && had && gone.is_none() {
-                        gone = Some((Found::Gone(text.clone()), last.unwrap_or(self.from)));
+                        gone = Some((Found::Gone(text.clone()), last.unwrap_or(self.start.from)));
                     }
                 }
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
@@ -876,18 +845,9 @@ impl Watch {
     /// the first of `texts` that a piece of output printed, on its line or
     /// in the piece itself, is found.
     fn read_prints(&mut self, pane: &Pane, texts: &[String]) {
-        self.missed |= pane.record.lost_after(self.read);
         // Rows scrolled off are printed on no more: a long wait lets them go.
-        let screen = pane.screen();
-        if self.stream.len() > usize::from(screen.size().rows()).saturating_mul(4) {
-            let window = screen.window();
-            let rows: std::collections::HashSet<_> = (0..window.rows())
-                .filter_map(|y| Some(window.row(y)?.id()))
-                .collect();
-            self.stream.retain(|id, _| rows.contains(id));
-        }
-        let pieces = pane.record.printed_after(self.read.max(self.from));
-        self.read = Seq(pane.screen().version());
+        crate::pane::prune(&mut self.stream, pane.screen());
+        let pieces = pane.record.printed_after(self.looked.max(self.start.from));
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
         let wanted: Vec<Vec<char>> = (texts.iter())
@@ -1040,9 +1000,7 @@ impl Watch {
 
     fn since(&self, pane: Option<&Pane>) -> Since {
         Since {
-            from: self.from,
-            on_full: self.on_full,
-            finished: self.finished,
+            start: self.start,
             revision: self.revision,
             cut: pane.and_then(|p| match (self.missed, p.cut()) {
                 (true, _) => Some(MORE_THAN_KEPT),
@@ -1059,11 +1017,10 @@ const CUT_END: &str = "\u{1}";
 
 /// A line of text, its soft-wrapped rows joined, from its first row; and
 /// which of its bytes, if any, a piece of output just printed.
+#[derive(Default)]
 struct Line {
     text: String,
     printed: Vec<bool>,
-    /// The rows it was read from, if on the screen or in history.
-    rows: Vec<fux_vt::RowId>,
 }
 
 impl Line {
@@ -1084,11 +1041,7 @@ impl Line {
                     None => break,
                 }
             }
-            let mut line = Line {
-                text: String::new(),
-                printed: Vec::new(),
-                rows: Vec::new(),
-            };
+            let mut line = Line::default();
             if first.above().is_some_and(|up| up.wrapped()) {
                 line.push(CUT_END, false);
             }
@@ -1097,7 +1050,6 @@ impl Line {
             let mut row = Some(first);
             while let Some(r) = row {
                 let ours = r.id() == print.row;
-                line.rows.push(r.id());
                 let cells = r.cells().enumerate();
                 for (col, cell) in cells.filter(|(_, c)| !c.is_wide_continuation()) {
                     let text = match cell.contents() {
@@ -1129,11 +1081,7 @@ impl Line {
     /// A row a line wraps onto goes on from `above`, the last character of
     /// the row above.
     fn piece(print: &fux_vt::Print<'_>, above: Option<char>, (from, to): (usize, usize)) -> Line {
-        let mut line = Line {
-            text: String::new(),
-            printed: Vec::new(),
-            rows: Vec::new(),
-        };
+        let mut line = Line::default();
         match above.filter(|_| print.cols.0 == 0) {
             Some(last) => {
                 line.push(CUT_END, false);
@@ -1161,7 +1109,7 @@ impl Line {
         self
     }
 
-    /// Where the line holds `text` as `found_at` finds it, on bytes that
+    /// Where the line holds `text` as `found_in` finds it, on bytes that
     /// were just printed: its first such place, as `normal` counts it.
     fn holds(&self, text: &str) -> Option<usize> {
         let (line, printed) = normal_marked(&self.text, &self.printed);
@@ -1177,12 +1125,11 @@ impl Line {
 /// its characters (blanks aside, case ignored) one that was typed, as
 /// often, in whatever order the line's editing left them.
 fn typed_from(typed: &str, text: &str) -> bool {
-    let mut left: Vec<Option<char>> = (typed.to_lowercase().chars())
+    let mut left: Vec<Option<char>> = (typed.chars().flat_map(fold))
         .filter(|c| !c.is_whitespace())
         .map(Some)
         .collect();
-    text.to_lowercase()
-        .chars()
+    (text.chars().flat_map(fold))
         .filter(|c| !c.is_whitespace())
         .all(|c| {
             let slot = left.iter_mut().find(|l| **l == Some(c));
@@ -1213,7 +1160,7 @@ fn normal_marked(text: &str, marked: &[bool]) -> (String, Vec<bool>) {
             out.push(' ');
             marks.push(mark);
         }
-        for lower in c.to_lowercase() {
+        for lower in fold(c) {
             out.push(lower);
             marks.resize(out.len(), mark);
         }
@@ -1221,14 +1168,9 @@ fn normal_marked(text: &str, marked: &[bool]) -> (String, Vec<bool>) {
     (out, marks)
 }
 
-/// A screen's lines, its soft-wrapped rows joined.
-struct Shown {
-    text: String,
-}
-
 /// Rows as lines: soft-wrapped rows joined into the lines they wrap.
-fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<Shown> {
-    let mut out: Vec<Shown> = Vec::new();
+fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     let mut wraps = false;
     for row in rows {
         let text = row.cells_text();
@@ -1238,30 +1180,42 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<Shown> {
             false => text.trim_end_matches(' ').to_owned(),
         };
         match out.last_mut() {
-            Some(last) if wraps => last.text.push_str(&text),
-            _ => out.push(Shown { text }),
+            Some(last) if wraps => last.push_str(&text),
+            _ => out.push(text),
         }
         wraps = row.wrapped();
     }
     out
 }
 
+/// Whether the screen's lines show `text`, as `found_in` finds it.
+fn on_screen(screen: &fux_vt::Screen, text: &str) -> bool {
+    let shown = lines(screen.rows().skip(screen_top(screen)));
+    shown.iter().any(|l| found_in(l, text) > 0)
+}
+
 /// Where the screen's lines start among the rows kept: at its top row, or
 /// at the first row of a line wrapped onto it from history.
 fn screen_top(screen: &fux_vt::Screen) -> usize {
-    let Some(mut top) = screen.window().row(0) else {
+    let Some(top) = screen.window().row(0) else {
         return screen.history_len();
     };
-    while let Some(up) = top.above().filter(fux_vt::Row::wrapped) {
-        top = up;
-    }
-    screen.row_index(top.id()).unwrap_or(screen.history_len())
+    screen
+        .row_index(crate::pane::line_top(top).id())
+        .unwrap_or(screen.history_len())
 }
 
 /// A text as a wait compares it: case ignored, runs of blanks as one, and
 /// none at its ends.
 fn normal(text: &str) -> String {
-    blanks_as_one(text).to_lowercase()
+    normal_marked(text, &[]).0
+}
+
+/// A character as a wait compares it, case aside: lower case, and a
+/// final ς as σ, since a word's last Σ lowers to ς only where the word is
+/// seen whole.
+pub(crate) fn fold(c: char) -> impl Iterator<Item = char> {
+    c.to_lowercase().map(|c| if c == 'ς' { 'σ' } else { c })
 }
 
 /// The characters `from..to` of `print`, where they went; none if empty.
@@ -1295,7 +1249,7 @@ fn folded(text: &str) -> Vec<char> {
         match c.is_whitespace() {
             true if out.last() == Some(&' ') => {}
             true => out.push(' '),
-            false => out.extend(c.to_lowercase()),
+            false => out.extend(fold(c)),
         }
     }
     out
@@ -1317,25 +1271,15 @@ fn overlaps(run: &[char], text: &[char]) -> bool {
     holds(run, text) || holds(text, run) || joins(run, text) || joins(text, run)
 }
 
-/// `text` with runs of blanks as one, and none at its ends.
-fn blanks_as_one(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// How many times a line shows TEXT: case ignored, runs of blanks as one,
 /// starting where a word does (`READY` is not in `NOT_READY`), `^` and `$`
 /// holding it to the line's start and end.
 fn found_in(line: &str, text: &str) -> usize {
-    found_at(line, text).len()
+    found_at_normal(&normal(line), text).len()
 }
 
-/// Where a line shows TEXT, as `found_in` finds it: each place in the line
-/// as `normal` makes it.
-fn found_at(line: &str, text: &str) -> Vec<usize> {
-    found_at_normal(&normal(line), text)
-}
-
-/// Where a line already made `normal` shows TEXT, as `found_at` finds it.
+/// Where a line already made `normal` shows TEXT, as `found_in` finds it:
+/// each place in it.
 fn found_at_normal(line: &str, text: &str) -> Vec<usize> {
     let (start, rest) = match text.strip_prefix('^') {
         Some(rest) => (true, rest),
@@ -1389,9 +1333,9 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
         alt,
         ..CaptureView::default()
     };
-    let first = crate::capture::pane(pane, None, view(alt), false, false);
+    let (first, _) = crate::capture::pane(pane, None, view(alt), false, false);
     if first.trim().is_empty() {
-        return crate::capture::pane(pane, None, view(!alt), false, false);
+        return crate::capture::pane(pane, None, view(!alt), false, false).0;
     }
     first
 }
@@ -1402,40 +1346,37 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
 /// the program has since left, what it printed after, else that last full
 /// screen if it drew it since, else the screen as it is.
 fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
-    let screen = pane.screen();
+    let (screen, start) = (pane.screen(), since.start);
     if screen.mode(fux_vt::Mode::AlternateScreen) {
         return text(pane, marks, false);
     }
     // A row changed since, or moved (`fux_vt::Print`).
-    let moved: std::collections::HashSet<fux_vt::RowId> = (pane.record.printed_after(since.from))
+    let moved: std::collections::HashSet<fux_vt::RowId> = (pane.record.printed_after(start.from))
         .flat_map(|(_, p)| p.prints.iter().map(|r| r.row))
         .collect();
     // A resize gives every row it keeps a new number, and brings nothing.
-    let resized: std::collections::HashSet<u64> = (pane.record.after(since.from))
+    let resized: std::collections::HashSet<u64> = (pane.record.after(start.from))
         .filter(|e| matches!(e.event, crate::log::Event::Resize(_)))
         .map(|e| e.seq.0)
         .collect();
     let window = screen.window();
     // A row drawn again to show as it did at the input brings nothing.
     let new = |r: &fux_vt::Row<'_>| {
-        (r.version() > since.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
+        (r.version() > start.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
             && (pane.before_shows.get(&r.id())).is_none_or(|was| {
                 window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)
             })
     };
-    let Some(mut first) = screen.rows().find(new) else {
-        return match (screen.alternate_rows().any(|r| new(&r)), since.on_full) {
+    let Some(first) = screen.rows().find(new) else {
+        return match (screen.alternate_rows().any(|r| new(&r)), start.on_full) {
             (true, _) => text(pane, marks, true),
             (false, true) => text(pane, marks, false),
             (false, false) => String::new(),
         };
     };
-    while let Some(up) = first.above().filter(fux_vt::Row::wrapped) {
-        first = up;
-    }
-    let from = screen.row_index(first.id()).unwrap_or(0);
+    let from = (screen.row_index(crate::pane::line_top(first).id())).unwrap_or(0);
     let found = lines(screen.rows().skip(from));
-    let texts: Vec<&str> = found.iter().map(|l| l.text.trim_end()).collect();
+    let texts: Vec<&str> = found.iter().map(|l| l.trim_end()).collect();
     let end = (texts.iter())
         .rposition(|t| !t.is_empty())
         .map_or(0, |i| i.saturating_add(1));
@@ -1448,7 +1389,7 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::found_in;
+    use super::{found_in, normal, normal_marked};
 
     /// A text waited for: case ignored, blanks as one, from a word's start,
     /// and `^`/`$` for a line's start and end.
@@ -1471,5 +1412,10 @@ mod tests {
         // first word, indented or not.
         assert_eq!(found_in("    READY", "^READY"), 1);
         assert_eq!(found_in("READY", " READY"), 1);
+        // A word's last Σ, written either way, case ignored too, on the
+        // screen and in the output read as it comes.
+        assert_eq!(found_in("ΟΔΟΣ done", "οδος done"), 1);
+        assert_eq!(found_in("οδος", "ΟΔΟΣ"), 1);
+        assert_eq!(normal_marked("ΟΔΟΣ", &[]).0, normal("οδος"));
     }
 }

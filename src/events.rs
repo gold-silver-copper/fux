@@ -145,28 +145,21 @@ impl Event {
 /// then what closed.
 pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> {
     let mut events = Vec::new();
-    let name = |n: &str| Json::str(n.to_owned());
-    for (&ws, ws_name) in &new.workspaces {
-        match old.workspaces.get(&ws) {
-            None => events.push(Event::new("created", ws, None, None).with("name", name(ws_name))),
-            Some(was) if was != ws_name => {
-                events.push(Event::new("renamed", ws, None, None).with("name", name(ws_name)));
-            }
-            Some(_) => {}
-        }
+    // A workspace or tab made since, or named otherwise.
+    let named = |ws, tab, was: Option<&String>, name: &String| {
+        let what = match was {
+            None => "created",
+            Some(was) if was != name => "renamed",
+            Some(_) => return None,
+        };
+        Some(Event::new(what, ws, tab, None).with("name", Json::str(name.clone())))
+    };
+    for (&ws, name) in &new.workspaces {
+        events.extend(named(ws, None, old.workspaces.get(&ws), name));
     }
-    for (&tab, (ws, tab_name)) in &new.tabs {
-        match old.tabs.get(&tab) {
-            None => {
-                let event = Event::new("created", *ws, Some(tab), None);
-                events.push(event.with("name", name(tab_name)));
-            }
-            Some((_, was)) if was != tab_name => {
-                let event = Event::new("renamed", *ws, Some(tab), None);
-                events.push(event.with("name", name(tab_name)));
-            }
-            Some(_) => {}
-        }
+    for (&tab, (ws, name)) in &new.tabs {
+        let was = old.tabs.get(&tab).map(|(_, was)| was);
+        events.extend(named(*ws, Some(tab), was, name));
     }
     for (&pane, now) in &new.panes {
         let at = |name| Event::new(name, now.ws, Some(now.tab), Some(pane));
@@ -192,7 +185,6 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
         }
         let journal = pane_now.map(|p| p.record.after(from));
         for entry in journal.into_iter().flatten() {
-            let number = |n: i64| Json::Number(n);
             events.push(match &entry.event {
                 Recorded::Bell => at("bell"),
                 Recorded::Notification(text) => {
@@ -200,39 +192,29 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
                 }
                 Recorded::Title(title) => at("title").with("title", Json::str(title.clone())),
                 Recorded::Done(status) => {
-                    at("done").with("status", status.map_or(Json::Null, |s| number(s.into())))
+                    at("done").with("status", status.map_or(Json::Null, Json::int))
                 }
                 Recorded::Resize(size) => (at("resized"))
-                    .with("cols", number(size.cols().into()))
-                    .with("rows", number(size.rows().into())),
+                    .with("cols", Json::int(size.cols()))
+                    .with("rows", Json::int(size.rows())),
                 Recorded::Output { .. } | Recorded::Input { .. } | Recorded::Action => continue,
             });
         }
         let was = old.panes.get(&pane).and_then(|w| w.ended);
         if let (Some(ended), true) = (now.ended, now.ended != was) {
             events.push(match ended {
-                Ended::Exited(code) => at("exited").with("status", Json::Number(i64::from(code))),
-                Ended::Signalled(signal) => {
-                    at("exited").with("signal", Json::Number(i64::from(signal)))
-                }
+                Ended::Exited(code) => at("exited").with("status", Json::int(code)),
+                Ended::Signalled(signal) => at("exited").with("signal", Json::int(signal)),
             });
         }
     }
-    for (&pane, was) in &old.panes {
-        if !new.panes.contains_key(&pane) {
-            events.push(Event::new("closed", was.ws, Some(was.tab), Some(pane)));
-        }
-    }
-    for (&tab, (ws, _)) in &old.tabs {
-        if !new.tabs.contains_key(&tab) {
-            events.push(Event::new("closed", *ws, Some(tab), None));
-        }
-    }
-    for &ws in old.workspaces.keys() {
-        if !new.workspaces.contains_key(&ws) {
-            events.push(Event::new("closed", ws, None, None));
-        }
-    }
+    let panes = (old.panes.iter()).filter(|(pane, _)| !new.panes.contains_key(pane));
+    let tabs = (old.tabs.iter()).filter(|(tab, _)| !new.tabs.contains_key(tab));
+    let workspaces = (old.workspaces.keys()).filter(|ws| !new.workspaces.contains_key(ws));
+    let closed = (panes.map(|(&pane, was)| (was.ws, Some(was.tab), Some(pane))))
+        .chain(tabs.map(|(&tab, (ws, _))| (*ws, Some(tab), None)))
+        .chain(workspaces.map(|&ws| (ws, None, None)));
+    events.extend(closed.map(|(ws, tab, pane)| Event::new("closed", ws, tab, pane)));
     events
 }
 

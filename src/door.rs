@@ -209,20 +209,10 @@ fn relay(from: File, into: File) -> io::Result<UnixStream> {
 fn copy(mut from: impl Read + AsFd, mut into: impl Write, stop: Option<&io::PipeReader>) {
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        if let Some(stop) = stop {
-            let mut fds = [
-                fuxix::poll::PollFd::new(&from, fuxix::poll::Events::IN),
-                fuxix::poll::PollFd::new(stop, fuxix::poll::Events::IN),
-            ];
-            match fuxix::poll::poll(&mut fds, None) {
-                Ok(_) => {}
-                Err(fuxix::Errno::INTR) => continue,
-                Err(_) => return,
-            }
-            let [_, stopped] = &fds;
-            if !stopped.revents().is_empty() {
-                return;
-            }
+        match ready(&from, stop, None) {
+            Ok(true) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Ok(false) | Err(_) => return,
         }
         match from.read(&mut buffer) {
             Ok(0) => return,
@@ -235,6 +225,28 @@ fn copy(mut from: impl Read + AsFd, mut into: impl Write, stop: Option<&io::Pipe
             Err(_) => return,
         }
     }
+}
+
+/// Waits until `file` has something to read: `Ok(false)` if `stop` ends
+/// first, a `TimedOut` error if `timeout` (`None`, for ever) passes. With
+/// neither to wait on, at once.
+fn ready(
+    file: &impl AsFd,
+    stop: Option<&io::PipeReader>,
+    timeout: Option<Duration>,
+) -> io::Result<bool> {
+    use fuxix::poll::{Events, PollFd};
+    let mut fds = match stop {
+        Some(stop) => vec![PollFd::new(file, Events::IN), PollFd::new(stop, Events::IN)],
+        None if timeout.is_some() => vec![PollFd::new(file, Events::IN)],
+        None => return Ok(true),
+    };
+    if fuxix::poll::poll(&mut fds, timeout)? == 0 {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    Ok(fds
+        .get(1)
+        .is_none_or(|stopped| stopped.revents().is_empty()))
 }
 
 /// The door beside `socket` opened to knock at, if a server holds it open.
@@ -350,26 +362,8 @@ impl Link {
 
 impl Read for Link {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let ready = |fds: &mut [fuxix::poll::PollFd<'_>]| fuxix::poll::poll(fds, self.timeout);
-        let file = fuxix::poll::PollFd::new(&self.file, fuxix::poll::Events::IN);
-        let found = match (&self.stop, self.timeout) {
-            (Some(stop), _) => {
-                let mut fds = [
-                    file,
-                    fuxix::poll::PollFd::new(stop, fuxix::poll::Events::IN),
-                ];
-                let found = ready(&mut fds)?;
-                let [_, stopped] = &fds;
-                if !stopped.revents().is_empty() {
-                    return Ok(0);
-                }
-                found
-            }
-            (None, Some(_)) => ready(&mut [file])?,
-            (None, None) => 1,
-        };
-        if found == 0 {
-            return Err(io::ErrorKind::TimedOut.into());
+        if !ready(&self.file, self.stop.as_ref(), self.timeout)? {
+            return Ok(0);
         }
         self.file.read(buffer)
     }

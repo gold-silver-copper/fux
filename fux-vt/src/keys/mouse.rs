@@ -189,12 +189,8 @@ pub fn mouse_bytes(
         _ => NO_BUTTON,
     };
     if mode != MouseProtocolMode::Press {
-        let mods = event.mods;
-        for (held, bit) in [(mods.shift, SHIFT), (mods.alt, ALT), (mods.ctrl, CTRL)] {
-            if held {
-                code |= bit;
-            }
-        }
+        // `SHIFT`, `ALT` and `CTRL`.
+        code |= u32::from(event.mods.bits()) << 2;
     }
     if event.action == MouseAction::Motion {
         code |= MOTION;
@@ -257,11 +253,7 @@ pub(crate) fn event(code: u32, x: u32, y: u32, sgr_release: bool) -> Option<Mous
     Some(MouseEvent {
         action,
         button,
-        mods: Modifiers {
-            ctrl: code & CTRL != 0,
-            alt: code & ALT != 0,
-            shift: code & SHIFT != 0,
-        },
+        mods: Modifiers::from_bits(code >> 2),
         row,
         col,
     })

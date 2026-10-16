@@ -85,16 +85,16 @@ impl Seat {
 }
 
 impl Workspace {
-    /// A workspace whose one tab, `tab`, holds `root` and is shown to every
-    /// attached client, `clients`.
+    /// A workspace whose one tab, `tab` with its name, holds `root` and is
+    /// shown to every attached client, `clients`.
     pub(crate) fn new(
         id: WsId,
         name: String,
-        tab: TabId,
+        (tab, tab_name): (TabId, String),
         (root, fit): (Option<Tree>, Fit),
         clients: impl Iterator<Item = ClientId>,
     ) -> Workspace {
-        let tab = Tab::new(tab, crate::session::MAIN.into(), (root, fit), clients, true);
+        let tab = Tab::new(tab, tab_name, (root, fit), clients, true);
         let (tabs, viewers) = (vec![tab], BTreeSet::new());
         Workspace {
             id,

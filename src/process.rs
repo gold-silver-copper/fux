@@ -5,32 +5,6 @@ use fuxix::process::{Signal, Status};
 use fuxix::pty::Master;
 use std::path::{Path, PathBuf};
 
-/// Why a pane's process could not be started.
-#[derive(Debug)]
-pub enum Error {
-    Pty(fuxix::pty::Error),
-    NoProgram,
-    /// The `fux` binary, to run the launcher from, could not be found.
-    Launcher(std::io::Error),
-    Start {
-        program: String,
-        source: std::io::Error,
-    },
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Pty(error) => error.fmt(f),
-            Error::NoProgram => f.write_str("no program to run"),
-            Error::Launcher(error) => write!(f, "finding the fux binary: {error}"),
-            Error::Start { program, source } => write!(f, "starting {program}: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
 /// A pane's program: the leader of a session of its own, started by fux
 /// and not yet reaped. Unreaped, its pid is its group's and its session's
 /// ID and cannot be reused, so it is signalled through this alone; reaping
@@ -53,10 +27,10 @@ pub fn spawn(
     cwd: &Path,
     (env, unset): (&[(&str, String)], &[String]),
     size: fux_vt::Size,
-) -> Result<Child, Error> {
-    let program = argv.first().ok_or(Error::NoProgram)?;
-    let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(Error::Pty)?;
-    let fux = launcher().map_err(Error::Launcher)?;
+) -> Result<Child, String> {
+    let program = argv.first().ok_or("no program to run")?;
+    let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(|e| e.to_string())?;
+    let fux = launcher().map_err(|e| format!("finding the fux binary: {e}"))?;
     let (child, pid) = slave
         .spawn(&fux, argv, |command| {
             // TERM_PROGRAM is fux's, as tmux sets its own: the outer
@@ -75,10 +49,7 @@ pub fn spawn(
                 command.env(key, value);
             }
         })
-        .map_err(|source| Error::Start {
-            program: program.clone(),
-            source,
-        })?;
+        .map_err(|source| format!("starting {program}: {source}"))?;
     // The std handle is dropped without waiting: fux reaps the pid itself, and
     // std never waits on a dropped child.
     drop(child);

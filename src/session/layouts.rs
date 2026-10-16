@@ -14,7 +14,7 @@ impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
     /// as a fuxth program; with `ids`, the ids to ask for, as a saved
     /// session keeps them.
-    pub(super) fn dump_layout(&self, only: Option<AnyRef<WsId>>, ids: bool) -> String {
+    pub(crate) fn dump_layout(&self, only: Option<AnyRef<WsId>>, ids: bool) -> String {
         let only = match only {
             Some(AnyRef::Pane(pane)) => self.locate(pane).map(|(_, tab)| AnyRef::Tab(tab)),
             other => other,
@@ -100,18 +100,11 @@ impl Session {
         if opens {
             push(
                 out,
-                &[
-                    pane_name(first),
-                    "workspace".into(),
-                    "let".into(),
-                    workspace(ws.id),
-                ],
+                &[&pane_name(first), "workspace", "let", &workspace(ws.id)],
             );
         }
         if named && makes {
-            let mut rename = vec![pane_name(first), "tab".to_owned()];
-            rename.extend(string(&tab.name).chain(["rename".to_owned()]));
-            push(out, &rename);
+            push(out, &[&pane_name(first), "tab", "str", &tab.name, "rename"]);
         }
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, ids, out);
@@ -127,11 +120,8 @@ impl Session {
                     continue;
                 };
                 let name = pane_name(*pane);
-                push(
-                    out,
-                    &[name.clone(), size.cols().to_string(), "resize-x".into()],
-                );
-                push(out, &[name, size.rows().to_string(), "resize-y".into()]);
+                push(out, &[&name, &size.cols().to_string(), "resize-x"]);
+                push(out, &[&name, &size.rows().to_string(), "resize-y"]);
             }
         }
         // Panes renamed keep their names.
@@ -144,9 +134,7 @@ impl Session {
                 None => self.config.shell.first().map(|s| basename(s)),
             };
             if default.as_deref() != Some(p.name.as_str()) {
-                let mut rename = vec![pane_name(pane)];
-                rename.extend(string(&p.name).chain(["rename".to_owned()]));
-                push(out, &rename);
+                push(out, &[&pane_name(pane), "str", &p.name, "rename"]);
             }
         }
     }
@@ -212,11 +200,6 @@ impl Session {
             }
         }
     }
-
-    /// The program a server saves: everything, as it is now, its ids kept.
-    pub fn saved_layout(&self) -> String {
-        self.dump_layout(None, true)
-    }
 }
 
 /// The `let` name a dump names pane `id` by.
@@ -241,8 +224,11 @@ fn asked(id: &str) -> impl Iterator<Item = String> {
 
 /// Appends a line of words, each quoted as fuxth's tokenizer reads it
 /// back.
-fn push(out: &mut String, line: &[String]) {
-    let words: Vec<String> = line.iter().map(|w| crate::screens::quote(w)).collect();
+fn push(out: &mut String, line: &[impl AsRef<str>]) {
+    let words: Vec<String> = line
+        .iter()
+        .map(|w| crate::words::quote(w.as_ref()))
+        .collect();
     out.push_str(&words.join(" "));
     out.push('\n');
 }

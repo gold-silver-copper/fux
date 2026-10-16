@@ -24,63 +24,8 @@ const DEFAULT_NAME: &str = "server.sock";
 /// Why a socket path is refused, or its directory, or the socket itself.
 #[derive(Debug)]
 pub enum Error {
-    /// An environment variable that is not UTF-8.
-    NotUtf8 {
-        variable: &'static str,
-    },
-    /// Nowhere to put the socket.
-    NoLocation,
-    /// A base directory's variable, set but empty.
-    EmptyVariable {
-        variable: &'static str,
-    },
-    /// A base directory that is not absolute.
-    RelativeVariable {
-        variable: &'static str,
-        value: String,
-    },
-    // A socket path, given by `from`, that is empty, has a NUL, is
-    // relative, names no file in a directory below /, or is too long.
-    EmptyPath {
-        from: &'static str,
-    },
-    Nul {
-        from: &'static str,
-    },
-    Relative {
-        from: &'static str,
-        value: String,
-    },
-    NoFile {
-        from: &'static str,
-        value: String,
-    },
-    TooLong {
-        from: &'static str,
-        value: String,
-        limit: usize,
-    },
-    /// The socket's directory is a symbolic link.
-    Symlink(PathBuf),
-    /// The socket's directory, not a directory of ours with mode 0700.
-    NotPrivate {
-        path: PathBuf,
-        euid: u32,
-        directory: bool,
-        mode: u32,
-        uid: u32,
-    },
+    /// No socket at the path: no server runs there.
     NoServer(PathBuf),
-    /// A `-L` name that is not a plain file name.
-    BadName(String),
-    /// A socket not ours to connect to.
-    NotOurs(PathBuf),
-    /// Something at the socket's path that is not ours to replace.
-    Foreign(PathBuf),
-    /// Another server holds the lock.
-    InUse(PathBuf),
-    /// Another server answers on the socket.
-    Listening(PathBuf),
     /// A call about `path` that failed: what it was doing, as the message
     /// begins ("locking "), and why.
     Io {
@@ -88,65 +33,13 @@ pub enum Error {
         path: PathBuf,
         source: io::Error,
     },
+    /// Anything else refused: why.
+    Refused(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NotUtf8 { variable } => write!(f, "{variable} is not valid UTF-8"),
-            Error::NoLocation => f.write_str(
-                "no socket location: neither XDG_RUNTIME_DIR nor TMPDIR is set; \
-                 set FUX_SOCKET to an absolute socket path",
-            ),
-            Error::EmptyVariable { variable } => write!(
-                f,
-                "{variable} is set but empty; set it to a directory or set FUX_SOCKET"
-            ),
-            Error::RelativeVariable { variable, value } => write!(
-                f,
-                "{variable} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
-            ),
-            Error::EmptyPath { from } => {
-                write!(f, "{from} is empty; it must be an absolute socket path")
-            }
-            Error::Nul { from } => write!(f, "{from} contains a NUL byte"),
-            Error::Relative { from, value } => {
-                write!(f, "{from} is {value:?}; it must be an absolute path")
-            }
-            Error::NoFile { from, value } => {
-                write!(
-                    f,
-                    "{from} is {value:?}; it must name a socket file in a directory below /"
-                )
-            }
-            Error::TooLong { from, value, limit } => write!(
-                f,
-                "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
-                 domain socket on this platform (from {from}): {value}",
-                value.len()
-            ),
-            Error::Symlink(path) => write!(
-                f,
-                "{} is a symbolic link; the socket directory must be a real directory",
-                path.display()
-            ),
-            Error::NotPrivate {
-                path,
-                euid,
-                directory,
-                mode,
-                uid,
-            } => write!(
-                f,
-                "{} must be a directory owned by you (uid {euid}) with mode 0700; it is {} \
-                 with mode {mode:04o} owned by uid {uid}. fux does not change it",
-                path.display(),
-                if *directory {
-                    "a directory"
-                } else {
-                    "not a directory"
-                },
-            ),
             Error::NoServer(path) => {
                 write!(
                     f,
@@ -155,34 +48,12 @@ impl std::fmt::Display for Error {
                     start_hint(path)
                 )
             }
-            Error::BadName(name) => write!(
-                f,
-                "-L {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
-                 not starting with '.' or '-'"
-            ),
-            Error::NotOurs(path) => write!(
-                f,
-                "{} is not a socket owned by you; refusing to connect",
-                path.display()
-            ),
-            Error::Foreign(path) => write!(
-                f,
-                "{} exists and is not a socket owned by you; fux will not replace it",
-                path.display()
-            ),
-            Error::InUse(path) => {
-                write!(f, "another fux server is already using {}", path.display())
-            }
-            Error::Listening(path) => write!(
-                f,
-                "another fux server is already listening on {}",
-                path.display()
-            ),
             Error::Io {
                 doing,
                 path,
                 source,
             } => write!(f, "{doing}{}: {source}", path.display()),
+            Error::Refused(why) => f.write_str(why),
         }
     }
 }
@@ -265,15 +136,16 @@ pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
                 && !name.starts_with(['.', '-'])
                 && (name.chars()).all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
             if !valid {
-                return Err(Error::BadName(name.to_owned()));
+                return Err(Error::Refused(format!(
+                    "-L {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
+                     not starting with '.' or '-'"
+                )));
             }
             in_directory(&format!("{name}.sock"))
         }
         Choice::Default => match std::env::var_os("FUX_SOCKET") {
             Some(value) => {
-                let value = value.into_string().map_err(|_| Error::NotUtf8 {
-                    variable: "FUX_SOCKET",
-                })?;
+                let value = value.into_string().map_err(|_| not_utf8("FUX_SOCKET"))?;
                 checked(&value, "FUX_SOCKET")
             }
             None => in_directory(DEFAULT_NAME),
@@ -306,13 +178,19 @@ pub fn start_hint(path: &Path) -> String {
 pub fn directory() -> Result<PathBuf, Error> {
     for base in ["XDG_RUNTIME_DIR", "TMPDIR"] {
         if let Some(value) = std::env::var_os(base) {
-            let value = value
-                .into_string()
-                .map_err(|_| Error::NotUtf8 { variable: base })?;
+            let value = value.into_string().map_err(|_| not_utf8(base))?;
             return base_directory(base, &value);
         }
     }
-    Err(Error::NoLocation)
+    Err(Error::Refused(
+        "no socket location: neither XDG_RUNTIME_DIR nor TMPDIR is set; \
+         set FUX_SOCKET to an absolute socket path"
+            .to_owned(),
+    ))
+}
+
+fn not_utf8(variable: &str) -> Error {
+    Error::Refused(format!("{variable} is not valid UTF-8"))
 }
 
 /// The socket `name` in fux's directory.
@@ -328,49 +206,48 @@ pub fn max_path_bytes() -> usize {
 
 fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     if value.is_empty() {
-        return Err(Error::EmptyVariable { variable: base });
+        return Err(Error::Refused(format!(
+            "{base} is set but empty; set it to a directory or set FUX_SOCKET"
+        )));
     }
     if !Path::new(value).is_absolute() {
-        return Err(Error::RelativeVariable {
-            variable: base,
-            value: value.to_owned(),
-        });
+        return Err(Error::Refused(format!(
+            "{base} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
+        )));
     }
     Ok(Path::new(value).join("fux"))
 }
 
 fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
+    let refused = |why: String| Err(Error::Refused(why));
     if value.is_empty() {
-        return Err(Error::EmptyPath { from });
+        return refused(format!(
+            "{from} is empty; it must be an absolute socket path"
+        ));
     }
     if value.contains('\0') {
-        return Err(Error::Nul { from });
+        return refused(format!("{from} contains a NUL byte"));
     }
     let path = PathBuf::from(value);
-    let value = || value.to_owned();
     if !path.is_absolute() {
-        return Err(Error::Relative {
-            from,
-            value: value(),
-        });
+        return refused(format!("{from} is {value:?}; it must be an absolute path"));
     }
     let directories = path
         .file_name()
         .and(path.parent())
         .and_then(|directory| Some((directory.to_owned(), directory.parent()?.to_owned())));
     let Some((directory, above)) = directories else {
-        return Err(Error::NoFile {
-            from,
-            value: value(),
-        });
+        return refused(format!(
+            "{from} is {value:?}; it must name a socket file in a directory below /"
+        ));
     };
     let limit = max_path_bytes();
     if path.as_os_str().len() > limit {
-        return Err(Error::TooLong {
-            from,
-            value: value(),
-            limit,
-        });
+        return refused(format!(
+            "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
+             domain socket on this platform (from {from}): {value}",
+            value.len()
+        ));
     }
     Ok(SocketPath {
         path,
@@ -407,16 +284,24 @@ fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
     let meta = fs::symlink_metadata(directory).map_err(io(directory))?;
     let mode = meta.permissions().mode();
     if meta.file_type().is_symlink() {
-        return Err(Error::Symlink(directory.to_owned()));
+        return Err(Error::Refused(format!(
+            "{} is a symbolic link; the socket directory must be a real directory",
+            directory.display()
+        )));
     }
     if !meta.is_dir() || meta.uid() != euid || mode & 0o077 != 0 {
-        return Err(Error::NotPrivate {
-            path: directory.to_owned(),
-            euid,
-            directory: meta.is_dir(),
-            mode: mode & 0o7777,
-            uid: meta.uid(),
-        });
+        return Err(Error::Refused(format!(
+            "{} must be a directory owned by you (uid {euid}) with mode 0700; it is {} \
+             with mode {:04o} owned by uid {}. fux does not change it",
+            directory.display(),
+            if meta.is_dir() {
+                "a directory"
+            } else {
+                "not a directory"
+            },
+            mode & 0o7777,
+            meta.uid(),
+        )));
     }
     Ok(())
 }
@@ -440,7 +325,10 @@ pub fn check_client_socket(socket: &SocketPath) -> Result<(), Error> {
     };
     private_directory(socket, false)?;
     if !meta.file_type().is_socket() || meta.uid() != geteuid() {
-        return Err(Error::NotOurs(path.to_owned()));
+        return Err(Error::Refused(format!(
+            "{} is not a socket owned by you; refusing to connect",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -518,7 +406,12 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
     private_directory(socket, true)?;
     let euid = geteuid();
     let foreign = |meta: &fs::Metadata| !meta.file_type().is_socket() || meta.uid() != euid;
-    let refused = || Error::Foreign(path.to_owned());
+    let refused = || {
+        Error::Refused(format!(
+            "{} exists and is not a socket owned by you; fux will not replace it",
+            path.display()
+        ))
+    };
     if fs::symlink_metadata(path).is_ok_and(|meta| foreign(&meta)) {
         return Err(refused());
     }
@@ -536,7 +429,10 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
         .open(&lock_path)
         .map_err(io(&lock_path))?;
     lock.try_lock().map_err(|error| match error {
-        fs::TryLockError::WouldBlock => Error::InUse(path.to_owned()),
+        fs::TryLockError::WouldBlock => Error::Refused(format!(
+            "another fux server is already using {}",
+            path.display()
+        )),
         fs::TryLockError::Error(error) => failed("locking ", &lock_path)(error),
     })?;
     // Pinned before the probe, so the file found dead is the one removed.
@@ -545,7 +441,12 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io(path)(error)),
         Ok(meta) if foreign(&meta) => return Err(refused()),
-        Ok(_) if probe(path).is_ok() => return Err(Error::Listening(path.to_owned())),
+        Ok(_) if probe(path).is_ok() => {
+            return Err(Error::Refused(format!(
+                "another fux server is already listening on {}",
+                path.display()
+            )));
+        }
         // No answer: with the lock held, no server owns it, whether connect
         // was refused or denied (a sandbox that forbids sockets).
         Ok(_) => {
@@ -610,7 +511,6 @@ mod tests {
             .chain(std::iter::repeat_n('a', max_path_bytes()))
             .collect();
         let too_long = checked(&long, "X");
-        assert!(matches!(too_long, Err(Error::TooLong { .. })));
         assert!(too_long.is_err_and(|e| e.to_string().contains("limit")));
         assert!(checked("/tmp/fux/s.sock", "X").is_ok());
         assert!(base_directory("TMPDIR", "").is_err());
@@ -645,11 +545,6 @@ mod tests {
         ] {
             assert_eq!(message(result).as_deref(), Some(expected));
         }
-        assert_eq!(
-            Error::NoLocation.to_string(),
-            "no socket location: neither XDG_RUNTIME_DIR nor TMPDIR is set; \
-             set FUX_SOCKET to an absolute socket path"
-        );
         // No server at a socket chosen by its path: what starts that one.
         assert!(
             Error::NoServer(PathBuf::from("/x/y/absent.sock"))
@@ -684,7 +579,6 @@ mod tests {
         assert_eq!(mode(&root.join("fux")), Some(0o700));
         // A second server on the same path is refused while the first lives.
         let second = bind(&path);
-        assert!(matches!(second, Err(Error::InUse(_))));
         assert_eq!(
             second.err().map(|e| e.to_string()),
             Some(format!(
@@ -714,7 +608,7 @@ mod tests {
         );
         // A socket something listens on, though it holds no lock, is never
         // taken over.
-        assert!(matches!(bind(&path), Err(Error::Listening(_))));
+        assert!(bind(&path).is_err_and(|e| e.to_string().contains("already listening")));
         assert!(exists(&path), "the live socket is kept");
         drop(replacement);
         let _ = fs::remove_dir_all(&root);
@@ -810,7 +704,6 @@ mod tests {
         fs::set_permissions(root.join("fux"), fs::Permissions::from_mode(0o755))
             .map_err(|e| e.to_string())?;
         let error = bind(&root.join("fux").join("s.sock"));
-        assert!(matches!(error, Err(Error::NotPrivate { mode: 0o755, .. })));
         let error = error.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
             error.contains("mode 0700") && error.contains("mode 0755"),

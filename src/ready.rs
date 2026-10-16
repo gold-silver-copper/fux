@@ -1,7 +1,7 @@
 //! Whether a pane's program waits for its terminal: the moment an agent
 //! driving it should look. A program that wants input stops and reads its
 //! terminal, and fux, which runs it, can see that, as far as the system
-//! says (`fuxix::process::Host`, chosen when fux is built):
+//! says (`fuxix::process::activity`, as built for the system):
 //! - Linux and Android name what each thread of the terminal's foreground
 //!   group is blocked in: reading the terminal, polling it, waiting on
 //!   something else, or busy.
@@ -12,7 +12,7 @@
 //!   is taken as settled after a longer while, and said to be a guess.
 use crate::pane::{Pane, Process};
 use crate::process::Ended;
-use fuxix::process::{Activity, Host, Probe};
+use fuxix::process::Activity;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -97,7 +97,7 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         && commands.finished > 0
         && tty
             .as_deref()
-            .is_some_and(|tty| Host::reads_terminal(child.leader.pid(), tty));
+            .is_some_and(|tty| fuxix::process::reads_terminal(child.leader.pid(), tty));
     let activity = if left { Activity::Reading } else { activity };
     match activity {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Reading,
@@ -142,7 +142,7 @@ fn activity(
         };
         t.timed_reads(since)
     };
-    match tty.map(|tty| Host::activity(group, tty, leader)) {
+    match tty.map(|tty| fuxix::process::activity(group, tty, leader)) {
         // A read with a time limit is a poll: the program goes on alone
         // when it runs out.
         Some(Activity::Reading)
@@ -155,35 +155,16 @@ fn activity(
     }
 }
 
-/// Whether the program has read every key and waits for more, with no time
-/// limit; `surely`, only where the system says it reads (not idle on
-/// something it does not name: a program telling a lone Escape from a
-/// key's sequence waits in a read with a timer).
-pub fn took_keys(
+/// What the program of `child` is blocked in (`activity`), the last key
+/// written `since_key` ago, the screen changed since if `answered`; `None`
+/// while keys wait in its terminal unread.
+pub fn taking(
     child: &crate::process::Child,
     (since_key, answered): (Duration, bool),
-    surely: bool,
-) -> bool {
+) -> Option<Activity> {
     let tty = child.master.slave_path();
     let activity = activity(child, tty.as_deref(), since_key, answered);
-    let reads = match activity {
-        Activity::Reading => true,
-        Activity::Idle => !surely,
-        Activity::Polling | Activity::Waiting | Activity::Busy | Activity::Unknown => false,
-    };
-    reads && !keys_unread(tty.as_deref())
-}
-
-/// Whether keys written now go to a program that reads them, at once or
-/// within a time limit (a read with a timer, or one thread reading while
-/// another sleeps): else they are typed ahead of its read.
-pub fn reads_keys(child: &crate::process::Child, (since_key, answered): (Duration, bool)) -> bool {
-    let tty = child.master.slave_path();
-    let activity = activity(child, tty.as_deref(), since_key, answered);
-    matches!(
-        activity,
-        Activity::Reading | Activity::Polling | Activity::Idle
-    ) && !keys_unread(tty.as_deref())
+    (!keys_unread(tty.as_deref())).then_some(activity)
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a

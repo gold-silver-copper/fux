@@ -41,6 +41,18 @@ pub(crate) fn copy_from<T: Copy>(dst: &mut [T], src: &[T]) -> Option<()> {
     (dst.len() == src.len()).then(|| dst.copy_from_slice(src))
 }
 
+/// `bytes` split at their first `;`, which neither half keeps.
+pub(crate) fn split_semicolon(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    let mut halves = bytes.splitn(2, |b| *b == b';');
+    Some((halves.next()?, halves.next()?))
+}
+
+/// Makes room in `v` for `len` items in all, or says there is none.
+pub(crate) fn reserve<T>(v: &mut Vec<T>, len: usize) -> Result<(), Error> {
+    v.try_reserve_exact(len.saturating_sub(v.len()))
+        .map_err(|_| Error::Capacity)
+}
+
 /// A reply to a query, built where it is kept rather than on the heap: the
 /// longest fux-vt makes, XTVERSION's `DCS > | name version ST` with
 /// [`Identity::MAX_LEN`] bytes of name and version, is 55 bytes.
@@ -70,15 +82,18 @@ impl Reply {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         self.bytes.get(..self.len).unwrap_or_default()
     }
+    /// Adds `bytes`, if they fit; every reply does.
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Option<()> {
+        let end = self.len.checked_add(bytes.len())?;
+        copy_from(self.bytes.get_mut(self.len..end)?, bytes)?;
+        self.len = end;
+        Some(())
+    }
 }
 
 impl std::fmt::Write for Reply {
     fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        let end = self.len.checked_add(text.len()).ok_or(std::fmt::Error)?;
-        let room = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
-        copy_from(room, text.as_bytes()).ok_or(std::fmt::Error)?;
-        self.len = end;
-        Ok(())
+        self.push(text.as_bytes()).ok_or(std::fmt::Error)
     }
 }
 
@@ -262,10 +277,7 @@ impl<'a> Row<'a> {
     /// and the blanks at its end kept.
     pub fn cells_text(&self) -> String {
         (self.cells().filter(|c| !c.is_wide_continuation()))
-            .map(|c| match c.contents() {
-                text if c.has_contents() && text != PLACEHOLDER => text,
-                _ => " ",
-            })
+            .map(|c| c.shown())
             .collect()
     }
 }
@@ -364,6 +376,15 @@ impl std::error::Error for Error {}
 pub struct Rows<'a> {
     pub(crate) grid: &'a grid::Grid,
     pub(crate) range: std::ops::Range<usize>,
+}
+impl<'a> Rows<'a> {
+    /// Every row `grid` retains, its history's oldest first.
+    pub(crate) fn of(grid: &'a grid::Grid) -> Self {
+        Self {
+            grid,
+            range: 0..grid.retained_len(),
+        }
+    }
 }
 impl<'a> Iterator for Rows<'a> {
     type Item = Row<'a>;

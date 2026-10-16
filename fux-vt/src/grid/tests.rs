@@ -267,7 +267,11 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
                 }
             }
             3 => {
-                let link = grid.links.insert(&Arc::from("poked"), None, 0);
+                let link = grid.links.insert(&Hyperlink {
+                    key: 0,
+                    uri: Arc::from("poked"),
+                    id: None,
+                });
                 if let Some(links) = grid.linked.get_mut(slot) {
                     links.set(col..col.saturating_add(1), link.as_ref());
                 }

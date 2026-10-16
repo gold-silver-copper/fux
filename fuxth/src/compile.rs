@@ -16,164 +16,74 @@ use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-/// The words fuxth itself gives: its core. Everything else is the
-/// standard library, written in fuxth.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Builtin {
-    Drop,
-    Pick,
-    Roll,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Lt,
-    Eq,
-    Len,
-    At,
-    Slice,
-    Concat,
-    Push,
-    Put,
-    Code,
-    Char,
-    Kind,
-    String,
-    Print,
-    Fail,
+/// Expands `Variant "name" takes "effect" "about", ...` to the enum
+/// `Builtin` of those variants, `Builtin::ALL` in that order, and `name`,
+/// `takes`, `effect` and `about`, each a match giving that variant's column.
+macro_rules! builtins {
+    ($($variant:ident $name:literal $takes:literal $effect:literal $about:literal,)*) => {
+        /// The words fuxth itself gives: its core. Everything else is the
+        /// standard library, written in fuxth.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Builtin {
+            $($variant,)*
+        }
+
+        impl Builtin {
+            pub const ALL: [Builtin; [$($name),*].len()] = [$(Builtin::$variant),*];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $name,)*
+                }
+            }
+
+            /// How many values it takes: `pick` and `roll` take a count,
+            /// then as many values as it says (the machine checks those).
+            pub fn takes(self) -> usize {
+                match self {
+                    $(Builtin::$variant => $takes,)*
+                }
+            }
+
+            /// What it does to the stack, as help shows it.
+            pub fn effect(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $effect,)*
+                }
+            }
+
+            /// What it does, in a line, as help says it.
+            pub fn about(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $about,)*
+                }
+            }
+        }
+    };
 }
 
-impl Builtin {
-    pub const ALL: [Builtin; 21] = [
-        Builtin::Drop,
-        Builtin::Pick,
-        Builtin::Roll,
-        Builtin::Add,
-        Builtin::Sub,
-        Builtin::Mul,
-        Builtin::Div,
-        Builtin::Lt,
-        Builtin::Eq,
-        Builtin::Len,
-        Builtin::At,
-        Builtin::Slice,
-        Builtin::Concat,
-        Builtin::Push,
-        Builtin::Put,
-        Builtin::Code,
-        Builtin::Char,
-        Builtin::Kind,
-        Builtin::String,
-        Builtin::Print,
-        Builtin::Fail,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Builtin::Drop => "drop",
-            Builtin::Pick => "pick",
-            Builtin::Roll => "roll",
-            Builtin::Add => "add",
-            Builtin::Sub => "sub",
-            Builtin::Mul => "mul",
-            Builtin::Div => "div",
-            Builtin::Lt => "lt",
-            Builtin::Eq => "eq",
-            Builtin::Len => "len",
-            Builtin::At => "at",
-            Builtin::Slice => "slice",
-            Builtin::Concat => "concat",
-            Builtin::Push => "push",
-            Builtin::Put => "put",
-            Builtin::Code => "code",
-            Builtin::Char => "char",
-            Builtin::Kind => "kind",
-            Builtin::String => "string",
-            Builtin::Print => "print",
-            Builtin::Fail => "fail",
-        }
-    }
-
-    /// What it does to the stack, as help shows it.
-    pub fn effect(self) -> &'static str {
-        match self {
-            Builtin::Drop => "x --",
-            Builtin::Pick => "xn … x0 n -- xn … x0 xn",
-            Builtin::Roll => "xn … x0 n -- xn-1 … x0 xn",
-            Builtin::Add => "n m -- n+m",
-            Builtin::Sub => "n m -- n-m",
-            Builtin::Mul => "n m -- n*m",
-            Builtin::Div => "n m -- n/m",
-            Builtin::Lt => "a b -- a<b",
-            Builtin::Eq => "a b -- a=b",
-            Builtin::Len => "seq -- n",
-            Builtin::At => "seq i -- x",
-            Builtin::Slice => "seq from to -- seq",
-            Builtin::Concat => "list -- seq",
-            Builtin::Push => "seq x -- seq",
-            Builtin::Put => "seq i x -- seq",
-            Builtin::Code => "c -- n",
-            Builtin::Char => "n -- c",
-            Builtin::Kind => "x -- name",
-            Builtin::String => "x -- s",
-            Builtin::Print => "x --",
-            Builtin::Fail => "x --",
-        }
-    }
-
-    /// What it does, in a line, as help says it.
-    pub fn about(self) -> &'static str {
-        match self {
-            Builtin::Drop => "the top value dropped",
-            Builtin::Pick => "a copy of the value n under the top (0 pick copies the top)",
-            Builtin::Roll => "the value n under the top moved to the top (1 roll swaps)",
-            Builtin::Add | Builtin::Sub | Builtin::Mul => "integer arithmetic, checked",
-            Builtin::Div => "integer division, checked; it truncates toward zero",
-            Builtin::Lt => "whether a comes before b: two integers, two strings or two lists",
-            Builtin::Eq => "whether two values are the same, of one kind",
-            Builtin::Len => "how many elements a string or list has",
-            Builtin::At => "element i, from 0 (of a string, a one-character string)",
-            Builtin::Slice => "the elements from `from` up to before `to`",
-            Builtin::Concat => {
-                "a list of strings joined into one string, or a list of lists into one list"
-            }
-            Builtin::Push => "x added at the end (to a string, x is a string)",
-            Builtin::Put => "element i replaced by x (in a string, by a string)",
-            Builtin::Code => "the character code of a one-character string",
-            Builtin::Char => "the one-character string with code n",
-            Builtin::Kind => "integer, boolean, string, list, or the host's kind",
-            Builtin::String => "x as text, as print shows it",
-            Builtin::Print => "print x now, a line",
-            Builtin::Fail => "stop the program, with x as the reason",
-        }
-    }
-
-    /// How many values it takes: `pick` and `roll` take a count, then as
-    /// many values as it says (the machine checks those).
-    pub fn takes(self) -> usize {
-        match self {
-            Builtin::Drop
-            | Builtin::Pick
-            | Builtin::Roll
-            | Builtin::Len
-            | Builtin::Concat
-            | Builtin::Code
-            | Builtin::Char
-            | Builtin::Kind
-            | Builtin::String
-            | Builtin::Print
-            | Builtin::Fail => 1,
-            Builtin::Add
-            | Builtin::Sub
-            | Builtin::Mul
-            | Builtin::Div
-            | Builtin::Lt
-            | Builtin::Eq
-            | Builtin::At
-            | Builtin::Push => 2,
-            Builtin::Slice | Builtin::Put => 3,
-        }
-    }
+builtins! {
+    Drop "drop" 1 "x --" "the top value dropped",
+    Pick "pick" 1 "xn … x0 n -- xn … x0 xn" "a copy of the value n under the top (0 pick copies the top)",
+    Roll "roll" 1 "xn … x0 n -- xn-1 … x0 xn" "the value n under the top moved to the top (1 roll swaps)",
+    Add "add" 2 "n m -- n+m" "integer arithmetic, checked",
+    Sub "sub" 2 "n m -- n-m" "integer arithmetic, checked",
+    Mul "mul" 2 "n m -- n*m" "integer arithmetic, checked",
+    Div "div" 2 "n m -- n/m" "integer division, checked; it truncates toward zero",
+    Lt "lt" 2 "a b -- a<b" "whether a comes before b: two integers, two strings or two lists",
+    Eq "eq" 2 "a b -- a=b" "whether two values are the same, of one kind",
+    Len "len" 1 "seq -- n" "how many elements a string or list has",
+    At "at" 2 "seq i -- x" "element i, from 0 (of a string, a one-character string)",
+    Slice "slice" 3 "seq from to -- seq" "the elements from `from` up to before `to`",
+    Concat "concat" 1 "list -- seq" "a list of strings joined into one string, or a list of lists into one list",
+    Push "push" 2 "seq x -- seq" "x added at the end (to a string, x is a string)",
+    Put "put" 3 "seq i x -- seq" "element i replaced by x (in a string, by a string)",
+    Code "code" 1 "c -- n" "the character code of a one-character string",
+    Char "char" 1 "n -- c" "the one-character string with code n",
+    Kind "kind" 1 "x -- name" "integer, boolean, string, list, or the host's kind",
+    String "string" 1 "x -- s" "x as text, as print shows it",
+    Print "print" 1 "x --" "print x now, a line",
+    Fail "fail" 1 "x --" "stop the program, with x as the reason",
 }
 
 /// The words that read the token after them, or shape the program: no
@@ -188,28 +98,25 @@ pub const PARSING: [&str; 11] = [
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
     words: Vec<(String, usize, RangeInclusive<usize>)>,
-    index: HashMap<String, usize>,
 }
 
 impl Vocabulary {
     /// Adds a word taking `takes` values and giving `gives`; its id, which
     /// the host is called with. A name given twice keeps its first word.
     pub fn add(&mut self, name: &str, takes: usize, gives: RangeInclusive<usize>) -> usize {
-        if let Some(id) = self.index.get(name) {
-            return *id;
+        if let Some(id) = self.words.iter().position(|(n, _, _)| n == name) {
+            return id;
         }
-        let id = self.words.len();
         self.words.push((name.to_owned(), takes, gives));
-        self.index.insert(name.to_owned(), id);
-        id
+        self.words.len().saturating_sub(1)
     }
 
-    /// The word `id`'s name, how many values it takes, and how many it
-    /// gives.
-    pub fn word(&self, id: usize) -> Option<(&str, usize, RangeInclusive<usize>)> {
+    /// How many values the word `id` takes, and how many it gives: none,
+    /// for an id no word has.
+    pub(crate) fn effect(&self, id: usize) -> (usize, RangeInclusive<usize>) {
         self.words
             .get(id)
-            .map(|(name, takes, gives)| (name.as_str(), *takes, gives.clone()))
+            .map_or((0, 0..=0), |(_, takes, gives)| (*takes, gives.clone()))
     }
 }
 
@@ -282,22 +189,13 @@ impl<A> Steps<A> {
     /// call (`dup` is `0 pick`). Longer words stay calls, so a mistake in
     /// one is said as the whole word's, not one of its steps'.
     fn leaf(&self) -> bool {
-        self.ops.len() == 1
-            && self.ops.iter().all(|op| match op {
-                Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_) => true,
-                Op::App(_)
-                | Op::Call(_)
-                | Op::Jump(_)
-                | Op::JumpUnless(_)
-                | Op::SetLocal(_)
-                | Op::GetLocal(_)
-                | Op::SetGlobal(_)
-                | Op::GetGlobal(_)
-                | Op::Mark
-                | Op::Gather
-                | Op::EachStart
-                | Op::EachNext(_) => false,
-            })
+        let [op] = self.ops.as_slice() else {
+            return false;
+        };
+        matches!(
+            op,
+            Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_)
+        )
     }
 }
 
@@ -527,12 +425,11 @@ impl<A: Clone> Compiler<A> {
     fn word(&mut self, token: &Token, text: &str, literal: bool) -> Result<(), Error> {
         if is_number(text) {
             let Ok(n) = text.parse::<i64>() else {
-                return Err(Error {
-                    code: Code::Overflow,
-                    message: "a number past what an integer holds (64 bits)".to_owned(),
-                    place: Some(token.place.clone()),
-                    word: Some(Rc::clone(&token.text)),
-                });
+                return Err(Error::new(
+                    Code::Overflow,
+                    "a number past what an integer holds (64 bits)",
+                    Some(token),
+                ));
             };
             self.code().push(Op::Push(Value::Int(n)), token);
             self.literal = true;
@@ -583,16 +480,15 @@ impl<A: Clone> Compiler<A> {
             }
             Some(Entry::Global(slot)) => self.code().push(Op::GetGlobal(slot), token),
             None => {
-                return Err(Error {
-                    code: Code::UnknownWord,
-                    message: if text.is_empty() {
-                        "no such word: an empty one (str '' pushes an empty string)".to_owned()
+                return Err(Error::new(
+                    Code::UnknownWord,
+                    if text.is_empty() {
+                        "no such word: an empty one (str '' pushes an empty string)"
                     } else {
-                        "no such word".to_owned()
+                        "no such word"
                     },
-                    place: Some(token.place.clone()),
-                    word: Some(Rc::clone(&token.text)),
-                });
+                    Some(token),
+                ));
             }
         }
         Ok(())
@@ -632,12 +528,11 @@ impl<A: Clone> Compiler<A> {
         if self.open.is_empty() {
             return Ok(());
         }
-        Err(Error {
-            code: Code::NotTopLevel,
-            message: "define goes at the top level, outside any definition or block".to_owned(),
-            place: Some(token.place.clone()),
-            word: Some(Rc::clone(&token.text)),
-        })
+        Err(Error::new(
+            Code::NotTopLevel,
+            "define goes at the top level, outside any definition or block",
+            Some(token),
+        ))
     }
 
     /// Whether `name` may be defined (`define`), or named (`let`, which may
@@ -661,32 +556,25 @@ impl<A: Clone> Compiler<A> {
         };
         match why {
             None => Ok(()),
-            Some(why) => Err(Error {
-                code: Code::BadName,
-                message: format!("{text:?} cannot be defined: it is {why}"),
-                place: Some(name.place.clone()),
-                word: Some(Rc::clone(&name.text)),
-            }),
+            Some(why) => Err(Error::new(
+                Code::BadName,
+                format!("{text:?} cannot be defined: it is {why}"),
+                Some(name),
+            )),
         }
     }
 }
 
 fn missing(token: &Token, what: &str) -> Error {
-    Error {
-        code: Code::MissingToken,
-        message: format!("{} needs {what} after it", token.text),
-        place: Some(token.place.clone()),
-        word: Some(Rc::clone(&token.text)),
-    }
+    Error::new(
+        Code::MissingToken,
+        format!("{} needs {what} after it", token.text),
+        Some(token),
+    )
 }
 
 fn unmatched(token: &Token, why: &str) -> Error {
-    Error {
-        code: Code::Unmatched,
-        message: why.to_owned(),
-        place: Some(token.place.clone()),
-        word: Some(Rc::clone(&token.text)),
-    }
+    Error::new(Code::Unmatched, why, Some(token))
 }
 
 fn opened(open: &Open) -> (&Token, &'static str) {
@@ -702,22 +590,20 @@ fn opened(open: &Open) -> (&Token, &'static str) {
 
 fn unclosed(open: &Open) -> Error {
     let (at, what) = opened(open);
-    Error {
-        code: Code::Unclosed,
-        message: format!("this {what} is never closed"),
-        place: Some(at.place.clone()),
-        word: Some(Rc::clone(&at.text)),
-    }
+    Error::new(
+        Code::Unclosed,
+        format!("this {what} is never closed"),
+        Some(at),
+    )
 }
 
 fn mismatched(token: &Token, open: &Open) -> Error {
     let (at, what) = opened(open);
-    Error {
-        code: Code::Unmatched,
-        message: format!("the open block is {what}, from {}", at.place),
-        place: Some(token.place.clone()),
-        word: Some(Rc::clone(&token.text)),
-    }
+    Error::new(
+        Code::Unmatched,
+        format!("the open block is {what}, from {}", at.place),
+        Some(token),
+    )
 }
 
 /// Whether `text` is written as an integer: digits, after a `-` or not.

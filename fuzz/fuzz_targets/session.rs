@@ -21,14 +21,14 @@ use fux::config::Config;
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
-use fux::keymap::{Held, Keymap, Step};
+use fux::keymap::{Held, Keymap};
 use fux::keys::Keystroke;
 use fux::outer;
 use fux::protocol::{Context, Reply, Request};
 use fux::render::{Grid, compose};
 use fux::screens::{Effect, Screen};
 use fux::script::{Ask, Failed, Host, Local};
-use fux::session::{Begun, Origin, Outcome, Outgoing, Session};
+use fux::session::{Begun, Origin, Outgoing, Session};
 use fux::view::Mode;
 use fuxth::Outcome as Ran;
 use libfuzzer_sys::fuzz_target;
@@ -237,8 +237,8 @@ impl Run {
             Some(_) | None => Origin::default(),
         };
         match self.s.begin(request.command, &origin) {
-            Begun::Done(outcome) => outcome.into(),
-            Begun::Waiting(_) | Begun::Events(_) => Outcome::default().into(),
+            Begun::Done(outcome) => outcome,
+            Begun::Waiting(_) | Begun::Events(_) => Reply::default(),
         }
     }
 
@@ -327,7 +327,7 @@ impl Run {
         self.keymap = keymap;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended? {
-            text.push_str(&fux::script::display(value));
+            text.push_str(&value.text());
             text.push('\n');
         }
         Ok(text)
@@ -593,7 +593,7 @@ impl Run {
         let mut writes = false;
         for step in steps {
             match step {
-                Step::Send(act) => {
+                Effect::Send(act) => {
                     let key = matches!(act, Act::Key(_));
                     assert!(
                         !(repeating && key),
@@ -602,7 +602,7 @@ impl Run {
                     );
                     self.s.acts(client, vec![act]);
                 }
-                Step::Run(code) => {
+                Effect::Run(code) => {
                     writes |= WRITES.iter().any(|w| code.contains(w));
                     self.run_as(client, &code);
                 }

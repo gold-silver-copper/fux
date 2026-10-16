@@ -7,39 +7,52 @@ use crate::session::Error;
 use std::fmt;
 use std::str::FromStr;
 
-/// A pane's number, `%N`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PaneId(u32);
-/// A tab's number, `@N`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TabId(u32);
-/// A workspace's number, `+N`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WsId(u32);
-/// An attached client's number, `cN`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClientId(u32);
+/// `id!(Name, '%', Kind::Pane)` expands to `pub struct Name(u32)`, its
+/// `Display` (`%N`), its `number()`, and a `FromStr` that reads `%N` back
+/// or fails with `Usage::Not(Kind::Pane, …)`. Without a kind there is no
+/// `FromStr`: the id reads its own.
+macro_rules! id {
+    ($(#[$doc:meta])* $name:ident, $sigil:literal $(, $kind:expr)?) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(u32);
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, concat!($sigil, "{}"), self.0)
+            }
+        }
+        impl $name {
+            /// The number after its sigil.
+            pub fn number(self) -> u32 {
+                self.0
+            }
+        }
+        $(impl FromStr for $name {
+            type Err = Usage;
+            fn from_str(text: &str) -> Result<$name, Usage> {
+                let n = text.strip_prefix($sigil).and_then(number);
+                n.map($name).ok_or_else(|| Usage::Not($kind, text.to_owned()))
+            }
+        })?
+    };
+}
 
-impl fmt::Display for PaneId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "%{}", self.0)
-    }
-}
-impl fmt::Display for TabId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "@{}", self.0)
-    }
-}
-impl fmt::Display for WsId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "+{}", self.0)
-    }
-}
-impl fmt::Display for ClientId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "c{}", self.0)
-    }
-}
+id!(
+    /// A pane's number, `%N`.
+    PaneId, '%', Kind::Pane
+);
+id!(
+    /// A tab's number, `@N`.
+    TabId, '@', Kind::Tab
+);
+id!(
+    /// A workspace's number, `+N`: a workspace's default name has it.
+    WsId, '+', Kind::Workspace
+);
+id!(
+    /// An attached client's number, `cN`.
+    ClientId, 'c'
+);
 
 /// Digits only: no sign, no space.
 pub(crate) fn number(text: &str) -> Option<u32> {
@@ -49,30 +62,6 @@ pub(crate) fn number(text: &str) -> Option<u32> {
     text.parse().ok()
 }
 
-impl FromStr for PaneId {
-    type Err = Usage;
-    fn from_str(text: &str) -> Result<PaneId, Usage> {
-        let n = text.strip_prefix('%').and_then(number);
-        n.map(PaneId)
-            .ok_or_else(|| Usage::Not(Kind::Pane, text.to_owned()))
-    }
-}
-impl FromStr for TabId {
-    type Err = Usage;
-    fn from_str(text: &str) -> Result<TabId, Usage> {
-        let n = text.strip_prefix('@').and_then(number);
-        n.map(TabId)
-            .ok_or_else(|| Usage::Not(Kind::Tab, text.to_owned()))
-    }
-}
-impl FromStr for WsId {
-    type Err = Usage;
-    fn from_str(text: &str) -> Result<WsId, Usage> {
-        let n = text.strip_prefix('+').and_then(number);
-        n.map(WsId)
-            .ok_or_else(|| Usage::Not(Kind::Workspace, text.to_owned()))
-    }
-}
 /// `cN`, or `N` alone.
 impl FromStr for ClientId {
     type Err = Usage;
@@ -83,19 +72,6 @@ impl FromStr for ClientId {
             .or_else(|| number(text));
         n.map(ClientId)
             .ok_or_else(|| Usage::NotClient(text.to_owned()))
-    }
-}
-
-impl PaneId {
-    /// The number after `%`.
-    pub fn number(self) -> u32 {
-        self.0
-    }
-}
-impl WsId {
-    /// The number after `+`, as a workspace's default name has it.
-    pub fn number(self) -> u32 {
-        self.0
     }
 }
 
@@ -150,7 +126,9 @@ impl Ids {
         }
         // An id far ahead would leave none after it: the ids would run out.
         if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
-            return Err(Error::IdTooHigh(crate::session::describe(id)));
+            let id = crate::session::describe(id);
+            let why = "too far ahead of the ids given so far, which would run out after it";
+            return Err(crate::session::fail("id", format!("id {id}: {why}")));
         }
         *wanted = Some(n);
         Ok(())
@@ -173,7 +151,8 @@ fn take(counter: &mut u32, wanted: &mut Option<u32>, what: &'static str) -> Resu
         *counter = (*counter).max(n);
         return Ok(n);
     }
-    *counter = counter.checked_add(1).ok_or(Error::IdsExhausted(what))?;
+    *counter = (counter.checked_add(1))
+        .ok_or_else(|| crate::session::fail("ids_exhausted", format!("no {what} IDs are left")))?;
     Ok(*counter)
 }
 

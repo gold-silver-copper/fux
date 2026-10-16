@@ -110,9 +110,7 @@ impl Screen {
     /// the cursor: where what a line typed at it brought begins.
     fn after_prompt(&self) -> Option<Mark> {
         let grid = self.grid();
-        let cursor = grid
-            .history_len()
-            .checked_add(usize::from(grid.cursor.row()))?;
+        let cursor = grid.cursor_index()?;
         let prompt = (0..=cursor)
             .rev()
             .find(|i| grid.row_at(*i).is_some_and(|r| r.starts_prompt()))?;
@@ -124,9 +122,7 @@ impl Screen {
     /// begins.
     fn after_line(&self, row: RowId) -> Option<Mark> {
         let grid = self.grid();
-        let cursor = grid
-            .history_len()
-            .checked_add(usize::from(grid.cursor.row()))?;
+        let cursor = grid.cursor_index()?;
         self.line_after(grid.index_of(row)?, cursor)
     }
 
@@ -146,10 +142,7 @@ impl Screen {
 
     pub(crate) fn cursor_mark(&self) -> Option<Mark> {
         let grid = self.grid();
-        let index = grid
-            .history_len()
-            .checked_add(usize::from(grid.cursor.row()))?;
-        let row = grid.row_at(index)?.id();
+        let row = grid.row_at(grid.cursor_index()?)?.id();
         Some(Mark {
             row,
             col: grid.cursor.col(),

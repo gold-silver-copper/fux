@@ -4,7 +4,7 @@
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
     AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
-    PanePick, PaneResize, Pick, Resized, Sibling, Subject, SwapWith, Until, Wait, WsRef,
+    PanePick, PaneResize, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
@@ -81,54 +81,21 @@ pub fn encode<T: Wire>(value: &T) -> Vec<u8> {
     out
 }
 
-fn tag(out: &mut Vec<u8>, tag: u8) {
-    out.push(tag);
+/// `int_wire!(u16, …)` expands to `impl Wire for u16` and so on: the
+/// number's big-endian bytes.
+macro_rules! int_wire {
+    ($($ty:ty),*) => {$(
+        impl Wire for $ty {
+            fn put(&self, out: &mut Vec<u8>) {
+                out.extend_from_slice(&self.to_be_bytes());
+            }
+            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+                r.take().map(<$ty>::from_be_bytes)
+            }
+        }
+    )*};
 }
-
-impl Wire for u8 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.push(*self);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take::<1>().map(u8::from_be_bytes)
-    }
-}
-
-impl Wire for u16 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(u16::from_be_bytes)
-    }
-}
-
-impl Wire for u32 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(u32::from_be_bytes)
-    }
-}
-
-impl Wire for u64 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(u64::from_be_bytes)
-    }
-}
-
-impl Wire for i64 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_be_bytes());
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.take().map(i64::from_be_bytes)
-    }
-}
+int_wire!(u8, u16, u32, u64, i64);
 
 impl Wire for usize {
     fn put(&self, out: &mut Vec<u8>) {
@@ -167,9 +134,9 @@ impl Wire for String {
 impl<T: Wire> Wire for Option<T> {
     fn put(&self, out: &mut Vec<u8>) {
         match self {
-            None => tag(out, 0),
+            None => out.push(0),
             Some(value) => {
-                tag(out, 1);
+                out.push(1);
                 value.put(out);
             }
         }
@@ -240,8 +207,9 @@ impl Wire for Duration {
     }
 }
 
-/// An id: its number, read back through its text (`%3`).
-macro_rules! id_wire {
+/// `text_wire!(Ty, "what")` expands to `impl Wire for Ty`: its text
+/// (`%3`, `C-a`), read back through `FromStr` (else `Error::Bad("what")`).
+macro_rules! text_wire {
     ($ty:ty, $sigil:literal) => {
         impl Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
@@ -253,37 +221,32 @@ macro_rules! id_wire {
         }
     };
 }
-id_wire!(PaneId, "pane id");
-id_wire!(TabId, "tab id");
-id_wire!(WsId, "workspace id");
-id_wire!(ClientId, "client id");
-
-impl Wire for KeyPress {
-    fn put(&self, out: &mut Vec<u8>) {
-        self.to_string().put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        String::get(r)?.parse().map_err(|_| Error::Bad("key"))
-    }
-}
+text_wire!(PaneId, "pane id");
+text_wire!(TabId, "tab id");
+text_wire!(WsId, "workspace id");
+text_wire!(ClientId, "client id");
+text_wire!(KeyPress, "key");
 
 /// An enum of plain variants, as its index in `$all`.
 macro_rules! plain_wire {
-    ($ty:ty, $what:literal, [$($variant:expr),+ $(,)?]) => {
-        impl Wire for $ty {
+    ($ty:ty, $what:literal, $all:expr) => {
+        impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
-                let all = [$($variant),+];
+                let all = $all;
                 let index = all.iter().position(|v| v == self).unwrap_or(0);
                 out.push(u8::try_from(index).unwrap_or(0));
             }
-            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-                let all = [$($variant),+];
-                let index = u8::get(r)?;
-                all.get(usize::from(index)).copied().ok_or(Error::Tag($what, index))
+            fn get(r: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Error> {
+                let all = $all;
+                let index = <u8 as $crate::wire::Wire>::get(r)?;
+                all.get(usize::from(index))
+                    .copied()
+                    .ok_or($crate::wire::Error::Tag($what, index))
             }
         }
     };
 }
+pub(crate) use plain_wire;
 plain_wire!(
     Direction,
     "direction",
@@ -313,19 +276,7 @@ plain_wire!(
 plain_wire!(
     fuxix::process::Signal,
     "signal",
-    [
-        fuxix::process::Signal::Hup,
-        fuxix::process::Signal::Int,
-        fuxix::process::Signal::Term,
-        fuxix::process::Signal::Kill,
-        fuxix::process::Signal::Stop,
-        fuxix::process::Signal::Tstp,
-        fuxix::process::Signal::Cont,
-        fuxix::process::Signal::Winch,
-        fuxix::process::Signal::Quit,
-        fuxix::process::Signal::Usr1,
-        fuxix::process::Signal::Usr2,
-    ]
+    fuxix::process::Signal::ALL
 );
 
 impl Wire for fux_vt::Size {
@@ -339,891 +290,148 @@ impl Wire for fux_vt::Size {
     }
 }
 
-impl Wire for WsRef {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            WsRef::Id(id) => {
-                tag(out, 0);
-                id.put(out);
-            }
-            WsRef::Name(name) => {
-                tag(out, 1);
-                name.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => WsId::get(r).map(WsRef::Id),
-            1 => String::get(r).map(WsRef::Name),
-            other => Err(Error::Tag("workspace", other)),
-        }
-    }
-}
-
-impl<W: Wire> Wire for AnyRef<W> {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            AnyRef::Pane(p) => {
-                tag(out, 0);
-                p.put(out);
-            }
-            AnyRef::Tab(t) => {
-                tag(out, 1);
-                t.put(out);
-            }
-            AnyRef::Workspace(w) => {
-                tag(out, 2);
-                w.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => PaneId::get(r).map(AnyRef::Pane),
-            1 => TabId::get(r).map(AnyRef::Tab),
-            2 => W::get(r).map(AnyRef::Workspace),
-            other => Err(Error::Tag("target", other)),
-        }
-    }
-}
-
-impl<T: Wire> Wire for Pick<T> {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Pick::Step(s) => {
-                tag(out, 0);
-                s.put(out);
-            }
-            Pick::Id(id) => {
-                tag(out, 1);
-                id.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => Sibling::get(r).map(Pick::Step),
-            1 => T::get(r).map(Pick::Id),
-            other => Err(Error::Tag("pick", other)),
-        }
-    }
-}
-
-impl Wire for PanePick {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            PanePick::Step(s) => {
-                tag(out, 0);
-                s.put(out);
-            }
-            PanePick::Id(id) => {
-                tag(out, 1);
-                id.put(out);
-            }
-            PanePick::Last => tag(out, 2),
-            PanePick::Toward(d) => {
-                tag(out, 3);
-                d.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => Sibling::get(r).map(PanePick::Step),
-            1 => PaneId::get(r).map(PanePick::Id),
-            2 => Ok(PanePick::Last),
-            3 => Direction::get(r).map(PanePick::Toward),
-            other => Err(Error::Tag("pane pick", other)),
-        }
-    }
-}
-
-impl Wire for MoveTo {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            MoveTo::Tab(t) => {
-                tag(out, 0);
-                t.put(out);
-            }
-            MoveTo::Workspace(w) => {
-                tag(out, 1);
-                w.put(out);
-            }
-            MoveTo::NewTab => tag(out, 2),
-            MoveTo::NewWorkspace => tag(out, 3),
-            MoveTo::Beside(d) => {
-                tag(out, 4);
-                d.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => TabId::get(r).map(MoveTo::Tab),
-            1 => WsRef::get(r).map(MoveTo::Workspace),
-            2 => Ok(MoveTo::NewTab),
-            3 => Ok(MoveTo::NewWorkspace),
-            4 => Direction::get(r).map(MoveTo::Beside),
-            other => Err(Error::Tag("move", other)),
-        }
-    }
-}
-
-impl Wire for SwapWith {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            SwapWith::Pane(p) => {
-                tag(out, 0);
-                p.put(out);
-            }
-            SwapWith::Toward(d) => {
-                tag(out, 1);
-                d.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => PaneId::get(r).map(SwapWith::Pane),
-            1 => Direction::get(r).map(SwapWith::Toward),
-            other => Err(Error::Tag("swap", other)),
-        }
-    }
-}
-
-impl Wire for Subject {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Subject::Pane(p) => {
-                tag(out, 0);
-                p.put(out);
-            }
-            Subject::Tab(t) => {
-                tag(out, 1);
-                t.put(out);
-            }
-            Subject::Workspace(w) => {
-                tag(out, 2);
-                w.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => Option::get(r).map(Subject::Pane),
-            1 => Option::get(r).map(Subject::Tab),
-            2 => Option::get(r).map(Subject::Workspace),
-            other => Err(Error::Tag("subject", other)),
-        }
-    }
-}
-
-impl Wire for Extent {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Extent::Cells(n) => {
-                tag(out, 0);
-                n.put(out);
-            }
-            Extent::Percent(n) => {
-                tag(out, 1);
-                n.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => u16::get(r).map(Extent::Cells),
-            1 => u8::get(r).map(Extent::Percent),
-            other => Err(Error::Tag("extent", other)),
-        }
-    }
-}
-
-impl Wire for PaneResize {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            PaneResize::Border(d, n) => {
-                tag(out, 0);
-                d.put(out);
-                n.put(out);
-            }
-            PaneResize::To { cols, rows } => {
-                tag(out, 1);
-                cols.put(out);
-                rows.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => Ok(PaneResize::Border(Direction::get(r)?, u16::get(r)?)),
-            1 => Ok(PaneResize::To {
-                cols: Option::get(r)?,
-                rows: Option::get(r)?,
-            }),
-            other => Err(Error::Tag("resize", other)),
-        }
-    }
-}
-
-impl Wire for Resized {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Resized::Tabs(t) => {
-                tag(out, 0);
-                t.put(out);
-            }
-            Resized::Client(c) => {
-                tag(out, 1);
-                c.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => AnyRef::get(r).map(Resized::Tabs),
-            1 => ClientId::get(r).map(Resized::Client),
-            other => Err(Error::Tag("resized", other)),
-        }
-    }
-}
-
-impl Wire for Input {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Input::Key(k) => {
-                tag(out, 0);
-                k.put(out);
-            }
-            Input::Text(t) => {
-                tag(out, 1);
-                t.put(out);
-            }
-            Input::Paste(t) => {
-                tag(out, 2);
-                t.put(out);
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => KeyPress::get(r).map(Input::Key),
-            1 => String::get(r).map(Input::Text),
-            2 => String::get(r).map(Input::Paste),
-            other => Err(Error::Tag("input", other)),
-        }
-    }
-}
-
-impl Wire for CaptureView {
-    fn put(&self, out: &mut Vec<u8>) {
-        let flags = [
-            self.full,
-            self.join,
-            self.styles,
-            self.main,
-            self.alt,
-            self.last_output,
-            self.marks,
-        ];
-        for flag in flags {
-            flag.put(out);
-        }
-        self.rows.put(out);
-        self.cols.put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Ok(CaptureView {
-            full: bool::get(r)?,
-            join: bool::get(r)?,
-            styles: bool::get(r)?,
-            main: bool::get(r)?,
-            alt: bool::get(r)?,
-            last_output: bool::get(r)?,
-            marks: bool::get(r)?,
-            rows: Option::get(r)?,
-            cols: Option::get(r)?,
-        })
-    }
-}
-
-impl Wire for Until {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Until::Text(t) => {
-                tag(out, 0);
-                t.put(out);
-            }
-            Until::Gone(t) => {
-                tag(out, 1);
-                t.put(out);
-            }
-            Until::Exit => tag(out, 4),
-            Until::Bell => tag(out, 6),
-            Until::Settled => tag(out, 7),
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => String::get(r).map(Until::Text),
-            1 => String::get(r).map(Until::Gone),
-            4 => Ok(Until::Exit),
-            6 => Ok(Until::Bell),
-            7 => Ok(Until::Settled),
-            other => Err(Error::Tag("condition", other)),
-        }
-    }
-}
-
-impl Wire for Wait {
-    fn put(&self, out: &mut Vec<u8>) {
-        self.until.put(out);
-        self.timeout.put(out);
-        for flag in [self.print, self.after, self.marks] {
-            flag.put(out);
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Ok(Wait {
-            until: Vec::get(r)?,
-            timeout: Option::get(r)?,
-            print: bool::get(r)?,
-            after: bool::get(r)?,
-            marks: bool::get(r)?,
-        })
-    }
-}
-
-impl Wire for Mouse {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Mouse::Click(b) => {
-                tag(out, 0);
-                b.put(out);
-            }
-            Mouse::Press(b) => {
-                tag(out, 1);
-                b.put(out);
-            }
-            Mouse::Release(b) => {
-                tag(out, 2);
-                b.put(out);
-            }
-            Mouse::Wheel(b) => {
-                tag(out, 3);
-                b.put(out);
-            }
-            Mouse::Move => tag(out, 4),
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => MouseButton::get(r).map(Mouse::Click),
-            1 => MouseButton::get(r).map(Mouse::Press),
-            2 => MouseButton::get(r).map(Mouse::Release),
-            3 => MouseButton::get(r).map(Mouse::Wheel),
-            4 => Ok(Mouse::Move),
-            other => Err(Error::Tag("mouse", other)),
-        }
-    }
-}
-
-impl Wire for ClientAction {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            ClientAction::Detach => tag(out, 0),
-            ClientAction::Capture { json } => {
-                tag(out, 1);
-                json.put(out);
-            }
-            ClientAction::Choices(choices) => {
-                tag(out, 2);
-                match choices {
-                    Choices::Tabs => tag(out, 0),
-                    Choices::Workspaces => tag(out, 1),
-                    Choices::Panes(pane) => {
-                        tag(out, 2);
-                        pane.put(out);
+/// `wire_enum!(Ty, "what" { 0 => Unit, 1 => Tuple(a, b), 2 => Named { x, y } })`
+/// expands to `impl Wire for Ty`: `put` writes a variant's tag, then its
+/// fields in the order listed; `get` reads the tag, then each field back in
+/// that order (an unknown tag is `Error::Tag("what", tag)`). One list says
+/// both, so the two cannot drift apart. `Ty<T>` takes a parameter that is
+/// itself `Wire`.
+macro_rules! wire_enum {
+    ($ty:ident $(<$g:ident>)?, $what:literal {
+        $($tag:literal => $var:ident $(( $($p:ident),* ))? $({ $($f:ident),* })?),* $(,)?
+    }) => {
+        impl$(<$g: $crate::wire::Wire>)? $crate::wire::Wire for $ty$(<$g>)? {
+            fn put(&self, out: &mut Vec<u8>) {
+                match self {$(
+                    Self::$var $(( $($p),* ))? $({ $($f),* })? => {
+                        out.push($tag);
+                        $($($crate::wire::Wire::put($p, out);)*)?
+                        $($($crate::wire::Wire::put($f, out);)*)?
                     }
-                }
+                )*}
             }
-            ClientAction::Run(code) => {
-                tag(out, 3);
-                code.put(out);
-            }
-            ClientAction::Zoom => tag(out, 10),
-            ClientAction::SelectPane(p) => {
-                tag(out, 11);
-                p.put(out);
-            }
-            ClientAction::SelectTab(p) => {
-                tag(out, 12);
-                p.put(out);
-            }
-            ClientAction::SelectWorkspace(p) => {
-                tag(out, 13);
-                p.put(out);
+            fn get(
+                r: &mut $crate::wire::Reader<'_>,
+            ) -> Result<Self, $crate::wire::Error> {
+                Ok(match <u8 as $crate::wire::Wire>::get(r)? {
+                    $($tag => {
+                        $($(let $p = $crate::wire::Wire::get(r)?;)*)?
+                        $($(let $f = $crate::wire::Wire::get(r)?;)*)?
+                        Self::$var $(( $($p),* ))? $({ $($f),* })?
+                    })*
+                    other => return Err($crate::wire::Error::Tag($what, other)),
+                })
             }
         }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        match u8::get(r)? {
-            0 => Ok(ClientAction::Detach),
-            1 => Ok(ClientAction::Capture {
-                json: bool::get(r)?,
-            }),
-            2 => Ok(ClientAction::Choices(match u8::get(r)? {
-                0 => Choices::Tabs,
-                1 => Choices::Workspaces,
-                2 => Choices::Panes(PaneId::get(r)?),
-                other => return Err(Error::Tag("choices", other)),
-            })),
-            3 => String::get(r).map(ClientAction::Run),
-            10 => Ok(ClientAction::Zoom),
-            11 => PanePick::get(r).map(ClientAction::SelectPane),
-            12 => Pick::get(r).map(ClientAction::SelectTab),
-            13 => Pick::get(r).map(ClientAction::SelectWorkspace),
-            other => Err(Error::Tag("client action", other)),
-        }
-    }
+    };
 }
+pub(crate) use wire_enum;
 
-impl Wire for Command {
-    fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            Command::Ls { json, target, get } => {
-                tag(out, 0);
-                json.put(out);
-                target.put(out);
-                get.put(out);
+/// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields
+/// one after another, in the order listed (which is the wire's, not
+/// always the declaration's).
+macro_rules! wire_struct {
+    ($ty:path { $($f:ident),* $(,)? }) => {
+        impl $crate::wire::Wire for $ty {
+            fn put(&self, out: &mut Vec<u8>) {
+                $($crate::wire::Wire::put(&self.$f, out);)*
             }
-            Command::KillServer { force } => {
-                tag(out, 1);
-                force.put(out);
-            }
-            Command::NewWorkspace {
-                name,
-                cmd,
-                size,
-                cwd,
-                env,
-                ids,
-                json,
-            } => {
-                tag(out, 2);
-                name.put(out);
-                cmd.put(out);
-                size.put(out);
-                cwd.put(out);
-                env.put(out);
-                ids.put(out);
-                json.put(out);
-            }
-            Command::NewTab {
-                target,
-                name,
-                cmd,
-                size,
-                cwd,
-                env,
-                ids,
-                json,
-            } => {
-                tag(out, 3);
-                target.put(out);
-                name.put(out);
-                cmd.put(out);
-                size.put(out);
-                cwd.put(out);
-                env.put(out);
-                ids.put(out);
-                json.put(out);
-            }
-            Command::Split {
-                axis,
-                target,
-                cmd,
-                cwd,
-                env,
-                run,
-                ids,
-                json,
-                then,
-            } => {
-                tag(out, 4);
-                axis.put(out);
-                target.put(out);
-                cmd.put(out);
-                cwd.put(out);
-                env.put(out);
-                run.put(out);
-                ids.put(out);
-                json.put(out);
-                then.put(out);
-            }
-            Command::Run {
-                workspace,
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                json,
-                log,
-                ids,
-                then,
-            } => {
-                tag(out, 5);
-                workspace.put(out);
-                name.put(out);
-                size.put(out);
-                cwd.put(out);
-                env.put(out);
-                argv.put(out);
-                json.put(out);
-                log.put(out);
-                ids.put(out);
-                then.put(out);
-            }
-            Command::Respawn {
-                target,
-                kill,
-                env,
-                argv,
-                then,
-            } => {
-                tag(out, 6);
-                target.put(out);
-                kill.put(out);
-                env.put(out);
-                argv.put(out);
-                then.put(out);
-            }
-            Command::Notify { target, text } => {
-                tag(out, 7);
-                target.put(out);
-                text.put(out);
-            }
-            Command::Resize { what, size } => {
-                tag(out, 8);
-                what.put(out);
-                size.put(out);
-            }
-            Command::Wait { targets, wait } => {
-                tag(out, 9);
-                targets.put(out);
-                wait.put(out);
-            }
-            Command::SendMouse {
-                target,
-                mouse,
-                row,
-                col,
-                then,
-            } => {
-                tag(out, 10);
-                target.put(out);
-                mouse.put(out);
-                row.put(out);
-                col.put(out);
-                then.put(out);
-            }
-            Command::KillPane { target } => {
-                tag(out, 11);
-                target.put(out);
-            }
-            Command::Signal {
-                target,
-                signal,
-                then,
-            } => {
-                tag(out, 12);
-                target.put(out);
-                signal.put(out);
-                then.put(out);
-            }
-            Command::KillTab { target } => {
-                tag(out, 13);
-                target.put(out);
-            }
-            Command::KillWorkspace { target } => {
-                tag(out, 14);
-                target.put(out);
-            }
-            Command::Rename { target, name } => {
-                tag(out, 15);
-                target.put(out);
-                name.put(out);
-            }
-            Command::MovePane { target, to } => {
-                tag(out, 16);
-                target.put(out);
-                to.put(out);
-            }
-            Command::SwapPane { target, with } => {
-                tag(out, 17);
-                target.put(out);
-                with.put(out);
-            }
-            Command::ResizePane { target, by } => {
-                tag(out, 18);
-                target.put(out);
-                by.put(out);
-            }
-            Command::SendKeys {
-                targets,
-                client,
-                inputs,
-                then,
-            } => {
-                tag(out, 19);
-                targets.put(out);
-                client.put(out);
-                inputs.put(out);
-                then.put(out);
-            }
-            Command::Events { targets, json } => {
-                tag(out, 20);
-                targets.put(out);
-                json.put(out);
-            }
-            Command::DumpLayout { target } => {
-                tag(out, 21);
-                target.put(out);
-            }
-            Command::Grant {
-                workspace,
-                socket,
-                revoke,
-            } => {
-                tag(out, 22);
-                workspace.put(out);
-                socket.put(out);
-                revoke.put(out);
-            }
-            Command::Log { target, file } => {
-                tag(out, 23);
-                target.put(out);
-                file.put(out);
-            }
-            Command::ClearHistory { target } => {
-                tag(out, 24);
-                target.put(out);
-            }
-            Command::CapturePane {
-                target,
-                history,
-                view,
-                json,
-                settle,
-            } => {
-                tag(out, 25);
-                target.put(out);
-                history.put(out);
-                view.put(out);
-                json.put(out);
-                settle.put(out);
-            }
-            Command::Reorder { subject, toward } => {
-                tag(out, 26);
-                subject.put(out);
-                toward.put(out);
-            }
-            Command::Set { option, value } => {
-                tag(out, 27);
-                option.put(out);
-                value.put(out);
-            }
-            Command::Resolve { text, kind } => {
-                tag(out, 28);
-                text.put(out);
-                kind.put(out);
-            }
-            Command::ListBuffers => tag(out, 29),
-            Command::ShowBuffer { index } => {
-                tag(out, 30);
-                index.put(out);
-            }
-            Command::PasteBuffer { index, target } => {
-                tag(out, 31);
-                index.put(out);
-                target.put(out);
-            }
-            Command::Client { client, action } => {
-                tag(out, 32);
-                client.put(out);
-                action.put(out);
+            fn get(
+                r: &mut $crate::wire::Reader<'_>,
+            ) -> Result<Self, $crate::wire::Error> {
+                Ok(Self { $($f: $crate::wire::Wire::get(r)?),* })
             }
         }
-    }
-
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Ok(match u8::get(r)? {
-            0 => Command::Ls {
-                json: bool::get(r)?,
-                target: Option::get(r)?,
-                get: Option::get(r)?,
-            },
-            1 => Command::KillServer {
-                force: bool::get(r)?,
-            },
-            2 => Command::NewWorkspace {
-                name: Option::get(r)?,
-                cmd: Vec::get(r)?,
-                size: Option::get(r)?,
-                cwd: Option::get(r)?,
-                env: Vec::get(r)?,
-                ids: Vec::get(r)?,
-                json: bool::get(r)?,
-            },
-            3 => Command::NewTab {
-                target: Option::get(r)?,
-                name: Option::get(r)?,
-                cmd: Vec::get(r)?,
-                size: Option::get(r)?,
-                cwd: Option::get(r)?,
-                env: Vec::get(r)?,
-                ids: Vec::get(r)?,
-                json: bool::get(r)?,
-            },
-            4 => Command::Split {
-                axis: Axis::get(r)?,
-                target: Option::get(r)?,
-                cmd: Vec::get(r)?,
-                cwd: Option::get(r)?,
-                env: Vec::get(r)?,
-                run: bool::get(r)?,
-                ids: Vec::get(r)?,
-                json: bool::get(r)?,
-                then: Option::get(r)?,
-            },
-            5 => Command::Run {
-                workspace: Option::get(r)?,
-                name: Option::get(r)?,
-                size: Option::get(r)?,
-                cwd: Option::get(r)?,
-                env: Vec::get(r)?,
-                argv: Vec::get(r)?,
-                json: bool::get(r)?,
-                log: Option::get(r)?,
-                ids: Vec::get(r)?,
-                then: Option::get(r)?,
-            },
-            6 => Command::Respawn {
-                target: Option::get(r)?,
-                kill: bool::get(r)?,
-                env: Vec::get(r)?,
-                argv: Vec::get(r)?,
-                then: Option::get(r)?,
-            },
-            7 => Command::Notify {
-                target: Option::get(r)?,
-                text: String::get(r)?,
-            },
-            8 => Command::Resize {
-                what: Resized::get(r)?,
-                size: Option::get(r)?,
-            },
-            9 => Command::Wait {
-                targets: Vec::get(r)?,
-                wait: Wait::get(r)?,
-            },
-            10 => Command::SendMouse {
-                target: Option::get(r)?,
-                mouse: Mouse::get(r)?,
-                row: u16::get(r)?,
-                col: u16::get(r)?,
-                then: Option::get(r)?,
-            },
-            11 => Command::KillPane {
-                target: Option::get(r)?,
-            },
-            12 => Command::Signal {
-                target: Option::get(r)?,
-                signal: fuxix::process::Signal::get(r)?,
-                then: Option::get(r)?,
-            },
-            13 => Command::KillTab {
-                target: Option::get(r)?,
-            },
-            14 => Command::KillWorkspace {
-                target: Option::get(r)?,
-            },
-            15 => Command::Rename {
-                target: AnyRef::get(r)?,
-                name: String::get(r)?,
-            },
-            16 => Command::MovePane {
-                target: Option::get(r)?,
-                to: MoveTo::get(r)?,
-            },
-            17 => Command::SwapPane {
-                target: Option::get(r)?,
-                with: SwapWith::get(r)?,
-            },
-            18 => Command::ResizePane {
-                target: Option::get(r)?,
-                by: PaneResize::get(r)?,
-            },
-            19 => Command::SendKeys {
-                targets: Vec::get(r)?,
-                client: Option::get(r)?,
-                inputs: Vec::get(r)?,
-                then: Option::get(r)?,
-            },
-            20 => Command::Events {
-                targets: Vec::get(r)?,
-                json: bool::get(r)?,
-            },
-            21 => Command::DumpLayout {
-                target: Option::get(r)?,
-            },
-            22 => Command::Grant {
-                workspace: Option::get(r)?,
-                socket: String::get(r)?,
-                revoke: bool::get(r)?,
-            },
-            23 => Command::Log {
-                target: Option::get(r)?,
-                file: Option::get(r)?,
-            },
-            24 => Command::ClearHistory {
-                target: Option::get(r)?,
-            },
-            25 => Command::CapturePane {
-                target: Option::get(r)?,
-                history: Option::get(r)?,
-                view: CaptureView::get(r)?,
-                json: bool::get(r)?,
-                settle: Option::get(r)?,
-            },
-            26 => Command::Reorder {
-                subject: Subject::get(r)?,
-                toward: Sibling::get(r)?,
-            },
-            27 => Command::Set {
-                option: String::get(r)?,
-                value: String::get(r)?,
-            },
-            28 => Command::Resolve {
-                text: String::get(r)?,
-                kind: Kind::get(r)?,
-            },
-            29 => Command::ListBuffers,
-            30 => Command::ShowBuffer {
-                index: usize::get(r)?,
-            },
-            31 => Command::PasteBuffer {
-                index: usize::get(r)?,
-                target: Option::get(r)?,
-            },
-            32 => Command::Client {
-                client: Option::get(r)?,
-                action: ClientAction::get(r)?,
-            },
-            other => return Err(Error::Tag("command", other)),
-        })
-    }
+    };
 }
+pub(crate) use wire_struct;
+
+wire_enum!(WsRef, "workspace" { 0 => Id(id), 1 => Name(name) });
+wire_enum!(AnyRef<W>, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
+wire_enum!(Pick<T>, "pick" { 0 => Step(s), 1 => Id(id) });
+wire_enum!(PanePick, "pane pick" { 0 => Step(s), 1 => Id(id), 2 => Last, 3 => Toward(d) });
+wire_enum!(MoveTo, "move" {
+    0 => Tab(t),
+    1 => Workspace(w),
+    2 => NewTab,
+    3 => NewWorkspace,
+    4 => Beside(d),
+});
+wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
+wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
+wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To { cols, rows } });
+wire_enum!(Resized, "resized" { 0 => Tabs(t), 1 => Client(c) });
+wire_enum!(Input, "input" { 0 => Key(k), 1 => Text(t), 2 => Paste(t) });
+wire_struct!(CaptureView {
+    full,
+    join,
+    styles,
+    main,
+    alt,
+    last_output,
+    marks,
+    rows,
+    cols
+});
+wire_enum!(Until, "condition" { 0 => Text(t), 1 => Gone(t), 4 => Exit, 6 => Bell, 7 => Settled });
+wire_struct!(Wait {
+    until,
+    timeout,
+    print,
+    after,
+    marks
+});
+wire_enum!(Mouse, "mouse" {
+    0 => Click(b),
+    1 => Press(b),
+    2 => Release(b),
+    3 => Wheel(b),
+    4 => Move,
+});
+wire_enum!(Choices, "choices" { 0 => Tabs, 1 => Workspaces, 2 => Panes(pane) });
+wire_enum!(ClientAction, "client action" {
+    0 => Detach,
+    1 => Capture { json },
+    2 => Choices(choices),
+    3 => Run(code),
+    10 => Zoom,
+    11 => SelectPane(p),
+    12 => SelectTab(p),
+    13 => SelectWorkspace(p),
+});
+
+wire_enum!(Command, "command" {
+    0 => Ls { json, target, get },
+    1 => KillServer { force },
+    2 => NewWorkspace { name, cmd, size, cwd, env, ids, json },
+    3 => NewTab { target, name, cmd, size, cwd, env, ids, json },
+    4 => Split { axis, target, cmd, cwd, env, run, ids, json, then },
+    5 => Run { workspace, name, size, cwd, env, argv, json, log, ids, then },
+    6 => Respawn { target, kill, env, argv, then },
+    7 => Notify { target, text },
+    8 => Resize { what, size },
+    9 => Wait { targets, wait },
+    10 => SendMouse { target, mouse, row, col, then },
+    11 => KillPane { target },
+    12 => Signal { target, signal, then },
+    13 => KillTab { target },
+    14 => KillWorkspace { target },
+    15 => Rename { target, name },
+    16 => MovePane { target, to },
+    17 => SwapPane { target, with },
+    18 => ResizePane { target, by },
+    19 => SendKeys { targets, client, inputs, then },
+    20 => Events { targets, json },
+    21 => DumpLayout { target },
+    22 => Grant { workspace, socket, revoke },
+    23 => Log { target, file },
+    24 => ClearHistory { target },
+    25 => CapturePane { target, history, view, json, settle },
+    26 => Reorder { target, toward },
+    27 => Set { option, value },
+    28 => Resolve { text, kind },
+    29 => ListBuffers,
+    30 => ShowBuffer { index },
+    31 => PasteBuffer { index, target },
+    32 => Client { client, action },
+});

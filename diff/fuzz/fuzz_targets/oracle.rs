@@ -96,14 +96,12 @@ fn case(data: &[u8]) -> Option<Case> {
                 case.steps.push(Step::Resize(u16::MAX, cols));
             }
             0xfe => {
-                let (&[offset, h, w, y0, x0, y1, x1, limit], rest) =
+                let (&[offset, _, _, y0, x0, y1, x1, limit], rest) =
                     input.split_first_chunk::<8>()?;
                 input = rest;
                 let cells = usize::from(limit);
                 case.steps.push(Step::Copy(Selection {
                     offset: usize::from(offset),
-                    rows: u16::from(h % 32),
-                    cols: u16::from(w),
                     from: (u16::from(y0 % 32), u16::from(x0)),
                     to: (u16::from(y1 % 32), u16::from(x1)),
                     max_cells: if limit == 0xff { usize::MAX } else { cells },

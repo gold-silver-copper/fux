@@ -1,5 +1,5 @@
 use crate::compact::{Compact, PROTECTED};
-use crate::link::{Held, Pen};
+use crate::link::Held;
 use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
 use crate::{
@@ -309,16 +309,10 @@ pub struct Screen {
     /// the same in either grid; else `TABLED`. The pen's is found when the
     /// pen changes (`pen_changed`); the colours' is `UNKNOWN` until it is
     /// first asked for after that. So printing and erasing in the pen look
-    /// nothing up.
+    /// nothing up but a `TABLED` style, which the grid finds among those it
+    /// found lately (`Grid::table_style`).
     pen_style: u32,
     blank_style: u32,
-    /// The number each of those has in the grid's table, if it is
-    /// `TABLED` and its number was found since it changed: with whether
-    /// the grid was the alternate screen's, and the grid's styles' epoch
-    /// then (`Grid::epoch`). The number holds while both are still so
-    /// (`still`).
-    pen_table: Option<(u32, bool, u64)>,
-    blank_table: Option<(u32, bool, u64)>,
     saved_attributes: Attributes,
     charsets: Charsets,
     /// The character sets DECSC saved, which DECRC restores.
@@ -355,7 +349,7 @@ pub struct Screen {
     /// a cell of its own, as long as nothing but printing came after it.
     repeat: Option<char>,
     /// The hyperlink the program opened (OSC 8), which glyphs printed take.
-    link: Option<Pen>,
+    link: Option<Hyperlink>,
     /// Whether a link was opened since the screen was made or reset: until
     /// one is, no row has links, and printing, which asks this alone,
     /// leaves the links be.
@@ -437,7 +431,7 @@ fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
     width != 2
         || i.checked_add(1)
             .and_then(|j| cells.get(j))
-            .is_some_and(|c| c.same(&Compact::continuation()))
+            .is_some_and(|c| *c == Compact::continuation())
 }
 
 impl Screen {
@@ -459,8 +453,6 @@ impl Screen {
             attributes: Attributes::default(),
             pen_style: 0,
             blank_style: 0,
-            pen_table: None,
-            blank_table: None,
             saved_attributes: Attributes::default(),
             charsets: Charsets::default(),
             saved_charsets: Charsets::default(),
@@ -533,15 +525,6 @@ impl Screen {
     fn pen_changed(&mut self) {
         self.pen_style = self.attributes.inline_style().unwrap_or(TABLED);
         self.blank_style = UNKNOWN;
-        self.pen_table = None;
-        self.blank_table = None;
-    }
-    /// The number `table`, of the table of the grid shown, if it is still
-    /// that grid's and its epoch's.
-    #[inline]
-    fn still(&self, table: Option<(u32, bool, u64)>) -> Option<u32> {
-        let (id, alternate, epoch) = table?;
-        (alternate == self.alternate_active && epoch == self.grid().epoch()).then_some(id)
     }
     /// The number of the pen's style in the grid shown.
     #[inline]
@@ -551,49 +534,23 @@ impl Screen {
         if style < TABLED {
             return style;
         }
-        if let Some(id) = self.still(self.pen_table) {
-            return id;
-        }
-        self.find_pen_style(false)
+        let attributes = self.attributes;
+        self.grid_mut().table_style(attributes)
     }
     /// The number, in the grid shown, of the style of the pen's colours
     /// alone, which erasing, scrolling and inserting fill cells with (`bce`).
     #[inline]
     fn blank_style(&mut self) -> u32 {
+        let attributes = self.attributes.erased();
+        if self.blank_style == UNKNOWN {
+            self.blank_style = attributes.inline_style().unwrap_or(TABLED);
+        }
         let style = self.blank_style;
-        debug_assert!(style >= TABLED || Some(style) == self.attributes.erased().inline_style());
+        debug_assert!(style >= TABLED || Some(style) == attributes.inline_style());
         if style < TABLED {
             return style;
         }
-        if let Some(id) = self.still(self.blank_table) {
-            return id;
-        }
-        self.find_pen_style(true)
-    }
-    /// `pen_style`, or `blank_style` if `blank`, when it is not known to
-    /// be a number of its own: found, and kept if it is one.
-    #[inline(never)]
-    fn find_pen_style(&mut self, blank: bool) -> u32 {
-        let (attributes, known) = if blank {
-            (self.attributes.erased(), &mut self.blank_style)
-        } else {
-            (self.attributes, &mut self.pen_style)
-        };
-        if *known == UNKNOWN {
-            *known = attributes.inline_style().unwrap_or(TABLED);
-        }
-        if *known < TABLED {
-            return *known;
-        }
-        let id = self.grid_mut().table_style(attributes);
-        // After the search, which may have swept the styles.
-        let found = Some((id, self.alternate_active, self.grid().epoch()));
-        if blank {
-            self.blank_table = found;
-        } else {
-            self.pen_table = found;
-        }
-        id
+        self.grid_mut().table_style(attributes)
     }
     /// A new version, for what is processed next: like identities, 64 bits
     /// counted up by one do not run out.
@@ -611,7 +568,7 @@ impl Screen {
         self.grid().cursor.at()
     }
     /// DEC STD 070's Last Column Flag: a glyph went into the last column,
-    /// or the right margin's ([`left_right_margins`](Self::left_right_margins)),
+    /// or the right margin's (DECSLRM, with DECLRMM set),
     /// and the next one, with autowrap on, first moves to the start of the
     /// next line, wherever the cursor waits (a margin reset since leaves
     /// it where the margin was). Cursor movements, line feeds and edits
@@ -737,7 +694,7 @@ impl Screen {
     /// The hyperlink the program has open (`OSC 8 ; params ; URI ST`), which
     /// glyphs printed now take: its URI and `id`.
     pub fn hyperlink(&self) -> Option<(&str, Option<&str>)> {
-        self.link.as_ref().map(|pen| (&*pen.uri, pen.id.as_deref()))
+        self.link.as_ref().map(|link| (link.uri(), link.id()))
     }
     /// Whether row `row` of the screen is where a prompt starts (see
     /// [`Row::starts_prompt`]).
@@ -787,7 +744,7 @@ impl Screen {
             let key = self.next_link;
             // Keys never run out in practice: one a link opened.
             self.next_link = key.checked_add(1)?;
-            Some(Pen {
+            Some(Hyperlink {
                 uri: uri.into(),
                 id: id.map(Into::into),
                 key,
@@ -841,7 +798,7 @@ impl Screen {
             let kind = parts.find_map(|option| option.strip_prefix(b"k="));
             if kind.is_none_or(|k| k == b"i") {
                 let row = self.grid().cursor.row();
-                self.grid_mut().mark_prompt(row);
+                self.grid_mut().set_prompt(row, true);
                 self.prompted();
             }
             return Ok(());
@@ -858,7 +815,7 @@ impl Screen {
         }
         if command != b"L" {
             let row = self.grid().cursor.row();
-            self.grid_mut().mark_prompt(row);
+            self.grid_mut().set_prompt(row, true);
             self.prompted();
         }
         Ok(())
@@ -878,35 +835,18 @@ impl Screen {
     }
     /// The rows retained, history's oldest first, then the screen's.
     pub fn rows(&self) -> Rows<'_> {
-        let grid = self.grid();
-        Rows {
-            grid,
-            range: 0..grid.retained_len(),
-        }
+        Rows::of(self.grid())
     }
     /// The primary screen's rows, its history first, whichever screen is in
     /// use: what a program printed before it took the alternate screen.
     pub fn main_rows(&self) -> Rows<'_> {
-        let grid = &self.primary;
-        Rows {
-            grid,
-            range: 0..grid.retained_len(),
-        }
+        Rows::of(&self.primary)
     }
     /// The alternate screen's rows, whichever screen is in use: what a
     /// full-screen program drew last, kept after it leaves (1049, 1047, 47)
     /// until the alternate screen is shown again. None if it never was.
     pub fn alternate_rows(&self) -> Rows<'_> {
-        let grid = &self.alternate;
-        Rows {
-            grid,
-            range: 0..grid.retained_len(),
-        }
-    }
-    /// Where the primary screen's retained row `id` is among
-    /// [`main_rows`](Self::main_rows), whichever screen is in use.
-    pub fn main_row_index(&self, id: crate::RowId) -> Option<usize> {
-        self.primary.index_of(id)
+        Rows::of(&self.alternate)
     }
     /// Where the retained row `id` is, from the oldest, if it is kept.
     pub fn row_index(&self, id: crate::RowId) -> Option<usize> {
@@ -1207,13 +1147,9 @@ impl Screen {
         // With margins, the line feed goes from the column the glyph did
         // not fit in, which says whether it scrolls, then to the left
         // margin (xterm's `WrapLine`).
-        if self.grid().lr() {
-            self.new_line_in_margins()?;
-            return Ok(self.grid().line_end());
-        }
-        self.grid_mut().set_col(0);
-        self.linefeed()?;
-        Ok(end)
+        self.new_line()?;
+        let g = self.grid();
+        Ok(if g.lr() { g.line_end() } else { end })
     }
 
     pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
@@ -1304,7 +1240,7 @@ impl Screen {
                 let Some(current) = cells.get(i) else {
                     return false;
                 };
-                if current.same(&glyph) && whole(cells, i, width) {
+                if *current == glyph && whole(cells, i, width) {
                     return false;
                 }
                 // An overwrite at either half removes the other half too.
@@ -1609,7 +1545,7 @@ impl Screen {
         match byte {
             // Back a column, stopping at the left margin unless the cursor
             // is already left of it (xterm's `CursorBack`).
-            8 => g.back(),
+            8 => g.backward(1),
             9 => self.tab(1, true),
             // LNM: a new line, the carriage returned too.
             10..=12 if new_line => self.new_line()?,
@@ -1805,15 +1741,11 @@ impl Screen {
                 self.alternate.reset_links();
                 self.alternate_active = false;
                 self.clear_on_show = None;
-                self.attributes = Attributes::default();
-                self.pen_changed();
-                self.saved_attributes = Attributes::default();
-                self.charsets = Charsets::default();
-                self.saved_charsets = Charsets::default();
+                // The pen, the saved cursor's attributes, the character
+                // sets, protection and the palette, as DECSTR resets them;
+                // the grids' cursors and margins are new already.
+                self.soft_reset();
                 self.modes = Modes::DEFAULT;
-                self.protect = 0;
-                self.saved_protect = 0;
-                self.protection = Protection::Off;
                 self.tabs = TabStops::default();
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
@@ -1821,11 +1753,6 @@ impl Screen {
                 self.primary_keyboard = KeyboardStack::default();
                 self.alternate_keyboard = KeyboardStack::default();
                 self.modify_other_keys = None;
-                // The palette, as xterm resets it; the dynamic and special
-                // colours stay, as in xterm.
-                if let Some(colours) = &mut self.colours {
-                    colours.reset_palette();
-                }
                 self.structural = self.version;
             }
             // ST (ECMA-48 8.3.143) is done too: it ended the string before
@@ -1885,30 +1812,21 @@ impl Screen {
         self.with_grid(|g, _, v| g.erase_unprotected(row, start, end, blank, v));
     }
 
-    /// ED, EL, DECSED or DECSEL while glyphs may be protected: DECSED and
-    /// DECSEL (`private`) leave them with any protection, ED and EL with
-    /// ISO's alone (xterm's `do_erase_display`). Whether it erased: ED and
-    /// EL under DEC protection erase every cell, as `csi` does without. Out
-    /// of line: inlined, the tmux recordings count up to 0.35% more
-    /// instructions (fux-bench).
+    /// ED or EL (`display`), or DECSED or DECSEL (`private`), in `mode`,
+    /// while glyphs may be protected: DECSED and DECSEL leave them with any
+    /// protection, ED and EL with ISO's alone (xterm's `do_erase_display`
+    /// and `do_erase_line`). Whether it erased: ED and EL under DEC
+    /// protection erase every cell, as `csi` does without. The rest is as
+    /// for ED and EL. As in xterm, an ED of the whole screen (2, or 0 from
+    /// the first cell, or 1 from the last) that finds no protected glyph
+    /// ends the protection: until the next DECSCA or SPA, erases leave
+    /// nothing. Out of line: inlined, the tmux recordings count up to 0.35%
+    /// more instructions (fux-bench).
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, mode: u16) -> bool {
-        if private || self.protection == Protection::Iso {
-            self.selective_erase(display, mode);
-            return true;
+        if !private && self.protection != Protection::Iso {
+            return false;
         }
-        false
-    }
-
-    /// ED or EL (`display`) in `mode` leaving protected glyphs: DECSED and
-    /// DECSEL with any protection, ED and EL with ISO's (xterm's
-    /// `do_erase_display` and `do_erase_line`). The rest is as for ED and
-    /// EL. As in xterm, an ED of the whole screen (2, or 0 from the first
-    /// cell, or 1 from the last) that finds no protected glyph ends the
-    /// protection: until the next DECSCA or SPA, erases leave nothing. Out
-    /// of line, as protection is rare and `csi` is on every CSI's way.
-    #[inline(never)]
-    fn selective_erase(&mut self, display: bool, mode: u16) {
         let blank = self.blank_style();
         let version = self.version;
         let g = self.grid_mut();
@@ -1922,6 +1840,7 @@ impl Screen {
         if display && whole && !found {
             self.protection = Protection::Off;
         }
+        true
     }
 
     /// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
@@ -1960,7 +1879,7 @@ impl Screen {
                 });
             }
             g.wrap(y, false, version);
-            g.clear_prompt(y);
+            g.set_prompt(y, false);
         }
     }
 

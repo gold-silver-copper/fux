@@ -588,24 +588,6 @@ pub enum Event<'a> {
     },
 }
 
-/// The colour queries of an OSC 10 to 19, `command` its number and `rest`
-/// what follows it: each parameter is the next colour, and each `?` among
-/// them asks for that one (ctlseqs, "Operating System Commands").
-fn color_queries(command: &[u8], rest: &[u8], bel: bool, sink: &mut impl Sink) {
-    let Some(first) = std::str::from_utf8(command)
-        .ok()
-        .and_then(|n| n.parse::<u8>().ok())
-        .filter(|n| (10..=19).contains(n))
-    else {
-        return;
-    };
-    for (number, parameter) in (first..=19).zip(rest.split(|b| *b == b';')) {
-        if parameter == b"?" {
-            sink.event(Event::ColorQuery { number, bel });
-        }
-    }
-}
-
 /// A complete sequence fux-vt parsed but does not implement, so a host can
 /// log or answer it. Sequences cut short by their bounds (too many
 /// parameters or intermediates) are dropped without being reported.
@@ -1329,16 +1311,7 @@ impl Parser {
         bel: bool,
         sink: &mut impl Sink,
     ) -> Result<(), Error> {
-        let (command, rest) = match payload.iter().position(|b| *b == b';') {
-            Some(i) => (
-                payload.get(..i).unwrap_or_default(),
-                payload
-                    .get(i..)
-                    .and_then(|r| r.get(1..))
-                    .unwrap_or_default(),
-            ),
-            None => (payload, &[][..]),
-        };
+        let (command, rest) = crate::split_semicolon(payload).unwrap_or((payload, &[]));
         match command {
             b"133" if self.options.has(Feature::PromptMarks) => {
                 return self.screen.prompt_osc(rest);
@@ -1382,22 +1355,26 @@ impl Parser {
                 }
             }
             b"99" => {
-                let text = rest
-                    .iter()
-                    .position(|b| *b == b';')
-                    .and_then(|i| rest.get(i..)?.get(1..));
+                let text = crate::split_semicolon(rest).map(|(_, text)| text);
                 sink.event(Event::Notification(text.unwrap_or_default()));
             }
             b"52" => {
-                if let Some(i) = rest.iter().position(|b| *b == b';') {
-                    let selection = rest.get(..i).unwrap_or_default();
-                    let data = rest.get(i..).and_then(|r| r.get(1..)).unwrap_or_default();
-                    if data != b"?" {
-                        sink.event(Event::Clipboard { selection, data });
-                    }
+                if let Some((selection, data)) = crate::split_semicolon(rest)
+                    && data != b"?"
+                {
+                    sink.event(Event::Clipboard { selection, data });
                 }
             }
-            _ => color_queries(command, rest, bel, sink),
+            // OSC 10 to 19 the palette did not read (it is off, or the
+            // number is written `010`) still ask the host for their
+            // colours; what they set is kept nowhere.
+            _ => {
+                let number = std::str::from_utf8(command).ok();
+                let number = number.and_then(|n| n.parse::<u8>().ok());
+                if let Some(first) = number.and_then(|n| n.checked_sub(10)).filter(|n| *n < 10) {
+                    crate::palette::dynamic(&mut None, first, rest, bel, true, sink);
+                }
+            }
         }
         Ok(())
     }

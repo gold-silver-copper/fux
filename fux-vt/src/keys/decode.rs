@@ -47,7 +47,7 @@
 //! dropped to its end as it arrives, none of it typed.
 use crate::Rgb;
 use crate::keys::colour::Scheme;
-use crate::keys::encode::PASTE_END;
+use crate::keys::encode::{PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use std::borrow::Cow;
@@ -495,16 +495,6 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
     Some(Input::Key(KeyPress::new(key, mods).into()))
 }
 
-/// Modifiers from an xterm modifier parameter (`1 + bits`).
-fn modifiers(param: u32) -> Modifiers {
-    let bits = param.saturating_sub(1);
-    Modifiers {
-        shift: bits & 1 != 0,
-        alt: bits & 2 != 0,
-        ctrl: bits & 4 != 0,
-    }
-}
-
 /// One control byte or character, without an Escape prefix, and how many
 /// bytes it takes; none while it is incomplete.
 fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
@@ -586,8 +576,11 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
         // An answer only while one is expected: else `ESC P` is Alt-P at
         // once, and a string that began with it would be an answer read
-        // whole and keys read in pieces.
-        b'P' if answers && dcs_begun(bytes) => dcs(bytes, flush),
+        // whole and keys read in pieces. Its string ends with ST (`ESC \`);
+        // an answer fux uses becomes a `Reply`, and anything else, or
+        // anything cut short at the deadline or past `DCS_LIMIT`, is
+        // dropped, never typed.
+        b'P' if answers && dcs_begun(bytes) => answer(bytes, flush, false, DCS_LIMIT, dcs_reply),
         // What may yet begin an answer waits for the rest while one is
         // expected.
         b'P' if answers && !flush && matches!(bytes.get(2..), Some(b"" | b"0" | b"1")) => {
@@ -610,18 +603,8 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
 /// as `CSI M` is a mouse report.
 fn final_key(last: u8, mods: Modifiers) -> Option<Input> {
     let key = match last {
-        b'A' => Key::Arrow(Direction::Up),
-        b'B' => Key::Arrow(Direction::Down),
-        b'C' => Key::Arrow(Direction::Right),
-        b'D' => Key::Arrow(Direction::Left),
-        b'H' => Key::Home,
-        b'F' => Key::End,
-        b'P' => Key::F(1),
-        b'Q' => Key::F(2),
-        b'R' => Key::F(3),
-        b'S' => Key::F(4),
         b'M' => Key::Enter,
-        _ => return None,
+        _ => numbered_key(1, char::from(last))?,
     };
     press(key, mods)
 }
@@ -640,7 +623,21 @@ fn osc(bytes: &[u8], flush: bool) -> Step {
         Some(first) if first.is_ascii_digit() => {}
         _ => return alt_bracket(),
     }
-    let end = body.iter().position(|b| matches!(b, 0x07 | 0x1b));
+    answer(bytes, flush, true, OSC_LIMIT, colour_reply)
+}
+
+/// The string of an answer in `bytes`, after its two-byte opening: ended
+/// by ST (`ESC \`), or by BEL too if `bel`; what `reply` reads in it, if
+/// it is at most `limit` bytes.
+fn answer(
+    bytes: &[u8],
+    flush: bool,
+    bel: bool,
+    limit: usize,
+    reply: fn(&[u8]) -> Option<Reply>,
+) -> Step {
+    let body = bytes.get(2..).unwrap_or_default();
+    let end = body.iter().position(|b| *b == 0x1b || bel && *b == 0x07);
     let (payload, consumed) = match end.map(|i| (i, body.get(i).copied())) {
         Some((i, Some(0x07))) => (body.get(..i), i.checked_add(3)),
         Some((i, _)) => match body.get(i.saturating_add(1)) {
@@ -654,15 +651,15 @@ fn osc(bytes: &[u8], flush: bool) -> Step {
         // Cut short: dropped.
         None if flush => return Step::Done(bytes.len(), None),
         // Longer than any answer: dropped, the rest of it as it comes.
-        None if body.len() > OSC_LIMIT => return Step::Overlong { bel: true },
+        None if body.len() > limit => return Step::Overlong { bel },
         None => return Step::Incomplete,
     };
     // Within `bytes`: the string, its two-byte opening and its end.
     let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
     // A string past the limit is no answer, whether it came whole or not.
     let reply = payload
-        .filter(|p| p.len() <= OSC_LIMIT)
-        .and_then(colour_reply)
+        .filter(|p| p.len() <= limit)
+        .and_then(reply)
         .map(Input::Reply);
     Step::Done(consumed, reply)
 }
@@ -671,34 +668,6 @@ fn osc(bytes: &[u8], flush: bool) -> Step {
 /// `$` (DECRPSS) or `+` (XTGETTCAP).
 fn dcs_begun(bytes: &[u8]) -> bool {
     matches!(bytes.get(..4), Some([0x1b, b'P', b'0' | b'1', b'$' | b'+']))
-}
-
-/// A DCS answer begun (`dcs_begun`): its string, ended by ST (`ESC \`). An
-/// answer fux uses becomes a `Reply`; anything else, or anything cut short
-/// at the deadline or past `DCS_LIMIT`, is dropped, never typed.
-#[cold]
-fn dcs(bytes: &[u8], flush: bool) -> Step {
-    let body = bytes.get(2..).unwrap_or_default();
-    let (payload, consumed) = match body.iter().position(|b| *b == 0x1b) {
-        Some(i) => match body.get(i.saturating_add(1)) {
-            Some(b'\\') => (body.get(..i), i.checked_add(4)),
-            // ESC and something else: the string ends there, unfinished,
-            // and the ESC begins what comes next.
-            Some(_) => return Step::Done(i.saturating_add(2), None),
-            None if flush => return Step::Done(bytes.len(), None),
-            None => return Step::Incomplete,
-        },
-        None if flush => return Step::Done(bytes.len(), None),
-        None if body.len() > DCS_LIMIT => return Step::Overlong { bel: false },
-        None => return Step::Incomplete,
-    };
-    // Within `bytes`: the string, its two-byte opening and its end.
-    let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
-    let reply = payload
-        .filter(|p| p.len() <= DCS_LIMIT)
-        .and_then(dcs_reply)
-        .map(Input::Reply);
-    Step::Done(consumed, reply)
 }
 
 /// What a DCS answer says that fux uses: that the terminal draws underline
@@ -915,16 +884,10 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     if part(1, 1) == Some(3) {
         return Step::Done(consumed, None);
     }
-    let mods = modifiers(modifier);
+    // An xterm modifier parameter is `1 + bits`.
+    let mods = Modifiers::from_bits(modifier.saturating_sub(1));
     // Every modifier bit, the kitty protocol's beyond xterm's three too.
     let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
-    // `CSI n ~` numbers the function keys with gaps, each run from its
-    // base: the key is F(`first - base`). `encode.rs` sends the same
-    // numbers (its `Form::Numbered`).
-    let function = |base: u32| {
-        let n = u8::try_from(first.checked_sub(base)?).ok()?;
-        press(Key::F(n), mods)
-    };
     let input = match last {
         b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => {
             final_key(last, mods)
@@ -942,19 +905,20 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             // `PASTE_START`'s number.
             200 => return Step::PasteStart(consumed),
             1 | 7 => press(Key::Home, mods),
-            2 => press(Key::Insert, mods),
-            3 => press(Key::Delete, mods),
             4 | 8 => press(Key::End, mods),
-            5 => press(Key::PageUp, mods),
-            6 => press(Key::PageDown, mods),
-            11..=15 => function(10),
-            17..=21 => function(11),
-            23 | 24 => function(12),
+            // F1 to F4 as some terminals number them.
+            11..=14 => press(
+                Key::F(u8::try_from(first).unwrap_or(0).saturating_sub(10)),
+                mods,
+            ),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
             27 => part(2, 0)
                 .and_then(|code| coded(code, mods, |c| c))
                 .map(|press| Input::Key(press.into())),
-            _ => None,
+            // The others `encode.rs` sends (its `Form::Numbered`).
+            _ => u8::try_from(first)
+                .ok()
+                .and_then(|n| press(numbered_key(n, '~')?, mods)),
         },
         // `CSI code ; mod u`: xterm's formatOtherKeys, and the kitty
         // protocol's form, `CSI code:shifted:base ; mods u`.
@@ -978,10 +942,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let input = match input {
         Some(Input::Key(stroke)) if bits & !7 != 0 => Some(Input::Key(Keystroke {
             kitty: Some(Kitty {
-                code: None,
-                shifted: None,
-                base: None,
                 mods: bits,
+                ..Kitty::default()
             }),
             ..stroke
         })),

@@ -50,7 +50,7 @@ impl Colours {
         };
         colour.map(|c| {
             crate::palette::answer(u16::from(number), None, c, bel)
-                .bytes()
+                .as_bytes()
                 .to_vec()
         })
     }

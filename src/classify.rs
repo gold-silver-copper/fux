@@ -20,7 +20,7 @@
 //!
 //! A full-screen program's screen is all output, as is anything before the
 //! first input. What stays ambiguous is said in `docs/agents.md`.
-use crate::log::{InputSeq, Origin, Source, Unit};
+use crate::log::{Origin, Unit};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -42,7 +42,6 @@ pub enum Echo {
 /// A piece of input as it was written.
 #[derive(Clone, Copy, Debug)]
 pub struct Input {
-    pub seq: InputSeq,
     pub unit: Unit,
     /// The first row of the line the cursor was on as it went in.
     pub line: Option<fux_vt::RowId>,
@@ -151,20 +150,17 @@ impl Classes {
             self.pending_until = None;
         }
         let rest = self.rest(screen, marked);
-        let (Some(written), false) = (self.written.as_ref(), self.pending.is_empty()) else {
+        if self.written.is_none() || self.pending.is_empty() {
             return vec![(piece.len(), rest)];
-        };
+        }
         // The kernel's echo, found in order: a byte that is the next one
         // it echoes is its.
-        let echo = Origin::Echo {
-            of: written.input.seq,
-        };
         let mut runs: Vec<(usize, Origin)> = Vec::new();
         for (at, byte) in piece.iter().enumerate() {
             let origin = match self.pending.front() == Some(byte) {
                 true => {
                     self.pending.pop_front();
-                    echo
+                    Origin::Echo
                 }
                 false => rest,
             };
@@ -202,14 +198,13 @@ impl Classes {
             }
         };
         match origin {
-            Origin::Output { by: Source::Screen } => Echo::Not,
-            Origin::Output { .. } => ahead(self),
-            Origin::Echo { .. } => Echo::Is,
+            Origin::Screen => Echo::Not,
+            Origin::Output => ahead(self),
+            Origin::Echo => Echo::Is,
             // A shell fux marks draws the line it reads: all of it echo.
             Origin::Edited {
                 line: typed,
                 shell: true,
-                ..
             } if typed == Some(line()) => Echo::Is,
             // Wherever it lands (another line printed above the line typed
             // moves it down), an echo shows only what was typed.
@@ -233,24 +228,24 @@ impl Classes {
         // A full-screen program's screen is all output: a field showing
         // what was typed is a text an agent may wait for, to know it went in.
         if screen.mode(fux_vt::Mode::AlternateScreen) {
-            return Origin::Output { by: Source::Screen };
+            return Origin::Screen;
         }
         let Some(written) = self.written.as_ref() else {
-            return Origin::Output { by: Source::Order };
+            return Origin::Output;
         };
         let commands = screen.commands();
         let reading = marked && commands.prompt && !commands.running;
         match (reading, written.input.unit) {
-            // A prompt drawn since input typed ahead: the shell draws the
-            // line typed ahead again, as it reads it.
-            (true, Unit::Submit) => Origin::Output { by: Source::Marks },
-            (false, _) if written.kernel => Origin::Output { by: Source::Kernel },
+            // The kernel echoes the keys and nothing else: the rest is output.
+            (false, _) if written.kernel => Origin::Output,
             (_, Unit::Edit) => Origin::Edited {
-                of: written.input.seq,
                 line: written.input.line,
                 shell: reading,
             },
-            (false, Unit::Submit) => Origin::Output { by: Source::Order },
+            // What followed a line submitted, or, at a prompt drawn since
+            // input typed ahead, the shell drawing that line again as it
+            // reads it.
+            (_, Unit::Submit) => Origin::Output,
         }
     }
 }

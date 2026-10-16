@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, trimmed};
-use crate::link::{Held, Hyperlink, Links, Pen, RowLinks};
+use crate::link::{Held, Hyperlink, Links, RowLinks};
 use crate::style::Styles;
 use crate::{Attributes, CellRef, Error, Row, RowId};
 
@@ -246,10 +246,6 @@ pub(crate) struct Grid {
     /// whenever styles are numbered anew, each holds the default attributes,
     /// which are no style of the table.
     recent: [(Attributes, u32); RECENT],
-    /// Changed whenever a style's number may have changed: a sweep, the
-    /// grid started again. A number got with one epoch is a style's while
-    /// the epoch lasts, and a resize, which keeps the numbers, keeps it.
-    epoch: u64,
     /// The slot of each row of the screen, top to bottom.
     order: Order,
     history: History,
@@ -338,9 +334,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
-        self.cells
-            .try_reserve_exact(size)
-            .map_err(|_| Error::Capacity)?;
+        crate::reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
         Ok(())
@@ -376,7 +370,6 @@ impl Grid {
             links: Links::default(),
             styles: Arc::default(),
             recent: [(Attributes::default(), 0); RECENT],
-            epoch: 0,
             order: Order::default(),
             history: History::new(history_bytes),
             size,
@@ -396,7 +389,6 @@ impl Grid {
         Self {
             styles: Arc::clone(&self.styles),
             recent: self.recent,
-            epoch: self.epoch,
             unmade: self.unmade,
             ..Self::bare(size, self.history_bytes())
         }
@@ -407,18 +399,10 @@ impl Grid {
         // Within the limits: `check_size` came first.
         let rows = usize::from(self.size.rows());
         let cells = if self.unmade { 0 } else { self.size.cells() };
-        self.cells
-            .try_reserve_exact(cells.saturating_sub(self.cells.len()))
-            .map_err(|_| Error::Capacity)?;
-        self.meta
-            .try_reserve_exact(rows.saturating_sub(self.meta.len()))
-            .map_err(|_| Error::Capacity)?;
-        self.texts
-            .try_reserve_exact(rows.saturating_sub(self.texts.len()))
-            .map_err(|_| Error::Capacity)?;
-        self.linked
-            .try_reserve_exact(rows.saturating_sub(self.linked.len()))
-            .map_err(|_| Error::Capacity)?;
+        crate::reserve(&mut self.cells, cells)?;
+        crate::reserve(&mut self.meta, rows)?;
+        crate::reserve(&mut self.texts, rows)?;
+        crate::reserve(&mut self.linked, rows)?;
         self.order
             .try_reserve_exact(rows.saturating_sub(self.order.len()))?;
         Ok(())
@@ -458,6 +442,11 @@ impl Grid {
     }
     pub fn history_len(&self) -> usize {
         self.history.len()
+    }
+    /// The cursor's row, counted from the oldest row history keeps.
+    pub(crate) fn cursor_index(&self) -> Option<usize> {
+        self.history_len()
+            .checked_add(usize::from(self.cursor.row()))
     }
     /// The slot of the screen's row `row`, counted from 0 at the top.
     fn screen_slot(&self, row: usize) -> Option<usize> {
@@ -696,7 +685,7 @@ impl Grid {
         &mut self,
         row: u16,
         span: Range<usize>,
-        pen: Option<&Pen>,
+        pen: Option<&Hyperlink>,
         version: u64,
     ) {
         let link = match pen {
@@ -720,8 +709,8 @@ impl Grid {
     /// line, as printing makes it once.
     #[cold]
     #[inline(never)]
-    fn open(&mut self, pen: &Pen, version: u64) {
-        let link = self.intern(&pen.uri, pen.id.as_ref(), pen.key, version);
+    fn open(&mut self, pen: &Hyperlink, version: u64) {
+        let link = self.intern(pen, version);
         self.links.open = link.map_or(Held::Refused, Held::At);
     }
     /// Gives the cells `span` of live row `row` link `link`, or none.
@@ -794,7 +783,7 @@ impl Grid {
             }
         };
         self.cells.iter().for_each(&mut mark);
-        self.history.each_cell(mark);
+        self.history.each_cell_mut(|cell| mark(cell));
         let renumber = Arc::make_mut(&mut self.styles).retain(&used);
         let mut renumbered = |cell: &mut Compact| {
             if let Some(&new) = Styles::place(cell.style()).and_then(|i| renumber.get(i)) {
@@ -804,13 +793,6 @@ impl Grid {
         self.cells.iter_mut().for_each(&mut renumbered);
         self.history.each_cell_mut(renumbered);
         self.recent = [(Attributes::default(), 0); RECENT];
-        self.epoch = self.epoch.wrapping_add(1);
-    }
-
-    /// The styles' epoch (`Grid::epoch`).
-    #[inline]
-    pub fn epoch(&self) -> u64 {
-        self.epoch
     }
 
     /// How many styles the grid's table holds, in use or not.
@@ -826,16 +808,11 @@ impl Grid {
         self.links = Links::default();
     }
 
-    /// The link of `uri` and `id`, made with `key` if no row has it. With
+    /// The grid's link of the one `opened`, made if no row has it. With
     /// no room for it, room is made (`make_room`), at most once in a while
     /// after that fails; `None` if there is still none.
-    pub fn intern(
-        &mut self,
-        uri: &Arc<str>,
-        id: Option<&Arc<str>>,
-        key: u64,
-        version: u64,
-    ) -> Option<Hyperlink> {
+    pub fn intern(&mut self, opened: &Hyperlink, version: u64) -> Option<Hyperlink> {
+        let (uri, id) = (&opened.uri, opened.id.as_ref());
         if let Some(id) = id
             && let Some(link) = self.links.find(uri, id)
         {
@@ -852,7 +829,7 @@ impl Grid {
                 return None;
             }
         }
-        self.links.insert(uri, id, key)
+        self.links.insert(opened)
     }
 
     /// Makes room for links: the rows' links are counted again
@@ -877,25 +854,17 @@ impl Grid {
         }
     }
 
-    /// Marks live row `row` as where a prompt starts (OSC 133 ; A).
     /// The newest version of a history row let go past the limit.
     pub(crate) fn let_go(&self) -> u64 {
         self.history.let_go
     }
-    pub fn mark_prompt(&mut self, row: u16) {
+    /// Marks live row `row` as where a prompt starts (OSC 133 ; A), or
+    /// not: ED erased it.
+    pub fn set_prompt(&mut self, row: u16, prompt: bool) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
         {
-            m.prompt = true;
-        }
-    }
-
-    /// Unmarks live row `row` as where a prompt starts: ED erased it.
-    pub fn clear_prompt(&mut self, row: u16) {
-        if let Some(slot) = self.slot(row)
-            && let Some(m) = self.meta.get_mut(slot)
-        {
-            m.prompt = false;
+            m.prompt = prompt;
         }
     }
 
@@ -1023,7 +992,7 @@ impl Grid {
             for y in 0..self.size.rows() {
                 if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
                     found |= erase(self, y, 0, cols);
-                    self.clear_prompt(y);
+                    self.set_prompt(y, false);
                 }
             }
         }
@@ -1125,16 +1094,7 @@ impl Grid {
             let col = usize::from(col);
             // A wide glyph across the right margin loses both halves: the
             // edit moves one and not the other.
-            if row_cells
-                .get(end)
-                .is_some_and(Compact::is_wide_continuation)
-            {
-                for at in [end.saturating_sub(1), end] {
-                    if let Some(c) = row_cells.get_mut(at) {
-                        *c = c.blanked();
-                    }
-                }
-            }
+            split_wide(row_cells, end);
             let Some(cells) = row_cells.get_mut(..end) else {
                 return false;
             };
@@ -1151,17 +1111,7 @@ impl Grid {
             };
             // Clear a wide glyph straddling either edit boundary before shifting.
             for boundary in [col, shifted] {
-                if cells
-                    .get(boundary)
-                    .is_some_and(Compact::is_wide_continuation)
-                {
-                    if let Some(c) = boundary.checked_sub(1).and_then(|i| cells.get_mut(i)) {
-                        *c = c.blanked();
-                    }
-                    if let Some(c) = cells.get_mut(boundary) {
-                        *c = c.blanked();
-                    }
-                }
+                split_wide(cells, boundary);
             }
             shift(cells, col, count, insert, blank);
             repair_wide(row_cells);
@@ -1285,14 +1235,7 @@ impl Grid {
             self.mutate_row(y, version, 0, |cells| {
                 let mut changed = false;
                 for edge in [left, end] {
-                    if edge > 0 && cells.get(edge).is_some_and(Compact::is_wide_continuation) {
-                        for at in [edge.saturating_sub(1), edge] {
-                            if let Some(c) = cells.get_mut(at) {
-                                *c = c.blanked();
-                            }
-                        }
-                        changed = true;
-                    }
+                    changed |= edge > 0 && split_wide(cells, edge);
                 }
                 changed
             });
@@ -1692,7 +1635,6 @@ impl Grid {
             // has open (`Screen::link_cells`), and finds it by its `id`.
             let mut grid = Self::made(self.size, self.history_bytes(), next, version, self.unmade)?;
             grid.links = std::mem::take(&mut self.links);
-            grid.epoch = self.epoch.wrapping_add(1);
             *self = grid;
             return Ok(());
         }
@@ -1725,7 +1667,6 @@ impl Grid {
         // No cell has a style but the default now.
         self.styles = Arc::default();
         self.recent = [(Attributes::default(), 0); RECENT];
-        self.epoch = self.epoch.wrapping_add(1);
         self.cursor = Cursor::default();
         self.saved = Cursor::default();
         self.reset_margins();
@@ -1862,16 +1803,6 @@ impl Grid {
         } else {
             (self.size.lines(), self.size.columns())
         }
-    }
-    /// BS without reverse wraparound: back a column, stopping at the left
-    /// margin unless the cursor is already left of it (xterm's
-    /// `CursorBack`).
-    #[inline]
-    pub fn back(&mut self) {
-        if self.lr && self.cursor.col == self.columns.first() {
-            return;
-        }
-        self.cursor.col = self.cursor.col.saturating_sub(1);
     }
     /// CUF, or HPR (`absolute`, outside origin mode): the cursor `n`
     /// columns right, no further than the right margin, for CUF while the
@@ -2043,6 +1974,21 @@ fn shift<T: Copy>(cells: &mut [T], col: usize, count: usize, insert: bool, blank
     if let Some(run) = tail.get_mut(fill) {
         run.fill(blank);
     }
+}
+
+/// If cell `at` is the second half of a wide glyph, blanks it and the
+/// first half before it; whether it did.
+fn split_wide(cells: &mut [Compact], at: usize) -> bool {
+    let Some(pair) = cells.get_mut(at.saturating_sub(1)..=at) else {
+        return false;
+    };
+    if !pair.last().is_some_and(Compact::is_wide_continuation) {
+        return false;
+    }
+    for cell in pair {
+        *cell = cell.blanked();
+    }
+    true
 }
 
 pub(crate) fn repair_wide(cells: &mut [Compact]) {

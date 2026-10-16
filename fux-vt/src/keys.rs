@@ -34,15 +34,6 @@ impl Direction {
             Self::Down => "down",
         }
     }
-    /// The `-L`/`-R`/`-U`/`-D` flag that names it.
-    pub fn flag(self) -> &'static str {
-        match self {
-            Self::Left => "-L",
-            Self::Right => "-R",
-            Self::Up => "-U",
-            Self::Down => "-D",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,6 +79,18 @@ pub struct Modifiers {
 }
 
 impl Modifiers {
+    /// As xterm's and kitty's modifier bits: Shift 1, Alt 2, Ctrl 4.
+    pub(crate) fn bits(self) -> u8 {
+        u8::from(self.shift) | u8::from(self.alt) << 1 | u8::from(self.ctrl) << 2
+    }
+    /// The modifiers xterm's and kitty's modifier `bits` hold.
+    pub(crate) fn from_bits(bits: u32) -> Self {
+        Self {
+            shift: bits & 1 != 0,
+            alt: bits & 2 != 0,
+            ctrl: bits & 4 != 0,
+        }
+    }
     /// No modifier.
     pub const NONE: Modifiers = Modifiers {
         ctrl: false,
@@ -183,7 +186,7 @@ pub struct Keystroke {
 
 /// What a terminal speaking the kitty keyboard protocol said of a key
 /// beyond its `KeyPress` (`references/modern/kitty_keyboard_protocol.html`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Kitty {
     /// The number of a key sent as `CSI number u`: its unshifted code
     /// point, or a functional key's (keypad keys from 57399); none for a

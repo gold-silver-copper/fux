@@ -167,9 +167,7 @@ impl Terminal {
             sixel: self.sixel && self.cell.is_some(),
         }
     }
-}
 
-impl Terminal {
     /// Whether the terminal said anything of its colours.
     fn said(&self) -> bool {
         self.colours.known() || self.palette.iter().any(Option::is_some)
@@ -339,21 +337,22 @@ impl Session {
         typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
     }
 
+    /// The terminal of `colour_client(tab)`.
+    fn answering(&self, tab: Option<TabId>) -> Option<&Terminal> {
+        (self.colour_client(tab)).and_then(|c| self.views.get(&c).map(|v| &v.terminal))
+    }
+
     /// The colours the panes of `tab` are answered with (see the module
     /// documentation).
     pub(crate) fn colours_for(&self, tab: Option<TabId>) -> Colours {
-        self.colour_client(tab)
-            .and_then(|c| self.views.get(&c))
-            .map_or(self.last_colours, |v| v.terminal.colours)
+        self.answering(tab).map_or(self.last_colours, |t| t.colours)
     }
 
     /// The palette the panes of `tab` are answered with, as `colours_for`:
     /// the answering client's whole, so that another client's replaces it,
     /// entries it did not say cleared.
     pub(crate) fn palette_for(&self, tab: Option<TabId>) -> Palette {
-        self.colour_client(tab)
-            .and_then(|c| self.views.get(&c))
-            .map_or(self.last_palette, |v| v.terminal.palette)
+        self.answering(tab).map_or(self.last_palette, |t| t.palette)
     }
 
     /// What the panes of `tab` are told their terminal draws, as
@@ -361,9 +360,7 @@ impl Session {
     /// so a program started there draws in text, which a capture reads.
     pub(crate) fn graphics_for(&self, tab: Option<TabId>) -> fux_vt::Graphics {
         let shown = tab.filter(|t| self.views.keys().any(|c| self.shows(*c, *t)));
-        self.colour_client(shown)
-            .and_then(|c| self.views.get(&c))
-            .map_or_else(fux_vt::Graphics::default, |v| v.terminal.graphics())
+        (self.answering(shown)).map_or_else(fux_vt::Graphics::default, Terminal::graphics)
     }
 
     /// Pane `id`'s program rang the bell: each client showing its workspace

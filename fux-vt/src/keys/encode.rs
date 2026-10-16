@@ -207,7 +207,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
     let exact = stroke.kitty;
     let all = report != Report::Disambiguated;
     let capital = matches!(key, Key::Char(c) if c.is_ascii_uppercase()) && exact.is_none();
-    let bits = exact.map_or_else(|| xterm_bits(mods) | u8::from(capital), |k| k.mods);
+    let bits = exact.map_or_else(|| mods.bits() | u8::from(capital), |k| k.mods);
     let held = bits & !LOCKS;
     let modifier = u16::from(bits).saturating_add(1);
     // `;mods`, left out when there are none; empty if a parameter follows,
@@ -324,6 +324,23 @@ impl From<Key> for Form {
     }
 }
 
+/// The key sent as `CSI number ; mods last` (`Form::Numbered`), as
+/// `decode.rs` (`csi`) reads it back.
+pub(crate) fn numbered_key(number: u8, last: char) -> Option<Key> {
+    let keys = [
+        Key::Home,
+        Key::End,
+        Key::Insert,
+        Key::Delete,
+        Key::PageUp,
+        Key::PageDown,
+    ];
+    (Direction::ALL.map(Key::Arrow).into_iter())
+        .chain(keys)
+        .chain((1..=12).map(Key::F))
+        .find(|&key| matches!(Form::from(key), Form::Numbered(n, l) if (n, l) == (number, last)))
+}
+
 /// A key whose legacy bytes are a C0 control or DEL.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Control {
@@ -357,11 +374,6 @@ fn numbered(out: &mut Vec<u8>, number: u8, modifier: u16, final_byte: char) {
 
 /// F5 to F12's numbers, with xterm's gaps.
 const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
-
-/// Shift, Alt and Ctrl as xterm's and kitty's modifier bits.
-fn xterm_bits(mods: Modifiers) -> u8 {
-    u8::from(mods.shift) | u8::from(mods.alt) << 1 | u8::from(mods.ctrl) << 2
-}
 
 /// xterm's modifyOtherKeys bytes for a key, `CSI 27 ; mods ; code ~`
 /// (formatOtherKeys 0, xterm's default), if the key is an ordinary one (a
@@ -435,7 +447,7 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     if sent.is_empty() {
         return false;
     }
-    let mods = u16::from(xterm_bits(sent)).saturating_add(1);
+    let mods = u16::from(sent.bits()).saturating_add(1);
     let _ = write!(out, "\x1b[27;{mods};{code}~");
     true
 }
@@ -555,7 +567,7 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = press;
     let Modifiers { ctrl, alt, shift } = mods;
     // xterm's modifier parameter: 1 plus a bit for each, so at most 8.
-    let modifier = u16::from(xterm_bits(mods)).saturating_add(1);
+    let modifier = u16::from(mods.bits()).saturating_add(1);
     let start = out.len();
     match Form::from(key) {
         // SS3, for F1 to F4 and in application mode the other keys numbered

@@ -147,12 +147,8 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
 /// at its area's top left, its crop of pixels.
 pub fn picture_into(picture: &Visible, out: &mut Vec<u8>) {
     let (row, col, _, _) = picture.area;
-    let _ = write!(
-        out,
-        "\x1b7\x1b[{};{}H",
-        row.saturating_add(1),
-        col.saturating_add(1)
-    );
+    out.extend_from_slice(b"\x1b7");
+    goto(out, row, col);
     fux_vt::sixel::encode(&picture.picture, picture.crop, out);
     out.extend_from_slice(b"\x1b8");
 }
@@ -417,14 +413,12 @@ impl Grid {
     /// Whether the cells of `area` (top row, first column, rows, columns)
     /// are the same as `other`'s.
     pub fn same_in(&self, other: &Grid, (row, col, rows, cols): (u16, u16, u16, u16)) -> bool {
+        fn shows(c: CellRef<'_>) -> (&str, Attributes) {
+            (c.contents(), c.attributes())
+        }
         (row..row.saturating_add(rows)).all(|y| {
-            (col..col.saturating_add(cols)).all(|x| match (self.get(y, x), other.get(y, x)) {
-                (Some(a), Some(b)) => {
-                    a.contents() == b.contents() && a.attributes() == b.attributes()
-                }
-                (None, None) => true,
-                (Some(_), None) | (None, Some(_)) => false,
-            })
+            (col..col.saturating_add(cols))
+                .all(|x| self.get(y, x).map(shows) == other.get(y, x).map(shows))
         })
     }
     /// Takes it that the cells of `area` show something no composed grid
@@ -470,6 +464,12 @@ impl Grid {
     /// compared by `Cells::range_eq`, without reading each cell's text.
     fn row_eq(&self, other: &Grid, y: u16) -> bool {
         self.cells.range_eq(&other.cells, self.span(y))
+    }
+    /// Whether the cell at (`y`, `x`) is the same as `other`'s, a grid of
+    /// its size, as `row_eq` compares them.
+    fn cell_eq(&self, other: &Grid, y: u16, x: u16) -> bool {
+        let i = cell_count(y, self.cols).saturating_add(usize::from(x));
+        self.cells.range_eq(&other.cells, i..i.saturating_add(1))
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
@@ -651,12 +651,12 @@ pub fn shown(cell: CellRef<'_>) -> &str {
     }
 }
 
-fn style(foreground: Color, background: Color) -> Attributes {
-    Attributes::new(foreground, background)
-}
 const GRAY_BG: Color = Color::Idx(236);
 const BAR_FG: Color = Color::Idx(250);
-const PANEL_BG: Color = Color::Idx(238);
+/// A panel's lines.
+const PANEL: Attributes = Attributes::new(Color::Idx(255), Color::Idx(238));
+/// What the bar shows in black on yellow: a layer's keys, copy mode's.
+const HIGHLIGHT: Attributes = Attributes::new(Color::Idx(0), Color::Idx(11));
 
 /// How many cells `rows` rows of `cols` are. Exact: a u16 by a u16 fits
 /// even a 32-bit usize.
@@ -746,7 +746,13 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
         let x = area.w().saturating_sub(width(hint)) / 2;
-        grid.text(y, x, hint, style(Color::Idx(244), Color::Default), area.w());
+        grid.text(
+            y,
+            x,
+            hint,
+            Attributes::new(Color::Idx(244), Color::Default),
+            area.w(),
+        );
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
     // in normal mode: none under an overlay, nor in a repeat mode, whose
@@ -805,16 +811,16 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
-                (title.as_str().into(), panel().with_bold(true)),
-                (prompt_line(before, after, room).into(), panel()),
-                ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
+                (title.as_str().into(), PANEL.with_bold(true)),
+                (prompt_line(before, after, room).into(), PANEL),
+                ("Enter accepts · Esc cancels".into(), PANEL.with_dim(true)),
             ];
             surface(grid, view, &lines);
         }
         Mode::Panel(Panel::Confirm { question, .. }) => {
             let lines: [Line<'_>; 2] = [
-                (question.as_str().into(), panel().with_bold(true)),
-                ("y confirms · n or Esc cancels".into(), panel()),
+                (question.as_str().into(), PANEL.with_bold(true)),
+                ("y confirms · n or Esc cancels".into(), PANEL),
             ];
             surface(grid, view, &lines);
         }
@@ -944,10 +950,6 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
     out
 }
 
-fn panel() -> Attributes {
-    style(Color::Idx(255), PANEL_BG)
-}
-
 /// Separator lines, with tees where one meets another; the ones beside the
 /// focused pane are highlighted.
 fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
@@ -1011,7 +1013,7 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
         grid.put(
             y,
             x,
-            CellRef::new(glyph, false, style(color, Color::Default)),
+            CellRef::new(glyph, false, Attributes::new(color, Color::Default)),
         );
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
@@ -1057,7 +1059,7 @@ fn bar(
     let Some(y) = view.rows.checked_sub(1) else {
         return;
     };
-    let base = style(BAR_FG, GRAY_BG);
+    let base = Attributes::new(BAR_FG, GRAY_BG);
     grid.fill(
         Rect::screen(view.rows, view.cols).corner(1, view.cols),
         base,
@@ -1068,23 +1070,17 @@ fn bar(
         Some((
             notice.text.as_str().into(),
             if notice.error {
-                style(Color::Idx(9), GRAY_BG)
+                Attributes::new(Color::Idx(9), GRAY_BG)
             } else {
-                style(Color::Idx(11), GRAY_BG)
+                Attributes::new(Color::Idx(11), GRAY_BG)
             },
         ))
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
     } else if let Mode::Panel(Panel::Column(column)) = &view.mode {
-        Some((
-            format!("{} …", column.keys).into(),
-            style(Color::Idx(0), Color::Idx(11)),
-        ))
+        Some((format!("{} …", column.keys).into(), HIGHLIGHT))
     } else if let Mode::Panel(Panel::Repeat(bar)) = &view.mode {
-        Some((
-            bar.as_str().into(),
-            style(Color::Idx(0), Color::Idx(11)).with_bold(true),
-        ))
+        Some((bar.as_str().into(), HIGHLIGHT.with_bold(true)))
     } else {
         (session.focused(view.id))
             .and_then(|f| session.panes.get(&f))
@@ -1107,7 +1103,7 @@ fn bar(
     let mut x = 0;
     if let Some(copy) = &copy_bar {
         // Copy mode's keys replace the tabs.
-        let badge = style(Color::Idx(0), Color::Idx(11)).with_bold(true);
+        let badge = HIGHLIGHT.with_bold(true);
         let text = match &copy.badge {
             crate::copy::Badge::Label(label) => fit(&format!(" {label} "), left_limit).into_owned(),
             crate::copy::Badge::Typing(prompt, before, after) => {
@@ -1143,7 +1139,7 @@ fn bar(
             let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id) != current;
             let label = format!(" {}{} ", tab.name, if rang { "!" } else { "" });
             let attrs = if Some(tab.id) == current {
-                style(Color::Idx(0), Color::Idx(2)).with_bold(true)
+                Attributes::new(Color::Idx(0), Color::Idx(2)).with_bold(true)
             } else {
                 base
             };
@@ -1161,23 +1157,23 @@ fn bar(
 /// A line of a panel: its text, borrowed where it can be, and its style.
 type Line<'a> = (Cow<'a, str>, Attributes);
 
-/// Adds the entries `shown`, those from `start` that fit `room` of
-/// `total`, to a panel's `lines`, with how many more there are above and
-/// below them.
+/// Adds the `entries` that fit `room`, the `selected` one among them, to a
+/// panel's `lines`, with how many more there are above and below them.
 fn windowed<'a>(
     lines: &mut Vec<Line<'a>>,
-    total: usize,
-    start: usize,
+    entries: impl ExactSizeIterator<Item = Line<'a>>,
+    selected: usize,
     room: usize,
-    shown: impl Iterator<Item = Line<'a>>,
 ) {
+    let total = entries.len();
+    let start = overlay::window_start(total, selected, room);
     if start > 0 {
-        lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
+        lines.push((format!("▲ {start} more").into(), PANEL.with_dim(true)));
     }
-    lines.extend(shown);
+    lines.extend(entries.skip(start).take(room));
     let below = total.saturating_sub(start.saturating_add(room));
     if below > 0 {
-        lines.push((format!("▼ {below} more").into(), panel().with_dim(true)));
+        lines.push((format!("▼ {below} more").into(), PANEL.with_dim(true)));
     }
 }
 
@@ -1215,23 +1211,20 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 /// A list to choose from or run: the entries that fit, the selected one
 /// highlighted and, but in a chooser, those that cannot run now dimmed.
 fn list_panel(grid: &mut Grid, view: &View, list: &List) {
-    let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel().with_bold(true))];
+    let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), PANEL.with_bold(true))];
     let capacity = overlay::list_room(view.rows);
-    let (len, chosen) = (list.items.len(), list.selected);
-    let start = overlay::window_start(len, chosen, capacity);
-    let shown = list.items.iter().enumerate().skip(start).take(capacity);
-    let shown = shown.map(|(i, item)| {
+    let entries = list.items.iter().enumerate().map(|(i, item)| {
         let marker = if list.current == Some(i) { "*" } else { " " };
-        let attrs = panel().with_inverse(i == chosen);
+        let attrs = PANEL.with_inverse(i == list.selected);
         (format!("{marker} {item}").into(), attrs)
     });
-    windowed(&mut lines, len, start, capacity, shown);
+    windowed(&mut lines, entries, list.selected, capacity);
     let help = if list.chooser {
         "Enter selects · r renames · x closes · Esc"
     } else {
         "Enter runs · Esc cancels"
     };
-    lines.push((help.into(), panel().with_dim(true)));
+    lines.push((help.into(), PANEL.with_dim(true)));
     surface(grid, view, &lines);
 }
 
@@ -1250,13 +1243,13 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
     for (index, entry) in column.entries.iter().enumerate() {
         let group = (entry.root, entry.group.as_str());
         if heading != Some(group) {
-            entries.push((group.1.into(), panel().with_bold(true)));
+            entries.push((group.1.into(), PANEL.with_bold(true)));
             heading = Some(group);
         }
         let more = if entry.layer { "…" } else { "" };
         let key = &entry.key;
         let pad = usize::from(key_width.saturating_sub(width(key)));
-        let mut attrs = panel();
+        let mut attrs = PANEL;
         if index == column.selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
@@ -1265,16 +1258,13 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
     }
     let (heading, body_room) = overlay::column_room(view.rows);
-    let start = overlay::window_start(entries.len(), selected_row, body_room);
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
-        lines.push((column.title.as_str().into(), panel().with_bold(true)));
+        lines.push((column.title.as_str().into(), PANEL.with_bold(true)));
     }
-    let total = entries.len();
-    let shown = entries.into_iter().skip(start).take(body_room);
-    windowed(&mut lines, total, start, body_room, shown);
+    windowed(&mut lines, entries.into_iter(), selected_row, body_room);
     if column.entries.is_empty() {
-        lines.push(("no bindings".into(), panel().with_dim(true)));
+        lines.push(("no bindings".into(), PANEL.with_dim(true)));
     }
     surface(grid, view, &lines);
 }
@@ -1433,7 +1423,7 @@ fn cluster(
 ) -> bool {
     let joins = text.len() > 1 && joins_the_glyph_before(grid, y, x, text);
     if joins || joined {
-        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(x));
+        goto(out, y, x);
     }
     let marks_at_the_edge = x.saturating_add(width).saturating_add(1) == grid.cols
         && text.chars().nth(1).is_some()
@@ -1451,6 +1441,11 @@ fn cluster(
 /// A row or column as the terminal counts it, from 1; exact in a u32.
 fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
+}
+
+/// Moves the cursor to row `y`, column `x`, both from 0.
+fn goto(out: &mut Vec<u8>, y: u16, x: u16) {
+    let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(x));
 }
 
 /// Turns every mouse tracking mode and SGR encoding off, as `client::LEAVE`
@@ -1497,13 +1492,16 @@ fn same_row(old: &Grid, new: &Grid, y: u16, links: bool) -> bool {
     old.row_eq(new, y) && (!links || (0..new.cols).all(|x| old.link(y, x) == new.link(y, x)))
 }
 
-/// The rows of two grids of a size that differ: those whose memo does not
-/// show them the same and whose cells or links differ.
-fn differing_rows<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
-    let links = !new.links.is_empty() || !old.links.is_empty();
-    let memo = SameFrame::of(old, new);
+/// The rows of `new` that differ from `old`, a grid of its size (every
+/// row, if there is none): those whose memo does not show them the same
+/// and whose cells or links differ.
+fn differing_rows<'a>(old: Option<&'a Grid>, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
+    let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
+    let memo = old.and_then(|o| SameFrame::of(o, new));
     (0..new.rows).filter(move |&y| {
-        !memo.as_ref().is_some_and(|m| m.same_row(y)) && !same_row(old, new, y, links)
+        // An unchanged row costs this one comparison.
+        !memo.as_ref().is_some_and(|m| m.same_row(y))
+            && old.is_none_or(|o| !same_row(o, new, y, links))
     })
 }
 
@@ -1529,18 +1527,14 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     if to == 0 || to >= new.cols {
         return false;
     }
-    let mut rows = differing_rows(old, new);
+    let mut rows = differing_rows(Some(old), new);
     if rows.next() != Some(y) || rows.next().is_some() {
         return false;
     }
     // The run is from the first changed cell of the row to the cursor's
     // cell; nothing after it changed. Cells in it that did not change are
     // written as they are.
-    let start = new.span(y).start;
-    let same = |x: u16| {
-        let i = start.saturating_add(usize::from(x));
-        old.cells.range_eq(&new.cells, i..i.saturating_add(1))
-    };
+    let same = |x: u16| old.cell_eq(new, y, x);
     let Some(from) = (0..new.cols).find(|&x| !same(x)) else {
         return false;
     };
@@ -1586,7 +1580,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     // To the run's first cell: from the cursor on its row by the shortest
     // way, else by row and column.
     if oy != y {
-        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(from));
+        goto(out, y, from);
     } else if from == 0 && ox != 0 {
         out.push(b'\r');
     } else if from != ox {
@@ -1628,28 +1622,15 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     let mut open = None;
     // Whether either grid has a link: if neither does, no cell's changed.
     let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
-    // Grids of one frame show the same cells on a pane row whose keys are
-    // the same in both (`Memo`): no comparison needed.
-    let memo = old.filter(|_| !full).and_then(|o| SameFrame::of(o, new));
     // What the client shows, unless all is painted whole: a grid of the same
-    // size, so the two index their cells alike.
+    // size, so the two index their cells alike. Grids of one frame show the
+    // same cells on a pane row whose keys are the same in both (`Memo`): no
+    // comparison needed.
     let before = old.filter(|_| !full);
-    for y in 0..new.rows {
-        if memo.as_ref().is_some_and(|m| m.same_row(y)) {
-            continue;
-        }
-        // An unchanged row costs this one comparison.
-        if before.is_some_and(|o| same_row(o, new, y, links)) {
-            continue;
-        }
+    for y in differing_rows(before, new) {
         let cell = |x: u16| new.get(y, x);
-        let row_start = new.span(y).start;
         let changed = |x: u16| {
-            before.is_none_or(|o| {
-                let i = row_start.saturating_add(usize::from(x));
-                !o.cells.range_eq(&new.cells, i..i.saturating_add(1))
-                    || links && o.link(y, x) != new.link(y, x)
-            })
+            before.is_none_or(|o| !o.cell_eq(new, y, x) || links && o.link(y, x) != new.link(y, x))
         };
         let mut x = 0u16;
         while x < new.cols {
@@ -1663,7 +1644,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             if cell(start).is_some_and(|c| c.is_wide_continuation()) {
                 start = start.saturating_sub(1);
             }
-            let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
+            goto(out, y, start);
             let mut cx = start;
             // Whether the glyph before was one the client's terminal may
             // have joined to the one before it (see `cluster`).
@@ -1717,7 +1698,8 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[0m");
     new.modes.diff(old.map(|o| &o.modes), out);
     if let Some((y, x)) = new.cursor {
-        let _ = write!(out, "\x1b[{};{}H\x1b[?25h", one_based(y), one_based(x));
+        goto(out, y, x);
+        out.extend_from_slice(b"\x1b[?25h");
     }
     out.extend_from_slice(b"\x1b[?2026l");
 }

@@ -1,81 +1,75 @@
 //! Why a program could not be read or run: a stable code, what went wrong,
 //! and where.
-use crate::token::Place;
+use crate::token::{Place, Token};
 use std::rc::Rc;
 
-/// What kind of failure: each has a name that stays the same, for a script
-/// to tell failures apart by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Code {
-    /// A quote is never closed.
-    OpenQuote,
-    /// A word no definition, builtin or application gives.
-    UnknownWord,
-    /// A parsing word at the end of the program, with nothing to read.
-    MissingToken,
-    /// A name for `define` or `let` that is taken, a number, or a parsing
-    /// word.
-    BadName,
-    /// `define` inside a definition or a block.
-    NotTopLevel,
-    /// `end`, `else`, `then` or `until` with nothing open for it.
-    Unmatched,
-    /// A definition or block still open at the end.
-    Unclosed,
-    /// A word given fewer values than it takes.
-    StackUnderflow,
-    /// The stack grew past its limit.
-    StackOverflow,
-    /// Calls nested past their limit: recursion too deep.
-    CallDepth,
-    /// A value of the wrong type for a word.
-    Type,
-    /// Division or remainder by zero.
-    DivByZero,
-    /// Arithmetic past what an integer holds.
-    Overflow,
-    /// A `let` name read before its `let` ran.
-    Unset,
-    /// An index or slice past a string's or list's end, or a number out of
-    /// a word's range (a character code, a negative depth).
-    Range,
-    /// `fail`: the program stopped itself, saying why.
-    Fail,
-    /// A string or list past the length or nesting allowed, or a run that
-    /// built more than its share.
-    TooLong,
-    /// An application word gave more or fewer values than its vocabulary
-    /// says: a mistake in the application, not the program.
-    Contract,
-    /// The application's own failure, its code given.
-    Host(&'static str),
+/// Expands `/// doc, Variant "name", ...` to the enum `Code` of those
+/// variants and `Host`, and `name`, each variant's name (a host's code is
+/// its own).
+macro_rules! codes {
+    ($($(#[$doc:meta])* $variant:ident $name:literal,)*) => {
+        /// What kind of failure: each has a name that stays the same, for a
+        /// script to tell failures apart by.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Code {
+            $($(#[$doc])* $variant,)*
+            /// The application's own failure, its code given.
+            Host(&'static str),
+        }
+
+        impl Code {
+            /// The code's name.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Code::$variant => $name,)*
+                    Code::Host(code) => code,
+                }
+            }
+        }
+    };
 }
 
-impl Code {
-    /// The code's name.
-    pub fn name(self) -> &'static str {
-        match self {
-            Code::OpenQuote => "open_quote",
-            Code::UnknownWord => "unknown_word",
-            Code::MissingToken => "missing_token",
-            Code::BadName => "bad_name",
-            Code::NotTopLevel => "not_top_level",
-            Code::Unmatched => "unmatched",
-            Code::Unclosed => "unclosed",
-            Code::StackUnderflow => "stack_underflow",
-            Code::StackOverflow => "stack_overflow",
-            Code::CallDepth => "call_depth",
-            Code::Type => "type",
-            Code::DivByZero => "div_by_zero",
-            Code::Overflow => "overflow",
-            Code::Unset => "unset",
-            Code::Range => "range",
-            Code::Fail => "fail",
-            Code::TooLong => "too_long",
-            Code::Contract => "contract",
-            Code::Host(code) => code,
-        }
-    }
+codes! {
+    /// A quote is never closed.
+    OpenQuote "open_quote",
+    /// A word no definition, builtin or application gives.
+    UnknownWord "unknown_word",
+    /// A parsing word at the end of the program, with nothing to read.
+    MissingToken "missing_token",
+    /// A name for `define` or `let` that is taken, a number, or a parsing
+    /// word.
+    BadName "bad_name",
+    /// `define` inside a definition or a block.
+    NotTopLevel "not_top_level",
+    /// `end`, `else`, `then` or `until` with nothing open for it.
+    Unmatched "unmatched",
+    /// A definition or block still open at the end.
+    Unclosed "unclosed",
+    /// A word given fewer values than it takes.
+    StackUnderflow "stack_underflow",
+    /// The stack grew past its limit.
+    StackOverflow "stack_overflow",
+    /// Calls nested past their limit: recursion too deep.
+    CallDepth "call_depth",
+    /// A value of the wrong type for a word.
+    Type "type",
+    /// Division or remainder by zero.
+    DivByZero "div_by_zero",
+    /// Arithmetic past what an integer holds.
+    Overflow "overflow",
+    /// A `let` name read before its `let` ran.
+    Unset "unset",
+    /// An index or slice past a string's or list's end, or a number out of
+    /// a word's range (a character code, a negative depth).
+    Range "range",
+    /// `fail`: the program stopped itself, saying why.
+    Fail "fail",
+    /// A string or list past the length or nesting allowed, or a run that
+    /// built more than its share.
+    TooLong "too_long",
+    /// An application word gave more or fewer values than its vocabulary
+    /// says: a mistake in the application, not the program.
+    Contract "contract",
 }
 
 /// A failure, with where it happened: the token's place and text, when
@@ -86,6 +80,18 @@ pub struct Error {
     pub message: String,
     pub place: Option<Place>,
     pub word: Option<Rc<str>>,
+}
+
+impl Error {
+    /// A failure at `at`, the token it names, when there is one.
+    pub fn new(code: Code, message: impl Into<String>, at: Option<&Token>) -> Error {
+        Error {
+            code,
+            message: message.into(),
+            place: at.map(|t| t.place.clone()),
+            word: at.map(|t| Rc::clone(&t.text)),
+        }
+    }
 }
 
 impl std::fmt::Display for Error {

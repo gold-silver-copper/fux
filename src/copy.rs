@@ -9,7 +9,7 @@ use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::render::shown;
 use crate::session::{self, Error, Session};
-use crate::view::{Mode, Notice, View};
+use crate::view::{Mode, Notice};
 use fux_vt::{CellRef, Row, RowId, Screen};
 
 /// The most cells one copy takes.
@@ -32,6 +32,15 @@ pub enum Seek {
 }
 
 impl Seek {
+    /// Forward if `forward`, else backward.
+    pub fn forward(forward: bool) -> Seek {
+        if forward {
+            Seek::Forward
+        } else {
+            Seek::Backward
+        }
+    }
+
     /// The other way.
     pub fn reversed(self) -> Seek {
         match self {
@@ -361,7 +370,8 @@ fn fold(c: char, ignore_case: bool) -> char {
     } else if c.is_ascii() {
         c.to_ascii_lowercase()
     } else {
-        c.to_lowercase().next().unwrap_or(c)
+        // As a wait folds it: a final ς is σ.
+        crate::wait::fold(c).next().unwrap_or(c)
     }
 }
 
@@ -507,20 +517,26 @@ fn start(session: &mut Session, client: ClientId) {
     let Some(place) = session.place(client) else {
         return;
     };
-    let Some(mut view) = session.views.remove(&client) else {
+    let entered = enter(session, place);
+    let Some(view) = session.views.get_mut(&client) else {
         return;
     };
-    let entered = enter(session, &mut view, place);
     view.dirty = true;
-    session.views.insert(client, view);
-    if let Err(error) = entered {
-        session.error_to(client, error.to_string());
-        session.outbox.push(crate::session::Outgoing::Ended(client));
+    match entered {
+        Ok(copy) => {
+            view.mode = Mode::Copy(Box::new(copy));
+            // The bar shows where the cursor is; a notice would hide it.
+            view.notice = None;
+        }
+        Err(error) => {
+            session.error_to(client, error.to_string());
+            session.outbox.push(crate::session::Outgoing::Ended(client));
+        }
     }
 }
 
-/// Enters copy mode on the client's focused pane.
-pub fn enter(session: &Session, view: &mut View, place: session::Place) -> Result<String, Error> {
+/// Copy mode on the client's focused pane, its cursor where the pane's is.
+fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
     let pane = place.pane.ok_or(Error::NoPaneToCopy)?;
     let screen = session
         .panes
@@ -532,7 +548,7 @@ pub fn enter(session: &Session, view: &mut View, place: session::Place) -> Resul
     let row = window.row(cy).ok_or(Error::NoRows)?;
     let (cursor, cx) = (row.id(), glyph_start(row, cx));
     let top = window.row(0).ok_or(Error::NoRows)?.id();
-    let copy = Copy {
+    Ok(Copy {
         pane,
         top,
         cursor: (cursor, cx),
@@ -540,11 +556,7 @@ pub fn enter(session: &Session, view: &mut View, place: session::Place) -> Resul
         search: None,
         typing: None,
         held_at: None,
-    };
-    view.mode = Mode::Copy(Box::new(copy));
-    // The bar shows where the cursor is; a notice would hide it.
-    view.notice = None;
-    Ok(String::new())
+    })
 }
 
 fn leave(session: &mut Session, client: ClientId) {
@@ -554,11 +566,12 @@ fn leave(session: &mut Session, client: ClientId) {
     }
 }
 
-/// A scroll by some rows, toward older output or newer.
-#[derive(Clone, Copy)]
-enum Scroll {
-    Up(usize),
-    Down(usize),
+/// `text` as a search: no control characters, and at most `SEARCH_MAX`.
+fn clean(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(SEARCH_MAX)
+        .collect()
 }
 
 /// An action in copy mode, its keys the client's (`keymap::copy_act`).
@@ -592,72 +605,27 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     view.notice = None;
 
     // The search line the client types, shown; the search it asks for.
-    match act {
-        CopyAct::Typing(line) => {
-            copy.typing = line.map(|(forward, before, after)| {
-                let seek = if forward {
-                    Seek::Forward
-                } else {
-                    Seek::Backward
-                };
-                let clean = |text: String| -> String {
-                    text.chars()
-                        .filter(|c| !c.is_control())
-                        .take(SEARCH_MAX)
-                        .collect()
-                };
-                (seek, clean(before), clean(after))
-            });
+    if let CopyAct::Typing(line) = act {
+        copy.typing = line.map(|(forward, before, after)| {
+            (Seek::forward(forward), clean(&before), clean(&after))
+        });
+        return;
+    }
+    if let CopyAct::Find { query, forward } = act {
+        copy.typing = None;
+        let query = clean(&query);
+        if query.is_empty() {
             return;
         }
-        CopyAct::Find { query, forward } => {
-            copy.typing = None;
-            let seek = if forward {
-                Seek::Forward
-            } else {
-                Seek::Backward
-            };
-            let query: String = query
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(SEARCH_MAX)
-                .collect();
-            if query.is_empty() {
-                return;
-            }
-            let search = Search { query, seek };
-            copy.search = Some(search.clone());
-            if let Some(at) = copy.resolve(screen) {
-                jump(copy, screen, height, at, &search, &mut view.notice);
-            }
-            return;
+        let search = Search {
+            query,
+            seek: Seek::forward(forward),
+        };
+        copy.search = Some(search.clone());
+        if let Some(at) = copy.resolve(screen) {
+            jump(copy, screen, height, at, &search, &mut view.notice);
         }
-        CopyAct::Enter
-        | CopyAct::Leave
-        | CopyAct::Left
-        | CopyAct::Right
-        | CopyAct::Up
-        | CopyAct::Down
-        | CopyAct::WordForward
-        | CopyAct::WordBack
-        | CopyAct::FirstInk
-        | CopyAct::LastInk
-        | CopyAct::LineStart
-        | CopyAct::Top
-        | CopyAct::Bottom
-        | CopyAct::HalfUp
-        | CopyAct::HalfDown
-        | CopyAct::PageUp
-        | CopyAct::PageDown
-        | CopyAct::Next
-        | CopyAct::Previous
-        | CopyAct::PromptBack
-        | CopyAct::PromptForward
-        | CopyAct::SelectChar
-        | CopyAct::SelectLine
-        | CopyAct::SelectBlock
-        | CopyAct::OtherEnd
-        | CopyAct::Yank => {}
+        return;
     }
 
     let Some(at) = copy.resolve(screen) else {
@@ -673,7 +641,6 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         classes.filter(|(_, k)| *k != 0).map(|(c, _)| c)
     };
     let mut target: Option<Place<'_>> = None;
-    let mut scroll: Option<Scroll> = None;
     match act {
         CopyAct::Enter | CopyAct::Typing(_) | CopyAct::Find { .. } => return,
         CopyAct::Leave => {
@@ -699,10 +666,10 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         CopyAct::LineStart => target = Some((row, 0)),
         CopyAct::Top => target = Some((row.up(usize::MAX), 0)),
         CopyAct::Bottom => target = Some((row.down(usize::MAX), col)),
-        CopyAct::HalfUp => scroll = Some(Scroll::Up(half)),
-        CopyAct::HalfDown => scroll = Some(Scroll::Down(half)),
-        CopyAct::PageUp => scroll = Some(Scroll::Up(page)),
-        CopyAct::PageDown => scroll = Some(Scroll::Down(page)),
+        CopyAct::HalfUp => (top, target) = (top.up(half), Some((row.up(half), col))),
+        CopyAct::HalfDown => (top, target) = (top.down(half), Some((row.down(half), col))),
+        CopyAct::PageUp => (top, target) = (top.up(page), Some((row.up(page), col))),
+        CopyAct::PageDown => (top, target) = (top.down(page), Some((row.down(page), col))),
         key @ (CopyAct::Next | CopyAct::Previous) => {
             match copy.search.clone() {
                 Some(search) => {
@@ -721,12 +688,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
             return;
         }
         key @ (CopyAct::PromptBack | CopyAct::PromptForward) => {
-            let seek = if key == CopyAct::PromptBack {
-                Seek::Backward
-            } else {
-                Seek::Forward
-            };
-            match prompt(row, seek) {
+            match prompt(row, Seek::forward(key == CopyAct::PromptForward)) {
                 // The prompt at the top of the view, what came of it below.
                 Some(found) => {
                     top = found;
@@ -763,14 +725,6 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
             yank(session, client, copied);
             return;
         }
-    }
-    if let Some(scroll) = scroll {
-        let (moved, scrolled) = match scroll {
-            Scroll::Up(n) => (row.up(n), top.up(n)),
-            Scroll::Down(n) => (row.down(n), top.down(n)),
-        };
-        top = scrolled;
-        target = Some((moved, col));
     }
     if let Some(target) = target {
         move_to(copy, screen, height, top, target);

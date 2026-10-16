@@ -288,18 +288,8 @@ impl History {
             .filter_map(|(index, _)| Some((index, self.linked.get(&self.number(index)?)?)))
     }
     /// Calls `f` with every cell the rows keep (not those of rows gone,
-    /// which a block keeps until every row in it has gone), to mark the
-    /// styles they use.
-    pub(crate) fn each_cell(&self, mut f: impl FnMut(&Compact)) {
-        for kept in &self.rows {
-            if let Some(cells) =
-                Self::cells_of(kept).and_then(|cells| self.block(kept.block())?.get(cells))
-            {
-                cells.iter().for_each(&mut f);
-            }
-        }
-    }
-    /// `each_cell`, to change them: to renumber their styles.
+    /// which a block keeps until every row in it has gone): to mark the
+    /// styles they use, and renumber them.
     pub(crate) fn each_cell_mut(&mut self, mut f: impl FnMut(&mut Compact)) {
         let (older, newest) = (&mut self.older, &mut self.newest);
         for kept in &self.rows {
@@ -349,10 +339,7 @@ impl History {
         let end = self.newest.len().saturating_add(len);
         if self.newest.capacity() > 0 && end <= BLOCK {
             let capacity = self.newest.capacity().saturating_mul(2).clamp(end, BLOCK);
-            return self
-                .newest
-                .try_reserve_exact(capacity.saturating_sub(self.newest.len()))
-                .map_err(|_| Error::Capacity);
+            return crate::reserve(&mut self.newest, capacity);
         }
         if self.older.len() >= BLOCKS.saturating_sub(2) {
             return Err(Error::Capacity);
@@ -366,9 +353,7 @@ impl History {
             len.max(BLOCK)
         };
         let mut block = Vec::new();
-        block
-            .try_reserve_exact(capacity)
-            .map_err(|_| Error::Capacity)?;
+        crate::reserve(&mut block, capacity)?;
         self.spare = block;
         Ok(())
     }

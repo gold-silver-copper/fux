@@ -32,60 +32,55 @@ impl fmt::Display for Pid {
     }
 }
 
-/// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
-/// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
-/// `Stop` stopped as "Stopped (signal)".
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Signal {
-    Hup,
-    Int,
-    Term,
-    Kill,
-    Stop,
-    Tstp,
-    Cont,
-    Winch,
-    Quit,
-    Usr1,
-    Usr2,
+/// Expands `/// doc, then Variant "NAME" SIGNAL, ...` to the enum `Signal` of those
+/// variants, `Signal::ALL` in that order, `raw` (each one's `libc::SIGNAL`)
+/// and `named` (the variant whose name, exactly as written, is given).
+macro_rules! signals {
+    ($(#[$doc:meta])* $($variant:ident $name:literal $raw:ident,)*) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Signal {
+            $($variant,)*
+        }
+
+        impl Signal {
+            /// Every signal, in the order they are declared.
+            pub const ALL: [Signal; [$($name),*].len()] = [$(Signal::$variant),*];
+
+            /// The signal's number.
+            pub fn raw(self) -> i32 {
+                match self {
+                    $(Signal::$variant => libc::$raw,)*
+                }
+            }
+
+            /// The signal a name names, written as `fux signal` takes it:
+            /// without `SIG`, in capitals (`TERM`).
+            pub fn named(name: &str) -> Option<Signal> {
+                match name {
+                    $($name => Some(Signal::$variant),)*
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-impl Signal {
-    pub fn raw(self) -> i32 {
-        match self {
-            Signal::Hup => libc::SIGHUP,
-            Signal::Int => libc::SIGINT,
-            Signal::Term => libc::SIGTERM,
-            Signal::Kill => libc::SIGKILL,
-            Signal::Stop => libc::SIGSTOP,
-            Signal::Tstp => libc::SIGTSTP,
-            Signal::Cont => libc::SIGCONT,
-            Signal::Winch => libc::SIGWINCH,
-            Signal::Quit => libc::SIGQUIT,
-            Signal::Usr1 => libc::SIGUSR1,
-            Signal::Usr2 => libc::SIGUSR2,
-        }
-    }
-
-    /// The signal a name names: `TERM`, `SIGTERM` or `term`.
-    pub fn named(name: &str) -> Option<Signal> {
-        let name = name.to_ascii_uppercase();
-        let bare = name.strip_prefix("SIG").unwrap_or(&name);
-        Some(match bare {
-            "HUP" => Signal::Hup,
-            "INT" => Signal::Int,
-            "TERM" => Signal::Term,
-            "KILL" => Signal::Kill,
-            "STOP" => Signal::Stop,
-            "TSTP" => Signal::Tstp,
-            "CONT" => Signal::Cont,
-            "WINCH" => Signal::Winch,
-            "QUIT" => Signal::Quit,
-            "USR1" => Signal::Usr1,
-            "USR2" => Signal::Usr2,
-            _ => return None,
-        })
-    }
+signals! {
+    /// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
+    /// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
+    /// `Stop` stopped as "Stopped (signal)".
+    Hup "HUP" SIGHUP,
+    Int "INT" SIGINT,
+    Term "TERM" SIGTERM,
+    Kill "KILL" SIGKILL,
+    Stop "STOP" SIGSTOP,
+    Tstp "TSTP" SIGTSTP,
+    Cont "CONT" SIGCONT,
+    Winch "WINCH" SIGWINCH,
+    Quit "QUIT" SIGQUIT,
+    Usr1 "USR1" SIGUSR1,
+    Usr2 "USR2" SIGUSR2,
 }
 
 /// Sends `signal` to the process `pid`.
@@ -209,33 +204,27 @@ pub fn reap(pid: Pid) -> Result<Option<Status>> {
 /// Makes this process the reaper of its descendants' orphans: a program
 /// whose parent exits (a double fork, a daemon) becomes its child, not
 /// init's, so it stays in its [`tree`], where its system calls may be read,
-/// and this process must reap it ([`reap_orphans`]).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// and this process must reap it ([`reap_orphans`]). macOS has no reaper of
+/// orphans but launchd: none are adopted.
 pub fn adopt_orphans() -> Result<()> {
     // SAFETY: prctl with PR_SET_CHILD_SUBREAPER takes numbers and touches
     // no memory.
-    check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }).map(drop)
-}
-
-/// Reaps every child of this process that has exited and that `kept` does
-/// not keep: the orphans it adopted ([`adopt_orphans`]). Its own children
-/// are kept, for whoever waits for them.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
-    for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
-        let _ = reap(pid);
-    }
-}
-
-/// macOS has no reaper of orphans but launchd: none are adopted.
-#[cfg(target_os = "macos")]
-pub fn adopt_orphans() -> Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) })?;
     Ok(())
 }
 
-/// macOS: none were adopted ([`adopt_orphans`]), so none are reaped.
-#[cfg(target_os = "macos")]
-pub fn reap_orphans(_kept: impl Fn(Pid) -> bool) {}
+/// Reaps every child of this process that has exited and that `kept` does
+/// not keep: the orphans it adopted ([`adopt_orphans`]); none on macOS. Its
+/// own children are kept, for whoever waits for them.
+pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
+        let _ = reap(pid);
+    }
+    #[cfg(target_os = "macos")]
+    let _ = kept;
+}
 
 /// The processes this one started, those they started in turn, and the
 /// orphans it adopted ([`adopt_orphans`]); not itself. A runaway tree is
@@ -558,33 +547,6 @@ pub enum Activity {
     Unknown,
 }
 
-/// How the system tells what a terminal's programs are doing, chosen when
-/// fux is built: [`Host`].
-pub trait Probe {
-    /// What the programs in foreground group `group` of the terminal at
-    /// `tty` do: among `leader`'s own, else among this process's [`tree`].
-    fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity;
-    /// Whether process `pid` itself is blocked reading the terminal at
-    /// `tty`.
-    fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool;
-}
-
-/// The probe of Linux and Android: by each thread's system call.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub struct Linux;
-
-/// The probe of macOS: by whether each thread runs.
-#[cfg(target_os = "macos")]
-pub struct Macos;
-
-/// The probe of the system fux is built for.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub type Host = Linux;
-
-/// The probe of the system fux is built for.
-#[cfg(target_os = "macos")]
-pub type Host = Macos;
-
 /// What a blocked thread waits in, by its system call.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -835,10 +797,13 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
 }
 
 /// What the programs in foreground group `group` of the terminal at `tty`
-/// do: busy if one is; else reading if one waits for the terminal, polling
-/// if one polls it, waiting if they wait on something else.
+/// do, among `leader`'s own, else among this process's [`tree`]: busy if
+/// one is; else reading if one waits for the terminal, polling if one polls
+/// it, waiting if they wait on something else. Linux and Android tell by
+/// what each thread is blocked in, its system call
+/// (`/proc/PID/task/TID/syscall`).
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
+pub fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
     let in_group = |pid: &Pid| {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
@@ -878,60 +843,47 @@ fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
 
 /// Whether process `pid` itself is blocked reading the terminal at `tty`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
+pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
     process_activity(pid, tty) == Some(Activity::Reading)
-}
-
-/// Linux and Android: what each thread is blocked in, by its system call
-/// (`/proc/PID/task/TID/syscall`).
-#[cfg(any(target_os = "linux", target_os = "android"))]
-impl Probe for Linux {
-    fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
-        activity(group, tty, leader)
-    }
-
-    fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
-        reads_terminal(pid, tty)
-    }
 }
 
 /// macOS keeps what a thread is blocked in to itself, but says whether
 /// each runs or waits: busy while one of the group's runs (or waits on the
 /// disk, uninterruptible), idle once every one waits.
 #[cfg(target_os = "macos")]
-impl Probe for Macos {
-    fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
-        let mut pids: Vec<libc::pid_t> = vec![0; 1024];
-        let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
-            return Activity::Unknown;
-        };
-        // SAFETY: the buffer is `bytes` long and writable; the call says
-        // how many IDs it wrote.
-        let listed =
-            unsafe { libc::proc_listpgrppids(group.as_raw(), pids.as_mut_ptr().cast(), bytes) };
-        let Ok(listed) = usize::try_from(listed) else {
-            return Activity::Unknown;
-        };
-        pids.truncate(listed);
-        let seen: Vec<Option<bool>> = (pids.into_iter())
-            .filter_map(Pid::from_raw)
-            .filter_map(running)
-            .collect();
-        // None in the group (it is changing hands: a program starting or
-        // ending), or one runs: at work.
-        if seen.is_empty() || seen.contains(&Some(true)) {
-            Activity::Busy
-        } else if seen.contains(&None) {
-            Activity::Unknown
-        } else {
-            Activity::Idle
-        }
+pub fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
+    let mut pids: Vec<libc::pid_t> = vec![0; 1024];
+    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
+        return Activity::Unknown;
+    };
+    // SAFETY: the buffer is `bytes` long and writable; the call says
+    // how many IDs it wrote.
+    let listed =
+        unsafe { libc::proc_listpgrppids(group.as_raw(), pids.as_mut_ptr().cast(), bytes) };
+    let Ok(listed) = usize::try_from(listed) else {
+        return Activity::Unknown;
+    };
+    pids.truncate(listed);
+    let seen: Vec<Option<bool>> = (pids.into_iter())
+        .filter_map(Pid::from_raw)
+        .filter_map(running)
+        .collect();
+    // None in the group (it is changing hands: a program starting or
+    // ending), or one runs: at work.
+    if seen.is_empty() || seen.contains(&Some(true)) {
+        Activity::Busy
+    } else if seen.contains(&None) {
+        Activity::Unknown
+    } else {
+        Activity::Idle
     }
+}
 
-    /// What a waiting thread waits on is not said: never known to read.
-    fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
-        false
-    }
+/// Whether process `pid` itself is blocked reading the terminal at `tty`:
+/// never known on macOS, which does not say what a waiting thread waits on.
+#[cfg(target_os = "macos")]
+pub fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
+    false
 }
 
 /// A thread's recent use of the processor, in tenths of a percent, from

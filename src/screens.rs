@@ -9,10 +9,11 @@
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::{PaneId, WsId};
-use crate::keymap::{confirm_act, copy_act, line_act, list_act};
-use crate::keys::{Key, KeyPress};
+use crate::keymap::{PAGE, confirm_act, copy_act, letter, line_act, list_act};
+use crate::keys::KeyPress;
 use crate::protocol::{Reply, Scalar};
 use crate::script::Failed;
+use crate::session::describe;
 use crate::view::Line;
 
 /// A screen a word asks to open: built with what the server knows (names,
@@ -78,54 +79,22 @@ pub struct Prompt {
     pub rename: Option<AnyRef<WsId>>,
 }
 
-/// What a key in a screen leads to: an action for the server, or fuxth to
-/// run as the client.
+/// What a key leads to, in a screen or through the bindings: an action for
+/// the server, or fuxth to run as the client.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Send(Act),
     Run(String),
 }
 
-/// How far PageUp and PageDown move a list.
-const PAGE: usize = 10;
-
-/// A word as fuxth reads it back: bare if nothing in it is special, else
-/// in single quotes.
-pub fn quote(word: &str) -> String {
-    let bare = !word.is_empty()
-        && !word.starts_with('#')
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-    match bare {
-        true => word.to_owned(),
-        false => format!("'{}'", word.replace('\'', "'\\''")),
-    }
-}
-
 /// The words that push a handle to `target`: `str %3 pane`.
 pub fn naming(target: AnyRef<WsId>) -> String {
-    match target {
-        AnyRef::Pane(p) => format!("str {p} pane"),
-        AnyRef::Tab(t) => format!("str {t} tab"),
-        AnyRef::Workspace(w) => format!("str {w} workspace"),
-    }
+    format!("str {} {}", describe(target), target.kind().name())
 }
 
-fn kind(target: AnyRef<WsId>) -> &'static str {
-    match target {
-        AnyRef::Pane(_) => "pane",
-        AnyRef::Tab(_) => "tab",
-        AnyRef::Workspace(_) => "workspace",
-    }
-}
-
-fn shown(target: AnyRef<WsId>) -> String {
-    match target {
-        AnyRef::Pane(p) => p.to_string(),
-        AnyRef::Tab(t) => t.to_string(),
-        AnyRef::Workspace(w) => w.to_string(),
-    }
+/// What `target` is, as a title says it: `pane %3`.
+fn about(target: AnyRef<WsId>) -> String {
+    format!("{} {}", target.kind().name(), describe(target))
 }
 
 impl Open {
@@ -162,7 +131,7 @@ impl Open {
         };
         Ok(match *self {
             Open::Menu(target) => {
-                let title = format!("{} {} {}", kind(target), shown(target), name(target)?);
+                let title = format!("{} {}", about(target), name(target)?);
                 Screen::List(ListScreen {
                     title,
                     items: menu(target),
@@ -173,17 +142,12 @@ impl Open {
                 })
             }
             Open::Rename(target) => Screen::Prompt(Prompt {
-                title: format!("rename {} {}", kind(target), shown(target)),
+                title: format!("rename {}", about(target)),
                 line: Line::new(name(target)?),
                 rename: Some(target),
             }),
             Open::Confirm(target) => Screen::Confirm {
-                question: format!(
-                    "close {} {} {}?",
-                    kind(target),
-                    shown(target),
-                    name(target)?
-                ),
+                question: format!("close {} {}?", about(target), name(target)?),
                 about: target,
             },
             Open::Prompt => Screen::Prompt(Prompt {
@@ -394,48 +358,33 @@ impl Screen {
     }
 
     fn list(&mut self, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
-        let last = list.items.len().saturating_sub(1);
-        let moved = match list_act(press) {
-            None => Some(list.selected),
-            Some(ListAct::Up) => Some(list.selected.saturating_sub(1)),
-            Some(ListAct::Down) => Some(list.selected.saturating_add(1).min(last)),
-            Some(ListAct::PageUp) => Some(list.selected.saturating_sub(PAGE)),
-            Some(ListAct::PageDown) => Some(list.selected.saturating_add(PAGE).min(last)),
-            Some(ListAct::First) => Some(0),
-            Some(ListAct::Last) => Some(last),
+        let (at, last) = (list.selected, list.items.len().saturating_sub(1));
+        let chosen = list.items.get(at);
+        let about = chosen.and_then(|item| item.about.as_ref());
+        // `r` and `x` in a menu, whose rows are about nothing, run nothing.
+        let (moved, code) = match list_act(press) {
+            None => (at, None),
+            Some(ListAct::Up) => (at.saturating_sub(1), None),
+            Some(ListAct::Down) => (at.saturating_add(1).min(last), None),
+            Some(ListAct::PageUp) => (at.saturating_sub(PAGE), None),
+            Some(ListAct::PageDown) => (at.saturating_add(PAGE).min(last), None),
+            Some(ListAct::First) => (0, None),
+            Some(ListAct::Last) => (last, None),
             Some(ListAct::Cancel) => return vec![Effect::Send(Act::Hide)],
-            Some(act @ (ListAct::Choose | ListAct::Rename | ListAct::Close)) => {
-                let chosen = list.items.get(list.selected);
-                let code = match (act, chosen) {
-                    (ListAct::Choose, Some(item)) => Some(item.code.clone()),
-                    (
-                        ListAct::Rename,
-                        Some(Item {
-                            about: Some(it), ..
-                        }),
-                    ) => Some(format!("me {it} rename-prompt")),
-                    (
-                        ListAct::Close,
-                        Some(Item {
-                            about: Some(it), ..
-                        }),
-                    ) => Some(format!("me {it} confirm-close")),
-                    (_, _) => None,
-                };
-                match code {
-                    Some(code) => return vec![Effect::Send(Act::Hide), Effect::Run(code)],
-                    // `r` and `x` in a menu, whose rows are about nothing.
-                    None => Some(list.selected),
-                }
-            }
+            Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
+            Some(ListAct::Rename) => (at, about.map(|it| format!("me {it} rename-prompt"))),
+            Some(ListAct::Close) => (at, about.map(|it| format!("me {it} confirm-close"))),
         };
-        let changed = moved != Some(list.selected);
-        list.selected = moved.unwrap_or(list.selected);
-        *self = Screen::List(list);
-        match (changed, self.panel()) {
-            (true, Some(panel)) => vec![Effect::Send(Act::Show(panel))],
-            (true | false, _) => Vec::new(),
+        if let Some(code) = code {
+            return vec![Effect::Send(Act::Hide), Effect::Run(code)];
         }
+        list.selected = moved;
+        *self = Screen::List(list);
+        let shown = self.panel().filter(|_| moved != at);
+        shown
+            .map(|p| Effect::Send(Act::Show(p)))
+            .into_iter()
+            .collect()
     }
 
     fn prompt(&mut self, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
@@ -444,7 +393,11 @@ impl Screen {
             LineAct::Submit => {
                 let text = prompt.line.text();
                 let code = match prompt.rename {
-                    Some(it) => Some(format!("{} str {} rename", naming(it), quote(&text))),
+                    Some(it) => Some(format!(
+                        "{} str {} rename",
+                        naming(it),
+                        crate::words::quote(&text)
+                    )),
                     None => Some(text).filter(|t| !t.trim().is_empty()),
                 };
                 std::iter::once(Effect::Send(Act::Hide))
@@ -478,12 +431,8 @@ impl Screen {
                 }
             };
         }
-        let letter = match press.plain_key() {
-            Some(Key::Char(c)) => Some(c.to_ascii_lowercase()),
-            _ => None,
-        };
         // `f` and `r` open the search line, forward or back.
-        if let Some(forward) = letter.and_then(|c| match c {
+        if let Some(forward) = letter(press).and_then(|c| match c {
             'f' => Some(true),
             'r' => Some(false),
             _ => None,

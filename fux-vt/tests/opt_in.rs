@@ -455,12 +455,13 @@ fn setting_reports_are_the_same_in_any_pieces() -> Result {
 /// xterm's dynamic colour queries (ctlseqs, "Operating System Commands",
 /// OSC 10 to 19): each `?` asks for the next colour from the one the OSC
 /// names, an event each, with how the query ended so the host answers in
-/// kind. Setting a colour and other OSC numbers are no query; nor is
-/// anything without `Feature::Events`.
+/// kind, its number read as a number (`010` is 10). Setting a colour and
+/// other OSC numbers are no query; nor is anything without
+/// `Feature::Events`.
 #[test]
 fn colour_queries_are_events() -> Result {
     let input = b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]10;?;?\x07\x1b]12;red;?\x07\
-        \x1b]10;#ffffff\x07\x1b]4;1;?\x07\x1b]19;?;?\x07\x1b]110;?\x07";
+        \x1b]10;#ffffff\x07\x1b]4;1;?\x07\x1b]19;?;?\x07\x1b]110;?\x07\x1b]010;?\x07";
     let record = run(EVENTS, input)?;
     assert_eq!(
         record.events,
@@ -471,6 +472,7 @@ fn colour_queries_are_events() -> Result {
             "color:11:bel",
             "color:13:bel",
             "color:19:bel",
+            "color:10:bel",
         ]
     );
     assert!(record.replies.is_empty(), "the host answers");

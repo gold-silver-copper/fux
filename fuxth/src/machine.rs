@@ -198,17 +198,10 @@ impl<A: AppValue> Machine<A> {
     /// Pushes a value: a suspended word's result.
     pub fn push(&mut self, value: Value<A>) -> Result<(), Error> {
         if self.stack.len() >= self.limits.stack {
-            return Err(self.fail(ErrorCode::StackOverflow, "the stack is full".into(), None));
+            return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
         }
         self.stack.push(value);
         Ok(())
-    }
-
-    /// The token the step just taken came from: where an error is.
-    /// The word it ran last, and where: the one a suspension is for, which
-    /// the host's failure in doing it may name.
-    pub fn at(&self) -> Option<Token> {
-        self.token()
     }
 
     /// The step each call under way is at, the outermost first: the word
@@ -245,10 +238,12 @@ impl<A: AppValue> Machine<A> {
         ours.then(|| self.code(code)?.tokens.get(step).cloned())?
     }
 
-    /// The step taken last: in a frame at its first step (a call just
-    /// begun, a loop just gone back), the call that began it, else the step
-    /// about to be taken.
-    fn token(&self) -> Option<Token> {
+    /// The token the step just taken came from: where an error is, and
+    /// the word a suspension is for, which the host's failure in doing it
+    /// may name. In a frame at its first step (a call just begun, a loop
+    /// just gone back), the call that began it, else the step about to be
+    /// taken.
+    pub fn at(&self) -> Option<Token> {
         let at = |code: Option<usize>, step: usize| {
             self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
         };
@@ -268,14 +263,8 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    fn fail(&self, code: ErrorCode, message: String, at: Option<Token>) -> Error {
-        let at = at.or_else(|| self.token());
-        Error {
-            code,
-            message,
-            place: at.as_ref().map(|t| t.place.clone()),
-            word: at.map(|t| t.text),
-        }
+    fn fail(&self, code: ErrorCode, message: impl Into<String>) -> Error {
+        Error::new(code, message, self.at().as_ref())
     }
 
     /// Ends the frame on top: its `let` names go with it.
@@ -328,10 +317,7 @@ impl<A: AppValue> Machine<A> {
                 Op::PickN(n) => self.pick(*n)?,
                 Op::RollN(n) => self.roll(*n)?,
                 Op::App(id) => {
-                    let (takes, gives) = program
-                        .vocabulary
-                        .word(*id)
-                        .map_or((0, 0..=0), |(_, takes, gives)| (takes, gives));
+                    let (takes, gives) = program.vocabulary.effect(*id);
                     let from = self.depth(takes)?;
                     let mut out = std::mem::take(&mut self.out);
                     out.clear();
@@ -341,15 +327,10 @@ impl<A: AppValue> Machine<A> {
                         at: from,
                     };
                     let done = host.call(*id, args, &mut out);
-                    let done =
-                        done.map_err(|f| self.fail(ErrorCode::Host(f.code), f.message, None))?;
+                    let done = done.map_err(|f| self.fail(ErrorCode::Host(f.code), f.message))?;
                     let given = (self.stack.len(), gives);
                     if self.stack.len().saturating_add(out.len()) > self.limits.stack {
-                        return Err(self.fail(
-                            ErrorCode::StackOverflow,
-                            "the stack is full".into(),
-                            None,
-                        ));
+                        return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
                     }
                     self.stack.append(&mut out);
                     self.out = out;
@@ -373,7 +354,7 @@ impl<A: AppValue> Machine<A> {
                     } else if self.frames.len() > self.limits.calls {
                         let message =
                             format!("calls nest past {}: recursion too deep", self.limits.calls);
-                        return Err(self.fail(ErrorCode::CallDepth, message, None));
+                        return Err(self.fail(ErrorCode::CallDepth, message));
                     }
                     let base = self.locals.len();
                     let slots = program.words.get(*id).map_or(0, |w| w.locals);
@@ -432,7 +413,7 @@ impl<A: AppValue> Machine<A> {
                         other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => {
                             let message =
                                 format!("each walks a string or a list, not {}", other.kind());
-                            return Err(self.fail(ErrorCode::Type, message, None));
+                            return Err(self.fail(ErrorCode::Type, message));
                         }
                     }
                 }
@@ -464,7 +445,7 @@ impl<A: AppValue> Machine<A> {
             Some(value) => self.push(value),
             None => {
                 let message = "read before its let ran".to_owned();
-                Err(self.fail(ErrorCode::Unset, message, None))
+                Err(self.fail(ErrorCode::Unset, message))
             }
         }
     }
@@ -482,7 +463,7 @@ impl<A: AppValue> Machine<A> {
             gives.start(),
             gives.end()
         );
-        Err(self.fail(ErrorCode::Contract, message, None))
+        Err(self.fail(ErrorCode::Contract, message))
     }
 
     fn jump(&mut self, to: usize) {
@@ -506,14 +487,14 @@ impl<A: AppValue> Machine<A> {
             " (inside list … end, which starts with an empty stack)"
         };
         let message = format!("takes {n} {values}, and the stack has {has}{inside}");
-        Err(self.fail(ErrorCode::StackUnderflow, message, None))
+        Err(self.fail(ErrorCode::StackUnderflow, message))
     }
 
     fn pop(&mut self) -> Result<Value<A>, Error> {
         self.depth(1)?;
         self.stack
             .pop()
-            .ok_or_else(|| self.fail(ErrorCode::StackUnderflow, "takes 1 value".into(), None))
+            .ok_or_else(|| self.fail(ErrorCode::StackUnderflow, "takes 1 value"))
     }
 
     /// The top two values, the deeper first.
@@ -530,7 +511,7 @@ impl<A: AppValue> Machine<A> {
             Value::Bool(flag) => Ok(flag),
             other @ (Value::Int(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
                 let message = format!("takes a boolean (from eq or lt), not {}", other.kind());
-                Err(self.fail(ErrorCode::Type, message, None))
+                Err(self.fail(ErrorCode::Type, message))
             }
         }
     }
@@ -540,21 +521,21 @@ impl<A: AppValue> Machine<A> {
             (Value::Int(a), Value::Int(b)) => Ok((a, b)),
             (a, b) => {
                 let message = format!("takes two integers, not {} and {}", a.kind(), b.kind());
-                Err(self.fail(ErrorCode::Type, message, None))
+                Err(self.fail(ErrorCode::Type, message))
             }
         }
     }
 
-    fn type_error(&self, message: String) -> Error {
-        self.fail(ErrorCode::Type, message, None)
+    fn type_error(&self, message: impl Into<String>) -> Error {
+        self.fail(ErrorCode::Type, message)
     }
 
-    fn range_error(&self, message: String) -> Error {
-        self.fail(ErrorCode::Range, message, None)
+    fn range_error(&self, message: impl Into<String>) -> Error {
+        self.fail(ErrorCode::Range, message)
     }
 
-    fn too_long(&self, message: String) -> Error {
-        self.fail(ErrorCode::TooLong, message, None)
+    fn too_long(&self, message: impl Into<String>) -> Error {
+        self.fail(ErrorCode::TooLong, message)
     }
 
     /// Takes a count: an integer, 0 or more.
@@ -619,11 +600,18 @@ impl<A: AppValue> Machine<A> {
         let from = self.depth(n.saturating_add(1))?;
         match self.stack.get(from).cloned() {
             Some(value) => self.push(value),
-            None => Err(self.fail(
-                ErrorCode::StackUnderflow,
-                "pick reached past the stack".into(),
-                None,
-            )),
+            None => Err(self.fail(ErrorCode::StackUnderflow, "pick reached past the stack")),
+        }
+    }
+
+    /// Two integers taken and `op`'s result on them pushed: past what an
+    /// integer holds fails, and so does a division by zero.
+    fn arithmetic(&mut self, op: fn(i64, i64) -> Option<i64>) -> Result<(), Error> {
+        let (a, b) = self.ints()?;
+        match op(a, b) {
+            Some(n) => self.push(Value::Int(n)),
+            None if b == 0 => Err(self.fail(ErrorCode::DivByZero, "division by zero")),
+            None => Err(self.fail(ErrorCode::Overflow, "past what an integer holds")),
         }
     }
 
@@ -647,43 +635,10 @@ impl<A: AppValue> Machine<A> {
                 let n = self.count("roll")?;
                 self.roll(n)
             }
-            Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div => {
-                let (a, b) = self.ints()?;
-                if builtin == Builtin::Div && b == 0 {
-                    return Err(self.fail(ErrorCode::DivByZero, "division by zero".into(), None));
-                }
-                let n = match builtin {
-                    Builtin::Add => a.checked_add(b),
-                    Builtin::Sub => a.checked_sub(b),
-                    Builtin::Mul => a.checked_mul(b),
-                    Builtin::Div => a.checked_div(b),
-                    Builtin::Drop
-                    | Builtin::Pick
-                    | Builtin::Roll
-                    | Builtin::Lt
-                    | Builtin::Eq
-                    | Builtin::Len
-                    | Builtin::At
-                    | Builtin::Slice
-                    | Builtin::Concat
-                    | Builtin::Push
-                    | Builtin::Put
-                    | Builtin::Code
-                    | Builtin::Char
-                    | Builtin::Kind
-                    | Builtin::String
-                    | Builtin::Print
-                    | Builtin::Fail => None,
-                };
-                match n {
-                    Some(n) => self.push(Value::Int(n)),
-                    None => Err(self.fail(
-                        ErrorCode::Overflow,
-                        "past what an integer holds".into(),
-                        None,
-                    )),
-                }
-            }
+            Builtin::Add => self.arithmetic(i64::checked_add),
+            Builtin::Sub => self.arithmetic(i64::checked_sub),
+            Builtin::Mul => self.arithmetic(i64::checked_mul),
+            Builtin::Div => self.arithmetic(i64::checked_div),
             Builtin::Lt => {
                 let (a, b) = self.pop2()?;
                 self.walk(if a.weight() < b.weight() { &a } else { &b });
@@ -830,11 +785,11 @@ impl<A: AppValue> Machine<A> {
                 self.walk(&x);
                 let text = x.text();
                 host.print(&text)
-                    .map_err(|f| self.fail(ErrorCode::Host(f.code), f.message, None))
+                    .map_err(|f| self.fail(ErrorCode::Host(f.code), f.message))
             }
             Builtin::Fail => {
                 let x = self.pop()?;
-                Err(self.fail(ErrorCode::Fail, x.text(), None))
+                Err(self.fail(ErrorCode::Fail, x.text()))
             }
         }
     }
@@ -885,9 +840,7 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             if strings && lists {
-                return Err(
-                    self.type_error("concat takes a list of strings or of lists, not both".into())
-                );
+                return Err(self.type_error("concat takes a list of strings or of lists, not both"));
             }
         }
         if strings {

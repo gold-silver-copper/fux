@@ -3,6 +3,7 @@ use crate::bytes::ByteQueue;
 use crate::id::PaneId;
 use crate::process::Child;
 use fux_vt::Feature;
+use fuxix::process::Activity;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -104,12 +105,9 @@ impl InputQueue {
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
-        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
-        let used = self.bytes.len().saturating_add(held);
-        if self.refusing {
-            0
-        } else {
-            INPUT_BYTES.saturating_sub(used)
+        match self.refusing {
+            true => 0,
+            false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
     /// Queues terminal replies, as `push`: a program that is not reading
@@ -497,10 +495,7 @@ pub struct Pane {
     pub record: crate::log::Log,
     /// Where the last action's input began (or the program started):
     /// what came since is what it brought.
-    pub since: crate::log::Seq,
-    /// Then: how many shell commands had ended, and whether the full
-    /// screen was in use.
-    pub since_was: (u64, bool),
+    pub since: Start,
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new.
     pub before: std::collections::HashMap<fux_vt::RowId, Cells>,
@@ -548,6 +543,26 @@ const POLL: Duration = Duration::from_millis(2);
 /// How long after a piece is written the program may be taken to have it
 /// without drawing anything: the kernel hands it on within that.
 const FLOOR: Duration = Duration::from_millis(2);
+
+/// Where a wait counts from: a number in the pane's journal, and then, how
+/// many shell commands had ended and whether the full screen was in use.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Start {
+    pub from: crate::log::Seq,
+    pub finished: u64,
+    pub on_full: bool,
+}
+
+impl Start {
+    /// Counting from `from`, `screen` as it is now.
+    pub fn at(from: crate::log::Seq, screen: &fux_vt::Screen) -> Start {
+        Start {
+            from,
+            finished: screen.commands().finished,
+            on_full: screen.mode(fux_vt::Mode::AlternateScreen),
+        }
+    }
+}
 
 /// Input written a piece at a time (`crate::log::Unit`), each once the
 /// program took the one before (it reads its terminal again, every key
@@ -630,10 +645,10 @@ impl Pane {
         size: fux_vt::Size,
         history: usize,
     ) -> Result<Pane, Error> {
-        let parser = recording(
-            fux_vt::Parser::with_options(size, history, OPTIONS)
-                .map_err(|source| Error::Terminal { size, source })?,
-        );
+        let mut parser = fux_vt::Parser::with_options(size, history, OPTIONS)
+            .map_err(|source| Error::Terminal { size, source })?;
+        // What it prints is recorded (`Pane::record`).
+        parser.record_prints(true);
         let mark = parser.screen().mark();
         Ok(Pane {
             id,
@@ -652,8 +667,7 @@ impl Pane {
             changed_at: Instant::now(),
             written_at: None,
             record: crate::log::Log::new(crate::log::JOURNAL_BYTES),
-            since: crate::log::Seq::default(),
-            since_was: (0, false),
+            since: Start::default(),
             before: std::collections::HashMap::new(),
             seen: std::collections::HashMap::new(),
             before_shows: std::collections::HashMap::new(),
@@ -797,7 +811,8 @@ impl Pane {
             let screen = self.parser.screen();
             let mut echo: Vec<_> = (prints.iter())
                 .map(|print| {
-                    let line = || first_row(screen, print.row).unwrap_or(print.row);
+                    let line =
+                        || (screen.row_by_id(print.row)).map_or(print.row, |r| line_top(r).id());
                     self.classes.echo(origin, &print, line, reads)
                 })
                 .collect();
@@ -829,11 +844,8 @@ impl Pane {
             // printed on no more, and finding one there would read all of
             // history); rows scrolled off since are let go.
             if tell {
-                let window = screen.window();
-                let rows: std::collections::HashMap<_, _> = (0..window.rows())
-                    .filter_map(|y| window.row(y))
-                    .map(|row| (row.id(), row))
-                    .collect();
+                let rows: std::collections::HashMap<_, _> =
+                    live(screen).map(|(_, row)| (row.id(), row)).collect();
                 let mut last = None;
                 for print in prints.iter() {
                     if last.replace(print.row) == Some(print.row) {
@@ -843,9 +855,7 @@ impl Pane {
                         self.seen.entry(print.row).or_default().read(row);
                     }
                 }
-                if self.seen.len() > rows.len().saturating_mul(4) {
-                    self.seen.retain(|id, _| rows.contains_key(id));
-                }
+                prune(&mut self.seen, screen);
             } else {
                 self.seen.clear();
             }
@@ -995,19 +1005,13 @@ impl Pane {
 
     /// An action's input begins: what comes after is what it brought.
     pub fn note_input(&mut self) {
-        self.since = crate::log::Seq(self.parser.tick());
-        let screen = self.parser.screen();
-        self.since_was = (
-            screen.commands().finished,
-            screen.mode(fux_vt::Mode::AlternateScreen),
-        );
+        self.since = Start::at(crate::log::Seq(self.parser.tick()), self.parser.screen());
         self.record
-            .push(self.since, Instant::now(), crate::log::Event::Action);
+            .push(self.since.from, Instant::now(), crate::log::Event::Action);
         self.redraws = 0;
         self.before = rows_now(self.screen());
-        let window = self.screen().window();
-        self.before_shows = (0..window.rows())
-            .filter_map(|y| window.row(y).map(|row| (row.id(), (y, shows(&row)))))
+        self.before_shows = (live(self.screen()))
+            .map(|(y, row)| (row.id(), (y, shows(&row))))
             .collect();
         self.shown_rows.clone_from(&self.before_shows);
         self.seen.clear();
@@ -1084,7 +1088,7 @@ impl Pane {
     /// since is not all on the screen or in history. What they printed is
     /// in the journal (`record`).
     pub fn cut(&self) -> bool {
-        self.screen().let_go() > self.since.0
+        self.screen().let_go() > self.since.from.0
     }
 
     /// The text typed on the line since a key last submitted one.
@@ -1101,16 +1105,28 @@ impl Pane {
 
     /// Whether the program took the input written at `at`, by `now`: every
     /// byte written and read, its output read by fux, and it reads its
-    /// terminal again.
+    /// terminal again, with no time limit. After a lone Escape (`escape`),
+    /// only where the system says it reads, not idle on something it does
+    /// not name: a program telling a lone Escape from a key's sequence
+    /// waits in a read with a timer.
     fn taken(&self, at: Instant, now: Instant, escape: bool) -> bool {
         let Process::Reading(child) = &self.process else {
             return true;
         };
         let drawn = self.changed_at > at || now >= crate::after(at, FLOOR);
+        // The program asked last, after the checks that read no `/proc`.
+        let taking = || crate::ready::taking(child, (self.since_key(now), self.answered()));
         self.input.is_empty()
             && drawn
             && fuxix::io::unread(&child.master).unwrap_or(0) == 0
-            && crate::ready::took_keys(child, (self.since_key(now), self.answered()), escape)
+            && match taking() {
+                Some(Activity::Reading) => true,
+                Some(Activity::Idle) => !escape,
+                Some(
+                    Activity::Busy | Activity::Polling | Activity::Waiting | Activity::Unknown,
+                )
+                | None => false,
+            }
     }
 
     /// Writes a piece of input, `unit` its kind, and records it: its
@@ -1120,33 +1136,34 @@ impl Pane {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
         let keys = (self.since_key(now), self.answered());
-        let reading = child.is_some_and(|child| {
-            self.input.is_empty() && crate::ready::took_keys(child, keys, false)
-        });
+        let taking = child.and_then(|child| crate::ready::taking(child, keys));
+        let reading =
+            self.input.is_empty() && matches!(taking, Some(Activity::Reading | Activity::Idle));
         // Typed ahead: a shell fux marks says whether it reads its line.
         // Another program's line typed ahead ends at Enter: what it draws
-        // after is output (`docs/agents.md`, what fux cannot tell).
+        // after is output (`docs/agents.md`, what fux cannot tell). Else
+        // the keys go to a program that reads them at once or within a
+        // time limit (a read with a timer, or one thread reading while
+        // another sleeps).
         let ahead = match self.nonce {
             Some(_) => !self.at_prompt(),
             None => {
                 unit == crate::log::Unit::Edit
-                    && !child.is_some_and(|child| crate::ready::reads_keys(child, keys))
+                    && !matches!(
+                        taking,
+                        Some(Activity::Reading | Activity::Polling | Activity::Idle)
+                    )
             }
         };
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
             .map(|t| t.modes());
-        let seq = crate::log::InputSeq(crate::log::Seq(self.parser.tick()));
+        let seq = crate::log::Seq(self.parser.tick());
         if unit == crate::log::Unit::Submit {
             self.parser.note_submit();
         }
         let line = cursor_line(self.screen());
-        let input = crate::classify::Input {
-            seq,
-            unit,
-            line,
-            ahead,
-        };
+        let input = crate::classify::Input { unit, line, ahead };
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
         let _ = self.input.push(&bytes);
@@ -1154,7 +1171,7 @@ impl Pane {
             unit,
             bytes: bytes.into(),
         };
-        self.record.push(seq.0, now, event);
+        self.record.push(seq, now, event);
         let gap = if reading { TAKE } else { PACE };
         self.pace.written = Some((now, crate::after(now, gap), escape, exact));
         self.pace.until = Some(crate::after(now, if reading { POLL } else { PACE }));
@@ -1169,11 +1186,6 @@ impl Pane {
         process: Option<Process>,
         history: usize,
     ) -> Result<Process, Error> {
-        let size = self.size();
-        let mut parser = fux_vt::Parser::with_options(size, history, OPTIONS)
-            .map_err(|source| Error::Terminal { size, source })?;
-        parser.require_mark_nonce(self.nonce.as_deref().map(str::as_bytes));
-        self.parser = recording(parser);
         // Named after its program, unless renamed.
         let named = |launch: &Launch| {
             launch.argv.first().map_or_else(String::new, |p| {
@@ -1182,28 +1194,26 @@ impl Pane {
                     .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
             })
         };
-        if matches!(&self.runs, Runs::Program(old) if named(old) == self.name) {
-            self.name = named(&launch);
-        }
-        self.title = Title::default();
-        self.input = InputQueue::default();
-        self.frame = None;
-        self.runs = Runs::Program(launch);
-        self.alerts = Alerts::default();
-        self.revision = self.revision.wrapping_add(1);
-        self.starts = self.starts.wrapping_add(1);
-        self.mouse_held = None;
-        self.changed_at = Instant::now();
-        self.written_at = None;
-        // A new program, its own journal: a wait counts from its start.
-        self.record = crate::log::Log::new(self.record.budget);
-        self.classes = crate::classify::Classes::default();
-        self.pace = Pace::default();
-        self.note_input();
-        Ok(std::mem::replace(
-            &mut self.process,
-            process.unwrap_or(Process::Absent),
-        ))
+        let name = match matches!(&self.runs, Runs::Program(old) if named(old) == self.name) {
+            true => named(&launch),
+            false => self.name.clone(),
+        };
+        let runs = Runs::Program(launch);
+        // A new program, its own pane: a wait counts from its start. Kept
+        // are what the session has yet to take from the old one (a bell, a
+        // copy), its colours, nonce, log and journal budget, and its counts.
+        let mut fresh = Pane::new(self.id, name, runs, self.size(), history)?;
+        fresh.mark_with(self.nonce.take());
+        fresh.record.set_budget(self.record.budget);
+        fresh.colours = std::mem::take(&mut self.colours);
+        fresh.bell = self.bell;
+        fresh.copied = self.copied.take();
+        fresh.log = self.log.take();
+        fresh.revision = self.revision.wrapping_add(1);
+        fresh.starts = self.starts.wrapping_add(1);
+        fresh.process = process.unwrap_or(Process::Absent);
+        fresh.note_input();
+        Ok(std::mem::replace(self, fresh).process)
     }
 
     /// Notes, after the screen was read into at `now`, whether what it
@@ -1223,15 +1233,7 @@ impl Pane {
             let now_shows = (y, shows(&row));
             changed |= self.shown_rows.insert(row.id(), now_shows) != Some(now_shows);
         }
-        let rows = usize::from(screen.size().rows());
-        if self.shown_rows.len() > rows.saturating_mul(4) {
-            let window = screen.window();
-            let live: std::collections::HashSet<_> = (0..window.rows())
-                .filter_map(|y| window.row(y))
-                .map(|r| r.id())
-                .collect();
-            self.shown_rows.retain(|id, _| live.contains(id));
-        }
+        prune(&mut self.shown_rows, screen);
         self.shown = (screen.mark(), cursor);
         if changed {
             self.changed_at = now;
@@ -1344,10 +1346,8 @@ impl Cells {
                 }
                 self.at.push(start);
             }
-            match c.contents() {
-                _ if c.is_wide_continuation() => {}
-                text if c.has_contents() && text != fux_vt::PLACEHOLDER => self.text.push_str(text),
-                _ => self.text.push(' '),
+            if !c.is_wide_continuation() {
+                self.text.push_str(c.shown());
             }
         }
     }
@@ -1411,35 +1411,39 @@ pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
 
 /// The screen's rows as they read now, by row.
 pub fn rows_now(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, Cells> {
-    let window = screen.window();
-    (0..window.rows())
-        .filter_map(|y| window.row(y))
-        .map(|row| (row.id(), row_cells(&row)))
+    live(screen)
+        .map(|(_, row)| (row.id(), row_cells(&row)))
         .collect()
+}
+
+/// The screen's rows, from the top, and where each is.
+fn live(screen: &fux_vt::Screen) -> impl Iterator<Item = (u16, fux_vt::Row<'_>)> {
+    let window = screen.window();
+    (0..window.rows()).filter_map(move |y| Some((y, window.row(y)?)))
+}
+
+/// Past four times the screen's rows, keeps in `map` only the rows on the
+/// screen: rows scrolled off are printed on no more.
+pub fn prune<V>(map: &mut std::collections::HashMap<fux_vt::RowId, V>, screen: &fux_vt::Screen) {
+    if map.len() > usize::from(screen.size().rows()).saturating_mul(4) {
+        let rows: std::collections::HashSet<_> = live(screen).map(|(_, row)| row.id()).collect();
+        map.retain(|id, _| rows.contains(id));
+    }
 }
 
 /// The first row of the line the cursor is on (a line wider than the
 /// screen wraps from rows above).
 fn cursor_line(screen: &fux_vt::Screen) -> Option<fux_vt::RowId> {
-    first_row(
-        screen,
-        screen.window().row(screen.cursor_position().0)?.id(),
-    )
+    let row = screen.window().row(screen.cursor_position().0)?;
+    Some(line_top(row).id())
 }
 
-/// The first row of the line row `id` is on, if it is kept.
-pub fn first_row(screen: &fux_vt::Screen, id: fux_vt::RowId) -> Option<fux_vt::RowId> {
-    let mut row = screen.row_by_id(id)?;
+/// The first row of the line `row` is on.
+pub fn line_top(mut row: fux_vt::Row<'_>) -> fux_vt::Row<'_> {
     while let Some(up) = row.above().filter(fux_vt::Row::wrapped) {
         row = up;
     }
-    Some(row.id())
-}
-
-/// `parser`, recording what it prints, as a pane's does (`Pane::record`).
-fn recording(mut parser: fux_vt::Parser) -> fux_vt::Parser {
-    parser.record_prints(true);
-    parser
+    row
 }
 
 #[cfg(test)]
@@ -1597,7 +1601,7 @@ mod tests {
             pane.output(b"\x1b[H\x1b[L");
         }
         assert!(
-            pane.record.lost_after(pane.since),
+            pane.record.lost_after(pane.since.from),
             "{} kept",
             pane.record.held()
         );

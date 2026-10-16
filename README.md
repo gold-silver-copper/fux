@@ -61,8 +61,8 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
   with the file, line and word, and exits 1; an action's or wait's own
   status is the exit status: 3 the program exited first, 4 the pane closed,
   7 the program reads its terminal and the waited text has not come, 124
-  still busy at the time limit (`SECS timeout`: 10 for an action, 60 for a
-  wait; `0 timeout` answers at once). A wait met by its program's exit
+  still busy at the time limit (`SECS timeout`; the `wait-seconds` setting,
+  30, by default; `0 timeout` answers at once). A wait met by its program's exit
   (`wait-exit`) is no failure: the run exits with the program's own status,
   as `timeout(1)` does.
 - `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
