@@ -15,15 +15,67 @@ pub trait AppValue: Clone + PartialEq {
     /// What kind it is, as `kind` says it: "pane". By default its
     /// `kind` without the article.
     fn name(&self) -> &'static str {
-        let kind = self.kind();
-        kind.strip_prefix("an ")
-            .or_else(|| kind.strip_prefix("a "))
-            .unwrap_or(kind)
+        bare(self.kind())
     }
     /// How `string` and `print` show it.
     fn text(&self) -> String {
         self.kind().to_owned()
     }
+}
+
+/// A kind said without its article: "an integer" as "integer".
+fn bare(kind: &str) -> &str {
+    kind.strip_prefix("an ")
+        .or_else(|| kind.strip_prefix("a "))
+        .unwrap_or(kind)
+}
+
+/// Expands `Variant "said", ...`, a row for each variant of `Value`, to the
+/// enum `Kind` of those variants; `of`, a value's; `BITS`, every kind's
+/// `bit` (`Kind::Int.bit() | …`); and `said`, each one's column:
+/// `Int "an integer",` gives `Kind::Int`, said "an integer".
+macro_rules! kinds {
+    ($($variant:ident $said:literal,)*) => {
+        /// What kind a value is, without what an application's value holds.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(crate) enum Kind {
+            $($variant,)*
+        }
+
+        impl Kind {
+            pub(crate) const ALL: [Kind; [$($said),*].len()] = [$(Kind::$variant),*];
+
+            /// Its bit, in a set of kinds.
+            pub(crate) const fn bit(self) -> u8 {
+                1 << self as u8
+            }
+
+            /// Every kind's bit.
+            pub(crate) const BITS: u8 = 0 $(| Kind::$variant.bit())*;
+
+            pub(crate) fn of<A>(value: &Value<A>) -> Kind {
+                match value {
+                    $(Value::$variant(_) => Kind::$variant,)*
+                }
+            }
+
+            /// As an error says it: "an integer". An application's value
+            /// says its own kind, where the value is known.
+            pub(crate) fn said(self) -> &'static str {
+                match self {
+                    $(Kind::$variant => $said,)*
+                }
+            }
+        }
+    };
+}
+
+kinds! {
+    Int "an integer",
+    Bool "a boolean",
+    Str "a string",
+    List "a list",
+    App "an application value",
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -218,11 +270,10 @@ impl<A: AppValue> Value<A> {
     /// What kind it is, as an error says it.
     pub fn kind(&self) -> &'static str {
         match self {
-            Value::Int(_) => "an integer",
-            Value::Bool(_) => "a boolean",
-            Value::Str(_) => "a string",
-            Value::List(_) => "a list",
             Value::App(a) => a.kind(),
+            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) => {
+                Kind::of(self).said()
+            }
         }
     }
 
@@ -230,11 +281,8 @@ impl<A: AppValue> Value<A> {
     /// `list`, or the application's kind without its article (`pane`).
     pub fn kind_name(&self) -> &'static str {
         match self {
-            Value::Int(_) => "integer",
-            Value::Bool(_) => "boolean",
-            Value::Str(_) => "string",
-            Value::List(_) => "list",
             Value::App(a) => a.name(),
+            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) => bare(self.kind()),
         }
     }
 

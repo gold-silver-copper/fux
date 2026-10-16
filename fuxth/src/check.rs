@@ -15,7 +15,7 @@
 //! and a call applies that summary.
 use crate::compile::{Builtin, Op, Program, Steps};
 use crate::error::{Code, Error, Wants, underflow};
-use crate::value::Value;
+use crate::value::Kind;
 use std::collections::BTreeSet;
 
 /// Past any real stack: an unbounded depth.
@@ -32,39 +32,32 @@ const WIDEN_AFTER: u32 = 3;
 /// taken as anything at all.
 const RECURSION_ROUNDS: u32 = 8;
 
-/// The kinds a value may be: a set.
+/// The kinds a value may be: a set, a bit for each `Kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Kinds(u8);
 
-const INT: Kinds = Kinds(1);
-const BOOL: Kinds = Kinds(2);
-const STR: Kinds = Kinds(4);
-const LIST: Kinds = Kinds(8);
-const APP: Kinds = Kinds(16);
-const ANY: Kinds = Kinds(31);
+const INT: Kinds = Kinds::one(Kind::Int);
+const BOOL: Kinds = Kinds::one(Kind::Bool);
+const STR: Kinds = Kinds::one(Kind::Str);
+const LIST: Kinds = Kinds::one(Kind::List);
+const ANY: Kinds = Kinds(Kind::BITS);
 /// A string or a list.
-const SEQ: Kinds = Kinds(12);
+const SEQ: Kinds = STR.union(LIST);
 
 impl Kinds {
-    fn of<A>(value: &Value<A>) -> Kinds {
-        match value {
-            Value::Int(_) => INT,
-            Value::Bool(_) => BOOL,
-            Value::Str(_) => STR,
-            Value::List(_) => LIST,
-            Value::App(_) => APP,
-        }
+    const fn one(kind: Kind) -> Kinds {
+        Kinds(kind.bit())
     }
 
-    fn union(self, other: Kinds) -> Kinds {
+    const fn union(self, other: Kinds) -> Kinds {
         Kinds(self.0 | other.0)
     }
 
-    fn and(self, other: Kinds) -> Kinds {
+    const fn and(self, other: Kinds) -> Kinds {
         Kinds(self.0 & other.0)
     }
 
-    fn may_be(self, kind: Kinds) -> bool {
+    const fn may_be(self, kind: Kinds) -> bool {
         self.0 & kind.0 != 0
     }
 
@@ -73,17 +66,9 @@ impl Kinds {
         if self == ANY {
             return "any value".to_owned();
         }
-        let names = [
-            (INT, "an integer"),
-            (BOOL, "a boolean"),
-            (STR, "a string"),
-            (LIST, "a list"),
-            (APP, "an application value"),
-        ];
-        let said: Vec<&str> = names
-            .iter()
-            .filter(|(kind, _)| self.may_be(*kind))
-            .map(|(_, name)| *name)
+        let said: Vec<&str> = (Kind::ALL.into_iter())
+            .filter(|kind| self.may_be(Kinds::one(*kind)))
+            .map(Kind::said)
             .collect();
         said.join(" or ")
     }
@@ -736,7 +721,7 @@ impl<'a, A> Unit<'a, A> {
     /// One step: whether a run can go on past it.
     fn step(&self, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
         match op {
-            Op::Push(value) => state.push(Kinds::of(value)),
+            Op::Push(value) => state.push(Kinds::one(Kind::of(value))),
             Op::Builtin(builtin) => return builtin_step(*builtin, state),
             Op::PickN(n) => {
                 let taken = state.pop(n.saturating_add(1))?;
@@ -821,8 +806,8 @@ impl<'a, A> Unit<'a, A> {
                     if let (Some(exit), Some(known)) = (exit.as_mut(), does.exit.as_ref()) {
                         for (kinds, better) in exit.top.iter_mut().rev().zip(known.top.iter().rev())
                         {
-                            let both = Kinds(kinds.0 & better.0);
-                            if both.0 != 0 {
+                            let both = kinds.and(*better);
+                            if both != Kinds(0) {
                                 *kinds = both;
                             }
                         }
@@ -1004,7 +989,7 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
         }
         Builtin::Lt => {
             let (a, b) = (at(0), at(1));
-            if !a.and(b).may_be(Kinds(INT.0 | SEQ.0)) {
+            if !a.and(b).may_be(INT.union(SEQ)) {
                 let got = format!("{} and {}", a.describe(), b.describe());
                 return Err(Failing::Type(Wants::Ordered.not(got)));
             }
