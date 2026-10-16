@@ -142,7 +142,7 @@ fn activity(
         };
         t.timed_reads(since)
     };
-    match tty.map(|tty| Host::activity(group, tty, leader)) {
+    match tty.map(|tty| Host::activity(group, tty)) {
         // A read with a time limit is a poll: the program goes on alone
         // when it runs out.
         Some(Activity::Reading)

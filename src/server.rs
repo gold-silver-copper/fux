@@ -7,7 +7,7 @@ use crate::id::{ClientId, PaneId};
 use crate::json::Json;
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
-use crate::process::Leader;
+use crate::process::{Leader, Pid};
 use crate::protocol::{
     Attach, AttachedFrame, Decoder, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply, Request,
     Role, ServerFrame,
@@ -857,6 +857,10 @@ impl std::error::Error for Error {
 pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let listening = Listening::open(socket)?;
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
+    // Orphans the panes' programs leave stay the server's to read and reap.
+    if let Err(errno) = fuxix::process::adopt_orphans() {
+        log(&format!("adopting orphans: {errno}"));
+    }
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
     let mut session = Session::new(
@@ -1942,9 +1946,17 @@ impl Server {
     }
 
     /// Checks every killed program and every pane's, since signals
-    /// coalesce.
+    /// coalesce, and reaps the orphans the server adopted, every child
+    /// that is no pane's leader.
     fn reap(&mut self) {
         self.reap_killed();
+        let session = &self.session;
+        let panes = session.panes.values().filter_map(|p| p.process.child());
+        let leaders: Vec<Pid> = (panes.chain(session.dying.values().map(|d| &d.child)))
+            .map(|child| child.leader.pid())
+            .chain(self.killed.iter().map(Leader::pid))
+            .collect();
+        fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
         let exited: Vec<(PaneId, crate::process::Ended)> = self
             .session
             .panes

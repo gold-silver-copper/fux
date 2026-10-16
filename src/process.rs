@@ -138,11 +138,12 @@ impl Leader {
     /// Signals its process group and every other process in its session.
     /// A background job started by dash sits in its own group, out of reach
     /// of the group signal, but stays in the session (bevy-final finding
-    /// 013).
+    /// 013). The session is looked for in the server's own tree, which
+    /// keeps the orphans its panes leave (`fuxix::process::tree`).
     pub fn hang_up(&self) {
         let _ = fuxix::process::kill_group(self.0, Signal::Hup);
         // Checked just before each signal: a process that left is skipped.
-        for pid in fuxix::process::processes() {
+        for pid in fuxix::process::tree() {
             if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
                 let _ = fuxix::process::kill(pid, Signal::Hup);
             }
@@ -160,7 +161,7 @@ impl Leader {
         // (`nohup cmd &`) too. A program that ended by itself leaves those
         // it meant to (`nohup job & exit`).
         if self.1 {
-            for pid in fuxix::process::processes() {
+            for pid in fuxix::process::tree() {
                 if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
                     let _ = fuxix::process::kill(pid, Signal::Kill);
                 }

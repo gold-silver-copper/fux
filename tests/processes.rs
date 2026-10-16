@@ -254,6 +254,43 @@ fn zombies_of(pid: u32) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// A program a pane's program started and left (a double fork) becomes the
+/// server's child, not init's (Linux): it is still seen reading the pane's
+/// terminal, not guessed from a quiet screen, and once it exits the server
+/// reaps it, leaving no zombie.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
+    let server = Server::start("")?;
+    let (fifo, pidfile) = (server.dir.join("fifo"), server.dir.join("orphan"));
+    // The subshell starts cat and exits; the shell waits on a pipe, not
+    // the terminal, so only cat can make the pane read.
+    let code = "mkfifo \"$0\"; (cat </dev/tty & echo $! > \"$1\"); read x <> \"$0\"";
+    let (fifo, pidfile) = (fifo.to_string_lossy(), pidfile.to_string_lossy());
+    let answer = server.ok(&[
+        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "str", &fifo,
+        "arg", "str", &pidfile, "arg", "0", "timeout", "run",
+    ])?;
+    let pane = answer
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let orphan = pid_in(std::path::Path::new(&*pidfile))?;
+    let _reap = Reap(vec![orphan]);
+    // Seen only if the server adopted it: the probe walks its own tree.
+    eventually("the pane reading", || {
+        Ok(server
+            .ok(&["str", &pane, "pane", "str", "state", "get"])?
+            .trim()
+            == "reading")
+    })?;
+    // End of input: cat exits, and the server, its parent, reaps it.
+    server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
+    let gone = fuxix::process::Pid::from_raw(orphan).ok_or("a pid")?;
+    eventually("the orphan reaped", || Ok(!fuxix::process::exists(gone)))
+}
+
 /// A command line too long to type into a new pane's shell is refused
 /// before the shell starts, so no process is left behind. A pane's input
 /// queue holds a little more than a frame, so the request carrying the

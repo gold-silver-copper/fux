@@ -222,8 +222,10 @@ Process lifecycle, from the lessons:
   (`exit`, Ctrl-D) or something kills it, never merely because a command
   run in it ended.
 - **Close:** SIGHUP to the leader's group and to every process in its session.
-  The session is found through `/proc` on Linux and `proc_listallpids` on macOS
-  (013), so a job started by dash survives only if it ignores the hangup, as
+  The session is looked for in the server's own process tree on Linux, where
+  the server adopts the orphans its panes leave (`PR_SET_CHILD_SUBREAPER`) and
+  reaps them, and among every process (`proc_listallpids`) on macOS, which has
+  no subreaper (013), so a job started by dash survives only if it ignores the hangup, as
   under a real terminal. Then a 100 ms timer on the loop, never a sleep, closes
   the master, SIGKILLs the group and reaps the leader. Only IDs of unreaped
   children are ever signalled: the leader stays unreaped until then, so its
