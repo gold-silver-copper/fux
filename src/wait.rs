@@ -575,7 +575,7 @@ fn tail(pane: &Pane, n: usize) -> Vec<String> {
     let last = |rows: fux_vt::Rows<'_>| -> Vec<String> {
         let all = lines(rows);
         let kept: Vec<String> = (all.iter().rev())
-            .map(|l| l.text.trim_end().to_owned())
+            .map(|l| l.trim_end().to_owned())
             .filter(|l| !l.is_empty())
             .take(n)
             .collect();
@@ -750,11 +750,7 @@ impl Watch {
         if let Some(why) = self.unseen() {
             return Some(why);
         }
-        let screen = pane.screen();
-        let shown = lines(screen.rows().skip(screen_top(screen)));
-        let there = shown
-            .iter()
-            .any(|l| texts.iter().any(|t| found_in(&l.text, t) > 0));
+        let there = texts.iter().any(|t| on_screen(pane.screen(), t));
         there.then_some(
             "the text is on the screen, but on a line that reads as it did when the wait \
              began (nothing printed it since; drawn again the same, it brings nothing new); \
@@ -816,8 +812,7 @@ impl Watch {
             match until {
                 Until::Text(_) => {}
                 Until::Gone(text) => {
-                    let shown = lines(screen.rows().skip(screen_top(screen)));
-                    let present = shown.iter().any(|l| found_in(&l.text, text) > 0);
+                    let present = on_screen(screen, text);
                     // Shown between two looks (drawn over, erased, scrolled
                     // away): printed since, though gone now.
                     // It went no earlier than the last piece that printed it.
@@ -1060,11 +1055,10 @@ const CUT_END: &str = "\u{1}";
 
 /// A line of text, its soft-wrapped rows joined, from its first row; and
 /// which of its bytes, if any, a piece of output just printed.
+#[derive(Default)]
 struct Line {
     text: String,
     printed: Vec<bool>,
-    /// The rows it was read from, if on the screen or in history.
-    rows: Vec<fux_vt::RowId>,
 }
 
 impl Line {
@@ -1085,11 +1079,7 @@ impl Line {
                     None => break,
                 }
             }
-            let mut line = Line {
-                text: String::new(),
-                printed: Vec::new(),
-                rows: Vec::new(),
-            };
+            let mut line = Line::default();
             if first.above().is_some_and(|up| up.wrapped()) {
                 line.push(CUT_END, false);
             }
@@ -1098,7 +1088,6 @@ impl Line {
             let mut row = Some(first);
             while let Some(r) = row {
                 let ours = r.id() == print.row;
-                line.rows.push(r.id());
                 let cells = r.cells().enumerate();
                 for (col, cell) in cells.filter(|(_, c)| !c.is_wide_continuation()) {
                     let text = match cell.contents() {
@@ -1130,11 +1119,7 @@ impl Line {
     /// A row a line wraps onto goes on from `above`, the last character of
     /// the row above.
     fn piece(print: &fux_vt::Print<'_>, above: Option<char>, (from, to): (usize, usize)) -> Line {
-        let mut line = Line {
-            text: String::new(),
-            printed: Vec::new(),
-            rows: Vec::new(),
-        };
+        let mut line = Line::default();
         match above.filter(|_| print.cols.0 == 0) {
             Some(last) => {
                 line.push(CUT_END, false);
@@ -1162,7 +1147,7 @@ impl Line {
         self
     }
 
-    /// Where the line holds `text` as `found_at` finds it, on bytes that
+    /// Where the line holds `text` as `found_in` finds it, on bytes that
     /// were just printed: its first such place, as `normal` counts it.
     fn holds(&self, text: &str) -> Option<usize> {
         let (line, printed) = normal_marked(&self.text, &self.printed);
@@ -1178,12 +1163,11 @@ impl Line {
 /// its characters (blanks aside, case ignored) one that was typed, as
 /// often, in whatever order the line's editing left them.
 fn typed_from(typed: &str, text: &str) -> bool {
-    let mut left: Vec<Option<char>> = (typed.to_lowercase().chars())
+    let mut left: Vec<Option<char>> = (typed.chars().flat_map(fold))
         .filter(|c| !c.is_whitespace())
         .map(Some)
         .collect();
-    text.to_lowercase()
-        .chars()
+    (text.chars().flat_map(fold))
         .filter(|c| !c.is_whitespace())
         .all(|c| {
             let slot = left.iter_mut().find(|l| **l == Some(c));
@@ -1214,7 +1198,7 @@ fn normal_marked(text: &str, marked: &[bool]) -> (String, Vec<bool>) {
             out.push(' ');
             marks.push(mark);
         }
-        for lower in c.to_lowercase() {
+        for lower in fold(c) {
             out.push(lower);
             marks.resize(out.len(), mark);
         }
@@ -1222,14 +1206,9 @@ fn normal_marked(text: &str, marked: &[bool]) -> (String, Vec<bool>) {
     (out, marks)
 }
 
-/// A screen's lines, its soft-wrapped rows joined.
-struct Shown {
-    text: String,
-}
-
 /// Rows as lines: soft-wrapped rows joined into the lines they wrap.
-fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<Shown> {
-    let mut out: Vec<Shown> = Vec::new();
+fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     let mut wraps = false;
     for row in rows {
         let text = row.cells_text();
@@ -1239,30 +1218,42 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<Shown> {
             false => text.trim_end_matches(' ').to_owned(),
         };
         match out.last_mut() {
-            Some(last) if wraps => last.text.push_str(&text),
-            _ => out.push(Shown { text }),
+            Some(last) if wraps => last.push_str(&text),
+            _ => out.push(text),
         }
         wraps = row.wrapped();
     }
     out
 }
 
+/// Whether the screen's lines show `text`, as `found_in` finds it.
+fn on_screen(screen: &fux_vt::Screen, text: &str) -> bool {
+    let shown = lines(screen.rows().skip(screen_top(screen)));
+    shown.iter().any(|l| found_in(l, text) > 0)
+}
+
 /// Where the screen's lines start among the rows kept: at its top row, or
 /// at the first row of a line wrapped onto it from history.
 fn screen_top(screen: &fux_vt::Screen) -> usize {
-    let Some(mut top) = screen.window().row(0) else {
+    let Some(top) = screen.window().row(0) else {
         return screen.history_len();
     };
-    while let Some(up) = top.above().filter(fux_vt::Row::wrapped) {
-        top = up;
-    }
-    screen.row_index(top.id()).unwrap_or(screen.history_len())
+    screen
+        .row_index(crate::pane::line_top(top).id())
+        .unwrap_or(screen.history_len())
 }
 
 /// A text as a wait compares it: case ignored, runs of blanks as one, and
 /// none at its ends.
 fn normal(text: &str) -> String {
-    blanks_as_one(text).to_lowercase()
+    normal_marked(text, &[]).0
+}
+
+/// A character as a wait compares it, case aside: lower case, and a
+/// final ς as σ, since a word's last Σ lowers to ς only where the word is
+/// seen whole.
+pub(crate) fn fold(c: char) -> impl Iterator<Item = char> {
+    c.to_lowercase().map(|c| if c == 'ς' { 'σ' } else { c })
 }
 
 /// The characters `from..to` of `print`, where they went; none if empty.
@@ -1296,7 +1287,7 @@ fn folded(text: &str) -> Vec<char> {
         match c.is_whitespace() {
             true if out.last() == Some(&' ') => {}
             true => out.push(' '),
-            false => out.extend(c.to_lowercase()),
+            false => out.extend(fold(c)),
         }
     }
     out
@@ -1318,25 +1309,15 @@ fn overlaps(run: &[char], text: &[char]) -> bool {
     holds(run, text) || holds(text, run) || joins(run, text) || joins(text, run)
 }
 
-/// `text` with runs of blanks as one, and none at its ends.
-fn blanks_as_one(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// How many times a line shows TEXT: case ignored, runs of blanks as one,
 /// starting where a word does (`READY` is not in `NOT_READY`), `^` and `$`
 /// holding it to the line's start and end.
 fn found_in(line: &str, text: &str) -> usize {
-    found_at(line, text).len()
+    found_at_normal(&normal(line), text).len()
 }
 
-/// Where a line shows TEXT, as `found_in` finds it: each place in the line
-/// as `normal` makes it.
-fn found_at(line: &str, text: &str) -> Vec<usize> {
-    found_at_normal(&normal(line), text)
-}
-
-/// Where a line already made `normal` shows TEXT, as `found_at` finds it.
+/// Where a line already made `normal` shows TEXT, as `found_in` finds it:
+/// each place in it.
 fn found_at_normal(line: &str, text: &str) -> Vec<usize> {
     let (start, rest) = match text.strip_prefix('^') {
         Some(rest) => (true, rest),
@@ -1424,19 +1405,16 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
                 window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)
             })
     };
-    let Some(mut first) = screen.rows().find(new) else {
+    let Some(first) = screen.rows().find(new) else {
         return match (screen.alternate_rows().any(|r| new(&r)), since.on_full) {
             (true, _) => text(pane, marks, true),
             (false, true) => text(pane, marks, false),
             (false, false) => String::new(),
         };
     };
-    while let Some(up) = first.above().filter(fux_vt::Row::wrapped) {
-        first = up;
-    }
-    let from = screen.row_index(first.id()).unwrap_or(0);
+    let from = (screen.row_index(crate::pane::line_top(first).id())).unwrap_or(0);
     let found = lines(screen.rows().skip(from));
-    let texts: Vec<&str> = found.iter().map(|l| l.text.trim_end()).collect();
+    let texts: Vec<&str> = found.iter().map(|l| l.trim_end()).collect();
     let end = (texts.iter())
         .rposition(|t| !t.is_empty())
         .map_or(0, |i| i.saturating_add(1));
@@ -1449,7 +1427,7 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::found_in;
+    use super::{found_in, normal, normal_marked};
 
     /// A text waited for: case ignored, blanks as one, from a word's start,
     /// and `^`/`$` for a line's start and end.
@@ -1472,5 +1450,10 @@ mod tests {
         // first word, indented or not.
         assert_eq!(found_in("    READY", "^READY"), 1);
         assert_eq!(found_in("READY", " READY"), 1);
+        // A word's last Σ, written either way, case ignored too, on the
+        // screen and in the output read as it comes.
+        assert_eq!(found_in("ΟΔΟΣ done", "οδος done"), 1);
+        assert_eq!(found_in("οδος", "ΟΔΟΣ"), 1);
+        assert_eq!(normal_marked("ΟΔΟΣ", &[]).0, normal("οδος"));
     }
 }

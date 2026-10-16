@@ -797,7 +797,8 @@ impl Pane {
             let screen = self.parser.screen();
             let mut echo: Vec<_> = (prints.iter())
                 .map(|print| {
-                    let line = || first_row(screen, print.row).unwrap_or(print.row);
+                    let line =
+                        || (screen.row_by_id(print.row)).map_or(print.row, |r| line_top(r).id());
                     self.classes.echo(origin, &print, line, reads)
                 })
                 .collect();
@@ -1416,19 +1417,16 @@ pub fn rows_now(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::Ro
 /// The first row of the line the cursor is on (a line wider than the
 /// screen wraps from rows above).
 fn cursor_line(screen: &fux_vt::Screen) -> Option<fux_vt::RowId> {
-    first_row(
-        screen,
-        screen.window().row(screen.cursor_position().0)?.id(),
-    )
+    let row = screen.window().row(screen.cursor_position().0)?;
+    Some(line_top(row).id())
 }
 
-/// The first row of the line row `id` is on, if it is kept.
-pub fn first_row(screen: &fux_vt::Screen, id: fux_vt::RowId) -> Option<fux_vt::RowId> {
-    let mut row = screen.row_by_id(id)?;
+/// The first row of the line `row` is on.
+pub fn line_top(mut row: fux_vt::Row<'_>) -> fux_vt::Row<'_> {
     while let Some(up) = row.above().filter(fux_vt::Row::wrapped) {
         row = up;
     }
-    Some(row.id())
+    row
 }
 
 /// `parser`, recording what it prints, as a pane's does (`Pane::record`).
