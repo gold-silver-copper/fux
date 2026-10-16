@@ -17,7 +17,7 @@ use crate::command::{AnyRef, CaptureView, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
 use crate::log::Seq;
-use crate::pane::Pane;
+use crate::pane::{Pane, Start};
 use crate::process::Ended;
 use crate::session::{Outcome, Session};
 use std::time::Instant;
@@ -83,10 +83,7 @@ pub struct Waiting {
 /// revision.
 #[derive(Clone, Copy)]
 struct Since {
-    from: Seq,
-    /// The full screen was in use then.
-    on_full: bool,
-    finished: u64,
+    start: Start,
     revision: u64,
     /// What came since was more than the pane keeps, and which notice
     /// says so: some was let go before the wait read it.
@@ -97,8 +94,7 @@ struct Since {
 struct Watch {
     pane: PaneId,
     /// What came after this is new to it.
-    from: Seq,
-    on_full: bool,
+    start: Start,
     /// The last piece of output it read from the pane's journal, and
     /// whether pieces it had not read yet were let go.
     read: Seq,
@@ -121,7 +117,6 @@ struct Watch {
     bell: Option<Seq>,
     /// A text was found in the echo of what was typed alone.
     echo_skipped: bool,
-    finished: u64,
     revision: u64,
     /// The program's start (`Pane::starts`) the wait watches.
     starts: u64,
@@ -532,7 +527,7 @@ impl Wait {
         let mut line = format!("{id} {}", state.word());
         let mut fields = Vec::new();
         let commands = pane.screen().commands();
-        if commands.finished > since.finished {
+        if commands.finished > since.start.finished {
             let status = commands.last_status;
             match status {
                 Some(status) => line.push_str(&format!(" · done {status}")),
@@ -662,31 +657,23 @@ impl Watch {
     /// the pane, or its program's start.
     fn new(pane: &Pane, after: bool) -> Watch {
         let screen = pane.screen();
-        let (from, (finished, on_full)) = match after {
-            true => (
-                Seq(screen.version()),
-                (
-                    screen.commands().finished,
-                    screen.mode(fux_vt::Mode::AlternateScreen),
-                ),
-            ),
-            false => (pane.since, pane.since_was),
+        let start = match after {
+            true => Start::at(Seq(screen.version()), screen),
+            false => pane.since,
         };
         Watch {
             pane: pane.id,
-            from,
-            on_full,
-            read: from,
+            start,
+            read: start.from,
             missed: false,
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
             stream: std::collections::HashMap::new(),
             appeared: Vec::new(),
-            looked: from,
+            looked: start.from,
             printed: Vec::new(),
             bell: None,
             echo_skipped: false,
-            finished,
             revision: pane.revision,
             starts: pane.starts,
             reading_since: None,
@@ -824,7 +811,7 @@ impl Watch {
                     }
                     let had = !fresh || self.appeared.contains(text);
                     if !present && had && gone.is_none() {
-                        gone = Some((Found::Gone(text.clone()), last.unwrap_or(self.from)));
+                        gone = Some((Found::Gone(text.clone()), last.unwrap_or(self.start.from)));
                     }
                 }
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
@@ -882,7 +869,7 @@ impl Watch {
                 .collect();
             self.stream.retain(|id, _| rows.contains(id));
         }
-        let pieces = pane.record.printed_after(self.read.max(self.from));
+        let pieces = pane.record.printed_after(self.read.max(self.start.from));
         self.read = Seq(pane.screen().version());
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
@@ -1036,9 +1023,7 @@ impl Watch {
 
     fn since(&self, pane: Option<&Pane>) -> Since {
         Since {
-            from: self.from,
-            on_full: self.on_full,
-            finished: self.finished,
+            start: self.start,
             revision: self.revision,
             cut: pane.and_then(|p| match (self.missed, p.cut()) {
                 (true, _) => Some(MORE_THAN_KEPT),
@@ -1384,29 +1369,29 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
 /// the program has since left, what it printed after, else that last full
 /// screen if it drew it since, else the screen as it is.
 fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
-    let screen = pane.screen();
+    let (screen, start) = (pane.screen(), since.start);
     if screen.mode(fux_vt::Mode::AlternateScreen) {
         return text(pane, marks, false);
     }
     // A row changed since, or moved (`fux_vt::Print`).
-    let moved: std::collections::HashSet<fux_vt::RowId> = (pane.record.printed_after(since.from))
+    let moved: std::collections::HashSet<fux_vt::RowId> = (pane.record.printed_after(start.from))
         .flat_map(|(_, p)| p.prints.iter().map(|r| r.row))
         .collect();
     // A resize gives every row it keeps a new number, and brings nothing.
-    let resized: std::collections::HashSet<u64> = (pane.record.after(since.from))
+    let resized: std::collections::HashSet<u64> = (pane.record.after(start.from))
         .filter(|e| matches!(e.event, crate::log::Event::Resize(_)))
         .map(|e| e.seq.0)
         .collect();
     let window = screen.window();
     // A row drawn again to show as it did at the input brings nothing.
     let new = |r: &fux_vt::Row<'_>| {
-        (r.version() > since.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
+        (r.version() > start.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
             && (pane.before_shows.get(&r.id())).is_none_or(|was| {
                 window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)
             })
     };
     let Some(first) = screen.rows().find(new) else {
-        return match (screen.alternate_rows().any(|r| new(&r)), since.on_full) {
+        return match (screen.alternate_rows().any(|r| new(&r)), start.on_full) {
             (true, _) => text(pane, marks, true),
             (false, true) => text(pane, marks, false),
             (false, false) => String::new(),

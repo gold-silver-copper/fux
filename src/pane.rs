@@ -497,10 +497,7 @@ pub struct Pane {
     pub record: crate::log::Log,
     /// Where the last action's input began (or the program started):
     /// what came since is what it brought.
-    pub since: crate::log::Seq,
-    /// Then: how many shell commands had ended, and whether the full
-    /// screen was in use.
-    pub since_was: (u64, bool),
+    pub since: Start,
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new.
     pub before: std::collections::HashMap<fux_vt::RowId, Cells>,
@@ -548,6 +545,26 @@ const POLL: Duration = Duration::from_millis(2);
 /// How long after a piece is written the program may be taken to have it
 /// without drawing anything: the kernel hands it on within that.
 const FLOOR: Duration = Duration::from_millis(2);
+
+/// Where a wait counts from: a number in the pane's journal, and then, how
+/// many shell commands had ended and whether the full screen was in use.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Start {
+    pub from: crate::log::Seq,
+    pub finished: u64,
+    pub on_full: bool,
+}
+
+impl Start {
+    /// Counting from `from`, `screen` as it is now.
+    pub fn at(from: crate::log::Seq, screen: &fux_vt::Screen) -> Start {
+        Start {
+            from,
+            finished: screen.commands().finished,
+            on_full: screen.mode(fux_vt::Mode::AlternateScreen),
+        }
+    }
+}
 
 /// Input written a piece at a time (`crate::log::Unit`), each once the
 /// program took the one before (it reads its terminal again, every key
@@ -652,8 +669,7 @@ impl Pane {
             changed_at: Instant::now(),
             written_at: None,
             record: crate::log::Log::new(crate::log::JOURNAL_BYTES),
-            since: crate::log::Seq::default(),
-            since_was: (0, false),
+            since: Start::default(),
             before: std::collections::HashMap::new(),
             seen: std::collections::HashMap::new(),
             before_shows: std::collections::HashMap::new(),
@@ -996,14 +1012,9 @@ impl Pane {
 
     /// An action's input begins: what comes after is what it brought.
     pub fn note_input(&mut self) {
-        self.since = crate::log::Seq(self.parser.tick());
-        let screen = self.parser.screen();
-        self.since_was = (
-            screen.commands().finished,
-            screen.mode(fux_vt::Mode::AlternateScreen),
-        );
+        self.since = Start::at(crate::log::Seq(self.parser.tick()), self.parser.screen());
         self.record
-            .push(self.since, Instant::now(), crate::log::Event::Action);
+            .push(self.since.from, Instant::now(), crate::log::Event::Action);
         self.redraws = 0;
         self.before = rows_now(self.screen());
         let window = self.screen().window();
@@ -1085,7 +1096,7 @@ impl Pane {
     /// since is not all on the screen or in history. What they printed is
     /// in the journal (`record`).
     pub fn cut(&self) -> bool {
-        self.screen().let_go() > self.since.0
+        self.screen().let_go() > self.since.from.0
     }
 
     /// The text typed on the line since a key last submitted one.
@@ -1590,7 +1601,7 @@ mod tests {
             pane.output(b"\x1b[H\x1b[L");
         }
         assert!(
-            pane.record.lost_after(pane.since),
+            pane.record.lost_after(pane.since.from),
             "{} kept",
             pane.record.held()
         );
