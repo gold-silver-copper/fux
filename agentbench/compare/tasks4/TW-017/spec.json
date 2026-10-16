@@ -1,0 +1,26 @@
+{
+  "id": "TW-017",
+  "title": "Resolve competing watches after real completion",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/watches.py {work} desk, python3 -I {fixtures}/watches.py {work} amber, and python3 -I {fixtures}/watches.py {work} blue in three concurrent terminals. Keep both watches alive for all eight rounds while switching between them and the desk; identify them by their titles or your own names. Arm both watches as the desk instructs. Resolve each round only after one watch actually prints WON for that round; an arm echo or progress line is not a result. Handle the blue watch's reset prompt. Wait for the losing watch to finish its round before arming it again. Close both watches at their final quit prompts, finish the desk and leave all three exited. Write {work}/answer.txt with exactly eight lines in round order: round=<two-digit round number> winner=<observed watch name> token=<observed winning token>. Each ends with a newline; exclude RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Watch completion is causally ordered by named atomic records rather than a host scheduling race. Both must be armed, the winner publishes before the loser can finish, and the third round waits 13 seconds. Progress is overwritten; blue requires reset. The checker verifies all arm and resolve transitions, concurrent distinct terminals, and the seeded winning tokens.",
+  "kinds": [
+    "several-programs",
+    "overwritten-text",
+    "recovery",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "read-screen",
+    "several-panes",
+    "pane-names",
+    "wait-exit"
+  ]
+}

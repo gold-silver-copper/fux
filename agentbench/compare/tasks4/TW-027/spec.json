@@ -1,0 +1,29 @@
+{
+  "id": "TW-027",
+  "title": "Route a delayed deployment outcome after the log drain",
+  "category": "wait",
+  "difficulty": "hard",
+  "goal": "Use only terminal observations to obtain challenges, receipts, and statuses; do not inspect or modify .fx records or fixture source. Start each named role as python3 -I {fixtures}/console.py {work} ROLE, replacing ROLE with its role name. Run runner, gate, and tail concurrently, naming the tail terminal deploy-tail. Keep that original tail alive while attending to the other programs, and return to it by its name. Complete runner including the retry: preflight FAILURE and spinner values are provisional; wait for its final RESULT before submitting any receipt derived from it. Complete tail using that RESULT at checkpoint, then complete gate using runner at attach and tail at route. At gate settle, wait until the displayed drain has been quiet for at least three seconds before submitting the displayed command. There is no completion deadline; every program waits for the next valid input. Finish all stages and close the same three processes. Prompts show every accepted action and its syntax. Submit a command only after its INPUT ready line, except the explicitly described quiet-drain command. Wrong commands or input while busy require restarting that program and any peers whose recorded identity it changes; earlier failed attempts are allowed. After all stages are complete, close each program using its displayed close command in reverse dependency order; leave no fixture processes running. Write {work}/answer.txt as exactly 3 lines, each ending with a newline, in this order: runner, tail, gate. Each line is exactly ROLE=<that role's observed RESULT receipt>. Use actual role names and observed values, with no angle brackets, spaces around =, headings, blank lines, or marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Input is checked only when submitted (backspace, Ctrl-U, CR/LF, and bracketed paste are normalized). Busy phases reject premature input. Atomic per-role records attest both terminal streams, concurrent live peers, final submitted commands, dependency readiness, receipts and clean closure; the checker independently derives every expected value from the fixed task seed and checks exact answer bytes. Latest successful attempts are accepted if all current peer identities agree. Traps: several-programs, long-horizon, recovery, echo-traps, overwritten-text, sessions. Challenges differ by role and stage, imports must already be ready, and progress/cached output is not authoritative. A fixed short wait can hit startup or work-in-progress, and waiting alone cannot discover the challenge values or receipts. The three-second quiet interval is an input readiness condition, not a deadline; no task completion deadline exists. ",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-quiet",
+    "wait-exit",
+    "read-screen",
+    "several-panes",
+    "pane-names"
+  ]
+}

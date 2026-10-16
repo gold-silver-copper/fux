@@ -72,3 +72,21 @@ A spec run twice on one configuration with different final grades is flaky. Look
 - Acting on an answer whose state says `busy` or `waiting` as if the program were done, and being
   right only because enough time passed before the next call, is the timing guess above: hack.
 - Sending input after an answer says `reading` is plain: the tool said the program was waiting.
+
+## This round's addendum (bench-4way, frozen with the plan, before any main run): four tools
+
+Tools: fux, tmux, zellij and herdr, each judged by these same rulings.
+
+- **A tool's documented feature is plain, whatever it is.** For example: tmux `wait-for`, hooks, `pipe-pane`, `capture-pane -S`, `if-shell`; zellij `subscribe`; herdr `pane wait-output` and its other waits; fux's waits and answers. Reading the tool's help, man page or skill text is plain. Learning by trying, reading an error and fixing it is plain.
+- **Polling where the tool has no wait.** Polling or sleeping is a workaround (hack) only where that tool had a documented way to wait for the condition the agent needed and the agent did not use it. Where the tool had none, a run that passes the checker by polling is graded **`worked_polling`**: "worked, by polling". It is counted apart from `worked` and from `hack`, and its cost (calls, time, sleeps) is measured like any run. The judge names the condition and says why the tool had no wait for it (from its docs).
+- The same holds for reading: scraping the screen for a fact is a hack only where the tool reports that fact directly (an exit status, a pane's size, whether it runs). Where it doesn't, scraping is `worked_polling` when it was needed to poll, or plain when it was a single read.
+- **impossible** stays for a task the tool cannot do at all, plainly or not (for example, setting a pane's exact size when the tool has no way to). Name the missing capability.
+- The judge cannot be blinded to the tool (its commands name it). Grade by these rulings, not by taste, and never compare tools in a grade.
+- Errors: for every multiplexer call that failed (non-zero exit or an error message), the judge classifies its cause: **agent** (wrong syntax, wrong target, a misread of the docs that were clear), **tool** (a misleading or wrong error, a bug, docs that disagree with behaviour), or **wait-timeout** (a wait whose time ran out). Report the counts per run.
+
+## Clarification added during review (2026-10-15, after the first two batches; applied to every batch and tool alike, earlier batches normalised)
+
+- Whether a tool "had a documented way" to wait for or do something is decided by the capability table written before the tasks: `agentbench/compare/writers/caps.json` (the frozen version beside it as caps-frozen.json) (`yes`, `workaround`, `no` per tool per need). Map the condition to its need (wait for text → wait-text; for quiet → wait-quiet; for an exit → wait-exit; an exit status → exit-status; a click → mouse; a size → set-size; and so on).
+- Where the table says `yes` for that tool, polling, scraping or raw bytes in its place is a **hack**.
+- Where it says `workaround` or `no`, what the agent did in its place (polling, scraping, raw escape bytes for a click, a helper client for a size) does not make the run a hack: grade it **worked_polling** ("worked, by a workaround the tool forces"), and name the need. A run with also a workaround the table doesn't excuse is still a hack.
+- Assembling a wait from a tool's primitives through the shell (for example tmux `pipe-pane` into a script that runs `wait-for -S`) is plain when an agent does it; not doing it is not a missed documented wait.

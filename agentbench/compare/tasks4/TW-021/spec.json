@@ -1,0 +1,32 @@
+{
+  "id": "TW-021",
+  "title": "Rebuild a live preview through three receipts",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "Use only terminal observations to obtain challenges, receipts, and statuses; do not inspect or modify .fx records or fixture source. Start each named role as python3 -I {fixtures}/console.py {work} ROLE, replacing ROLE with its role name. Run compiler, watcher, and tests concurrently in three separate terminal views. Name the watcher view preview-watch and keep that same process running while you work in the other views. Keep the compiler and watcher side by side; all three programs require at least 90 columns and 18 rows when they accept a command. Complete every displayed command in the compiler, transfer its RESULT receipt to the watcher attach prompt, then complete the watcher and transfer its RESULT receipt to the tests connect prompt. Complete the tests. The long wrapped build manifest contains the scan challenge; the old progress values are decoys. Prompts show every accepted action and its syntax. Submit a command only after its INPUT ready line, except the explicitly described quiet-drain command. Wrong commands or input while busy require restarting that program and any peers whose recorded identity it changes; earlier failed attempts are allowed. After all stages are complete, close each program using its displayed close command in reverse dependency order; leave no fixture processes running. Write {work}/answer.txt as exactly 3 lines, each ending with a newline, in this order: compiler, watcher, tests. Each line is exactly ROLE=<that role's observed RESULT receipt>. Use actual role names and observed values, with no angle brackets, spaces around =, headings, blank lines, or marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Input is checked only when submitted (backspace, Ctrl-U, CR/LF, and bracketed paste are normalized). Busy phases reject premature input. Atomic per-role records attest both terminal streams, concurrent live peers, final submitted commands, dependency readiness, receipts and clean closure; the checker independently derives every expected value from the fixed task seed and checks exact answer bytes. Latest successful attempts are accepted if all current peer identities agree. Traps: several-programs, long-horizon, echo-traps, overwritten-text, reading, layout-size, sessions. Challenges differ by role and stage, imports must already be ready, and progress/cached output is not authoritative. A fixed short wait can hit startup or work-in-progress, and waiting alone cannot discover the challenge values or receipts. ",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "echo-traps",
+    "overwritten-text",
+    "reading",
+    "layout-size",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "read-wrapped",
+    "set-size",
+    "several-panes",
+    "side-by-side",
+    "pane-names"
+  ]
+}

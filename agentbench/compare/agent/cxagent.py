@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Codex as the agent: one run of one task with one tool, in an environment
-of its own under the run's work directory (runtime dir, sockets, state,
-TMPDIR), with logging wrappers first in PATH. The multiplexer's server is
-started before the agent and stopped after, by its own socket; what the run
-did is read from the wrappers' log and Codex's transcript; whether it
-succeeded, from the task's checker.
+"""Codex as the agent: one run of one task with one tool (fux, tmux, zellij
+or herdr), in an environment of its own (runtime dir, sockets, config,
+state, TMPDIR, HOME), with logging wrappers first in PATH. The multiplexer's
+server is started before the agent and stopped after, by its own socket,
+and anything left that carries the run's environment is killed; what the run
+did is read from the wrappers' log (each call's time, arguments, exit status
+and error) and Codex's event stream (tokens, commands, a readable
+transcript); whether it succeeded, from the task's checker.
 
 Used as a module (run_one) by the batch driver, or by hand:
   cxagent.py TOOL FUX_BIN TASK_DIR_OR_AGENTBENCH_ID WORK
@@ -35,16 +37,24 @@ import drivers  # noqa: E402
 MODEL = "gpt-6.1-sol"
 CODEX = shutil.which("codex") or "codex"
 SCHEMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent.schema.json")
-TIMEOUT = int(os.environ.get("TIMEOUT", "1200"))
-REAL = {n: shutil.which(n) for n in ("tmux", "sleep")}
+TIMEOUT = int(os.environ.get("TIMEOUT", "1800"))
+REAL = {n: shutil.which(n) for n in ("tmux", "zellij", "herdr", "sleep")}
+TOOLS = ("fux", "tmux", "zellij", "herdr")
 
 LEARN = {
     "fux": "fux, a terminal multiplexer. Learn it with `fux help-agents` (start there), `fux help` "
-           "and `fux str WORD explain`, and the guide at {guide}. A private fux server is already "
+           "and `fux str WORD explain`. A private fux server is already "
            "running for you: FUX_SOCKET points to it, and nothing in this environment reaches anyone "
            "else's session, so you may use any fux command, kill-server included.",
-    "tmux": "tmux. Learn it with `man tmux` or `tmux list-commands`. A private tmux server is already "
+    "tmux": "tmux, a terminal multiplexer. Learn it with `man tmux` or `tmux list-commands`. A private tmux server is already "
             "running for you: always pass `-L ab` (for example `tmux -L ab list-panes -a`).",
+    "zellij": "zellij, a terminal multiplexer. Learn it with `zellij --help` and `zellij action --help`. A private "
+              "zellij session named `ab` is already running for you: pass `--session ab` "
+              "(for example `zellij --session ab action list-panes --json`).",
+    "herdr": "herdr, a terminal multiplexer. Learn it with `herdr --skill`, `herdr --help` and `herdr pane`. A private "
+             "herdr session named `ab` is already running for you: pass `--session ab` to every "
+             "command (for example `herdr --session ab pane list`). You are allowed to control "
+             "it although HERDR_ENV is not set: it is a test session made for you.",
 }
 
 PROMPT = """You are an AI agent driving terminal programs with {learn}
@@ -84,18 +94,51 @@ For worked, "none".
 # arguments, directory and stdin to a helper outside the sandbox, which runs
 # the real binary against the run's server, logs the call, and hands back
 # the output and exit status. Everything else the agent runs stays sandboxed.
-PROXY = r"""#!/bin/sh
-d=$(mktemp -d "$FXH_RPC/c.XXXXXX") || exit 125
-for a in "$@"; do printf '%s\0' "$a"; done > "$d/argv"
-pwd > "$d/cwd"
-if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then cat > "$d/stdin"; fi
-: > "$d/ready"
-while [ ! -e "$d/done" ]; do /usr/bin/sleep 0.02; done
-cat "$d/out"
-cat "$d/err" >&2
-code=$(cat "$d/code")
-rm -rf "$d"
-exit "$code"
+PROXY = r"""#!/usr/bin/python3 -I
+# Hands a call to the helper outside the sandbox and streams back its output
+# as it comes; if this call is interrupted (a timeout, Ctrl-C), the real
+# command is stopped too.
+import os, signal, sys, tempfile, time
+d = tempfile.mkdtemp(prefix="c.", dir=os.environ["FXH_RPC"])
+with open(os.path.join(d, "argv"), "wb") as f:
+    f.write(b"".join(os.fsencode(a) + b"\0" for a in sys.argv[1:]))
+with open(os.path.join(d, "cwd"), "w") as f:
+    f.write(os.getcwd())
+try:
+    if not os.isatty(0):
+        import stat
+        m = os.fstat(0).st_mode
+        if stat.S_ISFIFO(m) or stat.S_ISREG(m):
+            with open(os.path.join(d, "stdin"), "wb") as f:
+                f.write(sys.stdin.buffer.read())
+except OSError:
+    pass
+def stop(*_):
+    open(os.path.join(d, "kill"), "w").close()
+    os._exit(143)
+for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(sig, stop)
+open(os.path.join(d, "ready"), "w").close()
+pos = {"out": 0, "err": 0}
+def pump():
+    for name, fd in (("out", 1), ("err", 2)):
+        try:
+            with open(os.path.join(d, name), "rb") as f:
+                f.seek(pos[name])
+                data = f.read()
+        except OSError:
+            continue
+        if data:
+            pos[name] += len(data)
+            os.write(fd, data)
+while not os.path.exists(os.path.join(d, "done")):
+    pump()
+    time.sleep(0.005)
+pump()
+code = int(open(os.path.join(d, "code")).read() or 1)
+import shutil
+shutil.rmtree(d, ignore_errors=True)
+sys.exit(code)
 """
 
 
@@ -103,8 +146,15 @@ exit "$code"
 # call and execs the real binary, which reaches the run's server through its
 # door (a FIFO), since the sandbox refuses Unix sockets.
 DIRECT = r"""#!/bin/sh
-printf '%s\t%s\t%s\n' "$(date +%s.%N)" fux "$*" >> "{log}"
-exec {real} "$@"
+t=$(date +%s.%N)
+e=$(mktemp)
+{real} "$@" 2> "$e"
+c=$?
+cat "$e" >&2
+h=$(head -c 300 "$e" | tr '\t\n' '  ')
+rm -f "$e"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$t" fux "$*" "$c" "$(date +%s.%N)" "$h" >> "{log}"
+exit $c
 """
 
 
@@ -157,20 +207,35 @@ class Helper(threading.Thread):
             argv = open(os.path.join(d, "argv"), "rb").read().split(b"\0")[:-1]
             argv = [a.decode(errors="surrogateescape") for a in argv]
             cwd = open(os.path.join(d, "cwd")).read().strip()
-            stdin = open(os.path.join(d, "stdin"), "rb").read() if os.path.exists(os.path.join(d, "stdin")) else b""
-            with open(self.log, "a") as f:
-                f.write(f"{time.time():.6f}\t{self.name}\t{shlex.join(argv)}\n")
+            sin = os.path.join(d, "stdin")
             if not os.path.isdir(cwd):
                 cwd = self.env["XDG_RUNTIME_DIR"]
-            try:
-                p = subprocess.run([self.real, *argv], input=stdin, capture_output=True, cwd=cwd,
-                                   env=self.env, timeout=1800)
-                out, err, code = p.stdout, p.stderr, p.returncode
-            except subprocess.TimeoutExpired:
-                out, err, code = b"", b"proxy: the command ran past 30 minutes\n", 124
-            for name, data in (("out", out), ("err", err), ("code", str(code if code >= 0 else 128 - code).encode())):
-                with open(os.path.join(d, name), "wb") as f:
-                    f.write(data)
+            started = time.time()
+            with open(os.path.join(d, "out"), "wb") as out, open(os.path.join(d, "err"), "wb") as err, \
+                    open(sin if os.path.exists(sin) else os.devnull, "rb") as inp:
+                p = subprocess.Popen([self.real, *argv], stdin=inp, stdout=out, stderr=err, cwd=cwd,
+                                     env=self.env, start_new_session=True)
+                code = None
+                while code is None:
+                    try:
+                        code = p.wait(0.02)
+                    except subprocess.TimeoutExpired:
+                        killed = os.path.exists(os.path.join(d, "kill"))
+                        if killed or time.time() - started > 1800:
+                            try:
+                                os.killpg(p.pid, signal.SIGKILL)
+                            except OSError:
+                                pass
+                            code = p.wait()
+                            if not killed:
+                                err.write(b"proxy: the command ran past 30 minutes\n")
+                                code = 124
+            code = code if code >= 0 else 128 - code
+            head = open(os.path.join(d, "err"), "rb").read(300).decode(errors="replace")
+            head = head.replace("\t", " ").replace("\n", " ")
+            with open(self.log, "a") as f:
+                f.write(f"{started:.6f}\t{self.name}\t{shlex.join(argv)}\t{code}\t{time.time():.6f}\t{head}\n")
+            open(os.path.join(d, "code"), "w").write(str(code))
             open(os.path.join(d, "done"), "w").close()
         except OSError:
             pass
@@ -179,7 +244,8 @@ class Helper(threading.Thread):
 def make_env(work, tool, fux_bin):
     e = os.path.join(work, ".env")
     dirs = {"XDG_RUNTIME_DIR": "rt", "TMUX_TMPDIR": "tmux", "XDG_CONFIG_HOME": "config",
-            "XDG_STATE_HOME": "state", "TMPDIR": "tmp"}
+            "XDG_STATE_HOME": "state", "TMPDIR": "tmp", "ZELLIJ_SOCKET_DIR": "zs",
+            "ZELLIJ_CONFIG_DIR": "zc"}
     # A HOME of its own, so the login shell Codex runs commands in loads no
     # profile of the user's (which would put another fux first in PATH).
     home = os.path.join(e, "home")
@@ -187,8 +253,19 @@ def make_env(work, tool, fux_bin):
     env = {"HOME": home, "CODEX_HOME": os.path.expanduser("~/.codex"),
            "USER": os.environ.get("USER", ""), "LANG": "en_US.UTF-8",
            "TERM": "xterm-256color", "PYTHONDONTWRITEBYTECODE": "1"}
+    # Unix socket paths are limited to 108 bytes, and a socket under a deep
+    # run folder doesn't fit (herdr keeps its sockets in its config folder).
+    # The tools that run outside the sandbox get their folders under a short
+    # path of the run's own; fux, called inside the sandbox, keeps them in
+    # the work folder, which the sandbox lets it write.
+    short = e
+    if tool != "fux":
+        import hashlib
+        short = os.path.join(H, "s", hashlib.sha1(work.encode()).hexdigest()[:10])
+        shutil.rmtree(short, ignore_errors=True)
+        os.makedirs(short, mode=0o700)
     for k, sub in dirs.items():
-        p = os.path.join(e, sub)
+        p = os.path.join(e if k in ("TMPDIR",) else short, sub)
         os.makedirs(p, mode=0o700, exist_ok=True)
         os.chmod(p, 0o700)
         env[k] = p
@@ -255,17 +332,47 @@ def check(task, work):
     return ab.check(task, work)
 
 
+def reap_env(env):
+    """Kills whatever is left of a run: every process whose environment holds
+    the run's own runtime folder (a path no other process has), such as a
+    second server an agent started under another name."""
+    mark = ("XDG_RUNTIME_DIR=" + env["XDG_RUNTIME_DIR"]).encode() + b"\0"
+    me = os.getpid()
+    for _ in range(3):
+        found = False
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or int(pid) == me:
+                continue
+            try:
+                with open(f"/proc/{pid}/environ", "rb") as f:
+                    if mark not in f.read() + b"\0":
+                        continue
+                os.kill(int(pid), signal.SIGKILL)
+                found = True
+            except (OSError, ValueError):
+                pass
+        if not found:
+            break
+        time.sleep(0.2)
+
+
 def stop_all(tool, env, fux_bin, work, driver=None):
     """Stops this run's server, by its own socket, and whatever its programs
     left by the pids they recorded, and reaps the server the driver started
     (no zombie left). Never matches processes by name."""
     if driver is not None:
         driver.stop()
-    if tool == "fux":
-        subprocess.run([fux_bin, "force-kill-server"], env=env, capture_output=True, timeout=30)
-    else:
-        subprocess.run(["tmux", "-L", "ab", "kill-server"], env=env, capture_output=True, timeout=30)
+    cmds = {"fux": [[fux_bin, "force-kill-server"]],
+            "tmux": [["tmux", "-L", "ab", "kill-server"]],
+            "zellij": [["zellij", "kill-session", "ab"], ["zellij", "delete-session", "ab", "--force"]],
+            "herdr": [["herdr", "--session", "ab", "server", "stop"]]}[tool]
+    for cmd in cmds:
+        try:
+            subprocess.run(cmd, env=env, capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
     ab.reap(work)
+    reap_env(env)
     for root, _, files in os.walk(os.path.join(work, ".fx")):
         for name in files:
             if name.endswith(".pid"):
@@ -286,22 +393,27 @@ def run_one(tool, fux_bin, ref, work):
     plain = dict(env, PATH="/usr/local/bin:/usr/bin:/bin")
     d = ab.driver_for(tool, work, dict(plain), fux_bin)
     d.start()
-    real = fux_bin if tool == "fux" else REAL["tmux"]
+    real = fux_bin if tool == "fux" else REAL[tool]
     helper = Helper(env["FXH_RPC"], real, tool, dict(plain), os.path.join(work, ".calls.log"))
     if not direct(tool, fux_bin):
         helper.start()
+    learn = LEARN[tool]
+    # A guide named after the binary (bench-161 gave each build an opaque
+    # name and its own docs/agents.md) is offered beside the built-in help.
     guide = os.path.join(H, "guides", os.path.basename(fux_bin) + ".md")
-    prompt = PROMPT.format(learn=LEARN[tool].format(guide=guide), goal=goal_text(task, work), work=work)
+    if tool == "fux" and os.path.exists(guide):
+        learn = learn.replace("`fux str WORD explain`.", f"`fux str WORD explain`, and the guide at {guide}.")
+    prompt = PROMPT.format(learn=learn, goal=goal_text(task, work), work=work)
     open(os.path.join(work, ".prompt.md"), "w").write(prompt)
-    rec = {"id": task["id"], "tool": tool, "bin": os.path.basename(fux_bin) if tool == "fux" else "tmux",
+    rec = {"id": task["id"], "tool": tool, "bin": tool,
            "direct": direct(tool, fux_bin),
            "category": task.get("category")}
     started = time.time()
     try:
-        with open(os.path.join(work, ".codex.log"), "w") as log:
+        with open(os.path.join(work, ".codex.jsonl"), "w") as log:
             p = subprocess.run([CODEX, "exec", "-m", MODEL, "-c", 'service_tier="default"',
                                 "-c", 'model_reasoning_effort="high"', "-s", "workspace-write",
-                                "--ephemeral", "--skip-git-repo-check", "-C", work,
+                                "--ephemeral", "--skip-git-repo-check", "--json", "-C", work,
                                 "--output-schema", SCHEMA, "-o", os.path.join(work, ".report.json"), "-"],
                                input=prompt, stdout=log, stderr=subprocess.STDOUT, text=True,
                                env=env, cwd=work, timeout=TIMEOUT)
@@ -319,17 +431,17 @@ def run_one(tool, fux_bin, ref, work):
     calls = []
     if os.path.exists(os.path.join(work, ".calls.log")):
         calls = [l.split("\t") for l in open(os.path.join(work, ".calls.log")).read().splitlines()]
-    name = "fux" if tool == "fux" else "tmux"
-    rec["tool_calls"] = sum(1 for c in calls if len(c) > 1 and c[1] == name)
+    rec["tool_calls"] = sum(1 for c in calls if len(c) > 1 and c[1] == tool)
+    rec["tool_errors"] = sum(1 for c in calls if len(c) > 3 and c[1] == tool and c[3] not in ("0", ""))
+    rec["tool_seconds"] = round(sum(float(c[4]) - float(c[0]) for c in calls
+                                    if len(c) > 4 and c[1] == tool and _num(c[4])), 1)
     rec["sleeps"] = sum(1 for c in calls if len(c) > 1 and c[1] == "sleep")
     rec["sleep_s"] = round(sum(_secs(c[2]) for c in calls if len(c) > 2 and c[1] == "sleep"), 1)
     try:
         rec["report"] = json.load(open(os.path.join(work, ".report.json")))
     except (OSError, json.JSONDecodeError):
         rec["report"] = None
-    tokens = _tokens(os.path.join(work, ".codex.log"))
-    if tokens:
-        rec["tokens"] = tokens
+    rec.update(transcript(work))
     json.dump(rec, open(os.path.join(work, ".result.json"), "w"), indent=1)
     return rec
 
@@ -341,18 +453,59 @@ def _secs(text):
         return 0.0
 
 
-def _tokens(path):
+def _num(text):
     try:
-        lines = open(path, errors="replace").read().splitlines()
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
+def transcript(work):
+    """Reads Codex's event stream: token usage, the agent's shell commands,
+    and a readable transcript (.codex.log) for the judges."""
+    usage = {"input": 0, "cached": 0, "output": 0, "reasoning": 0}
+    cmds = failed = 0
+    lines = []
+    try:
+        events = open(os.path.join(work, ".codex.jsonl"), errors="replace").read().splitlines()
     except OSError:
-        return None
-    for i, l in enumerate(lines):
-        if l.strip() == "tokens used" and i + 1 < len(lines):
-            try:
-                return int(lines[i + 1].replace(",", "").strip())
-            except ValueError:
-                return None
-    return None
+        events = []
+    for raw in events:
+        try:
+            e = json.loads(raw)
+        except json.JSONDecodeError:
+            lines.append(raw)
+            continue
+        if e.get("type") == "turn.completed":
+            u = e.get("usage") or {}
+            usage["input"] += u.get("input_tokens", 0)
+            usage["cached"] += u.get("cached_input_tokens", 0)
+            usage["output"] += u.get("output_tokens", 0)
+            usage["reasoning"] += u.get("reasoning_output_tokens", 0)
+        if e.get("type") != "item.completed":
+            continue
+        item = e.get("item") or {}
+        kind = item.get("type")
+        if kind == "agent_message":
+            lines.append("codex\n" + item.get("text", ""))
+        elif kind == "reasoning":
+            lines.append("thinking\n" + item.get("text", ""))
+        elif kind == "command_execution":
+            cmds += 1
+            failed += item.get("exit_code") not in (0, None)
+            out = item.get("aggregated_output", "")
+            if len(out) > 6000:
+                out = out[:3000] + f"\n... [{len(out) - 6000} bytes cut] ...\n" + out[-3000:]
+            lines.append(f"exec\n{item.get('command')}\nexit {item.get('exit_code')}\n{out}")
+        elif kind == "file_change":
+            lines.append("file change\n" + json.dumps(item.get("changes")))
+        elif kind == "error":
+            lines.append("error\n" + item.get("message", ""))
+    with open(os.path.join(work, ".codex.log"), "w") as f:
+        f.write("\n\n".join(lines) + "\n")
+    return {"tokens": usage["input"] + usage["output"], "usage": usage,
+            "shell_commands": cmds, "shell_failed": failed}
 
 
 if __name__ == "__main__":
@@ -369,8 +522,10 @@ def writer_env(work, tools):
     home = os.path.join(e, "home")
     rpc_root = os.path.join(e, "rpc")
     os.makedirs(home, exist_ok=True)
+    # BENCH_DIR goes with it: the helpers' HOME is the run's own, so the
+    # default (under ~) would point elsewhere.
     env = {"HOME": home, "CODEX_HOME": os.path.expanduser("~/.codex"), "USER": os.environ.get("USER", ""),
-           "LANG": "en_US.UTF-8", "TERM": "xterm-256color", "PYTHONDONTWRITEBYTECODE": "1"}
+           "LANG": "en_US.UTF-8", "TERM": "xterm-256color", "PYTHONDONTWRITEBYTECODE": "1", "BENCH_DIR": H}
     binp = os.path.join(e, "bin")
     os.makedirs(binp, exist_ok=True)
     helpers = []
@@ -379,7 +534,7 @@ def writer_env(work, tools):
         rpc = os.path.join(rpc_root, name)
         os.makedirs(rpc, exist_ok=True)
         with open(os.path.join(binp, name), "w") as f:
-            f.write(PROXY.replace("$FXH_RPC", rpc))
+            f.write(PROXY.replace('os.environ["FXH_RPC"]', repr(rpc)))
         os.chmod(os.path.join(binp, name), 0o755)
         h = Helper(rpc, real, name, plain, os.path.join(work, ".calls.log"))
         h.start()

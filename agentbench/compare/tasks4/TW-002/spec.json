@@ -1,0 +1,30 @@
+{
+  "id": "TW-002",
+  "title": "Seal and exchange eight replica epochs",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/console.py {work} north`, `python3 -I {fixtures}/console.py {work} east`, and `python3 -I {fixtures}/console.py {work} west` concurrently, side by side. Initially each terminal needs at least 44 columns and 12 rows. At the midpoint each requests at least 58 columns and 16 rows: resize when requested. Finish eight epochs of sealing and certificate exchange, following the prompts; all three replicas must stay alive until their final shutdown prompts. Stop each using its displayed shutdown credential. Write {work}/answer.txt with exactly three newline-terminated lines in north, east, west order: `<replica>=<observed final certificate>`. No marker lines. Never type during BUSY. Earlier failed attempts may be replaced by complete successful runs. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Live peers cannot advance without another peer\u2019s atomically published epoch certificate; terminals must be enlarged at epoch five. There are 51 accepted submissions, each scoped to a role and epoch, followed by authenticated shutdown. Terminal records and exact transcripts reject skipped exchanges. Per-epoch BUSY gates prevent typing a precomputed stream; stale certificates and echoed submissions are decoys. There is no timeout. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "echo-traps",
+    "layout-size",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "read-screen",
+    "several-panes",
+    "side-by-side",
+    "resize",
+    "set-size",
+    "title",
+    "wait-exit"
+  ]
+}

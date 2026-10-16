@@ -1,0 +1,28 @@
+{
+  "id": "TW-006",
+  "title": "Preserve a foreground migration status in an interactive shell",
+  "category": "shell",
+  "difficulty": "hard",
+  "goal": "Use an interactive shell in one terminal and run `python3 -I {fixtures}/console.py {work} journal` in another. Complete the journal checkpoints and leave it running at its parked checkpoint. From the interactive shell run `python3 -I {fixtures}/console.py {work} command \"$-\"` (the shell must expand `$-`). Complete the migration approvals, let it exit, and obtain its actual foreground exit status from the shell. It deliberately fails after a checkpoint. Then run `python3 -I {fixtures}/console.py {work} audit` from the same shell, submit that exit status, and complete the audit. Shut down the journal with its displayed credential and exit the interactive shell. Write {work}/answer.txt with exactly four newline-terminated lines: `status=<observed shell exit status>`, `migration=<observed migration receipt>`, `audit=<observed audit receipt>`, `journal=<observed journal receipt>`. No marker lines. Do not type into BUSY programs. Failed attempts can be retried. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "The migration returns a deterministic nonzero status, which must be preserved before another shell command overwrites $?. The journal remains alive through migration and audit. The shell expands $- and the terminal fixture verifies the interactive flag and isatty, without inspecting shell argv. Twenty-three signed inputs plus the status audit are recorded. A parked background program, echoed shell command text and late foreground output make prompt/status confusion costly; fixed sleeps supply neither credentials nor a status. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not. Migration and audit require a live journal, and its shutdown prompt is withheld until the audit is complete.",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "reading",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "exit-status",
+    "read-screen",
+    "several-panes"
+  ]
+}

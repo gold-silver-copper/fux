@@ -1,0 +1,31 @@
+{
+  "id": "TW-005",
+  "title": "Review wrapped diffs and paste seven signed patches",
+  "category": "tui",
+  "difficulty": "hard",
+  "goal": "Start `python3 -I {fixtures}/console.py {work}` in at least 72 columns and 22 rows. Complete every diff revision, following the viewer's paging and editor instructions. Read the seal from each long, wrapped REFERENCE line and submit the requested three-line patch, then review and commit through the modal. Resize to at least 100 columns and 26 rows when requested. Complete the patchset. Write {work}/answer.txt with exactly two newline-terminated lines: `patchset=<observed patchset receipt>` and `commits=<observed commit count>`. No marker lines. Multiline pasting is supported with CR or LF line endings. Do not type during BUSY; earlier failed attempts can be retried. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Seven full-screen diffs combine paging, wrapped reference seals, multiline editor input and nested commit modals. Rendering spinners overwrite text and each revision replaces the screen; the seal must be read before entering the modal. The exact 35-event transcript and terminal record prove all revisions, not just a final receipt. Size gates and busy rejection make blind key streams fail; input decoding permits CR/LF, paste markers, common arrow/F-key forms and ordinary line editing. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "long-horizon",
+    "echo-traps",
+    "overwritten-text",
+    "reading",
+    "full-screen",
+    "layout-size"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "special-keys",
+    "paste",
+    "wait-text",
+    "read-screen",
+    "read-wrapped",
+    "set-size",
+    "resize",
+    "wait-exit"
+  ]
+}

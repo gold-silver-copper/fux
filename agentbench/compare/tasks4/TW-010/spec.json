@@ -1,0 +1,30 @@
+{
+  "id": "TW-010",
+  "title": "Coordinate and collect a signed eight-worker ring",
+  "category": "scripting",
+  "difficulty": "hard",
+  "goal": "Start all eight workers concurrently using `python3 -I {fixtures}/console.py {work} N`, with N from 0 through 7 in separate terminals. Complete three commit rounds per worker. Before later rounds, submit the previous numeric neighbor's prior-round result as requested (worker 0 follows worker 7). All workers must remain available across round barriers. Recover the deliberate worker crash with the displayed resume invocation and receipt; preserve its checkpoint and continue that worker. Use a loop or equivalent repeated procedure to collect final results only after all workers finish. Write {work}/answer.txt as exactly eight newline-terminated lines in numeric worker order, each `worker<N>=<that worker's observed final result>`. No marker lines. Do not type during BUSY; failed complete attempts may be retried. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Eight live workers publish atomic named round records, with global barriers and previous-neighbor handoffs. Forty semantic submissions carry state across three rounds, a real exit-46 crash requires a displayed resume receipt, and final answer ordering is numeric rather than completion order. Only named immutable round records are read; no directory listing races. Terminal evidence and exact transcripts include the resumed worker\u2019s pre-crash history. Busy spinners replace progress and reject early streams, so fixed sleeps and guessing fail. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text",
+    "reading",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "read-scrollback",
+    "several-panes",
+    "pane-names"
+  ]
+}

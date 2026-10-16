@@ -1,0 +1,27 @@
+{
+  "id": "TW-030",
+  "title": "Run an eight-worker build farm through synchronized rounds",
+  "category": "scripting",
+  "difficulty": "hard",
+  "goal": "Use only terminal observations to obtain challenges, receipts, and statuses; do not inspect or modify .fx records or fixture source. Start each named role as python3 -I {fixtures}/console.py {work} ROLE, replacing ROLE with its role name. Start workers w01 through w08 and coordinator concurrently, each in its own named terminal view. Drive all eight workers through configure, then all through build, then all through publish. A worker will not accept the next round until every worker has completed the previous round. Handle the worker-05 repair prompt using its displayed command. Keep every worker alive at its RESULT prompt while completing coordinator, including its index repair. Coordinator attach takes worker w01's RESULT receipt. Collect the worker receipts in numeric worker order followed by the coordinator receipt. Prompts show every accepted action and its syntax. Submit a command only after its INPUT ready line, except the explicitly described quiet-drain command. Wrong commands or input while busy require restarting that program and any peers whose recorded identity it changes; earlier failed attempts are allowed. After all stages are complete, close each program using its displayed close command in reverse dependency order; leave no fixture processes running. Write {work}/answer.txt as exactly 9 lines, each ending with a newline, in this order: w01, w02, w03, w04, w05, w06, w07, w08, coordinator. Each line is exactly ROLE=<that role's observed RESULT receipt>. Use actual role names and observed values, with no angle brackets, spaces around =, headings, blank lines, or marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Input is checked only when submitted (backspace, Ctrl-U, CR/LF, and bracketed paste are normalized). Busy phases reject premature input. Atomic per-role records attest both terminal streams, concurrent live peers, final submitted commands, dependency readiness, receipts and clean closure; the checker independently derives every expected value from the fixed task seed and checks exact answer bytes. Latest successful attempts are accepted if all current peer identities agree. Traps: several-programs, long-horizon, recovery, echo-traps, overwritten-text. Challenges differ by role and stage, imports must already be ready, and progress/cached output is not authoritative. A fixed short wait can hit startup or work-in-progress, and waiting alone cannot discover the challenge values or receipts. ",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "several-panes",
+    "pane-names"
+  ]
+}

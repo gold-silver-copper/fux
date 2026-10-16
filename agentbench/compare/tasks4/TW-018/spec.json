@@ -1,0 +1,28 @@
+{
+  "id": "TW-018",
+  "title": "Bind old archive needles to frozen live readings",
+  "category": "read",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/reader.py {work} initially 90\u2013110 columns wide and at least 24 rows high. Recover all eight ARCHIVE ITEM codes from the diagnostic history (more than 1 MiB), then open the live dashboard. For each item in order, request freeze, wait for its FROZEN snapshot, and bind that snapshot to the corresponding archived code. Ignore provisional and moving values. At the resize prompt enlarge to at least 120 columns and 30 rows before acknowledging. Let the reader exit and write {work}/answer.txt with exactly eight lines in item order: item=<two-digit item number> archive=<observed archive code> frozen=<observed frozen value>. Every line ends with a newline; omit RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Eight seeded needles are separated by a large wrapped diagnostic flood. Full-screen redraws replace provisional and moving values with a stable frozen snapshot. Early bind input during snapshotting is fatal. The checker requires every archive/frozen pair and a real terminal resize, so sleeping cannot substitute for reading.",
+  "kinds": [
+    "reading",
+    "overwritten-text",
+    "full-screen",
+    "layout-size"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "read-screen",
+    "read-scrollback",
+    "read-wrapped",
+    "set-size",
+    "resize",
+    "wait-exit"
+  ]
+}

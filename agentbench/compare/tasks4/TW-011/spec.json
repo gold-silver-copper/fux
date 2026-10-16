@@ -1,0 +1,29 @@
+{
+  "id": "TW-011",
+  "title": "Promotion desk with expiring lease",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/desk.py {work} and, in two other terminals, python3 -I {fixtures}/journal.py {work} source and python3 -I {fixtures}/journal.py {work} audit. Keep all three running concurrently. Complete all 24 promotions in order, obtaining each source token before its audit token and committing before the next fetch. Follow the displayed recovery instructions when needed. Start the desk at 90\u2013110 columns and at least 24 rows; at its resize request enlarge it to at least 120 columns and 30 rows before acknowledging. Close both journals through their quit prompts, finish the desk, and leave all three fixtures exited. Write {work}/answer.txt with exactly 24 lines in release order: release=<two-digit release number> receipt=<observed receipt>. Each line ends with a newline; omit the RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Three simultaneous terminal records and ordered published checkpoints establish causality. Early input is fatal during BUSY. Journal decoys are overwritten. A lease must be renewed at release nine. Every answer receipt is derived from this task seed; waiting alone cannot issue or commit any promotion. Failed attempts can be replaced by successful runs.",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "layout-size"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "several-panes",
+    "side-by-side",
+    "set-size",
+    "resize"
+  ]
+}

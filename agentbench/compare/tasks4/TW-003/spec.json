@@ -1,0 +1,29 @@
+{
+  "id": "TW-003",
+  "title": "Keep a planning assistant within local permission",
+  "category": "agents",
+  "difficulty": "hard",
+  "goal": "Start `python3 -I {fixtures}/console.py {work}`. Supervise its 22 signed plan approvals. Use each READY grant, not a draft proposal. In the full-screen permission dialog select LOCAL ONLY and confirm with F2. When its tool call explicitly reports STALLED, cancel that call with Ctrl-C and continue the same assistant. Complete all approvals with local-only scope. Write {work}/answer.txt as exactly two newline-terminated lines: `revision=<observed revision>` and `scope=<observed scope>`. No marker lines. The assistant waits indefinitely for requested input; input during BUSY invalidates an attempt. You may restart failed attempts. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "22 grants are interleaved with a permission modal and an intentionally stuck tool call; Ctrl-C is consumed only at the displayed recovery prompt. Provisional draft codes, overwritten spinners and echoed grants are not readiness signals. An exact transcript proves scope selection, cancellation, and every grant, including terminal use. A fixed sleep cannot provide tokens or drive the dialog, and premature typing invalidates an attempt. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text",
+    "reading",
+    "full-screen"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "special-keys",
+    "wait-text",
+    "read-screen",
+    "read-scrollback",
+    "signals",
+    "wait-exit"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "TW-026",
+  "title": "Collect real shell statuses while a monitor reconciles jobs",
+  "category": "shell",
+  "difficulty": "hard",
+  "goal": "Use only terminal observations to obtain challenges, receipts, and statuses; do not inspect or modify .fx records or fixture source. Start monitor as python3 -I {fixtures}/console.py {work} monitor. Start monitor in one terminal and an actual interactive Bash shell in another (use bash --noprofile --norc -i). In that shell, sequentially run jobs j01 through j06 using python3 -I {fixtures}/console.py {work} JOB --shell-flags \"$-\", replacing JOB with the job name. Preparation challenges are embedded in long wrapped manifest records. Complete each job's two displayed commands, observe its RESULT receipt and the actual shell exit status immediately after it returns, then return to the same interactive shell prompt before starting the next job. Do not use the fixture's progress estimates as exit statuses. The monitor must remain running throughout. Submit its displayed report-jNN commands with the corresponding observed status and receipt, then finish reconciliation and approval. All terminal-observed values must come from terminal output and the shell's $? value. Prompts show each accepted action and its syntax. Submit only after INPUT ready. Jobs exit themselves; close monitor with its displayed close command after reconciliation. Leave no fixture processes running. Earlier failed attempts are allowed; if monitor is restarted, rerun the jobs under it. Write {work}/answer.txt as exactly 7 lines, each ending with a newline, in this order: j01, j02, j03, j04, j05, j06, monitor. Each job line is exactly JOB status=<observed exit status> receipt=<observed RESULT receipt>; the final line is monitor=<observed RESULT receipt>. Use actual role names and observed values, with no angle brackets, spaces around =, headings, blank lines, or marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Input is checked only when submitted (backspace, Ctrl-U, CR/LF, and bracketed paste are normalized). Busy phases reject premature input. Atomic per-role records attest both terminal streams, concurrent live peers, final submitted commands, dependency readiness, receipts and clean closure; the checker independently derives every expected value from the fixed task seed and checks exact answer bytes. Latest successful attempts are accepted if all current peer identities agree. Traps: several-programs, long-horizon, recovery, echo-traps, overwritten-text, reading. Challenges differ by role and stage, imports must already be ready, and progress/cached output is not authoritative. A fixed short wait can hit startup or work-in-progress, and waiting alone cannot discover the challenge values or receipts. ",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "overwritten-text",
+    "reading"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "exit-status",
+    "read-screen",
+    "read-wrapped",
+    "several-panes"
+  ]
+}

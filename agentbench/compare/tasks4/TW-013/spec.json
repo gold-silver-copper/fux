@@ -1,0 +1,24 @@
+{
+  "id": "TW-013",
+  "title": "Approve a planner without approving its echo",
+  "category": "agents",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/planner.py {work}. Supervise all 24 tickets, approving each displayed plan only at its APPROVAL prompt. Recover the planner when its permission workflow gets stuck, using its displayed recovery instruction. An echoed approval is only queued; wait for the next screen before sending another approval. Publish the final ledger and let the planner exit. Write {work}/answer.txt with exactly 24 lines in ticket order: ticket=<two-digit ticket number> proof=<observed proof>. Each ends with a newline; exclude RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "An alternate-screen planner redraws each approval, echoes queued text, stalls for 12 seconds during planning, and twice requires recovery. The checker requires all 26 committed state transitions. Fixed short waits cause a fatal early-input record; guesses fail seeded permission checks.",
+  "kinds": [
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "full-screen"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "read-screen",
+    "wait-exit"
+  ]
+}

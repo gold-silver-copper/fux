@@ -1,0 +1,28 @@
+{
+  "id": "TW-029",
+  "title": "Resume a parked service after leaving its workspace",
+  "category": "sessions",
+  "difficulty": "hard",
+  "goal": "Use only terminal observations to obtain challenges, receipts, and statuses; do not inspect or modify .fx records or fixture source. Start each named role as python3 -I {fixtures}/console.py {work} ROLE, replacing ROLE with its role name. Create a persistent terminal workspace named shift-vault, with the daemon terminal named retained-service. Run daemon there, with ledger and inspector concurrently in other terminal views. Complete daemon through park, then leave/disconnect your viewing client from that workspace while the original daemon stays alive. Work on the ledger in a different workspace until it has a RESULT; it must accept at least one command after PARKED and reach RESULT before daemon resumes. Reconnect to shift-vault and find retained-service by name. Daemon announces PARKED followed later by RESUME-READY and an epoch challenge without further input; wait for that announcement, resume it, and finish its stages. Complete inspector using daemon at attach and ledger at compare. Preserve the daemon PID across park/resume; all programs must eventually exit cleanly. Prompts show every accepted action and its syntax. Submit a command only after its INPUT ready line, except the explicitly described quiet-drain command. Wrong commands or input while busy require restarting that program and any peers whose recorded identity it changes; earlier failed attempts are allowed. After all stages are complete, close each program using its displayed close command in reverse dependency order; leave no fixture processes running. Write {work}/answer.txt as exactly 3 lines, each ending with a newline, in this order: daemon, ledger, inspector. Each line is exactly ROLE=<that role's observed RESULT receipt>. Use actual role names and observed values, with no angle brackets, spaces around =, headings, blank lines, or marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Input is checked only when submitted (backspace, Ctrl-U, CR/LF, and bracketed paste are normalized). Busy phases reject premature input. Atomic per-role records attest both terminal streams, concurrent live peers, final submitted commands, dependency readiness, receipts and clean closure; the checker independently derives every expected value from the fixed task seed and checks exact answer bytes. Latest successful attempts are accepted if all current peer identities agree. Traps: several-programs, long-horizon, echo-traps, overwritten-text, sessions. Challenges differ by role and stage, imports must already be ready, and progress/cached output is not authoritative. A fixed short wait can hit startup or work-in-progress, and waiting alone cannot discover the challenge values or receipts. Disconnect/reconnect and terminal naming are requested capabilities; final-state evidence proves the original daemon survives and the ledger advances while it is parked, but cannot independently prove a viewing client was detached. ",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "echo-traps",
+    "overwritten-text",
+    "sessions"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "several-panes",
+    "pane-names",
+    "detach-reattach"
+  ]
+}

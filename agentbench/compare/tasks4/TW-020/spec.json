@@ -1,0 +1,30 @@
+{
+  "id": "TW-020",
+  "title": "Sweep an eight-worker dependency ring",
+  "category": "scripting",
+  "difficulty": "hard",
+  "goal": "Start eight concurrent programs python3 -I {fixtures}/worker.py {work} k, one for each decimal k from 0 through 7, in separate terminals. Keep all eight running until every worker completes all three laps. While they remain alive, run python3 -I {fixtures}/visit.py {work} in a separate terminal, submit its displayed visit completed instruction, let that visitor exit, and locate each worker again using its terminal title. Recover each worker's archive key from its terminal output; worker 02 buries its key in more than 1 MiB of diagnostics. For each lap, operate workers in ascending index order, waiting for each READY prompt and submitting its displayed run command with that worker's archive key. A queued echo is not DONE. After all eight report DONE for lap 3, seal each using its observed final result and let all workers exit. Write {work}/answer.txt with exactly eight lines in ascending worker order: worker=<two-digit worker index> result=<observed lap-3 result>. Each line ends with a newline; omit RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "A named-file dependency ring prevents readiness from being guessed or skipped; all eight workers overlap until the final seal barrier. Twenty-four run submissions carry archive keys and per-lap codes. One key is buried in a large flood, and queued echoes precede BUSY completion. The checker derives ordered results and verifies every lap, seal, terminal, and simultaneous lifetime.",
+  "kinds": [
+    "several-programs",
+    "sessions",
+    "long-horizon",
+    "reading",
+    "echo-traps"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "several-panes",
+    "wait-text",
+    "read-screen",
+    "read-scrollback",
+    "read-wrapped",
+    "title",
+    "pane-names",
+    "wait-exit"
+  ]
+}

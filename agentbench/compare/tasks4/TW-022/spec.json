@@ -1,0 +1,30 @@
+{
+  "id": "TW-022",
+  "title": "Reconcile a locked migration against a live database",
+  "category": "panes",
+  "difficulty": "hard",
+  "goal": "Use only terminal observations to obtain challenges, receipts, and statuses; do not inspect or modify .fx records or fixture source. Start each named role as python3 -I {fixtures}/console.py {work} ROLE, replacing ROLE with its role name. Keep database, migration, and query running concurrently in separate terminal views, with database and migration side by side. Each view needs at least 90 columns and 18 rows when commands are submitted. Finish the database snapshot dialogue first. Its describe challenge is in the audit archive before the log flood. Transfer the database RESULT receipt to migration, resolve the displayed lock incident in the displayed order, finish the migration, and transfer its RESULT receipt to query. Complete all query checks. Prompts show every accepted action and its syntax. Submit a command only after its INPUT ready line, except the explicitly described quiet-drain command. Wrong commands or input while busy require restarting that program and any peers whose recorded identity it changes; earlier failed attempts are allowed. After all stages are complete, close each program using its displayed close command in reverse dependency order; leave no fixture processes running. Write {work}/answer.txt as exactly 3 lines, each ending with a newline, in this order: database, migration, query. Each line is exactly ROLE=<that role's observed RESULT receipt>. Use actual role names and observed values, with no angle brackets, spaces around =, headings, blank lines, or marker lines.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Input is checked only when submitted (backspace, Ctrl-U, CR/LF, and bracketed paste are normalized). Busy phases reject premature input. Atomic per-role records attest both terminal streams, concurrent live peers, final submitted commands, dependency readiness, receipts and clean closure; the checker independently derives every expected value from the fixed task seed and checks exact answer bytes. Latest successful attempts are accepted if all current peer identities agree. Traps: several-programs, long-horizon, recovery, echo-traps, reading, layout-size. Challenges differ by role and stage, imports must already be ready, and progress/cached output is not authoritative. A fixed short wait can hit startup or work-in-progress, and waiting alone cannot discover the challenge values or receipts. ",
+  "kinds": [
+    "several-programs",
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "reading",
+    "layout-size"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "wait-text",
+    "wait-exit",
+    "read-screen",
+    "read-scrollback",
+    "set-size",
+    "several-panes",
+    "side-by-side"
+  ]
+}

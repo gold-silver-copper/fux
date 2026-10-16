@@ -1,0 +1,30 @@
+{
+  "id": "TW-004",
+  "title": "Archive catalog pages through forms and mouse saves",
+  "category": "tui",
+  "difficulty": "hard",
+  "goal": "Run `python3 -I {fixtures}/console.py {work}` in a terminal at least 78 columns by 24 rows. Process every displayed catalog page: select ARCHIVE with Down and Enter, enter its observed value, and click the SAVE PAGE button when ready (columns 5\u201316 on row 12, left button). Recover the validation outage with the displayed retry key. Enlarge the terminal to at least 96 columns by 28 rows when requested. Finish the catalog. This task requires mouse input and resizing. Write {work}/answer.txt with exactly two newline-terminated lines: `catalog=<observed catalog receipt>` and `pages=<observed saved-page count>`. Include no marker lines. Do not type during BUSY; complete successful retries may replace earlier failed attempts. A wrong submitted value invalidates that attempt too; edit the line before submitting if needed.",
+  "setup": {
+    "files": {}
+  },
+  "note": "Eight alternate-screen forms require 24 state-carrying submissions plus navigation, mouse saves, a retry modal and an actual size increase. ANSI cursor positioning pins the mouse hit area. Both common cursor/F-key encodings, SGR/legacy mouse presses, CR/LF and bracketed paste are decoded semantically. Exact event records reject missing pages or a skipped retry. The validator outage lasts 4.3 seconds and rejects input during reconnection. A wrong submitted line permanently invalidates its attempt; line edits before Enter do not.",
+  "kinds": [
+    "long-horizon",
+    "recovery",
+    "echo-traps",
+    "full-screen",
+    "layout-size"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "special-keys",
+    "wait-text",
+    "read-screen",
+    "mouse",
+    "set-size",
+    "resize",
+    "cursor",
+    "wait-exit"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "id": "TW-014",
+  "title": "Commit twenty-four redraw-heavy forms",
+  "category": "tui",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/forms.py {work} in a terminal initially 90\u2013110 columns wide and at least 24 rows high. Save all 24 forms in order using the menu, editable field, F2 preview dialog, and Enter confirmation shown on screen. At the midpoint resize to at least 120 columns and 30 rows before acknowledging. Only a confirmed dialog saves a form. Let the program exit, then write {work}/answer.txt with exactly 24 lines in form order: form=<two-digit form number> digest=<observed digest>. Every line ends with a newline; exclude RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "The field redraws on every editing key and accepts final submitted text, including corrections. Menus, preview, and confirmation are separate states; typing ahead during save fails. Arrow and F2 inputs accept CSI and SS3 forms. A seeded code, 24 commits, and a real size change are checked.",
+  "kinds": [
+    "full-screen",
+    "layout-size",
+    "long-horizon",
+    "echo-traps"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "special-keys",
+    "read-screen",
+    "wait-text",
+    "set-size",
+    "resize",
+    "wait-exit"
+  ]
+}

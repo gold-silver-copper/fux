@@ -1,0 +1,29 @@
+{
+  "id": "TW-015",
+  "title": "Inspect wrapped notices through modal locks",
+  "category": "tui",
+  "difficulty": "hard",
+  "goal": "Run python3 -I {fixtures}/board.py {work} initially 90\u2013110 columns wide and at least 24 rows high. Inspect and save all eight notices, in order. Select Inspect by clicking row 5, read the NOTICE_CODE in the long wrapped detail record, acknowledge it, then use the displayed F2 review and Enter save dialog. Resolve the locked notice using its displayed recovery instruction. At the resize prompt enlarge to at least 120 columns and 30 rows before pressing Enter. Mouse input is required; SGR and legacy terminal clicks both work. Let the board exit. Write {work}/answer.txt with exactly eight lines in notice order: notice=<two-digit notice number> seal=<observed seal>. Each line ends with a newline; omit RESULT markers. All programs require terminals on stdin and stdout. Use their displayed instructions and terminal output; do not inspect fixture source or .fx records. Do not type during BUSY; wait for the next explicit input prompt. Failed attempts may be restarted; only completed successful attempts count. There is no deadline.",
+  "setup": {
+    "files": {}
+  },
+  "note": "The preview contains an obsolete code; the real code is inside a wrapped detail record reached by mouse. One notice opens a recovery lock, each save needs its own dialog, and the board changes size midway. The checker requires all saves and the unlock. Neither a delay nor a guessed preview code can complete a notice.",
+  "kinds": [
+    "full-screen",
+    "reading",
+    "recovery",
+    "layout-size"
+  ],
+  "needs": [
+    "start-program",
+    "type-text",
+    "special-keys",
+    "mouse",
+    "read-screen",
+    "read-wrapped",
+    "wait-text",
+    "set-size",
+    "resize",
+    "wait-exit"
+  ]
+}
