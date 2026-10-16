@@ -27,7 +27,9 @@ fn cells_read_back_what_they_were_made_with() {
         (Compact::glyph('界', 2, style), "界", true, false),
         (Compact::glyph('\u{1F600}', 2, 0), "\u{1F600}", true, false),
         (
-            Compact::blank(0).with_inline("e\u{301}".as_bytes()),
+            Compact::blank(0)
+                .holding("e\u{301}".as_bytes())
+                .unwrap_or_default(),
             "e\u{301}",
             false,
             false,
@@ -62,11 +64,12 @@ fn cells_read_back_what_they_were_made_with() {
             char::from(byte).to_string()
         );
     }
-    // Five bytes do not fit inline: the cell is left blank, its halves and
-    // style kept.
-    let cell = Compact::glyph('x', 2, style).with_inline(b"abcde");
-    assert_eq!(cell, Compact::glyph('x', 2, style).with_inline(b""));
-    assert!(cell.is_wide() && !cell.has_contents());
+    // Five bytes do not fit inline; none, the cell blank with its halves
+    // and style kept.
+    let cell = Compact::glyph('x', 2, style);
+    assert_eq!(cell.holding(b"abcde"), None);
+    let blank = cell.holding(b"").unwrap_or_default();
+    assert!(blank.is_wide() && !blank.has_contents());
 }
 
 #[test]

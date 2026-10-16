@@ -63,8 +63,6 @@ const _: () = assert!(HALVES >> 22 == CellRef::HALVES as u32);
 /// The longest cluster a short one is. A long cluster the row has no room
 /// for is cut to this.
 const SHORT: usize = 17;
-/// The longest text a cell holds inline.
-const INLINE: usize = 4;
 /// The bytes a row's short text first takes room for.
 const FIRST_SHORT: usize = 256;
 
@@ -245,25 +243,12 @@ impl Compact {
         let (start, len) = self.locator().filter(|(_, len)| (*len > SHORT) == long)?;
         Some(start..start.checked_add(len)?)
     }
-    /// The cell, keeping its halves and style, holding `text` inline: at
-    /// most [`INLINE`] bytes, or the cell is left blank.
-    fn with_inline(self, text: &[u8]) -> Self {
-        let mut bytes = [0; 4];
-        let fits = bytes
-            .get_mut(..text.len())
-            .and_then(|head| crate::copy_from(head, text))
-            .is_some();
-        Self {
-            text: if fits { bytes } else { [0; 4] },
-            word: self.word & KEPT,
-        }
-    }
     /// The cell, keeping its halves and style, holding `text` inline, if
     /// it fits: what `Line::set` stores, without the row's text.
     #[inline]
-    pub(crate) fn holding(self, text: &str) -> Option<Self> {
+    pub(crate) fn holding(self, text: &[u8]) -> Option<Self> {
         let mut bytes = [0; 4];
-        match (text.as_bytes(), &mut bytes) {
+        match (text, &mut bytes) {
             // One byte, as most text is: stored without a copy's call.
             ([byte], [first, ..]) => *first = *byte,
             (text, bytes) => crate::copy_from(bytes.get_mut(..text.len())?, text)?,
@@ -522,9 +507,9 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// UTF-8 of at most [`SHORT`] bytes: inline, or with
     /// the row's short text, which always has room for it once compacted.
     fn store_short(&mut self, i: usize, cell: Compact, text: &[u8]) {
-        if text.len() <= INLINE {
+        if let Some(inline) = cell.holding(text) {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
-                *slot = cell.with_inline(text);
+                *slot = inline;
             }
             return;
         }

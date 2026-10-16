@@ -661,7 +661,7 @@ impl Cells {
         };
         slot.attributes = cell.attributes;
         let shape = Compact::shaped(cell.halves());
-        if let Some(inline) = shape.holding(cell.text) {
+        if let Some(inline) = shape.holding(cell.text.as_bytes()) {
             slot.cell = inline;
             return true;
         }
@@ -680,7 +680,7 @@ impl Cells {
         if start == 0 && end == self.cells.len() {
             self.text.release();
         }
-        let inline = Compact::shaped(cell.halves()).holding(cell.text);
+        let inline = Compact::shaped(cell.halves()).holding(cell.text.as_bytes());
         match (inline, self.cells.get_mut(start..end)) {
             (Some(inline), Some(run)) => run.fill(Stored {
                 cell: inline,
