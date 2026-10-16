@@ -6,7 +6,7 @@
 //! cursor in the scrollback, which it alone holds (`Act::Copy`).
 //!
 //! What a screen's entry does is fuxth, run as the client runs a binding.
-use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel};
+use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::PaneId;
 use crate::keymap::{PAGE, confirm_act, copy_act, letter, line_act, list_act};
@@ -43,7 +43,7 @@ pub enum Screen {
         about: AnyRef,
     },
     /// Copy mode, and the search line being typed in it, forward or back.
-    Copy(Option<(bool, Line<1024>)>),
+    Copy(Option<(Seek, Line<1024>)>),
 }
 
 /// A menu or a chooser: its rows, each running fuxth when chosen.
@@ -411,7 +411,7 @@ impl Screen {
         }
     }
 
-    fn copy(&mut self, search: Option<(bool, Line<1024>)>, press: KeyPress) -> Vec<Effect> {
+    fn copy(&mut self, search: Option<(Seek, Line<1024>)>, press: KeyPress) -> Vec<Effect> {
         if let Some(search) = search {
             return match line_act(press) {
                 Some(act) => self.copy_search(search, act),
@@ -422,13 +422,13 @@ impl Screen {
             };
         }
         // `f` and `r` open the search line, forward or back.
-        if let Some(forward) = letter(press).and_then(|c| match c {
-            'f' => Some(true),
-            'r' => Some(false),
+        if let Some(seek) = letter(press).and_then(|c| match c {
+            'f' => Some(Seek::Forward),
+            'r' => Some(Seek::Backward),
             _ => None,
         }) {
-            *self = Screen::Copy(Some((forward, Line::new(String::new()))));
-            let typing = CopyAct::Typing(Some((forward, String::new(), String::new())));
+            *self = Screen::Copy(Some((seek, Line::new(String::new()))));
+            let typing = CopyAct::Typing(Some((seek, String::new(), String::new())));
             return vec![Effect::Send(Act::Copy(typing))];
         }
         let act = copy_act(press);
@@ -441,21 +441,17 @@ impl Screen {
             .collect()
     }
 
-    fn copy_search(
-        &mut self,
-        (forward, mut line): (bool, Line<1024>),
-        act: LineAct,
-    ) -> Vec<Effect> {
+    fn copy_search(&mut self, (seek, mut line): (Seek, Line<1024>), act: LineAct) -> Vec<Effect> {
         let sent = match act {
             LineAct::Cancel => CopyAct::Typing(None),
             LineAct::Submit => CopyAct::Find {
                 query: line.text(),
-                forward,
+                seek,
             },
             LineAct::Edit(edit) => {
                 line.edit(&edit);
-                let typing = (forward, line.before().to_owned(), line.after().to_owned());
-                *self = Screen::Copy(Some((forward, line)));
+                let typing = (seek, line.before().to_owned(), line.after().to_owned());
+                *self = Screen::Copy(Some((seek, line)));
                 return vec![Effect::Send(Act::Copy(CopyAct::Typing(Some(typing))))];
             }
         };
@@ -549,7 +545,7 @@ mod tests {
             found,
             [Effect::Send(Act::Copy(CopyAct::Find {
                 query: "a".into(),
-                forward: true
+                seek: Seek::Forward
             }))]
         );
         assert_eq!(screen, Screen::Copy(None));

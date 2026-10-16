@@ -4,7 +4,7 @@
 //! anchored to fux-vt row IDs, so new output does not move them, while other
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
-use crate::act::CopyAct;
+use crate::act::{CopyAct, Seek};
 use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::render::shown;
@@ -22,32 +22,6 @@ pub enum Select {
     Char,
     Line,
     Block,
-}
-
-/// Which way a search goes: toward later rows, or earlier ones.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Seek {
-    Forward,
-    Backward,
-}
-
-impl Seek {
-    /// Forward if `forward`, else backward.
-    pub fn forward(forward: bool) -> Seek {
-        if forward {
-            Seek::Forward
-        } else {
-            Seek::Backward
-        }
-    }
-
-    /// The other way.
-    pub fn reversed(self) -> Seek {
-        match self {
-            Seek::Forward => Seek::Backward,
-            Seek::Backward => Seek::Forward,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -606,21 +580,16 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
 
     // The search line the client types, shown; the search it asks for.
     if let CopyAct::Typing(line) = act {
-        copy.typing = line.map(|(forward, before, after)| {
-            (Seek::forward(forward), clean(&before), clean(&after))
-        });
+        copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
         return;
     }
-    if let CopyAct::Find { query, forward } = act {
+    if let CopyAct::Find { query, seek } = act {
         copy.typing = None;
         let query = clean(&query);
         if query.is_empty() {
             return;
         }
-        let search = Search {
-            query,
-            seek: Seek::forward(forward),
-        };
+        let search = Search { query, seek };
         copy.search = Some(search.clone());
         if let Some(at) = copy.resolve(screen) {
             jump(copy, screen, height, at, &search, &mut view.notice);
@@ -687,18 +656,17 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
             }
             return;
         }
-        key @ (CopyAct::PromptBack | CopyAct::PromptForward) => {
-            match prompt(row, Seek::forward(key == CopyAct::PromptForward)) {
+        CopyAct::Prompt(seek) => {
+            match prompt(row, seek) {
                 // The prompt at the top of the view, what came of it below.
                 Some(found) => {
                     top = found;
                     target = Some((found, 0));
                 }
                 None => {
-                    let which = if key == CopyAct::PromptBack {
-                        "earlier"
-                    } else {
-                        "later"
+                    let which = match seek {
+                        Seek::Backward => "earlier",
+                        Seek::Forward => "later",
                     };
                     view.error(format!("no {which} prompt (shells mark them with OSC 133)"));
                     return;

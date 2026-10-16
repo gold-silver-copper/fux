@@ -119,8 +119,8 @@ pub enum CopyAct {
     PageDown,
     Next,
     Previous,
-    PromptBack,
-    PromptForward,
+    /// The cursor to the next shell prompt, or the one before.
+    Prompt(Seek),
     SelectChar,
     SelectLine,
     SelectBlock,
@@ -130,12 +130,29 @@ pub enum CopyAct {
     Yank,
     /// The search line the client is typing, for the bar: forward or back,
     /// and its text before and after the cursor; none once it is done.
-    Typing(Option<(bool, String, String)>),
+    Typing(Option<(Seek, String, String)>),
     /// Find `query`, forward or back, from the cursor.
     Find {
         query: String,
-        forward: bool,
+        seek: Seek,
     },
+}
+
+/// Which way a search goes: toward later rows, or earlier ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seek {
+    Forward,
+    Backward,
+}
+
+impl Seek {
+    /// The other way.
+    pub fn reversed(self) -> Seek {
+        match self {
+            Seek::Forward => Seek::Backward,
+            Seek::Backward => Seek::Forward,
+        }
+    }
 }
 
 /// What moves a list (a menu, a chooser), made of the client's keys.
@@ -267,16 +284,16 @@ wire_enum!(CopyAct, "copy action" {
     16 => PageDown,
     17 => Next,
     18 => Previous,
-    19 => PromptBack,
-    20 => PromptForward,
+    19 => Prompt(seek),
     21 => SelectChar,
     22 => SelectLine,
     23 => SelectBlock,
     24 => OtherEnd,
     25 => Yank,
     254 => Typing(line),
-    255 => Find { query, forward },
+    255 => Find { query, seek },
 });
+wire_enum!(Seek, "search direction" { 0 => Forward, 1 => Backward });
 wire_enum!(Act, "action" {
     0 => Key(k),
     1 => Paste(text),

@@ -5,7 +5,7 @@
 //!
 //! A binding runs fuxth: its code is compiled and run by the client, fresh,
 //! each time its keys are typed, the client itself its `me`.
-use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Panel};
+use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Panel, Seek};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use crate::screens::Effect;
 
@@ -885,8 +885,8 @@ pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
         (_, Key::PageDown) => CopyAct::PageDown,
         (Some('n'), _) => CopyAct::Next,
         (Some('p'), _) => CopyAct::Previous,
-        (Some('['), _) => CopyAct::PromptBack,
-        (Some(']'), _) => CopyAct::PromptForward,
+        (Some('['), _) => CopyAct::Prompt(Seek::Backward),
+        (Some(']'), _) => CopyAct::Prompt(Seek::Forward),
         (Some('v'), _) => CopyAct::SelectChar,
         (Some('s'), _) => CopyAct::SelectLine,
         (Some('x'), _) => CopyAct::SelectBlock,
