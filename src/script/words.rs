@@ -1136,7 +1136,6 @@ impl fuxth::Host for Host<'_> {
                         target: p,
                         history: built.history,
                         view: built.view,
-                        json: built.json,
                         settle,
                     },
                     then,

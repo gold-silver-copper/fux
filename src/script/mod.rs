@@ -767,7 +767,11 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             }
         },
         Then::Answer(kind) => vec![Answer::value(text, json, kind, None)],
-        Then::Json(kind) => vec![Answer::value(text.clone(), Some(text), kind, None)],
+        // Its JSON alone, as its text too.
+        Then::Json(kind) => {
+            let json = json.unwrap_or(text);
+            vec![Answer::value(json.clone(), Some(json), kind, None)]
+        }
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
             Some(Scalar::Int(n)) => Value::Int(n),

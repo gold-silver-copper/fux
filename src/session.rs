@@ -1983,7 +1983,6 @@ impl Session {
             target,
             history,
             view,
-            json,
             settle: Some(limit),
         } = command
         {
@@ -1997,7 +1996,7 @@ impl Session {
             let pane = self.pane(target)?;
             let now = Instant::now();
             let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
-            waiting.capture = Some((history, view, json));
+            waiting.capture = Some((history, view));
             return Ok(self.wait_on(waiting, now));
         }
         let (target, wait, keys) = if let Command::Wait { target, wait } = command {
@@ -2623,13 +2622,11 @@ impl Session {
                 target,
                 history,
                 view,
-                json,
                 ..
             } => {
                 let pane = self.pane(target)?;
                 let copying = self.copying(pane.id);
-                let read = crate::capture::pane(pane, history, view, true, copying);
-                let (text, form) = crate::capture::asked(read, json);
+                let (text, form) = crate::capture::pane(pane, history, view, true, copying);
                 Ok(Reply {
                     json: form.unwrap_or_default(),
                     ..text.into()

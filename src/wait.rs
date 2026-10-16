@@ -78,7 +78,7 @@ pub struct Waiting {
     answers: Vec<Option<Reply>>,
     /// A capture to give once the pane settles (`capture` from a command
     /// line): its history, view and whether as JSON.
-    pub capture: Option<(Option<usize>, CaptureView, bool)>,
+    pub capture: Option<(Option<usize>, CaptureView)>,
 }
 
 /// What a wait's answer tells of a pane against how it was as the wait
@@ -199,20 +199,15 @@ impl Waiting {
     pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let mut outcome = self.look(session, now)?;
         // A capture asked to settle first: its state line, then the capture.
-        if let (Some((history, view, json)), Some(watch)) = (self.capture, self.watches.first())
+        if let (Some((history, view)), Some(watch)) = (self.capture, self.watches.first())
             && let Some(pane) = session.panes.get(&watch.pane)
         {
             let copying = session.copying(pane.id);
-            let read = crate::capture::pane(pane, history, view, true, copying);
-            outcome.text = match crate::capture::asked(read, json) {
-                (read, None) => read,
-                // Its JSON, read at the same moment, for `json` to give.
-                (read, Some(form)) => {
-                    outcome.json = form;
-                    let line = outcome.text.lines().next().unwrap_or_default();
-                    format!("{line}\n{read}")
-                }
-            };
+            let (read, form) = crate::capture::pane(pane, history, view, true, copying);
+            // Its JSON, read at the same moment, for `json` to give.
+            outcome.json = form.unwrap_or_default();
+            let line = outcome.text.lines().next().unwrap_or_default();
+            outcome.text = format!("{line}\n{read}");
         }
         // An answer that starts with the pane's state names the pane itself.
         let named = self.lead.trim_end();

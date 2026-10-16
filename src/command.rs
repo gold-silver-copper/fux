@@ -370,12 +370,11 @@ pub enum Command {
         target: PaneId,
     },
     /// What the pane shows, with up to `history` lines before it, as text
-    /// or JSON.
+    /// and as JSON.
     CapturePane {
         target: PaneId,
         history: Option<usize>,
         view: CaptureView,
-        json: bool,
         /// Read once the pane settles, waiting this long at most (if unsaid,
         /// the server's `wait-seconds`), and said with its state; at once,
         /// as it is, without.

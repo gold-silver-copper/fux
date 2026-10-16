@@ -15,15 +15,6 @@ type Cells<'a> = Vec<(&'a str, Attributes)>;
 /// A capture as text, and as JSON if it was asked for too: read once.
 type Read = (String, Option<String>);
 
-/// A capture's form `json` asks for: its JSON alone, or its text with
-/// its JSON beside it.
-pub fn asked((text, form): Read, json: bool) -> Read {
-    match json {
-        true => (form.unwrap_or(text), None),
-        false => (text, form),
-    }
-}
-
 /// A pane's screen, and `history` rows before it, as `view` asks, with
 /// `json` its JSON too; with `copy_mode`, that says a client is in copy
 /// mode on it.

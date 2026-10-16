@@ -450,7 +450,7 @@ wire_enum!(Command, "command" {
     33 => Revoke { socket },
     23 => Log { target, file },
     24 => ClearHistory { target },
-    25 => CapturePane { target, history, view, json, settle },
+    25 => CapturePane { target, history, view, settle },
     26 => Reorder { target, toward },
     27 => Set { option, value },
     28 => Resolve { text, kind },
