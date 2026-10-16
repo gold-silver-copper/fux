@@ -365,6 +365,15 @@ pub struct Rows<'a> {
     pub(crate) grid: &'a grid::Grid,
     pub(crate) range: std::ops::Range<usize>,
 }
+impl<'a> Rows<'a> {
+    /// Every row `grid` retains, its history's oldest first.
+    pub(crate) fn of(grid: &'a grid::Grid) -> Self {
+        Self {
+            grid,
+            range: 0..grid.retained_len(),
+        }
+    }
+}
 impl<'a> Iterator for Rows<'a> {
     type Item = Row<'a>;
     fn next(&mut self) -> Option<Row<'a>> {

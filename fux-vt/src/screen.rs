@@ -611,7 +611,7 @@ impl Screen {
         self.grid().cursor.at()
     }
     /// DEC STD 070's Last Column Flag: a glyph went into the last column,
-    /// or the right margin's ([`left_right_margins`](Self::left_right_margins)),
+    /// or the right margin's (DECSLRM, with DECLRMM set),
     /// and the next one, with autowrap on, first moves to the start of the
     /// next line, wherever the cursor waits (a margin reset since leaves
     /// it where the margin was). Cursor movements, line feeds and edits
@@ -878,35 +878,18 @@ impl Screen {
     }
     /// The rows retained, history's oldest first, then the screen's.
     pub fn rows(&self) -> Rows<'_> {
-        let grid = self.grid();
-        Rows {
-            grid,
-            range: 0..grid.retained_len(),
-        }
+        Rows::of(self.grid())
     }
     /// The primary screen's rows, its history first, whichever screen is in
     /// use: what a program printed before it took the alternate screen.
     pub fn main_rows(&self) -> Rows<'_> {
-        let grid = &self.primary;
-        Rows {
-            grid,
-            range: 0..grid.retained_len(),
-        }
+        Rows::of(&self.primary)
     }
     /// The alternate screen's rows, whichever screen is in use: what a
     /// full-screen program drew last, kept after it leaves (1049, 1047, 47)
     /// until the alternate screen is shown again. None if it never was.
     pub fn alternate_rows(&self) -> Rows<'_> {
-        let grid = &self.alternate;
-        Rows {
-            grid,
-            range: 0..grid.retained_len(),
-        }
-    }
-    /// Where the primary screen's retained row `id` is among
-    /// [`main_rows`](Self::main_rows), whichever screen is in use.
-    pub fn main_row_index(&self, id: crate::RowId) -> Option<usize> {
-        self.primary.index_of(id)
+        Rows::of(&self.alternate)
     }
     /// Where the retained row `id` is, from the oldest, if it is kept.
     pub fn row_index(&self, id: crate::RowId) -> Option<usize> {
