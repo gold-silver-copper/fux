@@ -437,6 +437,19 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
+/// What a pane running `argv` is named until it is renamed: its program's
+/// file name.
+pub(crate) fn named(argv: &[String]) -> String {
+    argv.first().map(|p| basename(p)).unwrap_or_default()
+}
+
+/// A program's file name, or the program as given if it has none.
+pub(crate) fn basename(program: &str) -> String {
+    std::path::Path::new(program)
+        .file_name()
+        .map_or_else(|| program.to_owned(), |n| n.to_string_lossy().into_owned())
+}
+
 /// What a program rang or announced since it started: bells, and desktop
 /// notifications (OSC 9, 777, 99) with the last one's text, and whether the
 /// last alert was that notification.
@@ -1176,15 +1189,8 @@ impl Pane {
         history: usize,
     ) -> Result<Process, Error> {
         // Named after its program, unless renamed.
-        let named = |launch: &Launch| {
-            launch.argv.first().map_or_else(String::new, |p| {
-                std::path::Path::new(p)
-                    .file_name()
-                    .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
-            })
-        };
-        let name = match matches!(&self.runs, Runs::Program(old) if named(old) == self.name) {
-            true => named(&launch),
+        let name = match matches!(&self.runs, Runs::Program(old) if named(&old.argv) == self.name) {
+            true => named(&launch.argv),
             false => self.name.clone(),
         };
         let runs = Runs::Program(launch);

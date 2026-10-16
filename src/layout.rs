@@ -78,7 +78,7 @@ pub struct Rect {
 
 impl Rect {
     /// A whole screen of `rows` by `cols`.
-    pub fn screen(rows: u16, cols: u16) -> Rect {
+    pub const fn screen(rows: u16, cols: u16) -> Rect {
         Rect {
             x: 0,
             y: 0,

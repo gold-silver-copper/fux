@@ -46,6 +46,12 @@ pub enum Fit {
     Fixed(fux_vt::Size),
 }
 
+/// What the tab at `place`, counted from 1, is named if it is given no
+/// name and is not a workspace's first.
+pub(crate) fn numbered(place: usize) -> String {
+    format!("tab-{place}")
+}
+
 impl Fit {
     /// The area it lays a tab out in: a fixed size's, or `client`, a
     /// client's screen, if there is one.
@@ -122,7 +128,7 @@ impl Workspace {
     /// for every client that has one in the others.
     pub(crate) fn add_tab(&mut self, id: TabId, name: Option<String>, layout: (Option<Tree>, Fit)) {
         let number = self.tabs.len().saturating_add(1);
-        let name = name.unwrap_or_else(|| format!("tab-{number}"));
+        let name = name.unwrap_or_else(|| numbered(number));
         let clients = self.tabs.first().map(|t| t.seats.keys().copied());
         let tab = Tab::new(id, name, layout, clients.into_iter().flatten(), false);
         self.tabs.push(tab);

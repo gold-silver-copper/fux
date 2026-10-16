@@ -11,7 +11,7 @@ use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
-use crate::pane::{InputQueue, Pane, Process, Runs, Typed};
+use crate::pane::{InputQueue, Pane, Process, Runs, Typed, basename};
 use crate::process::Child;
 use crate::protocol::{End, Reply};
 use crate::view::{ClientKind, Mode, View};
@@ -134,6 +134,9 @@ enum Here<'a> {
 }
 
 impl Here<'_> {
+    /// The CLI with no caller: a command run for no one.
+    const NOWHERE: Here<'static> = Here::Cli(None, None, None);
+
     fn place(self) -> Option<Place> {
         match self {
             Here::Client(_, place) => Some(place),
@@ -144,6 +147,12 @@ impl Here<'_> {
         match self {
             Here::Client(_, place) => place.pane,
             Here::Cli(pane, ..) => pane,
+        }
+    }
+    fn client(self) -> Option<ClientId> {
+        match self {
+            Here::Client(client, _) => Some(client),
+            Here::Cli(..) => None,
         }
     }
     /// The caller's pane, for a command that acts on it when none is named.
@@ -305,6 +314,10 @@ pub const GRACE: Duration = Duration::from_millis(100);
 pub const TYPE_WAIT: Duration = Duration::from_secs(1);
 /// The size a pane starts at, until it is laid out on a client's screen.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
+/// A typical terminal's screen, which a tab no client shows is laid out on.
+const TYPICAL: Rect = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
+/// The most rows, and columns, a client's view is kept to.
+const MOST: u16 = 4096;
 
 pub(crate) fn default_size() -> fux_vt::Size {
     crate::pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
@@ -583,12 +596,6 @@ fn failure(error: Error, origin: &Origin) -> Reply {
     Reply::failed(error.code(), error.to_string())
 }
 
-fn basename(program: &str) -> String {
-    Path::new(program)
-        .file_name()
-        .map_or_else(|| program.to_owned(), |n| n.to_string_lossy().into_owned())
-}
-
 impl Session {
     pub fn new(config: Config, socket: PathBuf, launch: bool) -> Session {
         // The process and the moment it started: no two runs share both.
@@ -710,7 +717,7 @@ impl Session {
                 let at = at.map(|(ws, tab)| Place { ws, tab, pane });
                 Ok(Here::Cli(pane, at, caller.cwd.as_deref()))
             }
-            Origin::Nowhere => Ok(Here::Cli(None, None, None)),
+            Origin::Nowhere => Ok(Here::NOWHERE),
         }
     }
 
@@ -893,7 +900,7 @@ impl Session {
                     continue;
                 }
                 let free = (place..)
-                    .map(|n| format!("tab-{n}"))
+                    .map(crate::workspace::numbered)
                     .find(|n| !taken.contains(n));
                 if let Some(free) = free {
                     taken.insert(free.clone());
@@ -1410,7 +1417,7 @@ impl Session {
             }
         };
         let id = self.ids.client()?;
-        let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096));
+        let mut view = View::new(id, rows.clamp(1, MOST), cols.clamp(1, MOST));
         view.kind = kind;
         self.views.insert(id, view);
         self.workspaces.iter_mut().for_each(|w| w.attach(id));
@@ -1450,11 +1457,11 @@ impl Session {
         }
     }
 
-    /// A client's terminal is `rows` by `cols`: its view, kept at most 4096
+    /// A client's terminal is `rows` by `cols`: its view, kept at most `MOST`
     /// each way, takes the size and settles if that changes it, and says
     /// whether it did.
     pub fn resize(&mut self, id: ClientId, rows: u16, cols: u16) -> bool {
-        let size = (rows.clamp(1, 4096), cols.clamp(1, 4096));
+        let size = (rows.clamp(1, MOST), cols.clamp(1, MOST));
         let view = self.views.get_mut(&id).filter(|v| (v.rows, v.cols) != size);
         let Some(view) = view else { return false };
         (view.rows, view.cols) = size;
@@ -1520,10 +1527,7 @@ impl Session {
     /// The area to lay out a tab in for a command: a client's showing it,
     /// else what its fit says (`tab_area`).
     fn reference_area(&self, tab: TabId, here: Here) -> Rect {
-        let own = match here {
-            Here::Client(client, _) => self.views.get(&client),
-            Here::Cli(..) => None,
-        };
+        let own = here.client().and_then(|c| self.views.get(&c));
         let shows = |v: &&View| self.shows(v.id, tab);
         match own
             .filter(shows)
@@ -1538,13 +1542,9 @@ impl Session {
     /// size's, else the commanding client's screen, else any client's, else
     /// a typical terminal's.
     fn tab_area(&self, fit: Fit, here: Here) -> Rect {
-        let own = match here {
-            Here::Client(client, _) => self.views.get(&client),
-            Here::Cli(..) => None,
-        };
+        let own = here.client().and_then(|c| self.views.get(&c));
         let client = own.or_else(|| self.views.values().next());
-        (fit.area(client.map(Self::pane_area)))
-            .unwrap_or(Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1))
+        fit.area(client.map(Self::pane_area)).unwrap_or(TYPICAL)
     }
 
     // -------------------------------------------------------------- repair
@@ -1668,8 +1668,7 @@ impl Session {
         }
         // With no client, a tab that fits clients is laid out as a typical
         // terminal would show it (`tab_area`).
-        let typical = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
-        let client = Some(self.views.values().next().map_or(typical, Self::pane_area));
+        let client = Some(self.views.values().next().map_or(TYPICAL, Self::pane_area));
         let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed_unshown(client));
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
@@ -2257,16 +2256,13 @@ impl Session {
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 // Its place is out of every client's way: no client follows.
-                let place = (fit, self.start_size(fit, Here::Cli(None, None, None)));
+                let place = (fit, self.start_size(fit, Here::NOWHERE));
                 // A name given is one `str NAME tab` finds: it must be the only one.
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
                 // Named after its program, if that makes a name.
-                let derived = argv
-                    .first()
-                    .map(|p| basename(p))
-                    .filter(|n| check_name(n).is_ok());
+                let derived = Some(crate::pane::named(argv)).filter(|n| check_name(n).is_ok());
                 let given = name.clone();
                 let name = name.clone().or(derived);
                 let start = (Start::Program(argv, env), cwd.as_path());
@@ -2708,8 +2704,7 @@ impl Session {
                         return Ok(Reply::default());
                     }
                     ClientAction::Detach => {
-                        self.views.remove(&client);
-                        self.workspaces.iter_mut().for_each(|w| w.forget(client));
+                        self.detach(client);
                         self.outbox.push(Outgoing::Exit(client, "detached".into()));
                         return Ok(Reply::default());
                     }
