@@ -500,10 +500,8 @@ impl History {
     #[cold]
     #[inline(never)]
     pub(crate) fn attach(&mut self, text: Option<Text>, links: Option<RowLinks>) {
-        let Some(index) = self.rows.len().checked_sub(1) else {
-            return;
-        };
-        let Some(number) = self.number(index) else {
+        let last = self.rows.len().checked_sub(1);
+        let Some(number) = last.and_then(|last| self.number(last)) else {
             return;
         };
         let Some(kept) = self.rows.back_mut() else {
