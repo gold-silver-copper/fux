@@ -162,19 +162,14 @@ impl Text {
         if self.ascii {
             self.text.get(from..to).unwrap_or_default()
         } else {
-            let mut at = self
-                .text
-                .char_indices()
-                .map(|(i, _)| i)
-                .chain([self.text.len()]);
-            let start = at.nth(from).unwrap_or(self.text.len());
-            let end = self
-                .text
-                .char_indices()
-                .map(|(i, _)| i)
-                .chain([self.text.len()])
-                .nth(to)
-                .unwrap_or(self.text.len());
+            let len = self.text.len();
+            let mut at = self.text.char_indices().map(|(i, _)| i).chain([len]);
+            let start = at.nth(from).unwrap_or(len);
+            // On from there: `to` is the (to - from - 1)th after `from`.
+            let end = match to.checked_sub(from).and_then(|n| n.checked_sub(1)) {
+                Some(n) => at.nth(n).unwrap_or(len),
+                None => start,
+            };
             self.text.get(start..end).unwrap_or_default()
         }
     }
