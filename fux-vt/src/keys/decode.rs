@@ -508,10 +508,8 @@ fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
         0x00 => (Key::Char(' '), Modifiers::CTRL),
         // Ctrl-A to Ctrl-Z are the letters with bits 5 and 6 cleared.
         0x01..=0x1a => (Key::Char(char::from(first | 0x60)), Modifiers::CTRL),
-        0x1c => (Key::Char('\\'), Modifiers::CTRL),
-        0x1d => (Key::Char(']'), Modifiers::CTRL),
-        0x1e => (Key::Char('^'), Modifiers::CTRL),
-        0x1f => (Key::Char('_'), Modifiers::CTRL),
+        // Ctrl-\ to Ctrl-_ are those characters with bit 6 cleared.
+        0x1c..=0x1f => (Key::Char(char::from(first | 0x40)), Modifiers::CTRL),
         0x20..=0x7e => (Key::Char(char::from(first)), Modifiers::NONE),
         _ => {
             let need = match first {
@@ -1103,6 +1101,9 @@ mod tests {
             (b"\x02", "C-b"),
             (b"\x00", "C-Space"),
             (b"\x1c", "C-\\"),
+            (b"\x1d", "C-]"),
+            (b"\x1e", "C-^"),
+            (b"\x1f", "C-_"),
             (b"\x1b[A", "Up"),
             (b"\x1b[B", "Down"),
             (b"\x1b[C", "Right"),
