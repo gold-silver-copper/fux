@@ -358,8 +358,8 @@ Per client, on a 16 ms coalescing tick:
    plus separators and the bottom bar (workspace, tabs, focused pane, notice).
    Overlays are drawn on top.
 2. Diff it against the client's last grid, and emit only the changed runs,
-   wrapped in synchronized output (`?2026`). Cursor position and shape come
-   from the focused pane.
+   wrapped in synchronized output (`?2026`). The cursor and the focused pane's
+   modes (`render::Modes`: mouse, cursor shape) are diffed the same way.
 3. One frame in flight per client: the next is composed only once the last
    is written out. A slow client gets fewer, newer frames, never a backlog,
    and never grows the server or stalls the loop.

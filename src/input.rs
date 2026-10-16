@@ -859,7 +859,7 @@ mod tests {
 
     /// The mouse tracking client `c`'s terminal is asked for.
     fn asked_mouse_level(s: &Session, c: ClientId) -> Option<u16> {
-        crate::render::compose(s, c).map(|g| g.mouse)
+        crate::render::compose(s, c).map(|g| g.modes.mouse)
     }
 
     #[test]

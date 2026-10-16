@@ -26,18 +26,42 @@ pub struct Grid {
     links: Links,
     /// Where the terminal cursor is shown, if it is.
     pub cursor: Option<(u16, u16)>,
-    /// DECSCUSR shape for the cursor; 0 is the terminal's default.
-    pub cursor_shape: u16,
-    /// The mouse tracking the client's terminal is asked for (1000, 1002
-    /// or 1003, always SGR-encoded), 0 for none: the focused pane's
-    /// program's, while it has the keys ([`mouse_level`]).
-    pub mouse: u16,
+    /// The modes the client's terminal is set to.
+    pub modes: Modes,
     /// Whether the client's terminal draws underline styles (`outer`):
     /// painted as they are, else as plain underlines (`sgr`).
     pub underline_styles: bool,
     /// What composed the grid, if it can say (`Memo`). Not what the grid
     /// shows: grids compare equal whatever composed them.
     memo: Option<Memo>,
+}
+
+/// The modes a paint sets on the client's terminal from its focused pane,
+/// each a field here and a line in `Modes::diff`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    /// DECSCUSR shape for the cursor; 0 is the terminal's default.
+    pub cursor_shape: u16,
+    /// The mouse tracking asked for (1000, 1002 or 1003, always
+    /// SGR-encoded), 0 for none: the focused pane's program's, while it
+    /// has the keys ([`mouse_level`]).
+    pub mouse: u16,
+}
+
+impl Modes {
+    /// Appends what turns the terminal's modes from `old`, if known, into these.
+    fn diff(&self, old: Option<&Modes>, out: &mut Vec<u8>) {
+        if old.map(|o| o.mouse) != Some(self.mouse) {
+            // Off first, as a terminal not known may have any on.
+            out.extend_from_slice(MOUSE_OFF.as_bytes());
+            if self.mouse != 0 {
+                let _ = write!(out, "\x1b[?{}h\x1b[?1006h", self.mouse);
+            }
+        }
+        if old.map(|o| o.cursor_shape) != Some(self.cursor_shape) {
+            let _ = write!(out, "\x1b[{} q", self.cursor_shape);
+        }
+    }
 }
 
 /// A picture a client is shown: the pane it is in and its number there,
@@ -354,8 +378,7 @@ impl Grid {
             cells: Cells::new(cell_count(rows, cols)),
             links: Links::default(),
             cursor: None,
-            cursor_shape: 0,
-            mouse: 0,
+            modes: Modes::default(),
             underline_styles: false,
             memo: None,
         }
@@ -381,8 +404,7 @@ impl Grid {
                 .resize(cell_count(rows, cols), CellRef::default());
         }
         self.cursor = None;
-        self.cursor_shape = 0;
-        self.mouse = 0;
+        self.modes = Modes::default();
         self.memo = None;
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
@@ -430,7 +452,7 @@ impl Grid {
     fn head(&self) -> impl PartialEq + '_ {
         (
             (self.rows, self.cols, self.cursor),
-            (self.cursor_shape, self.mouse, self.underline_styles),
+            (self.modes, self.underline_styles),
             &self.links,
         )
     }
@@ -743,7 +765,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                 {
                     grid.cursor = Some(at);
                     // The copy cursor is a block.
-                    grid.cursor_shape = 2;
+                    grid.modes.cursor_shape = 2;
                 }
             }
             None => {
@@ -753,7 +775,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                     && let Some(at) = rect.at(y, x)
                 {
                     grid.cursor = Some(at);
-                    grid.cursor_shape = screen.cursor_shape();
+                    grid.modes.cursor_shape = screen.cursor_shape();
                 }
             }
         }
@@ -768,7 +790,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         && placement.rect(focus).is_some()
         && let Some(pane) = session.panes.get(&focus)
     {
-        grid.mouse = mouse_level(pane.screen().mouse_protocol_mode());
+        grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }
     bar(grid, session, view, copy);
     match &view.mode {
@@ -821,8 +843,7 @@ fn put_panes(
         .filter(|m| frame.as_ref() == Some(&m.frame))
     {
         grid.cursor = None;
-        grid.cursor_shape = 0;
-        grid.mouse = 0;
+        grid.modes = Modes::default();
         grid.memo = Some(memo.update(grid, session));
         return;
     }
@@ -1495,19 +1516,9 @@ fn differing_rows<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16>
 /// for the terminal: not the cursor's shape or visibility, the mouse, a
 /// link, a wide glyph. Whether it was so; if not, nothing is written.
 fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
-    if (
-        old.rows,
-        old.cols,
-        old.underline_styles,
-        old.mouse,
-        old.cursor_shape,
-    ) != (
-        new.rows,
-        new.cols,
-        new.underline_styles,
-        new.mouse,
-        new.cursor_shape,
-    ) || !old.links.is_empty()
+    if (old.rows, old.cols, old.underline_styles, old.modes)
+        != (new.rows, new.cols, new.underline_styles, new.modes)
+        || !old.links.is_empty()
         || !new.links.is_empty()
     {
         return false;
@@ -1704,18 +1715,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
         hyperlink(out, None);
     }
     out.extend_from_slice(b"\x1b[0m");
-    // From nothing, said either way: a client repainted whole may have had
-    // reporting on.
-    if old.is_none_or(|o| o.mouse != new.mouse) {
-        out.extend_from_slice(MOUSE_OFF.as_bytes());
-        if new.mouse != 0 {
-            let _ = write!(out, "\x1b[?{}h\x1b[?1006h", new.mouse);
-        }
-    }
-    let shape_changed = old.is_none_or(|o| o.cursor_shape != new.cursor_shape);
-    if shape_changed {
-        let _ = write!(out, "\x1b[{} q", new.cursor_shape);
-    }
+    new.modes.diff(old.map(|o| &o.modes), out);
     if let Some((y, x)) = new.cursor {
         let _ = write!(out, "\x1b[{};{}H\x1b[?25h", one_based(y), one_based(x));
     }
@@ -1936,7 +1936,7 @@ mod tests {
     #[test]
     fn mouse_reporting_is_painted_when_it_changes() {
         let mut on = Grid::new(2, 4);
-        on.mouse = 1002;
+        on.modes.mouse = 1002;
         let off = Grid::new(2, 4);
         let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
         let first = text(paint(None, &on));
@@ -1952,7 +1952,7 @@ mod tests {
             "{gone:?}"
         );
         let mut any = on.clone();
-        any.mouse = 1003;
+        any.modes.mouse = 1003;
         assert!(text(paint(Some(&on), &any)).contains(&format!("{MOUSE_OFF}\x1b[?1003h")));
         use fux_vt::MouseProtocolMode as M;
         let levels = [
@@ -2076,7 +2076,7 @@ mod tests {
                 );
             }
             other.cursor = Some((1, 1));
-            other.cursor_shape = 3;
+            other.modes.cursor_shape = 3;
             assert!(compose_into(&s, c, &mut other, &mut Placement::default()));
             assert_eq!(other, fresh, "{rows}x{cols}");
         }
