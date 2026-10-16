@@ -41,8 +41,10 @@ use crate::id::PaneId;
 use crate::id::{ClientId, TabId};
 use crate::session::{Outgoing, Session};
 use crate::view::View;
+use fux_vt::ModeStatus;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 /// The colours asked one by one, each its own OSC: the foreground, the
@@ -177,15 +179,10 @@ impl Terminal {
 impl Session {
     /// Asks client `client`'s terminal `queries`, which end with DA1, in its
     /// paint stream; the client's decoder expects the answers.
-    fn ask(&mut self, client: ClientId, queries: &[u8]) {
+    pub(crate) fn ask(&mut self, client: ClientId, queries: &[u8]) {
         if self.views.contains_key(&client) {
             self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
         }
-    }
-
-    /// Asks a newly attached client's terminal what fux wants to know of it.
-    pub(crate) fn ask_terminal(&mut self, client: ClientId) {
-        self.ask(client, QUERIES);
     }
 
     /// An answer or report from client `client`'s terminal.
@@ -223,12 +220,11 @@ impl Session {
                 }
             }
             Reply::Mode { mode: 2031, status } => {
-                // 1 or 2: known, and set or reset; 3: always set
-                // (DECRQM, ctlseqs).
+                // Known, and set or reset; or always set (DECRQM, ctlseqs).
                 let queries = match status {
-                    1 | 2 => REPORTS_ON,
-                    3 => SCHEME_QUERY,
-                    _ => return,
+                    ModeStatus::Set | ModeStatus::Reset => REPORTS_ON,
+                    ModeStatus::PermanentlySet => SCHEME_QUERY,
+                    ModeStatus::NotRecognized | ModeStatus::PermanentlyReset => return,
                 };
                 terminal.asked = terminal.asked.saturating_add(1);
                 self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
@@ -337,30 +333,22 @@ impl Session {
         typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
     }
 
-    /// The terminal of `colour_client(tab)`.
-    fn answering(&self, tab: Option<TabId>) -> Option<&Terminal> {
-        (self.colour_client(tab)).and_then(|c| self.views.get(&c).map(|v| &v.terminal))
-    }
-
-    /// The colours the panes of `tab` are answered with (see the module
-    /// documentation).
-    pub(crate) fn colours_for(&self, tab: Option<TabId>) -> Colours {
-        self.answering(tab).map_or(self.last_colours, |t| t.colours)
-    }
-
-    /// The palette the panes of `tab` are answered with, as `colours_for`:
-    /// the answering client's whole, so that another client's replaces it,
-    /// entries it did not say cleared.
-    pub(crate) fn palette_for(&self, tab: Option<TabId>) -> Palette {
-        self.answering(tab).map_or(self.last_palette, |t| t.palette)
-    }
-
-    /// What the panes of `tab` are told their terminal draws, as
-    /// `colours_for` finds the terminal: nothing in a tab no client shows,
-    /// so a program started there draws in text, which a capture reads.
-    pub(crate) fn graphics_for(&self, tab: Option<TabId>) -> fux_vt::Graphics {
-        let shown = tab.filter(|t| self.views.keys().any(|c| self.shows(*c, *t)));
-        (self.answering(shown)).map_or_else(fux_vt::Graphics::default, Terminal::graphics)
+    /// What the panes of `tab` are answered with, from the terminal of
+    /// `colour_client(tab)`: its colours (see the module documentation); its
+    /// palette whole, so that another client's replaces it, entries it did
+    /// not say cleared; and what they are told their terminal draws, which
+    /// is nothing in a tab no client shows, so a program started there draws
+    /// in text, which a capture reads.
+    pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, fux_vt::Graphics) {
+        let answering = (self.colour_client(tab)).and_then(|c| self.views.get(&c));
+        let answering = answering.map(|v| &v.terminal);
+        let shown = tab.is_some_and(|t| self.views.keys().any(|c| self.shows(*c, t)));
+        (
+            answering.map_or(self.last_colours, |t| t.colours),
+            answering.map_or(self.last_palette, |t| t.palette),
+            (answering.filter(|_| shown))
+                .map_or_else(fux_vt::Graphics::default, Terminal::graphics),
+        )
     }
 
     /// Pane `id`'s program rang the bell: each client showing its workspace
@@ -374,15 +362,17 @@ impl Session {
         else {
             return;
         };
-        let viewers = ws.viewers.clone();
+        // Each client showing the workspace, and whether it is shown the tab.
+        let viewers: BTreeMap<ClientId, bool> = (ws.viewers.iter())
+            .map(|c| (*c, ws.tab_of(*c).is_some_and(|t| t.holds(id))))
+            .collect();
         let Some(tab) = ws.tabs_mut().iter_mut().find(|t| t.holds(id)) else {
             return;
         };
         for view in self.views.values_mut() {
-            if !viewers.contains(&view.id) {
+            let Some(&shown) = viewers.get(&view.id) else {
                 continue;
-            }
-            let shown = tab.shown_to(view.id);
+            };
             if let Some(seat) = tab.seat_mut(view.id).filter(|s| !shown && !s.rang) {
                 seat.rang = true;
                 view.dirty = true;

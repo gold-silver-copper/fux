@@ -1,6 +1,5 @@
-//! Keys, their modifiers, and their names in `bind`, `send-keys` and
-//! `list-keys`: tmux's names (`C-x`, `M-x`, `S-Left`, `Enter`, `BTab`, …)
-//! plus any single character.
+//! Keys, their modifiers, and their names: tmux's names (`C-x`, `M-x`,
+//! `S-Left`, `Enter`, `BTab`, …) plus any single character.
 pub mod colour;
 pub mod decode;
 pub mod encode;
@@ -8,31 +7,21 @@ pub mod mouse;
 
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// An arrow key's direction.
-pub enum Direction {
-    /// The left arrow.
-    Left,
-    /// The right arrow.
-    Right,
-    /// The up arrow.
-    Up,
-    /// The down arrow.
-    Down,
-}
-
-impl Direction {
-    /// Every direction, left, right, up, down.
-    pub const ALL: [Direction; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
-    /// The direction's name, lower case (`left`, `right`, `up`, `down`), as
-    /// messages write it; key names are `Left` and so on (`NAMED`).
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Left => "left",
-            Self::Right => "right",
-            Self::Up => "up",
-            Self::Down => "down",
-        }
+closed! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// An arrow key's direction.
+    pub enum Direction {
+        /// The direction's name, lower case (`left`, `right`, `up`, `down`),
+        /// as messages write it; key names are `Left` and so on (`NAMED`).
+        pub fn name(self) -> &'static str;
+        /// The left arrow.
+        Left => "left",
+        /// The right arrow.
+        Right => "right",
+        /// The up arrow.
+        Up => "up",
+        /// The down arrow.
+        Down => "down",
     }
 }
 
@@ -78,17 +67,27 @@ pub struct Modifiers {
     pub shift: bool,
 }
 
+// The modifier bits of xterm's and kitty's protocols, one less than their
+// modifier parameter, as `Kitty::mods` holds them.
+pub(crate) const SHIFT_BIT: u8 = 1;
+pub(crate) const ALT_BIT: u8 = 2;
+pub(crate) const CTRL_BIT: u8 = 4;
+pub(crate) const CAPS_LOCK_BIT: u8 = 64;
+pub(crate) const NUM_LOCK_BIT: u8 = 128;
+
 impl Modifiers {
-    /// As xterm's and kitty's modifier bits: Shift 1, Alt 2, Ctrl 4.
+    /// As xterm's and kitty's modifier bits.
     pub(crate) fn bits(self) -> u8 {
-        u8::from(self.shift) | u8::from(self.alt) << 1 | u8::from(self.ctrl) << 2
+        let bit = |on: bool, bit: u8| if on { bit } else { 0 };
+        bit(self.shift, SHIFT_BIT) | bit(self.alt, ALT_BIT) | bit(self.ctrl, CTRL_BIT)
     }
     /// The modifiers xterm's and kitty's modifier `bits` hold.
     pub(crate) fn from_bits(bits: u32) -> Self {
+        let on = |bit: u8| bits & u32::from(bit) != 0;
         Self {
-            shift: bits & 1 != 0,
-            alt: bits & 2 != 0,
-            ctrl: bits & 4 != 0,
+            shift: on(SHIFT_BIT),
+            alt: on(ALT_BIT),
+            ctrl: on(CTRL_BIT),
         }
     }
     /// No modifier.
@@ -153,7 +152,7 @@ impl KeyPress {
     /// The key as fux matches letter keys typed after the prefix, and in
     /// choosers, menus, confirmations and copy mode: a letter in lower case,
     /// whatever Shift and Caps Lock did. The prefix itself and root bindings
-    /// (`bind -n`) match the press as it is. A letter with Ctrl or Alt is left as it is,
+    /// (fux's `bind-root`) match the press as it is. A letter with Ctrl or Alt is left as it is,
     /// and matches no letter key.
     pub fn folded(self) -> Self {
         if let Key::Char(c) = self.key
@@ -277,7 +276,7 @@ pub struct Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown key {:?}; `fux list-keys` lists them", self.name)
+        write!(f, "unknown key {:?}", self.name)
     }
 }
 
@@ -339,7 +338,7 @@ impl std::str::FromStr for KeyPress {
     }
 }
 
-/// Every key name, for `fux list-keys`.
+/// Every key name, as a host lists them.
 pub fn all_names() -> Vec<String> {
     let mut names: Vec<String> = NAMED.iter().map(|(n, _)| (*n).to_owned()).collect();
     names.push("BTab".into());
@@ -394,7 +393,7 @@ mod tests {
         }
         assert_eq!(
             "Nope".parse::<KeyPress>().map_err(|e| e.to_string()),
-            Err("unknown key \"Nope\"; `fux list-keys` lists them".to_owned())
+            Err("unknown key \"Nope\"".to_owned())
         );
         for name in all_names() {
             assert_eq!(parse(&name).map(|k| k.to_string()), Some(name.clone()));

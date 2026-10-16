@@ -9,7 +9,6 @@ use fux::client::Keyboard;
 use fux::keymap::Keymap;
 use fux::protocol::{Attach, AttachedFrame, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
 use std::io::{Read, Write};
-use std::num::NonZeroU16;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -52,8 +51,8 @@ pub fn asleep(pane: &str) -> String {
 pub const CANNOT_COME: i32 = if PROBED { 7 } else { 124 };
 
 /// A size a frame carries: never zero.
-pub fn nonzero(n: u16) -> Result<NonZeroU16, String> {
-    NonZeroU16::new(n).ok_or_else(|| "a size of zero".to_owned())
+pub fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
+    fux_vt::Size::new(rows, cols).map_err(|_| "a size of zero".to_owned())
 }
 
 pub const FUX: &str = env!("CARGO_BIN_EXE_fux");
@@ -216,7 +215,7 @@ impl Server {
     /// Its socket, as fux takes it.
     pub fn socket_path(&self) -> Result<fux::socket::SocketPath, String> {
         let path = self.socket.to_string_lossy();
-        fux::socket::socket_path(fux::socket::Choice::Path(&path, "socket")).map_err(e)
+        fux::socket::socket_path(&fux::socket::Choice::Path(path.to_string())).map_err(e)
     }
 
     /// The server's process id, while it runs.
@@ -360,14 +359,13 @@ impl Client {
         let mut stream = UnixStream::connect(&server.socket).map_err(e)?;
         let hello = Hello {
             protocol: PROTOCOL,
-            version: "test",
+            version: "test".into(),
             role: Role::Attach,
         };
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         let attach = Attach {
-            rows: nonzero(rows)?,
-            cols: nonzero(cols)?,
-            workspace,
+            size: sized(rows, cols)?,
+            workspace: workspace.map(str::to_owned),
             read_only,
             env: Vec::new(),
         };
@@ -431,10 +429,7 @@ impl Client {
         self.rows = rows;
         self.cols = cols;
         self.terminal = terminal(rows, cols)?;
-        self.frame(&AttachedFrame::Resize {
-            rows: nonzero(rows)?,
-            cols: nonzero(cols)?,
-        })
+        self.frame(&AttachedFrame::Resize(sized(rows, cols)?))
     }
 
     pub fn frame<'a>(&mut self, frame: &impl Frame<'a>) -> Outcome {

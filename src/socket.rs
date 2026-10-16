@@ -1,6 +1,6 @@
 //! Where the server's socket lives, and the rules that keep it private.
 //!
-//! - The path is `-S PATH` (`server --socket`), or `-L NAME`'s
+//! - The path is `str PATH socket`'s, or `str NAME server`'s
 //!   `NAME.sock` in fux's directory, else `FUX_SOCKET`, else `server.sock`
 //!   there: fux's directory is `$XDG_RUNTIME_DIR/fux`, else `$TMPDIR/fux`.
 //! - Its directory is owned by the user, mode 0700, reached only through
@@ -58,14 +58,6 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl Error {
-    /// Whether the system denied a socket at all (a sandbox that forbids
-    /// them): a door may serve instead (`crate::door`).
-    pub fn denied(&self) -> bool {
-        matches!(self, Error::Io { source, .. } if source.kind() == io::ErrorKind::PermissionDenied)
-    }
-}
-
 impl std::error::Error for Error {}
 
 /// An I/O error about `path`.
@@ -106,38 +98,31 @@ impl SocketPath {
     }
 }
 
-/// Which server a command names, before the command: `-S PATH`, `-L NAME`,
+/// Which server a command names, before the command: `str PATH socket`, `str NAME server`,
 /// or neither.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Choice<'a> {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Choice {
+    /// Neither: `FUX_SOCKET`, else `server.sock`.
     #[default]
     Default,
-    /// A socket's path, and the flag that gave it.
-    Path(&'a str, &'static str),
+    /// A socket's path (`socket`).
+    Path(String),
     /// A server's name: its socket is `NAME.sock` in fux's directory.
-    Name(&'a str),
-}
-
-impl Choice<'_> {
-    /// Whether the command named its server, rather than taking it from
-    /// the environment.
-    pub fn named(&self) -> bool {
-        !matches!(self, Choice::Default)
-    }
+    Name(String),
 }
 
 /// The socket a command uses: the one `choice` names, else `FUX_SOCKET`,
 /// else `server.sock` in fux's directory.
-pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
+pub fn socket_path(choice: &Choice) -> Result<SocketPath, Error> {
     match choice {
-        Choice::Path(path, from) => checked(path, from),
+        Choice::Path(path) => checked(path, "socket"),
         Choice::Name(name) => {
             let valid = (1..=64).contains(&name.len())
                 && !name.starts_with(['.', '-'])
                 && (name.chars()).all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
             if !valid {
                 return Err(Error::Refused(format!(
-                    "-L {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
+                    "server {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
                      not starting with '.' or '-'"
                 )));
             }
@@ -156,7 +141,7 @@ pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
 /// What starts the server at `path`: `fux start` the default's (or
 /// `FUX_SOCKET`'s), the command that names its socket another's.
 pub fn start_hint(path: &Path) -> String {
-    let default = socket_path(Choice::Default).is_ok_and(|s| s.path == path);
+    let default = socket_path(&Choice::Default).is_ok_and(|s| s.path == path);
     if default {
         return "`fux` in a terminal starts one, or `fux start` one with no terminal".into();
     }
@@ -199,11 +184,6 @@ fn in_directory(name: &str) -> Result<SocketPath, Error> {
     checked(&path.to_string_lossy(), "the socket's directory")
 }
 
-/// Longest socket path, in bytes, that `sockaddr_un` holds with its NUL.
-pub fn max_path_bytes() -> usize {
-    if cfg!(target_os = "linux") { 107 } else { 103 }
-}
-
 fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     if value.is_empty() {
         return Err(Error::Refused(format!(
@@ -218,7 +198,7 @@ fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     Ok(Path::new(value).join("fux"))
 }
 
-fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
+pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
     let refused = |why: String| Err(Error::Refused(why));
     if value.is_empty() {
         return refused(format!(
@@ -241,7 +221,7 @@ fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
             "{from} is {value:?}; it must name a socket file in a directory below /"
         ));
     };
-    let limit = max_path_bytes();
+    let limit = fuxix::socket::max_path_len();
     if path.as_os_str().len() > limit {
         return refused(format!(
             "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
@@ -468,7 +448,11 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
         });
     let fd = match bound {
         Ok(fd) => fd,
-        Err(error) if error.denied() => return Ok((endpoint, None)),
+        // The system denies sockets at all (a sandbox that forbids them): a
+        // door may serve instead (`crate::door`).
+        Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::PermissionDenied => {
+            return Ok((endpoint, None));
+        }
         Err(error) => return Err(error),
     };
     endpoint.socket = Some(Pinned::new(path).map_err(io(path))?);
@@ -508,7 +492,7 @@ mod tests {
         assert!(checked("/s.sock", "X").is_err());
         let long: String = "/d/"
             .chars()
-            .chain(std::iter::repeat_n('a', max_path_bytes()))
+            .chain(std::iter::repeat_n('a', fuxix::socket::max_path_len()))
             .collect();
         let too_long = checked(&long, "X");
         assert!(too_long.is_err_and(|e| e.to_string().contains("limit")));

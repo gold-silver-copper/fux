@@ -325,7 +325,7 @@ str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 
 | Setting | Value | Default |
 | --- | --- | --- |
-| `shell` | a program and its arguments | `$SHELL`, else `/bin/sh` |
+| `shell` | a program and its arguments | `$SHELL`, else your login shell, else `/bin/sh` |
 | `history-bytes` | bytes of each pane's history, how far copy mode scrolls and `history capture` reads; past it, the oldest rows go; 0 to 1 GiB; a change applies to every pane | 8388608 (8 MiB) |
 | `wait-seconds` | how long an action, a capture or a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
 | `journal-bytes` | bytes of each pane's journal, 1 MiB to 2 GiB: everything it printed, in order, which waits and events read; past it, the oldest goes and a wait says text may have passed unseen | 33554432 (32 MiB) |

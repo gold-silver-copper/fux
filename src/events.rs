@@ -1,5 +1,5 @@
 //! `fux events`: what happens in the session, a line each as it happens,
-//! for a script that would otherwise poll `fux ls --json`. After each
+//! for a script that would otherwise poll `fux ls json`. After each
 //! round of what the server read and did, each subscriber is told what
 //! happened since it last looked: what each pane's journal recorded, in
 //! order (a bell, a notification, a title, a shell command's end, a
@@ -65,7 +65,7 @@ impl Snapshot {
     }
 }
 
-/// One thing that happened: its name, where (for `-t` to choose by), and
+/// One thing that happened: its name, where (for `events-of` to choose by), and
 /// what else it says.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {
@@ -218,21 +218,20 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
     events
 }
 
-/// A connection that streams events: which panes, tabs and workspaces it
-/// is told of (all without any), how, and what it has seen.
+/// A connection that streams events: which pane, tab or workspace it is
+/// told of (all without one), how, and what it has seen.
 pub struct Subscription {
-    pub targets: Vec<AnyRef<WsId>>,
+    pub target: Option<AnyRef>,
     pub json: bool,
     pub seen: Snapshot,
 }
 
 impl Subscription {
     /// Whether it is told of `event`: one of the stream itself, or where
-    /// one of its targets is or holds.
+    /// its target is or holds.
     pub fn wants(&self, event: &Event) -> bool {
         event.ws.is_none()
-            || self.targets.is_empty()
-            || self.targets.iter().any(|target| match *target {
+            || self.target.is_none_or(|target| match target {
                 AnyRef::Pane(p) => event.pane == Some(p),
                 AnyRef::Tab(t) => event.tab == Some(t),
                 AnyRef::Workspace(w) => event.ws == Some(w),
@@ -252,12 +251,11 @@ impl Subscription {
             .filter(|e| self.wants(e))
             .map(|e| e.line(self.json))
             .collect();
-        let there = |target: &AnyRef<WsId>| match *target {
-            AnyRef::Pane(p) => now.panes.contains_key(&p),
-            AnyRef::Tab(t) => now.tabs.contains_key(&t),
-            AnyRef::Workspace(w) => now.workspaces.contains_key(&w),
-        };
-        let over = !self.targets.is_empty() && !self.targets.iter().any(there);
+        let over = self.target.is_some_and(|target| match target {
+            AnyRef::Pane(p) => !now.panes.contains_key(&p),
+            AnyRef::Tab(t) => !now.tabs.contains_key(&t),
+            AnyRef::Workspace(w) => !now.workspaces.contains_key(&w),
+        });
         if over {
             lines.push_str(&Event::stream("gone", Vec::new()).line(self.json));
         }

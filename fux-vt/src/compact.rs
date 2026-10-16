@@ -63,8 +63,6 @@ const _: () = assert!(HALVES >> 22 == CellRef::HALVES as u32);
 /// The longest cluster a short one is. A long cluster the row has no room
 /// for is cut to this.
 const SHORT: usize = 17;
-/// The longest text a cell holds inline.
-const INLINE: usize = 4;
 /// The bytes a row's short text first takes room for.
 const FIRST_SHORT: usize = 256;
 
@@ -245,25 +243,12 @@ impl Compact {
         let (start, len) = self.locator().filter(|(_, len)| (*len > SHORT) == long)?;
         Some(start..start.checked_add(len)?)
     }
-    /// The cell, keeping its halves and style, holding `text` inline: at
-    /// most [`INLINE`] bytes, or the cell is left blank.
-    fn with_inline(self, text: &[u8]) -> Self {
-        let mut bytes = [0; 4];
-        let fits = bytes
-            .get_mut(..text.len())
-            .and_then(|head| crate::copy_from(head, text))
-            .is_some();
-        Self {
-            text: if fits { bytes } else { [0; 4] },
-            word: self.word & KEPT,
-        }
-    }
     /// The cell, keeping its halves and style, holding `text` inline, if
     /// it fits: what `Line::set` stores, without the row's text.
     #[inline]
-    pub(crate) fn holding(self, text: &str) -> Option<Self> {
+    pub(crate) fn holding(self, text: &[u8]) -> Option<Self> {
         let mut bytes = [0; 4];
-        match (text.as_bytes(), &mut bytes) {
+        match (text, &mut bytes) {
             // One byte, as most text is: stored without a copy's call.
             ([byte], [first, ..]) => *first = *byte,
             (text, bytes) => crate::copy_from(bytes.get_mut(..text.len())?, text)?,
@@ -461,26 +446,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         }
         // Unlike `set`, the cell keeps what it has if the row has no room,
         // even compacted: an append never loses text.
-        if self.text.long.len().saturating_add(joined.len()) > limit {
-            self.compact(true);
-        }
-        let long = &mut self.text.long;
-        let (Ok(start), Ok(len)) = (u32::try_from(long.len()), u8::try_from(joined.len())) else {
-            return false;
-        };
-        if long.len().saturating_add(joined.len()) > limit {
-            return false;
-        }
-        long.extend_from_slice(joined);
-        match self.cells.get_mut(i).map(AsMut::as_mut) {
-            // Compaction may have moved it; its halves and style are as
-            // they were.
-            Some(slot) => {
-                *slot = slot.with_spilled(start, len);
-                true
-            }
-            None => false,
-        }
+        self.store_long(i, cell, joined, false)
     }
 
     /// Sets cell `i` to `cell`'s halves and style holding `text`: inline
@@ -501,30 +467,39 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             self.store_short(i, cell, text.as_bytes());
             return true;
         }
+        if self.store_long(i, cell, text.as_bytes(), true) {
+            return true;
+        }
+        self.store_short(i, cell, floor(text, SHORT).as_bytes());
+        false
+    }
+
+    /// Sets cell `i` to `cell`'s halves and style holding `text`, a long
+    /// cluster, in the row's long text, compacting it first if it is out
+    /// of room. If `replace`, the text the cell had goes before that: it
+    /// is being replaced. Whether the row had room.
+    fn store_long(&mut self, i: usize, cell: Compact, text: &[u8], replace: bool) -> bool {
         let limit = Text::long_limit(self.cells.len());
         if self.text.long.len().saturating_add(text.len()) > limit {
-            // The text the cell had goes too: it is being replaced.
-            if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
+            if replace && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
             self.compact(true);
         }
         let long = &mut self.text.long;
-        let start = u32::try_from(long.len());
-        let len = u8::try_from(text.len());
+        let (Ok(start), Ok(len)) = (u32::try_from(long.len()), u8::try_from(text.len())) else {
+            return false;
+        };
         let room = long.len().saturating_add(text.len()) <= limit;
-        match (start, len) {
-            (Ok(start), Ok(len)) if room => {
-                long.extend_from_slice(text.as_bytes());
-                if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
-                    *slot = cell.with_spilled(start, len);
-                }
+        match self.cells.get_mut(i).map(AsMut::as_mut) {
+            Some(slot) if room => {
+                long.extend_from_slice(text);
+                // Compaction may have moved the text the cell had; its
+                // halves and style are `cell`'s.
+                *slot = cell.with_spilled(start, len);
                 true
             }
-            _ => {
-                self.store_short(i, cell, floor(text, SHORT).as_bytes());
-                false
-            }
+            _ => false,
         }
     }
 
@@ -532,9 +507,9 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// UTF-8 of at most [`SHORT`] bytes: inline, or with
     /// the row's short text, which always has room for it once compacted.
     fn store_short(&mut self, i: usize, cell: Compact, text: &[u8]) {
-        if text.len() <= INLINE {
+        if let Some(inline) = cell.holding(text) {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
-                *slot = cell.with_inline(text);
+                *slot = inline;
             }
             return;
         }
@@ -597,23 +572,34 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         if old.is_empty() {
             return text;
         }
-        // Every spilled cell blanked first: until stored again, none may
-        // locate text in the new store, which a compaction would misread.
-        let mut spilled = Vec::new();
-        for (i, cell) in cells.iter_mut().map(AsMut::as_mut).enumerate() {
-            if cell.is_spilled() {
-                spilled.push((i, *cell));
-                *cell = cell.blanked();
-            }
-        }
+        let spilled: Vec<(usize, Compact)> = (cells.iter().map(|c| *c.as_ref()).enumerate())
+            .filter(|(_, cell)| cell.is_spilled())
+            .collect();
         let mut line = Line {
             cells,
             text: &mut text,
         };
-        for (i, cell) in spilled {
-            line.set(i, cell, old.of(&cell));
-        }
+        line.store_again(spilled.into_iter(), old);
         text
+    }
+
+    /// Stores the text of the cells `spilled` names again, left to right,
+    /// each by its place in the line and as it was, its text in `old`.
+    /// Every one is blanked first: until stored again, none may locate
+    /// text in this store, which a compaction would misread.
+    pub(crate) fn store_again(
+        &mut self,
+        spilled: impl Iterator<Item = (usize, Compact)> + Clone,
+        old: &Text,
+    ) {
+        for (i, cell) in spilled.clone() {
+            if let Some(stored) = self.cells.get_mut(i) {
+                *stored.as_mut() = cell.blanked();
+            }
+        }
+        for (i, cell) in spilled {
+            self.set(i, cell, old.of(&cell));
+        }
     }
 
     /// Cell `i`'s text.

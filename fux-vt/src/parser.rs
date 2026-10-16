@@ -2,8 +2,11 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::mode::{Kind, Mode};
-use crate::{Error, Reply, Rgb, Screen, Size, screen::Dispatch};
+use crate::mode::{Kind, Mode, ModeStatus};
+use crate::{
+    Error, Reply, Rgb, Screen, Size,
+    screen::{Dispatch, Setting},
+};
 
 #[cfg(test)]
 #[path = "../tests/corpus/mod.rs"]
@@ -140,24 +143,13 @@ impl Parameters {
 
 /// The non-ASCII character a valid UTF-8 sequence at the start of `bytes`
 /// encodes, and its length; `None` for ASCII, and for a sequence invalid or
-/// cut short, which the byte-by-byte path reads. The checks are the ones
-/// `Parser::ground` makes: no overlong forms, surrogates or code points
-/// past U+10FFFF.
+/// cut short, which the byte-by-byte path reads. The checks are `lead`'s,
+/// which that path makes too.
 fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     let &first = bytes.first()?;
-    let (length, mut code) = match first {
-        0xc2..=0xdf => (2, u32::from(first & 0x1f)),
-        0xe0..=0xef => (3, u32::from(first & 0x0f)),
-        0xf0..=0xf4 => (4, u32::from(first & 0x07)),
-        _ => return None,
-    };
-    let (low, high) = match first {
-        0xe0 => (0xa0, 0xbf),
-        0xed => (0x80, 0x9f),
-        0xf0 => (0x90, 0xbf),
-        0xf4 => (0x80, 0x8f),
-        _ => (0x80, 0xbf),
-    };
+    let (length, low, high) = lead(first)?;
+    // The lead byte's own bits: 5, 4 or 3.
+    let mut code = u32::from(first) & 0x7f_u32.checked_shr(u32::try_from(length).ok()?)?;
     let continuation = bytes.get(1..length)?;
     for (i, &byte) in continuation.iter().enumerate() {
         let (low, high) = if i == 0 { (low, high) } else { (0x80, 0xbf) };
@@ -167,6 +159,24 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
         code = code.checked_shl(6)? | u32::from(byte & 0x3f);
     }
     Some((char::from_u32(code)?, length))
+}
+
+/// What a UTF-8 lead byte begins: the sequence's length, and the range its
+/// second byte is in, which rules out overlong forms, surrogates and code
+/// points past U+10FFFF (Unicode 17, table 3-7); `None` for a byte that
+/// leads none. Every later byte is 0x80 to 0xbf.
+#[inline(always)]
+const fn lead(first: u8) -> Option<(usize, u8, u8)> {
+    Some(match first {
+        0xc2..=0xdf => (2, 0x80, 0xbf),
+        0xe0 => (3, 0xa0, 0xbf),
+        0xed => (3, 0x80, 0x9f),
+        0xe1..=0xef => (3, 0x80, 0xbf),
+        0xf0 => (4, 0x90, 0xbf),
+        0xf4 => (4, 0x80, 0x8f),
+        0xf1..=0xf3 => (4, 0x80, 0xbf),
+        _ => return None,
+    })
 }
 
 /// How many bytes `bytes` begins with are printable ASCII, 0x20 to 0x7e,
@@ -230,7 +240,7 @@ enum State {
     /// Sixel data (`DCS P1 ; P2 ; P3 q … ST`), decoded as it comes by the
     /// parser's decoder; its end places the picture.
     Sixel,
-    /// A DECRQSS (`DCS $ q Pt ST`) with [`Options::setting_reports`]: its
+    /// A DECRQSS (`DCS $ q Pt ST`) with [`Feature::SettingReports`]: its
     /// request so far, `None` once it ran past any setting fux-vt knows.
     Request(Option<Bytes<REQUEST_LIMIT>>),
     /// An OSC string, its payload the parser's: `whole` until it ran past
@@ -347,109 +357,91 @@ const OSC_PREFIX: usize = 64;
 /// (` q`, `$|`, `"p`). A longer request is no setting fux-vt knows.
 const REQUEST_LIMIT: usize = 4;
 
-/// A piece of opt-in behaviour that needs the host's cooperation, turned on
-/// in [`Options`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Feature {
-    /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
-    /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
-    /// [`Event::ColorQuery`]) as [`Event`]s. OSC payloads are buffered up
-    /// to [`OSC_PAYLOAD_LIMIT`].
-    Events,
-    /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
-    /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
-    ExtendedReplies,
-    /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
-    /// [`Feature::ExtendedReplies`] does with the rest: how programs learn
-    /// which modes the terminal knows, synchronized output (2026) among
-    /// them, without what DA2 and DECXCPR say about it.
-    ModeReports,
-    /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
-    /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
-    /// program sets it, and give the host the report to send after a
-    /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
-    /// which the spec allows a terminal that does not know them. Off, the
-    /// mode is not recognized, and DECRQM says so.
-    InBandResize,
-    /// Answer xterm's text-area size query (`CSI 18 t`, ctlseqs' window
-    /// manipulation) with `CSI 8 ; rows ; cols t`, the screen's size in
-    /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
-    /// knows no pixels.
-    SizeReports,
-    /// Mode 2031, colour-scheme change reports
-    /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
-    /// read with [`Screen::mode`], and report it to DECRQM.
-    /// State only: the host knows the colour scheme, and sends the reports
-    /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
-    /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
-    /// recognized, and DECRQM says so.
-    ColorSchemeUpdates,
-    /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
-    /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
-    /// the flag query `CSI ? u`. State only: the host encodes keys, reading
-    /// [`Screen::kitty_keyboard_flags`] and [`Screen::modify_other_keys`].
-    /// A host that cannot encode keys that way must leave this off, or
-    /// programs will believe it can.
-    KittyKeyboard,
-    /// Re-wrap the primary screen and its history at the new width on
-    /// resize, keeping the cursor on its character. The alternate screen is
-    /// resized without reflow, as its programs redraw anyway.
-    Reflow,
-    /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
-    /// one is open has it, read with [`crate::Row::link`]. The URIs are
-    /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
-    /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
-    Hyperlinks,
-    /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
-    /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
-    /// and `L` start a fresh line. An OSC string's first bytes are kept to
-    /// tell one. Off, OSC 133 is ignored.
-    PromptMarks,
-    /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
-    /// DECCKSR, as xterm and the VT520 sum it (`Screen::rectangle_checksum`).
-    /// It lets a program read what its screen shows, so xterm refuses it by
-    /// default, and fux's panes leave it off; esctest reads the screen so.
-    RectangleChecksums,
-    /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
-    /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
-    /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
-    /// r Pt ST`, `Pt` the sequence that sets it, such as `0;1;4:3m`.
-    /// Another request is answered as invalid, `DCS 0 $ r ST`, and a cursor
-    /// shape left to the terminal (DECSCUSR 0, the default) not at all. A
-    /// request's first bytes are kept to tell it, nothing more. Programs
-    /// learn from the pen what the terminal draws: neovim sets a curly
-    /// underline and asks, and draws its diagnostics curly only if `4:3`
-    /// comes back. Off, DECRQSS is ignored, as every other DCS.
-    SettingReports,
-    /// Keep the colours a program sets and answer its queries of them, as
-    /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
-    /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119); `palette.rs`
-    /// says how. Read with [`Screen::palette_color`] and
-    /// [`Screen::dynamic_color`]. OSC payloads are buffered, up to
-    /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
-    /// queries are events, with [`Feature::Events`].
-    Palette,
-}
-
-impl Feature {
-    /// Every feature, in declaration order: a new one goes last, here too,
-    /// as [`Options`] keeps a place for each.
-    pub const ALL: [Feature; 13] = [
-        Feature::Events,
-        Feature::ExtendedReplies,
-        Feature::ModeReports,
-        Feature::InBandResize,
-        Feature::SizeReports,
-        Feature::ColorSchemeUpdates,
-        Feature::KittyKeyboard,
-        Feature::Reflow,
-        Feature::Hyperlinks,
-        Feature::PromptMarks,
-        Feature::RectangleChecksums,
-        Feature::SettingReports,
-        Feature::Palette,
-    ];
+closed! {
+    /// A piece of opt-in behaviour that needs the host's cooperation, turned on
+    /// in [`Options`].
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[non_exhaustive]
+    pub enum Feature {
+        /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
+        /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
+        /// [`Event::ColorQuery`]) as [`Event`]s. OSC payloads are buffered up
+        /// to [`OSC_PAYLOAD_LIMIT`].
+        Events,
+        /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
+        /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
+        ExtendedReplies,
+        /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
+        /// [`Feature::ExtendedReplies`] does with the rest: how programs learn
+        /// which modes the terminal knows, synchronized output (2026) among
+        /// them, without what DA2 and DECXCPR say about it.
+        ModeReports,
+        /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
+        /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
+        /// program sets it, and give the host the report to send after a
+        /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
+        /// which the spec allows a terminal that does not know them. Off, the
+        /// mode is not recognized, and DECRQM says so.
+        InBandResize,
+        /// Answer xterm's text-area size query (`CSI 18 t`, ctlseqs' window
+        /// manipulation) with `CSI 8 ; rows ; cols t`, the screen's size in
+        /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
+        /// knows no pixels.
+        SizeReports,
+        /// Mode 2031, colour-scheme change reports
+        /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
+        /// read with [`Screen::mode`], and report it to DECRQM.
+        /// State only: the host knows the colour scheme, and sends the reports
+        /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
+        /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
+        /// recognized, and DECRQM says so.
+        ColorSchemeUpdates,
+        /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
+        /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
+        /// the flag query `CSI ? u`. State only: the host encodes keys, reading
+        /// [`Screen::kitty_keyboard_flags`] and [`Screen::modify_other_keys`].
+        /// A host that cannot encode keys that way must leave this off, or
+        /// programs will believe it can.
+        KittyKeyboard,
+        /// Re-wrap the primary screen and its history at the new width on
+        /// resize, keeping the cursor on its character. The alternate screen is
+        /// resized without reflow, as its programs redraw anyway.
+        Reflow,
+        /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
+        /// one is open has it, read with [`crate::Row::link`]. The URIs are
+        /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
+        /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
+        Hyperlinks,
+        /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
+        /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
+        /// and `L` start a fresh line. An OSC string's first bytes are kept to
+        /// tell one. Off, OSC 133 is ignored.
+        PromptMarks,
+        /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
+        /// DECCKSR, as xterm and the VT520 sum it (`Screen::rectangle_checksum`).
+        /// It lets a program read what its screen shows, so xterm refuses it by
+        /// default, and fux's panes leave it off; esctest reads the screen so.
+        RectangleChecksums,
+        /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
+        /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
+        /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
+        /// r Pt ST`, `Pt` the sequence that sets it, such as `0;1;4:3m`.
+        /// Another request is answered as invalid, `DCS 0 $ r ST`, and a cursor
+        /// shape left to the terminal (DECSCUSR 0, the default) not at all. A
+        /// request's first bytes are kept to tell it, nothing more. Programs
+        /// learn from the pen what the terminal draws: neovim sets a curly
+        /// underline and asks, and draws its diagnostics curly only if `4:3`
+        /// comes back. Off, DECRQSS is ignored, as every other DCS.
+        SettingReports,
+        /// Keep the colours a program sets and answer its queries of them, as
+        /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
+        /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119); `palette.rs`
+        /// says how. Read with [`Screen::palette_color`] and
+        /// [`Screen::dynamic_color`]. OSC payloads are buffered, up to
+        /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
+        /// queries are events, with [`Feature::Events`].
+        Palette,
+    }
 }
 
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The
@@ -1018,21 +1010,15 @@ impl Parser {
         byte: u8,
         sink: &mut impl Sink,
     ) -> Result<(), Error> {
-        let [lead, ..] = read.bytes;
-        let valid = (0x80..=0xbf).contains(&byte)
-            && (read.len != 1
-                || match lead {
-                    0xe0 => byte >= 0xa0,
-                    0xed => byte < 0xa0,
-                    0xf0 => byte >= 0x90,
-                    0xf4 => byte < 0x90,
-                    _ => true,
-                });
-        let need = match lead {
-            0xc2..=0xdf => 2,
-            0xe0..=0xef => 3,
-            _ => 4,
+        let [first, ..] = read.bytes;
+        // Only a lead byte begins a character's bytes (`ground`).
+        let (need, low, high) = lead(first).unwrap_or((1, 0xff, 0));
+        let (low, high) = if read.len == 1 {
+            (low, high)
+        } else {
+            (0x80, 0xbf)
         };
+        let valid = (low..=high).contains(&byte);
         self.state = State::Ground;
         match read.push(byte).filter(|_| valid) {
             Some(read) if usize::from(read.len) < need => self.state = State::Utf8(read),
@@ -1293,14 +1279,11 @@ impl Parser {
     #[inline(never)]
     fn dispatch_request(&mut self, request: Option<Bytes<REQUEST_LIMIT>>, sink: &mut impl Sink) {
         let mut setting = String::new();
-        let valid = match request {
-            Some(request) => self.screen.setting_report(request.as_slice(), &mut setting),
-            None => Some(false),
+        let status = match request.map(|r| self.screen.setting_report(r.as_slice(), &mut setting)) {
+            Some(Setting::Written) => '1',
+            Some(Setting::Unknown) | None => '0',
+            Some(Setting::Unanswered) => return,
         };
-        let Some(valid) = valid else {
-            return;
-        };
-        let status = if valid { '1' } else { '0' };
         sink.reply(format!("\x1bP{status}$r{setting}\x1b\\").as_bytes());
     }
 
@@ -1437,22 +1420,18 @@ impl Parser {
             (b"*", b'y') if self.options.has(Feature::RectangleChecksums) => {
                 Some(self.screen.rectangle_checksum(&self.params))
             }
-            // DECRQM: 1 set, 2 reset, 0 not recognized (and 1048, an
-            // action), 4 permanently reset for DECARM, and 3 permanently set
-            // for 2027: graphemes are always clustered, as kitty's and
-            // Ghostty's mode 2027 does, so a program measuring them counts
-            // their cells as fux does.
+            // DECRQM.
             (b"?$" | b"$", b'p') if modes => {
                 let private = intermediates == b"?$";
                 let mode = Mode::of(n, private, &self.options);
                 let status = match mode.map(|m| (m, m.kind())) {
-                    None if private && n == 2027 => 3,
-                    None | Some((_, Kind::SaveCursor)) => 0,
-                    Some((_, Kind::Reset)) => 4,
-                    Some((mode, _)) if self.screen.mode(mode) => 1,
-                    Some(_) => 2,
+                    None | Some((_, Kind::SaveCursor)) => ModeStatus::NotRecognized,
+                    Some((_, Kind::Permanent(true))) => ModeStatus::PermanentlySet,
+                    Some((_, Kind::Permanent(false))) => ModeStatus::PermanentlyReset,
+                    Some((mode, _)) if self.screen.mode(mode) => ModeStatus::Set,
+                    Some(_) => ModeStatus::Reset,
                 };
-                let marker = if private { "?" } else { "" };
+                let (marker, status) = (if private { "?" } else { "" }, status.number());
                 Some(Reply::of(format_args!("\x1b[{marker}{n};{status}$y")))
             }
             _ => None,

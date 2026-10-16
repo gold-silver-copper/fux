@@ -128,12 +128,22 @@ impl Packed {
 
 /// Attributes are independent of glyph storage. An erase fills cells with
 /// the pen's colours alone (`erased`).
-#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Attributes {
     foreground: Packed,
     background: Packed,
     underline_color: Packed,
     pub(crate) flags: u16,
+}
+
+/// Hashed as `bits`, mixed so that every bit of them reaches the low bits
+/// a table picks a place by (a style table's, `style.rs`).
+impl std::hash::Hash for Attributes {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let (a, b) = self.bits();
+        let mixed = (a ^ b.rotate_left(23)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        state.write_u64(mixed.rotate_left(32));
+    }
 }
 
 impl std::fmt::Debug for Attributes {
@@ -147,20 +157,30 @@ impl std::fmt::Debug for Attributes {
     }
 }
 
-/// Expands each `get with BIT "what";` to the getter `get(self) -> bool`
-/// and the builder `with(self, on: bool) -> Self` of that one flag bit.
+/// Expands each `get with BIT on off;` to the getter `get(self) -> bool`
+/// and the builder `with(self, on: bool) -> Self` of that one flag bit,
+/// which SGR `on` sets and SGR `off` clears, and `Attributes::FLAGS`, the
+/// rows in their order: `bold with_bold BOLD 1 22;` gives `bold`,
+/// `with_bold` and the row `(BOLD, 1, 22, "bold")`.
 macro_rules! flags {
-    ($($get:ident $with:ident $bit:ident $what:literal;)*) => {$(
-        #[doc = concat!("Whether ", $what, " is on.")]
-        pub fn $get(self) -> bool {
-            self.flags & Self::$bit != 0
-        }
-        #[doc = concat!("These attributes with ", $what, " on or off.")]
-        #[must_use]
-        pub const fn $with(self, on: bool) -> Self {
-            self.with_flag(Self::$bit, on)
-        }
-    )*};
+    ($($get:ident $with:ident $bit:ident $on:literal $off:literal;)*) => {
+        /// Each flag SGR sets and clears with a number of its own, in
+        /// the order xterm reports them: its bit, the numbers that set
+        /// and clear it, and its name, its getter's.
+        pub(crate) const FLAGS: [(u16, u16, u16, &'static str); [$($on),*].len()] =
+            [$((Self::$bit, $on, $off, stringify!($get)),)*];
+        $(
+            #[doc = concat!("Whether ", stringify!($get), " (SGR ", $on, ") is on.")]
+            pub fn $get(self) -> bool {
+                self.flags & Self::$bit != 0
+            }
+            #[doc = concat!("These attributes with ", stringify!($get), " on or off.")]
+            #[must_use]
+            pub const fn $with(self, on: bool) -> Self {
+                self.with_flag(Self::$bit, on)
+            }
+        )*
+    };
 }
 
 impl Attributes {
@@ -276,7 +296,7 @@ impl Attributes {
         }
     }
     /// The attributes as two words, which differ where the attributes do:
-    /// what a style table hashes (`style.rs`).
+    /// what they hash as.
     pub(crate) fn bits(self) -> (u64, u64) {
         let word = |p: Packed| u64::from(u32::from_le_bytes(p.0));
         (
@@ -324,12 +344,21 @@ impl Attributes {
         self
     }
     flags! {
-        bold with_bold BOLD "bold (SGR 1)";
-        dim with_dim DIM "dim (SGR 2)";
-        italic with_italic ITALIC "italic (SGR 3)";
-        inverse with_inverse INVERSE "inverse (SGR 7)";
-        hidden with_hidden HIDDEN "hidden (SGR 8)";
-        strikeout with_strikeout STRIKEOUT "strikeout (SGR 9)";
+        bold with_bold BOLD 1 22;
+        inverse with_inverse INVERSE 7 27;
+        hidden with_hidden HIDDEN 8 28;
+        dim with_dim DIM 2 22;
+        italic with_italic ITALIC 3 23;
+        strikeout with_strikeout STRIKEOUT 9 29;
+    }
+    /// The flags SGR sets with a number of their own that are on, each
+    /// one's number and name (its getter's), in the order xterm reports
+    /// them: bold, inverse, hidden, dim, italic, strikeout.
+    pub fn sgr_flags(self) -> impl Iterator<Item = (u16, &'static str)> {
+        Self::FLAGS
+            .into_iter()
+            .filter(move |(bit, ..)| self.flags & bit != 0)
+            .map(|(_, on, _, name)| (on, name))
     }
     /// These attributes with a single underline (SGR 4), or none of any
     /// style.
@@ -642,7 +671,7 @@ impl Cells {
         };
         slot.attributes = cell.attributes;
         let shape = Compact::shaped(cell.halves());
-        if let Some(inline) = shape.holding(cell.text) {
+        if let Some(inline) = shape.holding(cell.text.as_bytes()) {
             slot.cell = inline;
             return true;
         }
@@ -661,7 +690,7 @@ impl Cells {
         if start == 0 && end == self.cells.len() {
             self.text.release();
         }
-        let inline = Compact::shaped(cell.halves()).holding(cell.text);
+        let inline = Compact::shaped(cell.halves()).holding(cell.text.as_bytes());
         match (inline, self.cells.get_mut(start..end)) {
             (Some(inline), Some(run)) => run.fill(Stored {
                 cell: inline,

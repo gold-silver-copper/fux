@@ -44,67 +44,41 @@ impl<const MAX: usize> Line<MAX> {
         self.before + &self.after
     }
 
-    /// Types `text` at the cursor, unless the line would pass `MAX` bytes:
-    /// whether it did.
-    pub fn insert(&mut self, text: &str) -> bool {
-        let len = self.before.len().saturating_add(self.after.len());
-        let fits = len.saturating_add(text.len()) <= MAX;
-        if fits {
-            self.before.push_str(text);
-        }
-        fits
-    }
-
-    pub fn backspace(&mut self) {
-        self.before.pop();
-    }
-
-    pub fn delete(&mut self) {
-        self.after = self.after.chars().skip(1).collect();
-    }
-
-    pub fn left(&mut self) {
-        if let Some(c) = self.before.pop() {
-            self.after = std::iter::once(c).chain(self.after.chars()).collect();
-        }
-    }
-
-    pub fn right(&mut self) {
-        let mut chars = self.after.chars();
-        if let Some(c) = chars.next() {
-            self.before.push(c);
-            self.after = chars.as_str().to_owned();
-        }
-    }
-
-    pub fn home(&mut self) {
-        self.before.push_str(&self.after);
-        self.after = std::mem::take(&mut self.before);
-    }
-
-    pub fn end(&mut self) {
-        self.before.push_str(&std::mem::take(&mut self.after));
-    }
-
     /// An edit of the line: typed text (one line of it, nothing that
-    /// controls), or a move or a deletion; Enter and Esc are the caller's.
-    pub fn edit(&mut self, act: &crate::act::LineAct) {
-        use crate::act::LineAct;
-        match act {
-            LineAct::Insert(text) => {
+    /// controls, unless the line would pass `MAX` bytes), or a move or a
+    /// deletion.
+    pub fn edit(&mut self, edit: &crate::act::Edit) {
+        use crate::act::Edit;
+        match edit {
+            Edit::Insert(text) => {
                 let typed: String = (text.chars())
                     .take_while(|c| *c != '\n' && *c != '\r')
                     .filter(|c| !c.is_control())
                     .collect();
-                self.insert(&typed);
+                let len = self.before.len().saturating_add(self.after.len());
+                if len.saturating_add(typed.len()) <= MAX {
+                    self.before.push_str(&typed);
+                }
             }
-            LineAct::Backspace => self.backspace(),
-            LineAct::Delete => self.delete(),
-            LineAct::Left => self.left(),
-            LineAct::Right => self.right(),
-            LineAct::Home => self.home(),
-            LineAct::End => self.end(),
-            LineAct::Submit | LineAct::Cancel => {}
+            Edit::Backspace => drop(self.before.pop()),
+            Edit::Delete => self.after = self.after.chars().skip(1).collect(),
+            Edit::Left => {
+                if let Some(c) = self.before.pop() {
+                    self.after = std::iter::once(c).chain(self.after.chars()).collect();
+                }
+            }
+            Edit::Right => {
+                let mut chars = self.after.chars();
+                if let Some(c) = chars.next() {
+                    self.before.push(c);
+                    self.after = chars.as_str().to_owned();
+                }
+            }
+            Edit::Home => {
+                self.before.push_str(&self.after);
+                self.after = std::mem::take(&mut self.before);
+            }
+            Edit::End => self.before.push_str(&std::mem::take(&mut self.after)),
         }
     }
 }
@@ -123,8 +97,8 @@ pub enum Mode {
 pub enum ClientKind {
     /// A terminal, which says its size and sends keys.
     Terminal,
-    /// Nowhere a person sees (`fux attach --headless`): its size is set by
-    /// `fux resize -c`, and it sends no keys.
+    /// Nowhere a person sees (`COLS ROWS headless`): its size is set by
+    /// `resize-client`, and it sends no keys.
     Headless,
 }
 

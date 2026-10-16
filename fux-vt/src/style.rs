@@ -24,7 +24,11 @@
 //! an eighth of the grid's cells, so a style costs a few cell reads however
 //! many there are. No reader sees a style's number.
 
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
+
 use crate::Attributes;
+use crate::history::SlotHasher;
 
 /// The bit of a style's number that says it is in the table.
 pub(crate) const TABLE: u32 = 1 << 27;
@@ -36,27 +40,14 @@ pub(crate) const MAX_STYLES: usize = 1 << 27;
 /// The fewest styles a table holds before it is swept.
 const FLOOR: usize = 4096;
 
-/// An index slot with no style in it.
-const EMPTY: u32 = u32::MAX;
-
-/// A grid's table of styles: their attributes by place, and an index that
-/// finds a style's place from its attributes (open addressing, linear
-/// probing, at most half full).
+/// A grid's table of styles: their attributes by place, and each one's
+/// place by its attributes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Styles {
     table: Vec<Attributes>,
-    slots: Vec<u32>,
+    places: HashMap<Attributes, u32, BuildHasherDefault<SlotHasher>>,
     /// How many styles were in use when the table was last swept.
     live: usize,
-}
-
-/// Where a search for `attributes` starts in `slots` of length `mask + 1`.
-#[inline]
-fn home(attributes: Attributes, mask: usize) -> usize {
-    let (a, b) = attributes.bits();
-    let hash = (a ^ b.rotate_left(23)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    // The top bits, which mix every bit of the key.
-    usize::try_from(hash >> 32).unwrap_or(0) & mask
 }
 
 impl Styles {
@@ -89,19 +80,7 @@ impl Styles {
 
     /// The number of the style with `attributes`, if the table has it.
     pub(crate) fn find(&self, attributes: Attributes) -> Option<u32> {
-        let mask = self.slots.len().checked_sub(1)?;
-        let mut at = home(attributes, mask);
-        loop {
-            let place = *self.slots.get(at)?;
-            if place == EMPTY {
-                return None;
-            }
-            let found = usize::try_from(place).ok().and_then(|i| self.table.get(i));
-            if found == Some(&attributes) {
-                return Some(place | TABLE);
-            }
-            at = at.wrapping_add(1) & mask;
-        }
+        self.places.get(&attributes).map(|place| place | TABLE)
     }
 
     /// Whether the table is to be swept before another style is added:
@@ -123,68 +102,23 @@ impl Styles {
         }
         let place = u32::try_from(self.table.len()).ok()?;
         self.table.push(attributes);
-        // At most half full.
-        if self.table.len().saturating_mul(2) > self.slots.len() {
-            self.reindex();
-        } else {
-            self.index(place);
-        }
+        self.places.insert(attributes, place);
         Some(place | TABLE)
-    }
-
-    /// Puts the style at `place` in the index, which has room for it.
-    fn index(&mut self, place: u32) {
-        let Some(mask) = self.slots.len().checked_sub(1) else {
-            return;
-        };
-        let Some(&attributes) = usize::try_from(place).ok().and_then(|i| self.table.get(i)) else {
-            return;
-        };
-        let mut at = home(attributes, mask);
-        while let Some(slot) = self.slots.get_mut(at) {
-            if *slot == EMPTY {
-                *slot = place;
-                return;
-            }
-            at = at.wrapping_add(1) & mask;
-        }
-    }
-
-    /// Builds the index again, at least twice as large as the table.
-    fn reindex(&mut self) {
-        let size = self
-            .table
-            .len()
-            .saturating_mul(2)
-            .max(8)
-            .checked_next_power_of_two()
-            .unwrap_or(usize::MAX);
-        self.slots = vec![EMPTY; size];
-        for place in 0..self.table.len() {
-            if let Ok(place) = u32::try_from(place) {
-                self.index(place);
-            }
-        }
     }
 
     /// Keeps the styles `used` marks, by place, in their order. What each
     /// style's number becomes; a style let go becomes 0.
     pub(crate) fn retain(&mut self, used: &[bool]) -> Vec<u32> {
-        let mut renumber = vec![0; self.table.len()];
-        let mut kept = Vec::with_capacity(used.iter().filter(|u| **u).count());
-        for (place, attributes) in self.table.iter().enumerate() {
-            if used.get(place).copied().unwrap_or(false) {
-                if let (Some(new), Ok(number)) =
-                    (renumber.get_mut(place), u32::try_from(kept.len()))
-                {
-                    *new = number | TABLE;
-                }
-                kept.push(*attributes);
-            }
-        }
-        self.table = kept;
+        let table = std::mem::take(&mut self.table);
+        self.places.clear();
+        let used = used.iter().chain(std::iter::repeat(&false));
+        let renumber = (table.iter().zip(used))
+            .map(|(attributes, used)| match used {
+                true => self.insert(*attributes).unwrap_or(0),
+                false => 0,
+            })
+            .collect();
         self.live = self.table.len();
-        self.reindex();
         renumber
     }
 }

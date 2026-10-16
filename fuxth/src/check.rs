@@ -14,8 +14,8 @@
 //! by how many of its caller's values it surely uses and what it leaves,
 //! and a call applies that summary.
 use crate::compile::{Builtin, Op, Program, Steps};
-use crate::error::{Code, Error};
-use crate::value::Value;
+use crate::error::{Code, Error, Wants, underflow};
+use crate::value::Kind;
 use std::collections::BTreeSet;
 
 /// Past any real stack: an unbounded depth.
@@ -32,39 +32,32 @@ const WIDEN_AFTER: u32 = 3;
 /// taken as anything at all.
 const RECURSION_ROUNDS: u32 = 8;
 
-/// The kinds a value may be: a set.
+/// The kinds a value may be: a set, a bit for each `Kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Kinds(u8);
 
-const INT: Kinds = Kinds(1);
-const BOOL: Kinds = Kinds(2);
-const STR: Kinds = Kinds(4);
-const LIST: Kinds = Kinds(8);
-const APP: Kinds = Kinds(16);
-const ANY: Kinds = Kinds(31);
+const INT: Kinds = Kinds::one(Kind::Int);
+const BOOL: Kinds = Kinds::one(Kind::Bool);
+const STR: Kinds = Kinds::one(Kind::Str);
+const LIST: Kinds = Kinds::one(Kind::List);
+const ANY: Kinds = Kinds(Kind::BITS);
 /// A string or a list.
-const SEQ: Kinds = Kinds(12);
+const SEQ: Kinds = STR.union(LIST);
 
 impl Kinds {
-    fn of<A>(value: &Value<A>) -> Kinds {
-        match value {
-            Value::Int(_) => INT,
-            Value::Bool(_) => BOOL,
-            Value::Str(_) => STR,
-            Value::List(_) => LIST,
-            Value::App(_) => APP,
-        }
+    const fn one(kind: Kind) -> Kinds {
+        Kinds(kind.bit())
     }
 
-    fn union(self, other: Kinds) -> Kinds {
+    const fn union(self, other: Kinds) -> Kinds {
         Kinds(self.0 | other.0)
     }
 
-    fn and(self, other: Kinds) -> Kinds {
+    const fn and(self, other: Kinds) -> Kinds {
         Kinds(self.0 & other.0)
     }
 
-    fn may_be(self, kind: Kinds) -> bool {
+    const fn may_be(self, kind: Kinds) -> bool {
         self.0 & kind.0 != 0
     }
 
@@ -73,17 +66,9 @@ impl Kinds {
         if self == ANY {
             return "any value".to_owned();
         }
-        let names = [
-            (INT, "an integer"),
-            (BOOL, "a boolean"),
-            (STR, "a string"),
-            (LIST, "a list"),
-            (APP, "an application value"),
-        ];
-        let said: Vec<&str> = names
-            .iter()
-            .filter(|(kind, _)| self.may_be(*kind))
-            .map(|(_, name)| *name)
+        let said: Vec<&str> = (Kind::ALL.into_iter())
+            .filter(|kind| self.may_be(Kinds::one(*kind)))
+            .map(Kind::said)
             .collect();
         said.join(" or ")
     }
@@ -194,7 +179,7 @@ enum Failing {
     /// It takes `takes`, and the stack has from `lo` to `hi`; `inside`
     /// a `list` body.
     Underflow {
-        takes: u64,
+        takes: usize,
         lo: i64,
         hi: i64,
         inside: bool,
@@ -307,7 +292,7 @@ impl State {
         if self.bounded && self.hi.saturating_sub(missing) < 0 {
             let (lo, hi) = self.depth();
             return Err(Failing::Underflow {
-                takes: u64::try_from(n).unwrap_or(u64::MAX),
+                takes: n,
                 lo,
                 hi,
                 inside: !self.outer.is_empty(),
@@ -481,11 +466,10 @@ struct Unit<'a, A> {
     code: &'a Steps<A>,
     /// The stack where the code starts: empty at the top level.
     start: State,
-    /// Whether it is the top level, whose `let` names it follows.
-    top: bool,
     /// What each definition does, worked out so far.
     known: &'a Known,
     /// The definition it is, if one: a call to itself uses its summary.
+    /// None is the top level, whose `let` names it follows.
     own: Option<usize>,
     /// The steps where a block starts: the first, every jump's target, and
     /// each step after a jump.
@@ -507,12 +491,10 @@ impl<'a, A> Unit<'a, A> {
                 starts.insert(at.saturating_add(1));
             }
         }
-        let top = std::ptr::eq(code, &program.main);
         Unit {
             program,
             code,
             start,
-            top,
             known,
             own,
             starts,
@@ -736,7 +718,7 @@ impl<'a, A> Unit<'a, A> {
     /// One step: whether a run can go on past it.
     fn step(&self, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
         match op {
-            Op::Push(value) => state.push(Kinds::of(value)),
+            Op::Push(value) => state.push(Kinds::one(Kind::of(value))),
             Op::Builtin(builtin) => return builtin_step(*builtin, state),
             Op::PickN(n) => {
                 let taken = state.pop(n.saturating_add(1))?;
@@ -821,8 +803,8 @@ impl<'a, A> Unit<'a, A> {
                     if let (Some(exit), Some(known)) = (exit.as_mut(), does.exit.as_ref()) {
                         for (kinds, better) in exit.top.iter_mut().rev().zip(known.top.iter().rev())
                         {
-                            let both = Kinds(kinds.0 & better.0);
-                            if both.0 != 0 {
+                            let both = kinds.and(*better);
+                            if both != Kinds(0) {
                                 *kinds = both;
                             }
                         }
@@ -863,7 +845,7 @@ impl<'a, A> Unit<'a, A> {
                 }
             }
             Op::Jump(_) | Op::EachNext(_) => {}
-            Op::JumpUnless(_) => flag(state)?,
+            Op::JumpUnless(_) => must(Wants::Flag, state.pop1()?, BOOL)?,
             Op::SetLocal(slot) => {
                 let kinds = state.pop1()?;
                 name(&mut state.names, *slot, kinds);
@@ -871,12 +853,12 @@ impl<'a, A> Unit<'a, A> {
             Op::GetLocal(slot) => state.push(named(&state.names, *slot)),
             Op::SetGlobal(slot) => {
                 let kinds = state.pop1()?;
-                if self.top {
+                if self.own.is_none() {
                     name(&mut state.globals, *slot, kinds);
                 }
             }
             Op::GetGlobal(slot) => {
-                let kinds = if self.top {
+                let kinds = if self.own.is_none() {
                     named(&state.globals, *slot)
                 } else {
                     ANY
@@ -906,12 +888,7 @@ impl<'a, A> Unit<'a, A> {
             }
             Op::EachStart => {
                 let kinds = state.pop1()?;
-                if !kinds.may_be(SEQ) {
-                    return Err(Failing::Type(format!(
-                        "each walks a string or a list, not {}",
-                        kinds.describe()
-                    )));
-                }
+                must(Wants::Each, kinds, SEQ)?;
                 state.iters.push(if kinds == STR { STR } else { ANY });
             }
         }
@@ -926,24 +903,17 @@ impl<'a, A> Unit<'a, A> {
                 hi,
                 inside,
             } => {
-                let values = if takes == 1 { "value" } else { "values" };
                 let has = if lo == hi {
-                    format!("{hi}")
+                    format!("{hi} here")
                 } else {
-                    format!("at most {hi}")
+                    format!("at most {hi} here")
                 };
-                let takes = if let Op::Call(_) = op {
-                    format!("needs at least {takes}")
+                let verb = if let Op::Call(_) = op {
+                    "needs at least"
                 } else {
-                    format!("takes {takes}")
+                    "takes"
                 };
-                let inside = if inside {
-                    " (inside list … end, which starts with an empty stack)"
-                } else {
-                    ""
-                };
-                let message = format!("{takes} {values}, and the stack has {has} here{inside}");
-                (Code::StackUnderflow, message)
+                (Code::StackUnderflow, underflow(verb, takes, &has, inside))
             }
             Failing::Type(message) => (Code::Type, message),
         };
@@ -951,58 +921,41 @@ impl<'a, A> Unit<'a, A> {
     }
 }
 
-/// Takes a boolean, as `if` and `until` do.
-fn flag(state: &mut State) -> Result<(), Failing> {
-    let kinds = state.pop1()?;
-    if kinds.may_be(BOOL) {
-        return Ok(());
+/// A value of `kinds` that must be one of `may_be`, which `wants` says.
+fn must(wants: Wants, kinds: Kinds, may_be: Kinds) -> Result<(), Failing> {
+    if kinds.may_be(may_be) {
+        Ok(())
+    } else {
+        Err(Failing::Type(wants.not(kinds.describe())))
     }
-    Err(Failing::Type(format!(
-        "takes a boolean (from eq or lt), not {}",
-        kinds.describe()
-    )))
 }
 
-/// A value that must be a string or a list, for `word`.
-fn seq(word: &str, kinds: Kinds) -> Result<Kinds, Failing> {
-    if kinds.may_be(SEQ) {
-        Ok(kinds.and(SEQ))
-    } else {
-        Err(Failing::Type(format!(
-            "{word} takes a string or a list, not {}",
-            kinds.describe()
-        )))
-    }
+/// A value that must be a string or a list, for `word`: which it may be.
+fn seq(word: Builtin, kinds: Kinds) -> Result<Kinds, Failing> {
+    must(Wants::Seq(word), kinds, SEQ)?;
+    Ok(kinds.and(SEQ))
 }
 
 /// A value that must be an integer, for `word`.
-fn int(word: &str, kinds: Kinds) -> Result<(), Failing> {
-    if kinds.may_be(INT) {
-        Ok(())
-    } else {
-        Err(Failing::Type(format!(
-            "{word} takes an integer, not {}",
-            kinds.describe()
-        )))
-    }
+fn int(word: Builtin, kinds: Kinds) -> Result<(), Failing> {
+    must(Wants::Int(word), kinds, INT)
 }
 
 fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
-    let name = builtin.name();
     let taken = state.pop(builtin.takes())?;
     let at = |i: usize| taken.get(i).copied().unwrap_or(ANY);
     match builtin {
         Builtin::Drop | Builtin::Print => {}
         Builtin::Fail => return Ok(Flow::Stop),
         Builtin::Pick => {
-            int(name, at(0))?;
+            int(builtin, at(0))?;
             // At least the value it copies; which one isn't known.
             let one = state.pop1()?;
             state.push(one);
             state.push(ANY);
         }
         Builtin::Roll => {
-            int(name, at(0))?;
+            int(builtin, at(0))?;
             let one = state.pop1()?;
             state.push(one);
             // Some value from below comes up: what was known of their
@@ -1013,84 +966,73 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
         Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div => {
             let (a, b) = (at(0), at(1));
             let message = match (a.may_be(INT), b.may_be(INT)) {
-                (false, false) => Some(format!("not {} and {}", a.describe(), b.describe())),
-                (false, true) => Some(format!("and the one under the top is {}", a.describe())),
-                (true, false) => Some(format!("and the top one is {}", b.describe())),
+                (false, false) => {
+                    Some(Wants::Ints.not(format!("{} and {}", a.describe(), b.describe())))
+                }
+                (false, true) => Some(format!(
+                    "takes two integers, and the one under the top is {}",
+                    a.describe()
+                )),
+                (true, false) => Some(format!(
+                    "takes two integers, and the top one is {}",
+                    b.describe()
+                )),
                 (true, true) => None,
             };
             if let Some(message) = message {
-                return Err(Failing::Type(format!("takes two integers, {message}")));
+                return Err(Failing::Type(message));
             }
             state.push(INT);
         }
         Builtin::Lt => {
             let (a, b) = (at(0), at(1));
-            if !a.and(b).may_be(Kinds(INT.0 | SEQ.0)) {
-                return Err(Failing::Type(format!(
-                    "lt compares two integers, two strings or two lists, not {} and {}",
-                    a.describe(),
-                    b.describe()
-                )));
+            if !a.and(b).may_be(INT.union(SEQ)) {
+                let got = format!("{} and {}", a.describe(), b.describe());
+                return Err(Failing::Type(Wants::Ordered.not(got)));
             }
             state.push(BOOL);
         }
         Builtin::Eq => state.push(BOOL),
         Builtin::Len => {
-            seq(name, at(0))?;
+            seq(builtin, at(0))?;
             state.push(INT);
         }
         Builtin::At => {
-            let s = seq(name, at(0))?;
-            int(name, at(1))?;
+            let s = seq(builtin, at(0))?;
+            int(builtin, at(1))?;
             state.push(if s == STR { STR } else { ANY });
         }
         Builtin::Slice => {
-            let s = seq(name, at(0))?;
-            int(name, at(1))?;
-            int(name, at(2))?;
+            let s = seq(builtin, at(0))?;
+            int(builtin, at(1))?;
+            int(builtin, at(2))?;
             state.push(s);
         }
         Builtin::Concat => {
-            if !at(0).may_be(LIST) {
-                return Err(Failing::Type(format!(
-                    "concat takes a list of strings or of lists, not {}",
-                    at(0).describe()
-                )));
-            }
+            must(Wants::Concat, at(0), LIST)?;
             state.push(SEQ);
         }
         Builtin::Push => {
-            let s = seq(name, at(0))?;
-            if s == STR && !at(1).may_be(STR) {
-                return Err(Failing::Type(format!(
-                    "push onto a string takes a string, not {}",
-                    at(1).describe()
-                )));
+            let s = seq(builtin, at(0))?;
+            if s == STR {
+                must(Wants::PushText, at(1), STR)?;
             }
             state.push(s);
         }
         Builtin::Put => {
-            let s = seq(name, at(0))?;
-            int(name, at(1))?;
-            if s == STR && !at(2).may_be(STR) {
-                return Err(Failing::Type(format!(
-                    "put into a string takes a string, not {}",
-                    at(2).describe()
-                )));
+            let s = seq(builtin, at(0))?;
+            int(builtin, at(1))?;
+            if s == STR {
+                must(Wants::PutText, at(2), STR)?;
             }
             state.push(s);
         }
         Builtin::Code => {
-            if !at(0).may_be(STR) {
-                return Err(Failing::Type(format!(
-                    "code takes a one-character string, not {}",
-                    at(0).describe()
-                )));
-            }
+            must(Wants::Char, at(0), STR)?;
             state.push(INT);
         }
         Builtin::Char => {
-            int(name, at(0))?;
+            int(builtin, at(0))?;
             state.push(STR);
         }
         Builtin::Kind | Builtin::String => state.push(STR),

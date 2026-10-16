@@ -1,7 +1,7 @@
 //! The requests a client sends the server: typed actions, each built by
 //! fuxth words in a client (`crate::script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
-use crate::id::{AnyId, ClientId, PaneId, TabId, WsId};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -14,13 +14,13 @@ pub enum WsRef {
     Name(String),
 }
 
-/// Any target: `%N`, `@N`, `+N` or a workspace name; once found, a
-/// workspace by its ID (`AnyRef<WsId>`).
+/// Any target: a pane, a tab or a workspace (`%N`, `@N`, `+N`), as a
+/// client's words found it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AnyRef<W = WsRef> {
+pub enum AnyRef {
     Pane(PaneId),
     Tab(TabId),
-    Workspace(W),
+    Workspace(WsId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub enum Kind {
     Workspace,
 }
 
-impl<W> AnyRef<W> {
+impl AnyRef {
     pub fn kind(&self) -> Kind {
         match self {
             AnyRef::Pane(_) => Kind::Pane,
@@ -38,13 +38,27 @@ impl<W> AnyRef<W> {
             AnyRef::Workspace(_) => Kind::Workspace,
         }
     }
-    /// The same target, its workspace as `f` gives it.
-    pub fn map<V>(self, f: impl FnOnce(W) -> V) -> AnyRef<V> {
+}
+
+/// An id as it is written: `%3`, `@2`, `+1`.
+impl std::fmt::Display for AnyRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AnyRef::Pane(p) => AnyRef::Pane(p),
-            AnyRef::Tab(t) => AnyRef::Tab(t),
-            AnyRef::Workspace(w) => AnyRef::Workspace(f(w)),
+            AnyRef::Pane(id) => id.fmt(f),
+            AnyRef::Tab(id) => id.fmt(f),
+            AnyRef::Workspace(id) => id.fmt(f),
         }
+    }
+}
+
+/// `%N`, `@N` or `+N`: the id of the kind its sigil says.
+impl std::str::FromStr for AnyRef {
+    type Err = ();
+    fn from_str(text: &str) -> Result<AnyRef, ()> {
+        (text.parse().map(AnyRef::Pane))
+            .or_else(|_| text.parse().map(AnyRef::Tab))
+            .or_else(|_| text.parse().map(AnyRef::Workspace))
+            .map_err(drop)
     }
 }
 
@@ -59,21 +73,22 @@ impl Kind {
 }
 
 /// Which way `reorder` moves a pane, tab or workspace among its siblings,
-/// or `select-…` steps from the current one.
+/// or `focus`, `next-tab` and `next-workspace` (or `previous-…`) step from
+/// the current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sibling {
     Next,
     Previous,
 }
 
-/// Which tab or workspace `select-tab` or `select-workspace` picks.
+/// Which tab or workspace `show-tab` or `show-workspace` picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick<T> {
     Step(Sibling),
     Id(T),
 }
 
-/// Which pane `select-pane` picks.
+/// Which pane `focus` picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanePick {
     Step(Sibling),
@@ -98,11 +113,11 @@ pub enum SwapWith {
     Toward(Direction),
 }
 
-/// How a tab no client shows is laid out (`--size`, `fux resize`): `None`,
+/// How a tab no client shows is laid out (`size`, `resize`): `None`,
 /// on a client's screen.
 pub type Size = Option<fux_vt::Size>;
 
-/// A pane's new width or height (`resize-pane -x`, `-y`).
+/// A pane's new width or height (`resize-x`, `resize-y`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Extent {
     Cells(u16),
@@ -110,26 +125,23 @@ pub enum Extent {
     Percent(u8),
 }
 
-/// How `resize-pane` resizes a pane.
+/// How `resize-x`, `resize-y` and `move-border` resize a pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneResize {
     /// Moves the border toward `direction` by this many cells.
     Border(Direction, u16),
-    /// To a width, a height, or both.
-    To {
-        cols: Option<Extent>,
-        rows: Option<Extent>,
-    },
+    /// To a width (horizontal) or a height (vertical).
+    To(Axis, Extent),
 }
 
 /// What `resize` sizes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resized {
     /// A tab, or every tab of a workspace: what they are laid out on while
-    /// no client shows them.
-    Tabs(AnyRef),
+    /// no client shows them, or as the clients showing them are.
+    Tabs(AnyRef, Size),
     /// A headless client's screen.
-    Client(ClientId),
+    Client(ClientId, fux_vt::Size),
 }
 
 /// One thing `send-keys` sends.
@@ -143,7 +155,7 @@ pub enum Input {
     Paste(String),
 }
 
-/// Which part of a pane's screen `capture-pane` prints, and how.
+/// Which part of a pane's screen `capture` prints, and how.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CaptureView {
     /// Every row as it is, blank rows at the end and all, rather than
@@ -155,7 +167,7 @@ pub struct CaptureView {
     pub rows: Option<(u16, u16)>,
     /// Columns `start..=end`, from 0.
     pub cols: Option<(u16, u16)>,
-    /// Colours and attributes, as SGR escapes, or with `--json` as runs.
+    /// Colours and attributes, as SGR escapes, or with `json` as runs.
     pub styles: bool,
     /// The main screen and its history, though a program holds the
     /// alternate one: what was printed before it took the screen.
@@ -203,13 +215,6 @@ pub struct Wait {
     pub marks: bool,
 }
 
-impl Wait {
-    /// How long it waits at most.
-    pub fn limit(&self) -> Duration {
-        self.timeout.unwrap_or(crate::config::WAIT)
-    }
-}
-
 /// What `send-mouse` does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mouse {
@@ -226,7 +231,6 @@ pub enum Mouse {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Ls {
-        json: bool,
         /// One pane, tab or workspace only.
         target: Option<AnyRef>,
         /// One field of its JSON.
@@ -244,9 +248,8 @@ pub enum Command {
         /// Where its shell starts (default: the caller's directory).
         cwd: Option<String>,
         env: Vec<(String, String)>,
-        /// The ids it makes, if asked for (`--id`, as layout files have).
-        ids: Vec<AnyId>,
-        json: bool,
+        /// The ids it makes, if asked for (`id`, as saved sessions have).
+        ids: Vec<AnyRef>,
     },
     NewTab {
         target: Option<WsRef>,
@@ -255,12 +258,11 @@ pub enum Command {
         size: Size,
         cwd: Option<String>,
         env: Vec<(String, String)>,
-        ids: Vec<AnyId>,
-        json: bool,
+        ids: Vec<AnyRef>,
     },
     Split {
         axis: Axis,
-        target: Option<PaneId>,
+        target: PaneId,
         cmd: Vec<String>,
         /// Where its shell starts (default: where the split pane's is).
         cwd: Option<String>,
@@ -268,8 +270,7 @@ pub enum Command {
         /// `cmd` is the program, started in place of a shell, as `run`
         /// starts one.
         run: bool,
-        ids: Vec<AnyId>,
-        json: bool,
+        ids: Vec<AnyRef>,
         /// Then waits on the new pane, armed before its program writes.
         then: Option<Box<Wait>>,
     },
@@ -282,16 +283,15 @@ pub enum Command {
         cwd: Option<String>,
         env: Vec<(String, String)>,
         argv: Vec<String>,
-        json: bool,
         /// A file everything the program writes goes to too.
         log: Option<String>,
-        ids: Vec<AnyId>,
+        ids: Vec<AnyRef>,
         /// Then waits, armed before the program writes anything.
         then: Option<Box<Wait>>,
     },
     /// The program `run` started, started again in its pane.
     Respawn {
-        target: Option<PaneId>,
+        target: PaneId,
         /// Ends it first if it still runs.
         kill: bool,
         env: Vec<(String, String)>,
@@ -305,72 +305,60 @@ pub enum Command {
         target: Option<AnyRef>,
         text: String,
     },
-    Resize {
-        what: Resized,
-        size: Size,
-    },
+    Resize(Resized),
     Wait {
-        /// The panes, any of which answers it (a tab's or workspace's
-        /// every pane): the caller's without one.
-        targets: Vec<AnyRef>,
+        /// The pane, or a tab's or workspace's every pane, each of which
+        /// answers.
+        target: AnyRef,
         wait: Wait,
     },
     SendMouse {
-        target: Option<PaneId>,
+        target: PaneId,
         mouse: Mouse,
         row: u16,
         col: u16,
         /// Then waits, armed before the event goes in, as send-keys' does.
         then: Option<Box<Wait>>,
     },
-    KillPane {
-        target: Option<PaneId>,
+    /// Closes a pane, a tab or a workspace.
+    Kill {
+        target: AnyRef,
     },
     /// A signal to what runs in the pane's foreground, what its terminal's
     /// keys reach (a job its shell runs, or the program `run` started), never
     /// a shell itself: for a program that ignores Ctrl-C and hangups.
     Signal {
-        target: Option<PaneId>,
+        target: PaneId,
         signal: fuxix::process::Signal,
         then: Option<Box<Wait>>,
-    },
-    KillTab {
-        target: Option<TabId>,
-    },
-    KillWorkspace {
-        target: Option<WsRef>,
     },
     Rename {
         target: AnyRef,
         name: String,
     },
     MovePane {
-        target: Option<PaneId>,
+        target: PaneId,
         to: MoveTo,
     },
     SwapPane {
-        target: Option<PaneId>,
+        target: PaneId,
         with: SwapWith,
     },
     ResizePane {
-        target: Option<PaneId>,
+        target: PaneId,
         by: PaneResize,
     },
     SendKeys {
-        /// The panes: each `-t`, a pane or every pane of a tab; the
-        /// caller's without one.
-        targets: Vec<AnyRef>,
-        /// A client to send them to instead, as typed at its terminal: its
-        /// bindings, overlays and prompts take them as a person's keys.
-        client: Option<ClientId>,
+        /// The pane, or a tab's or workspace's every pane.
+        target: AnyRef,
         inputs: Vec<Input>,
         /// A wait for the program to go quiet once they are sent.
         then: Option<Box<Wait>>,
     },
     /// What happens, a line each as it happens, until the client goes:
-    /// where the targets are, or anywhere without any.
+    /// where the target is, or anywhere without one.
     Events {
-        targets: Vec<AnyRef>,
+        target: Option<AnyRef>,
         json: bool,
     },
     /// What is there, as a layout file: everything, or one tab or
@@ -378,30 +366,31 @@ pub enum Command {
     DumpLayout {
         target: Option<AnyRef>,
     },
-    /// A socket whose commands reach workspace `workspace` alone; or with
-    /// `revoke`, that socket closed.
+    /// A socket whose commands reach workspace `workspace` alone.
     Grant {
-        workspace: Option<WsRef>,
+        workspace: WsRef,
         socket: String,
-        revoke: bool,
+    },
+    /// The socket a grant made, closed.
+    Revoke {
+        socket: String,
     },
     /// What the pane's program writes, kept in a file from now on; `None`
     /// stops it.
     Log {
-        target: Option<PaneId>,
+        target: PaneId,
         file: Option<String>,
     },
     /// The pane's history, dropped.
     ClearHistory {
-        target: Option<PaneId>,
+        target: PaneId,
     },
     /// What the pane shows, with up to `history` lines before it, as text
-    /// or JSON.
+    /// and as JSON.
     CapturePane {
-        target: Option<PaneId>,
+        target: PaneId,
         history: Option<usize>,
         view: CaptureView,
-        json: bool,
         /// Read once the pane settles, waiting this long at most (if unsaid,
         /// the server's `wait-seconds`), and said with its state; at once,
         /// as it is, without.
@@ -429,9 +418,9 @@ pub enum Command {
     },
     PasteBuffer {
         index: usize,
-        target: Option<PaneId>,
+        target: PaneId,
     },
-    /// A command on one client's screen: the client `-c` names, or the one
+    /// A command on one client's screen: the client named (`str c1 client`), or the one
     /// whose key, menu or prompt ran it.
     Client {
         client: Option<ClientId>,
@@ -445,15 +434,16 @@ pub enum ClientAction {
     Detach,
     /// What the client's terminal shows: the screen the server composes for
     /// it, bar and overlays included.
-    Capture {
-        json: bool,
-    },
+    Capture,
     /// The rows of a chooser the client shows: what each is, its label,
     /// and which is the client's current one.
     Choices(Choices),
     /// fuxth for the client to run as its own: what opens one of its
     /// screens (a menu, the prompt, copy mode), asked from elsewhere.
     Run(String),
+    /// Keys as typed at its terminal: its bindings, overlays and prompts
+    /// take them as a person's keys.
+    Keys(Vec<Input>),
     Zoom,
     SelectPane(PanePick),
     SelectTab(Pick<TabId>),
@@ -500,9 +490,6 @@ impl std::fmt::Display for Usage {
 
 impl std::error::Error for Usage {}
 
-pub fn parse_pane(text: &str) -> Result<PaneId, Usage> {
-    text.parse()
-}
 /// A workspace: `+N`, or its name.
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
     match text.parse::<WsId>() {
@@ -522,15 +509,14 @@ pub fn shell_name(name: &str) -> bool {
 impl Command {
     /// The pane a command acts on and the wait it then does, armed before
     /// it acts: send-keys', send-mouse's and signal's.
-    pub fn acting_wait(&self) -> Option<(Vec<AnyRef>, Wait)> {
+    pub fn acting_wait(&self) -> Option<(AnyRef, Wait)> {
         if let Command::SendKeys {
-            targets,
-            client: None,
+            target,
             then: Some(wait),
             ..
         } = self
         {
-            return Some((targets.clone(), (**wait).clone()));
+            return Some((*target, (**wait).clone()));
         }
         if let Command::SendMouse {
             target,
@@ -543,25 +529,19 @@ impl Command {
             ..
         } = self
         {
-            return Some((
-                target.map(AnyRef::Pane).into_iter().collect(),
-                (**wait).clone(),
-            ));
+            return Some((AnyRef::Pane(*target), (**wait).clone()));
         }
         None
     }
 
     /// Takes the wait `run`, `split` or `respawn` does once it has started
     /// its program: the command then says only its pane, which the wait
-    /// answers of (as JSON too, if asked).
+    /// answers of.
     pub fn take_start_wait(&mut self) -> Option<Box<Wait>> {
-        if let Command::Run { json, then, .. } | Command::Split { json, then, .. } = self
-            && then.is_some()
+        if let Command::Run { then, .. }
+        | Command::Split { then, .. }
+        | Command::Respawn { then, .. } = self
         {
-            *json = false;
-            return then.take();
-        }
-        if let Command::Respawn { then, .. } = self {
             return then.take();
         }
         None

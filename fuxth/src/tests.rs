@@ -49,10 +49,10 @@ impl Host for Toy {
                 Ok(Done::Later(*n))
             }
             (1, [other]) => Err(Failure::new(
-                "not_a_number",
+                Code::Host("not_a_number"),
                 format!("ask takes an integer, not {}", other.kind()),
             )),
-            _ => Err(Failure::new("refused", "no")),
+            _ => Err(Failure::new(Code::Host("refused"), "no")),
         }
     }
 

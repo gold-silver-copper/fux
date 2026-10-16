@@ -45,11 +45,14 @@
 //!
 //! An answer's string longer than any answer (`OSC_LIMIT`, `DCS_LIMIT`) is
 //! dropped to its end as it arrives, none of it typed.
-use crate::Rgb;
 use crate::keys::colour::Scheme;
-use crate::keys::encode::{PASTE_END, numbered_key};
+use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
-use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
+use crate::keys::{
+    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Key, KeyPress, Keystroke, Kitty, Modifiers,
+    SHIFT_BIT,
+};
+use crate::{ModeStatus, Rgb};
 use std::borrow::Cow;
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
@@ -122,9 +125,8 @@ pub enum Reply {
     Mode {
         /// The mode asked about.
         mode: u16,
-        /// DECRPM's status: 0 not recognised, 1 set, 2 reset, 3 permanently set, 4 permanently
-        /// reset.
-        status: u8,
+        /// Its status.
+        status: ModeStatus,
     },
     /// The kitty keyboard protocol's flags: `CSI ? flags u`.
     KittyFlags(u8),
@@ -499,18 +501,15 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
 /// bytes it takes; none while it is incomplete.
 fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
     let first = *bytes.first()?;
+    if let Some(control) = Control::of(first.into()) {
+        return Some((1, KeyPress::plain(control.key())));
+    }
     let (key, mods) = match first {
-        0x0d => (Key::Enter, Modifiers::NONE),
-        0x09 => (Key::Tab, Modifiers::NONE),
-        0x7f => (Key::Backspace, Modifiers::NONE),
-        0x1b => (Key::Escape, Modifiers::NONE),
         0x00 => (Key::Char(' '), Modifiers::CTRL),
         // Ctrl-A to Ctrl-Z are the letters with bits 5 and 6 cleared.
         0x01..=0x1a => (Key::Char(char::from(first | 0x60)), Modifiers::CTRL),
-        0x1c => (Key::Char('\\'), Modifiers::CTRL),
-        0x1d => (Key::Char(']'), Modifiers::CTRL),
-        0x1e => (Key::Char('^'), Modifiers::CTRL),
-        0x1f => (Key::Char('_'), Modifiers::CTRL),
+        // Ctrl-\ to Ctrl-_ are those characters with bit 6 cleared.
+        0x1c..=0x1f => (Key::Char(char::from(first | 0x40)), Modifiers::CTRL),
         0x20..=0x7e => (Key::Char(char::from(first)), Modifiers::NONE),
         _ => {
             let need = match first {
@@ -734,16 +733,16 @@ fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
             let flags = text.parse::<u32>().ok()?;
             Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(u8::MAX)))
         }
-        b'n' => match text {
-            "997;1" => Some(Reply::Scheme(Scheme::Dark)),
-            "997;2" => Some(Reply::Scheme(Scheme::Light)),
-            _ => None,
-        },
+        // A scheme's report, but for its `CSI` and its `n`.
+        b'n' => (Scheme::ALL.into_iter())
+            .find(|s| s.report().get(2..).and_then(|r| r.strip_suffix(b"n")) == Some(params))
+            .map(Reply::Scheme),
         b'y' => {
             let (mode, status) = text.strip_suffix('$')?.split_once(';')?;
+            let status = status.parse().ok()?;
             Some(Reply::Mode {
                 mode: mode.parse().ok()?,
-                status: status.parse().ok()?,
+                status: ModeStatus::ALL.into_iter().find(|s| s.number() == status)?,
             })
         }
         _ => None,
@@ -940,13 +939,15 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // Modifiers beyond xterm's three (Super, Hyper, Meta, the locks) are
     // kept for a pane in the kitty protocol.
     let input = match input {
-        Some(Input::Key(stroke)) if bits & !7 != 0 => Some(Input::Key(Keystroke {
-            kitty: Some(Kitty {
-                mods: bits,
-                ..Kitty::default()
-            }),
-            ..stroke
-        })),
+        Some(Input::Key(stroke)) if bits & !(SHIFT_BIT | ALT_BIT | CTRL_BIT) != 0 => {
+            Some(Input::Key(Keystroke {
+                kitty: Some(Kitty {
+                    mods: bits,
+                    ..Kitty::default()
+                }),
+                ..stroke
+            }))
+        }
         other => other,
     };
     Step::Done(consumed, input)
@@ -960,21 +961,20 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
 /// character, as `char_of` reads it, unless it is another control, which
 /// names no key.
 fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> char) -> Option<KeyPress> {
-    let key = match code {
-        8 => {
-            let mods = Modifiers { ctrl: true, ..mods };
-            return Some(KeyPress::new(Key::Backspace, mods));
-        }
-        9 => Key::Tab,
-        13 => Key::Enter,
-        27 => Key::Escape,
-        127 => Key::Backspace,
-        0xe000..=0xf8ff => functional(code)?,
-        _ => Key::Char(
-            char::from_u32(code)
-                .map(char_of)
-                .filter(|c| !c.is_control())?,
-        ),
+    if code == u32::from(CTRL_BACKSPACE) {
+        let mods = Modifiers { ctrl: true, ..mods };
+        return Some(KeyPress::new(Key::Backspace, mods));
+    }
+    let key = match Control::of(code) {
+        Some(control) => control.key(),
+        None => match code {
+            0xe000..=0xf8ff => functional(code)?,
+            _ => Key::Char(
+                char::from_u32(code)
+                    .map(char_of)
+                    .filter(|c| !c.is_control())?,
+            ),
+        },
     };
     Some(KeyPress::new(key, mods))
 }
@@ -989,10 +989,10 @@ fn typed(c: char, kitty: &Kitty) -> char {
         .base
         .and_then(char::from_u32)
         .filter(char::is_ascii)
-        .filter(|_| kitty.mods & 6 != 0 && !c.is_ascii());
-    let shift = kitty.mods & 1 != 0;
+        .filter(|_| kitty.mods & (ALT_BIT | CTRL_BIT) != 0 && !c.is_ascii());
+    let shift = kitty.mods & SHIFT_BIT != 0;
     // Caps Lock capitalizes a letter, as in a legacy terminal's bytes.
-    let caps = kitty.mods & 64 != 0;
+    let caps = kitty.mods & CAPS_LOCK_BIT != 0;
     let letter = |c: char| {
         if shift != caps {
             c.to_ascii_uppercase()
@@ -1101,6 +1101,9 @@ mod tests {
             (b"\x02", "C-b"),
             (b"\x00", "C-Space"),
             (b"\x1c", "C-\\"),
+            (b"\x1d", "C-]"),
+            (b"\x1e", "C-^"),
+            (b"\x1f", "C-_"),
             (b"\x1b[A", "Up"),
             (b"\x1b[B", "Down"),
             (b"\x1b[C", "Right"),
@@ -1427,7 +1430,7 @@ mod tests {
             palette(15, 0xff, 0xff, 0xff),
             Input::Reply(Reply::Mode {
                 mode: 2031,
-                status: 2,
+                status: ModeStatus::Reset,
             }),
             Input::Reply(Reply::Scheme(Scheme::Dark)),
             key("c"),
@@ -1447,7 +1450,10 @@ mod tests {
             all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;red\x07\x1b]4;256;rgb:0/0/0\x07\x1b]4;x;rgb:0/0/0\x07\x1b]4;1\x07\x1b[?6;1$yx"),
             vec![
                 Input::Reply(Reply::Attributes { sixel: false }),
-                Input::Reply(Reply::Mode { mode: 6, status: 1 }),
+                Input::Reply(Reply::Mode {
+                    mode: 6,
+                    status: ModeStatus::Set,
+                }),
                 key("x")
             ]
         );

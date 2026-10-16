@@ -20,8 +20,9 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// How long a client waits for the server to open its FIFOs.
-const ANSWER: Duration = Duration::from_secs(5);
+/// How long a client waits for a server's answer: its Hello, or the FIFOs
+/// a door's knock asks for.
+pub(crate) const ANSWER: Duration = Duration::from_secs(5);
 
 /// The door beside `socket`.
 pub fn path(socket: &Path) -> PathBuf {
@@ -268,13 +269,10 @@ pub fn served(socket: &Path) -> bool {
 /// to write, once the server has opened them.
 pub fn knock(socket: &Path) -> io::Result<Link> {
     let mut knocked = open_door(socket)?;
-    let door = path(socket);
-    let dir = door
+    let dir = socket
         .parent()
         .ok_or_else(|| io::Error::other("a door with no directory"))?;
-    let mut random = [0u8; 8];
-    File::open("/dev/urandom")?.read_exact(&mut random)?;
-    let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = crate::marks::nonce().ok_or_else(|| io::Error::other("no random bytes"))?;
     let name = format!("c-{hex}");
     let paths = fifos(dir, &name);
     let [up_path, down_path] = &paths;
@@ -296,7 +294,7 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
         }
         let mut byte = [0u8; 1];
         match (&down).read(&mut byte) {
-            Ok(1) => Link::door(relay(down, up)?),
+            Ok(1) => Ok(Link::door(relay(down, up)?)),
             Ok(_) => Err(io::Error::other("the server closed the door")),
             Err(e) => Err(e),
         }
@@ -320,20 +318,20 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn socket(socket: UnixStream) -> io::Result<Link> {
-        Ok(Link {
+    pub fn socket(socket: UnixStream) -> Link {
+        Link {
             file: File::from(OwnedFd::from(socket)),
             door: false,
             timeout: None,
             stop: None,
-        })
+        }
     }
 
-    fn door(relayed: UnixStream) -> io::Result<Link> {
-        Ok(Link {
+    fn door(relayed: UnixStream) -> Link {
+        Link {
             door: true,
-            ..Link::socket(relayed)?
-        })
+            ..Link::socket(relayed)
+        }
     }
 
     /// How long a read waits for something to come; `None`, for ever.

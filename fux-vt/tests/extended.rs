@@ -448,6 +448,25 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
     Ok(())
 }
 
+/// Each screen's stack stays with it while its cells are cleared or
+/// resized: 1049 clears the alternate screen each time it is shown, and
+/// 1047 once it is shown again. RIS empties both.
+#[test]
+fn kitty_keyboard_stacks_outlive_clears_and_resizes() -> Result {
+    let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
+    p.process(b"\x1b[>3u\x1b[?1049h\x1b[>6u\x1b[?1049l\x1b[?1049h")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    p.process(b"\x1b[?1049l\x1b[?1047h\x1b[?1047l\x1b[?1047h")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    p.resize(Size::new(7, 30)?)?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    p.process(b"\x1b[?1047l")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 3);
+    p.process(b"\x1bc\x1b[?1049h")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 0);
+    Ok(())
+}
+
 #[test]
 fn modify_other_keys_levels_survive_split_sequences() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;

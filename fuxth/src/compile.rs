@@ -17,7 +17,7 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 /// Expands `Variant "name" takes "effect" "about", ...` to the enum
-/// `Builtin` of those variants, `Builtin::ALL` in that order, and `name`,
+/// `Builtin` of those variants, `Builtin::ALL` in that order, `name`,
 /// `takes`, `effect` and `about`, each a match giving that variant's column.
 macro_rules! builtins {
     ($($variant:ident $name:literal $takes:literal $effect:literal $about:literal,)*) => {
@@ -86,11 +86,90 @@ builtins! {
     Fail "fail" 1 "x --" "stop the program, with x as the reason",
 }
 
-/// The words that read the token after them, or shape the program: no
-/// definition or `let` may take their names.
-pub const PARSING: [&str; 11] = [
-    "str", "define", "end", "let", "if", "else", "then", "begin", "until", "list", "each",
-];
+/// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
+/// `PARSING`, their names, `Parsing::ALL` in that order, and `name`, a
+/// match giving each one's: `If "if",` gives `Parsing::If`, named "if".
+macro_rules! parsing {
+    ($($variant:ident $name:literal,)*) => {
+        /// The words that read the token after them, or shape the program:
+        /// no definition or `let` may take their names.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Parsing {
+            $($variant,)*
+        }
+
+        /// The parsing words' names, in `Parsing::ALL`'s order.
+        pub const PARSING: [&str; [$($name),*].len()] = [$($name),*];
+
+        impl Parsing {
+            pub const ALL: [Parsing; PARSING.len()] = [$(Parsing::$variant),*];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Parsing::$variant => $name,)*
+                }
+            }
+        }
+    };
+}
+
+parsing! {
+    Str "str",
+    Define "define",
+    End "end",
+    Let "let",
+    If "if",
+    Else "else",
+    Then "then",
+    Begin "begin",
+    Until "until",
+    List "list",
+    Each "each",
+}
+
+impl Builtin {
+    /// The built-in `name` is, if one.
+    pub fn named(name: &str) -> Option<Builtin> {
+        Builtin::ALL.into_iter().find(|b| b.name() == name)
+    }
+}
+
+impl Parsing {
+    /// The parsing word `name` is, if one.
+    pub fn named(name: &str) -> Option<Parsing> {
+        Parsing::ALL.into_iter().find(|p| p.name() == name)
+    }
+
+    /// How it is written, and what it does, as help says it: the words of
+    /// a block share the block's.
+    pub fn syntax(self) -> (&'static str, &'static str) {
+        match self {
+            Parsing::If | Parsing::Else | Parsing::Then => {
+                ("BOOL if … else … then", "runs one branch")
+            }
+            Parsing::Begin | Parsing::Until => {
+                ("begin … BOOL until", "runs until the bool is true")
+            }
+            Parsing::Define | Parsing::End => (
+                "define NAME … end",
+                "a word of your own; it may call itself (end also closes list and each)",
+            ),
+            Parsing::Let => (
+                "X let NAME",
+                "NAME pushes X from then on (in a definition, for that call)",
+            ),
+            Parsing::List => (
+                "list … end",
+                "a list of the values its body leaves; the body starts with an empty stack",
+            ),
+            Parsing::Each => (
+                "SEQ each … end",
+                "the body once per element of SEQ, a string or list, the element pushed",
+            ),
+            Parsing::Str => ("str WORD", "WORD as text, whatever it looks like"),
+        }
+    }
+}
 
 /// The application's words: each a name, how many values it takes, and
 /// how many it gives (a range, for a word that gives a value only
@@ -208,6 +287,21 @@ pub struct Program<A> {
     pub(crate) vocabulary: Vocabulary,
 }
 
+impl<A> Program<A> {
+    /// A code by its index: `None` is the top level.
+    pub(crate) fn code(&self, code: Option<usize>) -> Option<&Steps<A>> {
+        match code {
+            None => Some(&self.main),
+            Some(i) => self.words.get(i),
+        }
+    }
+
+    /// The token step `step` of code `code` came from.
+    pub(crate) fn token(&self, code: Option<usize>, step: usize) -> Option<&Token> {
+        self.code(code)?.tokens.get(step)
+    }
+}
+
 /// What a name compiles to.
 #[derive(Clone, Copy, Debug)]
 enum Entry {
@@ -228,11 +322,11 @@ enum Open {
     Each { head: usize, at: Token },
 }
 
-/// The definition being compiled: its index, its steps, and its own `let`
-/// names.
+/// The definition being compiled: its steps, and its own `let` names. It
+/// goes into `words` at its `end`; until then nothing else can, so its index
+/// is the next one there.
 #[derive(Clone)]
 struct Current<A> {
-    id: usize,
     code: Steps<A>,
     locals: HashMap<Rc<str>, usize>,
 }
@@ -296,33 +390,27 @@ impl<A: Clone> Compiler<A> {
         while let Some(token) = tokens.next() {
             let text = &*token.text;
             let literal = std::mem::replace(&mut self.literal, false);
-            match text {
-                "str" => {
+            match Parsing::named(text) {
+                Some(Parsing::Str) => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
                     self.code().push(Op::Push(Value::str(&*next.text)), token);
                 }
-                "define" => {
+                Some(Parsing::Define) => {
                     self.top_level(token)?;
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
                     self.check_name(name, false)?;
-                    let id = self.words.len();
                     // Visible from here on, its own body included.
-                    self.names.insert(Rc::clone(&name.text), Entry::Word(id));
-                    self.words.push(Steps::new());
+                    let id = Entry::Word(self.words.len());
+                    self.names.insert(Rc::clone(&name.text), id);
                     self.current = Some(Current {
-                        id,
                         code: Steps::new(),
                         locals: HashMap::new(),
                     });
                     self.open.push(Open::Define { at: token.clone() });
                 }
-                "end" => match self.open.pop() {
+                Some(Parsing::End) => match self.open.pop() {
                     Some(Open::Define { .. }) => {
-                        if let Some(current) = self.current.take()
-                            && let Some(slot) = self.words.get_mut(current.id)
-                        {
-                            *slot = current.code;
-                        }
+                        self.words.extend(self.current.take().map(|c| c.code))
                     }
                     Some(Open::List { .. }) => self.code().push(Op::Gather, token),
                     Some(Open::Each { head, .. }) => {
@@ -333,7 +421,7 @@ impl<A: Clone> Compiler<A> {
                     Some(other) => return Err(mismatched(token, &other)),
                     None => return Err(unmatched(token, "no define, list or each is open")),
                 },
-                "let" => {
+                Some(Parsing::Let) => {
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
                     self.check_name(name, true)?;
                     let op = match &mut self.current {
@@ -359,7 +447,7 @@ impl<A: Clone> Compiler<A> {
                     };
                     self.code().push(op, token);
                 }
-                "if" => {
+                Some(Parsing::If) => {
                     let jump = self.code().len();
                     self.code().push(Op::JumpUnless(0), token);
                     self.open.push(Open::If {
@@ -367,7 +455,7 @@ impl<A: Clone> Compiler<A> {
                         at: token.clone(),
                     });
                 }
-                "else" => match self.open.pop() {
+                Some(Parsing::Else) => match self.open.pop() {
                     Some(Open::If { jump, .. }) => {
                         let here = self.code().len();
                         self.code().push(Op::Jump(0), token);
@@ -380,7 +468,7 @@ impl<A: Clone> Compiler<A> {
                     Some(other) => return Err(mismatched(token, &other)),
                     None => return Err(unmatched(token, "no if is open")),
                 },
-                "then" => match self.open.pop() {
+                Some(Parsing::Then) => match self.open.pop() {
                     Some(Open::If { jump, .. } | Open::Else { jump, .. }) => {
                         let here = self.code().len();
                         self.code().patch(jump, here);
@@ -388,25 +476,25 @@ impl<A: Clone> Compiler<A> {
                     Some(other) => return Err(mismatched(token, &other)),
                     None => return Err(unmatched(token, "no if is open")),
                 },
-                "begin" => {
+                Some(Parsing::Begin) => {
                     let start = self.code().len();
                     self.open.push(Open::Begin {
                         start,
                         at: token.clone(),
                     });
                 }
-                "until" => match self.open.pop() {
+                Some(Parsing::Until) => match self.open.pop() {
                     Some(Open::Begin { start, .. }) => {
                         self.code().push(Op::JumpUnless(start), token);
                     }
                     Some(other) => return Err(mismatched(token, &other)),
                     None => return Err(unmatched(token, "no begin is open")),
                 },
-                "list" => {
+                Some(Parsing::List) => {
                     self.code().push(Op::Mark, token);
                     self.open.push(Open::List { at: token.clone() });
                 }
-                "each" => {
+                Some(Parsing::Each) => {
                     self.code().push(Op::EachStart, token);
                     let head = self.code().len();
                     self.code().push(Op::EachNext(0), token);
@@ -415,7 +503,7 @@ impl<A: Clone> Compiler<A> {
                         at: token.clone(),
                     });
                 }
-                text => self.word(token, text, literal)?,
+                None => self.word(token, text, literal)?,
             }
         }
         Ok(())
@@ -466,6 +554,8 @@ impl<A: Clone> Compiler<A> {
             Some(Entry::Builtin(b)) => self.code().push(Op::Builtin(b), token),
             Some(Entry::App(id)) => self.code().push(Op::App(id), token),
             Some(Entry::Word(id)) => {
+                // A word in its own body isn't in `words` until its `end`:
+                // a call.
                 let body = self.words.get(id).filter(|w| w.leaf()).cloned();
                 match body {
                     // Short and straight: copied in, each step named by the
@@ -544,7 +634,7 @@ impl<A: Clone> Compiler<A> {
             Some("an empty name")
         } else if is_number(text) {
             Some("a number")
-        } else if PARSING.contains(&text) {
+        } else if Parsing::named(text).is_some() {
             Some("a word of the language")
         } else {
             match self.names.get(text) {

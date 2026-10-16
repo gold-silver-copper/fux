@@ -58,8 +58,8 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     }
     let server = Server::start("str shell str /bin/dash set")?;
     let mut reap = Reap::default();
-    for how in ["kill-pane", "exit", "kill-workspace"] {
-        if how == "kill-workspace" {
+    for how in ["pane kill", "exit", "workspace kill"] {
+        if how == "workspace kill" {
             server.ok(&["opts", "str", "doomed", "name", "new-workspace"])?;
         } else {
             server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
@@ -90,7 +90,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
                 .ends_with("sleep"))
         })?;
         match how {
-            "kill-pane" => {
+            "pane kill" => {
                 server.ok(&["str", &pane, "pane", "kill"])?;
             }
             // The shell exits and its pane closes: answered with status 4.
@@ -147,7 +147,7 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     assert!(server.panes()?.iter().any(|(id, _)| *id == pane));
     // Closing the pane ends the job.
     server.ok(&["str", &pane, "pane", "kill"])?;
-    gone(job, "a background job, after kill-pane")
+    gone(job, "a background job, after pane kill")
 }
 
 /// A pane whose program is stopped is not one whose program exited: it
@@ -234,7 +234,7 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     assert!(alive(job), "the stopped job ended");
     assert!(server.panes()?.iter().any(|(id, _)| *id == pane));
     server.ok(&["str", &pane, "pane", "kill"])?;
-    gone(job, "a stopped job, after kill-pane")
+    gone(job, "a stopped job, after pane kill")
 }
 
 /// The server's children that have exited but were never reaped.

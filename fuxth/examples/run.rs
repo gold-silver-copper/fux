@@ -29,14 +29,15 @@ impl Host for Bare {
         _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<()>, Failure> {
         Err(Failure::new(
-            "no_words",
+            fuxth::Code::Host("no_words"),
             "this runner has no application words",
         ))
     }
 
     fn print(&mut self, line: &str) -> Result<(), Failure> {
         let mut out = std::io::stdout().lock();
-        writeln!(out, "{line}").map_err(|e| Failure::new("output", e.to_string()))
+        writeln!(out, "{line}")
+            .map_err(|e| Failure::new(fuxth::Code::Host("output"), e.to_string()))
     }
 }
 

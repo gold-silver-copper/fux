@@ -462,7 +462,7 @@ fn start(
             }
             // Its settings at once, as the test harness applies them.
             let path = socket.to_string_lossy();
-            let chosen = fux::socket::socket_path(fux::socket::Choice::Path(&path, "socket"))
+            let chosen = fux::socket::socket_path(&fux::socket::Choice::Path(path.to_string()))
                 .map_err(|e| e.to_string())?;
             fux::script::configure(&config, &chosen).map_err(|e| e.to_string())?;
             let socket = socket.to_string_lossy().into_owned();

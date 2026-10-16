@@ -1,6 +1,55 @@
 //! Bounded terminal emulation with immutable history windows and stable row IDs.
 //! See the crate README for the sequence and resource contracts.
 
+/// Expands `/// doc, #[derive(..)] pub enum Ty { /// doc, Variant, ... }` to
+/// that enum and `Ty::ALL`, every variant in the order declared. Given a
+/// function first, `/// doc, fn name(self) -> T;`, and a value on each row,
+/// `Variant => value,`, it writes that function too, each variant's value:
+/// `pub enum Direction { fn name(self) -> &'static str; Left => "left", ... }`
+/// gives `Direction::ALL` and `Direction::name`.
+macro_rules! closed {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $ty:ident {
+            $(#[$fdoc:meta])*
+            $fvis:vis fn $f:ident(self) -> $ret:ty;
+            $($(#[$doc:meta])* $variant:ident => $value:expr,)*
+        }
+    ) => {
+        closed! {
+            $(#[$meta])*
+            $vis enum $ty {
+                $($(#[$doc])* $variant,)*
+            }
+        }
+
+        impl $ty {
+            $(#[$fdoc])*
+            $fvis fn $f(self) -> $ret {
+                match self {
+                    $($ty::$variant => $value,)*
+                }
+            }
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $ty:ident {
+            $($(#[$doc:meta])* $variant:ident,)*
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $ty {
+            $($(#[$doc])* $variant,)*
+        }
+
+        impl $ty {
+            /// Every variant, in the order declared.
+            pub const ALL: [$ty; [$(stringify!($variant)),*].len()] = [$($ty::$variant),*];
+        }
+    };
+}
+
 pub mod bytes;
 mod cell;
 mod compact;
@@ -22,7 +71,7 @@ mod unicode;
 pub use cell::{Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, Rgb, UnderlineStyle};
 pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
-pub use mode::Mode;
+pub use mode::{Mode, ModeStatus};
 pub use parser::{
     Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled,
 };

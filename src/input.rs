@@ -375,7 +375,7 @@ mod tests {
         assert!(mode(&s, c).ends_with(" 0"), "K moves up: {}", mode(&s, c));
         s.input(c, b"Q");
         assert_eq!(mode(&s, c), "normal", "Q closes");
-        assert_eq!(screen(&s, c), Screen::None);
+        assert_eq!(screen(&s, c), Screen::default());
         run(&mut s, "str c1 client str @2 tab confirm-close")?;
         s.input(c, b"Q");
         assert_eq!(mode(&s, c), "normal", "Q cancels");
@@ -824,14 +824,15 @@ mod tests {
             let codes: Vec<String> = match screen(&s, c) {
                 Screen::List(list) => list.items.into_iter().map(|i| i.code).collect(),
                 mut confirm @ Screen::Confirm { .. } => {
-                    (confirm.key(crate::keymap::key("y")?).into_iter())
+                    (confirm.key(&s.test_keymap, crate::keymap::key("y")?.into(), false))
+                        .into_iter()
                         .filter_map(|e| match e {
                             crate::screens::Effect::Run(code) => Some(code),
                             crate::screens::Effect::Send(_) => None,
                         })
                         .collect()
                 }
-                other @ (Screen::None | Screen::Prompt(_) | Screen::Copy(_)) => {
+                other @ (Screen::Keys(_) | Screen::Prompt(_) | Screen::Copy(_)) => {
                     return Err(format!("{open}: {other:?}"));
                 }
             };
@@ -974,7 +975,7 @@ mod tests {
         assert!(mode(&s, c).starts_with("list "), "{}", mode(&s, c));
         run(&mut s, "str %2 pane kill")?;
         assert_eq!(mode(&s, c), "normal");
-        assert_eq!(screen(&s, c), Screen::None);
+        assert_eq!(screen(&s, c), Screen::default());
         assert!(notice(&s, c).contains("%2 is gone"), "{}", notice(&s, c));
         Ok(())
     }
@@ -1037,7 +1038,7 @@ mod tests {
         assert_eq!(mode(&s, c), "prompt one|");
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
-        assert_eq!(screen(&s, c), Screen::None);
+        assert_eq!(screen(&s, c), Screen::default());
         Ok(())
     }
 }

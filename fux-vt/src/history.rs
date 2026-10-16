@@ -18,11 +18,11 @@
 //! row's record (`Kept`), the cells it keeps and its text count.
 
 use std::collections::{HashMap, VecDeque};
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
-use crate::grid::{MAX_CELLS, MAX_ROWS, SlotHasher};
+use crate::grid::{MAX_CELLS, MAX_ROWS};
 use crate::link::RowLinks;
 use crate::{Error, RowId};
 
@@ -38,6 +38,27 @@ const BLOCKS: usize = 1 << 16;
 
 /// A map by a row's number in the order rows came.
 type ByRow<T> = HashMap<u64, T, BuildHasherDefault<SlotHasher>>;
+
+/// Hashes a row's number, a small number, by one multiplication
+/// (Fibonacci hashing), rather than by SipHash, which the default hasher
+/// spends on every lookup: it is no input a program chooses.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SlotHasher(u64);
+
+impl Hasher for SlotHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+        }
+        self.0 = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
 
 /// A row of history: what it is, and where its cells are.
 #[derive(Clone, Copy, Debug)]
@@ -236,14 +257,17 @@ impl History {
     fn number(&self, index: usize) -> Option<u64> {
         self.first_row.checked_add(u64::try_from(index).ok()?)
     }
+    /// Where the block numbered `block` is, if it is held, given the
+    /// first's number and how many are older than the newest: its index in
+    /// `older`, or `older`'s length for the newest.
+    fn block_at(first: u16, older: usize, block: u16) -> Option<usize> {
+        let at = usize::from(block.wrapping_sub(first));
+        (at <= older).then_some(at)
+    }
     /// The block numbered `block`, if it is held.
     fn block(&self, block: u16) -> Option<&Vec<Compact>> {
-        let at = usize::from(block.wrapping_sub(self.first_block));
-        match at.checked_sub(self.older.len()) {
-            None => self.older.get(at),
-            Some(0) => Some(&self.newest),
-            Some(_) => None,
-        }
+        let at = Self::block_at(self.first_block, self.older.len(), block)?;
+        Some(self.older.get(at).unwrap_or(&self.newest))
     }
     /// Where row `kept`'s cells are in its block.
     fn cells_of(kept: &Kept) -> Option<Range<usize>> {
@@ -293,12 +317,8 @@ impl History {
     pub(crate) fn each_cell_mut(&mut self, mut f: impl FnMut(&mut Compact)) {
         let (older, newest) = (&mut self.older, &mut self.newest);
         for kept in &self.rows {
-            let at = usize::from(kept.block().wrapping_sub(self.first_block));
-            let block = match at.checked_sub(older.len()) {
-                None => older.get_mut(at),
-                Some(0) => Some(&mut *newest),
-                Some(_) => None,
-            };
+            let at = Self::block_at(self.first_block, older.len(), kept.block());
+            let block = at.map(|at| older.get_mut(at).unwrap_or(&mut *newest));
             if let Some(cells) =
                 Self::cells_of(kept).and_then(|cells| block.and_then(|b| b.get_mut(cells)))
             {
@@ -479,10 +499,8 @@ impl History {
     #[cold]
     #[inline(never)]
     pub(crate) fn attach(&mut self, text: Option<Text>, links: Option<RowLinks>) {
-        let Some(index) = self.rows.len().checked_sub(1) else {
-            return;
-        };
-        let Some(number) = self.number(index) else {
+        let last = self.rows.len().checked_sub(1);
+        let Some(number) = last.and_then(|last| self.number(last)) else {
             return;
         };
         let Some(kept) = self.rows.back_mut() else {

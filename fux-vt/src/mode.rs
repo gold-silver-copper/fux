@@ -4,8 +4,9 @@
 
 use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 
-/// Expands `/// doc, Variant (private, n) [if Feature] => kind, ...` to the
-/// enum `Mode` of those variants, `Mode::of` (the mode SM and RM, or with
+/// Expands `/// doc pub enum Mode { /// doc Variant (private, n) if Feature
+/// => kind, ... }` (`if Feature` optional) to that enum, `Mode::of(n,
+/// private, options)` (the mode SM and RM, or with
 /// `private` DECSET and DECRST, name by `n`; with `if Feature` only while
 /// `options` have that feature) and `Mode::kind` (each one's kind).
 macro_rules! modes {
@@ -68,7 +69,7 @@ modes! {
         /// DECAWM (`CSI ? 7 h`): a glyph past the last column wraps. Default.
         Autowrap (true, 7) => Kind::Flag,
         /// DECARM (`CSI ? 8 h`): permanently reset, as in xterm 411.
-        AutoRepeat (true, 8) => Kind::Reset,
+        AutoRepeat (true, 8) => Kind::Permanent(false),
         /// Mouse mode 9, X10: button presses.
         MousePress (true, 9) => Kind::Mouse(MouseProtocolMode::Press),
         /// DECTCEM (`CSI ? 25 h`): the cursor is shown. Default.
@@ -111,21 +112,45 @@ modes! {
         ColorSchemeUpdates (true, 2031) if ColorSchemeUpdates => Kind::Flag,
         /// In-band resize (`CSI ? 2048 h`): a size report at each resize.
         InBandResize (true, 2048) if InBandResize => Kind::SizeReport,
+        /// Grapheme clustering (`CSI ? 2027 h`): permanently set. Graphemes
+        /// are always clustered, as kitty's and Ghostty's mode 2027 does, so
+        /// a program measuring them counts their cells as fux-vt does.
+        GraphemeClustering (true, 2027) => Kind::Permanent(true),
     }
 }
 
 // Each mode is a bit of a `Modes`.
-const _: () = assert!((Mode::InBandResize as u32) < u32::BITS);
+const _: () = assert!((Mode::GraphemeClustering as u32) < u32::BITS);
 
 impl Mode {
     /// Whether XTSAVE saves it and XTRESTORE restores it: not 1048, an
-    /// action, nor DECARM, permanently reset.
+    /// action, nor a mode set or reset for good.
     pub(crate) fn savable(self) -> bool {
-        !matches!(self.kind(), Kind::SaveCursor | Kind::Reset)
+        !matches!(self.kind(), Kind::SaveCursor | Kind::Permanent(_))
     }
 
     const fn bit(self) -> u32 {
         1u32.wrapping_shl(self as u32)
+    }
+}
+
+closed! {
+    /// A mode's status, as DECRQM asks for it and DECRPM reports it
+    /// (`CSI ? mode ; status $ y`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum ModeStatus {
+        /// Its number in DECRPM.
+        pub fn number(self) -> u8;
+        /// Not a mode the terminal knows (or 1048, an action).
+        NotRecognized => 0,
+        /// Set.
+        Set => 1,
+        /// Reset.
+        Reset => 2,
+        /// Set, and stays so.
+        PermanentlySet => 3,
+        /// Reset, and stays so.
+        PermanentlyReset => 4,
     }
 }
 
@@ -146,8 +171,9 @@ pub(crate) enum Kind {
     Screen(Switch),
     /// 1048: an action, never set, and not saved by XTSAVE.
     SaveCursor,
-    /// DECARM: permanently reset, and not saved by XTSAVE.
-    Reset,
+    /// DECARM, permanently reset, and 2027, permanently set: neither
+    /// changes, nor is saved by XTSAVE.
+    Permanent(bool),
     /// The mouse reporting, the latest set winning.
     Mouse(MouseProtocolMode),
     /// The mouse encoding, the latest set winning.

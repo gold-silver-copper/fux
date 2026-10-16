@@ -3,18 +3,18 @@
 //! A server saves its whole session so, the ids asked for too, and a server
 //! started after a crash or a reboot runs it (through a client, as fuxth
 //! always runs) to bring the session back with the ids it had.
-use super::{MAIN, Session, basename};
+use super::{MAIN, Session};
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
 use crate::layout::{Axis, Split, Tree};
-use crate::pane::{Launch, Runs};
+use crate::pane::{self, Launch, Runs};
 use crate::workspace::{Fit, Tab, Workspace};
 
 impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
     /// as a fuxth program; with `ids`, the ids to ask for, as a saved
     /// session keeps them.
-    pub(crate) fn dump_layout(&self, only: Option<AnyRef<WsId>>, ids: bool) -> String {
+    pub(crate) fn dump_layout(&self, only: Option<AnyRef>, ids: bool) -> String {
         let only = match only {
             Some(AnyRef::Pane(pane)) => self.locate(pane).map(|(_, tab)| AnyRef::Tab(tab)),
             other => other,
@@ -58,9 +58,9 @@ impl Session {
         };
         let program = self.program(first);
         let default_name = match program {
-            Some(launch) => launch.argv.first().map(|p| basename(p)).unwrap_or_default(),
+            Some(launch) => pane::named(&launch.argv),
             None if index == 0 => MAIN.to_owned(),
-            None => format!("tab-{}", index.saturating_add(1)),
+            None => crate::workspace::numbered(index.saturating_add(1)),
         };
         // A saved session makes each workspace, with the ids it had, on a
         // server that has none; a dump run anywhere puts each tab in the
@@ -129,11 +129,8 @@ impl Session {
             let Some(p) = self.panes.get(&pane) else {
                 continue;
             };
-            let default = match self.program(pane) {
-                Some(launch) => launch.argv.first().map(|a| basename(a)),
-                None => self.config.shell.first().map(|s| basename(s)),
-            };
-            if default.as_deref() != Some(p.name.as_str()) {
+            let default = pane::named(self.program(pane).map_or(&self.config.shell, |l| &l.argv));
+            if default != p.name {
                 push(out, &[&pane_name(pane), "str", &p.name, "rename"]);
             }
         }
@@ -192,7 +189,7 @@ impl Session {
                 line.extend(["0".to_owned(), "timeout".to_owned()]);
             }
             None => {
-                let cwd = self.cwd_for(super::Here::Cli(None, None, None), Some(id));
+                let cwd = self.cwd_for(super::Here::NOWHERE, Some(id));
                 line.extend(string(&cwd.to_string_lossy()).chain(["cwd".to_owned()]));
                 if ids {
                     line.extend(asked(&id.to_string()));

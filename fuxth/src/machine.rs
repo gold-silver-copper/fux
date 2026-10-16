@@ -5,8 +5,8 @@
 //! application word that needs its host to do something first. It never
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
-use crate::compile::{Builtin, Op, Program, Steps};
-use crate::error::{Code as ErrorCode, Error, Failure};
+use crate::compile::{Builtin, Op, Program};
+use crate::error::{Code as ErrorCode, Error, Failure, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, Value};
 use std::cmp::Ordering;
@@ -209,18 +209,15 @@ impl<A: AppValue> Machine<A> {
     /// A call in last place, which took its caller's frame, still shows
     /// the call that began it.
     pub fn calls(&self) -> Vec<Token> {
-        let at = |code: Option<usize>, step: usize| {
-            self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
-        };
         let mut calls: Vec<Token> = (self.frames.iter())
             .flat_map(|frame| {
-                let via = frame.via.and_then(|(code, step)| at(code, step));
-                via.into_iter().chain(at(frame.code, frame.step))
+                let via = frame.via.and_then(|(code, step)| self.before(code, step));
+                via.into_iter().chain(self.before(frame.code, frame.step))
             })
             .collect();
         // The innermost: the step it really took last, a jump's too.
         if let Some(last) = self.taken() {
-            if (self.frames.last()).is_some_and(|f| at(f.code, f.step).is_some()) {
+            if (self.frames.last()).is_some_and(|f| self.before(f.code, f.step).is_some()) {
                 calls.pop();
             }
             calls.push(last);
@@ -235,7 +232,7 @@ impl<A: AppValue> Machine<A> {
         let frame = self.frames.last()?;
         let begun = frame.step == 0 && code != frame.code;
         let ours = depth == self.frames.len() && !begun;
-        ours.then(|| self.code(code)?.tokens.get(step).cloned())?
+        ours.then(|| self.program.token(code, step).cloned())?
     }
 
     /// The token the step just taken came from: where an error is, and
@@ -244,23 +241,18 @@ impl<A: AppValue> Machine<A> {
     /// just gone back), the call that began it, else the step about to be
     /// taken.
     pub fn at(&self) -> Option<Token> {
-        let at = |code: Option<usize>, step: usize| {
-            self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
-        };
         if let Some(taken) = self.taken() {
             return Some(taken);
         }
         let frame = self.frames.last()?;
-        at(frame.code, frame.step)
-            .or_else(|| frame.via.and_then(|(code, step)| at(code, step)))
-            .or_else(|| self.code(frame.code)?.tokens.get(frame.step).cloned())
+        self.before(frame.code, frame.step)
+            .or_else(|| frame.via.and_then(|(code, step)| self.before(code, step)))
+            .or_else(|| self.program.token(frame.code, frame.step).cloned())
     }
 
-    fn code(&self, code: Option<usize>) -> Option<&Steps<A>> {
-        match code {
-            None => Some(&self.program.main),
-            Some(i) => self.program.words.get(i),
-        }
+    /// The token of the step before `step` in `code`: none at its first.
+    fn before(&self, code: Option<usize>, step: usize) -> Option<Token> {
+        self.program.token(code, step.checked_sub(1)?).cloned()
     }
 
     fn fail(&self, code: ErrorCode, message: impl Into<String>) -> Error {
@@ -296,11 +288,7 @@ impl<A: AppValue> Machine<A> {
             let Some(frame) = self.frames.last_mut() else {
                 return Ok(Outcome::Finished);
             };
-            let code = match frame.code {
-                None => Some(&program.main),
-                Some(i) => program.words.get(i),
-            };
-            let Some(code) = code else {
+            let Some(code) = program.code(frame.code) else {
                 self.leave();
                 continue;
             };
@@ -327,7 +315,7 @@ impl<A: AppValue> Machine<A> {
                         at: from,
                     };
                     let done = host.call(*id, args, &mut out);
-                    let done = done.map_err(|f| self.fail(ErrorCode::Host(f.code), f.message))?;
+                    let done = done.map_err(|f| self.fail(f.code, f.message))?;
                     let given = (self.stack.len(), gives);
                     if self.stack.len().saturating_add(out.len()) > self.limits.stack {
                         return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
@@ -411,9 +399,7 @@ impl<A: AppValue> Machine<A> {
                     match seq {
                         Value::Str(_) | Value::List(_) => self.iters.push((seq, 0)),
                         other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => {
-                            let message =
-                                format!("each walks a string or a list, not {}", other.kind());
-                            return Err(self.fail(ErrorCode::Type, message));
+                            return Err(self.type_error(Wants::Each.not(other.kind())));
                         }
                     }
                 }
@@ -480,13 +466,7 @@ impl<A: AppValue> Machine<A> {
         if has >= n {
             return Ok(self.stack.len().saturating_sub(n));
         }
-        let values = if n == 1 { "value" } else { "values" };
-        let inside = if self.marks.is_empty() {
-            ""
-        } else {
-            " (inside list … end, which starts with an empty stack)"
-        };
-        let message = format!("takes {n} {values}, and the stack has {has}{inside}");
+        let message = underflow("takes", n, &has.to_string(), !self.marks.is_empty());
         Err(self.fail(ErrorCode::StackUnderflow, message))
     }
 
@@ -510,8 +490,7 @@ impl<A: AppValue> Machine<A> {
         match self.pop()? {
             Value::Bool(flag) => Ok(flag),
             other @ (Value::Int(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                let message = format!("takes a boolean (from eq or lt), not {}", other.kind());
-                Err(self.fail(ErrorCode::Type, message))
+                Err(self.type_error(Wants::Flag.not(other.kind())))
             }
         }
     }
@@ -520,8 +499,8 @@ impl<A: AppValue> Machine<A> {
         match self.pop2()? {
             (Value::Int(a), Value::Int(b)) => Ok((a, b)),
             (a, b) => {
-                let message = format!("takes two integers, not {} and {}", a.kind(), b.kind());
-                Err(self.fail(ErrorCode::Type, message))
+                let got = format!("{} and {}", a.kind(), b.kind());
+                Err(self.type_error(Wants::Ints.not(got)))
             }
         }
     }
@@ -539,12 +518,13 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Takes a count: an integer, 0 or more.
-    fn count(&mut self, what: &str) -> Result<usize, Error> {
+    fn count(&mut self, word: Builtin) -> Result<usize, Error> {
         match self.pop()? {
-            Value::Int(n) => usize::try_from(n)
-                .map_err(|_| self.range_error(format!("{what} takes a count from 0, not {n}"))),
+            Value::Int(n) => usize::try_from(n).map_err(|_| {
+                self.range_error(format!("{} takes a count from 0, not {n}", word.name()))
+            }),
             other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                Err(self.type_error(format!("{what} takes an integer, not {}", other.kind())))
+                Err(self.type_error(Wants::Int(word).not(other.kind())))
             }
         }
     }
@@ -628,11 +608,11 @@ impl<A: AppValue> Machine<A> {
         match builtin {
             Builtin::Drop => self.pop().map(|_| ()),
             Builtin::Pick => {
-                let n = self.count("pick")?;
+                let n = self.count(builtin)?;
                 self.pick(n)
             }
             Builtin::Roll => {
-                let n = self.count("roll")?;
+                let n = self.count(builtin)?;
                 self.roll(n)
             }
             Builtin::Add => self.arithmetic(i64::checked_add),
@@ -654,14 +634,14 @@ impl<A: AppValue> Machine<A> {
             }
             Builtin::Len => {
                 let seq = self.pop()?;
-                let n = self.seq_len(&seq, "len")?;
+                let n = self.seq_len(&seq, builtin)?;
                 self.push(Value::Int(i64::try_from(n).unwrap_or(i64::MAX)))
             }
             Builtin::At => {
                 let i = self.pop()?;
                 let seq = self.pop()?;
-                let len = self.seq_len(&seq, "at")?;
-                let i = self.index(&i, len, "at")?;
+                let len = self.seq_len(&seq, builtin)?;
+                let i = self.index(&i, len, builtin)?;
                 if let Value::Str(s) = &seq
                     && !s.is_ascii()
                 {
@@ -676,7 +656,7 @@ impl<A: AppValue> Machine<A> {
                 let to = self.pop()?;
                 let from = self.pop()?;
                 let seq = self.pop()?;
-                let len = self.seq_len(&seq, "slice")?;
+                let len = self.seq_len(&seq, builtin)?;
                 let (Value::Int(a), Value::Int(b)) = (&from, &to) else {
                     return Err(self.type_error(format!(
                         "slice takes two integers after the sequence, not {} and {}",
@@ -698,7 +678,7 @@ impl<A: AppValue> Machine<A> {
                         Value::str(s.part(from, to))
                     }
                     Value::List(list) => {
-                        let items = list.items.iter().skip(from).take(n).cloned().collect();
+                        let items = list.items().iter().skip(from).take(n).cloned().collect();
                         self.list(items)?
                     }
                     Value::Int(_) | Value::Bool(_) | Value::App(_) => seq.clone(),
@@ -708,10 +688,7 @@ impl<A: AppValue> Machine<A> {
             Builtin::Concat => {
                 let list = self.pop()?;
                 let Value::List(list) = list else {
-                    return Err(self.type_error(format!(
-                        "concat takes a list of strings or of lists, not {}",
-                        list.kind()
-                    )));
+                    return Err(self.type_error(Wants::Concat.not(list.kind())));
                 };
                 let joined = self.concat(&list)?;
                 self.push(joined)
@@ -726,8 +703,8 @@ impl<A: AppValue> Machine<A> {
                 let x = self.pop()?;
                 let i = self.pop()?;
                 let seq = self.pop()?;
-                let len = self.seq_len(&seq, "put")?;
-                let i = self.index(&i, len, "put")?;
+                let len = self.seq_len(&seq, builtin)?;
+                let i = self.index(&i, len, builtin)?;
                 let put = self.put(seq, i, x)?;
                 self.push(put)
             }
@@ -742,22 +719,17 @@ impl<A: AppValue> Machine<A> {
                 };
                 match one {
                     Some(ch) => self.push(Value::Int(i64::from(u32::from(ch)))),
-                    None => Err(self.type_error(format!(
-                        "code takes a one-character string, not {}",
-                        match &c {
-                            Value::Str(s) if s.is_empty() => "an empty one",
-                            Value::Str(_) => "a longer one",
-                            Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => {
-                                c.kind()
-                            }
-                        }
-                    ))),
+                    None => Err(self.type_error(Wants::Char.not(match &c {
+                        Value::Str(s) if s.is_empty() => "an empty one",
+                        Value::Str(_) => "a longer one",
+                        Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => c.kind(),
+                    }))),
                 }
             }
             Builtin::Char => {
                 let n = self.pop()?;
                 let Value::Int(n) = n else {
-                    return Err(self.type_error(format!("char takes an integer, not {}", n.kind())));
+                    return Err(self.type_error(Wants::Int(builtin).not(n.kind())));
                 };
                 match u32::try_from(n).ok().and_then(char::from_u32) {
                     Some(ch) => self.push(Value::str(ch.to_string())),
@@ -784,8 +756,7 @@ impl<A: AppValue> Machine<A> {
                 let x = self.pop()?;
                 self.walk(&x);
                 let text = x.text();
-                host.print(&text)
-                    .map_err(|f| self.fail(ErrorCode::Host(f.code), f.message))
+                host.print(&text).map_err(|f| self.fail(f.code, f.message))
             }
             Builtin::Fail => {
                 let x = self.pop()?;
@@ -795,25 +766,24 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// How many elements `seq` has, if it is a string or list.
-    fn seq_len(&self, seq: &Value<A>, word: &str) -> Result<usize, Error> {
+    fn seq_len(&self, seq: &Value<A>, word: Builtin) -> Result<usize, Error> {
         match seq {
             Value::Str(_) | Value::List(_) => Ok(seq.size()),
-            Value::Int(_) | Value::Bool(_) | Value::App(_) => Err(self.type_error(format!(
-                "{word} takes a string or a list, not {}",
-                seq.kind()
-            ))),
+            Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+                Err(self.type_error(Wants::Seq(word).not(seq.kind())))
+            }
         }
     }
 
     /// An index into something `len` long.
-    fn index(&self, i: &Value<A>, len: usize, word: &str) -> Result<usize, Error> {
+    fn index(&self, i: &Value<A>, len: usize, word: Builtin) -> Result<usize, Error> {
         match i {
             Value::Int(n) => usize::try_from(*n)
                 .ok()
                 .filter(|i| *i < len)
                 .ok_or_else(|| self.range_error(format!("index {n}, and it has {len}"))),
             Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => {
-                Err(self.type_error(format!("{word} takes an integer index, not {}", i.kind())))
+                Err(self.type_error(Wants::Int(word).not(i.kind())))
             }
         }
     }
@@ -822,7 +792,7 @@ impl<A: AppValue> Machine<A> {
         let mut text = String::new();
         let mut items = Vec::new();
         let (mut strings, mut lists) = (false, false);
-        for item in &list.items {
+        for item in list.items() {
             match item {
                 Value::Str(s) => {
                     strings = true;
@@ -830,7 +800,7 @@ impl<A: AppValue> Machine<A> {
                 }
                 Value::List(l) => {
                     lists = true;
-                    items.extend(l.items.iter().cloned());
+                    items.extend(l.items().iter().cloned());
                 }
                 Value::Int(_) | Value::Bool(_) | Value::App(_) => {
                     return Err(self.type_error(format!(
@@ -855,16 +825,10 @@ impl<A: AppValue> Machine<A> {
     fn pushed(&mut self, seq: Value<A>, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Value::List(mut list), x) => {
-                if list.items.len() >= LONGEST {
+                if list.items().len() >= LONGEST {
                     return Err(self.too_long(format!("a list holds at most {LONGEST} elements")));
                 }
-                // Held elsewhere too, it is copied first: that is built.
-                let copied = if Rc::strong_count(&list) > 1 {
-                    list.items.len()
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(1))?;
+                self.build(copied(&list, list.items().len()).saturating_add(1))?;
                 // In place when nothing else holds the list.
                 match Rc::make_mut(&mut list).push(x) {
                     Some(()) => Ok(Value::List(list)),
@@ -872,42 +836,31 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             (Value::Str(mut s), Value::Str(x)) => {
-                let n = s.chars_len().saturating_add(x.chars_len());
-                if n > LONGEST {
-                    return Err(
-                        self.too_long(format!("a string holds at most {LONGEST} characters"))
-                    );
-                }
-                // Held elsewhere too, it is copied first, as a list is.
-                let copied = if Rc::strong_count(&s) > 1 {
-                    s.chars_len()
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(x.chars_len()))?;
+                self.text_fits(s.chars_len().saturating_add(x.chars_len()))?;
+                self.build(copied(&s, s.chars_len()).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
             }
-            (Value::Str(_), x) => Err(self.type_error(format!(
-                "push onto a string takes a string, not {}",
-                x.kind()
-            ))),
+            (Value::Str(_), x) => Err(self.type_error(Wants::PushText.not(x.kind()))),
             (seq @ (Value::Int(_) | Value::Bool(_) | Value::App(_)), _) => {
-                Err(self.type_error(format!("push takes a string or a list, not {}", seq.kind())))
+                Err(self.type_error(Wants::Seq(Builtin::Push).not(seq.kind())))
             }
         }
+    }
+
+    /// Whether a string `n` characters long may be.
+    fn text_fits(&self, n: usize) -> Result<(), Error> {
+        if n > LONGEST {
+            return Err(self.too_long(format!("a string holds at most {LONGEST} characters")));
+        }
+        Ok(())
     }
 
     fn put(&mut self, seq: Value<A>, i: usize, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Value::List(mut list), x) => {
-                // Held elsewhere too, it is copied first: that is built.
-                let copied = if Rc::strong_count(&list) > 1 {
-                    list.items.len().saturating_sub(1)
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(1))?;
+                let others = list.items().len().saturating_sub(1);
+                self.build(copied(&list, others).saturating_add(1))?;
                 match Rc::make_mut(&mut list).put(i, x) {
                     Some(()) => Ok(Value::List(list)),
                     None => Err(self.nested()),
@@ -915,41 +868,32 @@ impl<A: AppValue> Machine<A> {
             }
             (Value::Str(mut s), Value::Str(x)) => {
                 // One character replaced by x's.
-                let n = s
-                    .chars_len()
-                    .saturating_sub(1)
-                    .saturating_add(x.chars_len());
-                if n > LONGEST {
-                    return Err(
-                        self.too_long(format!("a string holds at most {LONGEST} characters"))
-                    );
-                }
-                // Held elsewhere too, it is copied first, as a list is.
-                let copied = if Rc::strong_count(&s) > 1 {
-                    s.chars_len().saturating_sub(1)
-                } else {
-                    0
-                };
-                self.build(copied.saturating_add(x.chars_len()))?;
+                let others = s.chars_len().saturating_sub(1);
+                self.text_fits(others.saturating_add(x.chars_len()))?;
+                self.build(copied(&s, others).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
-            (Value::Str(_), x) => Err(self.type_error(format!(
-                "put into a string takes a string, not {}",
-                x.kind()
-            ))),
+            (Value::Str(_), x) => Err(self.type_error(Wants::PutText.not(x.kind()))),
             (seq @ (Value::Int(_) | Value::Bool(_) | Value::App(_)), _) => {
-                Err(self.type_error(format!("put takes a string or a list, not {}", seq.kind())))
+                Err(self.type_error(Wants::Seq(Builtin::Put).not(seq.kind())))
             }
         }
     }
+}
+
+/// What changing a value held in `rc` copies first, of its `n` elements
+/// that stay: all of them when it is held elsewhere too, else none (it is
+/// changed in place). What is copied is built.
+fn copied<T>(rc: &Rc<T>, n: usize) -> usize {
+    if Rc::strong_count(rc) > 1 { n } else { 0 }
 }
 
 /// Element `i` of a string (a one-character string) or a list.
 fn element<A: Clone>(seq: &Value<A>, i: usize) -> Option<Value<A>> {
     match seq {
         Value::Str(s) => s.char_at(i).map(|c| Value::str(c.to_string())),
-        Value::List(list) => list.items.get(i).cloned(),
+        Value::List(list) => list.items().get(i).cloned(),
         Value::Int(_) | Value::Bool(_) | Value::App(_) => None,
     }
 }
@@ -961,7 +905,7 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
     let (mut a, mut b) = (a, b);
     // As deep as lists nest, at most `NESTING`.
     while let (Value::List(x), Value::List(y)) = (a, b) {
-        let next = (x.items.iter().zip(&y.items).enumerate())
+        let next = (x.items().iter().zip(y.items()).enumerate())
             .find(|(_, (p, q))| p != q && compare(p, q).is_none());
         let Some((i, (p, q))) = next else {
             break;
@@ -970,11 +914,7 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
         (a, b) = (p, q);
     }
     if path.is_empty() {
-        format!(
-            "lt compares two integers, two strings or two lists, not {} and {}",
-            a.kind(),
-            b.kind()
-        )
+        Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()))
     } else {
         format!(
             "lt compares lists element by element, and at {} it finds {} and {}",
@@ -993,12 +933,12 @@ fn compare<A: PartialEq>(a: &Value<A>, b: &Value<A>) -> Option<Ordering> {
         (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
         (Value::Str(a), Value::Str(b)) => Some(a.as_ref().cmp(b.as_ref())),
         (Value::List(a), Value::List(b)) => {
-            for (x, y) in a.items.iter().zip(&b.items) {
+            for (x, y) in a.items().iter().zip(b.items()) {
                 if x != y {
                     return compare(x, y);
                 }
             }
-            Some(a.items.len().cmp(&b.items.len()))
+            Some(a.items().len().cmp(&b.items().len()))
         }
         (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_), _) => {
             None

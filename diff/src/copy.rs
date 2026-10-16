@@ -26,7 +26,7 @@ const QUERIES: &[&str] = &[
 
 macro_rules! stack {
     (
-        $name:ident, $fux:ident, $vt:ident,
+        $name:ident, $fux:ident, $vt:ident, $seek_in:ident,
         |$rows:ident, $cols:ident| [$($size:tt)*],
         |$s:ident| $retained:expr,
         |$at:ident, $index:ident| $row:expr,
@@ -34,7 +34,8 @@ macro_rules! stack {
         |$copied:ident, $kind:ident, $start:ident, $end:ident| $text:expr
     ) => {
         mod $name {
-            use $fux::copy::{self, Seek, Select};
+            use $fux::$seek_in::Seek;
+            use $fux::copy::{self, Select};
             use $vt::Parser;
 
             pub fn terminal(
@@ -95,9 +96,10 @@ macro_rules! stack {
 }
 
 // The baseline counts rows from the oldest in copy mode's own functions;
-// now they are fux-vt's rows, which know their place.
+// now they are fux-vt's rows, which know their place. Its `Seek` was copy
+// mode's own; now it is an action's, sent by the client.
 stack! {
-    base, baseline, baseline_vt,
+    base, baseline, baseline_vt, copy,
     |r, c| [r, c],
     |s| copy::retained(s),
     |s, index| copy::row_at(s, index).map(|row| (row.id(), copy::index_of(s, row.id()))),
@@ -105,7 +107,7 @@ stack! {
     |s, kind, start, end| copy::text(s, kind, start, end).map_err(|e| e.to_string())
 }
 stack! {
-    cur, fux, fux_vt,
+    cur, fux, fux_vt, act,
     |r, c| [crate::size(r, c)],
     |s| s.rows().len(),
     |s, index| s.rows().nth(index).map(|row| (row.id(), Some(row.index()))),

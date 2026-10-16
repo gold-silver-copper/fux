@@ -2,15 +2,30 @@ use super::*;
 
 #[test]
 fn sgr_colour_parameters_name_the_sixteen_palette_colours() {
-    for (first, index) in [(30, 0), (40, 0), (90, 8), (100, 8)] {
+    for (first, index, selector) in [(30, 0, 38), (40, 0, 48), (90, 8, 38), (100, 8, 48)] {
         for offset in 0..8u8 {
             let n = first + u16::from(offset);
-            assert_eq!(palette(n), Some(Color::Idx(index + offset)), "{n}");
+            let colour = Color::Idx(index + offset);
+            assert_eq!(palette(n), Some((selector, colour)), "{n}");
         }
     }
     for n in [0, 29, 38, 39, 48, 49, 89, 98, 99, 108, u16::MAX] {
         assert_eq!(palette(n), None, "{n}");
     }
+}
+
+/// SGR's flag arms are what `Attributes::FLAGS` says: each row's number
+/// sets its bit, and its other number clears it, alone.
+#[test]
+fn sgr_sets_and_clears_each_flag_as_its_row_says() -> Result<(), Error> {
+    let mut p = crate::Parser::with_options(Size::of(2, 10), 0, crate::Options::new())?;
+    for (bit, on, off, name) in Attributes::FLAGS {
+        p.process(format!("\x1b[0;{on}m").as_bytes())?;
+        assert_eq!(p.screen().attributes.flags, bit, "{name} on");
+        p.process(format!("\x1b[0;1;2;3;7;8;9;{off}m").as_bytes())?;
+        assert_eq!(p.screen().attributes.flags & bit, 0, "{name} off");
+    }
+    Ok(())
 }
 
 /// Recycling a slot clears only the cells before its `used` mark, so every

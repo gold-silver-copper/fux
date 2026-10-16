@@ -3,6 +3,7 @@
 //! painting its terminal (or relaying the paints, if it did not take it);
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
+use crate::code::Code;
 use crate::decode::Input;
 use crate::door::Link;
 use crate::keymap::{Held, Keymap};
@@ -17,7 +18,6 @@ use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
 use std::io::{ErrorKind, Read, Write};
-use std::num::NonZeroU16;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -60,16 +60,18 @@ pub enum Error {
 }
 
 impl Error {
-    /// What kind of failure it is, as `--json` names it.
-    pub fn code(&self) -> &'static str {
+    /// What kind of failure it is: its code.
+    pub fn code(&self) -> Code {
         match self {
-            Error::Socket(crate::socket::Error::NoServer(_)) | Error::Connect { .. } => "no_server",
-            Error::Mismatch(_) => "mismatch",
+            Error::Socket(crate::socket::Error::NoServer(_)) | Error::Connect { .. } => {
+                Code::NoServer
+            }
+            Error::Mismatch(_) => Code::Mismatch,
             Error::Socket(_)
             | Error::Refused(_)
             | Error::Protocol(_)
             | Error::NotATerminal
-            | Error::Failed(_) => "client",
+            | Error::Failed(_) => Code::Client,
         }
     }
 }
@@ -168,7 +170,7 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
     // Its server is this user's, whoever made the path's directories.
     let euid = fuxix::process::geteuid();
     match fuxix::socket::peer_uid(&stream) {
-        Ok(uid) if uid == euid => Link::socket(stream),
+        Ok(uid) if uid == euid => Ok(Link::socket(stream)),
         Ok(uid) => Err(std::io::Error::other(format!(
             "its server runs as uid {uid}, not this user's ({euid})"
         ))),
@@ -181,22 +183,12 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
 /// server's version.
 fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), Error> {
     let mut stream = open(socket)?;
-    let ours = Hello {
-        protocol: PROTOCOL,
-        version: env!("CARGO_PKG_VERSION"),
-        role,
-    };
+    let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
-    let mut buffer = vec![0u8; 64 * 1024];
     // A server that refuses a connection says why and closes it, maybe
     // before the Hello is written: its reason is still there to read.
-    let answer = read_frame(
-        &mut stream,
-        &mut decoder,
-        &mut buffer,
-        Some(Duration::from_secs(5)),
-    );
+    let answer = read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER));
     let version = greeted(&ours, answer, sent)?;
     Ok((stream, decoder, version))
 }
@@ -232,18 +224,34 @@ fn send<'a>(stream: &mut Link, frame: &impl Frame<'a>) -> Result<(), Error> {
         .map_err(failed("writing to the server"))
 }
 
+/// The next frame the server sends, waiting `timeout` at most for each
+/// read; none once it has closed.
 fn read_frame<'d>(
     stream: &mut Link,
     decoder: &'d mut Decoder,
-    buffer: &mut [u8],
     timeout: Option<Duration>,
 ) -> Result<Option<ServerFrame<'d>>, Error> {
     stream.set_read_timeout(timeout);
     while !decoder.ready()? {
-        match stream.read(buffer) {
-            Ok(0) => return Ok(None),
-            Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+        if !read_more(stream, decoder)? {
+            return Ok(None);
+        }
+    }
+    Ok(decoder.frame()?)
+}
+
+/// What the server sent next, read into `decoder`: false once it has
+/// closed.
+fn read_more(stream: &mut Link, decoder: &mut Decoder) -> Result<bool, Error> {
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(false),
+            Ok(n) => {
+                decoder.push(buffer.get(..n).unwrap_or_default());
+                return Ok(true);
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 let why = "the server did not answer in time";
                 return Err(Error::Failed(why.to_owned()));
@@ -251,7 +259,6 @@ fn read_frame<'d>(
             Err(e) => return Err(failed("reading from the server")(e)),
         }
     }
-    Ok(decoder.frame()?)
 }
 
 /// A connection to the server for requests: each sent whole, and answered
@@ -260,7 +267,6 @@ fn read_frame<'d>(
 pub struct Requests {
     stream: Link,
     decoder: Decoder,
-    buffer: Vec<u8>,
     /// The pieces of a reply too large for one frame, so far.
     parts: Vec<u8>,
 }
@@ -271,7 +277,6 @@ impl Requests {
         Ok(Requests {
             stream,
             decoder,
-            buffer: vec![0u8; 64 * 1024],
             parts: Vec::new(),
         })
     }
@@ -285,14 +290,9 @@ impl Requests {
             if let Some(reply) = self.take(out)? {
                 return Ok(reply);
             }
-            match self.stream.read(&mut self.buffer) {
-                Ok(0) => {
-                    let closed = "the server closed the connection";
-                    return Err(Error::Failed(closed.to_owned()));
-                }
-                Ok(n) => self.decoder.push(self.buffer.get(..n).unwrap_or_default()),
-                Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                Err(e) => return Err(failed("reading from the server")(e)),
+            if !read_more(&mut self.stream, &mut self.decoder)? {
+                let closed = "the server closed the connection";
+                return Err(Error::Failed(closed.to_owned()));
             }
         }
     }
@@ -342,7 +342,7 @@ pub fn context() -> Context {
         cwd: std::env::current_dir()
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        pane: var("FUX_PANE"),
+        pane: var("FUX_PANE").and_then(|p| p.parse().ok()),
         server: var("FUX_SERVER"),
         env: environment(),
         client: None,
@@ -361,14 +361,8 @@ pub fn environment() -> Vec<(String, String)> {
 /// Stops the server, whatever fux version it is.
 pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
-    let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        match read_frame(
-            &mut stream,
-            &mut decoder,
-            &mut buffer,
-            Some(Duration::from_secs(5)),
-        ) {
+        match read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER)) {
             Ok(Some(ServerFrame::Done { .. })) | Ok(None) => return Ok(()),
             Ok(Some(_)) => {}
             Err(error) => return Err(error),
@@ -467,11 +461,10 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     }
 }
 
-/// The terminal's rows and columns; 24 by 80 if it does not say.
-fn window_size() -> (NonZeroU16, NonZeroU16) {
-    let fallback = |n: u16| NonZeroU16::MIN.saturating_add(n.saturating_sub(1));
+/// The terminal's rows and columns; a server's default if it does not say.
+fn window_size() -> fux_vt::Size {
     fuxix::terminal::window_size(std::io::stdout())
-        .map_or((fallback(24), fallback(80)), |s| (s.rows, s.cols))
+        .map_or(crate::session::default_size(), |s| (s.rows, s.cols).into())
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
@@ -512,8 +505,8 @@ struct Ran {
     opened: Option<Screen>,
 }
 
-/// An attached client's own keys: its keymap, what its keys are in the
-/// middle of, the screen it has open, the decoder its terminal's bytes go
+/// An attached client's own keys: its keymap, the screen it has open or
+/// what its keys are in the middle of, the decoder its terminal's bytes go
 /// through, and the worker that runs the programs its bindings and screens
 /// give, one after another, as the client. What each takes, it turns into
 /// the actions to send the server.
@@ -523,7 +516,6 @@ struct Ran {
 /// while one runs wait for it, and go to the screen it opened, if any.
 pub struct Keyboard {
     keymap: Keymap,
-    held: Held,
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
@@ -558,7 +550,7 @@ impl Keyboard {
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
-                let chosen = crate::script::Chosen::Path(path);
+                let chosen = crate::socket::Choice::Path(path);
                 let mut server = crate::script::Server::stoppable(chosen, stops.clone());
                 for job in todo {
                     stops.reset();
@@ -575,8 +567,7 @@ impl Keyboard {
         decoder.expect(Instant::now());
         Ok(Keyboard {
             keymap,
-            held: Held::default(),
-            screen: Screen::None,
+            screen: Screen::default(),
             read_only,
             decoder,
             jobs,
@@ -675,7 +666,9 @@ impl Keyboard {
     /// (`send-keys` to it).
     pub fn frame(&mut self, frame: ServerFrame<'_>) -> Vec<Act> {
         match frame {
-            ServerFrame::Ended => self.screen.ended(),
+            // A screen it ended, if the client has not left it already.
+            ServerFrame::Ended if self.screen.is_open() => self.screen = Screen::default(),
+            ServerFrame::Ended => {}
             ServerFrame::Run(code) => self.run(code.to_owned()),
             ServerFrame::Keys(typed) => self.typed(typed),
             ServerFrame::Hello(_)
@@ -721,7 +714,6 @@ impl Keyboard {
             acts.push(Act::Notice { text, error: true });
             return;
         }
-        self.held = Held::Normal;
         if let Screen::Copy(_) = self.screen {
             acts.push(Act::Copy(crate::act::CopyAct::Leave));
         }
@@ -733,15 +725,12 @@ impl Keyboard {
     /// right after the prefix also stops a program its key ran, if one runs.
     fn press(&mut self, stroke: crate::keys::Keystroke, acts: &mut Vec<Act>) {
         let escape = KeyPress::new(crate::keys::Key::Escape, crate::keys::Modifiers::NONE);
-        let column = matches!(&self.held, Held::Column { path, .. } if path.is_empty());
+        let column =
+            matches!(&self.screen, Screen::Keys(Held::Column { path, .. }) if path.is_empty());
         if column && stroke.press == escape {
             self.stop(acts);
         }
-        let effects = if self.screen == Screen::None {
-            self.held.press(&self.keymap, stroke, self.read_only)
-        } else {
-            self.screen.key(stroke.press)
-        };
+        let effects = self.screen.key(&self.keymap, stroke, self.read_only);
         self.apply(effects, acts);
     }
 
@@ -774,17 +763,9 @@ impl Keyboard {
             | Input::FocusOut
             | Input::Mouse(_)
                 if self.read_only => {}
-            Input::Paste(text) if self.screen != Screen::None => {
+            Input::Paste(text) => {
                 let effects = self.screen.paste(&text);
                 self.apply(effects, acts);
-            }
-            Input::Paste(text) => {
-                // A paste is the pane's: the column or a repeat mode ends.
-                if self.held != Held::Normal {
-                    self.held = Held::Normal;
-                    acts.push(Act::Hide);
-                }
-                acts.push(Act::Paste(text));
             }
             Input::PasteTooLong => {
                 let limit = crate::decode::PASTE_LIMIT / 1024;
@@ -795,7 +776,7 @@ impl Keyboard {
             Input::FocusOut => acts.push(Act::Focus(false)),
             // The mouse is a program's, while the client shows none of its
             // own screens.
-            Input::Mouse(_) if self.screen != Screen::None => {}
+            Input::Mouse(_) if self.screen.is_open() => {}
             Input::Mouse(event) => acts.push(Act::Mouse(event)),
         }
     }
@@ -870,35 +851,19 @@ fn run_job(
     }
 }
 
-/// Attaches this terminal to the server until detach or the server's end.
-pub fn attach(socket: &SocketPath, attaching: Attaching) -> Result<(), Error> {
-    attach_as(socket, attaching, None)
-}
-
-/// Attaches a client with no terminal, of `size`, until the server ends it
-/// or a signal detaches it: its id goes to stdout as it attaches. It reads
-/// no keys, but takes those sent it (`send-keys` to a client) as typed.
-pub fn headless(
-    socket: &SocketPath,
-    attaching: Attaching,
-    size: fux_vt::Size,
-) -> Result<(), Error> {
-    attach_as(socket, attaching, Some(size))
-}
-
-/// Attaches this terminal, or a client with no terminal of `size`, and
-/// says why it detached on stdout: on a terminal that may be gone, where a
-/// hung-up one fails the write, and the detach is no less done.
-fn attach_as(
+/// Attaches this terminal (stdin, a terminal), or a client with no
+/// terminal of `size`, until detach or the server's end, and says why it
+/// detached on stdout: on a terminal that may be gone, where a hung-up one
+/// fails the write, and the detach is no less done. A client with no
+/// terminal says its id as it attaches; it reads no keys, but takes those
+/// sent it (`send-keys` to a client) as typed.
+pub fn attach(
     socket: &SocketPath,
     attaching: Attaching,
     size: Option<fux_vt::Size>,
 ) -> Result<(), Error> {
     let stdin = std::io::stdin();
     let terminal = size.is_none();
-    if terminal && !std::io::IsTerminal::is_terminal(&stdin) {
-        return Err(Error::NotATerminal);
-    }
     // A client with no terminal answers signals from the start. A
     // terminal's are caught once connected, so that ^C while connecting
     // still ends fux, and before it goes raw, so that no wait there misses
@@ -914,13 +879,11 @@ fn attach_as(
         Some(signals) => signals,
         None => Signals::new()?,
     };
-    let fallback = |n: u16| NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN);
-    let (rows, cols) = size.map_or_else(window_size, |s| (fallback(s.rows()), fallback(s.cols())));
+    let size = size.unwrap_or_else(window_size);
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
-        rows,
-        cols,
-        workspace: attaching.workspace.as_deref(),
+        size,
+        workspace: attaching.workspace.clone(),
         read_only: attaching.read_only,
         env: environment(),
     };
@@ -1116,8 +1079,7 @@ fn attached(
         if is(WINCH) {
             crate::drain(winch);
             if terminal {
-                let (rows, cols) = window_size();
-                send(stream, &AttachedFrame::Resize { rows, cols })?;
+                send(stream, &AttachedFrame::Resize(window_size()))?;
             }
         }
         if let Some(keyboard) = &mut keyboard {
@@ -1140,13 +1102,8 @@ fn attached(
                 }
             }
         }
-        if is(STREAM) {
-            match stream.read(&mut buffer) {
-                Ok(0) => return Ok("the server closed the connection".into()),
-                Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
-                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
-                Err(e) => return Err(failed("reading from the server")(e)),
-            }
+        if is(STREAM) && !read_more(stream, decoder)? {
+            return Ok("the server closed the connection".into());
         }
     }
 }
@@ -1169,19 +1126,20 @@ mod tests {
     /// a socket in `wait`.
     fn answer(server: impl FnOnce(&mut UnixStream), wait: Duration) -> Result<String, Error> {
         let (client, mut peer) = UnixStream::pair()?;
-        let mut client = Link::socket(client)?;
+        let mut client = Link::socket(client);
         server(&mut peer);
         let mut decoder = Decoder::default();
-        let mut buffer = [0u8; 256];
-        let answer = read_frame(&mut client, &mut decoder, &mut buffer, Some(wait));
-        greeted(&OURS, answer, Ok(()))
+        let answer = read_frame(&mut client, &mut decoder, Some(wait));
+        greeted(&ours(), answer, Ok(()))
     }
 
-    const OURS: Hello = Hello {
-        protocol: PROTOCOL,
-        version: "0",
-        role: Role::Command,
-    };
+    fn ours() -> Hello {
+        Hello {
+            protocol: PROTOCOL,
+            version: "0".into(),
+            role: Role::Command,
+        }
+    }
 
     fn write(peer: &mut UnixStream, frame: &ServerFrame) {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
@@ -1192,12 +1150,12 @@ mod tests {
     #[test]
     fn the_client_tells_a_refusal_from_a_timeout() {
         let wait = Duration::from_millis(50);
-        assert!(answer(|peer| write(peer, &ServerFrame::Hello(OURS)), wait).is_ok());
+        assert!(answer(|peer| write(peer, &ServerFrame::Hello(ours())), wait).is_ok());
         // A server of another protocol is refused before anything else is
         // sent to it.
         let other = ServerFrame::Hello(Hello {
             protocol: PROTOCOL + 1,
-            ..OURS
+            ..ours()
         });
         let mismatched = answer(|peer| write(peer, &other), wait);
         assert!(matches!(&mismatched, Err(Error::Mismatch(m)) if m.protocol == PROTOCOL + 1));
@@ -1219,7 +1177,7 @@ mod tests {
             Err(Error::Protocol(crate::protocol::Error::UnexpectedKind(99)))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(&OURS, Ok(Some(ServerFrame::Exit("no"))), Err(no_answer()));
+        let both = greeted(&ours(), Ok(Some(ServerFrame::Exit("no"))), Err(no_answer()));
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }

@@ -8,11 +8,13 @@
 //! words first (`library.fux`).
 mod words;
 
-use crate::command::{Command, Extent, Input, Kind, Mouse, Until, WsRef};
-use crate::id::{AnyId, ClientId, PaneId, TabId, WsId};
+use crate::code::Code;
+use crate::command::{AnyRef, Command, Extent, Input, Kind, Mouse, Until, WsRef};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
 use crate::layout::Axis;
-use crate::protocol::{Context, Reply, Request, Scalar};
+use crate::protocol::{Context, End, Reply, Request, Scalar};
+use crate::socket::Choice;
 use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
 use std::io::Write;
 use std::time::Duration;
@@ -105,7 +107,7 @@ pub struct Opts {
     pub typed: Option<String>,
     pub axis: Option<Axis>,
     pub place: Option<WsRef>,
-    pub ids: Vec<AnyId>,
+    pub ids: Vec<AnyRef>,
     pub log: Option<String>,
     pub kill: bool,
     pub waits: Waits,
@@ -203,16 +205,14 @@ pub enum Then {
 /// What the client does itself.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Local {
+    /// This terminal, or a client of no terminal of `size`.
     Attach {
         workspace: Option<String>,
         read_only: bool,
-    },
-    Headless {
-        cols: u16,
-        rows: u16,
+        size: Option<fux_vt::Size>,
     },
     /// The server for what follows: its socket, by name or path.
-    Server(Chosen),
+    Server(Choice),
     Start,
     Status,
     Servers,
@@ -263,21 +263,20 @@ pub struct Ended {
 }
 
 /// A run's failure: its status (a wait's: 3, 4, 7, 124; a usage error's: 2;
-/// else 1), its
-/// stable code and its message.
+/// else 1), its code and its message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
-    pub status: u8,
-    pub code: String,
+    pub status: std::num::NonZeroU8,
+    pub code: Code,
     pub message: String,
 }
 
 impl Failed {
-    /// A failure of kind `code`: status 1, and why.
-    pub fn new(code: &str, message: impl Into<String>) -> Failed {
+    /// A failure of kind `code`, with its status, and why.
+    pub fn new(code: Code, message: impl Into<String>) -> Failed {
         Failed {
-            status: 1,
-            code: code.to_owned(),
+            status: code.status(),
+            code,
             message: message.into(),
         }
     }
@@ -302,36 +301,33 @@ impl std::fmt::Display for Failed {
 }
 
 impl From<fuxth::Error> for Failed {
-    fn from(mut error: fuxth::Error) -> Failed {
-        // A bundled word that fails whatever way it takes is told by its
-        // own name and use, not by the word inside it that would fail.
-        let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
-        if error.word.as_deref().is_some_and(bundled)
-            && let Some((whole, _)) = error.message.split_once(": ")
-            && whole.starts_with("every way through it fails")
-        {
-            error.message = whole.to_owned();
-        }
-        // A word given too few values, or the wrong kind, says how it is
-        // used.
-        if matches!(error.code, fuxth::Code::StackUnderflow | fuxth::Code::Type)
-            && !error.message.contains("(use: ")
-            && let Some(usage) = error.word.as_deref().and_then(words::usage)
-        {
-            error.message.push_str(&format!(" ({usage})"));
-        }
-        if error.code == fuxth::Code::UnknownWord {
-            error.message.push_str(" (`fux help` lists every word)");
-        }
-        let word = error.word.as_deref().filter(|w| !w.is_empty());
-        let message = match (&error.place, word) {
-            (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
-            (Some(place), None) => format!("{place}: {}", error.message),
-            (None, Some(word)) => format!("{word}: {}", error.message),
-            (None, None) => error.message,
-        };
-        Failed::new(error.code.name(), message)
+    fn from(error: fuxth::Error) -> Failed {
+        // A word given too few values, the wrong kind, or one out of its
+        // range, says how it is used.
+        use fuxth::Code::{Range, StackUnderflow, Type};
+        let usage = matches!(error.code, StackUnderflow | Type | Range);
+        told(error, usage)
     }
+}
+
+/// `error` as fux tells it, with how its word is used if `usage`.
+fn told(mut error: fuxth::Error, usage: bool) -> Failed {
+    // A bundled word that fails whatever way it takes is told by its own
+    // name and use, not by the word inside it that would fail.
+    let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
+    if error.word.as_deref().is_some_and(bundled)
+        && let Some((whole, _)) = error.message.split_once(": ")
+        && whole.starts_with("every way through it fails")
+    {
+        error.message = whole.to_owned();
+    }
+    if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
+        error.message.push_str(&format!(" ({usage})"));
+    }
+    if error.code == fuxth::Code::UnknownWord {
+        error.message.push_str(" (`fux help` lists every word)");
+    }
+    Failed::new(Code::from(error.code), error.located())
 }
 
 /// The vocabulary fuxth compiles fux's programs with.
@@ -372,32 +368,27 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     let mut out = Vec::with_capacity(tokens.len());
     let mut after: Option<&str> = None;
     for token in tokens {
-        let word = match token.text.chars().next() {
-            Some('%') => "pane",
-            Some('@') => "tab",
-            Some('+') => "workspace",
-            Some(_) | None => "",
-        };
-        let id = token.text.len() > 1 && token.text.chars().skip(1).all(|c| c.is_ascii_digit());
-        let handle = id && !word.is_empty();
-        match after {
-            Some("define" | "let") if handle => {
+        let id = token.text.parse::<AnyRef>().ok();
+        match (after, id) {
+            (Some("define" | "let"), Some(id)) => {
                 return Err(Failed::new(
-                    "bad_name",
+                    Code::BadName,
                     format!(
-                        "{}: {}: cannot be defined: it names a {word}",
-                        token.place, token.text
+                        "{}: {}: cannot be defined: it names a {}",
+                        token.place,
+                        token.text,
+                        id.kind().name()
                     ),
                 ));
             }
-            None if handle => {
+            (None, Some(id)) => {
                 let at = |text: &str| Token {
                     text: text.into(),
                     place: token.place.clone(),
                 };
-                out.extend([at("str"), token.clone(), at(word)]);
+                out.extend([at("str"), token.clone(), at(id.kind().name())]);
             }
-            Some(_) | None => out.push(token.clone()),
+            (Some(_) | None, _) => out.push(token.clone()),
         }
         after = match (&*token.text, after) {
             (text @ ("str" | "define" | "let"), None) => Some(text),
@@ -407,20 +398,10 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     Ok(out)
 }
 
-/// The server a program names: the default (`FUX_SOCKET`, else
-/// `server.sock`), one by name, or a socket's path.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Chosen {
-    #[default]
-    Default,
-    Name(String),
-    Path(String),
-}
-
 /// Where a program's requests go: a connection made when the first is.
 #[derive(Default)]
 pub struct Server {
-    chosen: Chosen,
+    chosen: Choice,
     requests: Option<crate::client::Requests>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
@@ -456,7 +437,7 @@ impl Stop {
 }
 
 impl Server {
-    pub fn new(chosen: Chosen) -> Server {
+    pub fn new(chosen: Choice) -> Server {
         Server {
             chosen,
             requests: None,
@@ -465,7 +446,7 @@ impl Server {
     }
 
     /// A server whose runs `stop` can stop.
-    pub fn stoppable(chosen: Chosen, stop: Stop) -> Server {
+    pub fn stoppable(chosen: Choice, stop: Stop) -> Server {
         Server {
             stop: Some(stop),
             ..Server::new(chosen)
@@ -473,43 +454,14 @@ impl Server {
     }
 
     /// The server for what follows.
-    pub fn choose(&mut self, chosen: Chosen) {
+    pub fn choose(&mut self, chosen: Choice) {
         self.chosen = chosen;
         self.requests = None;
     }
 
     /// Its socket.
     pub fn socket(&self) -> Result<crate::socket::SocketPath, Failed> {
-        let choice = match &self.chosen {
-            Chosen::Default => crate::socket::Choice::Default,
-            Chosen::Name(name) => crate::socket::Choice::Name(name),
-            Chosen::Path(path) => crate::socket::Choice::Path(path, "socket"),
-        };
-        crate::socket::socket_path(choice).map_err(|e| client_failed(e.into()))
-    }
-
-    /// Asks the server `request`, what it streams before its reply going to
-    /// `out`.
-    pub fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        let requests = match &mut self.requests {
-            Some(requests) => requests,
-            None => {
-                let socket = self.socket()?;
-                let mut opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
-                // A connection a stop can end.
-                if let Some(stop) = &self.stop
-                    && let Ok(mut held) = stop.stream.lock()
-                {
-                    *held = opened.stopper();
-                }
-                self.requests.insert(opened)
-            }
-        };
-        let asked = requests.ask(request, out).map_err(client_failed);
-        if asked.is_err() {
-            self.requests = None;
-        }
-        asked
+        crate::socket::socket_path(&self.chosen).map_err(|e| client_failed(e.into()))
     }
 }
 
@@ -529,9 +481,29 @@ pub trait Asks {
     }
 }
 
+/// The server's: each request asked on one connection, opened at the
+/// first.
 impl Asks for Server {
     fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        Server::ask(self, request, out)
+        let requests = match &mut self.requests {
+            Some(requests) => requests,
+            None => {
+                let socket = self.socket()?;
+                let mut opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
+                // A connection a stop can end.
+                if let Some(stop) = &self.stop
+                    && let Ok(mut held) = stop.stream.lock()
+                {
+                    *held = opened.stopper();
+                }
+                self.requests.insert(opened)
+            }
+        };
+        let asked = requests.ask(request, out).map_err(client_failed);
+        if asked.is_err() {
+            self.requests = None;
+        }
+        asked
     }
 }
 
@@ -607,17 +579,14 @@ pub fn run_capped(
     let mut taken: u64 = 0;
     loop {
         if stop.is_some_and(Stop::stopped) {
-            return Err(Failed::new("stopped", "stopped (the prefix, then Esc)"));
+            return Err(Failed::new(Code::Stopped, "stopped (the prefix, then Esc)"));
         }
         if let Some(steps) = steps.filter(|steps| taken > *steps) {
-            let failed = Failed::new("steps", format!("ran more than {steps} steps"));
+            let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
             return Err(placed(machine, failed));
         }
         taken = taken.saturating_add(SLICE);
-        match machine
-            .run(host, SLICE)
-            .map_err(|e| Failed::from(ours(machine, e)))?
-        {
+        match machine.run(host, SLICE).map_err(|e| ours(machine, e))? {
             Outcome::Finished => {
                 return Ok(Ended {
                     status,
@@ -637,14 +606,18 @@ pub fn run_capped(
                 let reply = asks
                     .ask(&Request { command, context }, host.out)
                     .map_err(|f| placed(machine, f))?;
-                if met(&reply) && reply.status != 0 {
-                    status = reply.status;
-                }
-                // A failure that answered too (`run`'s pane): its answer is
-                // left, printed before why it failed.
-                let answer = !reply.message.trim().is_empty() && !reply.text.trim().is_empty();
-                if reply.status != 0 && answer {
-                    machine.push(Value::str(reply.text.trim_end()))?;
+                match &reply.end {
+                    End::Answered {
+                        status: answered, ..
+                    } => status = answered.get(),
+                    // A failure that answered too (`run`'s pane): its answer
+                    // is left, printed before why it failed.
+                    End::Failed { message, .. }
+                        if !message.trim().is_empty() && !reply.text.trim().is_empty() =>
+                    {
+                        machine.push(Value::str(reply.text.trim_end()))?;
+                    }
+                    End::Failed { .. } | End::Done => {}
                 }
                 for value in answered(reply, then).map_err(|f| placed(machine, f))? {
                     machine.push(value)?;
@@ -668,33 +641,29 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
     let Some(at) = machine.at() else {
         return failed;
     };
-    let error = ours(
-        machine,
-        fuxth::Error {
-            code: fuxth::Code::Host("placed"),
-            message: failed.message,
-            place: Some(at.place),
-            word: Some(at.text),
-        },
-    );
-    let message = match (&error.place, &error.word) {
-        (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
-        (Some(_) | None, Some(_) | None) => error.message,
+    let error = fuxth::Error {
+        code: failed.code.into(),
+        message: failed.message,
+        place: Some(at.place),
+        word: Some(at.text),
     };
-    Failed { message, ..failed }
+    Failed {
+        message: ours(machine, error).message,
+        ..failed
+    }
 }
 
 /// An error placed where the program is: a failure inside a word of the
 /// prelude's or library's is named by the program's step that called it,
 /// with the bundled word's own step in the message, and how the program's
 /// word is used.
-fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
+fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     let bundled = |place: Option<&fuxth::Place>| {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
     if !bundled(error.place.as_ref()) {
-        return error;
+        return Failed::from(error);
     }
     let Some(step) = machine
         .calls()
@@ -702,48 +671,32 @@ fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
         .rev()
         .find(|t| !bundled(Some(&t.place)))
     else {
-        return error;
+        return Failed::from(error);
     };
     let inner = error.word.as_deref().unwrap_or_default();
-    // How the program's word is used, in place of the bundled step's.
-    let message = error.message.split(" (use: ").next().unwrap_or_default();
-    let usage = words::usage(&step.text).map_or_else(String::new, |u| format!(" ({u})"));
-    error.message = format!("inside {}, {inner}: {message}{usage}", step.text);
+    error.message = format!("inside {}, {inner}: {}", step.text, error.message);
     error.place = Some(step.place);
     error.word = Some(step.text);
-    error
-}
-
-/// Whether a reply with a status other than 0 is a wait met by its
-/// program's exit, which is no failure: that status is the run's (`run`).
-/// Every failure says why.
-fn met(reply: &Reply) -> bool {
-    reply.message.is_empty() && reply.code.is_none()
+    told(error, true)
 }
 
 /// What a reply puts on the stack, `then` saying what it is; a failure,
 /// with its status, if it failed: why, else what it answered.
 pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
-    if reply.status != 0 && !met(&reply) {
-        let message = match (reply.message.trim_end(), reply.text.trim_end()) {
+    if let End::Failed {
+        status,
+        code,
+        message,
+    } = reply.end
+    {
+        let message = match (message.trim_end(), reply.text.trim_end()) {
             ("", text) => text,
             (message, _) => message,
-        }
-        .to_owned();
-        let code = reply.code.unwrap_or_else(|| {
-            match reply.status {
-                3 => "exited",
-                4 => "closed",
-                7 => "stopped",
-                124 => "timeout",
-                _ => "failed",
-            }
-            .to_owned()
-        });
+        };
         return Err(Failed {
-            status: reply.status,
+            status,
             code,
-            message,
+            message: message.to_owned(),
         });
     }
     let text = reply.text.trim_end_matches('\n').to_owned();
@@ -776,13 +729,17 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed::new(
-                    "no_target",
+                    Code::NoTarget,
                     format!("the server named no {}", kind.name()),
                 ));
             }
         },
         Then::Answer(kind) => vec![Answer::value(text, json, kind, None)],
-        Then::Json(kind) => vec![Answer::value(text.clone(), Some(text), kind, None)],
+        // Its JSON alone, as its text too.
+        Then::Json(kind) => {
+            let json = json.unwrap_or(text);
+            vec![Answer::value(json.clone(), Some(json), kind, None)]
+        }
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
             Some(Scalar::Int(n)) => Value::Int(n),
@@ -790,9 +747,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             Some(Scalar::Str(s)) => Value::str(s),
             // JSON that is no one value of fuxth's: `null`, a list, an
             // object, as text that `json` gives as it is.
-            Some(Scalar::Null) | None => {
-                Answer::value(text.clone(), Some(text), "a JSON value", None)
-            }
+            None => Answer::value(text.clone(), Some(text), "a JSON value", None),
         }],
         Then::Outcome { waited: false } => Vec::new(),
         Then::Outcome { waited: true } => vec![action(text, json)],
@@ -800,7 +755,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
 }
 
 /// A handle for `id`.
-pub fn handle(id: crate::command::AnyRef<WsId>) -> Fux {
+pub fn handle(id: crate::command::AnyRef) -> Fux {
     match id {
         crate::command::AnyRef::Pane(p) => Fux::Pane(p),
         crate::command::AnyRef::Tab(t) => Fux::Tab(t),
@@ -820,17 +775,18 @@ fn local(
         Local::Attach {
             workspace,
             read_only,
+            size,
         } => {
-            if std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
+            if size.is_none() && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 let why = "this is a fux pane: attaching here would show fux inside itself \
                            (unset FUX_PANE to do it anyway)";
-                return Err(Failed::new("nested", why));
+                return Err(Failed::new(Code::Nested, why));
             }
             // Before a server is started for it, which would be left behind.
-            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            if size.is_none() && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 return Err(client_failed(crate::client::Error::NotATerminal));
             }
-            let socket = started(server)?;
+            let (socket, _) = started(server)?;
             let (keymap, problem) = configured(server);
             let attach = crate::client::Attaching {
                 workspace: workspace.clone(),
@@ -838,23 +794,14 @@ fn local(
                 keymap,
                 problem,
             };
-            crate::client::attach(&socket, attach).map_err(client_failed)?;
-        }
-        Local::Headless { cols, rows } => {
-            let socket = started(server)?;
-            let (keymap, problem) = configured(server);
-            let size = fux_vt::Size::new(*rows, *cols)
-                .map_err(|_| Failed::new("range", "headless: a size from 1 by 1"))?;
-            let attach = crate::client::Attaching {
-                workspace: None,
-                read_only: false,
-                keymap,
-                problem,
-            };
-            crate::client::headless(&socket, attach, size).map_err(client_failed)?;
+            crate::client::attach(&socket, attach, *size).map_err(client_failed)?;
         }
         Local::Start => {
-            started(server)?;
+            if started(server)?.1
+                && let (_, Some(problem)) = configured(server)
+            {
+                let _ = writeln!(std::io::stderr(), "fux: {problem}");
+            }
         }
         Local::ForceKill => {
             let socket = server.socket()?;
@@ -864,8 +811,7 @@ fn local(
         Local::Status => {
             let socket = server.socket()?;
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
-            let (text, _) = crate::status(&socket, &probe, false);
-            let (json, _) = crate::status(&socket, &probe, true);
+            let (text, json) = crate::status(&socket, &probe);
             return Ok(vec![answer(&text, &json, "a status")]);
         }
         Local::Servers => {
@@ -883,39 +829,29 @@ fn answer(text: &str, json: &str, kind: &'static str) -> Value<Fux> {
     Answer::value(text, Some(json), kind, None)
 }
 
-/// The server, started in the background if none answers: its socket. One
-/// started has the config's settings (`set`) at once.
-fn started(server: &mut Server) -> Result<crate::socket::SocketPath, Failed> {
+/// The server, started in the background if none answers: its socket, and
+/// whether it was started, for the config's settings (`set`) to go to it at
+/// once.
+fn started(server: &mut Server) -> Result<(crate::socket::SocketPath, bool), Failed> {
     let socket = server.socket()?;
-    if !crate::client::answers(&socket) {
+    let start = !crate::client::answers(&socket);
+    if start {
         crate::client::start_server(&socket).map_err(client_failed)?;
-        if let (_, Some(problem)) = configured(server) {
-            let _ = writeln!(std::io::stderr(), "fux: {problem}");
-        }
     }
-    Ok(socket)
+    Ok((socket, start))
 }
 
 /// The client's keymap, its config run on the defaults; and what was wrong
 /// with the config, if anything was.
 pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
-    let mut keymap = Keymap::default();
     let Some(path) = crate::config::default_path().filter(|p| p.exists()) else {
-        return (keymap, None);
+        return (Keymap::default(), None);
     };
-    match run_file(&path, &mut keymap, Some(server)) {
-        Ok(()) => (keymap, None),
+    match run_file(&path, Some(server)) {
+        Ok(keymap) => (keymap, None),
         // Half a config is no config: the defaults, and why.
         Err(failed) => (Keymap::default(), Some(format!("config: {failed}"))),
     }
-}
-
-/// The keymap the config file at `path` makes, run dry: its bindings made,
-/// its settings checked and sent nowhere; or why it would fail.
-pub fn dry_config(path: &std::path::Path) -> Result<Keymap, Failed> {
-    let mut keymap = Keymap::default();
-    run_file(path, &mut keymap, None)?;
-    Ok(keymap)
 }
 
 /// Runs the config file at `path` against the server on `socket`, as a
@@ -924,24 +860,27 @@ pub fn configure(
     path: &std::path::Path,
     socket: &crate::socket::SocketPath,
 ) -> Result<Keymap, Failed> {
-    let mut keymap = Keymap::default();
-    let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
-    run_file(path, &mut keymap, Some(&mut server))?;
-    Ok(keymap)
+    let mut server = Server::new(Choice::Path(socket.path().to_string_lossy().into_owned()));
+    run_file(path, Some(&mut server))
 }
 
-/// Runs a config file, its words changing `keymap`, its settings sent to
-/// `server`. A config attaches nothing, and chooses no other server.
-fn run_file(
-    path: &std::path::Path,
-    keymap: &mut Keymap,
-    server: Option<&mut Server>,
-) -> Result<(), Failed> {
+/// The keymap a config file makes, its words run on the defaults, its
+/// settings sent to `server`, or with none checked and sent nowhere (a dry
+/// run); or why it fails. A config attaches nothing, and chooses no other
+/// server.
+pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
-    let text =
-        std::fs::read_to_string(path).map_err(|e| Failed::new("read", format!("{shown}: {e}")))?;
+    let text = read_file(path, SOURCE_MAX)?;
     let context = crate::client::context();
-    run_quiet(&shown, &text, context, Some(keymap), &mut Settings(server))
+    let mut keymap = Keymap::default();
+    run_quiet(
+        &shown,
+        &text,
+        context,
+        Some(&mut keymap),
+        &mut Settings(server),
+    )?;
+    Ok(keymap)
 }
 
 /// Runs the program `text`, read from `name`, its requests going to `asks`
@@ -971,12 +910,12 @@ impl Asks for Settings<'_> {
                 Some(server) => server.ask(request, out),
                 None => match crate::config::Config::default().set(option, value) {
                     Ok(()) => Ok(Reply::default()),
-                    Err(error) => Err(Failed::new("config", error.to_string())),
+                    Err(error) => Err(Failed::new(Code::Config, error.to_string())),
                 },
             };
         }
         Err(Failed::new(
-            "not_config",
+            Code::NotConfig,
             "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
         ))
     }
@@ -986,8 +925,8 @@ impl Asks for Settings<'_> {
 /// key's, a saved session's.
 pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let word = match what {
-        Local::Attach { .. } => "attach",
-        Local::Headless { .. } => "headless",
+        Local::Attach { size: None, .. } => "attach",
+        Local::Attach { size: Some(_), .. } => "headless",
         Local::Server(_) => "server",
         Local::Start => "start",
         Local::Status => "status",
@@ -996,7 +935,7 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
         Local::Open(_) => "a client's screen",
     };
     Err(Failed::new(
-        "not_here",
+        Code::NotHere,
         format!("{word} runs from the command line only"),
     ))
 }
@@ -1012,7 +951,7 @@ pub fn restore(
     context.restoring = true;
     // Its panes are its own, not a pane's it runs in.
     (context.pane, context.server) = (None, None);
-    let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
+    let mut server = Server::new(Choice::Path(socket.path().to_string_lossy().into_owned()));
     let name = path.display().to_string();
     run_quiet(&name, text, context, None, &mut Layout(&mut server))
 }
@@ -1024,7 +963,7 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 
 /// What a saved session's requests go to: those that make and shape panes,
 /// tabs and workspaces, and find them; never what stops the server, grants,
-/// sets, or reaches a client, whatever the file says.
+/// sets, streams events or reaches a client, whatever the file says.
 struct Layout<'a>(&'a mut Server);
 
 impl Asks for Layout<'_> {
@@ -1033,8 +972,12 @@ impl Asks for Layout<'_> {
         let refused = match &request.command {
             C::KillServer { .. } => Some("kill-server"),
             C::Grant { .. } => Some("grant"),
+            C::Revoke { .. } => Some("revoke"),
             C::Set { .. } => Some("set"),
             C::Client { .. } => Some("a client's words"),
+            // A stream that never ends would hold the restore, and every
+            // request waiting for it, for good.
+            C::Events { .. } => Some("events"),
             C::Ls { .. }
             | C::NewWorkspace { .. }
             | C::NewTab { .. }
@@ -1045,16 +988,13 @@ impl Asks for Layout<'_> {
             | C::Resize { .. }
             | C::Wait { .. }
             | C::SendMouse { .. }
-            | C::KillPane { .. }
+            | C::Kill { .. }
             | C::Signal { .. }
-            | C::KillTab { .. }
-            | C::KillWorkspace { .. }
             | C::Rename { .. }
             | C::MovePane { .. }
             | C::SwapPane { .. }
             | C::ResizePane { .. }
             | C::SendKeys { .. }
-            | C::Events { .. }
             | C::DumpLayout { .. }
             | C::Log { .. }
             | C::ClearHistory { .. }
@@ -1067,7 +1007,7 @@ impl Asks for Layout<'_> {
         };
         match refused {
             Some(word) => Err(Failed::new(
-                "not_layout",
+                Code::NotLayout,
                 format!("{word} in a saved session: it makes and shapes, and does nothing else"),
             )),
             None => self.0.ask(request, out),
@@ -1081,14 +1021,12 @@ impl Asks for Layout<'_> {
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     let tokens = match args {
         [] => fuxth::token::arguments(&["attach"]),
-        // A program read whole, at most `SOURCE_MAX` bytes of it.
+        // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
-            fuxth::token::source("stdin", &source("stdin", std::io::stdin())?)?
+            fuxth::token::source("stdin", &read_text("stdin", std::io::stdin(), SOURCE_MAX)?)?
         }
         [file] if file.contains('/') || file.ends_with(".fux") => {
-            let opened =
-                std::fs::File::open(file).map_err(|e| read_failed(file, &e.to_string()))?;
-            fuxth::token::source(file, &source(file, opened)?)?
+            fuxth::token::source(file, &read_file(file.as_ref(), SOURCE_MAX)?)?
         }
         // A whole program in one word, as a shell passes `fux 'ls json'`.
         [line] if line.contains(char::is_whitespace) => fuxth::token::source("command line", line)?,
@@ -1102,7 +1040,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
             }
             word => {
                 return Err(Failed::new(
-                    "unknown_word",
+                    Code::UnknownWord,
                     format!("argument 2: help: no word {word:?} (`fux help` lists every word)"),
                 ));
             }
@@ -1135,35 +1073,44 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     let status = ran?.status;
     match out.failed {
         Some(error) => Err(Failed::new(
-            "output",
+            Code::Output,
             format!("writing the output: {error}"),
         )),
         None => Ok(status),
     }
 }
 
-/// The most a program read from a file or stdin may be.
-const SOURCE_MAX: u64 = 16 << 20;
+/// The most a program read from a file or stdin may be, and how that is
+/// said.
+const SOURCE_MAX: (usize, &str) = (16 << 20, "16 MiB: no program is that long");
 
 fn read_failed(name: &str, why: &str) -> Failed {
-    Failed::new("read", format!("{name}: {why}"))
+    Failed::new(Code::Read, format!("{name}: {why}"))
 }
 
-/// A program's text from `from`, which may be anything (`/dev/zero`): at
-/// most `SOURCE_MAX` bytes of UTF-8.
-fn source(name: &str, from: impl std::io::Read) -> Result<String, Failed> {
+/// The text read from `from`, which `name` names and which may be anything
+/// (`/dev/zero`): at most `limit` bytes of UTF-8, `said` saying how many.
+fn read_text(
+    name: &str,
+    from: impl std::io::Read,
+    (limit, said): (usize, &str),
+) -> Result<String, Failed> {
     let mut bytes = Vec::new();
     use std::io::Read;
-    from.take(SOURCE_MAX.saturating_add(1))
+    (from.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1)))
         .read_to_end(&mut bytes)
         .map_err(|e| read_failed(name, &e.to_string()))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > SOURCE_MAX {
-        return Err(read_failed(
-            name,
-            "more than 16 MiB: no program is that long",
-        ));
+    if bytes.len() > limit {
+        return Err(read_failed(name, &format!("more than {said}")));
     }
-    String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text: no fuxth program"))
+    String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
+}
+
+/// The text of the file at `path`, as `read_text` reads it.
+fn read_file(path: &std::path::Path, most: (usize, &str)) -> Result<String, Failed> {
+    let name = path.display().to_string();
+    let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
+    read_text(&name, file, most)
 }
 
 /// Output that keeps its first failure, so that a run whose output cannot

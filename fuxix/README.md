@@ -50,7 +50,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `process::tree` | this process's descendants, by `/proc/PID/task/*/children` | every process (`proc_listallpids`), as orphans leave the tree | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
-| `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `echoes`, `line_mode` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, `ECHO` and `ICANON` in `c_lflag` | the same | not offered |
+| `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `modes` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, the flags and characters (`ECHO` and `ICANON` in `c_lflag`, …) | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
 | `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
@@ -58,3 +58,8 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `file::pin` | `open(O_PATH \| O_NOFOLLOW)` | none | `O_PATH` has no name in std |
 
 `file::NOFOLLOW` is `O_NOFOLLOW`, for `OpenOptions::custom_flags`.
+`socket::max_path_len` is the longest path a socket address holds: its
+`sun_path` less the NUL (107 bytes on Linux and Android, 103 on macOS).
+`process::Signal` is the signals fuxix sends and those a program dies of,
+each found by its number (`from_raw`) or its name (`named`, `TERM`), and
+giving both back (`raw`, `name`).

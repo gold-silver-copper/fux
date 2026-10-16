@@ -8,9 +8,9 @@ use std::ops::Range;
 /// How a split arranges its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
-    /// Side by side, divided by vertical separators (`split -h`).
+    /// Side by side, divided by vertical separators (`horizontal split`).
     Horizontal,
-    /// Stacked, divided by horizontal separators (`split -v`).
+    /// Stacked, divided by horizontal separators (`vertical split`).
     Vertical,
 }
 
@@ -78,7 +78,7 @@ pub struct Rect {
 
 impl Rect {
     /// A whole screen of `rows` by `cols`.
-    pub fn screen(rows: u16, cols: u16) -> Rect {
+    pub const fn screen(rows: u16, cols: u16) -> Rect {
         Rect {
             x: 0,
             y: 0,
@@ -148,35 +148,35 @@ impl Rect {
         (inside(y, self.y, self.h), inside(x, self.x, self.w))
     }
     /// Its length along `axis`.
-    fn len(&self, axis: Axis) -> u16 {
+    pub fn len(&self, axis: Axis) -> u16 {
         match axis {
             Axis::Horizontal => self.w,
             Axis::Vertical => self.h,
         }
     }
+    /// Its first cell along `axis`.
+    fn start(&self, axis: Axis) -> u16 {
+        match axis {
+            Axis::Horizontal => self.x,
+            Axis::Vertical => self.y,
+        }
+    }
+    /// The rect `len` cells long from `start` along `axis`, and as it is
+    /// across.
+    fn along(mut self, axis: Axis, start: u16, len: u16) -> Rect {
+        match axis {
+            Axis::Horizontal => (self.x, self.w) = (start, len),
+            Axis::Vertical => (self.y, self.h) = (start, len),
+        }
+        self
+    }
     /// Its first `len` cells along `axis`, or all of it if it has fewer,
     /// and the rest.
     pub fn split(self, axis: Axis, len: u16) -> (Rect, Rect) {
-        let len = len.min(self.len(axis));
-        let rest = self.len(axis).saturating_sub(len);
-        match axis {
-            Axis::Horizontal => (
-                Rect { w: len, ..self },
-                Rect {
-                    x: self.x.saturating_add(len),
-                    w: rest,
-                    ..self
-                },
-            ),
-            Axis::Vertical => (
-                Rect { h: len, ..self },
-                Rect {
-                    y: self.y.saturating_add(len),
-                    h: rest,
-                    ..self
-                },
-            ),
-        }
+        let (start, all) = (self.start(axis), self.len(axis));
+        let len = len.min(all);
+        let rest = self.along(axis, start.saturating_add(len), all.saturating_sub(len));
+        (self.along(axis, start, len), rest)
     }
     /// Its bottom-right corner, at most `h` by `w`.
     pub fn corner(self, h: u16, w: u16) -> Rect {
@@ -382,6 +382,16 @@ pub enum Side {
     After,
 }
 
+impl Side {
+    /// The side `direction` points to, along its axis.
+    pub fn of(direction: Direction) -> Side {
+        match direction {
+            Direction::Left | Direction::Up => Side::Before,
+            Direction::Right | Direction::Down => Side::After,
+        }
+    }
+}
+
 impl Tree {
     /// Adds `new` beside `target`, on `side` of it, along `axis`. A split
     /// already along `axis` takes it as a sibling sharing the target's
@@ -399,14 +409,14 @@ impl Tree {
     }
 }
 
-/// Moves `pane` beside `target`, as `Tree::split` puts a new one, in a
-/// tree holding both. False, the tree as it was, otherwise.
+/// Moves `pane` beside `target`, on the side `direction` points to, as
+/// `Tree::split` puts a new one, in a tree holding both. False, the tree as
+/// it was, otherwise.
 pub fn move_beside(
     root: &mut Option<Tree>,
     pane: PaneId,
     target: PaneId,
-    axis: Axis,
-    side: Side,
+    direction: Direction,
 ) -> bool {
     let both = root
         .as_ref()
@@ -417,7 +427,7 @@ pub fn move_beside(
     // `target` is left, so the tree is too.
     remove(root, pane);
     root.as_mut()
-        .is_some_and(|r| r.split(target, pane, axis, side))
+        .is_some_and(|r| r.split(target, pane, Axis::of(direction), Side::of(direction)))
 }
 
 /// Removes a pane. A split left with one child becomes that child, merging
@@ -702,19 +712,12 @@ pub fn resize_to(root: &Tree, area: Rect, pane: PaneId, axis: Axis, len: u16) ->
         // side of its own to give from.
         let placed = place(&tree, area);
         let growing = directions.iter().map(|&direction| (pane, direction));
-        let neighbours = directions
-            .iter()
+        // Each of the axis's directions with the other, back from it.
+        let [start, end] = directions;
+        let neighbours = [(start, end), (end, start)]
+            .into_iter()
             .filter(|_| now > len)
-            .filter_map(|&direction| {
-                let other = neighbor(&placed, pane, direction)?;
-                let back = match direction {
-                    Direction::Left => Direction::Right,
-                    Direction::Right => Direction::Left,
-                    Direction::Up => Direction::Down,
-                    Direction::Down => Direction::Up,
-                };
-                Some((other, back))
-            });
+            .filter_map(|(direction, back)| Some((neighbor(&placed, pane, direction)?, back)));
         let tried = growing.chain(neighbours).filter_map(|(which, direction)| {
             let mut moved = tree.clone();
             resize(&mut moved, area, which, direction, amount).then_some(())?;
@@ -769,7 +772,7 @@ impl Split {
         if below == Some(true) || axis != Axis::of(direction) {
             return below;
         }
-        let toward_start = matches!(direction, Direction::Left | Direction::Up);
+        let toward_start = Side::of(direction) == Side::Before;
         // Grow toward the direction, taking from the siblings that way,
         // nearest first, each down to its least; else shrink from the far
         // side, moving the other border the same way.
@@ -813,10 +816,8 @@ fn placed_span(axis: Axis, child: &Tree<()>, area: Rect, placement: &Placement) 
     let mut span: Option<Range<u16>> = None;
     child.for_each_pane(&mut |p| {
         if let Some(r) = placement.rect(p) {
-            let (start, end) = match axis {
-                Axis::Horizontal => (r.x, r.right()),
-                Axis::Vertical => (r.y, r.bottom()),
-            };
+            let start = r.start(axis);
+            let end = start.saturating_add(r.len(axis));
             span = Some(
                 span.as_ref()
                     .map_or(start..end, |s| s.start.min(start)..s.end.max(end)),
@@ -825,19 +826,7 @@ fn placed_span(axis: Axis, child: &Tree<()>, area: Rect, placement: &Placement) 
     });
     // Inside `area`, as the panes are.
     let Range { start, end } = span.unwrap_or_default();
-    let len = end.saturating_sub(start);
-    match axis {
-        Axis::Horizontal => Rect {
-            x: start,
-            w: len,
-            ..area
-        },
-        Axis::Vertical => Rect {
-            y: start,
-            h: len,
-            ..area
-        },
-    }
+    area.along(axis, start, end.saturating_sub(start))
 }
 
 #[cfg(test)]
@@ -1007,45 +996,15 @@ mod tests {
     #[test]
     fn moving_beside_needs_both_panes_in_the_tree() {
         let mut root = Some(tree());
-        assert!(move_beside(
-            &mut root,
-            p(0),
-            p(1),
-            Axis::Vertical,
-            Side::After
-        ));
+        assert!(move_beside(&mut root, p(0), p(1), Direction::Down));
         assert_eq!(root.as_ref().map(Tree::panes), Some(vec![p(1), p(0)]));
         let before = root.clone();
-        assert!(!move_beside(
-            &mut root,
-            p(0),
-            p(9),
-            Axis::Vertical,
-            Side::After
-        ));
-        assert!(!move_beside(
-            &mut root,
-            p(9),
-            p(0),
-            Axis::Vertical,
-            Side::After
-        ));
-        assert!(!move_beside(
-            &mut root,
-            p(0),
-            p(0),
-            Axis::Vertical,
-            Side::After
-        ));
+        assert!(!move_beside(&mut root, p(0), p(9), Direction::Down));
+        assert!(!move_beside(&mut root, p(9), p(0), Direction::Down));
+        assert!(!move_beside(&mut root, p(0), p(0), Direction::Down));
         assert_eq!(root, before);
         let mut empty = None;
-        assert!(!move_beside(
-            &mut empty,
-            p(0),
-            p(1),
-            Axis::Vertical,
-            Side::After
-        ));
+        assert!(!move_beside(&mut empty, p(0), p(1), Direction::Down));
         assert_eq!(empty, None);
     }
 

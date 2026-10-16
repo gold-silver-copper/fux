@@ -1,4 +1,4 @@
-use std::hash::Hasher;
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -87,14 +87,7 @@ fn take_row(
         .unwrap_or_default();
     let len = trimmed(row).len();
     let kept = row.get_mut(..len).unwrap_or_default();
-    history.push(Arriving {
-        id: m.id,
-        version: m.version,
-        wrapped: m.wrapped,
-        prompt: m.prompt,
-        cells: kept,
-        width,
-    })?;
+    history.push(m.arriving(kept, width))?;
     // Blanked here, while they are at hand, not when the slot is taken;
     // a row of one cell, as a short line's often is, without a call.
     match kept {
@@ -130,6 +123,18 @@ struct Meta {
 const _: () = assert!(std::mem::size_of::<Meta>() == 24);
 
 impl Meta {
+    /// What the row brings into history: `cells`, its cells before its
+    /// blank tail, of `width`.
+    fn arriving(self, cells: &[Compact], width: u16) -> Arriving<'_> {
+        Arriving {
+            id: self.id,
+            version: self.version,
+            wrapped: self.wrapped,
+            prompt: self.prompt,
+            cells,
+            width,
+        }
+    }
     fn new(id: RowId, version: u64, wrapped: bool, used: u16) -> Self {
         Self {
             id,
@@ -222,6 +227,59 @@ impl Order {
     }
 }
 
+closed! {
+    /// What ED and EL erase: from the cursor to the end, from the start to
+    /// the cursor, or all.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Erase {
+        /// Its parameter.
+        pub(crate) fn number(self) -> u16;
+        /// The cursor's cell and what follows.
+        Below => 0,
+        /// What comes before, and the cursor's cell.
+        Above => 1,
+        /// All of it.
+        All => 2,
+    }
+}
+
+/// The most flag sets a kitty keyboard stack holds; a push onto a full stack
+/// drops the oldest, as kitty does, so a runaway program cannot grow it.
+const KEYBOARD_STACK_LIMIT: usize = 32;
+
+/// One screen's kitty keyboard protocol flag stack. The primary and
+/// alternate screens each keep one, so a program that pushes flags on the
+/// alternate screen and exits without popping them leaves the shell's alone.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct KeyboardStack(VecDeque<u8>);
+
+impl KeyboardStack {
+    pub(crate) fn top(&self) -> u8 {
+        self.0.back().copied().unwrap_or(0)
+    }
+    pub(crate) fn push(&mut self, flags: u8) {
+        if self.0.len() >= KEYBOARD_STACK_LIMIT {
+            self.0.pop_front();
+        }
+        self.0.push_back(flags);
+    }
+    pub(crate) fn pop(&mut self, count: u16) {
+        self.0
+            .truncate(self.0.len().saturating_sub(usize::from(count)));
+    }
+    /// `CSI = flags ; mode u`: mode 1 (the default) replaces the top's
+    /// flags, 2 adds to them and 3 removes from them; an empty stack's are 0.
+    pub(crate) fn set(&mut self, flags: u8, mode: u16) {
+        let top = self.top();
+        self.pop(1);
+        self.push(match mode {
+            2 => top | flags,
+            3 => top & !flags,
+            _ => flags,
+        });
+    }
+}
+
 /// A grid: its screen, rows of `cols` cells in slots, `order` saying which
 /// slot each row is in; and its history (`history.rs`), the rows scrolled
 /// off the screen's top, each kept as the cells it uses. A row's place
@@ -264,6 +322,8 @@ pub(crate) struct Grid {
     /// Whether its screen's cells are yet to be made (`Grid::unmade`):
     /// every row is blank, and `make` makes them.
     unmade: bool,
+    /// The kitty keyboard flags the program on this screen pushed.
+    pub keyboard: KeyboardStack,
 }
 
 /// Which way a scroll moves rows: up, the rows leaving the top going into
@@ -379,6 +439,7 @@ impl Grid {
             columns: size.columns(),
             lr: false,
             unmade: false,
+            keyboard: KeyboardStack::default(),
         }
     }
 
@@ -405,6 +466,32 @@ impl Grid {
         crate::reserve(&mut self.linked, rows)?;
         self.order
             .try_reserve_exact(rows.saturating_sub(self.order.len()))?;
+        Ok(())
+    }
+
+    /// Keeps a row laid out whole in `cells`, as wide as they are, as a
+    /// resize makes a grid anew: into history, with its text and links, if
+    /// `history`; else on the screen. Past `written` its cells are blank.
+    fn keep_row(
+        &mut self,
+        meta: Meta,
+        (cells, written): (&[Compact], usize),
+        (text, links): (Option<Text>, Option<RowLinks>),
+        history: bool,
+    ) -> Result<(), Error> {
+        if !history {
+            self.push_screen_row(meta, cells, text, links);
+            return Ok(());
+        }
+        let width = u16::try_from(cells.len()).map_err(|_| Error::Capacity)?;
+        let kept = trimmed(cells.get(..written).unwrap_or(cells));
+        self.history.push(meta.arriving(kept, width))?;
+        // A row with neither text nor links, as most are, attaches none.
+        let text = text.filter(|text| !text.is_empty());
+        if text.is_some() || links.is_some() {
+            self.history.attach(text.map(|text| text.exact()), links);
+        }
+        self.history.trim();
         Ok(())
     }
 
@@ -447,10 +534,6 @@ impl Grid {
     pub(crate) fn cursor_index(&self) -> Option<usize> {
         self.history_len()
             .checked_add(usize::from(self.cursor.row()))
-    }
-    /// The slot of the screen's row `row`, counted from 0 at the top.
-    fn screen_slot(&self, row: usize) -> Option<usize> {
-        self.order.get(row).copied()
     }
     pub fn retained_len(&self) -> usize {
         self.history.len().saturating_add(self.order.len())
@@ -521,7 +604,7 @@ impl Grid {
                 links: found.links,
             });
         };
-        self.slot_row(self.screen_slot(row)?, row)
+        self.slot_row(*self.order.get(row)?, row)
     }
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.index_of(id).and_then(|index| self.row_at(index))
@@ -544,11 +627,10 @@ impl Grid {
     pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
         self.slot_row(self.slot(row)?, usize::from(row))
     }
+    /// The slot of the screen's row `row`, counted from 0 at the top. The
+    /// order holds the screen's rows, exactly, once the grid is made.
     #[inline]
     fn slot(&self, row: u16) -> Option<usize> {
-        if row >= self.size.rows() {
-            return None;
-        }
         self.order.get(usize::from(row)).copied()
     }
     /// A live row's cell, found without making its `Row`: printing asks
@@ -818,18 +900,18 @@ impl Grid {
         {
             return Some(link.clone());
         }
-        let id_text = id.map(|id| &**id);
-        if !self.links.fits(uri, id_text) {
-            if !self.links.may_make_room() {
-                return None;
-            }
-            self.make_room(version);
-            if !self.links.fits(uri, id_text) {
-                self.links.stall();
-                return None;
-            }
+        if let Some(link) = self.links.insert(opened) {
+            return Some(link);
         }
-        self.links.insert(opened)
+        if !self.links.may_make_room() {
+            return None;
+        }
+        self.make_room(version);
+        let link = self.links.insert(opened);
+        if link.is_none() {
+            self.links.stall();
+        }
+        link
     }
 
     /// Makes room for links: the rows' links are counted again
@@ -973,16 +1055,16 @@ impl Grid {
         }
     }
 
-    /// ED (`display`) or EL in `mode`, 0 to 2, from the cursor, ending a
-    /// pending wrap: `erase` erases each row's span, and says whether it
-    /// found something it left; whether any did. A row ED erases whole is
-    /// no prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
+    /// ED (`display`) or EL of `part`, from the cursor, ending a pending
+    /// wrap: `erase` erases each row's span, and says whether it found
+    /// something it left; whether any did. A row ED erases whole is no
+    /// prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
     /// leave the mark (a shell redrawing its prompt erases from it).
     #[inline]
     pub fn erase_in(
         &mut self,
         display: bool,
-        mode: u16,
+        part: Erase,
         mut erase: impl FnMut(&mut Self, u16, u16, u16) -> bool,
     ) -> bool {
         self.cursor.pending_wrap = false;
@@ -990,16 +1072,21 @@ impl Grid {
         let mut found = false;
         if display {
             for y in 0..self.size.rows() {
-                if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
+                let whole = match part {
+                    Erase::Below => y > row,
+                    Erase::Above => y < row,
+                    Erase::All => true,
+                };
+                if whole {
                     found |= erase(self, y, 0, cols);
                     self.set_prompt(y, false);
                 }
             }
         }
-        let (start, end) = match mode {
-            0 => (col, cols),
-            1 => (0, col.saturating_add(1).min(cols)),
-            _ => (0, cols),
+        let (start, end) = match part {
+            Erase::Below => (col, cols),
+            Erase::Above => (0, col.saturating_add(1).min(cols)),
+            Erase::All => (0, cols),
         };
         erase(self, row, start, end) | found
     }
@@ -1433,14 +1520,7 @@ impl Grid {
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
-        self.history.push(Arriving {
-            id: m.id,
-            version: m.version,
-            wrapped: m.wrapped,
-            prompt: m.prompt,
-            cells,
-            width: self.size.cols(),
-        })?;
+        self.history.push(m.arriving(cells, self.size.cols()))?;
         self.retire_extras(slot);
         Ok(())
     }
@@ -1602,26 +1682,11 @@ impl Grid {
                 // budget of the row's new width.
                 text = Some(Line::rebuilt(&mut row, old.text));
             }
-            let prompt = old.is_some_and(|r| r.prompt);
-            if is_history {
-                let cells = trimmed(&row);
-                replacement.history.push(Arriving {
-                    id,
-                    version: row_version,
-                    wrapped,
-                    prompt,
-                    cells,
-                    width,
-                })?;
-                replacement
-                    .history
-                    .attach(text.map(|text| text.exact()), links);
-                replacement.history.trim();
-            } else {
-                let mut meta = Meta::new(id, row_version, wrapped, width);
-                meta.prompt = prompt;
-                replacement.push_screen_row(meta, &row, text, links);
-            }
+            let meta = Meta {
+                prompt: old.is_some_and(|r| r.prompt),
+                ..Meta::new(id, row_version, wrapped, width)
+            };
+            replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
         Ok(replacement)
     }
@@ -1655,7 +1720,8 @@ impl Grid {
     }
 
     /// Blanks every row of a recyclable grid and gives each a new identity,
-    /// top to bottom; the cursors, origin and margins are reset.
+    /// top to bottom; the cursors, origin, margins and keyboard stack are
+    /// reset.
     fn renew(&mut self, next: &mut u64, version: u64) {
         for index in 0..self.order.len() {
             let id = next_id(next);
@@ -1669,6 +1735,7 @@ impl Grid {
         self.recent = [(Attributes::default(), 0); RECENT];
         self.cursor = Cursor::default();
         self.saved = Cursor::default();
+        self.keyboard = KeyboardStack::default();
         self.reset_margins();
     }
     /// Whether every slot's cells from `used` to its width are blank, as
@@ -1867,31 +1934,6 @@ impl Grid {
 /// The column one past `col` if a wrap is pending there, else `col`.
 fn past(col: u16, pending_wrap: bool) -> u16 {
     col.saturating_add(u16::from(pending_wrap))
-}
-
-/// Hashes a row's number, a small number, by one multiplication
-/// (Fibonacci hashing), rather than by SipHash, which the default hasher
-/// spends on every lookup: it is no input a program chooses.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SlotHasher(u64);
-
-impl Hasher for SlotHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
-        }
-        self.0 = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-    fn write_usize(&mut self, n: usize) {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        self.write_u64(n);
-    }
-    fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
 }
 
 /// Gives the cells `span` of the row in slot `slot` link `link`, or none:

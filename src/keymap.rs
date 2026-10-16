@@ -5,7 +5,7 @@
 //!
 //! A binding runs fuxth: its code is compiled and run by the client, fresh,
 //! each time its keys are typed, the client itself its `me`.
-use crate::act::{Act, Column, ColumnEntry, CopyAct, LineAct, ListAct, Panel};
+use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Move, Panel, Seek};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use crate::screens::Effect;
 
@@ -159,6 +159,7 @@ pub fn key(word: &str) -> Result<KeyPress, String> {
     let press: KeyPress = word
         .parse()
         .map_err(|_| format!("{word:?} is no key's name"))?;
+    // A character's shift is dropped in parsing it: `S-` is read again.
     let mut rest = word;
     let mut shift = false;
     while let Some((modifier, tail)) = rest.split_at_checked(2) {
@@ -193,10 +194,6 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
     }
 }
 
-fn is_escape(press: &KeyPress) -> bool {
-    press.key == Key::Escape && !press.mods.ctrl && !press.mods.alt
-}
-
 /// A client's prefix and bindings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keymap {
@@ -213,210 +210,151 @@ const GROUPS: [&str; 5] = ["Panes", "Focus", "Tabs", "Workspaces", "Session"];
 /// The group of bindings without the prefix that gave none.
 pub const ROOT_GROUP: &str = "Without the prefix";
 
-/// The default bindings: keys after the prefix, fuxth, label, group, and
-/// whether it repeats. After the prefix every default key is a lower-case
+/// A group's bindings: keys after the prefix, fuxth and label.
+type Bindings = &'static [(&'static str, &'static str, &'static str)];
+
+/// The default bindings, by group, and whether the group's layer
+/// repeats. After the prefix every default key is a lower-case
 /// letter: `r` and `m` are repeat modes, `t` and `w` layers sharing their
 /// verbs.
-pub const DEFAULTS: &[(&str, &str, &str, &str, bool)] = &[
-    ("h", "me str left focus", "focus left", "Focus", false),
-    ("j", "me str down focus", "focus down", "Focus", false),
-    ("k", "me str up focus", "focus up", "Focus", false),
-    ("l", "me str right focus", "focus right", "Focus", false),
-    ("o", "me str next focus", "next pane", "Focus", false),
-    ("q", "me str last focus", "last pane", "Focus", false),
+pub const DEFAULTS: &[(&str, bool, Bindings)] = &[
     (
-        "v",
-        "me focused opts horizontal split drop",
-        "split side by side",
+        "Focus",
+        false,
+        &[
+            ("h", "me str left focus", "focus left"),
+            ("j", "me str down focus", "focus down"),
+            ("k", "me str up focus", "focus up"),
+            ("l", "me str right focus", "focus right"),
+            ("o", "me str next focus", "next pane"),
+            ("q", "me str last focus", "last pane"),
+        ],
+    ),
+    (
         "Panes",
         false,
+        &[
+            (
+                "v",
+                "me focused opts horizontal split drop",
+                "split side by side",
+            ),
+            ("s", "me focused opts vertical split drop", "split stacked"),
+            ("x", "me me focused confirm-close", "close pane"),
+            ("z", "me zoom", "zoom or restore"),
+            ("a", "me me focused menu", "pane actions"),
+            ("c", "me copy-mode", "copy and select"),
+            ("p", "me focused 0 paste-buffer", "paste the newest copy"),
+        ],
     ),
     (
-        "s",
-        "me focused opts vertical split drop",
-        "split stacked",
-        "Panes",
-        false,
-    ),
-    (
-        "x",
-        "me me focused confirm-close",
-        "close pane",
-        "Panes",
-        false,
-    ),
-    ("z", "me zoom", "zoom or restore", "Panes", false),
-    ("a", "me me focused menu", "pane actions", "Panes", false),
-    ("c", "me copy-mode", "copy and select", "Panes", false),
-    (
-        "p",
-        "me focused 0 paste-buffer",
-        "paste the newest copy",
-        "Panes",
-        false,
-    ),
-    (
-        "r h",
-        "me focused str left 1 move-border",
-        "shrink or grow left",
         "Resize",
         true,
+        &[
+            (
+                "r h",
+                "me focused str left 1 move-border",
+                "shrink or grow left",
+            ),
+            (
+                "r j",
+                "me focused str down 1 move-border",
+                "shrink or grow down",
+            ),
+            (
+                "r k",
+                "me focused str up 1 move-border",
+                "shrink or grow up",
+            ),
+            (
+                "r l",
+                "me focused str right 1 move-border",
+                "shrink or grow right",
+            ),
+        ],
     ),
     (
-        "r j",
-        "me focused str down 1 move-border",
-        "shrink or grow down",
-        "Resize",
-        true,
-    ),
-    (
-        "r k",
-        "me focused str up 1 move-border",
-        "shrink or grow up",
-        "Resize",
-        true,
-    ),
-    (
-        "r l",
-        "me focused str right 1 move-border",
-        "shrink or grow right",
-        "Resize",
-        true,
-    ),
-    (
-        "m h",
-        "me focused str left move-beside",
-        "move left",
         "Move",
         true,
+        &[
+            ("m h", "me focused str left move-beside", "move left"),
+            ("m j", "me focused str down move-beside", "move down"),
+            ("m k", "me focused str up move-beside", "move up"),
+            ("m l", "me focused str right move-beside", "move right"),
+        ],
     ),
     (
-        "m j",
-        "me focused str down move-beside",
-        "move down",
-        "Move",
-        true,
-    ),
-    (
-        "m k",
-        "me focused str up move-beside",
-        "move up",
-        "Move",
-        true,
-    ),
-    (
-        "m l",
-        "me focused str right move-beside",
-        "move right",
-        "Move",
-        true,
-    ),
-    ("n", "me next-tab", "next tab", "Tabs", false),
-    ("b", "me previous-tab", "previous tab", "Tabs", false),
-    ("t n", "opts new-tab drop", "new tab", "Tabs", false),
-    ("t h", "me previous-tab", "previous tab", "Tabs", false),
-    ("t l", "me next-tab", "next tab", "Tabs", false),
-    ("t g", "me choose-tab", "choose a tab", "Tabs", false),
-    (
-        "t r",
-        "me me focused tab rename-prompt",
-        "rename tab",
         "Tabs",
         false,
+        &[
+            ("n", "me next-tab", "next tab"),
+            ("b", "me previous-tab", "previous tab"),
+            ("t n", "opts new-tab drop", "new tab"),
+            ("t h", "me previous-tab", "previous tab"),
+            ("t l", "me next-tab", "next tab"),
+            ("t g", "me choose-tab", "choose a tab"),
+            ("t r", "me me focused tab rename-prompt", "rename tab"),
+            ("t x", "me me focused tab confirm-close", "close tab"),
+            ("t a", "me me focused tab menu", "tab actions"),
+        ],
     ),
     (
-        "t x",
-        "me me focused tab confirm-close",
-        "close tab",
-        "Tabs",
-        false,
-    ),
-    (
-        "t a",
-        "me me focused tab menu",
-        "tab actions",
-        "Tabs",
-        false,
-    ),
-    (
-        "t m h",
-        "me focused tab str previous reorder",
-        "move tab earlier",
         "Reorder",
         true,
+        &[
+            (
+                "t m h",
+                "me focused tab str previous reorder",
+                "move tab earlier",
+            ),
+            ("t m l", "me focused tab str next reorder", "move tab later"),
+        ],
     ),
     (
-        "t m l",
-        "me focused tab str next reorder",
-        "move tab later",
+        "Workspaces",
+        false,
+        &[
+            ("w n", "opts new-workspace drop", "new workspace"),
+            ("w h", "me previous-workspace", "previous workspace"),
+            ("w l", "me next-workspace", "next workspace"),
+            ("w g", "me choose-workspace", "choose a workspace"),
+            (
+                "w r",
+                "me me focused workspace rename-prompt",
+                "rename workspace",
+            ),
+            (
+                "w x",
+                "me me focused workspace confirm-close",
+                "close workspace",
+            ),
+            ("w a", "me me focused workspace menu", "workspace actions"),
+        ],
+    ),
+    (
         "Reorder",
         true,
+        &[
+            (
+                "w m h",
+                "me focused workspace str previous reorder",
+                "move workspace earlier",
+            ),
+            (
+                "w m l",
+                "me focused workspace str next reorder",
+                "move workspace later",
+            ),
+        ],
     ),
     (
-        "w n",
-        "opts new-workspace drop",
-        "new workspace",
-        "Workspaces",
+        "Session",
         false,
+        &[
+            ("e", "me command-prompt", "command prompt"),
+            ("d", "me detach", "detach"),
+        ],
     ),
-    (
-        "w h",
-        "me previous-workspace",
-        "previous workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w l",
-        "me next-workspace",
-        "next workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w g",
-        "me choose-workspace",
-        "choose a workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w r",
-        "me me focused workspace rename-prompt",
-        "rename workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w x",
-        "me me focused workspace confirm-close",
-        "close workspace",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w a",
-        "me me focused workspace menu",
-        "workspace actions",
-        "Workspaces",
-        false,
-    ),
-    (
-        "w m h",
-        "me focused workspace str previous reorder",
-        "move workspace earlier",
-        "Reorder",
-        true,
-    ),
-    (
-        "w m l",
-        "me focused workspace str next reorder",
-        "move workspace later",
-        "Reorder",
-        true,
-    ),
-    ("e", "me command-prompt", "command prompt", "Session", false),
-    ("d", "me detach", "detach", "Session", false),
 ];
 
 impl Default for Keymap {
@@ -426,13 +364,15 @@ impl Default for Keymap {
             bindings: Layer::default(),
             root: Vec::new(),
         };
-        for (keys, code, label, group, repeat) in DEFAULTS {
-            let binding = Binding {
-                code: (*code).to_owned(),
-                label: (*label).to_owned(),
-                group: (*group).to_owned(),
-            };
-            let _ = self::keys(keys).and_then(|keys| keymap.bind(&keys, binding, *repeat));
+        for (group, repeat, bindings) in DEFAULTS {
+            for (keys, code, label) in *bindings {
+                let binding = Binding {
+                    code: (*code).to_owned(),
+                    label: (*label).to_owned(),
+                    group: (*group).to_owned(),
+                };
+                let _ = self::keys(keys).and_then(|keys| keymap.bind(&keys, binding, *repeat));
+            }
         }
         keymap
     }
@@ -446,7 +386,7 @@ impl Keymap {
         binding: Binding,
         repeat: bool,
     ) -> Result<(), String> {
-        if keys.iter().any(is_escape) {
+        if keys.iter().any(|k| k.plain_key() == Some(Key::Escape)) {
             return Err("Escape after the prefix closes the column; it cannot be bound".to_owned());
         }
         self.bindings
@@ -528,7 +468,7 @@ impl Keymap {
     /// last; right after the prefix, the bindings without it follow.
     pub fn column(&self, path: &[KeyPress], selected: usize) -> Option<Column> {
         let layer = self.bindings.layer(path)?;
-        let mut entries: Vec<(bool, ColumnEntry)> = (layer.iter())
+        let mut entries: Vec<ColumnEntry> = (layer.iter())
             .filter_map(|(key, node)| {
                 // A layer is titled, and listed, by its first binding's
                 // group: `t` is `Tabs…`.
@@ -541,16 +481,13 @@ impl Keymap {
                         (group.clone(), group, true)
                     }
                 };
-                Some((
-                    false,
-                    ColumnEntry {
-                        key: key.to_string(),
-                        label,
-                        group,
-                        layer,
-                        root: false,
-                    },
-                ))
+                Some(ColumnEntry {
+                    key: key.to_string(),
+                    label,
+                    group,
+                    layer,
+                    root: false,
+                })
             })
             .collect();
         if path.is_empty() {
@@ -559,46 +496,38 @@ impl Keymap {
                     "" => ROOT_GROUP.to_owned(),
                     group => group.to_owned(),
                 };
-                (
-                    true,
-                    ColumnEntry {
-                        key: key.to_string(),
-                        label: binding.label.clone(),
-                        group,
-                        layer: false,
-                        root: true,
-                    },
-                )
+                ColumnEntry {
+                    key: key.to_string(),
+                    label: binding.label.clone(),
+                    group,
+                    layer: false,
+                    root: true,
+                }
             }));
         }
         let mut groups: Vec<(bool, String)> = GROUPS.map(|g| (false, g.to_owned())).to_vec();
-        for (root, entry) in &entries {
-            let group = (*root, entry.group.clone());
+        for entry in &entries {
+            let group = (entry.root, entry.group.clone());
             if !groups.contains(&group) && group != (false, "Other".to_owned()) {
                 groups.push(group);
             }
         }
         groups.push((false, "Other".to_owned()));
-        entries.sort_by_key(|(root, e)| {
-            let group = groups.iter().position(|(r, g)| r == root && *g == e.group);
-            (*root, group)
+        entries.sort_by_key(|e| {
+            let group = groups
+                .iter()
+                .position(|(r, g)| *r == e.root && *g == e.group);
+            (e.root, group)
         });
+        let keys = keys_text(&[&[self.prefix][..], path].concat());
         let title = match path.is_empty() {
             true => "Commands".to_owned(),
-            false => format!(
-                "{} {}: {}",
-                self.prefix,
-                keys_text(path),
-                layer.first().map_or("", |b| b.group.as_str())
-            ),
+            false => format!("{keys}: {}", layer.first().map_or("", |b| b.group.as_str())),
         };
-        let entries: Vec<ColumnEntry> = entries.into_iter().map(|(_, e)| e).collect();
         let selected = selected.min(entries.len().saturating_sub(1));
-        let keys =
-            std::iter::once(self.prefix.to_string()).chain(path.iter().map(KeyPress::to_string));
         Some(Column {
             title,
-            keys: keys.collect::<Vec<_>>().join(" "),
+            keys,
             entries,
             selected,
         })
@@ -668,9 +597,6 @@ pub enum Held {
     /// A client that only watches typed its prefix.
     Prefixed,
 }
-
-/// The rows the column, and a screen's list, page by.
-pub const PAGE: usize = 10;
 
 impl Held {
     /// A key typed at the client's terminal while none of its screens is
@@ -752,7 +678,7 @@ impl Held {
         stroke: Keystroke,
     ) -> Vec<Effect> {
         let press = stroke.press;
-        if is_escape(&press) {
+        if press.plain_key() == Some(Key::Escape) {
             return vec![Effect::Send(Act::Hide)];
         }
         if keymap
@@ -768,17 +694,11 @@ impl Held {
         }
         let count = keymap.column(&path, 0).map_or(0, |c| c.entries.len());
         let last = count.saturating_sub(1);
-        let moved = match (press.mods == Modifiers::NONE).then_some(press.key) {
-            Some(Key::Arrow(Direction::Up)) => Some(selected.saturating_sub(1)),
-            Some(Key::Arrow(Direction::Down)) => Some(selected.saturating_add(1).min(last)),
-            Some(Key::PageUp) => Some(selected.saturating_sub(PAGE)),
-            Some(Key::PageDown) => Some(selected.saturating_add(PAGE).min(last)),
-            Some(Key::Home) => Some(0),
-            Some(Key::End) => Some(last),
-            _ => None,
-        };
-        if let Some(selected) = moved {
-            return self.open(keymap, path, selected);
+        // A list's moves, but by its keys that are not letters, which are
+        // bindings here.
+        let unbound = press.mods == Modifiers::NONE && !matches!(press.key, Key::Char(_));
+        if let Some(ListAct::Move(moved)) = list_act(press).filter(|_| unbound) {
+            return self.open(keymap, path, moved.from(selected, last));
         }
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
             let chosen = keymap.column(&path, selected).and_then(|c| {
@@ -857,12 +777,12 @@ impl Held {
 /// what the chosen entry is about.
 pub fn list_act(press: KeyPress) -> Option<ListAct> {
     match press.plain_key()? {
-        Key::Arrow(Direction::Up) | Key::Char('k') => Some(ListAct::Up),
-        Key::Arrow(Direction::Down) | Key::Char('j') => Some(ListAct::Down),
-        Key::PageUp => Some(ListAct::PageUp),
-        Key::PageDown => Some(ListAct::PageDown),
-        Key::Home => Some(ListAct::First),
-        Key::End => Some(ListAct::Last),
+        Key::Arrow(Direction::Up) | Key::Char('k') => Some(ListAct::Move(Move::Up)),
+        Key::Arrow(Direction::Down) | Key::Char('j') => Some(ListAct::Move(Move::Down)),
+        Key::PageUp => Some(ListAct::Move(Move::PageUp)),
+        Key::PageDown => Some(ListAct::Move(Move::PageDown)),
+        Key::Home => Some(ListAct::Move(Move::First)),
+        Key::End => Some(ListAct::Move(Move::Last)),
         Key::Enter => Some(ListAct::Choose),
         Key::Escape | Key::Char('q') => Some(ListAct::Cancel),
         Key::Char('r') => Some(ListAct::Rename),
@@ -879,18 +799,19 @@ pub fn list_act(press: KeyPress) -> Option<ListAct> {
 
 /// A key in a line being typed: a one-line editor.
 pub fn line_act(press: KeyPress) -> Option<LineAct> {
+    let edit = |edit| Some(LineAct::Edit(edit));
     match press.key {
         Key::Escape => Some(LineAct::Cancel),
         Key::Enter => Some(LineAct::Submit),
-        Key::Backspace => Some(LineAct::Backspace),
-        Key::Delete => Some(LineAct::Delete),
-        Key::Arrow(Direction::Left) => Some(LineAct::Left),
-        Key::Arrow(Direction::Right) => Some(LineAct::Right),
-        Key::Home => Some(LineAct::Home),
-        Key::End => Some(LineAct::End),
+        Key::Backspace => edit(Edit::Backspace),
+        Key::Delete => edit(Edit::Delete),
+        Key::Arrow(Direction::Left) => edit(Edit::Left),
+        Key::Arrow(Direction::Right) => edit(Edit::Right),
+        Key::Home => edit(Edit::Home),
+        Key::End => edit(Edit::End),
         // Text: a letter with Ctrl or Alt types nothing.
         Key::Char(c) if !press.mods.ctrl && !press.mods.alt && !c.is_control() => {
-            Some(LineAct::Insert(c.to_string()))
+            edit(Edit::Insert(c.to_string()))
         }
         Key::Char(_)
         | Key::Tab
@@ -955,8 +876,8 @@ pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
         (_, Key::PageDown) => CopyAct::PageDown,
         (Some('n'), _) => CopyAct::Next,
         (Some('p'), _) => CopyAct::Previous,
-        (Some('['), _) => CopyAct::PromptBack,
-        (Some(']'), _) => CopyAct::PromptForward,
+        (Some('['), _) => CopyAct::Prompt(Seek::Backward),
+        (Some(']'), _) => CopyAct::Prompt(Seek::Forward),
         (Some('v'), _) => CopyAct::SelectChar,
         (Some('s'), _) => CopyAct::SelectLine,
         (Some('x'), _) => CopyAct::SelectBlock,
@@ -970,9 +891,25 @@ pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::act::PAGE;
 
     fn stroke(name: &str) -> Result<Keystroke, String> {
         key(name).map(Keystroke::from)
+    }
+
+    #[test]
+    fn every_default_is_bound() {
+        let keymap = Keymap::default();
+        let defaults: usize = DEFAULTS.iter().map(|(_, _, bindings)| bindings.len()).sum();
+        assert_eq!(keymap.bindings.all().len(), defaults);
+        assert!(keymap.root.is_empty());
+    }
+
+    #[test]
+    fn a_shifted_letter_is_its_upper_case() {
+        assert_eq!(key("S-v").map(|k| k.key), Ok(Key::Char('V')));
+        assert_eq!(key("s-M-v").map(|k| k.key), Ok(Key::Char('V')));
+        assert_eq!(key("S-1").map(|k| k.key), Ok(Key::Char('1')));
     }
 
     #[test]

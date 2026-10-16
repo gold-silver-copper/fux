@@ -1,5 +1,6 @@
 //! Why a program could not be read or run: a stable code, what went wrong,
 //! and where.
+use crate::compile::Builtin;
 use crate::token::{Place, Token};
 use std::rc::Rc;
 
@@ -18,6 +19,9 @@ macro_rules! codes {
         }
 
         impl Code {
+            /// Every code but a host's, in order.
+            pub const ALL: &[Code] = &[$(Code::$variant),*];
+
             /// The code's name.
             pub fn name(self) -> &'static str {
                 match self {
@@ -92,34 +96,100 @@ impl Error {
             word: at.map(|t| Rc::clone(&t.text)),
         }
     }
+
+    /// Where it happened and why, as `Display` writes them after its code:
+    /// `PLACE: WORD: MESSAGE`.
+    pub fn located(&self) -> String {
+        // An empty word (`define ''`) is said in its message, not here.
+        let word = self.word.as_deref().filter(|w| !w.is_empty());
+        match (&self.place, word) {
+            (Some(place), Some(word)) => format!("{place}: {word}: {}", self.message),
+            (Some(place), None) => format!("{place}: {}", self.message),
+            (None, Some(word)) => format!("{word}: {}", self.message),
+            (None, None) => self.message.clone(),
+        }
+    }
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: ", self.code.name())?;
-        // An empty word (`define ''`) is said in its message, not here.
-        let word = self.word.as_deref().filter(|w| !w.is_empty());
-        match (&self.place, word) {
-            (Some(place), Some(word)) => write!(f, "{place}: {word}: ")?,
-            (Some(place), None) => write!(f, "{place}: ")?,
-            (None, Some(word)) => write!(f, "{word}: ")?,
-            (None, None) => {}
-        }
-        f.write_str(&self.message)
+        write!(f, "{}: {}", self.code.name(), self.located())
     }
 }
 
 impl std::error::Error for Error {}
 
-/// What an application word gives when it fails: its code and why.
+/// What a step takes, as a value of another kind is told it: the same
+/// words whether the checker finds it before the run or the machine during
+/// it.
+#[derive(Clone, Copy)]
+pub(crate) enum Wants {
+    /// What `if` and `until` take.
+    Flag,
+    /// What `each` walks.
+    Each,
+    /// A string or a list, for the word.
+    Seq(Builtin),
+    /// An integer, for the word.
+    Int(Builtin),
+    /// Arithmetic's two values.
+    Ints,
+    /// `lt`'s two values.
+    Ordered,
+    /// What `concat` joins.
+    Concat,
+    /// What is pushed onto a string.
+    PushText,
+    /// What is put into a string.
+    PutText,
+    /// What `code` takes.
+    Char,
+}
+
+impl Wants {
+    /// "each walks a string or a list, not an integer": `got`, the kinds
+    /// found.
+    pub(crate) fn not(self, got: impl std::fmt::Display) -> String {
+        match self {
+            Wants::Flag => format!("takes a boolean (from eq or lt), not {got}"),
+            Wants::Each => format!("each walks a string or a list, not {got}"),
+            Wants::Seq(word) => format!("{} takes a string or a list, not {got}", word.name()),
+            Wants::Int(word) => format!("{} takes an integer, not {got}", word.name()),
+            Wants::Ints => format!("takes two integers, not {got}"),
+            Wants::Ordered => {
+                format!("lt compares two integers, two strings or two lists, not {got}")
+            }
+            Wants::Concat => format!("concat takes a list of strings or of lists, not {got}"),
+            Wants::PushText => format!("push onto a string takes a string, not {got}"),
+            Wants::PutText => format!("put into a string takes a string, not {got}"),
+            Wants::Char => format!("code takes a one-character string, not {got}"),
+        }
+    }
+}
+
+/// What too few values says, the checker's and the machine's alike: "takes
+/// 2 values, and the stack has 1". `takes` says how it takes them ("takes",
+/// "needs at least"), `has` how many the stack has.
+pub(crate) fn underflow(takes: &str, n: usize, has: &str, inside: bool) -> String {
+    let values = if n == 1 { "value" } else { "values" };
+    let inside = if inside {
+        " (inside list … end, which starts with an empty stack)"
+    } else {
+        ""
+    };
+    format!("{takes} {n} {values}, and the stack has {has}{inside}")
+}
+
+/// What an application word gives when it fails: its code (the language's
+/// own, when it is one of them, or `Code::Host`) and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
-    pub code: &'static str,
+    pub code: Code,
     pub message: String,
 }
 
 impl Failure {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Failure {
+    pub fn new(code: Code, message: impl Into<String>) -> Failure {
         Failure {
             code,
             message: message.into(),

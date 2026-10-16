@@ -1,6 +1,15 @@
-//! Splitting a line into words, the one grammar shared by the config file,
-//! bindings and the command prompt; and quoting words back for display and for a
-//! shell.
+//! Splitting a line into words as a shell does, for the `command` word and
+//! the `shell` setting; and quoting words back for display and for a shell.
+
+/// `names` in a sentence: `a, b and c`, `last` (`and`, `or`) before the
+/// last one.
+pub fn listed(names: &[&str], last: &str) -> String {
+    match names.split_last() {
+        Some((end, [])) => (*end).to_owned(),
+        Some((end, rest)) => format!("{} {last} {end}", rest.join(", ")),
+        None => String::new(),
+    }
+}
 
 /// Splits `line` like a shell: whitespace separates words; `'…'` is literal;
 /// `"…"` is literal except that a backslash escapes `"`, `\`, `$` and a

@@ -67,6 +67,21 @@ fn decrqm_reports_the_modes_xterm_keeps() -> Result {
     Ok(())
 }
 
+/// Grapheme clustering (2027) is permanently set, as kitty and Ghostty
+/// report it: DECRQM says 3 however a program sets, resets, saves or
+/// restores it, and `Screen::mode` reads it set.
+#[test]
+fn grapheme_clustering_is_permanently_set() -> Result {
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
+    assert_eq!(replies(&mut p, b"\x1b[?2027$p")?, "^[[?2027;3$y");
+    p.process(b"\x1b[?2027s\x1b[?2027l\x1b[?2027r\x1b[?2027l")?;
+    assert_eq!(replies(&mut p, b"\x1b[?2027$p")?, "^[[?2027;3$y");
+    assert!(p.screen().mode(Mode::GraphemeClustering));
+    // Not an ANSI mode.
+    assert_eq!(replies(&mut p, b"\x1b[2027$p")?, "^[[2027;0$y");
+    Ok(())
+}
+
 /// Reverse wraparound (ctlseqs: `CSI ? 45 h`, XTREVWRAP, and `CSI ? 1045
 /// h`, XTREVWRAP2), with DECAWM: BS and CUB at the first column go on at
 /// the end of the line before. 45 goes back only over a line's soft wraps;

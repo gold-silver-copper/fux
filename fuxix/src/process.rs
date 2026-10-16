@@ -34,7 +34,9 @@ impl fmt::Display for Pid {
 
 /// Expands `/// doc, then Variant "NAME" SIGNAL, ...` to the enum `Signal` of those
 /// variants, `Signal::ALL` in that order, `raw` (each one's `libc::SIGNAL`)
-/// and `named` (the variant whose name, exactly as written, is given).
+/// and `from_raw` (the variant of a number), `name` (its `NAME`) and `named`
+/// (the variant whose name, exactly as written, is given): `Term "TERM"
+/// SIGTERM,` gives `Signal::Term`, raw `libc::SIGTERM`, named "TERM".
 macro_rules! signals {
     ($(#[$doc:meta])* $($variant:ident $name:literal $raw:ident,)*) => {
         $(#[$doc])*
@@ -54,6 +56,21 @@ macro_rules! signals {
                 }
             }
 
+            /// The signal numbered `raw`, if it is one of these.
+            pub fn from_raw(raw: i32) -> Option<Signal> {
+                match raw {
+                    $(libc::$raw => Some(Signal::$variant),)*
+                    _ => None,
+                }
+            }
+
+            /// Its name without `SIG`, as `named` takes it: `TERM`.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Signal::$variant => $name,)*
+                }
+            }
+
             /// The signal a name names, written as `fux signal` takes it:
             /// without `SIG`, in capitals (`TERM`).
             pub fn named(name: &str) -> Option<Signal> {
@@ -69,7 +86,8 @@ macro_rules! signals {
 signals! {
     /// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
     /// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
-    /// `Stop` stopped as "Stopped (signal)".
+    /// `Stop` stopped as "Stopped (signal)". The last six are those a
+    /// program dies of on its own, which fux names when it tells a death.
     Hup "HUP" SIGHUP,
     Int "INT" SIGINT,
     Term "TERM" SIGTERM,
@@ -81,6 +99,12 @@ signals! {
     Quit "QUIT" SIGQUIT,
     Usr1 "USR1" SIGUSR1,
     Usr2 "USR2" SIGUSR2,
+    Ill "ILL" SIGILL,
+    Abrt "ABRT" SIGABRT,
+    Fpe "FPE" SIGFPE,
+    Segv "SEGV" SIGSEGV,
+    Pipe "PIPE" SIGPIPE,
+    Alrm "ALRM" SIGALRM,
 }
 
 /// Sends `signal` to the process `pid`.
@@ -366,6 +390,17 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn a_signal_is_found_again_by_its_number_and_its_name() {
+        for signal in Signal::ALL {
+            assert_eq!(Signal::from_raw(signal.raw()), Some(signal));
+            assert_eq!(Signal::named(signal.name()), Some(signal));
+        }
+        assert_eq!(Signal::from_raw(libc::SIGSEGV), Some(Signal::Segv));
+        assert_eq!(Signal::Usr1.name(), "USR1");
+        assert_eq!(Signal::from_raw(0), None);
+    }
+
     /// Polls `ended` until it answers, or a few seconds pass.
     fn wait_ended(pid: Pid) -> Option<Status> {
         let deadline = Instant::now().checked_add(Duration::from_secs(5));
@@ -570,64 +605,65 @@ enum Blocked {
     Other,
 }
 
-/// Where the descriptors a poll watches are: an array of `pollfd` in the
-/// program's memory and its length (poll), the length and address of the
-/// set read from (select), or an epoll descriptor (epoll_wait).
+/// Where the descriptors a poll watches are: an array of `len` `pollfd`s
+/// at `at` in the program's memory (poll), the set of the descriptors below
+/// `len` read from, at `at` (select), or an epoll descriptor (epoll_wait).
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Watched {
-    Fds(u64, u64),
-    Set(u64, u64),
+    Fds { at: u64, len: u64 },
+    Set { len: u64, at: u64 },
     Epoll(u64),
 }
 
-/// The system call numbers this machine uses, by what they wait for.
+/// What a system call waits for, by its number (`libc::SYS_*`, this
+/// machine's) and its arguments.
 #[cfg(all(
     any(target_os = "linux", target_os = "android"),
-    target_arch = "x86_64"
+    any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
     let arg = |i: usize| args.get(i).copied().unwrap_or(0);
     let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
+    let Ok(nr) = libc::c_long::try_from(nr) else {
+        return Blocked::Other;
+    };
+    let (fds, set, epoll) = (
+        Watched::Fds {
+            at: arg(0),
+            len: arg(1),
+        },
+        Watched::Set {
+            len: arg(0),
+            at: arg(1),
+        },
+        Watched::Epoll(arg(0)),
+    );
     match nr {
-        // read, pread64, readv, preadv, splice (`cat` from a terminal).
-        0 | 17 | 19 | 295 | 275 => Blocked::Read(arg(0)),
-        7 => Blocked::Poll(forever(arg(2)), Watched::Fds(arg(0), arg(1))),
-        23 | 270 => Blocked::Poll(arg(4) == 0, Watched::Set(arg(0), arg(1))),
-        271 => Blocked::Poll(arg(2) == 0, Watched::Fds(arg(0), arg(1))),
-        232 | 281 => Blocked::Poll(forever(arg(3)), Watched::Epoll(arg(0))),
-        441 => Blocked::Poll(arg(3) == 0, Watched::Epoll(arg(0))),
-        35 | 230 => Blocked::Sleep,
-        61 | 247 => Blocked::Child,
+        // read and its kind; splice (`cat` from a terminal).
+        libc::SYS_read
+        | libc::SYS_pread64
+        | libc::SYS_readv
+        | libc::SYS_preadv
+        | libc::SYS_splice => Blocked::Read(arg(0)),
+        // poll, select and epoll_wait are x86_64's alone: aarch64 has only
+        // their later forms.
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_poll => Blocked::Poll(forever(arg(2)), fds),
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_select => Blocked::Poll(arg(4) == 0, set),
+        libc::SYS_pselect6 => Blocked::Poll(arg(4) == 0, set),
+        libc::SYS_ppoll => Blocked::Poll(arg(2) == 0, fds),
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_epoll_wait => Blocked::Poll(forever(arg(3)), epoll),
+        libc::SYS_epoll_pwait => Blocked::Poll(forever(arg(3)), epoll),
+        libc::SYS_epoll_pwait2 => Blocked::Poll(arg(3) == 0, epoll),
+        libc::SYS_nanosleep | libc::SYS_clock_nanosleep => Blocked::Sleep,
+        libc::SYS_wait4 | libc::SYS_waitid => Blocked::Child,
         // A futex with a time limit (its fourth argument) wakes on a timer:
         // a sleep (Python's `Event.wait(0.1)`).
-        202 if arg(3) != 0 => Blocked::Sleep,
-        202 => Blocked::Futex,
-        _ => Blocked::Other,
-    }
-}
-
-/// The system call numbers this machine uses, by what they wait for.
-#[cfg(all(
-    any(target_os = "linux", target_os = "android"),
-    target_arch = "aarch64"
-))]
-fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
-    let arg = |i: usize| args.get(i).copied().unwrap_or(0);
-    let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
-    match nr {
-        // read, readv, pread64, preadv, splice (`cat` from a terminal).
-        63 | 65 | 67 | 69 | 76 => Blocked::Read(arg(0)),
-        72 => Blocked::Poll(arg(4) == 0, Watched::Set(arg(0), arg(1))),
-        73 => Blocked::Poll(arg(2) == 0, Watched::Fds(arg(0), arg(1))),
-        22 => Blocked::Poll(forever(arg(3)), Watched::Epoll(arg(0))),
-        441 => Blocked::Poll(arg(3) == 0, Watched::Epoll(arg(0))),
-        101 | 115 => Blocked::Sleep,
-        260 | 95 => Blocked::Child,
-        // A futex with a time limit (its fourth argument) wakes on a timer:
-        // a sleep (Python's `Event.wait(0.1)`).
-        98 if arg(3) != 0 => Blocked::Sleep,
-        98 => Blocked::Futex,
+        libc::SYS_futex if arg(3) != 0 => Blocked::Sleep,
+        libc::SYS_futex => Blocked::Futex,
         _ => Blocked::Other,
     }
 }
@@ -689,7 +725,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
         bytes
     };
     let fds: Vec<u64> = match watched {
-        Watched::Fds(at, n) => {
+        Watched::Fds { at, len: n } => {
             let array = memory(at, n.min(1024).saturating_mul(8));
             let (pollfds, _) = array.as_chunks::<8>();
             (pollfds.iter())
@@ -699,7 +735,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
                 })
                 .collect()
         }
-        Watched::Set(n, at) => {
+        Watched::Set { len: n, at } => {
             let n = n.min(1024);
             let set = memory(at, n.div_ceil(64).saturating_mul(8));
             let (words, _) = set.as_chunks::<8>();
@@ -964,19 +1000,28 @@ mod probe {
 
     /// Each kind of wait, by its system call and the arguments that say
     /// whether it has a time limit.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
-    fn x86_64_system_calls_are_told_by_what_they_wait_for() {
-        for read in [0, 17, 19, 295, 275] {
-            assert_eq!(blocked_in(read, &[5]), Blocked::Read(5), "{read}");
+    fn system_calls_are_told_by_what_they_wait_for() {
+        use libc::*;
+        let nr = |call: c_long| u64::try_from(call).unwrap_or(u64::MAX);
+        for read in [SYS_read, SYS_pread64, SYS_readv, SYS_preadv, SYS_splice] {
+            assert_eq!(blocked_in(nr(read), &[5]), Blocked::Read(5), "{read}");
         }
-        let fds = Watched::Fds(9, 2);
-        assert_eq!(blocked_in(7, &[9, 2, NEVER]), Blocked::Poll(true, fds));
-        let int_never = u64::from(u32::MAX);
-        assert_eq!(blocked_in(7, &[9, 2, int_never]), Blocked::Poll(true, fds));
-        assert_eq!(blocked_in(7, &[9, 2, 100]), Blocked::Poll(false, fds));
-        let set = Watched::Set(4, 9);
-        for select in [23, 270] {
+        let fds = Watched::Fds { at: 9, len: 2 };
+        let set = Watched::Set { len: 4, at: 9 };
+        let epoll = Watched::Epoll(3);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let poll = nr(SYS_poll);
+            assert_eq!(blocked_in(poll, &[9, 2, NEVER]), Blocked::Poll(true, fds));
+            let int_never = u64::from(u32::MAX);
+            assert_eq!(
+                blocked_in(poll, &[9, 2, int_never]),
+                Blocked::Poll(true, fds)
+            );
+            assert_eq!(blocked_in(poll, &[9, 2, 100]), Blocked::Poll(false, fds));
+            let select = nr(SYS_select);
             assert_eq!(
                 blocked_in(select, &[4, 9, 0, 0, 0]),
                 Blocked::Poll(true, set)
@@ -985,11 +1030,7 @@ mod probe {
                 blocked_in(select, &[4, 9, 0, 0, 7]),
                 Blocked::Poll(false, set)
             );
-        }
-        assert_eq!(blocked_in(271, &[9, 2, 0]), Blocked::Poll(true, fds));
-        assert_eq!(blocked_in(271, &[9, 2, 7]), Blocked::Poll(false, fds));
-        let epoll = Watched::Epoll(3);
-        for epoll_wait in [232, 281] {
+            let epoll_wait = nr(SYS_epoll_wait);
             assert_eq!(
                 blocked_in(epoll_wait, &[3, 9, 1, NEVER]),
                 Blocked::Poll(true, epoll)
@@ -999,58 +1040,48 @@ mod probe {
                 Blocked::Poll(false, epoll)
             );
         }
-        assert_eq!(blocked_in(441, &[3, 9, 1, 0]), Blocked::Poll(true, epoll));
-        assert_eq!(blocked_in(441, &[3, 9, 1, 7]), Blocked::Poll(false, epoll));
-        for (nr, kind) in [
-            (35, Blocked::Sleep),
-            (230, Blocked::Sleep),
-            (61, Blocked::Child),
-            (247, Blocked::Child),
-            (202, Blocked::Futex),
-            (1, Blocked::Other),
-        ] {
-            assert_eq!(blocked_in(nr, &[]), kind, "{nr}");
-        }
+        let pselect = nr(SYS_pselect6);
         assert_eq!(
-            blocked_in(202, &[9, 0, 0, 7]),
-            Blocked::Sleep,
-            "a futex with a limit"
+            blocked_in(pselect, &[4, 9, 0, 0, 0]),
+            Blocked::Poll(true, set)
         );
-    }
-
-    /// aarch64's numbers, which share few with x86_64's.
-    #[cfg(target_arch = "aarch64")]
-    #[test]
-    fn aarch64_system_calls_are_told_by_what_they_wait_for() {
-        for read in [63, 65, 67, 69, 76] {
-            assert_eq!(blocked_in(read, &[5]), Blocked::Read(5), "{read}");
-        }
-        let set = Watched::Set(4, 9);
-        assert_eq!(blocked_in(72, &[4, 9, 0, 0, 0]), Blocked::Poll(true, set));
-        assert_eq!(blocked_in(72, &[4, 9, 0, 0, 7]), Blocked::Poll(false, set));
-        let fds = Watched::Fds(9, 2);
-        assert_eq!(blocked_in(73, &[9, 2, 0]), Blocked::Poll(true, fds));
-        assert_eq!(blocked_in(73, &[9, 2, 7]), Blocked::Poll(false, fds));
-        let epoll = Watched::Epoll(3);
         assert_eq!(
-            blocked_in(22, &[3, 9, 1, NEVER]),
+            blocked_in(pselect, &[4, 9, 0, 0, 7]),
+            Blocked::Poll(false, set)
+        );
+        let ppoll = nr(SYS_ppoll);
+        assert_eq!(blocked_in(ppoll, &[9, 2, 0]), Blocked::Poll(true, fds));
+        assert_eq!(blocked_in(ppoll, &[9, 2, 7]), Blocked::Poll(false, fds));
+        let pwait = nr(SYS_epoll_pwait);
+        assert_eq!(
+            blocked_in(pwait, &[3, 9, 1, NEVER]),
             Blocked::Poll(true, epoll)
         );
-        assert_eq!(blocked_in(22, &[3, 9, 1, 100]), Blocked::Poll(false, epoll));
-        assert_eq!(blocked_in(441, &[3, 9, 1, 0]), Blocked::Poll(true, epoll));
-        assert_eq!(blocked_in(441, &[3, 9, 1, 7]), Blocked::Poll(false, epoll));
-        for (nr, kind) in [
-            (101, Blocked::Sleep),
-            (115, Blocked::Sleep),
-            (260, Blocked::Child),
-            (95, Blocked::Child),
-            (98, Blocked::Futex),
-            (64, Blocked::Other),
+        assert_eq!(
+            blocked_in(pwait, &[3, 9, 1, 100]),
+            Blocked::Poll(false, epoll)
+        );
+        let pwait2 = nr(SYS_epoll_pwait2);
+        assert_eq!(
+            blocked_in(pwait2, &[3, 9, 1, 0]),
+            Blocked::Poll(true, epoll)
+        );
+        assert_eq!(
+            blocked_in(pwait2, &[3, 9, 1, 7]),
+            Blocked::Poll(false, epoll)
+        );
+        for (call, kind) in [
+            (SYS_nanosleep, Blocked::Sleep),
+            (SYS_clock_nanosleep, Blocked::Sleep),
+            (SYS_wait4, Blocked::Child),
+            (SYS_waitid, Blocked::Child),
+            (SYS_futex, Blocked::Futex),
+            (SYS_write, Blocked::Other),
         ] {
-            assert_eq!(blocked_in(nr, &[]), kind, "{nr}");
+            assert_eq!(blocked_in(nr(call), &[]), kind, "{call}");
         }
         assert_eq!(
-            blocked_in(98, &[9, 0, 0, 7]),
+            blocked_in(nr(SYS_futex), &[9, 0, 0, 7]),
             Blocked::Sleep,
             "a futex with a limit"
         );
@@ -1084,20 +1115,33 @@ mod probe {
             [&fd[..], &events.to_ne_bytes()[..], &[0, 0][..]].concat()
         };
         let asks = pollfd(libc::POLLIN);
-        assert!(watches_terminal(pid, Watched::Fds(address(&asks), 1), tty));
+        assert!(watches_terminal(
+            pid,
+            Watched::Fds {
+                at: address(&asks),
+                len: 1
+            },
+            tty
+        ));
         let other = pollfd(libc::POLLPRI);
         assert!(!watches_terminal(
             pid,
-            Watched::Fds(address(&other), 1),
+            Watched::Fds {
+                at: address(&other),
+                len: 1
+            },
             tty
         ));
         let elsewhere = std::path::Path::new("/nowhere");
         assert!(!watches_terminal(
             pid,
-            Watched::Fds(address(&asks), 1),
+            Watched::Fds {
+                at: address(&asks),
+                len: 1
+            },
             elsewhere
         ));
-        assert!(!watches_terminal(pid, Watched::Fds(0, 1), tty));
+        assert!(!watches_terminal(pid, Watched::Fds { at: 0, len: 1 }, tty));
         Ok(())
     }
 
@@ -1122,21 +1166,37 @@ mod probe {
         let watched = set(&[fd]);
         assert!(watches_terminal(
             pid,
-            Watched::Set(n, address(&watched)),
+            Watched::Set {
+                len: n,
+                at: address(&watched)
+            },
             tty
         ));
         let others = set(&[0]);
         assert!(!watches_terminal(
             pid,
-            Watched::Set(n, address(&others)),
+            Watched::Set {
+                len: n,
+                at: address(&others)
+            },
             tty
         ));
         let none = set(&[]);
-        assert!(!watches_terminal(pid, Watched::Set(n, address(&none)), tty));
+        assert!(!watches_terminal(
+            pid,
+            Watched::Set {
+                len: n,
+                at: address(&none)
+            },
+            tty
+        ));
         // Below its count only.
         assert!(!watches_terminal(
             pid,
-            Watched::Set(fd, address(&watched)),
+            Watched::Set {
+                len: fd,
+                at: address(&watched)
+            },
             tty
         ));
         Ok(())

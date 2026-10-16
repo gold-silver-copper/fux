@@ -398,12 +398,11 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         let mut stream = UnixStream::connect(&socket).map_err(e)?;
         let hello = Hello {
             protocol: PROTOCOL,
-            version: "flood",
+            version: "flood".into(),
             role: Role::Attach,
         };
         let attach = Attach {
-            rows: nonzero(10)?,
-            cols: nonzero(40)?,
+            size: sized(10, 40)?,
             workspace: None,
             read_only: false,
             env: Vec::new(),

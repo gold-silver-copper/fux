@@ -2,6 +2,7 @@
 //! Graphics"): the data of a `DCS P1 ; P2 ; P3 q … ST`, decoded as it
 //! comes into a picture of RGBA pixels. Pixels no sixel paints stay clear.
 
+use std::io::Write;
 use std::sync::Arc;
 
 /// The most pixels across or down a picture may have: a 4K screen's.
@@ -27,14 +28,21 @@ impl Picture {
         if x >= self.width {
             return None;
         }
-        let at = u64::from(y)
-            .saturating_mul(u64::from(self.width))
-            .saturating_add(u64::from(x));
-        let at = usize::try_from(at).ok()?;
-        let at = at.checked_mul(4)?;
+        let at = offset(x, y, self.width)?;
         let bytes = self.rgba.get(at..at.checked_add(4)?)?;
         bytes.try_into().ok()
     }
+}
+
+/// The colour cube a picture of more than 256 colours is drawn in: 6
+/// reds, 7 greens and 6 blues, numbered red first, then green.
+const CUBE: (usize, usize, usize) = (6, 7, 6);
+
+/// Where the pixel at `x`, `y` of a picture `width` wide starts in its RGBA
+/// bytes.
+fn offset(x: u32, y: u32, width: u32) -> Option<usize> {
+    let at = u64::from(y).checked_mul(u64::from(width))?;
+    usize::try_from(at.checked_add(u64::from(x))?.checked_mul(4)?).ok()
 }
 
 /// Where the decoder is in its data: a run of digits after `!`, `#` or
@@ -171,11 +179,9 @@ impl Decoder {
                 }
                 let y = self.y.saturating_add(bit);
                 for x in self.x..right {
-                    let at = u64::from(y).saturating_mul(u64::from(self.width));
-                    let at = at.saturating_add(u64::from(x)).saturating_mul(4);
-                    let at = usize::try_from(at).unwrap_or(usize::MAX);
+                    let at = offset(x, y, self.width).unwrap_or(usize::MAX);
                     if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
-                        pixel.copy_from_slice(&[r, g, b, 255]);
+                        crate::copy_from(pixel, &[r, g, b, 255]);
                     }
                 }
             }
@@ -205,7 +211,7 @@ impl Decoder {
             if let (Some(source), Some(target)) =
                 (source, grown.get_mut(to..to.saturating_add(old)))
             {
-                target.copy_from_slice(source);
+                crate::copy_from(target, source);
             }
         }
         (self.width, self.height, self.pixels) = (width, height, grown);
@@ -316,8 +322,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     if width == 0 || height == 0 {
         return;
     }
-    // Colours as they are if there are few enough, else to a cube of
-    // 6 by 7 by 6.
+    // Colours as they are if there are few enough, else to the cube.
     let at = |px: u32, py: u32| picture.pixel(x.saturating_add(px), y.saturating_add(py));
     let mut seen: Vec<[u8; 3]> = Vec::new();
     let mut exact = true;
@@ -335,36 +340,34 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
             }
         }
     }
+    let (reds, greens, blues) = CUBE;
     let steps = |c: u8, of: usize| usize::from(c).saturating_mul(of) >> 8;
     let cube = |[r, g, b]: [u8; 3]| {
-        let (r, g, b) = (steps(r, 6), steps(g, 7), steps(b, 6));
-        r.saturating_mul(42)
-            .saturating_add(g.saturating_mul(6))
+        let (r, g, b) = (steps(r, reds), steps(g, greens), steps(b, blues));
+        (r.saturating_mul(greens).saturating_add(g))
+            .saturating_mul(blues)
             .saturating_add(b)
+    };
+    let level = |n: usize, of: usize| {
+        let n = n
+            .saturating_mul(255)
+            .checked_div(of.saturating_sub(1))
+            .unwrap_or(0);
+        u8::try_from(n).unwrap_or(u8::MAX)
     };
     let palette: Vec<[u8; 3]> = if exact {
         seen
     } else {
-        (0..252usize)
-            .map(|i| {
-                let level = |n: usize, of: usize| {
-                    let n = n
-                        .saturating_mul(255)
-                        .checked_div(of.saturating_sub(1))
-                        .unwrap_or(0);
-                    u8::try_from(n).unwrap_or(u8::MAX)
-                };
-                let (r, rest) = (
-                    i.checked_div(42).unwrap_or(0),
-                    i.checked_rem(42).unwrap_or(0),
-                );
-                let (g, b) = (
-                    rest.checked_div(6).unwrap_or(0),
-                    rest.checked_rem(6).unwrap_or(0),
-                );
-                [level(r, 6), level(g, 7), level(b, 6)]
-            })
-            .collect()
+        // In `cube`'s order: blue fastest, then green, then red.
+        let mut levels = Vec::new();
+        for r in 0..reds {
+            for g in 0..greens {
+                for b in 0..blues {
+                    levels.push([level(r, reds), level(g, greens), level(b, blues)]);
+                }
+            }
+        }
+        levels
     };
     let index = |rgb: [u8; 3]| -> usize {
         if exact {
@@ -375,7 +378,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     };
     // P2 = 1: clear pixels stay as they are. The raster attributes give
     // the size, square pixels.
-    let _ = std::io::Write::write_fmt(out, format_args!("\x1bP0;1;0q\"1;1;{width};{height}"));
+    let _ = write!(out, "\x1bP0;1;0q\"1;1;{width};{height}");
     for (i, [r, g, b]) in palette.iter().enumerate() {
         let share = |c: u8| {
             u32::from(c)
@@ -383,10 +386,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
                 .checked_div(255)
                 .unwrap_or(0)
         };
-        let _ = std::io::Write::write_fmt(
-            out,
-            format_args!("#{i};2;{};{};{}", share(*r), share(*g), share(*b)),
-        );
+        let _ = write!(out, "#{i};2;{};{};{}", share(*r), share(*g), share(*b));
     }
     let colours = palette.len();
     let mut band = vec![0u8; usize::try_from(width).unwrap_or(0)];
@@ -419,13 +419,13 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
                 out.push(b'$');
             }
             first = false;
-            let _ = std::io::Write::write_fmt(out, format_args!("#{colour}"));
+            let _ = write!(out, "#{colour}");
             for run in band.chunk_by(|a, b| a == b) {
                 let ch = run.first().copied().unwrap_or(0).saturating_add(0x3f);
                 match run.len() {
                     1..=3 => out.extend(std::iter::repeat_n(ch, run.len())),
                     n => {
-                        let _ = std::io::Write::write_fmt(out, format_args!("!{n}"));
+                        let _ = write!(out, "!{n}");
                         out.push(ch);
                     }
                 }
@@ -475,6 +475,43 @@ mod tests {
             .and_then(|b| b.strip_suffix(b"\x1b\\"))
             .unwrap_or_default();
         assert_eq!(decode(body).as_deref(), Some(&*picture));
+    }
+
+    /// A picture of more than 256 colours is drawn in a cube of 6 reds, 7
+    /// greens and 6 blues: each channel to its nearest step below, which
+    /// the colour definitions give in percent.
+    #[test]
+    fn many_colours_are_drawn_in_the_cube() {
+        let mut rgba = Vec::new();
+        for c in [[0, 0, 0], [255, 255, 255], [128, 128, 128], [200, 100, 50]] {
+            rgba.extend(c);
+            rgba.push(255);
+        }
+        for i in 4..300u32 {
+            let [low, high, ..] = i.to_le_bytes();
+            rgba.extend([low, high.saturating_mul(128), 7, 255]);
+        }
+        let picture = Picture {
+            width: 300,
+            height: 1,
+            rgba,
+        };
+        let mut encoded = Vec::new();
+        encode(&picture, (0, 0, 300, 1), &mut encoded);
+        let body = encoded
+            .strip_prefix(b"\x1bP0;1;0q")
+            .and_then(|b| b.strip_suffix(b"\x1b\\"))
+            .unwrap_or_default();
+        let back = decode(body);
+        let pixel = |x| back.as_ref().and_then(|p| p.pixel(x, 0));
+        assert_eq!(pixel(0), Some([0, 0, 0, 255]));
+        assert_eq!(pixel(1), Some([255, 255, 255, 255]));
+        // 128: red and blue 3 of 5 steps, 153, 60%; green 3 of 6, 127,
+        // 49%, read back as 124.
+        assert_eq!(pixel(2), Some([153, 124, 153, 255]));
+        // 200 is red's step 4 (204, 80%); 100 green's 2 (85, 33%: 84); 50
+        // blue's 1 (51, 20%).
+        assert_eq!(pixel(3), Some([204, 84, 51, 255]));
     }
 
     /// Data that would draw past what a picture may hold makes none.

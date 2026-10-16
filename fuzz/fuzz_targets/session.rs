@@ -166,14 +166,13 @@ type State = (
     Config,
     Vec<String>,
     Keymap,
-    Vec<(ClientId, Held, Screen)>,
+    Vec<(ClientId, Screen)>,
 );
 
-/// A client's keys, as its client reads them: its decoder, what its keys
-/// are in the middle of, and the screen it has open.
+/// A client's keys, as its client reads them: its decoder, and the screen
+/// it has open or what its keys are in the middle of.
 #[derive(Default)]
 struct Keys {
-    held: Held,
     screen: Screen,
     decoder: Decoder,
 }
@@ -234,7 +233,7 @@ impl Run {
     fn ask(&mut self, request: Request) -> Reply {
         let origin = match request.context.client {
             Some(client) if self.s.views.contains_key(&client) => Origin::Client(client),
-            Some(_) | None => Origin::default(),
+            Some(_) | None => Origin::Cli(fux::session::Caller::default()),
         };
         match self.s.begin(request.command, &origin) {
             Begun::Done(outcome) => outcome,
@@ -356,7 +355,6 @@ impl Run {
     fn open(&mut self, client: ClientId, screen: Screen) {
         let mut acts = Vec::new();
         if let Some(keys) = self.keys.get_mut(&client) {
-            keys.held = Held::Normal;
             if let Screen::Copy(_) = keys.screen {
                 acts.push(Act::Copy(CopyAct::Leave));
             }
@@ -418,8 +416,10 @@ impl Run {
             Outgoing::Shutdown { .. } => self.shut = true,
             Outgoing::Run(client, code) => self.run_as(client, &code),
             Outgoing::Ended(client) => {
-                if let Some(keys) = self.keys.get_mut(&client) {
-                    keys.screen.ended();
+                if let Some(keys) = self.keys.get_mut(&client)
+                    && keys.screen.is_open()
+                {
+                    keys.screen = Screen::default();
                 }
             }
             Outgoing::Keys(client, typed) => {
@@ -527,7 +527,7 @@ impl Run {
                 {
                     continue;
                 }
-                Input::Paste(text) if self.screen_open(client) => {
+                Input::Paste(text) => {
                     let effects = match self.keys.get_mut(&client) {
                         Some(keys) => keys.screen.paste(&text),
                         None => Vec::new(),
@@ -536,7 +536,6 @@ impl Run {
                     continue;
                 }
                 Input::Mouse(_) if self.screen_open(client) => continue,
-                Input::Paste(text) => Act::Paste(text),
                 Input::PasteTooLong => {
                     let limit = fux::decode::PASTE_LIMIT / 1024;
                     let text = format!("paste exceeds {limit} KiB; discarded");
@@ -551,9 +550,7 @@ impl Run {
     }
 
     fn screen_open(&self, client: ClientId) -> bool {
-        self.keys
-            .get(&client)
-            .is_some_and(|k| k.screen != Screen::None)
+        self.keys.get(&client).is_some_and(|k| k.screen.is_open())
     }
 
     /// What a screen's key or paste led to: actions sent, programs run.
@@ -576,14 +573,14 @@ impl Run {
         };
         let read_only = view.read_only;
         let mut keys = self.keys.remove(&client).unwrap_or_default();
-        if keys.screen != Screen::None && !read_only {
-            let effects = keys.screen.key(stroke.press);
+        if keys.screen.is_open() && !read_only {
+            let effects = keys.screen.key(&self.keymap, stroke, read_only);
             self.keys.insert(client, keys);
             self.effects(client, effects);
             return;
         }
-        let repeating = matches!(keys.held, Held::Repeat { .. }) && !read_only;
-        let steps = keys.held.press(&self.keymap, stroke, read_only);
+        let repeating = matches!(keys.screen, Screen::Keys(Held::Repeat { .. })) && !read_only;
+        let steps = keys.screen.key(&self.keymap, stroke, read_only);
         self.keys.insert(client, keys);
         if repeating {
             for pane in self.s.panes.values_mut() {
@@ -659,7 +656,7 @@ impl Run {
             })
             .collect();
         let held = (self.keys.iter())
-            .map(|(&c, keys)| (c, keys.held.clone(), keys.screen.clone()))
+            .map(|(&c, keys)| (c, keys.screen.clone()))
             .collect();
         (
             ls,
@@ -719,9 +716,9 @@ fn check(run: &Run) {
         let shown = s.views.get(id).map(|v| &v.mode);
         if matches!(shown, Some(Mode::Panel(Panel::Repeat(_)))) {
             assert!(
-                matches!(keys.held, Held::Repeat { .. }),
+                matches!(keys.screen, Screen::Keys(Held::Repeat { .. })),
                 "{id} shows a repeat bar, its keys {:?}",
-                keys.held
+                keys.screen
             );
         }
     }

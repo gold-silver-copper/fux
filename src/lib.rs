@@ -8,6 +8,7 @@ pub mod act;
 pub mod capture;
 pub mod classify;
 pub mod client;
+pub mod code;
 pub mod command;
 pub mod config;
 pub mod copy;
@@ -40,6 +41,7 @@ pub mod wire;
 pub mod words;
 pub mod workspace;
 
+use json::Json;
 use std::io::PipeReader;
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -89,7 +91,7 @@ pub fn main() -> ExitCode {
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
             let _ = writeln!(std::io::stderr(), "fux: {failed}");
-            failed.status
+            failed.status.get()
         }
     };
     let _ = stdout.flush();
@@ -97,7 +99,8 @@ pub fn main() -> ExitCode {
 }
 
 /// How a client starts a server, in the background: `fux __serve SOCKET`,
-/// with `fresh` to forget what the last one held. No person types it.
+/// with `fresh` to forget what the last one held. A client types it; no
+/// help lists it, though a person can type it too.
 pub const SERVE: &str = "__serve";
 
 /// A server, started by a client: it leaves the client's session first, so
@@ -113,7 +116,7 @@ fn serve(args: &[String]) -> ExitCode {
     let fresh = args.get(1).is_some_and(|a| a == "fresh");
     // Fails only for a session leader already, which is as good.
     let _ = fuxix::process::setsid();
-    let socket = match socket::socket_path(socket::Choice::Path(path, "socket")) {
+    let socket = match socket::checked(path, "socket") {
         Ok(socket) => socket,
         Err(error) => return fail(error.to_string()),
     };
@@ -123,13 +126,9 @@ fn serve(args: &[String]) -> ExitCode {
     }
 }
 
-/// `fux status`: what answers on `socket`, as text or JSON, and whether it
-/// is a server this fux can drive.
-pub(crate) fn status(
-    socket: &socket::SocketPath,
-    probe: &client::Probe,
-    json: bool,
-) -> (String, bool) {
+/// `fux status`: what answers on `socket`, as text and as JSON, and
+/// whether it is a server this fux can drive.
+pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> (String, String) {
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
     let left = matches!(probe, client::Probe::Left);
@@ -138,40 +137,33 @@ pub(crate) fn status(
         client::Probe::Server { protocol, version } => (true, Some((*protocol, version.as_str()))),
     };
     let compatible = theirs.is_some_and(|(protocol, _)| protocol == protocol::PROTOCOL);
-    let text = if json {
-        let mut fields = vec![
-            ("running", json::Json::Bool(running)),
-            ("socket", json::Json::str(&path)),
-            ("version", json::Json::str(ours)),
-            (
-                "protocol",
-                json::Json::Number(i64::from(protocol::PROTOCOL)),
-            ),
-        ];
-        if left {
-            fields.push(("left", json::Json::Bool(true)));
+    let mut fields = vec![
+        ("running", Json::Bool(running)),
+        ("socket", Json::str(&path)),
+        ("version", Json::str(ours)),
+        ("protocol", Json::int(protocol::PROTOCOL)),
+    ];
+    if left {
+        fields.push(("left", Json::Bool(true)));
+    }
+    if let Some((protocol, version)) = theirs {
+        fields.push(("server_version", Json::str(version)));
+        fields.push(("server_protocol", Json::int(protocol)));
+        fields.push(("compatible", Json::Bool(compatible)));
+    }
+    let text = match theirs {
+        None if left => {
+            format!("no fux server at {path} (its socket is left from one that stopped)")
         }
-        if let Some((protocol, version)) = theirs {
-            fields.push(("server_version", json::Json::str(version)));
-            fields.push(("server_protocol", json::Json::Number(i64::from(protocol))));
-            fields.push(("compatible", json::Json::Bool(compatible)));
-        }
-        json::Json::Object(fields).render()
-    } else {
-        match theirs {
-            None if left => {
-                format!("no fux server at {path} (its socket is left from one that stopped)")
-            }
-            None => format!("no fux server at {path}"),
-            Some((_, version)) if compatible => format!("fux {version} at {path}"),
-            Some((protocol, version)) => format!(
-                "fux {version} at {path} speaks protocol {protocol}, not this fux's ({}, \
-                 fux {ours}): `fux force-kill-server` stops it",
-                protocol::PROTOCOL
-            ),
-        }
+        None => format!("no fux server at {path}"),
+        Some((_, version)) if compatible => format!("fux {version} at {path}"),
+        Some((protocol, version)) => format!(
+            "fux {version} at {path} speaks protocol {protocol}, not this fux's ({}, \
+             fux {ours}): `fux force-kill-server` stops it",
+            protocol::PROTOCOL
+        ),
     };
-    (text, compatible)
+    (text, Json::Object(fields).render())
 }
 
 /// `fux servers`: every server that answers in fux's directory, a line
@@ -194,7 +186,7 @@ pub(crate) fn servers() -> Result<(String, String), socket::Error> {
     let mut lines = Vec::new();
     let mut objects = Vec::new();
     for name in names {
-        let Ok(socket) = socket::socket_path(socket::Choice::Name(&name)) else {
+        let Ok(socket) = socket::socket_path(&socket::Choice::Name(name.clone())) else {
             continue;
         };
         let Ok(client::Probe::Server { protocol, version }) = client::probe(&socket) else {
@@ -202,16 +194,13 @@ pub(crate) fn servers() -> Result<(String, String), socket::Error> {
         };
         let path = socket.path().display().to_string();
         lines.push(format!("{name}  {path}  fux {version}\n"));
-        objects.push(json::Json::Object(vec![
-            ("name", json::Json::str(name.clone())),
-            ("socket", json::Json::str(path.clone())),
-            ("version", json::Json::str(version.clone())),
-            (
-                "compatible",
-                json::Json::Bool(protocol == protocol::PROTOCOL),
-            ),
+        objects.push(Json::Object(vec![
+            ("name", Json::str(name.clone())),
+            ("socket", Json::str(path.clone())),
+            ("version", Json::str(version.clone())),
+            ("compatible", Json::Bool(protocol == protocol::PROTOCOL)),
         ]));
     }
-    let json = format!("{}\n", json::Json::Array(objects).render());
+    let json = format!("{}\n", Json::Array(objects).render());
     Ok((lines.concat(), json))
 }

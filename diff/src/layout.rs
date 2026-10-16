@@ -70,7 +70,10 @@ enum Change {
 }
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $ids:ident, $tree:ident, $area:expr, $line:expr, $split:expr) => {
+    (
+        $name:ident, $fux:ident, $ids:ident, $tree:ident, $area:expr, $line:expr, $split:expr,
+        $pane:expr
+    ) => {
         mod $name {
             use super::{Change, Shape};
             use $fux::keys::Direction;
@@ -88,7 +91,8 @@ macro_rules! stack {
             /// Pane `n` as a person names it, which both sides read alike:
             /// the current side makes IDs from nothing else.
             fn pane(n: u32) -> Option<PaneId> {
-                $fux::command::parse_pane(&format!("%{n}")).ok()
+                let read: fn(&str) -> Option<PaneId> = $pane;
+                read(&format!("%{n}"))
             }
 
             pub struct Laid {
@@ -209,7 +213,8 @@ stack!(
     Node,
     |x, y, w, h| Rect { x, y, w, h },
     |s: &Separator| (s.axis, s.x, s.y, s.len),
-    layout::split
+    layout::split,
+    |text| baseline::command::parse_pane(text).ok()
 );
 // A rect is cut from a screen, so it fits one.
 stack!(
@@ -233,7 +238,8 @@ stack!(
     |root: &mut Option<Tree>, target, new, axis, side| {
         root.as_mut()
             .is_some_and(|r| r.split(target, new, axis, side))
-    }
+    },
+    |text| text.parse().ok()
 );
 
 fn change(r: &mut Rng, panes: &[u32], next: &mut u32) -> Change {

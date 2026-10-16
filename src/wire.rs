@@ -10,9 +10,10 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
+use fuxix::process::Signal;
 use std::time::Duration;
 
-/// Why bytes are not a request.
+/// Why bytes are not the value they should be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The bytes end before the value does.
@@ -30,11 +31,11 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Truncated => f.write_str("a request ends early"),
-            Error::Tag(what, tag) => write!(f, "a request's {what} has no variant {tag}"),
-            Error::NotUtf8 => f.write_str("a request's text is not UTF-8"),
-            Error::Bad(what) => write!(f, "a request's {what} is out of range"),
-            Error::Trailing => f.write_str("bytes after a request"),
+            Error::Truncated => f.write_str("the bytes end early"),
+            Error::Tag(what, tag) => write!(f, "no {what} has tag {tag}"),
+            Error::NotUtf8 => f.write_str("a text that is not UTF-8"),
+            Error::Bad(what) => write!(f, "{what} out of range"),
+            Error::Trailing => f.write_str("bytes after the value"),
         }
     }
 }
@@ -96,6 +97,30 @@ macro_rules! int_wire {
     )*};
 }
 int_wire!(u8, u16, u32, u64, i64);
+
+/// `nonzero_wire!(NonZeroU8 u8 "status", …)` expands to `impl Wire for
+/// NonZeroU8` and so on: the number's bytes, 0 refused as `Bad("status")`.
+macro_rules! nonzero_wire {
+    ($($ty:ident $int:ident $what:literal),*) => {$(
+        impl Wire for std::num::$ty {
+            fn put(&self, out: &mut Vec<u8>) {
+                self.get().put(out);
+            }
+            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+                Self::new($int::get(r)?).ok_or(Error::Bad($what))
+            }
+        }
+    )*};
+}
+nonzero_wire!(NonZeroU8 u8 "status");
+
+/// Nothing: a value of no bytes, as an empty frame's payload.
+impl Wire for () {
+    fn put(&self, _: &mut Vec<u8>) {}
+    fn get(_: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(())
+    }
+}
 
 impl Wire for usize {
     fn put(&self, out: &mut Vec<u8>) {
@@ -226,58 +251,44 @@ text_wire!(TabId, "tab id");
 text_wire!(WsId, "workspace id");
 text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
+text_wire!(crate::code::Code, "code");
 
-/// An enum of plain variants, as its index in `$all`.
-macro_rules! plain_wire {
-    ($ty:ty, $what:literal, $all:expr) => {
+wire_enum!(Axis, "axis" {
+    0 => Horizontal,
+    1 => Vertical,
+});
+wire_enum!(Kind, "kind" {
+    0 => Pane,
+    1 => Tab,
+    2 => Workspace,
+});
+wire_enum!(Sibling, "sibling" {
+    0 => Next,
+    1 => Previous,
+});
+
+/// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
+/// a fieldless enum whose `ALL` lists every variant: a variant's one-byte
+/// tag is its place there, written and read alike. No variant can be missed, nor two
+/// share a tag; reordering `ALL` (fux-vt's, fuxix's) changes the wire.
+macro_rules! closed_wire {
+    ($($ty:ty, $what:literal);* $(;)?) => {$(
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
-                let all = $all;
-                let index = all.iter().position(|v| v == self).unwrap_or(0);
-                out.push(u8::try_from(index).unwrap_or(0));
+                let place = Self::ALL.iter().position(|v| v == self);
+                out.push(place.and_then(|p| u8::try_from(p).ok()).unwrap_or(u8::MAX));
             }
             fn get(r: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Error> {
-                let all = $all;
-                let index = <u8 as $crate::wire::Wire>::get(r)?;
-                all.get(usize::from(index))
-                    .copied()
-                    .ok_or($crate::wire::Error::Tag($what, index))
+                let tag = <u8 as $crate::wire::Wire>::get(r)?;
+                let all = Self::ALL.get(usize::from(tag)).copied();
+                all.ok_or($crate::wire::Error::Tag($what, tag))
             }
         }
-    };
+    )*};
 }
-pub(crate) use plain_wire;
-plain_wire!(
-    Direction,
-    "direction",
-    [
-        Direction::Left,
-        Direction::Right,
-        Direction::Up,
-        Direction::Down
-    ]
-);
-plain_wire!(Axis, "axis", [Axis::Horizontal, Axis::Vertical]);
-plain_wire!(Kind, "kind", [Kind::Pane, Kind::Tab, Kind::Workspace]);
-plain_wire!(Sibling, "sibling", [Sibling::Next, Sibling::Previous]);
-plain_wire!(
-    MouseButton,
-    "mouse button",
-    [
-        MouseButton::Left,
-        MouseButton::Middle,
-        MouseButton::Right,
-        MouseButton::WheelUp,
-        MouseButton::WheelDown,
-        MouseButton::WheelLeft,
-        MouseButton::WheelRight,
-    ]
-);
-plain_wire!(
-    fuxix::process::Signal,
-    "signal",
-    fuxix::process::Signal::ALL
-);
+pub(crate) use closed_wire;
+
+closed_wire!(Direction, "direction"; MouseButton, "mouse button"; Signal, "signal");
 
 impl Wire for fux_vt::Size {
     fn put(&self, out: &mut Vec<u8>) {
@@ -347,7 +358,7 @@ macro_rules! wire_struct {
 pub(crate) use wire_struct;
 
 wire_enum!(WsRef, "workspace" { 0 => Id(id), 1 => Name(name) });
-wire_enum!(AnyRef<W>, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
+wire_enum!(AnyRef, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
 wire_enum!(Pick<T>, "pick" { 0 => Step(s), 1 => Id(id) });
 wire_enum!(PanePick, "pane pick" { 0 => Step(s), 1 => Id(id), 2 => Last, 3 => Toward(d) });
 wire_enum!(MoveTo, "move" {
@@ -359,8 +370,8 @@ wire_enum!(MoveTo, "move" {
 });
 wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
 wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
-wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To { cols, rows } });
-wire_enum!(Resized, "resized" { 0 => Tabs(t), 1 => Client(c) });
+wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To(axis, extent) });
+wire_enum!(Resized, "resized" { 0 => Tabs(t, size), 1 => Client(c, size) });
 wire_enum!(Input, "input" { 0 => Key(k), 1 => Text(t), 2 => Paste(t) });
 wire_struct!(CaptureView {
     full,
@@ -391,9 +402,10 @@ wire_enum!(Mouse, "mouse" {
 wire_enum!(Choices, "choices" { 0 => Tabs, 1 => Workspaces, 2 => Panes(pane) });
 wire_enum!(ClientAction, "client action" {
     0 => Detach,
-    1 => Capture { json },
+    1 => Capture,
     2 => Choices(choices),
     3 => Run(code),
+    4 => Keys(inputs),
     10 => Zoom,
     11 => SelectPane(p),
     12 => SelectTab(p),
@@ -401,32 +413,31 @@ wire_enum!(ClientAction, "client action" {
 });
 
 wire_enum!(Command, "command" {
-    0 => Ls { json, target, get },
+    0 => Ls { target, get },
     1 => KillServer { force },
-    2 => NewWorkspace { name, cmd, size, cwd, env, ids, json },
-    3 => NewTab { target, name, cmd, size, cwd, env, ids, json },
-    4 => Split { axis, target, cmd, cwd, env, run, ids, json, then },
-    5 => Run { workspace, name, size, cwd, env, argv, json, log, ids, then },
+    2 => NewWorkspace { name, cmd, size, cwd, env, ids },
+    3 => NewTab { target, name, cmd, size, cwd, env, ids },
+    4 => Split { axis, target, cmd, cwd, env, run, ids, then },
+    5 => Run { workspace, name, size, cwd, env, argv, log, ids, then },
     6 => Respawn { target, kill, env, argv, then },
     7 => Notify { target, text },
-    8 => Resize { what, size },
-    9 => Wait { targets, wait },
+    8 => Resize(what),
+    9 => Wait { target, wait },
     10 => SendMouse { target, mouse, row, col, then },
-    11 => KillPane { target },
+    11 => Kill { target },
     12 => Signal { target, signal, then },
-    13 => KillTab { target },
-    14 => KillWorkspace { target },
     15 => Rename { target, name },
     16 => MovePane { target, to },
     17 => SwapPane { target, with },
     18 => ResizePane { target, by },
-    19 => SendKeys { targets, client, inputs, then },
-    20 => Events { targets, json },
+    19 => SendKeys { target, inputs, then },
+    20 => Events { target, json },
     21 => DumpLayout { target },
-    22 => Grant { workspace, socket, revoke },
+    22 => Grant { workspace, socket },
+    33 => Revoke { socket },
     23 => Log { target, file },
     24 => ClearHistory { target },
-    25 => CapturePane { target, history, view, json, settle },
+    25 => CapturePane { target, history, view, settle },
     26 => Reorder { target, toward },
     27 => Set { option, value },
     28 => Resolve { text, kind },
@@ -435,3 +446,26 @@ wire_enum!(Command, "command" {
     31 => PasteBuffer { index, target },
     32 => Client { client, action },
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each variant of an enum `closed_wire!` writes reads back as itself,
+    /// and its tag is its place in `ALL`.
+    #[test]
+    fn closed_enums_go_on_the_wire_as_their_place() {
+        fn each<T: Wire + PartialEq + std::fmt::Debug + Copy>(all: &[T]) {
+            for (place, value) in all.iter().enumerate() {
+                let bytes = encode(value);
+                assert_eq!(bytes, [u8::try_from(place).unwrap_or(u8::MAX)], "{value:?}");
+                assert_eq!(T::get(&mut Reader::new(&bytes)).ok(), Some(*value));
+            }
+        }
+        each(&Direction::ALL);
+        each(&MouseButton::ALL);
+        each(&Signal::ALL);
+        each(&fux_vt::ModeStatus::ALL);
+        each(&crate::keys::colour::Scheme::ALL);
+    }
+}

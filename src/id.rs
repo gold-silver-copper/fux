@@ -2,7 +2,8 @@
 //! the session's counters, [`Ids`]; any other is read from what a person
 //! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, and the session looks it up
 //! before acting on it. No code can make one from a number.
-use crate::command::{Kind, Usage};
+use crate::code::Code;
+use crate::command::{AnyRef, Kind, Usage};
 use crate::session::Error;
 use std::fmt;
 use std::str::FromStr;
@@ -75,12 +76,11 @@ impl FromStr for ClientId {
     }
 }
 
-/// The last ID of each kind handed out, from 1. IDs are never reused, so
-/// one that would wrap round is refused. A copy taken for something being
-/// made is committed back once it is made, so that a failure part way uses
-/// none up.
-/// The last id of each kind given out, and the next asked for (`--id`):
-/// ids count up, and none is given twice.
+/// The last id of each kind given out, from 1, and the next one asked for
+/// (`want`): ids count up and are not given twice, except to a restore,
+/// whose ids they were. One that would wrap, or jump more than `MAX_JUMP`
+/// ahead, is refused. A copy taken for something being made is committed
+/// back once it is made, so that a failure part way uses none up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Ids {
     pane: u32,
@@ -115,20 +115,19 @@ impl Ids {
     /// The next id of its kind is `id`: refused if one as high was ever
     /// given, which would give it twice, unless `again` (a restore, whose
     /// ids these were, and are free).
-    pub(crate) fn want(&mut self, id: AnyId, again: bool) -> Result<(), Error> {
+    pub(crate) fn want(&mut self, id: AnyRef, again: bool) -> Result<(), Error> {
         let (last, wanted, n) = match id {
-            AnyId::Pane(PaneId(n)) => (self.pane, &mut self.wanted.pane, n),
-            AnyId::Tab(TabId(n)) => (self.tab, &mut self.wanted.tab, n),
-            AnyId::Workspace(WsId(n)) => (self.workspace, &mut self.wanted.workspace, n),
+            AnyRef::Pane(PaneId(n)) => (self.pane, &mut self.wanted.pane, n),
+            AnyRef::Tab(TabId(n)) => (self.tab, &mut self.wanted.tab, n),
+            AnyRef::Workspace(WsId(n)) => (self.workspace, &mut self.wanted.workspace, n),
         };
         if n == 0 || (n <= last && !again) {
-            return Err(Error::IdTaken(crate::session::describe(id)));
+            return Err(Error::IdTaken(id));
         }
         // An id far ahead would leave none after it: the ids would run out.
         if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
-            let id = crate::session::describe(id);
             let why = "too far ahead of the ids given so far, which would run out after it";
-            return Err(crate::session::fail("id", format!("id {id}: {why}")));
+            return Err(crate::session::fail(Code::Id, format!("id {id}: {why}")));
         }
         *wanted = Some(n);
         Ok(())
@@ -143,16 +142,14 @@ impl Ids {
 /// How far ahead of the last id given an asked-for one may be.
 const MAX_JUMP: u32 = 1 << 16;
 
-/// An id of any kind: what `--id` asks for.
-pub type AnyId = crate::command::AnyRef<WsId>;
-
 fn take(counter: &mut u32, wanted: &mut Option<u32>, what: &'static str) -> Result<u32, Error> {
     if let Some(n) = wanted.take() {
         *counter = (*counter).max(n);
         return Ok(n);
     }
-    *counter = (counter.checked_add(1))
-        .ok_or_else(|| crate::session::fail("ids_exhausted", format!("no {what} IDs are left")))?;
+    *counter = (counter.checked_add(1)).ok_or_else(|| {
+        crate::session::fail(Code::IdsExhausted, format!("no {what} IDs are left"))
+    })?;
     Ok(*counter)
 }
 

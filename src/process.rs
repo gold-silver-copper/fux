@@ -145,22 +145,9 @@ impl Leader {
 pub fn told(ended: Status) -> String {
     match ended {
         Status::Exited(code) => format!("exited {code}"),
-        Status::Signalled(signal) => {
-            let name = match signal {
-                1 => "SIGHUP",
-                2 => "SIGINT",
-                3 => "SIGQUIT",
-                4 => "SIGILL",
-                6 => "SIGABRT",
-                8 => "SIGFPE",
-                9 => "SIGKILL",
-                11 => "SIGSEGV",
-                13 => "SIGPIPE",
-                14 => "SIGALRM",
-                15 => "SIGTERM",
-                _ => return format!("killed by signal {signal}"),
-            };
-            format!("killed by {name}")
-        }
+        Status::Signalled(raw) => match Signal::from_raw(raw) {
+            Some(signal) => format!("killed by SIG{}", signal.name()),
+            None => format!("killed by signal {raw}"),
+        },
     }
 }

@@ -142,42 +142,15 @@ pub fn explain(name: &str) -> Option<String> {
             "{name}  ( {effect} )\n\n{about}.\nWritten in fuxth:\n\n  {code}\n"
         ));
     }
-    if let Some(builtin) = fuxth::Builtin::ALL.iter().find(|b| b.name() == name) {
+    if let Some(builtin) = fuxth::Builtin::named(name) {
         return Some(format!(
             "{name}  ( {} )\n\n{}. One of the core's words.\n",
             builtin.effect(),
             builtin.about()
         ));
     }
-    let (shape, about) = syntax(name)?;
+    let (shape, about) = fuxth::Parsing::named(name)?.syntax();
     Some(format!("{name}  {shape}: {about}\n"))
-}
-
-/// A word of the language's own syntax: how it is written, and what it
-/// does.
-pub(crate) fn syntax(name: &str) -> Option<(&'static str, &'static str)> {
-    Some(match name {
-        "if" | "else" | "then" => ("BOOL if … else … then", "runs one branch"),
-        "begin" | "until" => ("begin … BOOL until", "runs until the bool is true"),
-        "define" | "end" => (
-            "define NAME … end",
-            "a word of your own; it may call itself (end also closes list and each)",
-        ),
-        "let" => (
-            "X let NAME",
-            "NAME pushes X from then on (in a definition, for that call)",
-        ),
-        "list" => (
-            "list … end",
-            "a list of the values its body leaves; the body starts with an empty stack",
-        ),
-        "each" => (
-            "SEQ each … end",
-            "the body once per element of SEQ, a string or list, the element pushed",
-        ),
-        "str" => ("str WORD", "WORD as text, whatever it looks like"),
-        _ => return None,
-    })
 }
 
 /// The words that build what a word takes, its options or its input: the

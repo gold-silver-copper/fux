@@ -317,11 +317,9 @@ impl fux_vt::Sink for Sink<'_> {
                 self.happened.push(crate::log::Event::Bell);
                 *self.bell = true;
                 self.alerts.bells = self.alerts.bells.saturating_add(1);
-                self.alerts.last_notified = false;
             }
             fux_vt::Event::Notification(text) => {
                 self.alerts.notifications = self.alerts.notifications.saturating_add(1);
-                self.alerts.last_notified = true;
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
                 self.happened
@@ -439,19 +437,30 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
+/// What a pane running `argv` is named until it is renamed: its program's
+/// file name.
+pub(crate) fn named(argv: &[String]) -> String {
+    argv.first().map(|p| basename(p)).unwrap_or_default()
+}
+
+/// A program's file name, or the program as given if it has none.
+pub(crate) fn basename(program: &str) -> String {
+    std::path::Path::new(program)
+        .file_name()
+        .map_or_else(|| program.to_owned(), |n| n.to_string_lossy().into_owned())
+}
+
 /// What a program rang or announced since it started: bells, and desktop
-/// notifications (OSC 9, 777, 99) with the last one's text, and whether the
-/// last alert was that notification.
+/// notifications (OSC 9, 777, 99) with the last one's text.
 #[derive(Clone, Debug, Default)]
 pub struct Alerts {
     pub bells: u64,
     pub notifications: u64,
     pub last: Option<String>,
-    pub last_notified: bool,
 }
 
 impl Alerts {
-    /// Bells and notifications together, as `wait --bell` counts them.
+    /// Bells and notifications together, as `wait-bell` counts them.
     pub fn count(&self) -> u64 {
         self.bells.saturating_add(self.notifications)
     }
@@ -525,7 +534,7 @@ pub struct Pane {
     /// screen of its own: a wait on the program before ends with it.
     pub starts: u64,
     pub alerts: Alerts,
-    /// Where everything the program writes is kept too (`fux run --log`).
+    /// Where everything the program writes is kept too (`log-to`, `start-log`).
     pub log: Option<std::fs::File>,
 }
 
@@ -800,7 +809,7 @@ impl Pane {
                 Some(_) => self.at_prompt(),
                 None => (self.process.child())
                     .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
-                    .is_some_and(|t| !t.line_mode()),
+                    .is_some_and(|t| !t.modes().canonical),
             };
         let finished = self.screen().commands().finished;
         let mut happened = Vec::new();
@@ -979,14 +988,6 @@ impl Pane {
         }
     }
 
-    /// Gives the parser `palette` as the host's colours for entries 0 to
-    /// 15, replacing the last whole: an entry it lacks is cleared, so a
-    /// program asking it gets xterm's default. The program's own colours
-    /// still win, and nothing drawn changes (`fux_vt::Parser::set_host_palette`).
-    pub fn set_host_palette(&mut self, palette: crate::outer::Palette) {
-        self.parser.set_host_palette(palette);
-    }
-
     pub fn size(&self) -> fux_vt::Size {
         self.screen().size()
     }
@@ -1100,7 +1101,7 @@ impl Pane {
     /// its command line, as its marks say.
     fn at_prompt(&self) -> bool {
         let commands = self.screen().commands();
-        commands.prompt && !commands.running
+        commands.prompt && !commands.running()
     }
 
     /// Whether the program took the input written at `at`, by `now`: every
@@ -1115,7 +1116,7 @@ impl Pane {
         };
         let drawn = self.changed_at > at || now >= crate::after(at, FLOOR);
         // The program asked last, after the checks that read no `/proc`.
-        let taking = || crate::ready::taking(child, (self.since_key(now), self.answered()));
+        let taking = || crate::ready::taking(self, child, now);
         self.input.is_empty()
             && drawn
             && fuxix::io::unread(&child.master).unwrap_or(0) == 0
@@ -1135,8 +1136,7 @@ impl Pane {
     fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) -> bool {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
-        let keys = (self.since_key(now), self.answered());
-        let taking = child.and_then(|child| crate::ready::taking(child, keys));
+        let taking = child.and_then(|child| crate::ready::taking(self, child, now));
         let reading =
             self.input.is_empty() && matches!(taking, Some(Activity::Reading | Activity::Idle));
         // Typed ahead: a shell fux marks says whether it reads its line.
@@ -1183,19 +1183,12 @@ impl Pane {
     pub fn respawned(
         &mut self,
         launch: Launch,
-        process: Option<Process>,
+        process: Process,
         history: usize,
     ) -> Result<Process, Error> {
         // Named after its program, unless renamed.
-        let named = |launch: &Launch| {
-            launch.argv.first().map_or_else(String::new, |p| {
-                std::path::Path::new(p)
-                    .file_name()
-                    .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
-            })
-        };
-        let name = match matches!(&self.runs, Runs::Program(old) if named(old) == self.name) {
-            true => named(&launch),
+        let name = match matches!(&self.runs, Runs::Program(old) if named(&old.argv) == self.name) {
+            true => named(&launch.argv),
             false => self.name.clone(),
         };
         let runs = Runs::Program(launch);
@@ -1211,7 +1204,7 @@ impl Pane {
         fresh.log = self.log.take();
         fresh.revision = self.revision.wrapping_add(1);
         fresh.starts = self.starts.wrapping_add(1);
-        fresh.process = process.unwrap_or(Process::Absent);
+        fresh.process = process;
         fresh.note_input();
         Ok(std::mem::replace(self, fresh).process)
     }

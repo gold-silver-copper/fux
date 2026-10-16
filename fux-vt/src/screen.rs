@@ -6,7 +6,7 @@ use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Rgb, Row,
     RowId, Rows, UnderlineStyle, Window,
     geometry::{Size, Span},
-    grid::{Cursor, Grid, Scroll, Written},
+    grid::{Cursor, Erase, Grid, Scroll, Written},
     parser::Parameters,
 };
 use std::collections::VecDeque;
@@ -219,6 +219,19 @@ impl TabStops {
     }
 }
 
+/// How DECRQSS answers a request (`Screen::setting_report`).
+pub(crate) enum Setting {
+    /// The setting, written.
+    Written,
+    /// A request fux-vt does not know, which xterm answers as invalid.
+    Unknown,
+    /// No answer: a cursor shape left to the terminal (DECSCUSR 0 or never
+    /// set), which fux-vt does not know. xterm and Ghostty always know
+    /// theirs, and vim, the program that asks, takes an invalid answer for
+    /// keys.
+    Unanswered,
+}
+
 /// What a CSI sequence came to.
 pub(crate) enum Dispatch {
     /// Carried out, with nothing to answer.
@@ -244,43 +257,6 @@ enum Protection {
     /// Every erase, ED, EL, ECH, DECSED and DECSEL, leaves them (ECMA-48,
     /// SPA and ERM reset; xterm, where DECSED and DECSEL do too).
     Iso,
-}
-
-/// The most flag sets a kitty keyboard stack holds; a push onto a full stack
-/// drops the oldest, as kitty does, so a runaway program cannot grow it.
-const KEYBOARD_STACK_LIMIT: usize = 32;
-
-/// One screen's kitty keyboard protocol flag stack. The primary and
-/// alternate screens each keep one, so a program that pushes flags on the
-/// alternate screen and exits without popping them leaves the shell's alone.
-#[derive(Clone, Debug, Default)]
-struct KeyboardStack(VecDeque<u8>);
-
-impl KeyboardStack {
-    fn top(&self) -> u8 {
-        self.0.back().copied().unwrap_or(0)
-    }
-    fn push(&mut self, flags: u8) {
-        if self.0.len() >= KEYBOARD_STACK_LIMIT {
-            self.0.pop_front();
-        }
-        self.0.push_back(flags);
-    }
-    fn pop(&mut self, count: u16) {
-        self.0
-            .truncate(self.0.len().saturating_sub(usize::from(count)));
-    }
-    /// `CSI = flags ; mode u`: mode 1 (the default) replaces the top's
-    /// flags, 2 adds to them and 3 removes from them; an empty stack's are 0.
-    fn set(&mut self, flags: u8, mode: u16) {
-        let top = self.top();
-        self.pop(1);
-        self.push(match mode {
-            2 => top | flags,
-            3 => top & !flags,
-            _ => flags,
-        });
-    }
 }
 
 /// Terminal state. Reading a window never changes where subsequent output lands.
@@ -337,8 +313,6 @@ pub struct Screen {
     cursor_shape: u16,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
-    primary_keyboard: KeyboardStack,
-    alternate_keyboard: KeyboardStack,
     modify_other_keys: Option<u8>,
     /// The cell the last glyph was printed in, and the state of its
     /// grapheme cluster, while the cursor has not moved nor the row been
@@ -378,39 +352,35 @@ pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;
 
-/// The palette colour an SGR parameter names: 30–37 and 40–47 are colours
-/// 0–7, and 90–97 and 100–107 their bright forms 8–15.
-fn palette(n: u16) -> Option<Color> {
-    let (base, bright) = match n {
-        30..=37 => (30, 0),
-        40..=47 => (40, 0),
-        90..=97 => (90, 8),
-        100..=107 => (100, 8),
+/// The palette colour an SGR parameter names, and the selector of the
+/// layer it colours (38 the foreground, 48 the background): 30–37 and
+/// 40–47 are colours 0–7, and 90–97 and 100–107 their bright forms 8–15.
+fn palette(n: u16) -> Option<(u16, Color)> {
+    let (selector, base, bright) = match n {
+        30..=37 => (38, 30, 0),
+        40..=47 => (48, 40, 0),
+        90..=97 => (38, 90, 8),
+        100..=107 => (48, 100, 8),
         _ => return None,
     };
     let index = u8::try_from(n.checked_sub(base)?).ok()?;
-    Some(Color::Idx(index.checked_add(bright)?))
+    Some((selector, Color::Idx(index.checked_add(bright)?)))
 }
 
-/// The colour of 38, 48 or 58 in their colon form, `rest` being what
-/// follows the selector: `5:index`, `2:r:g:b`, or ITU-T T.416's
-/// `2:space:r:g:b`, its colour space ignored and empty, as xterm reads it,
-/// with anything after the blue ignored. `None` if the colour is out of
-/// range or of another kind.
+/// The colour of 38, 48 or 58, `rest` being what follows the selector:
+/// `5:index`, `2:r:g:b`, or ITU-T T.416's `2:space:r:g:b`, its colour
+/// space ignored and empty, as xterm reads it, with anything after the
+/// blue ignored. `None` if the colour is out of range or of another kind.
 fn colour_of(rest: &[u16]) -> Option<Color> {
     match rest {
         [5, index, ..] => u8::try_from(*index).ok().map(Color::Idx),
-        [2, r, g, b] | [2, _, r, g, b, ..] => rgb(*r, *g, *b),
+        [2, r, g, b] | [2, _, r, g, b, ..] => Some(Color::Rgb(Rgb {
+            r: u8::try_from(*r).ok()?,
+            g: u8::try_from(*g).ok()?,
+            b: u8::try_from(*b).ok()?,
+        })),
         _ => None,
     }
-}
-
-fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
-    Some(Color::Rgb(Rgb {
-        r: u8::try_from(r).ok()?,
-        g: u8::try_from(g).ok()?,
-        b: u8::try_from(b).ok()?,
-    }))
 }
 
 /// Sets a mouse mode or encoding `value` in `slot`, the latest set
@@ -466,8 +436,6 @@ impl Screen {
             cursor_shape: 0,
             mouse: MouseProtocolMode::None,
             encoding: MouseProtocolEncoding::Default,
-            primary_keyboard: KeyboardStack::default(),
-            alternate_keyboard: KeyboardStack::default(),
             modify_other_keys: None,
             last_print: None,
             repeat: None,
@@ -587,7 +555,8 @@ impl Screen {
             }
             Kind::Origin => self.grid().cursor.origin,
             Kind::Screen(_) => self.alternate_active,
-            Kind::SaveCursor | Kind::Reset => false,
+            Kind::SaveCursor => false,
+            Kind::Permanent(set) => set,
             Kind::Mouse(mouse) => self.mouse == mouse,
             Kind::Encoding(encoding) => self.encoding == encoding,
         }
@@ -629,27 +598,13 @@ impl Screen {
     /// screen's stack, 0 (legacy key reporting) when it is empty. Always 0
     /// without [`Feature::KittyKeyboard`].
     pub fn kitty_keyboard_flags(&self) -> u8 {
-        self.keyboard().top()
+        self.grid().keyboard.top()
     }
     /// The xterm modifyOtherKeys level set by `CSI > 4 ; Pv m`, `None` when
     /// it is off (`Pv` 0 or absent). Always `None` without
     /// [`Feature::KittyKeyboard`].
     pub fn modify_other_keys(&self) -> Option<u8> {
         self.modify_other_keys
-    }
-    fn keyboard(&self) -> &KeyboardStack {
-        if self.alternate_active {
-            &self.alternate_keyboard
-        } else {
-            &self.primary_keyboard
-        }
-    }
-    fn keyboard_mut(&mut self) -> &mut KeyboardStack {
-        if self.alternate_active {
-            &mut self.alternate_keyboard
-        } else {
-            &mut self.primary_keyboard
-        }
     }
     /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
     /// is counted as CUP addresses it: from the top margin with DECOM set
@@ -953,9 +908,12 @@ impl Screen {
             self.primary.resized(size, &mut next, version)?
         };
         let mut alternate = self.alternate.resized(size, &mut next, version)?;
-        // The links' tables go along, as the cells keep their links.
+        // The links' tables go along, as the cells keep their links, and
+        // the keyboard stacks.
         primary.links = std::mem::take(&mut self.primary.links);
         alternate.links = std::mem::take(&mut self.alternate.links);
+        primary.keyboard = std::mem::take(&mut self.primary.keyboard);
+        alternate.keyboard = std::mem::take(&mut self.alternate.keyboard);
         self.primary = primary;
         self.alternate = alternate;
         self.next_id = next;
@@ -974,21 +932,15 @@ impl Screen {
         self.structural = self.version;
     }
 
-    fn scroll(&mut self, region: Span, count: u16, up: bool, history: bool) -> Result<(), Error> {
+    fn scroll(&mut self, region: Span, count: u16, direction: Scroll) -> Result<(), Error> {
         if self.grid().lr() {
-            self.scroll_columns(region, count, up);
+            self.scroll_columns(region, count, direction);
             return Ok(());
         }
-        self.scroll_rows(region, count, up, history)
+        self.scroll_rows(region, count, direction)
     }
     /// `scroll` without left and right margins: the rows move.
-    fn scroll_rows(
-        &mut self,
-        region: Span,
-        count: u16,
-        up: bool,
-        history: bool,
-    ) -> Result<(), Error> {
+    fn scroll_rows(&mut self, region: Span, count: u16, direction: Scroll) -> Result<(), Error> {
         // A bounded multi-row scroll can fail after earlier rows have moved
         // (allocation failure). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
@@ -996,23 +948,18 @@ impl Screen {
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {
-            let direction = if up {
-                Scroll::Up { history }
-            } else {
-                Scroll::Down
-            };
             g.scroll(region, count, direction, blank, next, version)
         })?;
         // Rows moved within the screen (lines deleted or put in above
         // them, a region scrolled) are recorded, their text unchanged: a
         // whole screen scrolled into history moves none of its lines.
         if self.prints.is_some()
-            && !(history && region == self.grid().size().lines())
+            && !(direction == Scroll::Up { history: true } && region == self.grid().size().lines())
             && region.len() > count
         {
-            let first = match up {
-                true => region.first(),
-                false => region.first().saturating_add(count),
+            let first = match direction {
+                Scroll::Up { .. } => region.first(),
+                Scroll::Down => region.first().saturating_add(count),
             };
             self.printed(first, 0..0, "");
         }
@@ -1022,8 +969,9 @@ impl Screen {
     /// its blanks in the pen's colours. Out of line: without margins it is
     /// never reached.
     #[inline(never)]
-    fn scroll_columns(&mut self, region: Span, count: u16, up: bool) {
+    fn scroll_columns(&mut self, region: Span, count: u16, direction: Scroll) {
         let blank = self.blank_style();
+        let up = direction != Scroll::Down;
         self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
     }
     /// IND, and LF, VT and FF: down a line, scrolling at the bottom margin;
@@ -1036,11 +984,11 @@ impl Screen {
         if g.cursor.row() == g.lines.last() {
             if g.lr() {
                 if g.in_columns() {
-                    self.scroll_columns(g.lines, 1, true);
+                    self.scroll_columns(g.lines, 1, Scroll::Up { history: true });
                 }
                 return Ok(());
             }
-            self.scroll_rows(g.lines, 1, true, true)?;
+            self.scroll_rows(g.lines, 1, Scroll::Up { history: true })?;
         } else {
             // Down a row, stopping at the last.
             let g = self.grid_mut();
@@ -1077,7 +1025,7 @@ impl Screen {
         let g = self.grid();
         if g.cursor.row() == g.lines.first() {
             if !g.lr() || g.in_columns() {
-                self.scroll(g.lines, 1, false, false)?;
+                self.scroll(g.lines, 1, Scroll::Down)?;
             }
         } else {
             let g = self.grid_mut();
@@ -1750,8 +1698,6 @@ impl Screen {
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
                 self.encoding = MouseProtocolEncoding::Default;
-                self.primary_keyboard = KeyboardStack::default();
-                self.alternate_keyboard = KeyboardStack::default();
                 self.modify_other_keys = None;
                 self.structural = self.version;
             }
@@ -1823,7 +1769,7 @@ impl Screen {
     /// nothing. Out of line: inlined, the tmux recordings count up to 0.35%
     /// more instructions (fux-bench).
     #[inline(never)]
-    fn erase_protected(&mut self, private: bool, display: bool, mode: u16) -> bool {
+    fn erase_protected(&mut self, private: bool, display: bool, part: Erase) -> bool {
         if !private && self.protection != Protection::Iso {
             return false;
         }
@@ -1831,12 +1777,14 @@ impl Screen {
         let version = self.version;
         let g = self.grid_mut();
         let ((row, col), size) = (g.cursor.at(), g.size());
-        let found = g.erase_in(display, mode, |g, y, start, end| {
+        let found = g.erase_in(display, part, |g, y, start, end| {
             g.erase_unprotected(y, start, end, blank, version)
         });
-        let whole = mode == 2
-            || (mode == 0 && (row, col) == (0, 0))
-            || (mode == 1 && (row, col) == (size.lines().last(), size.columns().last()));
+        let whole = match part {
+            Erase::Below => (row, col) == (0, 0),
+            Erase::Above => (row, col) == (size.lines().last(), size.columns().last()),
+            Erase::All => true,
+        };
         if display && whole && !found {
             self.protection = Protection::Off;
         }
@@ -1925,16 +1873,13 @@ impl Screen {
     /// margins and the screen's saved cursor stay, and a pending wrap ends,
     /// as ED's does (DEC STD 070, Appendix D.6.1).
     fn clear_alternate(&mut self, pen: Attributes) -> Result<(), Error> {
-        let g = &self.alternate;
-        let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
-        self.alternate.clear(&mut self.next_id, self.version)?;
-        let blank = pen.erased();
-        let blank = match blank.inline_style() {
-            Some(style) => style,
-            None => self.alternate.style(blank),
-        };
         let g = &mut self.alternate;
-        (g.cursor, g.saved, g.lines) = (cursor, saved, lines);
+        let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
+        let keyboard = std::mem::take(&mut g.keyboard);
+        self.alternate.clear(&mut self.next_id, self.version)?;
+        let blank = self.alternate.style(pen.erased());
+        let g = &mut self.alternate;
+        (g.cursor, g.saved, g.lines, g.keyboard) = (cursor, saved, lines, keyboard);
         g.set_columns(columns);
         g.cursor.pending_wrap = false;
         if blank != 0 {
@@ -2142,7 +2087,7 @@ impl Screen {
             }
             Kind::SaveCursor if on => self.save(),
             Kind::SaveCursor => self.restore(),
-            Kind::Reset => {}
+            Kind::Permanent(_) => {}
             Kind::Mouse(mouse) => latest(&mut self.mouse, mouse, on),
             Kind::Encoding(encoding) => latest(&mut self.encoding, encoding, on),
         }
@@ -2151,13 +2096,8 @@ impl Screen {
 
     /// DECRQSS (`DCS $ q Pt ST`): the setting `request` names, written to
     /// `out` as the control function that sets it, in the form xterm
-    /// answers (`do_dcs` and `xtermFormatSGR`, xterm 411 misc.c). `Some(true)`
-    /// for a setting written, `Some(false)` for a request fux-vt does not
-    /// know, which xterm answers as invalid; `None` for a cursor shape
-    /// left to the terminal (DECSCUSR 0 or never set), which fux-vt does
-    /// not know: xterm and Ghostty always know theirs, and vim, the program
-    /// that asks, takes an invalid answer for keys.
-    pub(crate) fn setting_report(&self, request: &[u8], out: &mut String) -> Option<bool> {
+    /// answers (`do_dcs` and `xtermFormatSGR`, xterm 411 misc.c).
+    pub(crate) fn setting_report(&self, request: &[u8], out: &mut String) -> Setting {
         use std::fmt::Write;
         match request {
             b"m" => {
@@ -2167,23 +2107,19 @@ impl Screen {
             b" q" => {
                 let shape = self.cursor_shape;
                 if !(1..=6).contains(&shape) {
-                    return None;
+                    return Setting::Unanswered;
                 }
                 let _ = write!(out, "{shape} q");
             }
             b"r" => {
+                // Exact: the margins are rows of a screen a u16 counts.
                 let (top, bottom) = self.scroll_region();
-                let (top, bottom) = (u32::from(top), u32::from(bottom));
-                let _ = write!(
-                    out,
-                    "{};{}r",
-                    top.saturating_add(1),
-                    bottom.saturating_add(1)
-                );
+                let (top, bottom) = (top.saturating_add(1), bottom.saturating_add(1));
+                let _ = write!(out, "{top};{bottom}r");
             }
-            _ => return Some(false),
+            _ => return Setting::Unknown,
         }
-        Some(true)
+        Setting::Written
     }
 
     /// The pen as xterm reports it to DECRQSS (`xtermFormatSGR`): 0, then
@@ -2198,10 +2134,16 @@ impl Screen {
     fn sgr_report(&self, out: &mut String) {
         use std::fmt::Write;
         let a = self.attributes;
+        let flag = |out: &mut String, (bit, on, ..): (u16, u16, u16, &str)| {
+            if a.flags & bit != 0 {
+                let _ = write!(out, ";{on}");
+            }
+        };
+        // xterm reports bold, the underline and the blink, then the other
+        // flags, then the double underline.
+        let [bold, rest @ ..] = Attributes::FLAGS;
         out.push('0');
-        if a.bold() {
-            out.push_str(";1");
-        }
+        flag(out, bold);
         match a.underline_style() {
             UnderlineStyle::None | UnderlineStyle::Double => {}
             UnderlineStyle::Single => out.push_str(";4"),
@@ -2214,17 +2156,11 @@ impl Screen {
             Blink::Rapid => out.push_str(";6"),
             Blink::None => {}
         }
-        for (on, code) in [
-            (a.inverse(), ";7"),
-            (a.hidden(), ";8"),
-            (a.dim(), ";2"),
-            (a.italic(), ";3"),
-            (a.strikeout(), ";9"),
-            (a.underline_style() == UnderlineStyle::Double, ";21"),
-        ] {
-            if on {
-                out.push_str(code);
-            }
+        for f in rest {
+            flag(out, f);
+        }
+        if a.underline_style() == UnderlineStyle::Double {
+            out.push_str(";21");
         }
         let colour = |out: &mut String, colour: Color, short: Option<(u8, u8)>, long: u8| {
             let _ = match (colour, short) {
@@ -2258,11 +2194,11 @@ impl Screen {
         // they saturate rather than being refused.
         let flags = |n: u16| u8::try_from(n).unwrap_or(u8::MAX);
         match (intermediates, byte) {
-            (b">", b'u') => self.keyboard_mut().push(flags(p.first(0, 0))),
-            (b"<", b'u') => self.keyboard_mut().pop(p.first(0, 1)),
+            (b">", b'u') => self.grid_mut().keyboard.push(flags(p.first(0, 0))),
+            (b"<", b'u') => self.grid_mut().keyboard.pop(p.first(0, 1)),
             (b"=", b'u') => {
                 let (set, mode) = (flags(p.first(0, 0)), p.first(1, 1));
-                self.keyboard_mut().set(set, mode);
+                self.grid_mut().keyboard.set(set, mode);
             }
             (b"?", b'u') => {
                 let flags = self.kitty_keyboard_flags();
@@ -2449,25 +2385,25 @@ impl Screen {
                     self.clear_history();
                     return Ok(Dispatch::Done);
                 }
-                if mode > 2 {
+                let Some(part) = Erase::ALL.into_iter().find(|e| e.number() == mode) else {
                     return Ok(Dispatch::Unhandled);
-                }
+                };
                 // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
                 // protected glyphs; ED and EL only ISO's (SPA), as xterm's
                 // `do_erase_display` has it.
                 if self.protection != Protection::Off
-                    && self.erase_protected(private, byte == b'J', mode)
+                    && self.erase_protected(private, byte == b'J', part)
                 {
                     return Ok(Dispatch::Done);
                 }
                 let a = self.blank_style();
                 self.with_grid(|g, _, v| {
-                    g.erase_in(byte == b'J', mode, |g, y, start, end| {
+                    g.erase_in(byte == b'J', part, |g, y, start, end| {
                         g.erase(y, start, end, a, v);
                         false
                     })
                 });
-                if byte == b'J' && mode == 2 {
+                if byte == b'J' && part == Erase::All {
                     self.screen_erased();
                 }
             }
@@ -2482,12 +2418,20 @@ impl Screen {
                 {
                     g.cursor.pending_wrap = false;
                     g.set_col(g.columns().first());
-                    self.scroll(region, n, byte == b'M', false)?;
+                    let direction = match byte {
+                        b'M' => Scroll::Up { history: false },
+                        _ => Scroll::Down,
+                    };
+                    self.scroll(region, n, direction)?;
                 }
             }
             b'S' | b'T' => {
                 let lines = self.grid().lines;
-                self.scroll(lines, n, byte == b'S', true)?;
+                let direction = match byte {
+                    b'S' => Scroll::Up { history: true },
+                    _ => Scroll::Down,
+                };
+                self.scroll(lines, n, direction)?;
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
             // bottom are set, and the cursor goes home, obeying DECOM;
@@ -2586,38 +2530,35 @@ impl Screen {
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
-                // Bold and dim are kept apart, and both can be on, as in
-                // xterm; 22 ends both (ECMA-48 8.3.117).
+                // The flags' rows (`Attributes::FLAGS`), as literal arms the
+                // hot path jumps to; a test holds them to the rows. Bold and
+                // dim are kept apart, and both can be on, as in xterm; 22
+                // ends both (ECMA-48 8.3.117).
                 [1] => self.attributes.flags |= Attributes::BOLD,
                 [2] => self.attributes.flags |= Attributes::DIM,
                 [3] => self.attributes.flags |= Attributes::ITALIC,
+                [7] => self.attributes.flags |= Attributes::INVERSE,
+                [8] => self.attributes.flags |= Attributes::HIDDEN,
+                [9] => self.attributes.flags |= Attributes::STRIKEOUT,
+                [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
+                [23] => self.attributes.flags &= !Attributes::ITALIC,
+                [27] => self.attributes.flags &= !Attributes::INVERSE,
+                [28] => self.attributes.flags &= !Attributes::HIDDEN,
+                [29] => self.attributes.flags &= !Attributes::STRIKEOUT,
                 [4] => self.underline(UnderlineStyle::Single),
                 // Doubly underlined (ECMA-48 8.3.117, xterm's ctlseqs).
                 [21] => self.underline(UnderlineStyle::Double),
                 // Slow and rapid blink replace one another.
                 [5] => self.attributes = self.attributes.with_blink(Blink::Slow),
                 [6] => self.attributes = self.attributes.with_blink(Blink::Rapid),
-                [7] => self.attributes.flags |= Attributes::INVERSE,
-                [8] => self.attributes.flags |= Attributes::HIDDEN,
-                [9] => self.attributes.flags |= Attributes::STRIKEOUT,
-                [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
-                [23] => self.attributes.flags &= !Attributes::ITALIC,
                 [24] => self.underline(UnderlineStyle::None),
                 [25] => self.attributes.flags &= !Attributes::BLINK,
-                [27] => self.attributes.flags &= !Attributes::INVERSE,
-                [28] => self.attributes.flags &= !Attributes::HIDDEN,
-                [29] => self.attributes.flags &= !Attributes::STRIKEOUT,
                 [39] => self.attributes = self.attributes.with_foreground(Color::Default),
                 [49] => self.attributes = self.attributes.with_background(Color::Default),
                 [59] => self.attributes = self.attributes.with_underline_color(Color::Default),
-                [n @ (30..=37 | 90..=97)] => {
-                    if let Some(color) = palette(*n) {
-                        self.attributes = self.attributes.with_foreground(color);
-                    }
-                }
-                [n @ (40..=47 | 100..=107)] => {
-                    if let Some(color) = palette(*n) {
-                        self.attributes = self.attributes.with_background(color);
+                [n @ (30..=37 | 40..=47 | 90..=97 | 100..=107)] => {
+                    if let Some((selector, colour)) = palette(*n) {
+                        self.set_colour(selector, colour);
                     }
                 }
                 // Underline styles (`references/modern/kitty_underlines.html`):
@@ -2641,6 +2582,7 @@ impl Screen {
                         self.set_colour(*selector, colour);
                     }
                 }
+
                 _ => {}
             }
         }
@@ -2676,19 +2618,15 @@ impl Screen {
             5 => 1,
             _ => return None,
         };
-        let mut values = [0u16; 3];
-        for value in values.iter_mut().take(count) {
+        // Read as the colon form is: `5:index` or `2:r:g:b`.
+        let mut values = [kind, 0, 0, 0];
+        for value in values.iter_mut().skip(1).take(count) {
             let Some([n]) = groups.peek() else {
                 break;
             };
             *value = *n;
             groups.next();
         }
-        let [a, b, c] = values;
-        if kind == 5 {
-            u8::try_from(a).ok().map(Color::Idx)
-        } else {
-            rgb(a, b, c)
-        }
+        colour_of(&values)
     }
 }

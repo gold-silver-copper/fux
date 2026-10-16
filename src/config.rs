@@ -1,43 +1,97 @@
 //! The server's settings: what every pane and client of it shares, set by
 //! the `set` word from a client's config or command line. Key bindings and
 //! the prefix are each client's own (`crate::keymap`).
+use crate::log::JOURNAL_BYTES;
 use crate::words;
 use std::path::PathBuf;
+use std::time::Duration;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Config {
-    pub shell: Vec<String>,
+/// `settings! { /// doc  field "name": Type = default, parse; … }` expands
+/// to the struct `Config` of those fields, its `Default`, `NAMES` (every
+/// setting's name, in order) and `Config::set`, which reads a setting's
+/// text with its `parse` (a `&str` to `Result<Type, String>`).
+macro_rules! settings {
+    ($($(#[$doc:meta])* $field:ident $name:literal: $ty:ty = $default:expr, $parse:expr;)*) => {
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub struct Config {
+            $($(#[$doc])* pub $field: $ty,)*
+        }
+
+        impl Default for Config {
+            fn default() -> Config {
+                Config {
+                    $($field: $default,)*
+                }
+            }
+        }
+
+        /// Every setting's name, in order.
+        pub const NAMES: &[&str] = &[$($name),*];
+
+        impl Config {
+            /// Sets setting `name` to `value`, its text: a number, `on` or
+            /// `off` (or `true` or `false`), a command line for `shell`,
+            /// names for `update-environment`. A setting refused says why.
+            pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
+                let refused = |why: String| format!("{name}: {why}");
+                match name {
+                    $($name => self.$field = $parse(value).map_err(refused)?,)*
+                    other => {
+                        let all = words::listed(NAMES, "and");
+                        return Err(format!("no setting {other:?}; the settings are {all}"));
+                    }
+                }
+                Ok(())
+            }
+        }
+    };
+}
+
+settings! {
+    shell "shell": Vec<String> = vec![default_shell()], shell;
     /// The bytes of history each pane keeps, for copy mode and `capture`.
-    pub history_bytes: usize,
+    history_bytes "history-bytes": usize = 8 << 20, number(0, 1 << 30);
     /// How long an action or a wait waits at most, unless it says.
-    pub wait_seconds: u64,
+    wait "wait-seconds": Duration = WAIT, |v| number(0, MAX_WAIT)(v).map(Duration::from_secs);
     /// The bytes each pane's journal keeps (`crate::log`).
-    pub journal_bytes: usize,
+    journal_bytes "journal-bytes": usize = JOURNAL_BYTES, number(MIN_JOURNAL, MAX_JOURNAL);
     /// The bytes all panes' journals keep together.
-    pub journal_total: usize,
+    journal_total "journal-total": usize = 16 * JOURNAL_BYTES, number(MIN_JOURNAL, MAX_JOURNAL);
     /// Copies are also sent to the client's terminal as OSC 52.
-    pub clipboard: bool,
+    clipboard "clipboard": bool = true, on;
     /// How many paste buffers are kept.
-    pub buffers: usize,
+    buffers "buffers": usize = 16, number(1, MAX_BUFFERS);
     /// A pane's bell rings in the terminals showing its workspace.
-    pub bell: bool,
+    bell "bell": bool = true, on;
     /// Each client's terminal title is its focused pane's.
-    pub titles: bool,
+    titles "titles": bool = false, on;
     /// The shells fux starts mark their commands (OSC 133): `crate::marks`.
-    pub shell_marks: bool,
+    shell_marks "shell-marks": bool = true, on;
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter has not is unset.
-    pub update_environment: Vec<String>,
+    update_environment "update-environment": Vec<String> = KEPT.map(str::to_owned).to_vec(), names;
 }
+
+/// What `update-environment` names at first.
+const KEPT: [&str; 8] = [
+    "DISPLAY",
+    "KRB5CCNAME",
+    "SSH_AGENT_PID",
+    "SSH_ASKPASS",
+    "SSH_AUTH_SOCK",
+    "SSH_CONNECTION",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+];
 
 pub const MAX_BUFFERS: usize = 1000;
 /// How long an action or a wait waits at most by default: a build or a
 /// program's startup is waited through, while a wait that cannot be met
 /// still answers well inside what a tool running a command waits for it.
-pub const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const WAIT: Duration = Duration::from_secs(30);
 /// The longest `wait-seconds`: a day.
-pub const MAX_WAIT_SECONDS: usize = 86_400;
+pub const MAX_WAIT: usize = 86_400;
 /// The most bytes journals may be given: each, or all together.
 pub const MAX_JOURNAL: usize = 1 << 31;
 /// The fewest bytes a journal may be given: waits and events read it.
@@ -63,101 +117,52 @@ fn shell_of(passwd: &str, uid: u32) -> Option<String> {
     })
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        let shell = std::env::var("SHELL")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(login_shell)
-            .unwrap_or_else(|| "/bin/sh".into());
-        Self {
-            shell: vec![shell],
-            history_bytes: 8 << 20,
-            wait_seconds: WAIT.as_secs(),
-            journal_bytes: crate::log::JOURNAL_BYTES,
-            journal_total: 16 * crate::log::JOURNAL_BYTES,
-            clipboard: true,
-            buffers: 16,
-            bell: true,
-            titles: false,
-            shell_marks: true,
-            update_environment: [
-                "DISPLAY",
-                "KRB5CCNAME",
-                "SSH_AGENT_PID",
-                "SSH_ASKPASS",
-                "SSH_AUTH_SOCK",
-                "SSH_CONNECTION",
-                "WAYLAND_DISPLAY",
-                "XAUTHORITY",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
-        }
+/// `SHELL`, else the login shell, else `/bin/sh`.
+fn default_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(login_shell)
+        .unwrap_or_else(|| "/bin/sh".into())
+}
+
+/// A whole number from `min` to `max`, read from its text.
+fn number<T: TryFrom<usize>>(min: usize, max: usize) -> impl Fn(&str) -> Result<T, String> {
+    move |value| {
+        let n: i128 = value.parse().map_err(|_| "not a number".to_owned())?;
+        (usize::try_from(n).ok())
+            .filter(|n| (min..=max).contains(n))
+            .and_then(|n| T::try_from(n).ok())
+            .ok_or_else(|| format!("out of range, {min} to {max}"))
     }
 }
 
-impl Config {
-    /// Sets `option` to `value`, its text: a number, `on` or `off` (or
-    /// `true` or `false`), a command line for `shell`, names for
-    /// `update-environment`. A setting refused says why.
-    pub fn set(&mut self, option: &str, value: &str) -> Result<(), String> {
-        let refused = |why: String| format!("{option}: {why}");
-        let number = |min: usize, max: usize| -> Result<usize, String> {
-            let n: i128 = value.parse().map_err(|_| refused("not a number".into()))?;
-            (usize::try_from(n).ok())
-                .filter(|n| (min..=max).contains(n))
-                .ok_or_else(|| refused(format!("out of range, {min} to {max}")))
-        };
-        let on = || match value {
-            "on" | "true" => Ok(true),
-            "off" | "false" => Ok(false),
-            other => Err(refused(format!(
-                "{other:?} is not on or off (true or false)"
-            ))),
-        };
-        match option {
-            "shell" => {
-                let argv = words::split(value).map_err(refused)?;
-                if argv.first().is_none_or(|p| p.is_empty()) {
-                    return Err(refused("a program is needed".into()));
-                }
-                self.shell = argv;
-            }
-            "history-bytes" => self.history_bytes = number(0, 1 << 30)?,
-            "wait-seconds" => {
-                self.wait_seconds = u64::try_from(number(0, MAX_WAIT_SECONDS)?).unwrap_or(0)
-            }
-            "journal-bytes" => self.journal_bytes = number(MIN_JOURNAL, MAX_JOURNAL)?,
-            "journal-total" => self.journal_total = number(MIN_JOURNAL, MAX_JOURNAL)?,
-            "clipboard" => self.clipboard = on()?,
-            "bell" => self.bell = on()?,
-            "titles" => self.titles = on()?,
-            "shell-marks" => self.shell_marks = on()?,
-            "update-environment" => {
-                let names: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
-                if let Some(bad) = names.iter().find(|n| !crate::command::shell_name(n)) {
-                    return Err(refused(format!(
-                        "{bad:?} is no variable's name (letters, digits and _, not first a digit)"
-                    )));
-                }
-                self.update_environment = names;
-            }
-            "buffers" => self.buffers = number(1, MAX_BUFFERS)?,
-            other => {
-                return Err(format!(
-                    "no setting {other:?}; the settings are shell, history-bytes, wait-seconds, \
-                     journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks \
-                     and update-environment"
-                ));
-            }
-        }
-        Ok(())
+/// `on` or `off` (or `true` or `false`).
+fn on(value: &str) -> Result<bool, String> {
+    match value {
+        "on" | "true" => Ok(true),
+        "off" | "false" => Ok(false),
+        other => Err(format!("{other:?} is not on or off (true or false)")),
     }
+}
 
-    /// How long an action or a wait waits at most, unless it says.
-    pub fn wait(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.wait_seconds)
+/// A command line, split as a shell splits it: a program first.
+fn shell(value: &str) -> Result<Vec<String>, String> {
+    let argv = words::split(value)?;
+    match argv.first().is_none_or(|p| p.is_empty()) {
+        true => Err("a program is needed".into()),
+        false => Ok(argv),
+    }
+}
+
+/// Variables' names, separated by blanks.
+fn names(value: &str) -> Result<Vec<String>, String> {
+    let names: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
+    match names.iter().find(|n| !crate::command::shell_name(n)) {
+        Some(bad) => Err(format!(
+            "{bad:?} is no variable's name (letters, digits and _, not first a digit)"
+        )),
+        None => Ok(names),
     }
 }
 

@@ -5,7 +5,9 @@
 //! [`crate::Screen::encode_focus`] read them from the program's screen,
 //! [`key_bytes`] and [`paste`] take them given. Mouse reports are
 //! [`crate::keys::mouse`]'s.
-use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
+use crate::keys::{
+    CAPS_LOCK_BIT, Direction, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT, SHIFT_BIT,
+};
 use std::io::Write;
 
 /// How a pane's program asked for its keys: one of the protocols fux
@@ -103,7 +105,7 @@ const ALTERNATE_KEYS: u8 = 4;
 const ALL_KEYS: u8 = 8;
 const TEXT: u8 = 16;
 /// The kitty protocol's lock modifiers, Caps Lock and Num Lock.
-const LOCKS: u8 = 64 | 128;
+const LOCKS: u8 = CAPS_LOCK_BIT | NUM_LOCK_BIT;
 
 /// What a bracketed paste begins with (`CSI 200 ~`).
 pub const PASTE_START: &[u8] = b"\x1b[200~";
@@ -207,7 +209,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
     let exact = stroke.kitty;
     let all = report != Report::Disambiguated;
     let capital = matches!(key, Key::Char(c) if c.is_ascii_uppercase()) && exact.is_none();
-    let bits = exact.map_or_else(|| mods.bits() | u8::from(capital), |k| k.mods);
+    let bits = exact.map_or_else(|| mods.bits() | (SHIFT_BIT * u8::from(capital)), |k| k.mods);
     let held = bits & !LOCKS;
     let modifier = u16::from(bits).saturating_add(1);
     // `;mods`, left out when there are none; empty if a parameter follows,
@@ -230,7 +232,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
     }
     match Form::from(key) {
         Form::Text(c) => {
-            let types_text = held & !1 == 0;
+            let types_text = held & !SHIFT_BIT == 0;
             if types_text && !all {
                 return out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
             }
@@ -246,7 +248,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
             });
             let _ = write!(out, "\x1b[{code}");
             if alternate {
-                let shifted = shifted.filter(|_| bits & 1 != 0);
+                let shifted = shifted.filter(|_| bits & SHIFT_BIT != 0);
                 let base = exact.and_then(|k| k.base);
                 match (shifted, base) {
                     (Some(s), Some(b)) => drop(write!(out, ":{s}:{b}")),
@@ -341,26 +343,39 @@ pub(crate) fn numbered_key(number: u8, last: char) -> Option<Key> {
         .find(|&key| matches!(Form::from(key), Form::Numbered(n, l) if (n, l) == (number, last)))
 }
 
-/// A key whose legacy bytes are a C0 control or DEL.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Control {
-    Enter,
-    Tab,
-    Escape,
-    Backspace,
+closed! {
+    /// A key whose legacy bytes are a C0 control or DEL.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Control {
+        /// Its byte unmodified, which is also its code in `CSI code u` and
+        /// in modifyOtherKeys's `CSI 27 ; mods ; code ~`.
+        pub(crate) fn code(self) -> u8;
+        Enter => 0x0d,
+        Tab => 0x09,
+        Escape => 0x1b,
+        Backspace => 0x7f,
+    }
 }
 
 impl Control {
-    /// Its byte unmodified, which is also its code in `CSI code u`.
-    fn code(self) -> u8 {
+    /// The control whose byte is `code`.
+    pub(crate) fn of(code: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| u32::from(c.code()) == code)
+    }
+    /// Its key.
+    pub(crate) fn key(self) -> Key {
         match self {
-            Control::Enter => 0x0d,
-            Control::Tab => 0x09,
-            Control::Escape => 0x1b,
-            Control::Backspace => 0x7f,
+            Control::Enter => Key::Enter,
+            Control::Tab => Key::Tab,
+            Control::Escape => Key::Escape,
+            Control::Backspace => Key::Backspace,
         }
     }
 }
+
+/// Ctrl-Backspace's byte, BS, as xterm, kitty's legacy encoding, VTE and
+/// Alacritty send it, and its code in modifyOtherKeys.
+pub(crate) const CTRL_BACKSPACE: u8 = 0x08;
 
 /// `CSI number ; modifier final`, the modifier left out when it is 1, none
 /// held, and then the number too if it is 1 (`CSI A`).
@@ -415,27 +430,17 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 /// backarrow toggle leaves BS.
 fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     let KeyPress { key, mods } = stroke.press;
-    let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & 1 != 0);
+    let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & SHIFT_BIT != 0);
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
     let state = Modifiers { shift, ..mods };
-    let (sym, code) = match key {
-        Key::Enter => (Sym::Return, 13),
-        Key::Tab => (Sym::Tab, 9),
-        Key::Escape => (Sym::Escape, 27),
-        Key::Backspace if mods.ctrl => (Sym::BackSpace, 8),
-        Key::Backspace => (Sym::Delete, 127),
-        Key::Char(c) => {
+    let (sym, code) = match Form::from(key) {
+        Form::Control(Control::Backspace) if mods.ctrl => (Sym::BackSpace, CTRL_BACKSPACE.into()),
+        Form::Control(control) => (Sym::Control(control), control.code().into()),
+        Form::Text(c) => {
             let c = if shift { c.to_ascii_uppercase() } else { c };
             (Sym::Char(c), u32::from(c))
         }
-        Key::Delete
-        | Key::Insert
-        | Key::Arrow(_)
-        | Key::Home
-        | Key::End
-        | Key::PageUp
-        | Key::PageDown
-        | Key::F(_) => return false,
+        Form::Numbered(..) | Form::Unnumbered(_) => return false,
     };
     if !modified(sym, state, level) {
         return false;
@@ -452,17 +457,15 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     true
 }
 
-/// An ordinary key as xterm's `input.c` sees it: by its keysym. Backspace
-/// is `BackSpace` with Ctrl and `Delete` without, as xterm's backarrow
-/// toggle (`IsBackarrowToggle`) makes it when the key sends DEL.
+/// An ordinary key as xterm's `input.c` sees it: by its keysym, a control
+/// key's being `Return`, `Tab`, `Escape` and, for Backspace, `Delete`.
+/// Backspace is `BackSpace` with Ctrl, as xterm's backarrow toggle
+/// (`IsBackarrowToggle`) makes it when the key sends DEL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sym {
     Char(char),
-    Return,
-    Tab,
-    Escape,
+    Control(Control),
     BackSpace,
-    Delete,
 }
 
 impl Sym {
@@ -487,7 +490,7 @@ impl Sym {
                 ctrl && matches!(c, '@'..='~' | ' ' | '2'..='8' | '/')
                     || matches!(c, '\0'..='\u{1f}' | '\u{7f}')
             }
-            Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => true,
+            Sym::Control(_) | Sym::BackSpace => true,
         }
     }
 }
@@ -503,24 +506,26 @@ fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
     let OtherKeys::Usual = level else {
         return match sym {
             Sym::BackSpace => state != Modifiers::CTRL,
-            Sym::Delete | Sym::Escape | Sym::Return | Sym::Tab => true,
+            Sym::Control(_) => true,
             Sym::Char(c) => state != Modifiers::SHIFT || c == ' ',
         };
     };
-    if sym == Sym::Tab && state == Modifiers::SHIFT {
+    if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT {
         return false;
     }
     // A character's modifiers are filtered first, a predefined key's not.
     let st = match sym {
         Sym::Char(_) => allowed(sym, state),
-        Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => state,
+        Sym::Control(_) | Sym::BackSpace => state,
     };
     let control = sym.control_input() || sym.control_alias(state.ctrl);
     match sym {
         _ if st.is_empty() => false,
-        Sym::BackSpace | Sym::Delete => false,
-        Sym::Return | Sym::Tab => true,
-        Sym::Char(_) | Sym::Escape => !control || st != Modifiers::CTRL && st != Modifiers::SHIFT,
+        Sym::BackSpace | Sym::Control(Control::Backspace) => false,
+        Sym::Control(Control::Enter | Control::Tab) => true,
+        Sym::Char(_) | Sym::Control(Control::Escape) => {
+            !control || st != Modifiers::CTRL && st != Modifiers::SHIFT
+        }
     }
 }
 
@@ -531,7 +536,7 @@ fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
     let text = matches!(sym, Sym::Char(_)) && !sym.control_output();
     if sym.control_input() && !m.shift && !m.alt {
         // Ctrl makes these a control already, which it is left to.
-    } else if matches!(sym, Sym::Return | Sym::Tab) {
+    } else if matches!(sym, Sym::Control(Control::Enter | Control::Tab)) {
         // Enter and Tab keep Ctrl and Shift.
     } else if sym.control_alias(state.ctrl) {
         // Ctrl and Shift on a control are its own.
@@ -550,7 +555,7 @@ fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
         // "special cases of control+meta which are used by some
         // applications, e.g., emacs", and Enter and Tab.
         let control = (sym.control_input() || sym.control_output()) && m.ctrl;
-        if control || matches!(sym, Sym::Return | Sym::Tab) {
+        if control || matches!(sym, Sym::Control(Control::Enter | Control::Tab)) {
             m.alt = false;
             m.ctrl = false;
         }
@@ -583,9 +588,7 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
             // Z`, as a numbered key carries them.
             Control::Tab if shift && !ctrl && !alt => out.extend_from_slice(b"\x1b[Z"),
             Control::Tab if shift => numbered(out, 1, modifier, 'Z'),
-            // Ctrl-Backspace is BS, as xterm, kitty's legacy encoding, VTE
-            // and Alacritty send it, and as modifyOtherKeys's code says.
-            Control::Backspace if ctrl => out.push(0x08),
+            Control::Backspace if ctrl => out.push(CTRL_BACKSPACE),
             Control::Enter | Control::Tab | Control::Escape | Control::Backspace => {
                 out.push(control.code());
             }
@@ -597,8 +600,9 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     // Alt is an Escape before the key, unless the key is a sequence, which
     // carries Alt in its parameter; a lone ESC (Escape, Ctrl-[) takes one
     // too, as xterm sends Alt-Escape: ESC ESC.
-    if alt && !(out.get(start) == Some(&27) && out.len() > start.saturating_add(1)) {
-        out.push(27);
+    let escape = Control::Escape.code();
+    if alt && !(out.get(start) == Some(&escape) && out.len() > start.saturating_add(1)) {
+        out.push(escape);
         // The key's bytes and the Escape after them: at least one to turn.
         if let Some(key) = out.get_mut(start..) {
             key.rotate_right(1);

@@ -107,6 +107,9 @@ macro_rules! modes {
 
 modes! {
     flags {
+        // Input edited a line at a time, as a program reading a line, or a
+        // password, has it; a line editor or a full-screen program turns it
+        // off and reads each key.
         canonical: c_lflag libc::ICANON,
         echo: c_lflag libc::ECHO,
         echoe: c_lflag libc::ECHOE,
@@ -155,18 +158,6 @@ modes! {
 }
 
 impl Termios {
-    /// Whether the terminal echoes what is typed (`ECHO`).
-    pub fn echoes(&self) -> bool {
-        self.0.c_lflag & libc::ECHO != 0
-    }
-
-    /// Whether the terminal edits input a line at a time (`ICANON`), as a
-    /// program reading a line, or a password, has it; a line editor or a
-    /// full-screen program turns it off and reads each key.
-    pub fn line_mode(&self) -> bool {
-        self.0.c_lflag & libc::ICANON != 0
-    }
-
     /// Whether a read may return on a timer (`VTIME`, and no line
     /// editing), the last key written `since_key` ago: a program that
     /// times its reads, as one telling a lone Escape from a key's sequence
@@ -177,7 +168,7 @@ impl Termios {
         let cc = |i| self.0.c_cc.get(i).copied().unwrap_or(0);
         let (vmin, vtime) = (cc(libc::VMIN), cc(libc::VTIME));
         let timer = std::time::Duration::from_millis(u64::from(vtime).saturating_mul(100));
-        !self.line_mode() && vtime > 0 && (vmin == 0 || since_key < timer)
+        !self.modes().canonical && vtime > 0 && (vmin == 0 || since_key < timer)
     }
 
     /// Raw mode: no echo, no line editing, no signals from keys, and no
@@ -314,12 +305,12 @@ mod tests {
         set_window_size(&master, size(5, 7)?).map_err(|e| e.to_string())?;
         assert_eq!(window_size(&slave), Some(size(5, 7)?));
         let mut modes = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(modes.echoes(), "a new terminal echoes");
-        assert!(modes.line_mode(), "and edits a line at a time");
+        assert!(modes.modes().echo, "a new terminal echoes");
+        assert!(modes.modes().canonical, "and edits a line at a time");
         modes.make_raw();
         set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
         let again = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(!again.echoes() && !again.line_mode());
+        assert!(!again.modes().echo && !again.modes().canonical);
         // Raw, a read waits for a key (VMIN 1, VTIME 0): not timed.
         let (now, later) = (std::time::Duration::ZERO, std::time::Duration::from_secs(1));
         assert!(!again.timed_reads(now));
@@ -349,7 +340,7 @@ mod tests {
         assert!(!at_once.timed_reads(now));
         // The master reads the modes the program set on its side.
         let seen = attributes(&master).map_err(|e| e.to_string())?;
-        assert!(!seen.echoes() && !seen.line_mode());
+        assert!(!seen.modes().echo && !seen.modes().canonical);
         // The modes echo depends on, set and read back as they were.
         let mut echo = seen.modes();
         (echo.canonical, echo.echoctl, echo.erase, echo.eol) = (true, true, Some(0x08), None);

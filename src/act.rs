@@ -7,12 +7,12 @@
 //! screens (`Act::Show`), and the moves of copy mode, whose cursor is the
 //! server's as it alone holds the scrollback (`Act::Copy`).
 use crate::command::AnyRef;
-use crate::id::WsId;
 use crate::keys::colour::Scheme;
 use crate::keys::decode::Reply;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::keys::{Keystroke, Kitty, Modifiers};
-use crate::wire::{plain_wire, wire_enum, wire_struct};
+use crate::wire::{closed_wire, wire_enum, wire_struct};
+use fux_vt::ModeStatus;
 
 /// One action of an attached client.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,13 +52,10 @@ pub enum Panel {
         title: String,
         before: String,
         after: String,
-        about: Option<AnyRef<WsId>>,
+        about: Option<AnyRef>,
     },
     /// A question answered y or n, about closing `about`.
-    Confirm {
-        question: String,
-        about: AnyRef<WsId>,
-    },
+    Confirm { question: String, about: AnyRef },
 }
 
 /// The command column as a client shows it.
@@ -94,7 +91,7 @@ pub struct List {
     pub selected: usize,
     pub chooser: bool,
     /// What it was opened for: if it goes, the server closes the list.
-    pub about: Option<AnyRef<WsId>>,
+    pub about: Option<AnyRef>,
 }
 
 /// What moves, selects and copies in copy mode.
@@ -122,8 +119,8 @@ pub enum CopyAct {
     PageDown,
     Next,
     Previous,
-    PromptBack,
-    PromptForward,
+    /// The cursor to the next shell prompt, or the one before.
+    Prompt(Seek),
     SelectChar,
     SelectLine,
     SelectBlock,
@@ -133,23 +130,35 @@ pub enum CopyAct {
     Yank,
     /// The search line the client is typing, for the bar: forward or back,
     /// and its text before and after the cursor; none once it is done.
-    Typing(Option<(bool, String, String)>),
+    Typing(Option<(Seek, String, String)>),
     /// Find `query`, forward or back, from the cursor.
     Find {
         query: String,
-        forward: bool,
+        seek: Seek,
     },
+}
+
+/// Which way a search goes: toward later rows, or earlier ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seek {
+    Forward,
+    Backward,
+}
+
+impl Seek {
+    /// The other way.
+    pub fn reversed(self) -> Seek {
+        match self {
+            Seek::Forward => Seek::Backward,
+            Seek::Backward => Seek::Forward,
+        }
+    }
 }
 
 /// What moves a list (a menu, a chooser), made of the client's keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListAct {
-    Up,
-    Down,
-    PageUp,
-    PageDown,
-    First,
-    Last,
+    Move(Move),
     Choose,
     Cancel,
     /// Rename what the chosen entry is about.
@@ -158,10 +167,46 @@ pub enum ListAct {
     Close,
 }
 
-/// What edits a line being typed (the prompt, a copy-mode search), made of
-/// the client's keys.
+/// A move of the selection in a list, or in the command column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Move {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+}
+
+/// The rows a list, and the command column, page by.
+pub const PAGE: usize = 10;
+
+impl Move {
+    /// The row it selects from row `at` of a list whose last is `last`.
+    pub fn from(self, at: usize, last: usize) -> usize {
+        match self {
+            Move::Up => at.saturating_sub(1),
+            Move::Down => at.saturating_add(1).min(last),
+            Move::PageUp => at.saturating_sub(PAGE),
+            Move::PageDown => at.saturating_add(PAGE).min(last),
+            Move::First => 0,
+            Move::Last => last,
+        }
+    }
+}
+
+/// What a line being typed (the prompt, a copy-mode search) is given, made
+/// of the client's keys: an edit, or Enter (`Submit`) or Esc (`Cancel`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LineAct {
+    Edit(Edit),
+    Submit,
+    Cancel,
+}
+
+/// An edit of a line being typed: text, a move or a deletion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Edit {
     Insert(String),
     Backspace,
     Delete,
@@ -169,20 +214,14 @@ pub enum LineAct {
     Right,
     Home,
     End,
-    Submit,
-    Cancel,
 }
 
-plain_wire!(
-    MouseAction,
-    "mouse action",
-    [
-        MouseAction::Press,
-        MouseAction::Release,
-        MouseAction::Motion
-    ]
-);
-plain_wire!(Scheme, "scheme", [Scheme::Light, Scheme::Dark]);
+wire_enum!(MouseAction, "mouse action" {
+    0 => Press,
+    1 => Release,
+    2 => Motion,
+});
+closed_wire!(ModeStatus, "mode status"; Scheme, "scheme");
 wire_struct!(Modifiers { ctrl, alt, shift });
 wire_struct!(Kitty {
     code,
@@ -258,16 +297,16 @@ wire_enum!(CopyAct, "copy action" {
     16 => PageDown,
     17 => Next,
     18 => Previous,
-    19 => PromptBack,
-    20 => PromptForward,
+    19 => Prompt(seek),
     21 => SelectChar,
     22 => SelectLine,
     23 => SelectBlock,
     24 => OtherEnd,
     25 => Yank,
     254 => Typing(line),
-    255 => Find { query, forward },
+    255 => Find { query, seek },
 });
+wire_enum!(Seek, "search direction" { 0 => Forward, 1 => Backward });
 wire_enum!(Act, "action" {
     0 => Key(k),
     1 => Paste(text),
