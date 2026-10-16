@@ -1279,14 +1279,8 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
 /// off (alacritty, avt). The underline colour goes either way: see below.
 pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
     out.extend_from_slice(b"\x1b[0");
-    if a.bold() {
-        out.extend_from_slice(b";1");
-    }
-    if a.dim() {
-        out.extend_from_slice(b";2");
-    }
-    if a.italic() {
-        out.extend_from_slice(b";3");
+    for (on, _) in a.sgr_flags() {
+        let _ = write!(out, ";{on}");
     }
     match a.underline_style() {
         UnderlineStyle::None => {}
@@ -1307,15 +1301,6 @@ pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
         fux_vt::Blink::Slow => out.extend_from_slice(b";5"),
         fux_vt::Blink::Rapid => out.extend_from_slice(b";6"),
         fux_vt::Blink::None | _ => {}
-    }
-    if a.inverse() {
-        out.extend_from_slice(b";7");
-    }
-    if a.hidden() {
-        out.extend_from_slice(b";8");
-    }
-    if a.strikeout() {
-        out.extend_from_slice(b";9");
     }
     // The underline colour in ITU-T T.416's colon form (§13.1.8), with its
     // empty colour-space slot: a terminal that does not know SGR 58 skips

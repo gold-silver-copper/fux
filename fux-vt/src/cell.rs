@@ -147,20 +147,30 @@ impl std::fmt::Debug for Attributes {
     }
 }
 
-/// Expands each `get with BIT "what";` to the getter `get(self) -> bool`
-/// and the builder `with(self, on: bool) -> Self` of that one flag bit.
+/// Expands each `get with BIT on off;` to the getter `get(self) -> bool`
+/// and the builder `with(self, on: bool) -> Self` of that one flag bit,
+/// which SGR `on` sets and SGR `off` clears, and `Attributes::FLAGS`, the
+/// rows in their order: `bold with_bold BOLD 1 22;` gives `bold`,
+/// `with_bold` and the row `(BOLD, 1, 22, "bold")`.
 macro_rules! flags {
-    ($($get:ident $with:ident $bit:ident $what:literal;)*) => {$(
-        #[doc = concat!("Whether ", $what, " is on.")]
-        pub fn $get(self) -> bool {
-            self.flags & Self::$bit != 0
-        }
-        #[doc = concat!("These attributes with ", $what, " on or off.")]
-        #[must_use]
-        pub const fn $with(self, on: bool) -> Self {
-            self.with_flag(Self::$bit, on)
-        }
-    )*};
+    ($($get:ident $with:ident $bit:ident $on:literal $off:literal;)*) => {
+        /// Each flag SGR sets and clears with a number of its own, in
+        /// the order xterm reports them: its bit, the numbers that set
+        /// and clear it, and its name, its getter's.
+        pub(crate) const FLAGS: [(u16, u16, u16, &'static str); [$($on),*].len()] =
+            [$((Self::$bit, $on, $off, stringify!($get)),)*];
+        $(
+            #[doc = concat!("Whether ", stringify!($get), " (SGR ", $on, ") is on.")]
+            pub fn $get(self) -> bool {
+                self.flags & Self::$bit != 0
+            }
+            #[doc = concat!("These attributes with ", stringify!($get), " on or off.")]
+            #[must_use]
+            pub const fn $with(self, on: bool) -> Self {
+                self.with_flag(Self::$bit, on)
+            }
+        )*
+    };
 }
 
 impl Attributes {
@@ -324,12 +334,21 @@ impl Attributes {
         self
     }
     flags! {
-        bold with_bold BOLD "bold (SGR 1)";
-        dim with_dim DIM "dim (SGR 2)";
-        italic with_italic ITALIC "italic (SGR 3)";
-        inverse with_inverse INVERSE "inverse (SGR 7)";
-        hidden with_hidden HIDDEN "hidden (SGR 8)";
-        strikeout with_strikeout STRIKEOUT "strikeout (SGR 9)";
+        bold with_bold BOLD 1 22;
+        inverse with_inverse INVERSE 7 27;
+        hidden with_hidden HIDDEN 8 28;
+        dim with_dim DIM 2 22;
+        italic with_italic ITALIC 3 23;
+        strikeout with_strikeout STRIKEOUT 9 29;
+    }
+    /// The flags SGR sets with a number of their own that are on, each
+    /// one's number and name (its getter's), in the order xterm reports
+    /// them: bold, inverse, hidden, dim, italic, strikeout.
+    pub fn sgr_flags(self) -> impl Iterator<Item = (u16, &'static str)> {
+        Self::FLAGS
+            .into_iter()
+            .filter(move |(bit, ..)| self.flags & bit != 0)
+            .map(|(_, on, _, name)| (on, name))
     }
     /// These attributes with a single underline (SGR 4), or none of any
     /// style.

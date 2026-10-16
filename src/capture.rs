@@ -526,18 +526,14 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
     let mut fields = Vec::new();
     fields.extend(colour(a.foreground()).map(|c| ("fg", c)));
     fields.extend(colour(a.background()).map(|c| ("bg", c)));
-    let flags = [
-        ("bold", a.bold()),
-        ("dim", a.dim()),
-        ("italic", a.italic()),
-        ("underline", a.underline()),
-        ("blink", a.blink() != fux_vt::Blink::None),
-        ("inverse", a.inverse()),
-        ("hidden", a.hidden()),
-        ("strikeout", a.strikeout()),
-    ];
+    let flags = a.sgr_flags().map(|(_, name)| name);
+    let underline = a.underline().then_some("underline");
+    let blink = (a.blink() != fux_vt::Blink::None).then_some("blink");
     fields.extend(
-        (flags.into_iter()).filter_map(|(name, set)| set.then_some((name, Json::Bool(true)))),
+        flags
+            .chain(underline)
+            .chain(blink)
+            .map(|name| (name, Json::Bool(true))),
     );
     fields
 }

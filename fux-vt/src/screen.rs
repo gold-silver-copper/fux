@@ -2198,10 +2198,16 @@ impl Screen {
     fn sgr_report(&self, out: &mut String) {
         use std::fmt::Write;
         let a = self.attributes;
+        let flag = |out: &mut String, (bit, on, ..): (u16, u16, u16, &str)| {
+            if a.flags & bit != 0 {
+                let _ = write!(out, ";{on}");
+            }
+        };
+        // xterm reports bold, the underline and the blink, then the other
+        // flags, then the double underline.
+        let [bold, rest @ ..] = Attributes::FLAGS;
         out.push('0');
-        if a.bold() {
-            out.push_str(";1");
-        }
+        flag(out, bold);
         match a.underline_style() {
             UnderlineStyle::None | UnderlineStyle::Double => {}
             UnderlineStyle::Single => out.push_str(";4"),
@@ -2214,17 +2220,11 @@ impl Screen {
             Blink::Rapid => out.push_str(";6"),
             Blink::None => {}
         }
-        for (on, code) in [
-            (a.inverse(), ";7"),
-            (a.hidden(), ";8"),
-            (a.dim(), ";2"),
-            (a.italic(), ";3"),
-            (a.strikeout(), ";9"),
-            (a.underline_style() == UnderlineStyle::Double, ";21"),
-        ] {
-            if on {
-                out.push_str(code);
-            }
+        for f in rest {
+            flag(out, f);
+        }
+        if a.underline_style() == UnderlineStyle::Double {
+            out.push_str(";21");
         }
         let colour = |out: &mut String, colour: Color, short: Option<(u8, u8)>, long: u8| {
             let _ = match (colour, short) {
@@ -2586,27 +2586,14 @@ impl Screen {
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
-                // Bold and dim are kept apart, and both can be on, as in
-                // xterm; 22 ends both (ECMA-48 8.3.117).
-                [1] => self.attributes.flags |= Attributes::BOLD,
-                [2] => self.attributes.flags |= Attributes::DIM,
-                [3] => self.attributes.flags |= Attributes::ITALIC,
                 [4] => self.underline(UnderlineStyle::Single),
                 // Doubly underlined (ECMA-48 8.3.117, xterm's ctlseqs).
                 [21] => self.underline(UnderlineStyle::Double),
                 // Slow and rapid blink replace one another.
                 [5] => self.attributes = self.attributes.with_blink(Blink::Slow),
                 [6] => self.attributes = self.attributes.with_blink(Blink::Rapid),
-                [7] => self.attributes.flags |= Attributes::INVERSE,
-                [8] => self.attributes.flags |= Attributes::HIDDEN,
-                [9] => self.attributes.flags |= Attributes::STRIKEOUT,
-                [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
-                [23] => self.attributes.flags &= !Attributes::ITALIC,
                 [24] => self.underline(UnderlineStyle::None),
                 [25] => self.attributes.flags &= !Attributes::BLINK,
-                [27] => self.attributes.flags &= !Attributes::INVERSE,
-                [28] => self.attributes.flags &= !Attributes::HIDDEN,
-                [29] => self.attributes.flags &= !Attributes::STRIKEOUT,
                 [39] => self.attributes = self.attributes.with_foreground(Color::Default),
                 [49] => self.attributes = self.attributes.with_background(Color::Default),
                 [59] => self.attributes = self.attributes.with_underline_color(Color::Default),
@@ -2639,6 +2626,17 @@ impl Screen {
                 [selector @ (38 | 48 | 58), rest @ ..] => {
                     if let Some(colour) = colour_of(rest) {
                         self.set_colour(*selector, colour);
+                    }
+                }
+                // Bold and dim are kept apart, and both can be on, as in
+                // xterm; 22 ends both (ECMA-48 8.3.117).
+                [n] => {
+                    for (bit, on, off, _) in Attributes::FLAGS {
+                        if *n == on {
+                            self.attributes.flags |= bit;
+                        } else if *n == off {
+                            self.attributes.flags &= !bit;
+                        }
                     }
                 }
                 _ => {}

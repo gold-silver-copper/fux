@@ -65,9 +65,9 @@ prints `null` (`string` makes it the text).
 printed (a blank row trimmed, outside `rows` or `cols`, the screen not
 captured). With `marks`, each line holds its marks as text does. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
-plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"dim":true,
-"italic":true,"underline":true,"blink":true,"inverse":true,
-"hidden":true,"strikeout":true}`, each attribute only when set; colours are
+plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"inverse":true,
+"hidden":true,"dim":true,"italic":true,"strikeout":true,"underline":true,
+"blink":true}`, each attribute only when set; colours are
 palette numbers or `"#rrggbb"`.
 
 `CLIENT capture-client json`:
