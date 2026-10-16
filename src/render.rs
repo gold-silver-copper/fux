@@ -651,12 +651,12 @@ pub fn shown(cell: CellRef<'_>) -> &str {
     }
 }
 
-fn style(foreground: Color, background: Color) -> Attributes {
-    Attributes::new(foreground, background)
-}
 const GRAY_BG: Color = Color::Idx(236);
 const BAR_FG: Color = Color::Idx(250);
-const PANEL_BG: Color = Color::Idx(238);
+/// A panel's lines.
+const PANEL: Attributes = Attributes::new(Color::Idx(255), Color::Idx(238));
+/// What the bar shows in black on yellow: a layer's keys, copy mode's.
+const HIGHLIGHT: Attributes = Attributes::new(Color::Idx(0), Color::Idx(11));
 
 /// How many cells `rows` rows of `cols` are. Exact: a u16 by a u16 fits
 /// even a 32-bit usize.
@@ -746,7 +746,13 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
         let x = area.w().saturating_sub(width(hint)) / 2;
-        grid.text(y, x, hint, style(Color::Idx(244), Color::Default), area.w());
+        grid.text(
+            y,
+            x,
+            hint,
+            Attributes::new(Color::Idx(244), Color::Default),
+            area.w(),
+        );
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
     // in normal mode: none under an overlay, nor in a repeat mode, whose
@@ -805,16 +811,16 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
-                (title.as_str().into(), panel().with_bold(true)),
-                (prompt_line(before, after, room).into(), panel()),
-                ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
+                (title.as_str().into(), PANEL.with_bold(true)),
+                (prompt_line(before, after, room).into(), PANEL),
+                ("Enter accepts · Esc cancels".into(), PANEL.with_dim(true)),
             ];
             surface(grid, view, &lines);
         }
         Mode::Panel(Panel::Confirm { question, .. }) => {
             let lines: [Line<'_>; 2] = [
-                (question.as_str().into(), panel().with_bold(true)),
-                ("y confirms · n or Esc cancels".into(), panel()),
+                (question.as_str().into(), PANEL.with_bold(true)),
+                ("y confirms · n or Esc cancels".into(), PANEL),
             ];
             surface(grid, view, &lines);
         }
@@ -944,10 +950,6 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
     out
 }
 
-fn panel() -> Attributes {
-    style(Color::Idx(255), PANEL_BG)
-}
-
 /// Separator lines, with tees where one meets another; the ones beside the
 /// focused pane are highlighted.
 fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
@@ -1011,7 +1013,7 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
         grid.put(
             y,
             x,
-            CellRef::new(glyph, false, style(color, Color::Default)),
+            CellRef::new(glyph, false, Attributes::new(color, Color::Default)),
         );
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
@@ -1057,7 +1059,7 @@ fn bar(
     let Some(y) = view.rows.checked_sub(1) else {
         return;
     };
-    let base = style(BAR_FG, GRAY_BG);
+    let base = Attributes::new(BAR_FG, GRAY_BG);
     grid.fill(
         Rect::screen(view.rows, view.cols).corner(1, view.cols),
         base,
@@ -1068,23 +1070,17 @@ fn bar(
         Some((
             notice.text.as_str().into(),
             if notice.error {
-                style(Color::Idx(9), GRAY_BG)
+                Attributes::new(Color::Idx(9), GRAY_BG)
             } else {
-                style(Color::Idx(11), GRAY_BG)
+                Attributes::new(Color::Idx(11), GRAY_BG)
             },
         ))
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
     } else if let Mode::Panel(Panel::Column(column)) = &view.mode {
-        Some((
-            format!("{} …", column.keys).into(),
-            style(Color::Idx(0), Color::Idx(11)),
-        ))
+        Some((format!("{} …", column.keys).into(), HIGHLIGHT))
     } else if let Mode::Panel(Panel::Repeat(bar)) = &view.mode {
-        Some((
-            bar.as_str().into(),
-            style(Color::Idx(0), Color::Idx(11)).with_bold(true),
-        ))
+        Some((bar.as_str().into(), HIGHLIGHT.with_bold(true)))
     } else {
         (session.focused(view.id))
             .and_then(|f| session.panes.get(&f))
@@ -1107,7 +1103,7 @@ fn bar(
     let mut x = 0;
     if let Some(copy) = &copy_bar {
         // Copy mode's keys replace the tabs.
-        let badge = style(Color::Idx(0), Color::Idx(11)).with_bold(true);
+        let badge = HIGHLIGHT.with_bold(true);
         let text = match &copy.badge {
             crate::copy::Badge::Label(label) => fit(&format!(" {label} "), left_limit).into_owned(),
             crate::copy::Badge::Typing(prompt, before, after) => {
@@ -1143,7 +1139,7 @@ fn bar(
             let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id) != current;
             let label = format!(" {}{} ", tab.name, if rang { "!" } else { "" });
             let attrs = if Some(tab.id) == current {
-                style(Color::Idx(0), Color::Idx(2)).with_bold(true)
+                Attributes::new(Color::Idx(0), Color::Idx(2)).with_bold(true)
             } else {
                 base
             };
@@ -1161,23 +1157,23 @@ fn bar(
 /// A line of a panel: its text, borrowed where it can be, and its style.
 type Line<'a> = (Cow<'a, str>, Attributes);
 
-/// Adds the entries `shown`, those from `start` that fit `room` of
-/// `total`, to a panel's `lines`, with how many more there are above and
-/// below them.
+/// Adds the `entries` that fit `room`, the `selected` one among them, to a
+/// panel's `lines`, with how many more there are above and below them.
 fn windowed<'a>(
     lines: &mut Vec<Line<'a>>,
-    total: usize,
-    start: usize,
+    entries: impl ExactSizeIterator<Item = Line<'a>>,
+    selected: usize,
     room: usize,
-    shown: impl Iterator<Item = Line<'a>>,
 ) {
+    let total = entries.len();
+    let start = overlay::window_start(total, selected, room);
     if start > 0 {
-        lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
+        lines.push((format!("▲ {start} more").into(), PANEL.with_dim(true)));
     }
-    lines.extend(shown);
+    lines.extend(entries.skip(start).take(room));
     let below = total.saturating_sub(start.saturating_add(room));
     if below > 0 {
-        lines.push((format!("▼ {below} more").into(), panel().with_dim(true)));
+        lines.push((format!("▼ {below} more").into(), PANEL.with_dim(true)));
     }
 }
 
@@ -1215,23 +1211,20 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 /// A list to choose from or run: the entries that fit, the selected one
 /// highlighted and, but in a chooser, those that cannot run now dimmed.
 fn list_panel(grid: &mut Grid, view: &View, list: &List) {
-    let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel().with_bold(true))];
+    let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), PANEL.with_bold(true))];
     let capacity = overlay::list_room(view.rows);
-    let (len, chosen) = (list.items.len(), list.selected);
-    let start = overlay::window_start(len, chosen, capacity);
-    let shown = list.items.iter().enumerate().skip(start).take(capacity);
-    let shown = shown.map(|(i, item)| {
+    let entries = list.items.iter().enumerate().map(|(i, item)| {
         let marker = if list.current == Some(i) { "*" } else { " " };
-        let attrs = panel().with_inverse(i == chosen);
+        let attrs = PANEL.with_inverse(i == list.selected);
         (format!("{marker} {item}").into(), attrs)
     });
-    windowed(&mut lines, len, start, capacity, shown);
+    windowed(&mut lines, entries, list.selected, capacity);
     let help = if list.chooser {
         "Enter selects · r renames · x closes · Esc"
     } else {
         "Enter runs · Esc cancels"
     };
-    lines.push((help.into(), panel().with_dim(true)));
+    lines.push((help.into(), PANEL.with_dim(true)));
     surface(grid, view, &lines);
 }
 
@@ -1250,13 +1243,13 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
     for (index, entry) in column.entries.iter().enumerate() {
         let group = (entry.root, entry.group.as_str());
         if heading != Some(group) {
-            entries.push((group.1.into(), panel().with_bold(true)));
+            entries.push((group.1.into(), PANEL.with_bold(true)));
             heading = Some(group);
         }
         let more = if entry.layer { "…" } else { "" };
         let key = &entry.key;
         let pad = usize::from(key_width.saturating_sub(width(key)));
-        let mut attrs = panel();
+        let mut attrs = PANEL;
         if index == column.selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
@@ -1265,16 +1258,13 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
     }
     let (heading, body_room) = overlay::column_room(view.rows);
-    let start = overlay::window_start(entries.len(), selected_row, body_room);
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
-        lines.push((column.title.as_str().into(), panel().with_bold(true)));
+        lines.push((column.title.as_str().into(), PANEL.with_bold(true)));
     }
-    let total = entries.len();
-    let shown = entries.into_iter().skip(start).take(body_room);
-    windowed(&mut lines, total, start, body_room, shown);
+    windowed(&mut lines, entries.into_iter(), selected_row, body_room);
     if column.entries.is_empty() {
-        lines.push(("no bindings".into(), panel().with_dim(true)));
+        lines.push(("no bindings".into(), PANEL.with_dim(true)));
     }
     surface(grid, view, &lines);
 }
