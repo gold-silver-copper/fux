@@ -2450,44 +2450,6 @@ impl Session {
                     None => Begun::Waiting(Box::new(waiting)),
                 };
             }
-            command @ (Command::Ls { .. }
-            | Command::KillServer { .. }
-            | Command::NewWorkspace { .. }
-            | Command::NewTab { .. }
-            | Command::Split { .. }
-            | Command::Run { .. }
-            | Command::Respawn { .. }
-            | Command::Notify { .. }
-            | Command::Resize { .. }
-            | Command::SendMouse { .. }
-            | Command::KillPane { .. }
-            | Command::Signal { .. }
-            | Command::KillTab { .. }
-            | Command::KillWorkspace { .. }
-            | Command::Rename { .. }
-            | Command::MovePane { .. }
-            | Command::SwapPane { .. }
-            | Command::ResizePane { .. }
-            | Command::SendKeys { .. }
-            | Command::DumpLayout { .. }
-            | Command::Grant { .. }
-            | Command::Log { .. }
-            | Command::ClearHistory { .. }
-            | Command::CapturePane { .. }
-            | Command::Reorder { .. }
-            | Command::Set { .. }
-            | Command::Resolve { .. }
-            | Command::ListBuffers
-            | Command::ShowBuffer { .. }
-            | Command::PasteBuffer { .. }
-            | Command::Client { .. })
-                if command.acting_wait().is_some() =>
-            {
-                let Some((targets, wait)) = command.acting_wait() else {
-                    return Begun::Done(self.run_command(&command, origin));
-                };
-                (targets, wait, Some(command))
-            }
             // Started, then waited for from its first output on.
             mut command @ (Command::Run { then: Some(_), .. }
             | Command::Split { then: Some(_), .. }
@@ -2527,7 +2489,10 @@ impl Session {
             | Command::ListBuffers
             | Command::ShowBuffer { .. }
             | Command::PasteBuffer { .. }
-            | Command::Client { .. }) => return Begun::Done(self.run_command(&command, origin)),
+            | Command::Client { .. }) => match command.acting_wait() {
+                Some((targets, wait)) => (targets, wait, Some(command)),
+                None => return Begun::Done(self.run_command(&command, origin)),
+            },
         };
         let here = match self.here(origin) {
             Ok(here) => here,
@@ -4327,47 +4292,17 @@ pub(crate) mod testing {
                 request: &crate::protocol::Request,
                 out: &mut dyn std::io::Write,
             ) -> Result<crate::protocol::Reply, crate::script::Failed> {
-                match &request.command {
-                    crate::command::Command::Resolve { .. } => self.0.ask(request, out),
-                    crate::command::Command::Client { action, .. } => {
-                        self.1.push(action.clone().here());
-                        Ok(crate::protocol::Reply::default())
-                    }
-                    other @ (crate::command::Command::Ls { .. }
-                    | crate::command::Command::KillServer { .. }
-                    | crate::command::Command::NewWorkspace { .. }
-                    | crate::command::Command::NewTab { .. }
-                    | crate::command::Command::Split { .. }
-                    | crate::command::Command::Run { .. }
-                    | crate::command::Command::Respawn { .. }
-                    | crate::command::Command::Notify { .. }
-                    | crate::command::Command::Resize { .. }
-                    | crate::command::Command::Wait { .. }
-                    | crate::command::Command::SendMouse { .. }
-                    | crate::command::Command::KillPane { .. }
-                    | crate::command::Command::Signal { .. }
-                    | crate::command::Command::KillTab { .. }
-                    | crate::command::Command::KillWorkspace { .. }
-                    | crate::command::Command::Rename { .. }
-                    | crate::command::Command::MovePane { .. }
-                    | crate::command::Command::SwapPane { .. }
-                    | crate::command::Command::ResizePane { .. }
-                    | crate::command::Command::SendKeys { .. }
-                    | crate::command::Command::Events { .. }
-                    | crate::command::Command::DumpLayout { .. }
-                    | crate::command::Command::Grant { .. }
-                    | crate::command::Command::Log { .. }
-                    | crate::command::Command::ClearHistory { .. }
-                    | crate::command::Command::CapturePane { .. }
-                    | crate::command::Command::Reorder { .. }
-                    | crate::command::Command::Set { .. }
-                    | crate::command::Command::ListBuffers
-                    | crate::command::Command::ShowBuffer { .. }
-                    | crate::command::Command::PasteBuffer { .. }) => {
-                        self.1.push(other.clone());
-                        Ok(crate::protocol::Reply::default())
-                    }
+                let command = &request.command;
+                if let crate::command::Command::Resolve { .. } = command {
+                    return self.0.ask(request, out);
                 }
+                let recorded = if let crate::command::Command::Client { action, .. } = command {
+                    action.clone().here()
+                } else {
+                    command.clone()
+                };
+                self.1.push(recorded);
+                Ok(crate::protocol::Reply::default())
             }
         }
         let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
