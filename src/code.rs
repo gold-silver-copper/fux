@@ -189,8 +189,8 @@ impl Code {
     /// The exit status a failure of this kind ends with: a usage error's 2,
     /// any other's 1 (a wait says its own: 3, 4, 7, 124).
     pub fn status(self) -> NonZeroU8 {
-        let status = if self == Code::Usage { 2 } else { 1 };
-        NonZeroU8::new(status).unwrap_or(NonZeroU8::MIN)
+        let usage = u8::from(self == Code::Usage);
+        NonZeroU8::MIN.saturating_add(usage)
     }
 }
 

@@ -351,11 +351,6 @@ pub enum End {
 }
 
 impl End {
-    /// An answer with exit status `status`, which `code` names.
-    pub fn answered(status: u8, code: Code) -> End {
-        NonZeroU8::new(status).map_or(End::Done, |status| End::Answered { status, code })
-    }
-
     /// A failure of kind `code`, with its exit status.
     pub fn failed(code: Code, message: impl Into<String>) -> End {
         End::Failed {

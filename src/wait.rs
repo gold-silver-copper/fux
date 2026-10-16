@@ -27,13 +27,13 @@ use std::time::Instant;
 
 /// The exit statuses a wait ends with, besides 0 (what it waited for came)
 /// and the 1 and 2 of any command.
-pub const EXITED: u8 = 3;
-pub const GONE: u8 = 4;
+pub const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
+pub const GONE: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
 /// The program reads its terminal, and the text waited for has not come
 /// (or gone): fux judges it cannot before the agent types.
-pub const STOPPED: u8 = 7;
+pub const STOPPED: NonZeroU8 = NonZeroU8::MIN.saturating_add(6);
 /// As `timeout(1)`.
-pub const TIMED_OUT: u8 = 124;
+pub const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 
 /// Said first of what came when lines of it were let go past history's
 /// budget.
@@ -302,12 +302,12 @@ enum Told {
 impl Told {
     /// The status a wait that ended so ends with, if not 0, and the code
     /// that names it.
-    fn status(&self) -> Option<(u8, Code)> {
+    fn status(&self) -> Option<(NonZeroU8, Code)> {
         match self {
             // As timeout(1): the program's own status, once it exits.
             Told::Found(Found::Exit(ended)) => {
                 let status = crate::process::shell_status(*ended);
-                Some((u8::try_from(status).unwrap_or(u8::MAX), Code::Exited))
+                NonZeroU8::new(u8::try_from(status).unwrap_or(u8::MAX)).map(|s| (s, Code::Exited))
             }
             Told::Found(Found::Stopped) => Some((STOPPED, Code::Stopped)),
             Told::Found(Found::Text { .. } | Found::Gone | Found::Bell(_) | Found::Settled(_)) => {
@@ -451,7 +451,12 @@ impl Wait {
                 answer(id, status, stdout, fields, screen)
             }
             // A failure always has a status: its told one.
-            Err(message) => failed(id, status.unwrap_or((1, Code::Failed)), stdout, message),
+            Err(message) => failed(
+                id,
+                status.unwrap_or((NonZeroU8::MIN, Code::Failed)),
+                stdout,
+                message,
+            ),
         }
     }
 
@@ -460,7 +465,7 @@ impl Wait {
         &self,
         pane: &Pane,
         state: crate::ready::State,
-        status: Option<(u8, Code)>,
+        status: Option<(NonZeroU8, Code)>,
         body: String,
         since: Since,
     ) -> Reply {
@@ -475,8 +480,7 @@ impl Wait {
 
 /// A wait's failure in pane `id`, with its status and code: why, on
 /// stderr, beside what it prints. It leaves no answer, so no JSON.
-fn failed(id: PaneId, (status, code): (u8, Code), text: String, message: String) -> Reply {
-    let status = NonZeroU8::new(status).unwrap_or(NonZeroU8::MIN);
+fn failed(id: PaneId, (status, code): (NonZeroU8, Code), text: String, message: String) -> Reply {
     Reply {
         end: End::Failed {
             status,
@@ -493,17 +497,17 @@ fn failed(id: PaneId, (status, code): (u8, Code), text: String, message: String)
 /// then `last`, if any.
 fn answer(
     id: PaneId,
-    status: Option<(u8, Code)>,
+    status: Option<(NonZeroU8, Code)>,
     stdout: String,
     fields: Vec<(&'static str, Json<'static>)>,
     last: Option<(&'static str, Json<'static>)>,
 ) -> Reply {
     let mut all = vec![("pane", Json::str(id.to_string()))];
     all.extend(fields);
-    all.push(("status", Json::int(status.map_or(0, |(s, _)| s))));
+    all.push(("status", Json::int(status.map_or(0, |(s, _)| s.get()))));
     all.extend(last);
     Reply {
-        end: status.map_or(End::Done, |(status, code)| End::answered(status, code)),
+        end: status.map_or(End::Done, |(status, code)| End::Answered { status, code }),
         text: stdout,
         json: format!("{}\n", Json::Object(all).render()),
         ids: vec![AnyRef::Pane(id)],

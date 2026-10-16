@@ -990,8 +990,7 @@ impl Server {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
                 let gone = Reply {
                     end: End::Failed {
-                        status: std::num::NonZeroU8::new(crate::wait::GONE)
-                            .unwrap_or(std::num::NonZeroU8::MIN),
+                        status: crate::wait::GONE,
                         code: Code::Gone,
                         message: "everything it watched has closed".into(),
                     },
