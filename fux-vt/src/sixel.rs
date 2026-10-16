@@ -2,6 +2,7 @@
 //! Graphics"): the data of a `DCS P1 ; P2 ; P3 q … ST`, decoded as it
 //! comes into a picture of RGBA pixels. Pixels no sixel paints stay clear.
 
+use std::io::Write;
 use std::sync::Arc;
 
 /// The most pixels across or down a picture may have: a 4K screen's.
@@ -347,29 +348,26 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
             .saturating_mul(blues)
             .saturating_add(b)
     };
+    let level = |n: usize, of: usize| {
+        let n = n
+            .saturating_mul(255)
+            .checked_div(of.saturating_sub(1))
+            .unwrap_or(0);
+        u8::try_from(n).unwrap_or(u8::MAX)
+    };
     let palette: Vec<[u8; 3]> = if exact {
         seen
     } else {
-        (0..reds.saturating_mul(greens).saturating_mul(blues))
-            .map(|i| {
-                let level = |n: usize, of: usize| {
-                    let n = n
-                        .saturating_mul(255)
-                        .checked_div(of.saturating_sub(1))
-                        .unwrap_or(0);
-                    u8::try_from(n).unwrap_or(u8::MAX)
-                };
-                let (rest, b) = (
-                    i.checked_div(blues).unwrap_or(0),
-                    i.checked_rem(blues).unwrap_or(0),
-                );
-                let (r, g) = (
-                    rest.checked_div(greens).unwrap_or(0),
-                    rest.checked_rem(greens).unwrap_or(0),
-                );
-                [level(r, reds), level(g, greens), level(b, blues)]
-            })
-            .collect()
+        // In `cube`'s order: blue fastest, then green, then red.
+        let mut levels = Vec::new();
+        for r in 0..reds {
+            for g in 0..greens {
+                for b in 0..blues {
+                    levels.push([level(r, reds), level(g, greens), level(b, blues)]);
+                }
+            }
+        }
+        levels
     };
     let index = |rgb: [u8; 3]| -> usize {
         if exact {
@@ -380,7 +378,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     };
     // P2 = 1: clear pixels stay as they are. The raster attributes give
     // the size, square pixels.
-    let _ = std::io::Write::write_fmt(out, format_args!("\x1bP0;1;0q\"1;1;{width};{height}"));
+    let _ = write!(out, "\x1bP0;1;0q\"1;1;{width};{height}");
     for (i, [r, g, b]) in palette.iter().enumerate() {
         let share = |c: u8| {
             u32::from(c)
@@ -388,10 +386,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
                 .checked_div(255)
                 .unwrap_or(0)
         };
-        let _ = std::io::Write::write_fmt(
-            out,
-            format_args!("#{i};2;{};{};{}", share(*r), share(*g), share(*b)),
-        );
+        let _ = write!(out, "#{i};2;{};{};{}", share(*r), share(*g), share(*b));
     }
     let colours = palette.len();
     let mut band = vec![0u8; usize::try_from(width).unwrap_or(0)];
@@ -424,13 +419,13 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
                 out.push(b'$');
             }
             first = false;
-            let _ = std::io::Write::write_fmt(out, format_args!("#{colour}"));
+            let _ = write!(out, "#{colour}");
             for run in band.chunk_by(|a, b| a == b) {
                 let ch = run.first().copied().unwrap_or(0).saturating_add(0x3f);
                 match run.len() {
                     1..=3 => out.extend(std::iter::repeat_n(ch, run.len())),
                     n => {
-                        let _ = std::io::Write::write_fmt(out, format_args!("!{n}"));
+                        let _ = write!(out, "!{n}");
                         out.push(ch);
                     }
                 }
