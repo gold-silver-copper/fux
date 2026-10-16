@@ -384,6 +384,18 @@ pub struct Reply {
     pub value: Option<Scalar>,
 }
 
+impl Reply {
+    /// A failure of kind `code`, as `--json` names it: status 1, and why.
+    pub fn failed(code: &str, message: impl Into<String>) -> Reply {
+        Reply {
+            status: 1,
+            code: Some(code.to_owned()),
+            message: message.into(),
+            ..Reply::default()
+        }
+    }
+}
+
 wire_enum!(Scalar, "scalar" { 0 => Int(n), 1 => Bool(b), 2 => Str(s), 3 => Null });
 
 wire_struct!(Reply {

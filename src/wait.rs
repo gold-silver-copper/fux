@@ -19,7 +19,8 @@ use crate::json::Json;
 use crate::log::Seq;
 use crate::pane::{Pane, Start};
 use crate::process::Ended;
-use crate::session::{Outcome, Session};
+use crate::protocol::Reply;
+use crate::session::Session;
 use std::time::Instant;
 
 /// The exit statuses a wait ends with, besides 0 (what it waited for came)
@@ -72,7 +73,7 @@ pub struct Waiting {
     /// What the command it follows made, for its reply.
     pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
     /// What each pane said, once it has.
-    answers: Vec<Option<Outcome>>,
+    answers: Vec<Option<Reply>>,
     /// A capture to give once the pane settles (`capture` from a command
     /// line): its history, view and whether as JSON.
     pub capture: Option<(Option<usize>, CaptureView, bool)>,
@@ -193,7 +194,7 @@ impl Waiting {
     /// Its answer, if it has one at `now`: in each of its panes, what it
     /// waited for came, its program exited first, it went, or its time is
     /// up.
-    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
+    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let mut outcome = self.look(session, now)?;
         // A capture asked to settle first: its state line, then the capture.
         if let (Some((history, view, json)), Some(watch)) = (self.capture, self.watches.first())
@@ -201,19 +202,19 @@ impl Waiting {
         {
             let copying = session.copying(pane.id);
             let read = crate::capture::pane(pane, history, view, true, copying);
-            outcome.stdout = match crate::capture::asked(read, json) {
+            outcome.text = match crate::capture::asked(read, json) {
                 (read, None) => read,
                 // Its JSON, read at the same moment, for `json` to give.
                 (read, Some(form)) => {
                     outcome.json = form;
-                    let line = outcome.stdout.lines().next().unwrap_or_default();
+                    let line = outcome.text.lines().next().unwrap_or_default();
                     format!("{line}\n{read}")
                 }
             };
         }
         // An answer that starts with the pane's state names the pane itself.
         let named = self.lead.trim_end();
-        let lead = if !named.is_empty() && outcome.stdout.starts_with(&format!("{named} ")) {
+        let lead = if !named.is_empty() && outcome.text.starts_with(&format!("{named} ")) {
             ""
         } else {
             self.lead.as_str()
@@ -222,8 +223,8 @@ impl Waiting {
         // is that pane.
         let mut ids = self.made.clone();
         ids.extend(outcome.ids.iter().filter(|id| !self.made.contains(id)));
-        Some(Outcome {
-            stdout: format!("{lead}{}", outcome.stdout),
+        Some(Reply {
+            text: format!("{lead}{}", outcome.text),
             ids,
             ..outcome
         })
@@ -233,7 +234,7 @@ impl Waiting {
     /// wait once every one has: a line from each, in order, with the first
     /// failing status. At the limit, each pane yet to answer is said as it
     /// is.
-    fn look(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
+    fn look(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let several = self.watches.len() > 1;
         let (wait, texts) = (&self.wait, self.texts.as_slice());
         let (window, mode) = ((self.began, now), (self.fresh, self.more));
@@ -249,7 +250,7 @@ impl Waiting {
                 *answer = Some(watch.timed_out(session, wait, texts, several));
             }
         }
-        let answers: Vec<&Outcome> = self
+        let answers: Vec<&Reply> = self
             .answers
             .iter()
             .map(Option::as_ref)
@@ -258,19 +259,19 @@ impl Waiting {
             return Some((*one).clone());
         }
         let mut stderr = String::new();
-        for answer in answers.iter().filter(|a| !a.stderr.is_empty()) {
-            stderr.push_str(answer.stderr.trim_end());
+        for answer in answers.iter().filter(|a| !a.message.is_empty()) {
+            stderr.push_str(answer.message.trim_end());
             stderr.push('\n');
         }
-        Some(Outcome {
+        Some(Reply {
             status: (answers.iter().map(|a| a.status))
                 .find(|s| *s != 0)
                 .unwrap_or(0),
-            stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
-            stderr,
+            text: answers.iter().map(|a| a.text.as_str()).collect(),
+            message: stderr,
             json: answers.iter().map(|a| a.json.as_str()).collect(),
             ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
-            ..Outcome::default()
+            ..Reply::default()
         })
     }
 }
@@ -315,7 +316,7 @@ impl Wait {
         told: Told,
         several: bool,
         since: Since,
-    ) -> Outcome {
+    ) -> Reply {
         let prefix = if several {
             format!("{id} ")
         } else {
@@ -491,18 +492,18 @@ fn answer(
     (stdout, stderr): (String, String),
     fields: Vec<(&'static str, Json<'static>)>,
     last: Option<(&'static str, Json<'static>)>,
-) -> Outcome {
+) -> Reply {
     let mut all = vec![("pane", Json::str(id.to_string()))];
     all.extend(fields);
     all.push(("status", Json::Number(i64::from(status))));
     all.extend(last);
-    Outcome {
+    Reply {
         status,
-        stdout,
-        stderr,
+        text: stdout,
+        message: stderr,
         json: format!("{}\n", Json::Object(all).render()),
         ids: vec![AnyRef::Pane(id)],
-        ..Outcome::default()
+        ..Reply::default()
     }
 }
 
@@ -705,13 +706,7 @@ impl Watch {
 
     /// The wait's answer at its limit: what the pane is doing, and why
     /// the wait may never be met, if a reason shows.
-    fn timed_out(
-        &self,
-        session: &Session,
-        wait: &Wait,
-        texts: &[String],
-        several: bool,
-    ) -> Outcome {
+    fn timed_out(&self, session: &Session, wait: &Wait, texts: &[String], several: bool) -> Reply {
         let pane = session.panes.get(&self.pane);
         let hint = pane.and_then(|p| self.hint(p, texts));
         wait.told(

@@ -12,6 +12,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::pane::{InputQueue, Pane, Process, Runs, Typed};
 use crate::process::Child;
+use crate::protocol::Reply;
 use crate::view::{ClientKind, Mode, View};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
@@ -297,51 +298,10 @@ fn ended(pane: PaneId, status: crate::process::Ended) -> Error {
     fail("exited", format!("the program in {pane} {was}{told}"))
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Outcome {
-    pub status: u8,
-    pub stdout: String,
-    pub stderr: String,
-    /// Its JSON form, where it has one (a wait's).
-    pub json: String,
-    /// The panes, tabs and workspaces it made or found.
-    pub ids: Vec<AnyRef<WsId>>,
-    /// A field's value (`ls -t X --get FIELD`).
-    pub value: Option<crate::protocol::Scalar>,
-    /// Why it failed, as a stable code.
-    pub code: Option<&'static str>,
-}
-
-impl Outcome {
-    /// A failure of kind `code`, as `--json` names it: status 1, and why.
-    pub fn failed(code: &'static str, stderr: impl Into<String>) -> Outcome {
-        Outcome {
-            status: 1,
-            stderr: stderr.into(),
-            code: Some(code),
-            ..Outcome::default()
-        }
-    }
-}
-
-impl From<Outcome> for crate::protocol::Reply {
-    fn from(outcome: Outcome) -> crate::protocol::Reply {
-        crate::protocol::Reply {
-            status: outcome.status,
-            code: outcome.code.map(str::to_owned),
-            message: outcome.stderr,
-            text: outcome.stdout,
-            json: outcome.json,
-            ids: outcome.ids,
-            value: outcome.value,
-        }
-    }
-}
-
 /// What a command line from the CLI begins: its outcome, now, or a wait
 /// for one (`wait`, or an action that settles).
 pub enum Begun {
-    Done(Outcome),
+    Done(Reply),
     Waiting(Box<crate::wait::Waiting>),
     /// `fux events`: a stream, until the client goes.
     Events(Box<crate::events::Subscription>),
@@ -632,7 +592,7 @@ fn one<T: Copy + std::fmt::Display>(
 
 /// A command that failed, told with its code for `--json`: a usage error's
 /// status is 2.
-fn failure(error: Error, origin: &Origin) -> Outcome {
+fn failure(error: Error, origin: &Origin) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
     // caller whose `FUX_PANE` is another server's pane: why it got none.
     let error = match (error, origin) {
@@ -655,9 +615,9 @@ fn failure(error: Error, origin: &Origin) -> Outcome {
     } else {
         1
     };
-    Outcome {
+    Reply {
         status,
-        ..Outcome::failed(error.code(), error.to_string())
+        ..Reply::failed(error.code(), error.to_string())
     }
 }
 
@@ -2101,7 +2061,7 @@ impl Session {
         if self.restoring && matches!(command, Command::ResizePane { .. }) {
             let mut outcome = self.run_command(&command, origin);
             if outcome.status != 0 {
-                outcome = Outcome::default();
+                outcome = Reply::default();
             }
             return Begun::Done(outcome);
         }
@@ -2249,14 +2209,14 @@ impl Session {
         };
         let now = Instant::now();
         let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
-        waiting.lead = outcome.stdout;
+        waiting.lead = outcome.text;
         waiting.made = outcome.ids;
         waiting.fresh = true;
         self.wait_on(waiting, now)
     }
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
-    pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Outcome {
+    pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Reply {
         self.made.clear();
         self.value = None;
         self.json = None;
@@ -2271,12 +2231,12 @@ impl Session {
             .unwrap_or_default();
         self.ids.unwant();
         let outcome = match executed {
-            Ok(stdout) => Outcome {
-                stdout,
+            Ok(text) => Reply {
+                text,
                 json,
                 ids,
                 value: self.value.take(),
-                ..Outcome::default()
+                ..Reply::default()
             },
             Err(error) => failure(error, origin),
         };
@@ -3572,7 +3532,7 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
 /// config, a client attached, and a command line run in it.
 #[cfg(test)]
 pub(crate) mod testing {
-    use super::{Origin, Outcome, Session};
+    use super::{Origin, Reply, Session};
     use crate::config::Config;
     use crate::id::ClientId;
 
@@ -3608,7 +3568,7 @@ pub(crate) mod testing {
             &mut self,
             request: &crate::protocol::Request,
             out: &mut dyn std::io::Write,
-        ) -> Result<crate::protocol::Reply, crate::script::Failed> {
+        ) -> Result<Reply, crate::script::Failed> {
             let session = &mut *self.0;
             let origin = match request.context.client {
                 Some(client) if session.views.contains_key(&client) => Origin::Client(client),
@@ -3622,10 +3582,10 @@ pub(crate) mod testing {
                 }
                 super::Begun::Events(_) => {
                     let _ = writeln!(out, "events stream from a real server only");
-                    Outcome::default()
+                    Reply::default()
                 }
             };
-            Ok(outcome.into())
+            Ok(outcome)
         }
     }
 
@@ -3731,7 +3691,7 @@ pub(crate) mod testing {
                 &mut self,
                 request: &crate::protocol::Request,
                 out: &mut dyn std::io::Write,
-            ) -> Result<crate::protocol::Reply, crate::script::Failed> {
+            ) -> Result<Reply, crate::script::Failed> {
                 let command = &request.command;
                 if let crate::command::Command::Resolve { .. } = command {
                     return self.0.ask(request, out);
@@ -3742,7 +3702,7 @@ pub(crate) mod testing {
                     command.clone()
                 };
                 self.1.push(recorded);
-                Ok(crate::protocol::Reply::default())
+                Ok(Reply::default())
             }
         }
         let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;

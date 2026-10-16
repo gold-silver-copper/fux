@@ -13,7 +13,7 @@ use crate::protocol::{
     Role, ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Begun, Caller, Dying, Origin, Outcome, Outgoing, Session, Timer};
+use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer};
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
@@ -438,8 +438,7 @@ impl Conn {
     }
 
     /// Answers a request with its outcome, and takes the next.
-    fn answer(&mut self, session: &mut Session, outcome: Outcome) {
-        let reply = Reply::from(outcome);
+    fn answer(&mut self, session: &mut Session, reply: Reply) {
         let bytes = crate::wire::encode(&reply);
         if bytes.len() < MAX_PAYLOAD {
             self.send(session, &ServerFrame::Reply(Box::new(reply)));
@@ -716,15 +715,15 @@ fn grant(
     session: &mut Session,
     (workspace, socket, revoke): (Option<crate::command::WsRef>, String, bool),
     cwd: Option<PathBuf>,
-) -> Outcome {
-    let failed = |stderr: String| Outcome::failed("grant", stderr);
+) -> Reply {
+    let failed = |stderr: String| Reply::failed("grant", stderr);
     let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
     if revoke {
         let before = grants.len();
         grants.retain(|g| g.socket != path);
         session.grants.retain(|(s, _)| *s != path);
         return match grants.len() < before {
-            true => Outcome::default(),
+            true => Reply::default(),
             false => failed(format!("no grant made {}", path.display())),
         };
     }
@@ -764,9 +763,9 @@ fn grant(
         workspace,
         pinned,
     });
-    Outcome {
-        stdout: format!("{}\n", path.display()),
-        ..Outcome::default()
+    Reply {
+        text: format!("{}\n", path.display()),
+        ..Reply::default()
     }
 }
 
@@ -1062,9 +1061,9 @@ impl Server {
             let (lines, over) = subscription.told(&now, &self.session);
             if over {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let gone = Outcome {
+                let gone = Reply {
                     status: crate::wait::GONE,
-                    ..Outcome::failed("gone", "everything it watched has closed")
+                    ..Reply::failed("gone", "everything it watched has closed")
                 };
                 conn.answer(&mut self.session, gone);
                 continue;
@@ -1075,7 +1074,7 @@ impl Server {
             if conn.out.len() > crate::events::BACKLOG {
                 let lost = Event::stream("lost", Vec::new()).line(subscription.json);
                 ServerFrame::split_into(lost.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let lost = Outcome::failed("lost", "events: the reader fell too far behind");
+                let lost = Reply::failed("lost", "events: the reader fell too far behind");
                 conn.answer(&mut self.session, lost);
                 continue;
             }
@@ -1194,7 +1193,7 @@ impl Server {
                 let stopped = Event::stream("stopped", vec![("reason", reason)]);
                 let line = stopped.line(subscription.json);
                 ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                conn.answer(&mut self.session, Outcome::default());
+                conn.answer(&mut self.session, Reply::default());
             }
             if conn.stage.reads() {
                 conn.end(&mut self.session, &ServerFrame::Exit(&exit));
@@ -1728,7 +1727,7 @@ impl Server {
             let outcome = match scope {
                 // `fux grant` from a granted socket: refused.
                 Some(_) => {
-                    Outcome::failed("not_granted", "a socket `grant` made cannot grant another")
+                    Reply::failed("not_granted", "a socket `grant` made cannot grant another")
                 }
                 None => {
                     // What came through a revoked grant ends.
@@ -1742,7 +1741,7 @@ impl Server {
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         if let Some(c) = client.filter(|c| scope.is_none() && !session.views.contains_key(c)) {
-            let outcome = Outcome::failed("no_client", format!("no client {c}"));
+            let outcome = Reply::failed("no_client", format!("no client {c}"));
             conn.answer(session, outcome);
             return;
         }
