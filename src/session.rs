@@ -354,6 +354,18 @@ pub struct Outcome {
     pub code: Option<&'static str>,
 }
 
+impl Outcome {
+    /// A failure of kind `code`, as `--json` names it: status 1, and why.
+    pub fn failed(code: &'static str, stderr: impl Into<String>) -> Outcome {
+        Outcome {
+            status: 1,
+            stderr: stderr.into(),
+            code: Some(code),
+            ..Outcome::default()
+        }
+    }
+}
+
 impl From<Outcome> for crate::protocol::Reply {
     fn from(outcome: Outcome) -> crate::protocol::Reply {
         crate::protocol::Reply {
@@ -657,9 +669,7 @@ fn failure(error: Error, origin: &Origin) -> Outcome {
     };
     Outcome {
         status,
-        stderr: error.to_string(),
-        code: Some(error.code()),
-        ..Outcome::default()
+        ..Outcome::failed(error.code(), error.to_string())
     }
 }
 

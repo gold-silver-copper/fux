@@ -708,16 +708,6 @@ impl Saved {
     }
 }
 
-/// `fux grant` from a granted socket: refused.
-fn refused_grant() -> Outcome {
-    Outcome {
-        status: 1,
-        stderr: "a socket `grant` made cannot grant another".to_owned(),
-        code: Some("not_granted"),
-        ..Outcome::default()
-    }
-}
-
 /// `fux grant`: a socket made at `socket`, from the caller's directory
 /// `cwd`, whose commands reach `workspace` alone; or with `revoke`, the
 /// one made there closed, and what came through it reaching nothing more.
@@ -727,12 +717,7 @@ fn grant(
     (workspace, socket, revoke): (Option<crate::command::WsRef>, String, bool),
     cwd: Option<PathBuf>,
 ) -> Outcome {
-    let failed = |stderr: String| Outcome {
-        status: 1,
-        stderr,
-        code: Some("grant"),
-        ..Outcome::default()
-    };
+    let failed = |stderr: String| Outcome::failed("grant", stderr);
     let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
     if revoke {
         let before = grants.len();
@@ -1087,17 +1072,11 @@ impl Server {
             let (lines, over) = subscription.told(&now, &self.session);
             if over {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let status = crate::wait::GONE;
-                let code = Some("gone");
-                conn.answer(
-                    &mut self.session,
-                    Outcome {
-                        status,
-                        code,
-                        stderr: "everything it watched has closed".to_owned(),
-                        ..Outcome::default()
-                    },
-                );
+                let gone = Outcome {
+                    status: crate::wait::GONE,
+                    ..Outcome::failed("gone", "everything it watched has closed")
+                };
+                conn.answer(&mut self.session, gone);
                 continue;
             }
             if lines.is_empty() {
@@ -1106,12 +1085,7 @@ impl Server {
             if conn.out.len() > crate::events::BACKLOG {
                 let lost = Event::stream("lost", Vec::new()).line(subscription.json);
                 ServerFrame::split_into(lost.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let lost = Outcome {
-                    status: 1,
-                    code: Some("lost"),
-                    stderr: "events: the reader fell too far behind".to_owned(),
-                    ..Outcome::default()
-                };
+                let lost = Outcome::failed("lost", "events: the reader fell too far behind");
                 conn.answer(&mut self.session, lost);
                 continue;
             }
@@ -1788,7 +1762,10 @@ impl Server {
         } = command
         {
             let outcome = match scope {
-                Some(_) => refused_grant(),
+                // `fux grant` from a granted socket: refused.
+                Some(_) => {
+                    Outcome::failed("not_granted", "a socket `grant` made cannot grant another")
+                }
                 None => {
                     // What came through a revoked grant ends.
                     self.revoked |= revoke;
@@ -1801,12 +1778,7 @@ impl Server {
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         if let Some(c) = client.filter(|c| scope.is_none() && !session.views.contains_key(c)) {
-            let outcome = Outcome {
-                status: 1,
-                stderr: format!("no client {c}"),
-                code: Some("no_client"),
-                ..Outcome::default()
-            };
+            let outcome = Outcome::failed("no_client", format!("no client {c}"));
             conn.answer(session, outcome);
             return;
         }
