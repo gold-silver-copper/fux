@@ -963,10 +963,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let input = match input {
         Some(Input::Key(stroke)) if bits & !7 != 0 => Some(Input::Key(Keystroke {
             kitty: Some(Kitty {
-                code: None,
-                shifted: None,
-                base: None,
                 mods: bits,
+                ..Kitty::default()
             }),
             ..stroke
         })),

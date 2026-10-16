@@ -34,15 +34,6 @@ impl Direction {
             Self::Down => "down",
         }
     }
-    /// The `-L`/`-R`/`-U`/`-D` flag that names it.
-    pub fn flag(self) -> &'static str {
-        match self {
-            Self::Left => "-L",
-            Self::Right => "-R",
-            Self::Up => "-U",
-            Self::Down => "-D",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -195,7 +186,7 @@ pub struct Keystroke {
 
 /// What a terminal speaking the kitty keyboard protocol said of a key
 /// beyond its `KeyPress` (`references/modern/kitty_keyboard_protocol.html`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Kitty {
     /// The number of a key sent as `CSI number u`: its unshifted code
     /// point, or a functional key's (keypad keys from 57399); none for a
