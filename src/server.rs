@@ -471,8 +471,6 @@ pub struct Server {
     /// The sockets `fux grant` made, which the session's grants reach
     /// through.
     grants: Vec<(PathBuf, Listening)>,
-    /// A grant was revoked: what waits or streams through it ends.
-    revoked: bool,
     /// Where the layout is saved, for a server after a crash to bring
     /// back; none if there is nowhere to.
     saved: Option<Saved>,
@@ -685,21 +683,22 @@ impl Saved {
 
 /// `fux grant`: a socket made at `socket` (from the caller's directory
 /// `cwd`), whose commands reach `workspace` alone; or `fux revoke`, the one
-/// made there closed (and what came through it ends): whether it was.
+/// made there closed (and what came through it ends): the socket of the
+/// grant it revoked.
 fn grant(
     grants: &mut Vec<(PathBuf, Listening)>,
     session: &mut Session,
     (socket, workspace): (String, Option<crate::command::WsRef>),
     cwd: Option<PathBuf>,
-) -> (Reply, bool) {
-    let failed = |stderr: String| (Reply::failed(Code::Grant, stderr), false);
+) -> (Reply, Option<PathBuf>) {
+    let failed = |stderr: String| (Reply::failed(Code::Grant, stderr), None);
     let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
     let Some(workspace) = workspace else {
         let before = grants.len();
         grants.retain(|(socket, _)| *socket != path);
         session.grants.retain(|g| g.socket != path);
         return match grants.len() < before {
-            true => (Reply::default(), true),
+            true => (Reply::default(), Some(path)),
             false => failed(format!("no grant made {}", path.display())),
         };
     };
@@ -717,7 +716,7 @@ fn grant(
     };
     session.grant(path.clone(), name);
     grants.push((path.clone(), listening));
-    (format!("{}\n", path.display()).into(), false)
+    (format!("{}\n", path.display()).into(), None)
 }
 
 /// Why a server could not start.
@@ -781,7 +780,6 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         },
         conns: Vec::new(),
         grants: Vec::new(),
-        revoked: false,
         saved,
         children,
         killed: Vec::new(),
@@ -833,7 +831,6 @@ impl Server {
             // for, or an event to tell.
             self.after_restore();
             self.answer_waits(now);
-            self.end_revoked();
             self.tell_events();
             if let Some(saved) = &mut self.saved {
                 saved.save_by(&self.session, now);
@@ -971,21 +968,6 @@ impl Server {
             };
             if let Some(outcome) = waiting.answer(&self.session, now) {
                 conn.answer(&mut self.session, outcome);
-            }
-        }
-    }
-
-    /// Ends what waits or streams through a grant that was revoked.
-    fn end_revoked(&mut self) {
-        if !std::mem::take(&mut self.revoked) {
-            return;
-        }
-        let live: Vec<&PathBuf> = self.grants.iter().map(|(socket, _)| socket).collect();
-        for conn in &mut self.conns {
-            let gone = conn.grant.as_ref().is_some_and(|g| !live.contains(&g));
-            if gone && matches!(conn.stage, Stage::Waiting(_) | Stage::Events(_)) {
-                let why = "the grant this came through was revoked";
-                conn.end(&mut self.session, &ServerFrame::Exit(why));
             }
         }
     }
@@ -1674,20 +1656,26 @@ impl Server {
             None
         };
         if let Some(granting) = granting {
-            let outcome = match conn.grant {
+            let (outcome, revoked) = match conn.grant {
                 // `fux grant` from a granted socket: refused.
-                Some(_) => Reply::failed(
-                    Code::NotGranted,
-                    "a socket `grant` made cannot grant another",
-                ),
-                None => {
-                    let (outcome, revoked) = grant(&mut self.grants, session, granting, cwd);
-                    // What came through a revoked grant ends.
-                    self.revoked |= revoked;
-                    outcome
+                Some(_) => {
+                    let why = "a socket `grant` made cannot grant another";
+                    (Reply::failed(Code::NotGranted, why), None)
                 }
+                None => grant(&mut self.grants, session, granting, cwd),
             };
             conn.answer(session, outcome);
+            // What waits or streams through a grant revoked ends.
+            for conn in (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
+            {
+                if matches!(
+                    conn.stage,
+                    Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_)
+                ) {
+                    let why = "the grant this came through was revoked";
+                    conn.end(session, &ServerFrame::Exit(why));
+                }
+            }
             return;
         }
         // A program run as a client (`str c2 client focused`) names one
