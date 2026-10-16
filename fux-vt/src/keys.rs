@@ -88,6 +88,18 @@ pub struct Modifiers {
 }
 
 impl Modifiers {
+    /// As xterm's and kitty's modifier bits: Shift 1, Alt 2, Ctrl 4.
+    pub(crate) fn bits(self) -> u8 {
+        u8::from(self.shift) | u8::from(self.alt) << 1 | u8::from(self.ctrl) << 2
+    }
+    /// The modifiers xterm's and kitty's modifier `bits` hold.
+    pub(crate) fn from_bits(bits: u32) -> Self {
+        Self {
+            shift: bits & 1 != 0,
+            alt: bits & 2 != 0,
+            ctrl: bits & 4 != 0,
+        }
+    }
     /// No modifier.
     pub const NONE: Modifiers = Modifiers {
         ctrl: false,

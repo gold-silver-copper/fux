@@ -495,16 +495,6 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
     Some(Input::Key(KeyPress::new(key, mods).into()))
 }
 
-/// Modifiers from an xterm modifier parameter (`1 + bits`).
-fn modifiers(param: u32) -> Modifiers {
-    let bits = param.saturating_sub(1);
-    Modifiers {
-        shift: bits & 1 != 0,
-        alt: bits & 2 != 0,
-        ctrl: bits & 4 != 0,
-    }
-}
-
 /// One control byte or character, without an Escape prefix, and how many
 /// bytes it takes; none while it is incomplete.
 fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
@@ -909,7 +899,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     if part(1, 1) == Some(3) {
         return Step::Done(consumed, None);
     }
-    let mods = modifiers(modifier);
+    // An xterm modifier parameter is `1 + bits`.
+    let mods = Modifiers::from_bits(modifier.saturating_sub(1));
     // Every modifier bit, the kitty protocol's beyond xterm's three too.
     let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
     // `CSI n ~` numbers the function keys with gaps, each run from its
