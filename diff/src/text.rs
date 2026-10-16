@@ -22,9 +22,8 @@ macro_rules! stack {
                 let split = words::split(line).map_err(|e| e.to_string());
                 let argv = split.clone().unwrap_or_default();
                 format!(
-                    "{split:?} {:?} {} {:?} {:?}",
+                    "{split:?} {:?} {:?} {:?}",
                     argv.iter().map(|w| words::quote(w)).collect::<Vec<_>>(),
-                    words::join(&argv),
                     words::shell_line(&argv, false).map_err(|e| e.to_string()),
                     words::shell_line(&argv, true).map_err(|e| e.to_string())
                 )

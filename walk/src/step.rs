@@ -108,7 +108,10 @@ impl Step {
             Step::Keys { client, bytes } => {
                 format!("keys {client} {}", words::quote(&escape(bytes)))
             }
-            Step::Cli(args) => format!("cli {}", words::join(args)),
+            Step::Cli(args) => {
+                let quoted: Vec<String> = args.iter().map(|w| words::quote(w)).collect();
+                format!("cli {}", quoted.join(" "))
+            }
             Step::Resize { client, rows, cols } => format!("resize {client} {rows} {cols}"),
             Step::Attach { rows, cols } => format!("attach {rows} {cols}"),
             Step::Hangup { client } => format!("hangup {client}"),

@@ -21,7 +21,7 @@ use fux::config::Config;
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
-use fux::keymap::{Held, Keymap, Step};
+use fux::keymap::{Held, Keymap};
 use fux::keys::Keystroke;
 use fux::outer;
 use fux::protocol::{Context, Reply, Request};
@@ -327,7 +327,7 @@ impl Run {
         self.keymap = keymap;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended? {
-            text.push_str(&fux::script::display(value));
+            text.push_str(&value.text());
             text.push('\n');
         }
         Ok(text)
@@ -593,7 +593,7 @@ impl Run {
         let mut writes = false;
         for step in steps {
             match step {
-                Step::Send(act) => {
+                Effect::Send(act) => {
                     let key = matches!(act, Act::Key(_));
                     assert!(
                         !(repeating && key),
@@ -602,7 +602,7 @@ impl Run {
                     );
                     self.s.acts(client, vec![act]);
                 }
-                Step::Run(code) => {
+                Effect::Run(code) => {
                     writes |= WRITES.iter().any(|w| code.contains(w));
                     self.run_as(client, &code);
                 }

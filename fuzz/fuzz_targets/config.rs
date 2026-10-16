@@ -10,7 +10,8 @@
 //! - Any other line is fuxth source: split into tokens, compiled, and run
 //!   as a config for a bounded number of steps, up to its first request
 //!   for the server.
-use fux::keymap::{Binding, Held, Keymap, Layer, Node, Step};
+use fux::keymap::{Binding, Held, Keymap, Layer, Node};
+use fux::screens::Effect;
 use fux::keys::{KeyPress, Keystroke};
 use fux::script::{Fux, Host};
 use fuxth::{Machine, Outcome};
@@ -385,7 +386,7 @@ impl Client {
             .chain(self.keymap.root.iter().map(|(_, b)| b.code.as_str()))
             .collect();
         for step in &steps {
-            if let Step::Run(code) = step {
+            if let Effect::Run(code) = step {
                 // Only a bound program runs, and it compiles: it did when it
                 // was bound.
                 assert!(
@@ -399,13 +400,13 @@ impl Client {
             let root = self.keymap.root.iter().find(|(k, _)| *k == press);
             let expected = if press == self.keymap.prefix {
                 let column = self.keymap.column(&[], 0);
-                vec![Step::Send(fux::act::Act::Show(fux::act::Panel::Column(
+                vec![Effect::Send(fux::act::Act::Show(fux::act::Panel::Column(
                     column.unwrap_or_default(),
                 )))]
             } else if let Some((_, binding)) = root {
-                vec![Step::Run(binding.code.clone())]
+                vec![Effect::Run(binding.code.clone())]
             } else {
-                vec![Step::Send(fux::act::Act::Key(stroke))]
+                vec![Effect::Send(fux::act::Act::Key(stroke))]
             };
             assert_eq!(steps, expected, "{press} typed");
         }
