@@ -185,7 +185,12 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
                 }
             }
         }
-        let journal = session.panes.get(&pane).map(|p| p.record.after(from));
+        let pane_now = session.panes.get(&pane);
+        // Entries it had not told were let go (journal-bytes): said so.
+        if pane_now.is_some_and(|p| p.record.lost_after(from)) {
+            events.push(at("missed"));
+        }
+        let journal = pane_now.map(|p| p.record.after(from));
         for entry in journal.into_iter().flatten() {
             let number = |n: i64| Json::Number(n);
             events.push(match &entry.event {

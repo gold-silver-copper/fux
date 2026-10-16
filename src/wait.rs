@@ -875,6 +875,15 @@ impl Watch {
     /// in the piece itself, is found.
     fn read_prints(&mut self, pane: &Pane, texts: &[String]) {
         self.missed |= pane.record.lost_after(self.read);
+        // Rows scrolled off are printed on no more: a long wait lets them go.
+        let screen = pane.screen();
+        if self.stream.len() > usize::from(screen.size().rows()).saturating_mul(4) {
+            let window = screen.window();
+            let rows: std::collections::HashSet<_> = (0..window.rows())
+                .filter_map(|y| Some(window.row(y)?.id()))
+                .collect();
+            self.stream.retain(|id, _| rows.contains(id));
+        }
         let pieces = pane.record.printed_after(self.read.max(self.from));
         self.read = Seq(pane.screen().version());
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);

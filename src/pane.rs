@@ -238,8 +238,6 @@ const TITLE_STACK: usize = 10;
 pub struct Title {
     now: String,
     pushed: VecDeque<String>,
-    /// How many times it changed.
-    changes: u64,
 }
 
 impl Title {
@@ -248,15 +246,15 @@ impl Title {
     }
     /// The title a program set, without control characters, at most 256
     /// characters of it.
-    fn set(&mut self, title: &[u8]) {
+    /// Sets it from what a program sent; whether it changed.
+    fn set(&mut self, title: &[u8]) -> bool {
         let text = String::from_utf8_lossy(title);
-        self.become_(text.chars().filter(|c| !c.is_control()).take(256).collect());
+        self.become_(text.chars().filter(|c| !c.is_control()).take(256).collect())
     }
-    fn become_(&mut self, title: String) {
-        if title != self.now {
-            self.now = title;
-            self.changes = self.changes.wrapping_add(1);
-        }
+    fn become_(&mut self, title: String) -> bool {
+        let changed = title != self.now;
+        self.now = title;
+        changed
     }
     fn push(&mut self) {
         if self.pushed.len() >= TITLE_STACK {
@@ -265,10 +263,11 @@ impl Title {
         self.pushed.push_back(self.now.clone());
     }
     /// The title last pushed comes back; with none, nothing changes.
-    fn pop(&mut self) {
-        if let Some(title) = self.pushed.pop_back() {
-            self.become_(title);
-        }
+    /// Whether it changed.
+    fn pop(&mut self) -> bool {
+        self.pushed
+            .pop_back()
+            .is_some_and(|title| self.become_(title))
     }
 }
 
@@ -276,6 +275,8 @@ impl Title {
 struct Sink<'a> {
     /// The replies to one read, queued together after it: at most 4 KiB.
     replies: Vec<u8>,
+    /// Its bells, notifications and titles, in order, for the journal.
+    happened: &'a mut Vec<crate::log::Event>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -287,6 +288,14 @@ struct Sink<'a> {
     colours: &'a crate::outer::Colours,
 }
 
+impl Sink<'_> {
+    /// The title changed: the journal is told.
+    fn titled(&mut self) {
+        let title = self.title.as_str().to_owned();
+        self.happened.push(crate::log::Event::Title(title));
+    }
+}
+
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
         if self.replies.len().saturating_add(bytes.len()) <= 4096 {
@@ -296,13 +305,18 @@ impl fux_vt::Sink for Sink<'_> {
     /// A colour query (OSC 10, 11) is answered if the colour is known.
     fn event(&mut self, event: fux_vt::Event<'_>) {
         match event {
-            fux_vt::Event::Title(title) => self.title.set(title),
+            fux_vt::Event::Title(title) => {
+                if self.title.set(title) {
+                    self.titled();
+                }
+            }
             fux_vt::Event::ColorQuery { number, bel } => {
                 if let Some(answer) = self.colours.answer(number, bel) {
                     fux_vt::Sink::reply(self, &answer);
                 }
             }
             fux_vt::Event::Bell => {
+                self.happened.push(crate::log::Event::Bell);
                 *self.bell = true;
                 self.alerts.bells = self.alerts.bells.saturating_add(1);
                 self.alerts.last_notified = false;
@@ -311,8 +325,10 @@ impl fux_vt::Sink for Sink<'_> {
                 self.alerts.notifications = self.alerts.notifications.saturating_add(1);
                 self.alerts.last_notified = true;
                 let text = String::from_utf8_lossy(text);
-                self.alerts.last =
-                    Some(text.chars().filter(|c| !c.is_control()).take(500).collect());
+                let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
+                self.happened
+                    .push(crate::log::Event::Notification(text.clone()));
+                self.alerts.last = Some(text);
             }
             fux_vt::Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
                 let text = crate::json::unbase64(data).and_then(|d| String::from_utf8(d).ok());
@@ -347,7 +363,7 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             (b"", b't', Some([22])) if title => self.title.push(),
-            (b"", b't', Some([23])) if title => self.title.pop(),
+            (b"", b't', Some([23])) if title && self.title.pop() => self.titled(),
             _ => {}
         }
     }
@@ -762,13 +778,9 @@ impl Pane {
                     .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
                     .is_some_and(|t| !t.line_mode()),
             };
-        let was = (
-            self.alerts.bells,
-            self.alerts.notifications,
-            self.screen().commands().finished,
-            self.title.changes,
-        );
-        let begun = self.parse(run, until_frame);
+        let finished = self.screen().commands().finished;
+        let mut happened = Vec::new();
+        let begun = self.parse(run, until_frame, &mut happened);
         let seq = crate::log::Seq(self.screen().version());
         let prints = self.parser.take_prints();
         let printed = (!prints.is_empty()).then(|| {
@@ -821,21 +833,11 @@ impl Pane {
             printed,
         };
         self.record.push(seq, now, event);
-        // What else the piece did, each in its place after it.
+        // What else the piece did, after it, in the order it came; a shell
+        // command's end, by the shell's marks, with the last one's status.
         let commands = self.screen().commands();
-        let mut happened = Vec::new();
-        if self.alerts.bells != was.0 {
-            happened.push(crate::log::Event::Bell);
-        }
-        if self.alerts.notifications != was.1 {
-            let text = self.alerts.last.clone().unwrap_or_default();
-            happened.push(crate::log::Event::Notification(text));
-        }
-        let ended = commands.finished.saturating_sub(was.2);
+        let ended = commands.finished.saturating_sub(finished);
         happened.extend((0..ended.min(16)).map(|_| crate::log::Event::Done(commands.last_status)));
-        if self.title.changes != was.3 {
-            happened.push(crate::log::Event::Title(self.title.now.clone()));
-        }
         for event in happened {
             let seq = crate::log::Seq(self.parser.tick());
             self.record.push(seq, now, event);
@@ -844,9 +846,15 @@ impl Pane {
     }
 
     /// Gives `bytes` to the screen, as `feed` does.
-    fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
+    fn parse(
+        &mut self,
+        bytes: &[u8],
+        until_frame: bool,
+        happened: &mut Vec<crate::log::Event>,
+    ) -> Option<usize> {
         let mut sink = Sink {
             replies: Vec::new(),
+            happened,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,

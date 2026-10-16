@@ -228,7 +228,14 @@ fn held(event: &Event) -> usize {
     let own = match event {
         Event::Output { bytes, printed, .. } => {
             let printed = printed.as_ref().map_or(0, |p| {
-                (p.prints.len()).saturating_add(p.prints.iter().count().saturating_mul(RUN_COST))
+                // The text an echo is of, shared by its runs: once.
+                let echo = (p.echo.iter()).find_map(|e| match e {
+                    crate::classify::Echo::Of(text) => Some(text.len()),
+                    crate::classify::Echo::Not | crate::classify::Echo::Is => None,
+                });
+                (p.prints.len())
+                    .saturating_add(p.prints.iter().count().saturating_mul(RUN_COST))
+                    .saturating_add(echo.unwrap_or(0))
             });
             bytes.len().saturating_add(printed)
         }

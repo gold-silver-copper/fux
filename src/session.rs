@@ -2713,6 +2713,8 @@ impl Session {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
         }
+        // Input and resizes grow journals too.
+        self.keep_journals();
         self.settle();
         outcome
     }
