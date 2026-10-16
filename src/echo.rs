@@ -118,7 +118,7 @@ impl Echo {
         let typed = if m.istrip { typed & 0x7f } else { typed };
         let left_out = |c| {
             (m.parmrk && c == 0xff)
-                || (m.ixon && (is(m.start, c) || is(m.stop, c)))
+                || (m.ixon && (m.start == Some(c) || m.stop == Some(c)))
                 || (m.iexten && [m.lnext, m.reprint, m.discard, m.status].contains(&Some(c)))
         };
         if left_out(typed) {
@@ -130,7 +130,7 @@ impl Echo {
             if !m.noflsh {
                 self.line.clear();
                 // On macOS a suspend keeps the echo not yet read.
-                if !MACOS || is(m.intr, typed) || is(m.quit, typed) {
+                if !MACOS || m.intr == Some(typed) || m.quit == Some(typed) {
                     w.known &= w.out.len() < FLUSHED_WHOLE;
                     w.out.clear();
                 }
@@ -157,20 +157,20 @@ impl Echo {
             }
             return Some(());
         }
-        if is(m.erase, c) {
+        if m.erase == Some(c) {
             return self.edit(w, Edit::Char, c);
         }
-        if is(m.kill, c) {
+        if m.kill == Some(c) {
             // Linux takes it as a word erase when it is that too.
-            if is(m.werase, c) {
+            if m.werase == Some(c) {
                 return None;
             }
             return self.edit(w, Edit::Line, c);
         }
-        if m.iexten && is(m.werase, c) {
+        if m.iexten && m.werase == Some(c) {
             return self.edit(w, Edit::Word, c);
         }
-        if c == b'\n' || is(m.eof, c) || is(m.eol, c) || (m.iexten && is(m.eol2, c)) {
+        if c == b'\n' || m.eof == Some(c) || m.eol == Some(c) || (m.iexten && m.eol2 == Some(c)) {
             self.line.clear();
         } else if self.line.len() < LONGEST_LINE {
             self.line.push(c);
@@ -181,7 +181,7 @@ impl Echo {
             if m.echo || m.echonl {
                 w.output(b'\n');
             }
-        } else if !is(m.eof, c) {
+        } else if m.eof != Some(c) {
             w.echo(c);
         } else if MACOS {
             // Only macOS echoes the end-of-file character.
@@ -315,7 +315,7 @@ impl Write<'_> {
                 self.known = false;
                 0
             }
-            _ if !cntrl(c) => 1,
+            _ if !u8::is_ascii_control(&c) => 1,
             _ if self.modes.echoctl => 2,
             _ => 0,
         };
@@ -327,22 +327,12 @@ impl Write<'_> {
     }
 }
 
-/// Whether `c` is the character `char`, which may be disabled.
-fn is(char: Option<u8>, c: u8) -> bool {
-    char == Some(c)
-}
-
 /// Whether `c` continues a UTF-8 character.
 fn continuation(c: u8) -> bool {
     c & 0xc0 == 0x80
 }
 
-/// The kernels' `iscntrl`: ASCII's control characters only.
-fn cntrl(c: u8) -> bool {
-    c < 0x20 || c == 0x7f
-}
-
 /// Whether `ECHOCTL` echoes `c` as `^X`.
 fn caret(c: u8) -> bool {
-    cntrl(c) && c != b'\t'
+    u8::is_ascii_control(&c) && c != b'\t'
 }

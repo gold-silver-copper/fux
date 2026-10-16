@@ -979,14 +979,6 @@ impl Pane {
         }
     }
 
-    /// Gives the parser `palette` as the host's colours for entries 0 to
-    /// 15, replacing the last whole: an entry it lacks is cleared, so a
-    /// program asking it gets xterm's default. The program's own colours
-    /// still win, and nothing drawn changes (`fux_vt::Parser::set_host_palette`).
-    pub fn set_host_palette(&mut self, palette: crate::outer::Palette) {
-        self.parser.set_host_palette(palette);
-    }
-
     pub fn size(&self) -> fux_vt::Size {
         self.screen().size()
     }

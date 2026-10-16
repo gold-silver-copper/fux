@@ -1876,7 +1876,7 @@ impl Session {
             return;
         };
         pane.colours = colours;
-        pane.set_host_palette(palette);
+        pane.parser.set_host_palette(palette);
         pane.parser.set_host_graphics(graphics);
         read(pane);
         pane.note_change(Instant::now());

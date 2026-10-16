@@ -505,10 +505,7 @@ fn answer(
 ) -> Reply {
     let mut all = vec![("pane", Json::str(id.to_string()))];
     all.extend(fields);
-    all.push((
-        "status",
-        Json::Number(i64::from(status.map_or(0, |(s, _)| s))),
-    ));
+    all.push(("status", Json::int(status.map_or(0, |(s, _)| s))));
     all.extend(last);
     Reply {
         end: status.map_or(End::Done, |(status, code)| End::answered(status, code)),
@@ -539,7 +536,7 @@ impl Wait {
                 Some(status) => line.push_str(&format!(" · done {status}")),
                 None => line.push_str(" · done"),
             }
-            let status = status.map_or(Json::Null, |s| Json::Number(i64::from(s)));
+            let status = status.map_or(Json::Null, Json::int);
             fields.push(("done", status));
         }
         if self.after && pane.revision == since.revision && state == crate::ready::State::Reading {
@@ -552,10 +549,7 @@ impl Wait {
         let queued = pane.input_queued();
         if queued > 0 {
             line.push_str(&format!(" · {queued} bytes unread"));
-            fields.push((
-                "unread",
-                Json::Number(i64::try_from(queued).unwrap_or(i64::MAX)),
-            ));
+            fields.push(("unread", Json::int(queued)));
         }
         (line, fields)
     }

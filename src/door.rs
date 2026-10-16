@@ -272,9 +272,7 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
     let dir = door
         .parent()
         .ok_or_else(|| io::Error::other("a door with no directory"))?;
-    let mut random = [0u8; 8];
-    File::open("/dev/urandom")?.read_exact(&mut random)?;
-    let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = crate::marks::nonce().ok_or_else(|| io::Error::other("no random bytes"))?;
     let name = format!("c-{hex}");
     let paths = fifos(dir, &name);
     let [up_path, down_path] = &paths;
