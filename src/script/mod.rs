@@ -146,6 +146,23 @@ pub struct Answer {
     pub pane: Option<crate::id::PaneId>,
 }
 
+impl Answer {
+    /// An answer, as a value on the stack.
+    fn value(
+        text: String,
+        json: Option<String>,
+        kind: &'static str,
+        pane: Option<PaneId>,
+    ) -> Value<Fux> {
+        Value::App(Fux::Answer(Box::new(Answer {
+            text,
+            json,
+            kind,
+            pane,
+        })))
+    }
+}
+
 /// What an application word asks while the program waits.
 #[derive(Clone, Debug)]
 pub enum Ask {
@@ -220,6 +237,23 @@ pub struct Host<'a> {
     /// pane to settle unless it names what to wait for. Bindings, configs
     /// and restores act at once.
     pub settle: bool,
+}
+
+impl<'a> Host<'a> {
+    pub fn new(
+        context: Context,
+        keymap: Option<&'a mut Keymap>,
+        out: &'a mut dyn Write,
+        settle: bool,
+    ) -> Host<'a> {
+        Host {
+            context,
+            keymap,
+            last_bound: None,
+            out,
+            settle,
+        }
+    }
 }
 
 /// How a run ended: its status, and why it failed, if it did.
@@ -725,15 +759,11 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
         (Some(_), Some(_)) | (None, _) => None,
     };
     let action = |text: String, json: Option<String>| {
-        Value::App(Fux::Answer(Box::new(Answer {
-            text,
-            json,
-            kind: match pane {
-                Some(_) => "an action's answer",
-                None => "an answer of several panes",
-            },
-            pane,
-        })))
+        let kind = match pane {
+            Some(_) => "an action's answer",
+            None => "an answer of several panes",
+        };
+        Answer::value(text, json, kind, pane)
     };
     Ok(match then {
         Then::Nothing => Vec::new(),
@@ -750,18 +780,8 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
                 ));
             }
         },
-        Then::Answer(kind) => vec![Value::App(Fux::Answer(Box::new(Answer {
-            text,
-            json,
-            kind,
-            pane: None,
-        })))],
-        Then::Json(kind) => vec![Value::App(Fux::Answer(Box::new(Answer {
-            json: Some(text.clone()),
-            text,
-            kind,
-            pane: None,
-        })))],
+        Then::Answer(kind) => vec![Answer::value(text, json, kind, None)],
+        Then::Json(kind) => vec![Answer::value(text.clone(), Some(text), kind, None)],
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
             Some(Scalar::Int(n)) => Value::Int(n),
@@ -769,12 +789,9 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             Some(Scalar::Str(s)) => Value::str(s),
             // JSON that is no one value of fuxth's: `null`, a list, an
             // object, as text that `json` gives as it is.
-            Some(Scalar::Null) | None => Value::App(Fux::Answer(Box::new(Answer {
-                json: Some(text.clone()),
-                text,
-                kind: "a JSON value",
-                pane: None,
-            }))),
+            Some(Scalar::Null) | None => {
+                Answer::value(text.clone(), Some(text), "a JSON value", None)
+            }
         }],
         Then::Outcome { waited: false } => Vec::new(),
         Then::Outcome { waited: true } => vec![action(text, json)],
@@ -788,11 +805,6 @@ pub fn handle(id: crate::command::AnyRef<WsId>) -> Fux {
         crate::command::AnyRef::Tab(t) => Fux::Tab(t),
         crate::command::AnyRef::Workspace(w) => Fux::Workspace(w),
     }
-}
-
-/// A value as a program's end prints it.
-pub fn display(value: &Value<Fux>) -> String {
-    value.text()
 }
 
 /// What a program does that the client does itself, from the command line:
@@ -853,26 +865,22 @@ fn local(
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
             let (text, _) = crate::status(&socket, &probe, false);
             let (json, _) = crate::status(&socket, &probe, true);
-            return Ok(vec![answer(text, json, "a status")]);
+            return Ok(vec![answer(&text, &json, "a status")]);
         }
         Local::Servers => {
             let fail = |e: crate::socket::Error| client_failed(e.into());
             let text = crate::servers(false).map_err(fail)?;
             let json = crate::servers(true).map_err(fail)?;
-            return Ok(vec![answer(text, json, "a listing of servers")]);
+            return Ok(vec![answer(&text, &json, "a listing of servers")]);
         }
     }
     Ok(Vec::new())
 }
 
 /// An answer the client made itself, as text and JSON.
-fn answer(text: String, json: String, kind: &'static str) -> Value<Fux> {
-    Value::App(Fux::Answer(Box::new(Answer {
-        text: text.trim_end().to_owned(),
-        json: Some(json.trim_end().to_owned()),
-        kind,
-        pane: None,
-    })))
+fn answer(text: &str, json: &str, kind: &'static str) -> Value<Fux> {
+    let (text, json) = (text.trim_end().to_owned(), json.trim_end().to_owned());
+    Answer::value(text, Some(json), kind, None)
 }
 
 /// The server, started in the background if none answers: its socket. One
@@ -932,23 +940,23 @@ fn run_file(
     let shown = path.display().to_string();
     let text =
         std::fs::read_to_string(path).map_err(|e| Failed::new("read", format!("{shown}: {e}")))?;
-    let mut machine = compile(&fuxth::token::source(&shown, &text)?)?;
+    let context = crate::client::context();
+    run_quiet(&shown, &text, context, Some(keymap), &mut Settings(server))
+}
+
+/// Runs the program `text`, read from `name`, its requests going to `asks`
+/// and its output nowhere, for at most `PROGRAM_STEPS` steps.
+fn run_quiet(
+    name: &str,
+    text: &str,
+    context: Context,
+    keymap: Option<&mut Keymap>,
+    asks: &mut dyn Asks,
+) -> Result<(), Failed> {
+    let mut machine = compile(&fuxth::token::source(name, text)?)?;
     let mut out = std::io::sink();
-    let mut host = Host {
-        context: crate::client::context(),
-        keymap: Some(keymap),
-        last_bound: None,
-        out: &mut out,
-        settle: false,
-    };
-    run_capped(
-        &mut machine,
-        &mut host,
-        &mut Settings(server),
-        Some(PROGRAM_STEPS),
-        None,
-    )
-    .map(drop)
+    let mut host = Host::new(context, keymap, &mut out, false);
+    run_capped(&mut machine, &mut host, asks, Some(PROGRAM_STEPS), None).map(drop)
 }
 
 /// What a config's requests go to: settings alone, as a config runs each
@@ -1000,28 +1008,13 @@ pub fn restore(
     path: &std::path::Path,
     text: &str,
 ) -> Result<(), Failed> {
-    let mut machine = compile(&fuxth::token::source(&path.display().to_string(), text)?)?;
-    let mut out = std::io::sink();
     let mut context = crate::client::context();
     context.restoring = true;
     // Its panes are its own, not a pane's it runs in.
     (context.pane, context.server) = (None, None);
-    let mut host = Host {
-        context,
-        keymap: None,
-        last_bound: None,
-        out: &mut out,
-        settle: false,
-    };
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
-    run_capped(
-        &mut machine,
-        &mut host,
-        &mut Layout(&mut server),
-        Some(PROGRAM_STEPS),
-        None,
-    )
-    .map(drop)
+    let name = path.display().to_string();
+    run_quiet(&name, text, context, None, &mut Layout(&mut server))
 }
 
 /// The most steps a program the client runs takes (a config, a saved
@@ -1123,13 +1116,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     };
     let mut machine = compile(&tokens)?;
     let mut out = Checked { out, failed: None };
-    let mut host = Host {
-        context: crate::client::context(),
-        keymap: None,
-        last_bound: None,
-        out: &mut out,
-        settle: true,
-    };
+    let mut host = Host::new(crate::client::context(), None, &mut out, true);
     let ran = run(&mut machine, &mut host, &mut Cli::default());
     // What the words before a failure left is printed too: their answers.
     let stack = match &ran {
@@ -1142,7 +1129,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty()) {
             continue;
         }
-        let _ = writeln!(host.out, "{}", display(value));
+        let _ = writeln!(host.out, "{}", value.text());
     }
     let _ = host.out.flush();
     let status = ran?.status;
@@ -1189,20 +1176,22 @@ struct Checked<'a> {
 impl Write for Checked<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let written = self.out.write(bytes);
-        if let Err(error) = &written
-            && self.failed.is_none()
-        {
-            self.failed = Some(std::io::Error::new(error.kind(), error.to_string()));
-        }
-        written
+        self.keep(written)
     }
     fn flush(&mut self) -> std::io::Result<()> {
         let flushed = self.out.flush();
-        if let Err(error) = &flushed
+        self.keep(flushed)
+    }
+}
+
+impl Checked<'_> {
+    /// `result`, its error kept if it is the first.
+    fn keep<T>(&mut self, result: std::io::Result<T>) -> std::io::Result<T> {
+        if let Err(error) = &result
             && self.failed.is_none()
         {
             self.failed = Some(std::io::Error::new(error.kind(), error.to_string()));
         }
-        flushed
+        result
     }
 }

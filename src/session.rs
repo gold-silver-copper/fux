@@ -3767,13 +3767,8 @@ pub(crate) mod testing {
             client,
             ..crate::protocol::Context::default()
         };
-        let mut host = crate::script::Host {
-            context: context.clone(),
-            keymap: Some(&mut keymap),
-            last_bound: None,
-            out: &mut out,
-            settle: false,
-        };
+        let mut host =
+            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, false);
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
             asks: &mut process,
@@ -3790,7 +3785,7 @@ pub(crate) mod testing {
         let ended = ended.map_err(|e| e.to_string())?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended.stack {
-            text.push_str(&crate::script::display(value));
+            text.push_str(&value.text());
             text.push('\n');
         }
         Ok(text)
@@ -3874,16 +3869,11 @@ pub(crate) mod testing {
         let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
         let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
-        let mut host = crate::script::Host {
-            context: crate::protocol::Context {
-                client: Some(client),
-                ..crate::protocol::Context::default()
-            },
-            keymap: None,
-            last_bound: None,
-            out: &mut out,
-            settle: false,
+        let context = crate::protocol::Context {
+            client: Some(client),
+            ..crate::protocol::Context::default()
         };
+        let mut host = crate::script::Host::new(context, None, &mut out, false);
         let mut recorder = Recorder(InProcess(s), Vec::new());
         crate::script::run(&mut machine, &mut host, &mut recorder).map_err(|e| e.to_string())?;
         Ok(recorder.1)

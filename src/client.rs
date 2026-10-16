@@ -870,13 +870,7 @@ fn run_job(
     let result = (|| {
         let tokens = fuxth::token::source("key", &code)?;
         let mut machine = crate::script::compile(&tokens)?;
-        let mut host = crate::script::Host {
-            context,
-            keymap: Some(&mut changed),
-            last_bound: None,
-            out: &mut out,
-            settle: false,
-        };
+        let mut host = crate::script::Host::new(context, Some(&mut changed), &mut out, false);
         crate::script::run_capped(
             &mut machine,
             &mut host,
@@ -892,7 +886,7 @@ fn run_job(
         Ok(ended) => {
             let mut said = String::from_utf8_lossy(&out).into_owned();
             for value in &ended.stack {
-                said.push_str(&crate::script::display(value));
+                said.push_str(&value.text());
                 said.push('\n');
             }
             let said: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -969,11 +963,7 @@ pub fn headless(
         &attaching,
         false,
     )?;
-    say(&reason)
-}
-
-/// Says why a client detached, on its stdout.
-fn say(reason: &str) -> Result<(), Error> {
+    // Why it detached, on its stdout.
     let _ = writeln!(std::io::stdout(), "[{reason}]");
     Ok(())
 }

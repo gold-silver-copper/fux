@@ -309,7 +309,7 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
             }
             None => Json::str(answer.text.clone()),
         },
-        Value::App(_) => Json::str(super::display(value)),
+        Value::App(_) => Json::str(value.text()),
     }
 }
 
@@ -677,7 +677,7 @@ impl fuxth::Host for Host<'_> {
                             (Kind::Pane, Fux::Pane(_))
                             | (Kind::Tab, Fux::Tab(_))
                             | (Kind::Workspace, Fux::Workspace(_)) => now(out, Value::App(app)),
-                            _ => resolve(super::display(&Value::App(app)), kind),
+                            _ => resolve(Value::App(app).text(), kind),
                         }
                     }
                     other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
