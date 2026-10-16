@@ -646,6 +646,23 @@ impl Reach<'_> {
     }
 }
 
+/// A command that failed, told with its code for `--json`: a usage error's
+/// status is 2.
+fn failure(error: Error, origin: &Origin) -> Outcome {
+    let error = stray(error, origin);
+    let status = if matches!(error, Error::Usage(_)) {
+        2
+    } else {
+        1
+    };
+    Outcome {
+        status,
+        stderr: error.to_string(),
+        code: Some(error.code()),
+        ..Outcome::default()
+    }
+}
+
 /// A command that needed its caller's pane, tab or workspace, from a caller
 /// whose `FUX_PANE` is another server's pane: why it got none.
 fn stray(error: Error, origin: &Origin) -> Error {
@@ -2146,141 +2163,84 @@ impl Session {
             }
             return Begun::Done(outcome);
         }
-        let command = match origin {
-            Origin::Cli(Caller {
-                scope: Some(scope), ..
-            }) => match self.scoped(command, scope, origin) {
-                Ok(command) => command,
-                Err(error) => return self.failed(error, origin),
-            },
-            Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => command,
-        };
         self.begin_command(command, origin)
+            .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
     }
 
-    fn begin_command(&mut self, command: Command, origin: &Origin) -> Begun {
-        let (targets, wait, keys) = match command {
-            Command::Events { targets, json } => {
-                let here = match self.here(origin) {
-                    Ok(here) => here,
-                    Err(error) => return self.failed(error, origin),
-                };
-                let targets: Result<Vec<_>, Error> = (targets.into_iter())
-                    .map(|t| self.any_target(&Subject::from(t), here))
-                    .collect();
-                return match targets {
-                    Ok(targets) => Begun::Events(Box::new(crate::events::Subscription {
-                        targets,
-                        json,
-                        seen: crate::events::Snapshot::of(self),
-                    })),
-                    Err(error) => self.failed(error, origin),
-                };
-            }
-            Command::Wait { targets, wait } => (targets, wait, None),
-            // From a command line: read once the pane settles, said with
-            // its state.
-            Command::CapturePane {
-                target,
-                history,
-                view,
+    /// `begin`'s work: what fails before a command runs is its error.
+    fn begin_command(&mut self, command: Command, origin: &Origin) -> Result<Begun, Error> {
+        let mut command = match origin {
+            Origin::Cli(Caller {
+                scope: Some(scope), ..
+            }) => self.scoped(command, scope, origin)?,
+            Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => command,
+        };
+        // Started, then waited for from its first output on.
+        if let Some(wait) = command.take_start_wait() {
+            return Ok(self.start_waiting(&command, *wait, origin));
+        }
+        if let Command::Events { targets, json } = command {
+            let here = self.here(origin)?;
+            let targets = (targets.into_iter())
+                .map(|t| self.any_target(&Subject::from(t), here))
+                .collect::<Result<_, _>>()?;
+            return Ok(Begun::Events(Box::new(crate::events::Subscription {
+                targets,
                 json,
-                settle: Some(limit),
-            } => {
-                let wait = crate::command::Wait {
-                    until: vec![crate::command::Until::Settled],
-                    timeout: limit,
-                    print: false,
-                    after: false,
-                    marks: false,
-                };
-                let here = match self.here(origin) {
-                    Ok(here) => here,
-                    Err(error) => return self.failed(error, origin),
-                };
-                let pane = match self.pane(target, here) {
-                    Ok(pane) => pane,
-                    Err(error) => return self.failed(error, origin),
-                };
-                let now = Instant::now();
-                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
-                waiting.capture = Some((history, view, json));
-                return match waiting.answer(self, now) {
-                    Some(outcome) => Begun::Done(outcome),
-                    None => Begun::Waiting(Box::new(waiting)),
-                };
-            }
-            // Started, then waited for from its first output on.
-            mut command @ (Command::Run { then: Some(_), .. }
-            | Command::Split { then: Some(_), .. }
-            | Command::Respawn { then: Some(_), .. }) => {
-                return match command.take_start_wait() {
-                    Some(wait) => self.start_waiting(&command, *wait, origin),
-                    None => Begun::Done(self.run_command(&command, origin)),
-                };
-            }
-            command @ (Command::Ls { .. }
-            | Command::KillServer { .. }
-            | Command::NewWorkspace { .. }
-            | Command::NewTab { .. }
-            | Command::Split { .. }
-            | Command::Run { .. }
-            | Command::Respawn { .. }
-            | Command::Notify { .. }
-            | Command::Resize { .. }
-            | Command::SendMouse { .. }
-            | Command::KillPane { .. }
-            | Command::Signal { .. }
-            | Command::KillTab { .. }
-            | Command::KillWorkspace { .. }
-            | Command::Rename { .. }
-            | Command::MovePane { .. }
-            | Command::SwapPane { .. }
-            | Command::ResizePane { .. }
-            | Command::SendKeys { .. }
-            | Command::DumpLayout { .. }
-            | Command::Grant { .. }
-            | Command::Log { .. }
-            | Command::ClearHistory { .. }
-            | Command::CapturePane { .. }
-            | Command::Reorder { .. }
-            | Command::Set { .. }
-            | Command::Resolve { .. }
-            | Command::ListBuffers
-            | Command::ShowBuffer { .. }
-            | Command::PasteBuffer { .. }
-            | Command::Client { .. }) => match command.acting_wait() {
-                Some((targets, wait)) => (targets, wait, Some(command)),
-                None => return Begun::Done(self.run_command(&command, origin)),
-            },
+                seen: crate::events::Snapshot::of(self),
+            })));
+        }
+        // From a command line: read once the pane settles, said with its
+        // state.
+        if let Command::CapturePane {
+            target,
+            history,
+            view,
+            json,
+            settle: Some(limit),
+        } = command
+        {
+            let wait = crate::command::Wait {
+                until: vec![crate::command::Until::Settled],
+                timeout: limit,
+                print: false,
+                after: false,
+                marks: false,
+            };
+            let pane = self.pane(target, self.here(origin)?)?;
+            let now = Instant::now();
+            let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
+            waiting.capture = Some((history, view, json));
+            return Ok(self.wait_on(waiting, now));
+        }
+        let (targets, wait, keys) = if let Command::Wait { targets, wait } = command {
+            (targets, wait, None)
+        } else if let Some((targets, wait)) = command.acting_wait() {
+            (targets, wait, Some(command))
+        } else {
+            return Ok(Begun::Done(self.run_command(&command, origin)));
         };
-        let here = match self.here(origin) {
-            Ok(here) => here,
-            Err(error) => return self.failed(error, origin),
-        };
-        let ids = match self.panes_of(&targets, here) {
-            Ok(ids) => ids,
-            Err(error) => return self.failed(error, origin),
-        };
-        let panes: Result<Vec<&Pane>, Error> = ids
-            .into_iter()
+        let here = self.here(origin)?;
+        let panes = (self.panes_of(&targets, here)?.into_iter())
             .map(|id| self.pane(Some(id), here))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let now = Instant::now();
         // Armed before any keys go in: what the keys bring is what it sees.
-        let mut waiting = match panes {
-            Ok(panes) => crate::wait::Waiting::new(&panes, wait, now, self.config.wait()),
-            Err(error) => return self.failed(error, origin),
-        };
+        let mut waiting = crate::wait::Waiting::new(&panes, wait, now, self.config.wait());
         match keys {
             Some(command) => {
                 let outcome = self.run_command(&command, origin);
                 if outcome.status != 0 {
-                    return Begun::Done(outcome);
+                    return Ok(Begun::Done(outcome));
                 }
             }
             None => waiting.more = true,
         }
+        Ok(self.wait_on(waiting, now))
+    }
+
+    /// A wait's answer, if it has one already; else the wait.
+    fn wait_on(&self, mut waiting: crate::wait::Waiting, now: Instant) -> Begun {
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
@@ -2330,18 +2290,6 @@ impl Session {
         Ok(command)
     }
 
-    /// A command line from the CLI that failed before it ran: why, its code
-    /// kept for `--json`.
-    fn failed(&mut self, error: Error, origin: &Origin) -> Begun {
-        let error = stray(error, origin);
-        Begun::Done(Outcome {
-            status: 1,
-            stderr: error.to_string(),
-            code: Some(error.code()),
-            ..Outcome::default()
-        })
-    }
-
     /// Runs a command that starts a program and prints its pane's id, then
     /// waits on that pane, armed before the server reads anything the
     /// program writes; the id comes first in what the wait prints.
@@ -2362,10 +2310,7 @@ impl Session {
         waiting.lead = outcome.stdout;
         waiting.made = outcome.ids;
         waiting.fresh = true;
-        match waiting.answer(self, now) {
-            Some(outcome) => Begun::Done(outcome),
-            None => Begun::Waiting(Box::new(waiting)),
-        }
+        self.wait_on(waiting, now)
     }
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
@@ -2391,20 +2336,7 @@ impl Session {
                 value: self.value.take(),
                 ..Outcome::default()
             },
-            Err(error) => {
-                let error = stray(error, origin);
-                let status = if matches!(error, Error::Usage(_)) {
-                    2
-                } else {
-                    1
-                };
-                Outcome {
-                    status,
-                    stderr: error.to_string(),
-                    code: Some(error.code()),
-                    ..Outcome::default()
-                }
-            }
+            Err(error) => failure(error, origin),
         };
         if !shows_nothing_new(command) {
             self.changes = self.changes.wrapping_add(1);
