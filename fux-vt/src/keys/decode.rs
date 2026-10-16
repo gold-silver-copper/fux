@@ -47,7 +47,7 @@
 //! dropped to its end as it arrives, none of it typed.
 use crate::Rgb;
 use crate::keys::colour::Scheme;
-use crate::keys::encode::PASTE_END;
+use crate::keys::encode::{PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use std::borrow::Cow;
@@ -603,18 +603,8 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
 /// as `CSI M` is a mouse report.
 fn final_key(last: u8, mods: Modifiers) -> Option<Input> {
     let key = match last {
-        b'A' => Key::Arrow(Direction::Up),
-        b'B' => Key::Arrow(Direction::Down),
-        b'C' => Key::Arrow(Direction::Right),
-        b'D' => Key::Arrow(Direction::Left),
-        b'H' => Key::Home,
-        b'F' => Key::End,
-        b'P' => Key::F(1),
-        b'Q' => Key::F(2),
-        b'R' => Key::F(3),
-        b'S' => Key::F(4),
         b'M' => Key::Enter,
-        _ => return None,
+        _ => numbered_key(1, char::from(last))?,
     };
     press(key, mods)
 }
@@ -898,13 +888,6 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let mods = Modifiers::from_bits(modifier.saturating_sub(1));
     // Every modifier bit, the kitty protocol's beyond xterm's three too.
     let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
-    // `CSI n ~` numbers the function keys with gaps, each run from its
-    // base: the key is F(`first - base`). `encode.rs` sends the same
-    // numbers (its `Form::Numbered`).
-    let function = |base: u32| {
-        let n = u8::try_from(first.checked_sub(base)?).ok()?;
-        press(Key::F(n), mods)
-    };
     let input = match last {
         b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => {
             final_key(last, mods)
@@ -922,19 +905,20 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             // `PASTE_START`'s number.
             200 => return Step::PasteStart(consumed),
             1 | 7 => press(Key::Home, mods),
-            2 => press(Key::Insert, mods),
-            3 => press(Key::Delete, mods),
             4 | 8 => press(Key::End, mods),
-            5 => press(Key::PageUp, mods),
-            6 => press(Key::PageDown, mods),
-            11..=15 => function(10),
-            17..=21 => function(11),
-            23 | 24 => function(12),
+            // F1 to F4 as some terminals number them.
+            11..=14 => press(
+                Key::F(u8::try_from(first).unwrap_or(0).saturating_sub(10)),
+                mods,
+            ),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
             27 => part(2, 0)
                 .and_then(|code| coded(code, mods, |c| c))
                 .map(|press| Input::Key(press.into())),
-            _ => None,
+            // The others `encode.rs` sends (its `Form::Numbered`).
+            _ => u8::try_from(first)
+                .ok()
+                .and_then(|n| press(numbered_key(n, '~')?, mods)),
         },
         // `CSI code ; mod u`: xterm's formatOtherKeys, and the kitty
         // protocol's form, `CSI code:shifted:base ; mods u`.

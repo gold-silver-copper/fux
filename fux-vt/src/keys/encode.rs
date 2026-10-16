@@ -324,6 +324,23 @@ impl From<Key> for Form {
     }
 }
 
+/// The key sent as `CSI number ; mods last` (`Form::Numbered`), as
+/// `decode.rs` (`csi`) reads it back.
+pub(crate) fn numbered_key(number: u8, last: char) -> Option<Key> {
+    let keys = [
+        Key::Home,
+        Key::End,
+        Key::Insert,
+        Key::Delete,
+        Key::PageUp,
+        Key::PageDown,
+    ];
+    (Direction::ALL.map(Key::Arrow).into_iter())
+        .chain(keys)
+        .chain((1..=12).map(Key::F))
+        .find(|&key| matches!(Form::from(key), Form::Numbered(n, l) if (n, l) == (number, last)))
+}
+
 /// A key whose legacy bytes are a C0 control or DEL.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Control {
