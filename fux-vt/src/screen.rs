@@ -1881,11 +1881,7 @@ impl Screen {
         let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
         let keyboard = std::mem::take(&mut g.keyboard);
         self.alternate.clear(&mut self.next_id, self.version)?;
-        let blank = pen.erased();
-        let blank = match blank.inline_style() {
-            Some(style) => style,
-            None => self.alternate.style(blank),
-        };
+        let blank = self.alternate.style(pen.erased());
         let g = &mut self.alternate;
         (g.cursor, g.saved, g.lines, g.keyboard) = (cursor, saved, lines, keyboard);
         g.set_columns(columns);
