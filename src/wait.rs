@@ -95,9 +95,7 @@ struct Watch {
     pane: PaneId,
     /// What came after this is new to it.
     start: Start,
-    /// The last piece of output it read from the pane's journal, and
-    /// whether pieces it had not read yet were let go.
-    read: Seq,
+    /// Pieces of output it had not read yet were let go.
     missed: bool,
     /// The screen's rows as they read when it began, if it began after the
     /// last action (else the pane's, `Pane::before`).
@@ -110,8 +108,9 @@ struct Watch {
     stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
     /// The `wait-gone` texts seen since the wait began, for a fresh program.
     appeared: Vec<String>,
-    /// How far it read the journal for texts gone and bells, and the last
-    /// piece that printed each text gone: each look reads only what is new.
+    /// How far it read the journal, for texts, texts gone and bells, and
+    /// the last piece that printed each text gone: each look reads only
+    /// what is new.
     looked: Seq,
     printed: Vec<(String, Seq)>,
     bell: Option<Seq>,
@@ -659,7 +658,7 @@ impl Watch {
         Watch {
             pane: pane.id,
             start,
-            read: start.from,
+
             missed: false,
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
@@ -854,11 +853,9 @@ impl Watch {
     /// the first of `texts` that a piece of output printed, on its line or
     /// in the piece itself, is found.
     fn read_prints(&mut self, pane: &Pane, texts: &[String]) {
-        self.missed |= pane.record.lost_after(self.read);
         // Rows scrolled off are printed on no more: a long wait lets them go.
         crate::pane::prune(&mut self.stream, pane.screen());
-        let pieces = pane.record.printed_after(self.read.max(self.start.from));
-        self.read = Seq(pane.screen().version());
+        let pieces = pane.record.printed_after(self.looked.max(self.start.from));
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
         let wanted: Vec<Vec<char>> = (texts.iter())
