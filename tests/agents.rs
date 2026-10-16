@@ -2458,7 +2458,7 @@ fn keys_with_no_enter_are_their_echo() -> Outcome {
 /// were let go: the text may have come unseen.
 #[test]
 fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
-    let server = Server::start("str history-lines 20 set")?;
+    let server = Server::start("str history-lines 20 set  str journal-bytes 200000 set")?;
     let wait = |pane: &str, text: &str| {
         let args = [
             "str",
@@ -2482,9 +2482,9 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
         "{}",
         found.stderr
     );
-    // Past the text the pane keeps for waits (1 MiB since the input).
-    let flood = "import sys; w = sys.stdout.write\nw(('filler ' * 10 + '\\n') * 20000)\n\
-                 w('LOST_LINE\\n' + 'after\\n' * 100 + 'END\\n'); sys.stdout.flush(); input()";
+    // Past what the pane's journal keeps (`journal-bytes`, 200 kB here).
+    let flood = "import sys; w = sys.stdout.write\nw('LOST_LINE\\n')\n\
+                 w(('filler ' * 10 + '\\n') * 20000)\nw('END\\n'); sys.stdout.flush(); input()";
     let lost = id(&server.ok(&run(
         &["str", "END", "wait-text"],
         &["python3", "-c", flood],
@@ -2493,7 +2493,7 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
     assert_eq!(out.status, CANNOT_COME, "{}", out.stderr);
     // Told at once, the answer is the screen; at the limit, the error.
     let (said, why) = match PROBED {
-        true => (&out.stdout, "more came than fux keeps"),
+        true => (&out.stdout, "more came than the pane's journal keeps"),
         false => (&out.stderr, "may have come unseen"),
     };
     assert!(said.contains(why), "{}{}", out.stdout, out.stderr);

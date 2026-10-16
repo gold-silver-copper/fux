@@ -2151,6 +2151,28 @@ impl Session {
         let lines = self.config.history_lines;
         for pane in self.panes.values_mut() {
             let _ = pane.parser.set_history_lines(lines);
+            pane.record.set_budget(self.config.journal_bytes);
+        }
+        self.keep_journals();
+    }
+
+    /// All panes' journals together keep at most `journal-total` bytes:
+    /// the largest lets its oldest entries go first.
+    fn keep_journals(&mut self) {
+        let total = self.config.journal_total;
+        let mut held: usize = self.panes.values().map(|p| p.record.held()).sum();
+        while held > total {
+            let Some(largest) = self.panes.values_mut().max_by_key(|p| p.record.held()) else {
+                break;
+            };
+            let had = largest.record.held();
+            largest
+                .record
+                .keep(had.saturating_sub(held.saturating_sub(total)));
+            held = held.saturating_sub(had.saturating_sub(largest.record.held()));
+            if largest.record.held() == had {
+                break;
+            }
         }
     }
 
@@ -2396,6 +2418,7 @@ impl Session {
         read(pane);
         pane.note_change(Instant::now());
         let dropped = pane.input.lost_reply();
+        self.keep_journals();
         self.read_into(id, place, dropped);
     }
 
@@ -4125,6 +4148,7 @@ fn new_pane(
         .map(|c| basename(c))
         .unwrap_or_else(|| basename(&shell_program));
     let mut pane = Pane::new(id, name, runs, size, config.history_lines)?;
+    pane.record.set_budget(config.journal_bytes);
     // A program brought back by a restore waits for `respawn`.
     let paused = fresh.paused && matches!(start, Start::Program(..));
     if let Some(launcher) = launch.filter(|_| !paused) {
@@ -5000,7 +5024,7 @@ mod tests {
             ("str %1 pane str left move-beside", "no pane left of %1".to_owned()),
             (
                 "str nope 1 set",
-                r#"no setting "nope"; the settings are shell, history-lines, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
+                r#"no setting "nope"; the settings are shell, history-lines, journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
             ),
             ("opts str '' name new-workspace", "a name cannot be empty or blank".to_owned()),
             (

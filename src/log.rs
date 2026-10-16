@@ -1,6 +1,7 @@
-//! What happens in a pane, recorded as it happens, on one counter: the
-//! output fux reads, each piece numbered as the screen took it, and where
-//! it came from; each piece of input fux writes; bells. Every question an
+//! A pane's journal: what happens in it, recorded as it happens, on one
+//! counter: the output fux reads, each piece numbered as the screen took
+//! it, where it came from and what it printed; each piece of input fux
+//! writes; bells, resizes and each action's start. Every question an
 //! agent asks (what came since its input, which came first, is this text
 //! the echo of what it typed) is answered from the record, never by
 //! comparing screens afterwards.
@@ -75,9 +76,12 @@ pub enum Origin {
 /// What a log entry records.
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// A piece of output and where it came from. Its bytes are kept while
-    /// the log's budget allows ([`LOG_BYTES`]), for a replay.
-    Output { origin: Origin, bytes: Box<[u8]> },
+    /// A piece of output, where it came from, and what it printed.
+    Output {
+        origin: Origin,
+        bytes: Box<[u8]>,
+        printed: Option<Box<Printed>>,
+    },
     /// A piece of input written.
     Input { unit: Unit, bytes: Box<[u8]> },
     /// An action's input began: what came since is what it brought.
@@ -88,6 +92,18 @@ pub enum Event {
     Resize(fux_vt::Size),
 }
 
+/// What a piece of output printed: its runs, what each may be the echo of
+/// (`crate::classify`), which a wait never takes, and of each, the
+/// characters it changed, those after the first and before the last it
+/// printed as its row held them just before (a line drawn again, the same,
+/// changes none: nothing new).
+#[derive(Clone, Debug)]
+pub struct Printed {
+    pub prints: fux_vt::Prints,
+    pub echo: Vec<crate::classify::Echo>,
+    pub fresh: Vec<(usize, usize)>,
+}
+
 /// One thing that happened, and its number.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -96,56 +112,66 @@ pub struct Entry {
     pub event: Event,
 }
 
-/// The most bytes of output and input a pane's log keeps for a replay;
-/// older entries keep their place and origin, without their bytes.
-pub const LOG_BYTES: usize = 1 << 20;
-/// The most entries a pane's log keeps.
-pub const LOG_ENTRIES: usize = 1 << 16;
+/// How many bytes a pane's journal keeps by default (`journal-bytes`).
+pub const JOURNAL_BYTES: usize = 32 << 20;
+/// What an entry costs beside what it holds: its number, time and kind.
+const ENTRY_COST: usize = std::mem::size_of::<Entry>();
+/// What a printed run costs beside its text: its row, columns, place in
+/// the text, echo and change.
+const RUN_COST: usize = 64;
 
-/// A pane's log.
-#[derive(Debug, Default)]
+/// A pane's journal: everything that happened in it, in order, under one
+/// budget in bytes. Past it, the oldest entries go whole, and a reader
+/// asking for what came after one that went is told so.
+#[derive(Debug)]
 pub struct Log {
     entries: VecDeque<Entry>,
-    /// Bytes held in the entries.
+    /// Bytes the entries take.
     bytes: usize,
-    /// The first entry whose bytes are still held: a replay starts no
-    /// earlier.
-    whole_from: usize,
-    /// It let go of an entry or its bytes.
-    lost: bool,
+    /// The bytes it keeps.
+    pub budget: usize,
+    /// The newest entry let go, if any was.
+    dropped: Option<Seq>,
 }
 
 impl Log {
+    /// An empty journal that keeps `budget` bytes.
+    pub fn new(budget: usize) -> Log {
+        Log {
+            entries: VecDeque::new(),
+            bytes: 0,
+            budget,
+            dropped: None,
+        }
+    }
+
     /// Records `event` with number `seq`, at `at`.
     pub fn push(&mut self, seq: Seq, at: Instant, event: Event) {
         self.bytes = self.bytes.saturating_add(held(&event));
         self.entries.push_back(Entry { seq, at, event });
-        while self.bytes > LOG_BYTES {
-            let Some(entry) = self.entries.get_mut(self.whole_from) else {
+        self.keep(self.budget);
+    }
+
+    /// Lets the oldest entries go until it holds at most `bytes`.
+    pub fn keep(&mut self, bytes: usize) {
+        while self.bytes > bytes {
+            let Some(entry) = self.entries.pop_front() else {
                 break;
             };
             self.bytes = self.bytes.saturating_sub(held(&entry.event));
-            if let Event::Output { bytes, .. } | Event::Input { bytes, .. } = &mut entry.event {
-                *bytes = Box::default();
-            }
-            self.whole_from = self.whole_from.saturating_add(1);
-            self.lost = true;
-        }
-        while self.entries.len() > LOG_ENTRIES {
-            self.entries.pop_front();
-            self.whole_from = self.whole_from.saturating_sub(1);
-            self.lost = true;
+            self.dropped = Some(entry.seq);
         }
     }
 
-    /// Where the output numbered `seq` came from, if the log still holds
-    /// it.
-    pub fn origin(&self, seq: OutputSeq) -> Option<Origin> {
-        let at = self.entries.binary_search_by_key(&seq.0, |e| e.seq).ok()?;
-        match self.entries.get(at).map(|e| &e.event) {
-            Some(Event::Output { origin, .. }) => Some(*origin),
-            _ => None,
-        }
+    /// Keeps `budget` bytes from now on.
+    pub fn set_budget(&mut self, budget: usize) {
+        self.budget = budget;
+        self.keep(budget);
+    }
+
+    /// How many bytes its entries take.
+    pub fn held(&self) -> usize {
+        self.bytes
     }
 
     /// The first bell rung after `seq`, if one was.
@@ -161,47 +187,70 @@ impl Log {
         self.entries.iter().skip(from)
     }
 
-    /// The entries whose bytes are still held, for a replay: from the
-    /// first, if none has lost them.
-    pub fn whole(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().skip(self.whole_from)
+    /// What each piece of output after `seq` printed, oldest first.
+    pub fn printed_after(&self, seq: Seq) -> impl Iterator<Item = (Seq, &Printed)> {
+        self.after(seq).filter_map(|e| match &e.event {
+            Event::Output { printed, .. } => printed.as_deref().map(|p| (e.seq, p)),
+            Event::Input { .. } | Event::Action | Event::Bell | Event::Resize(_) => None,
+        })
     }
 
-    /// Whether the log holds every entry since the pane began, bytes too:
-    /// a replay rebuilds its screen.
-    pub fn complete(&self) -> bool {
-        !self.lost
+    /// Whether something that came after `seq` was let go.
+    pub fn lost_after(&self, seq: Seq) -> bool {
+        self.dropped.is_some_and(|d| d > seq)
+    }
+
+    /// Every entry, for a replay, if none was let go.
+    pub fn whole(&self) -> Option<impl Iterator<Item = &Entry>> {
+        self.dropped.is_none().then(|| self.entries.iter())
     }
 }
 
-/// The bytes an event holds.
+/// The bytes an event takes.
 fn held(event: &Event) -> usize {
-    match event {
-        Event::Output { bytes, .. } | Event::Input { bytes, .. } => bytes.len(),
+    let own = match event {
+        Event::Output { bytes, printed, .. } => {
+            let printed = printed.as_ref().map_or(0, |p| {
+                (p.prints.len()).saturating_add(p.prints.iter().count().saturating_mul(RUN_COST))
+            });
+            bytes.len().saturating_add(printed)
+        }
+        Event::Input { bytes, .. } => bytes.len(),
         Event::Action | Event::Bell | Event::Resize(_) => 0,
-    }
+    };
+    own.saturating_add(ENTRY_COST)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Past its budget, the log lets go of the oldest bytes first, and
-    /// keeps every entry's place and origin.
+    /// Past its budget, the journal lets go of the oldest entries whole,
+    /// and says what came after one that went.
     #[test]
-    fn the_oldest_bytes_go_first_and_origins_stay() {
-        let mut log = Log::default();
+    fn the_oldest_entries_go_first_and_are_told() {
+        let mut log = Log::new(4096);
         let now = Instant::now();
         let origin = Origin::Output { by: Source::Order };
         for n in 1..=3u64 {
-            let bytes = vec![b'x'; LOG_BYTES / 2].into_boxed_slice();
-            log.push(Seq(n), now, Event::Output { origin, bytes });
+            let bytes = vec![b'x'; 1500].into_boxed_slice();
+            let printed = None;
+            log.push(
+                Seq(n),
+                now,
+                Event::Output {
+                    origin,
+                    bytes,
+                    printed,
+                },
+            );
         }
         log.push(Seq(4), now, Event::Bell);
-        assert!(!log.complete());
-        assert_eq!(log.whole().count(), 3);
-        assert_eq!(log.origin(OutputSeq(Seq(1))), Some(origin));
+        assert!(log.whole().is_none());
+        assert!(log.lost_after(Seq(0)) && !log.lost_after(Seq(1)));
         assert_eq!(log.bell_after(Seq(2)), Some(Seq(4)));
-        assert_eq!(log.after(Seq(2)).count(), 2);
+        assert_eq!(log.after(Seq(0)).count(), 3);
+        log.keep(0);
+        assert_eq!(log.after(Seq(0)).count(), 0);
     }
 }

@@ -37,7 +37,7 @@ pub const TIMED_OUT: u8 = 124;
 const CUT: &str = "… earlier lines not kept (past history-lines)\n";
 /// Said first instead when more came than fux keeps for a wait.
 const MORE_THAN_KEPT: &str =
-    "… more came than fux keeps for a wait (1 MiB): text may have passed unseen\n";
+    "… more came than the pane's journal keeps (journal-bytes): text may have passed unseen\n";
 
 /// How long a bare `wait` on a pane that may go on alone waits for
 /// something new before it answers the pane as it is: longer than the
@@ -99,10 +99,8 @@ struct Watch {
     /// What came after this is new to it.
     from: Seq,
     on_full: bool,
-    /// The action the pane's prints are kept since, and how many of them
-    /// it has read: a new action starts them again.
-    since: Seq,
-    read: usize,
+    /// The last piece of output it read from the pane's journal.
+    read: Seq,
     /// The screen's rows as they read when it began, if it began after the
     /// last action (else the pane's, `Pane::before`).
     before: Option<std::collections::HashMap<fux_vt::RowId, crate::pane::Cells>>,
@@ -114,9 +112,6 @@ struct Watch {
     stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
     /// The `wait-gone` texts seen since the wait began, for a fresh program.
     appeared: Vec<String>,
-    /// More came than the pane keeps: the rows changed up to this number
-    /// were read as they read then.
-    scanned: Seq,
     /// A text was found in the echo of what was typed alone.
     echo_skipped: bool,
     finished: u64,
@@ -659,13 +654,11 @@ impl Watch {
             pane: pane.id,
             from,
             on_full,
-            since: pane.since,
-            read: if after { pane.prints.len() } else { 0 },
+            read: from,
             before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
             stream: std::collections::HashMap::new(),
             appeared: Vec::new(),
-            scanned: Seq(0),
             echo_skipped: false,
             finished,
             revision: pane.revision,
@@ -746,10 +739,10 @@ impl Watch {
     /// Why a text may have come unseen: more came than the pane keeps, or
     /// the text was in the echo of what was typed alone.
     fn unseen(&self, pane: Option<&Pane>) -> Option<&'static str> {
-        if pane.is_some_and(|p| p.prints_lost) {
+        if pane.is_some_and(|p| p.record.lost_after(self.from)) {
             return Some(
-                "more was written since the input than fux keeps for a wait: the text \
-                 may have come unseen",
+                "more was written since the wait began than the pane's journal keeps \
+                 (journal-bytes): the text may have come unseen",
             );
         }
         self.echo_skipped.then_some(
@@ -784,10 +777,10 @@ impl Watch {
                     // Shown between two looks (drawn over, erased, scrolled
                     // away): printed since, though gone now.
                     // It went no earlier than the last piece that printed it.
-                    let last = (pane.prints.iter().filter(|p| p.seq.0 > self.from))
-                        .filter(|p| p.prints.iter().any(|r| found_in(r.text, text) > 0))
-                        .map(|p| p.seq.0)
-                        .next_back();
+                    let last = (pane.record.printed_after(self.from))
+                        .filter(|(_, p)| p.prints.iter().any(|r| found_in(r.text, text) > 0))
+                        .map(|(seq, _)| seq)
+                        .last();
                     if (present || last.is_some()) && !self.appeared.contains(text) {
                         self.appeared.push(text.clone());
                     }
@@ -841,20 +834,15 @@ impl Watch {
     /// the first of `texts` that a piece of output printed, on its line or
     /// in the piece itself, is found.
     fn read_prints(&mut self, pane: &Pane, texts: &[String]) {
-        if pane.since != self.since {
-            self.since = pane.since;
-            self.read = 0;
-        }
-        let prints = pane.prints.get(self.read..).unwrap_or_default();
-        self.read = pane.prints.len();
+        let pieces = pane.record.printed_after(self.read.max(self.from));
+        self.read = Seq(pane.screen().version());
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
         let wanted: Vec<Vec<char>> = (texts.iter())
             .map(|t| folded(t.trim_start_matches('^').trim_end_matches('$')))
             .collect();
-        let pieces = prints.iter().filter(|p| p.seq.0 > self.from);
-        let runs = pieces.flat_map(|p| {
-            (p.prints.iter().zip(&p.echo).zip(&p.fresh)).map(move |((r, e), f)| (p.seq, r, e, *f))
+        let runs = pieces.flat_map(|(seq, p)| {
+            (p.prints.iter().zip(&p.echo).zip(&p.fresh)).map(move |((r, e), f)| (seq, r, e, *f))
         });
         for (seq, whole, echo, fresh) in runs {
             // Only what it changed is news: what it printed as its row held
@@ -959,26 +947,8 @@ impl Watch {
                         .replace(CUT_END, ""),
                     false => line,
                 };
-                self.found = Some((text, line, seq.0));
+                self.found = Some((text, line, seq));
                 return;
-            }
-        }
-        // More was printed than the pane keeps: the lines changed since,
-        // as they read now, on the screen and in history.
-        if pane.prints_lost {
-            let screen = pane.screen();
-            // Only the rows changed since the last look: a row changed
-            // again since takes a newer number and is read again.
-            let since = self.from.max(self.scanned).0;
-            self.scanned = Seq(screen.version());
-            let changed = screen.rows().filter(|r| r.version() > since);
-            let found = changed.map(|row| Line::of_row(row)).find_map(|l| {
-                let at = texts.iter().filter_map(|t| l.holds(t).map(|at| (at, t)));
-                at.min_by_key(|(at, _)| *at)
-                    .map(|(_, t)| (t.clone(), l.text.clone()))
-            });
-            if let Some((text, line)) = found {
-                self.found = Some((text, line, Seq(screen.version())));
             }
         }
     }
@@ -1024,7 +994,7 @@ impl Watch {
             on_full: self.on_full,
             finished: self.finished,
             revision: self.revision,
-            cut: pane.and_then(|p| match (p.prints_lost, p.cut()) {
+            cut: pane.and_then(|p| match (p.record.lost_after(self.from), p.cut()) {
                 (true, _) => Some(MORE_THAN_KEPT),
                 (false, true) => Some(CUT),
                 (false, false) => None,
@@ -1047,16 +1017,6 @@ struct Line {
 }
 
 impl Line {
-    /// Row `row`'s text alone, all of it taken as printed.
-    fn of_row(row: fux_vt::Row<'_>) -> Line {
-        let text = row.cells_text().trim_end_matches(' ').to_owned();
-        Line {
-            printed: vec![true; text.len()],
-            text,
-            rows: vec![row.id()],
-        }
-    }
-
     /// The line the piece `print` went on, wherever it is now: on the
     /// screen or in history; else (let go) the piece's own text. Of a line wrapped over many rows, the rows within `reach`
     /// characters of the piece: a text that holds any of it lies there.
@@ -1397,9 +1357,8 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
         return text(pane, marks, false);
     }
     // A row changed since, or moved (`fux_vt::Print`).
-    let moved: std::collections::HashSet<fux_vt::RowId> = (pane.prints.iter())
-        .filter(|p| p.seq.0 > since.from)
-        .flat_map(|p| p.prints.iter().map(|r| r.row))
+    let moved: std::collections::HashSet<fux_vt::RowId> = (pane.record.printed_after(since.from))
+        .flat_map(|(_, p)| p.prints.iter().map(|r| r.row))
         .collect();
     // A resize gives every row it keeps a new number, and brings nothing.
     let resized: std::collections::HashSet<u64> = (pane.record.after(since.from))

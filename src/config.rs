@@ -35,8 +35,9 @@ impl std::fmt::Display for Error {
         match self {
             Error::UnknownOption { option } => write!(
                 f,
-                "no setting {option:?}; the settings are shell, history-lines, clipboard, \
-                 buffers, bell, titles, shell-marks and update-environment"
+                "no setting {option:?}; the settings are shell, history-lines, journal-bytes, \
+                 journal-total, clipboard, buffers, bell, titles, shell-marks and \
+                 update-environment"
             ),
             Error::NotANumber { option } => write!(f, "{option}: not a number"),
             Error::OutOfRange { option, min, max } => {
@@ -62,6 +63,10 @@ impl std::error::Error for Error {}
 pub struct Config {
     pub shell: Vec<String>,
     pub history_lines: usize,
+    /// The bytes each pane's journal keeps (`crate::log`).
+    pub journal_bytes: usize,
+    /// The bytes all panes' journals keep together.
+    pub journal_total: usize,
     /// Copies are also sent to the client's terminal as OSC 52.
     pub clipboard: bool,
     /// How many paste buffers are kept.
@@ -81,6 +86,8 @@ pub struct Config {
 /// The largest history a pane keeps.
 pub const MAX_HISTORY: usize = 250_000;
 pub const MAX_BUFFERS: usize = 1000;
+/// The most bytes journals may be given: each, or all together.
+pub const MAX_JOURNAL: usize = 1 << 34;
 
 /// The user's login shell from `/etc/passwd`, for when `SHELL` is unset
 /// (a service, a sandbox, a cleared environment): bash or zsh there marks
@@ -112,6 +119,8 @@ impl Default for Config {
         Self {
             shell: vec![shell],
             history_lines: 10_000,
+            journal_bytes: crate::log::JOURNAL_BYTES,
+            journal_total: 16 * crate::log::JOURNAL_BYTES,
             clipboard: true,
             buffers: 16,
             bell: true,
@@ -168,6 +177,8 @@ impl Config {
                 self.shell = argv;
             }
             "history-lines" => self.history_lines = number(0, MAX_HISTORY)?,
+            "journal-bytes" => self.journal_bytes = number(0, MAX_JOURNAL)?,
+            "journal-total" => self.journal_total = number(0, MAX_JOURNAL)?,
             "clipboard" => self.clipboard = on()?,
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,

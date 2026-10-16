@@ -182,7 +182,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "servers", 0, "-- listing", "the servers that answer in fux's directory"),
     word("Server", "kill-server", 0, "-- ", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", 0, "-- ", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", 2, "setting value -- ", "shell history-lines clipboard buffers bell titles shell-marks update-environment"),
+    word("Server", "set", 2, "setting value -- ", "shell history-lines journal-bytes journal-total clipboard buffers bell titles shell-marks update-environment"),
     word("Server", "grant", 2, "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", 1, "socket -- ", "close a grant's socket"),
     word("Server", "version", 0, "-- text", "this fux's version"),

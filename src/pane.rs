@@ -450,30 +450,6 @@ impl Alerts {
     }
 }
 
-/// What a piece of output printed, and its number: kept since the last
-/// action's input, for waits to read.
-#[derive(Clone, Debug)]
-pub struct Printed {
-    pub seq: crate::log::OutputSeq,
-    pub prints: fux_vt::Prints,
-    /// What each of its runs may be the echo of (`crate::classify`), which
-    /// a wait never takes.
-    pub echo: Vec<crate::classify::Echo>,
-    /// Of each of its runs, the characters it changed: those after the
-    /// first and before the last it printed as its row held them just
-    /// before (a line drawn again, the same, changes none: nothing new).
-    pub fresh: Vec<(usize, usize)>,
-}
-
-/// The most bytes of text printed since the last input a pane keeps for
-/// waits, about as much as history keeps; past it, nothing more is recorded
-/// until the next input, and a wait reads the lines changed since as they
-/// read now, said to be all it has.
-pub const PRINTS_BYTES: usize = 1 << 20;
-/// What a printed run costs to keep beside its text, against
-/// [`PRINTS_BYTES`]: its row, columns, place in the text, echo and change.
-const RUN_COST: usize = 64;
-
 pub struct Pane {
     pub id: PaneId,
     pub name: String,
@@ -507,7 +483,8 @@ pub struct Pane {
     /// it at first, even while still blocked reading (the kernel has yet
     /// to wake it).
     pub written_at: Option<Instant>,
-    /// What happened in it, in order (`crate::log`).
+    /// What happened in it, in order, and what each piece of output
+    /// printed: its journal (`crate::log`), which waits read.
     pub record: crate::log::Log,
     /// Where the last action's input began (or the program started):
     /// what came since is what it brought.
@@ -515,11 +492,6 @@ pub struct Pane {
     /// Then: how many shell commands had ended, and whether the full
     /// screen was in use.
     pub since_was: (u64, bool),
-    /// What was printed since then, and its bytes; whether some was let
-    /// go past [`PRINTS_BYTES`].
-    pub prints: Vec<Printed>,
-    printed: usize,
-    pub prints_lost: bool,
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new.
     pub before: std::collections::HashMap<fux_vt::RowId, Cells>,
@@ -666,12 +638,9 @@ impl Pane {
             shown: (mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
-            record: crate::log::Log::default(),
+            record: crate::log::Log::new(crate::log::JOURNAL_BYTES),
             since: crate::log::Seq::default(),
             since_was: (0, false),
-            prints: Vec::new(),
-            printed: 0,
-            prints_lost: false,
             before: std::collections::HashMap::new(),
             seen: std::collections::HashMap::new(),
             before_shows: std::collections::HashMap::new(),
@@ -809,59 +778,54 @@ impl Pane {
         let begun = self.parse(run, until_frame);
         let seq = crate::log::Seq(self.screen().version());
         let prints = self.parser.take_prints();
-        // A run costs its text and its place, though it printed nothing (a
-        // row moved): output that only moves rows reaches the limit too.
-        let runs = prints.iter().count().saturating_mul(RUN_COST);
-        self.printed = self
-            .printed
-            .saturating_add(prints.len())
-            .saturating_add(runs);
-        match (prints.is_empty(), self.printed > PRINTS_BYTES) {
-            (true, _) => {}
-            (false, true) => {
-                self.prints_lost = true;
-                self.parser.record_prints(false);
-            }
-            (false, false) => {
-                let screen = self.parser.screen();
-                let echo = (prints.iter())
-                    .map(|print| {
-                        let line = || first_row(screen, print.row).unwrap_or(print.row);
-                        self.classes.echo(origin, &print, line, reads)
-                    })
-                    .collect();
-                let held =
-                    |p: &fux_vt::Print<'_>| self.seen.get(&p.row).or(self.before.get(&p.row));
-                let fresh = (prints.iter().zip(&echo))
-                    .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
-                        let echo = *e != crate::classify::Echo::Not;
-                        held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
-                    })
-                    .collect();
-                // Only a row on the screen can be printed on again: one gone
-                // into history is not looked for there.
-                let window = screen.window();
-                let rows: std::collections::HashMap<_, _> = (0..window.rows())
-                    .filter_map(|y| window.row(y))
-                    .map(|row| (row.id(), row))
-                    .collect();
-                for print in prints.iter() {
-                    if let Some(row) = rows.get(&print.row) {
-                        self.seen.insert(print.row, row_cells(row));
-                    }
+        let printed = (!prints.is_empty()).then(|| {
+            let screen = self.parser.screen();
+            let echo: Vec<_> = (prints.iter())
+                .map(|print| {
+                    let line = || first_row(screen, print.row).unwrap_or(print.row);
+                    self.classes.echo(origin, &print, line, reads)
+                })
+                .collect();
+            let held = |p: &fux_vt::Print<'_>| self.seen.get(&p.row).or(self.before.get(&p.row));
+            let fresh = (prints.iter().zip(&echo))
+                .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
+                    let echo = *e != crate::classify::Echo::Not;
+                    held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
+                })
+                .collect();
+            // Each row printed on, once, as it reads now, if it is on the
+            // screen: one gone into history is not printed on again.
+            let window = screen.window();
+            let mut last = None;
+            for print in prints.iter() {
+                if last.replace(print.row) == Some(print.row) {
+                    continue;
                 }
-                self.prints.push(Printed {
-                    seq: crate::log::OutputSeq(seq),
-                    prints,
-                    echo,
-                    fresh,
-                });
+                let row = screen
+                    .row_by_id(print.row)
+                    .filter(|r| window.place(r).is_some());
+                if let Some(row) = row {
+                    self.seen.insert(print.row, row_cells(&row));
+                }
             }
-        }
+            // Rows scrolled off since are let go: nothing prints on them.
+            if self.seen.len() > usize::from(window.rows()).saturating_mul(4) {
+                let on_screen = |id: &fux_vt::RowId| {
+                    (screen.row_by_id(*id)).is_some_and(|r| window.place(&r).is_some())
+                };
+                self.seen.retain(|id, _| on_screen(id));
+            }
+            Box::new(crate::log::Printed {
+                prints,
+                echo,
+                fresh,
+            })
+        });
         let taken = begun.map_or(run, |t| run.get(..t).unwrap_or_default());
         let event = crate::log::Event::Output {
             origin,
             bytes: taken.into(),
+            printed,
         };
         self.record.push(seq, now, event);
         if self.alerts.count() != bells {
@@ -982,8 +946,7 @@ impl Pane {
         self.nonce = nonce;
     }
 
-    /// An action's input begins: what comes after is what it brought,
-    /// and what was printed before is forgotten.
+    /// An action's input begins: what comes after is what it brought.
     pub fn note_input(&mut self) {
         self.since = crate::log::Seq(self.parser.tick());
         let screen = self.parser.screen();
@@ -993,10 +956,6 @@ impl Pane {
         );
         self.record
             .push(self.since, Instant::now(), crate::log::Event::Action);
-        self.prints.clear();
-        self.printed = 0;
-        self.prints_lost = false;
-        self.parser.record_prints(true);
         self.before = rows_now(self.screen());
         let window = self.screen().window();
         self.before_shows = (0..window.rows())
@@ -1194,8 +1153,8 @@ impl Pane {
         self.mouse_held = None;
         self.changed_at = Instant::now();
         self.written_at = None;
-        // A new program, its own record: a wait counts from its start.
-        self.record = crate::log::Log::default();
+        // A new program, its own journal: a wait counts from its start.
+        self.record = crate::log::Log::new(self.record.budget);
         self.classes = crate::classify::Classes::default();
         self.pace = Pace::default();
         self.note_input();
@@ -1571,15 +1530,20 @@ mod tests {
     }
 
     /// Output that only moves rows (insert line, over and over) still
-    /// reaches the limit of what is kept for waits, and stops being kept.
+    /// counts against the journal's budget, which lets the oldest go.
     #[test]
     fn rows_moved_alone_count_against_what_is_kept() -> Result<(), Error> {
         let mut pane = pane(24, 80)?;
+        pane.record.set_budget(1 << 20);
         pane.note_input();
         for _ in 0..40_000 {
             pane.output(b"\x1b[H\x1b[L");
         }
-        assert!(pane.prints_lost, "{} kept", pane.printed);
+        assert!(
+            pane.record.lost_after(pane.since),
+            "{} kept",
+            pane.record.held()
+        );
         Ok(())
     }
 
@@ -1736,8 +1700,9 @@ mod tests {
                     source,
                 }
             })?;
-        assert!(p.record.complete());
-        for entry in p.record.whole() {
+        let whole = p.record.whole();
+        assert!(whole.is_some(), "the journal let nothing go");
+        for entry in whole.into_iter().flatten() {
             match &entry.event {
                 crate::log::Event::Output { bytes, .. } => {
                     let _ = again.process(bytes);
