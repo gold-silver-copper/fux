@@ -315,7 +315,7 @@ impl<A: AppValue> Machine<A> {
                         at: from,
                     };
                     let done = host.call(*id, args, &mut out);
-                    let done = done.map_err(|f| self.fail(ErrorCode::Host(f.code), f.message))?;
+                    let done = done.map_err(|f| self.fail(f.code, f.message))?;
                     let given = (self.stack.len(), gives);
                     if self.stack.len().saturating_add(out.len()) > self.limits.stack {
                         return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
@@ -756,8 +756,7 @@ impl<A: AppValue> Machine<A> {
                 let x = self.pop()?;
                 self.walk(&x);
                 let text = x.text();
-                host.print(&text)
-                    .map_err(|f| self.fail(ErrorCode::Host(f.code), f.message))
+                host.print(&text).map_err(|f| self.fail(f.code, f.message))
             }
             Builtin::Fail => {
                 let x = self.pop()?;

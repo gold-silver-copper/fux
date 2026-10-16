@@ -301,36 +301,33 @@ impl std::fmt::Display for Failed {
 }
 
 impl From<fuxth::Error> for Failed {
-    fn from(mut error: fuxth::Error) -> Failed {
-        // A bundled word that fails whatever way it takes is told by its
-        // own name and use, not by the word inside it that would fail.
-        let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
-        if error.word.as_deref().is_some_and(bundled)
-            && let Some((whole, _)) = error.message.split_once(": ")
-            && whole.starts_with("every way through it fails")
-        {
-            error.message = whole.to_owned();
-        }
-        // A word given too few values, or the wrong kind, says how it is
-        // used.
-        if matches!(error.code, fuxth::Code::StackUnderflow | fuxth::Code::Type)
-            && !error.message.contains("(use: ")
-            && let Some(usage) = error.word.as_deref().and_then(words::usage)
-        {
-            error.message.push_str(&format!(" ({usage})"));
-        }
-        if error.code == fuxth::Code::UnknownWord {
-            error.message.push_str(" (`fux help` lists every word)");
-        }
-        let word = error.word.as_deref().filter(|w| !w.is_empty());
-        let message = match (&error.place, word) {
-            (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
-            (Some(place), None) => format!("{place}: {}", error.message),
-            (None, Some(word)) => format!("{word}: {}", error.message),
-            (None, None) => error.message,
-        };
-        Failed::new(Code::from(error.code), message)
+    fn from(error: fuxth::Error) -> Failed {
+        // A word given too few values, the wrong kind, or one out of its
+        // range, says how it is used.
+        use fuxth::Code::{Range, StackUnderflow, Type};
+        let usage = matches!(error.code, StackUnderflow | Type | Range);
+        told(error, usage)
     }
+}
+
+/// `error` as fux tells it, with how its word is used if `usage`.
+fn told(mut error: fuxth::Error, usage: bool) -> Failed {
+    // A bundled word that fails whatever way it takes is told by its own
+    // name and use, not by the word inside it that would fail.
+    let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
+    if error.word.as_deref().is_some_and(bundled)
+        && let Some((whole, _)) = error.message.split_once(": ")
+        && whole.starts_with("every way through it fails")
+    {
+        error.message = whole.to_owned();
+    }
+    if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
+        error.message.push_str(&format!(" ({usage})"));
+    }
+    if error.code == fuxth::Code::UnknownWord {
+        error.message.push_str(" (`fux help` lists every word)");
+    }
+    Failed::new(Code::from(error.code), error.located())
 }
 
 /// The vocabulary fuxth compiles fux's programs with.
@@ -594,10 +591,7 @@ pub fn run_capped(
             return Err(placed(machine, failed));
         }
         taken = taken.saturating_add(SLICE);
-        match machine
-            .run(host, SLICE)
-            .map_err(|e| Failed::from(ours(machine, e)))?
-        {
+        match machine.run(host, SLICE).map_err(|e| ours(machine, e))? {
             Outcome::Finished => {
                 return Ok(Ended {
                     status,
@@ -652,33 +646,29 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
     let Some(at) = machine.at() else {
         return failed;
     };
-    let error = ours(
-        machine,
-        fuxth::Error {
-            code: fuxth::Code::Host("placed"),
-            message: failed.message,
-            place: Some(at.place),
-            word: Some(at.text),
-        },
-    );
-    let message = match (&error.place, &error.word) {
-        (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
-        (Some(_) | None, Some(_) | None) => error.message,
+    let error = fuxth::Error {
+        code: fuxth::Code::Host("placed"),
+        message: failed.message,
+        place: Some(at.place),
+        word: Some(at.text),
     };
-    Failed { message, ..failed }
+    Failed {
+        message: ours(machine, error).message,
+        ..failed
+    }
 }
 
 /// An error placed where the program is: a failure inside a word of the
 /// prelude's or library's is named by the program's step that called it,
 /// with the bundled word's own step in the message, and how the program's
 /// word is used.
-fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
+fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     let bundled = |place: Option<&fuxth::Place>| {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
     if !bundled(error.place.as_ref()) {
-        return error;
+        return Failed::from(error);
     }
     let Some(step) = machine
         .calls()
@@ -686,16 +676,13 @@ fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
         .rev()
         .find(|t| !bundled(Some(&t.place)))
     else {
-        return error;
+        return Failed::from(error);
     };
     let inner = error.word.as_deref().unwrap_or_default();
-    // How the program's word is used, in place of the bundled step's.
-    let message = error.message.split(" (use: ").next().unwrap_or_default();
-    let usage = words::usage(&step.text).map_or_else(String::new, |u| format!(" ({u})"));
-    error.message = format!("inside {}, {inner}: {message}{usage}", step.text);
+    error.message = format!("inside {}, {inner}: {}", step.text, error.message);
     error.place = Some(step.place);
     error.word = Some(step.text);
-    error
+    told(error, true)
 }
 
 /// What a reply puts on the stack, `then` saying what it is; a failure,

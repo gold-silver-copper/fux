@@ -36,7 +36,7 @@ impl Host for Toy {
                 }
                 Ok(Done::Now)
             }
-            _ => Err(Failure::new("not_a_number", "takes an integer")),
+            _ => Err(Failure::new(fuxth::Code::Host("not_a_number"), "takes an integer")),
         }
     }
 

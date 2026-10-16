@@ -219,7 +219,7 @@ fn bounded(path: &str, limit: usize) -> std::io::Result<Vec<u8>> {
 
 /// A failure of a word's own: its code and why.
 fn fail(code: Code, message: impl Into<String>) -> Failure {
-    Failure::new(code.name(), message)
+    Failure::new(code.into(), message)
 }
 
 /// How a word of fux's is used, for a mistake in using it: what goes
@@ -255,11 +255,9 @@ pub fn usage(word: &str) -> Option<String> {
 }
 
 fn wrong(word: &str, wanted: &str, got: &Value<Fux>) -> Failure {
-    // With how the word is used, which says what goes before it.
-    let usage = usage(word).map_or_else(String::new, |u| format!(" ({u})"));
     fail(
         Code::Type,
-        format!("{word} takes {wanted}, not {}{usage}", got.kind()),
+        format!("{word} takes {wanted}, not {}", got.kind()),
     )
 }
 
@@ -318,12 +316,6 @@ fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
     Ok(*n)
 }
 
-/// A value outside what `word` takes: what it takes, and how it is used.
-fn out_of_range(word: &str, message: impl std::fmt::Display) -> Failure {
-    let usage = usage(word).map_or_else(String::new, |u| format!(" ({u})"));
-    fail(Code::Range, format!("{message}{usage}"))
-}
-
 /// What a count or a cell can be: from 0 to the most it holds.
 trait Count: TryFrom<i64> {
     const MOST: i64;
@@ -345,8 +337,8 @@ impl Count for usize {
 fn count<T: Count>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
     let n = int(word, value)?;
     T::try_from(n).map_err(|_| match T::MOST {
-        i64::MAX => out_of_range(word, format!("{n} is out of range: from 0")),
-        most => out_of_range(word, format!("{n} is out of range: 0 to {most}")),
+        i64::MAX => fail(Code::Range, format!("{n} is out of range: from 0")),
+        most => fail(Code::Range, format!("{n} is out of range: 0 to {most}")),
     })
 }
 
@@ -358,8 +350,8 @@ fn laid_out(word: &str, cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::
         .zip(cell(rows))
         .and_then(|(cols, rows)| fux_vt::Size::new(rows, cols).ok())
         .ok_or_else(|| {
-            out_of_range(
-                word,
+            fail(
+                Code::Range,
                 format!("size {cols} {rows}: columns and rows each 1 to 500"),
             )
         })
@@ -807,8 +799,8 @@ impl fuxth::Host for Host<'_> {
                 let mut o = next()?;
                 let (from, to) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 if from > to {
-                    return Err(out_of_range(
-                        name,
+                    return Err(fail(
+                        Code::Range,
                         format!("{from} {to}: the first {name} before the last"),
                     ));
                 }
@@ -981,7 +973,7 @@ impl fuxth::Host for Host<'_> {
                             .ok()
                             .filter(|n| (1..=1000).contains(n))
                             .ok_or_else(|| {
-                                out_of_range(name, format!("{n}: a count from 1 to 1000"))
+                                fail(Code::Range, format!("{n}: a count from 1 to 1000"))
                             })?;
                         let Some(last) = built.inputs.last().cloned() else {
                             return Err(fail(
@@ -1223,7 +1215,7 @@ impl fuxth::Host for Host<'_> {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
-                    .ok_or_else(|| out_of_range(name, "columns and rows each from 1"))?;
+                    .ok_or_else(|| fail(Code::Range, "columns and rows each from 1"))?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
@@ -1245,8 +1237,8 @@ impl fuxth::Host for Host<'_> {
             "percent" => {
                 let n = int(name, &next()?)?;
                 let Some(n) = u8::try_from(n).ok().filter(|n| (1..=100).contains(n)) else {
-                    return Err(out_of_range(
-                        name,
+                    return Err(fail(
+                        Code::Range,
                         format!("percent takes 1 to 100, not {n}"),
                     ));
                 };
@@ -1352,7 +1344,7 @@ impl fuxth::Host for Host<'_> {
             "headless" => {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let size = fux_vt::Size::new(rows, cols)
-                    .map_err(|_| out_of_range(name, "a size of at least 1 by 1"))?;
+                    .map_err(|_| fail(Code::Range, "a size of at least 1 by 1"))?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
@@ -1499,12 +1491,8 @@ impl fuxth::Host for Host<'_> {
             "help-json" => self.show(crate::help::JSON),
             "explain" => {
                 let word = string(name, &next()?)?;
-                let text = crate::help::explain(&word).ok_or_else(|| {
-                    fail(
-                        Code::UnknownWord,
-                        format!("no word {word:?}: help lists them"),
-                    )
-                })?;
+                let text = crate::help::explain(&word)
+                    .ok_or_else(|| fail(Code::UnknownWord, format!("no word {word:?}")))?;
                 self.show(&text)
             }
             "check" => {

@@ -31,7 +31,10 @@ impl Host for Bare {
         _args: Args<'_, Nothing>,
         _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<()>, Failure> {
-        Err(Failure::new("no_words", "this host has no words"))
+        Err(Failure::new(
+            fuxth::Code::Host("no_words"),
+            "this host has no words",
+        ))
     }
 
     fn print(&mut self, line: &str) -> Result<(), Failure> {

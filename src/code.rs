@@ -219,6 +219,18 @@ impl From<fuxth::Code> for Code {
     }
 }
 
+/// A code as the language takes it from a word of fux's: the language's
+/// own when it is one of them (a word's `type`), else fux's, by its name.
+impl From<Code> for fuxth::Code {
+    fn from(code: Code) -> fuxth::Code {
+        let own = fuxth::Code::ALL
+            .iter()
+            .copied()
+            .find(|c| c.name() == code.name());
+        own.unwrap_or(fuxth::Code::Host(code.name()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Code;
@@ -248,6 +260,7 @@ mod tests {
     fn every_code_of_the_language_is_one_of_fuxs() {
         for code in fuxth::Code::ALL {
             assert_ne!(Code::from(*code), Code::Failed, "{code:?}");
+            assert_eq!(fuxth::Code::from(Code::from(*code)), *code);
         }
     }
 }

@@ -96,20 +96,24 @@ impl Error {
             word: at.map(|t| Rc::clone(&t.text)),
         }
     }
+
+    /// Where it happened and why, as `Display` writes them after its code:
+    /// `PLACE: WORD: MESSAGE`.
+    pub fn located(&self) -> String {
+        // An empty word (`define ''`) is said in its message, not here.
+        let word = self.word.as_deref().filter(|w| !w.is_empty());
+        match (&self.place, word) {
+            (Some(place), Some(word)) => format!("{place}: {word}: {}", self.message),
+            (Some(place), None) => format!("{place}: {}", self.message),
+            (None, Some(word)) => format!("{word}: {}", self.message),
+            (None, None) => self.message.clone(),
+        }
+    }
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: ", self.code.name())?;
-        // An empty word (`define ''`) is said in its message, not here.
-        let word = self.word.as_deref().filter(|w| !w.is_empty());
-        match (&self.place, word) {
-            (Some(place), Some(word)) => write!(f, "{place}: {word}: ")?,
-            (Some(place), None) => write!(f, "{place}: ")?,
-            (None, Some(word)) => write!(f, "{word}: ")?,
-            (None, None) => {}
-        }
-        f.write_str(&self.message)
+        write!(f, "{}: {}", self.code.name(), self.located())
     }
 }
 
@@ -176,15 +180,16 @@ pub(crate) fn underflow(takes: &str, n: usize, has: &str, inside: bool) -> Strin
     format!("{takes} {n} {values}, and the stack has {has}{inside}")
 }
 
-/// What an application word gives when it fails: its code and why.
+/// What an application word gives when it fails: its code (the language's
+/// own, when it is one of them, or `Code::Host`) and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
-    pub code: &'static str,
+    pub code: Code,
     pub message: String,
 }
 
 impl Failure {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Failure {
+    pub fn new(code: Code, message: impl Into<String>) -> Failure {
         Failure {
             code,
             message: message.into(),
