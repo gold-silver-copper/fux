@@ -208,21 +208,13 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
             });
         }
     }
-    for (&pane, was) in &old.panes {
-        if !new.panes.contains_key(&pane) {
-            events.push(Event::new("closed", was.ws, Some(was.tab), Some(pane)));
-        }
-    }
-    for (&tab, (ws, _)) in &old.tabs {
-        if !new.tabs.contains_key(&tab) {
-            events.push(Event::new("closed", *ws, Some(tab), None));
-        }
-    }
-    for &ws in old.workspaces.keys() {
-        if !new.workspaces.contains_key(&ws) {
-            events.push(Event::new("closed", ws, None, None));
-        }
-    }
+    let panes = (old.panes.iter()).filter(|(pane, _)| !new.panes.contains_key(pane));
+    let tabs = (old.tabs.iter()).filter(|(tab, _)| !new.tabs.contains_key(tab));
+    let workspaces = (old.workspaces.keys()).filter(|ws| !new.workspaces.contains_key(ws));
+    let closed = (panes.map(|(&pane, was)| (was.ws, Some(was.tab), Some(pane))))
+        .chain(tabs.map(|(&tab, (ws, _))| (*ws, Some(tab), None)))
+        .chain(workspaces.map(|&ws| (ws, None, None)));
+    events.extend(closed.map(|(ws, tab, pane)| Event::new("closed", ws, tab, pane)));
     events
 }
 

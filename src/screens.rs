@@ -9,8 +9,8 @@
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::{PaneId, WsId};
-use crate::keymap::{confirm_act, copy_act, line_act, list_act};
-use crate::keys::{Key, KeyPress};
+use crate::keymap::{PAGE, confirm_act, copy_act, letter, line_act, list_act};
+use crate::keys::KeyPress;
 use crate::protocol::{Reply, Scalar};
 use crate::script::Failed;
 use crate::session::describe;
@@ -86,9 +86,6 @@ pub enum Effect {
     Send(Act),
     Run(String),
 }
-
-/// How far PageUp and PageDown move a list.
-const PAGE: usize = 10;
 
 /// The words that push a handle to `target`: `str %3 pane`.
 pub fn naming(target: AnyRef<WsId>) -> String {
@@ -361,48 +358,33 @@ impl Screen {
     }
 
     fn list(&mut self, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
-        let last = list.items.len().saturating_sub(1);
-        let moved = match list_act(press) {
-            None => Some(list.selected),
-            Some(ListAct::Up) => Some(list.selected.saturating_sub(1)),
-            Some(ListAct::Down) => Some(list.selected.saturating_add(1).min(last)),
-            Some(ListAct::PageUp) => Some(list.selected.saturating_sub(PAGE)),
-            Some(ListAct::PageDown) => Some(list.selected.saturating_add(PAGE).min(last)),
-            Some(ListAct::First) => Some(0),
-            Some(ListAct::Last) => Some(last),
+        let (at, last) = (list.selected, list.items.len().saturating_sub(1));
+        let chosen = list.items.get(at);
+        let about = chosen.and_then(|item| item.about.as_ref());
+        // `r` and `x` in a menu, whose rows are about nothing, run nothing.
+        let (moved, code) = match list_act(press) {
+            None => (at, None),
+            Some(ListAct::Up) => (at.saturating_sub(1), None),
+            Some(ListAct::Down) => (at.saturating_add(1).min(last), None),
+            Some(ListAct::PageUp) => (at.saturating_sub(PAGE), None),
+            Some(ListAct::PageDown) => (at.saturating_add(PAGE).min(last), None),
+            Some(ListAct::First) => (0, None),
+            Some(ListAct::Last) => (last, None),
             Some(ListAct::Cancel) => return vec![Effect::Send(Act::Hide)],
-            Some(act @ (ListAct::Choose | ListAct::Rename | ListAct::Close)) => {
-                let chosen = list.items.get(list.selected);
-                let code = match (act, chosen) {
-                    (ListAct::Choose, Some(item)) => Some(item.code.clone()),
-                    (
-                        ListAct::Rename,
-                        Some(Item {
-                            about: Some(it), ..
-                        }),
-                    ) => Some(format!("me {it} rename-prompt")),
-                    (
-                        ListAct::Close,
-                        Some(Item {
-                            about: Some(it), ..
-                        }),
-                    ) => Some(format!("me {it} confirm-close")),
-                    (_, _) => None,
-                };
-                match code {
-                    Some(code) => return vec![Effect::Send(Act::Hide), Effect::Run(code)],
-                    // `r` and `x` in a menu, whose rows are about nothing.
-                    None => Some(list.selected),
-                }
-            }
+            Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
+            Some(ListAct::Rename) => (at, about.map(|it| format!("me {it} rename-prompt"))),
+            Some(ListAct::Close) => (at, about.map(|it| format!("me {it} confirm-close"))),
         };
-        let changed = moved != Some(list.selected);
-        list.selected = moved.unwrap_or(list.selected);
-        *self = Screen::List(list);
-        match (changed, self.panel()) {
-            (true, Some(panel)) => vec![Effect::Send(Act::Show(panel))],
-            (true | false, _) => Vec::new(),
+        if let Some(code) = code {
+            return vec![Effect::Send(Act::Hide), Effect::Run(code)];
         }
+        list.selected = moved;
+        *self = Screen::List(list);
+        let shown = self.panel().filter(|_| moved != at);
+        shown
+            .map(|p| Effect::Send(Act::Show(p)))
+            .into_iter()
+            .collect()
     }
 
     fn prompt(&mut self, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
@@ -449,12 +431,8 @@ impl Screen {
                 }
             };
         }
-        let letter = match press.plain_key() {
-            Some(Key::Char(c)) => Some(c.to_ascii_lowercase()),
-            _ => None,
-        };
         // `f` and `r` open the search line, forward or back.
-        if let Some(forward) = letter.and_then(|c| match c {
+        if let Some(forward) = letter(press).and_then(|c| match c {
             'f' => Some(true),
             'r' => Some(false),
             _ => None,

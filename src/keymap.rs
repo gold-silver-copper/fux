@@ -467,6 +467,11 @@ impl Keymap {
         Ok(())
     }
 
+    /// The binding of `key` without the prefix.
+    fn root_binding(&self, key: KeyPress) -> Option<&Binding> {
+        self.root.iter().find(|(k, _)| *k == key).map(|(_, b)| b)
+    }
+
     pub fn unbind(&mut self, keys: &[KeyPress]) -> Result<(), String> {
         match self.bindings.unbind(keys) {
             true => Ok(()),
@@ -509,7 +514,7 @@ impl Keymap {
 
     /// Sets the prefix: refused if a key bound without it is the one.
     pub fn set_prefix(&mut self, key: KeyPress) -> Result<(), String> {
-        if self.root.iter().any(|(k, _)| *k == key) {
+        if self.root_binding(key).is_some() {
             return Err(format!(
                 "{key} is bound without the prefix; unbind it first"
             ));
@@ -664,8 +669,8 @@ pub enum Held {
     Prefixed,
 }
 
-/// The rows the column pages by.
-const PAGE: usize = 10;
+/// The rows the column, and a screen's list, page by.
+pub const PAGE: usize = 10;
 
 impl Held {
     /// A key typed at the client's terminal while none of its screens is
@@ -681,8 +686,8 @@ impl Held {
                 if press == keymap.prefix {
                     return self.open(keymap, Vec::new(), 0);
                 }
-                match keymap.root.iter().find(|(k, _)| *k == press) {
-                    Some((_, binding)) => vec![Effect::Run(binding.code.clone())],
+                match keymap.root_binding(press) {
+                    Some(binding) => vec![Effect::Run(binding.code.clone())],
                     None => vec![Effect::Send(Act::Key(stroke))],
                 }
             }
@@ -783,11 +788,7 @@ impl Held {
             return match chosen {
                 // A key bound without the prefix, listed after the rest.
                 Some((press, true)) => {
-                    let code = keymap
-                        .root
-                        .iter()
-                        .find(|(k, _)| *k == press)
-                        .map(|(_, b)| b.code.clone());
+                    let code = keymap.root_binding(press).map(|b| b.code.clone());
                     std::iter::once(Effect::Send(Act::Hide))
                         .chain(code.map(Effect::Run))
                         .collect()
@@ -901,6 +902,15 @@ pub fn line_act(press: KeyPress) -> Option<LineAct> {
     }
 }
 
+/// The letter a key types with neither Ctrl nor Alt, in either case, as
+/// lower case.
+pub fn letter(press: KeyPress) -> Option<char> {
+    let Some(Key::Char(c)) = press.plain_key() else {
+        return None;
+    };
+    Some(c.to_ascii_lowercase())
+}
+
 /// A key while a confirmation waits: `y` yes; `n`, `q` or Escape no.
 pub fn confirm_act(press: KeyPress) -> Option<bool> {
     match press.plain_key()? {
@@ -926,11 +936,7 @@ pub fn confirm_act(press: KeyPress) -> Option<bool> {
 /// arrows, paging keys, Home, End, Enter and Esc too. `f` and `r`, which
 /// open its search line, are the client's own (`crate::screens`).
 pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
-    let letter = match press.plain_key() {
-        Some(Key::Char(c)) => Some(c.to_ascii_lowercase()),
-        _ => None,
-    };
-    let act = match (letter, press.key) {
+    let act = match (letter(press), press.key) {
         (Some('q'), _) | (_, Key::Escape) => CopyAct::Leave,
         (Some('h'), _) | (_, Key::Arrow(Direction::Left)) => CopyAct::Left,
         (Some('l'), _) | (_, Key::Arrow(Direction::Right)) => CopyAct::Right,
