@@ -88,14 +88,7 @@ fn take_row(
         .unwrap_or_default();
     let len = trimmed(row).len();
     let kept = row.get_mut(..len).unwrap_or_default();
-    history.push(Arriving {
-        id: m.id,
-        version: m.version,
-        wrapped: m.wrapped,
-        prompt: m.prompt,
-        cells: kept,
-        width,
-    })?;
+    history.push(m.arriving(kept, width))?;
     // Blanked here, while they are at hand, not when the slot is taken;
     // a row of one cell, as a short line's often is, without a call.
     match kept {
@@ -131,6 +124,18 @@ struct Meta {
 const _: () = assert!(std::mem::size_of::<Meta>() == 24);
 
 impl Meta {
+    /// What the row brings into history: `cells`, its cells before its
+    /// blank tail, of `width`.
+    fn arriving(self, cells: &[Compact], width: u16) -> Arriving<'_> {
+        Arriving {
+            id: self.id,
+            version: self.version,
+            wrapped: self.wrapped,
+            prompt: self.prompt,
+            cells,
+            width,
+        }
+    }
     fn new(id: RowId, version: u64, wrapped: bool, used: u16) -> Self {
         Self {
             id,
@@ -468,6 +473,27 @@ impl Grid {
     /// Puts a row under the screen's rows, in a slot of its own: `meta`,
     /// `cells` from its first (the rest blank), its text and its links.
     /// Room was made for it (`reserve_screen`).
+    /// Keeps a row laid out whole in `cells`, as wide as they are, as a
+    /// resize makes a grid anew: into history, with its text and links, if
+    /// `history`; else on the screen.
+    fn keep_row(
+        &mut self,
+        meta: Meta,
+        cells: &[Compact],
+        (text, links): (Option<Text>, Option<RowLinks>),
+        history: bool,
+    ) -> Result<(), Error> {
+        if !history {
+            self.push_screen_row(meta, cells, text, links);
+            return Ok(());
+        }
+        let width = u16::try_from(cells.len()).map_err(|_| Error::Capacity)?;
+        self.history.push(meta.arriving(trimmed(cells), width))?;
+        self.history.attach(text.map(|text| text.exact()), links);
+        self.history.trim();
+        Ok(())
+    }
+
     fn push_screen_row(
         &mut self,
         meta: Meta,
@@ -1495,14 +1521,7 @@ impl Grid {
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
-        self.history.push(Arriving {
-            id: m.id,
-            version: m.version,
-            wrapped: m.wrapped,
-            prompt: m.prompt,
-            cells,
-            width: self.size.cols(),
-        })?;
+        self.history.push(m.arriving(cells, self.size.cols()))?;
         self.retire_extras(slot);
         Ok(())
     }
@@ -1664,26 +1683,11 @@ impl Grid {
                 // budget of the row's new width.
                 text = Some(Line::rebuilt(&mut row, old.text));
             }
-            let prompt = old.is_some_and(|r| r.prompt);
-            if is_history {
-                let cells = trimmed(&row);
-                replacement.history.push(Arriving {
-                    id,
-                    version: row_version,
-                    wrapped,
-                    prompt,
-                    cells,
-                    width,
-                })?;
-                replacement
-                    .history
-                    .attach(text.map(|text| text.exact()), links);
-                replacement.history.trim();
-            } else {
-                let mut meta = Meta::new(id, row_version, wrapped, width);
-                meta.prompt = prompt;
-                replacement.push_screen_row(meta, &row, text, links);
-            }
+            let meta = Meta {
+                prompt: old.is_some_and(|r| r.prompt),
+                ..Meta::new(id, row_version, wrapped, width)
+            };
+            replacement.keep_row(meta, &row, (text, links), is_history)?;
         }
         Ok(replacement)
     }

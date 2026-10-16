@@ -582,26 +582,13 @@ impl Reflow for Fill<'_> {
         let text = std::mem::take(&mut self.text);
         let links = self.links.take();
         let written = std::mem::take(&mut self.written);
-        if row < self.screen {
-            let cells = trimmed(self.cells.get(..written).unwrap_or_default());
-            self.grid.history.push(Arriving {
-                id,
-                version: self.version,
-                wrapped,
-                prompt,
-                cells,
-                width: cols,
-            })?;
-            if !text.is_empty() || links.is_some() {
-                self.grid.history.attach(Some(text.exact()), links);
-            }
-            self.grid.history.trim();
-        } else {
-            let mut meta = Meta::new(id, self.version, wrapped, used);
-            meta.prompt = prompt;
-            self.grid
-                .push_screen_row(meta, &self.cells, Some(text), links);
-        }
+        let meta = Meta {
+            prompt,
+            ..Meta::new(id, self.version, wrapped, used)
+        };
+        // Past `written` the cells are blank, as history trims them.
+        let history = row < self.screen;
+        (self.grid).keep_row(meta, &self.cells, (Some(text), links), history)?;
         if let Some(cells) = self.cells.get_mut(..written) {
             cells.fill(BLANK);
         }
