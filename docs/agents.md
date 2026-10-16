@@ -14,7 +14,7 @@ fux opts str app name str './app --fast' command run    # start: answers %2 read
 fux %2 keys str y text str Enter key send-keys          # type: answers as run does
 fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
-fux %2 opts wait                                        # settle again (60s), what came since your input
+fux %2 opts wait                                        # settle again (30s), what came since your input
 fux %2 opts str 'listening on' wait-text wait           # wait for a text (case ignored)
 fux %2 opts all-history capture                         # read: the screen once settled
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
@@ -39,8 +39,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 %2 exited 3                    the program ended; what it printed since your input follows
 ```
 
-- **Time:** an action or `capture` settles within 10s; a `wait`, or an action given a
-  wait (`wait-text` …), within 60s; `SECS timeout` changes it. `0 timeout` acts and answers
+- **Time:** an action, a `capture` and a `wait` all wait 30s at most (the server's
+  `wait-seconds`); `SECS timeout` changes it for one. `0 timeout` acts and answers
   at once, the state as it is (start many programs so, then one `wait` on their tab or
   workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on.
 - **Start:** `run` starts a program (not a shell) in a tab of its own in

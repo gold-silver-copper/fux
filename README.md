@@ -327,6 +327,7 @@ str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 | --- | --- | --- |
 | `shell` | a program and its arguments | `$SHELL`, else `/bin/sh` |
 | `history-lines` | lines per pane, 0 to 250,000; a change applies to every pane | 10000 |
+| `wait-seconds` | how long an action, a capture or a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
 | `journal-bytes` | bytes of each pane's journal: everything it printed, in order, which waits read; past it, the oldest goes and a wait says text may have passed unseen | 33554432 (32 MiB) |
 | `journal-total` | bytes of all panes' journals together; past it, the largest lets its oldest go first | 536870912 (512 MiB) |
 | `clipboard` | `on` or `off`: copies, fux's and programs', reach your terminal's clipboard | `on` |

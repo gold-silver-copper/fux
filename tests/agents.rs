@@ -563,7 +563,7 @@ fn answers_say_what_the_program_does() -> Outcome {
         (at_work.status, at_work.stdout.as_str()),
         (
             if PROBED { 124 } else { 0 },
-            format!("{pane} {ASLEEP}\nlater\n").as_str()
+            format!("{pane} {}\nlater\n", asleep(&pane)).as_str()
         )
     );
     let since = server.ok(&[&p[..], &["str", "later", "wait-text", "wait"]].concat())?;
@@ -571,7 +571,7 @@ fn answers_say_what_the_program_does() -> Outcome {
     let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
     assert_eq!(
         (now.status, now.stdout.as_str()),
-        (0, format!("{pane} {ASLEEP}\nlater\n").as_str()),
+        (0, format!("{pane} {}\nlater\n", asleep(&pane)).as_str()),
         "what came since the keys"
     );
     assert_eq!(
@@ -1376,7 +1376,7 @@ fn the_rechecks_hold() -> Outcome {
     let status = if PROBED { 124 } else { 0 };
     assert_eq!(at_work.status, status, "{}", at_work.stderr);
     assert!(
-        head(&at_work.stdout).ends_with(&format!(" {ASLEEP}")),
+        head(&at_work.stdout).ends_with(&format!(" {}", asleep("%2"))),
         "{}",
         at_work.stdout
     );

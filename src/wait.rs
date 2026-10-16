@@ -142,7 +142,14 @@ enum Found {
 }
 
 impl Waiting {
-    pub fn new(panes: &[&Pane], wait: Wait, now: Instant) -> Waiting {
+    /// A wait in `panes` from `now`, for `limit` at most unless it says.
+    pub fn new(
+        panes: &[&Pane],
+        mut wait: Wait,
+        now: Instant,
+        limit: std::time::Duration,
+    ) -> Waiting {
+        wait.timeout = Some(wait.timeout.unwrap_or(limit));
         let texts = (wait.until.iter())
             .filter_map(|u| match u {
                 Until::Text(text) => Some(text.clone()),
@@ -153,7 +160,7 @@ impl Waiting {
             answers: vec![None; panes.len()],
             watches: panes.iter().map(|p| Watch::new(p, wait.after)).collect(),
             texts,
-            deadline: crate::after(now, wait.timeout),
+            deadline: crate::after(now, wait.limit()),
             wait,
             began: now,
             lead: String::new(),
@@ -334,7 +341,7 @@ impl Wait {
         };
         // At its limit a settling wait fails (124) only while busy; `0
         // timeout` answers at once, as it is, and never fails.
-        let calm = self.timeout.is_zero() || state.is_some_and(|s| s != crate::ready::State::Busy);
+        let calm = self.limit().is_zero() || state.is_some_and(|s| s != crate::ready::State::Busy);
         let status = match settles && calm && matches!(told, Told::TimedOut(_)) {
             true => 0,
             false => told.status(),
@@ -435,7 +442,7 @@ impl Wait {
             Told::TimedOut(hint) => {
                 // What the pane is doing, so the next step is clear: still
                 // busy, or settled on a prompt that will not change.
-                let seconds = self.timeout.as_secs_f64();
+                let seconds = self.limit().as_secs_f64();
                 let idle = pane.map(|p| Instant::now().saturating_duration_since(p.changed_at));
                 let last = pane.and_then(|p| tail(p, 1).pop());
                 let mut message = format!(
@@ -444,11 +451,15 @@ impl Wait {
                 );
                 // What it does: reading its terminal, waiting, busy…
                 if let (Some(idle), Some(pane)) = (idle, pane) {
+                    let state = crate::ready::state(pane, Instant::now());
                     message.push_str(&format!(
                         "; {id} {}, the screen unchanged for {}s",
-                        crate::ready::state(pane, Instant::now()).word(),
+                        state.word(),
                         idle.as_secs()
                     ));
+                    if state == crate::ready::State::Busy {
+                        message.push_str(&format!("; `{id} {} wait` waits on", self.again()));
+                    }
                 }
                 if let Some(line) = &last {
                     message.push_str(&format!("; last line: `{line}`"));
@@ -526,6 +537,9 @@ impl Wait {
             line.push_str(" · no change");
             fields.push(("no_change", Json::Bool(true)));
         }
+        if state == crate::ready::State::Busy {
+            line.push_str(&format!(" · `{id} opts wait` waits on"));
+        }
         let queued = pane.input_queued();
         if queued > 0 {
             line.push_str(&format!(" · {queued} bytes unread"));
@@ -535,6 +549,19 @@ impl Wait {
             ));
         }
         (line, fields)
+    }
+
+    /// The options that wait for its conditions again (`opts …`).
+    fn again(&self) -> String {
+        let words = (self.until.iter()).map(|until| match until {
+            Until::Text(text) => format!("str '{text}' wait-text"),
+            Until::Gone(text) => format!("str '{text}' wait-gone"),
+            Until::Exit => "wait-exit".to_owned(),
+            Until::Bell => "wait-bell".to_owned(),
+            Until::Settled => String::new(),
+        });
+        let words: Vec<String> = words.filter(|w| !w.is_empty()).collect();
+        format!("opts {}", words.join(" ")).trim_end().to_owned()
     }
 
     /// Its conditions, as an error says what did not come.

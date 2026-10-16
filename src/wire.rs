@@ -688,7 +688,7 @@ impl Wire for Wait {
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok(Wait {
             until: Vec::get(r)?,
-            timeout: Duration::get(r)?,
+            timeout: Option::get(r)?,
             print: bool::get(r)?,
             after: bool::get(r)?,
             marks: bool::get(r)?,

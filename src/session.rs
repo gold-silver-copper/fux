@@ -2562,7 +2562,7 @@ impl Session {
                     Err(error) => return self.failed(error, origin),
                 };
                 let now = Instant::now();
-                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
                 waiting.capture = Some((history, view, json));
                 return match waiting.answer(self, now) {
                     Some(outcome) => Begun::Done(outcome),
@@ -2663,7 +2663,7 @@ impl Session {
         let now = Instant::now();
         // Armed before any keys go in: what the keys bring is what it sees.
         let mut waiting = match panes {
-            Ok(panes) => crate::wait::Waiting::new(&panes, wait, now),
+            Ok(panes) => crate::wait::Waiting::new(&panes, wait, now, self.config.wait()),
             Err(error) => return self.failed(error, origin),
         };
         match keys {
@@ -2814,7 +2814,7 @@ impl Session {
             return Begun::Done(outcome);
         };
         let now = Instant::now();
-        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait());
         waiting.lead = outcome.stdout;
         waiting.made = outcome.ids;
         waiting.fresh = true;
@@ -4311,7 +4311,7 @@ pub(crate) mod testing {
             let outcome = match session.begin(request.command.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
                 super::Begun::Waiting(mut waiting) => {
-                    let later = crate::after(std::time::Instant::now(), waiting.wait.timeout);
+                    let later = crate::after(std::time::Instant::now(), waiting.wait.limit());
                     waiting.answer(session, later).unwrap_or_default()
                 }
                 super::Begun::Events(_) => {
@@ -5024,7 +5024,7 @@ mod tests {
             ("str %1 pane str left move-beside", "no pane left of %1".to_owned()),
             (
                 "str nope 1 set",
-                r#"no setting "nope"; the settings are shell, history-lines, journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
+                r#"no setting "nope"; the settings are shell, history-lines, wait-seconds, journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks and update-environment"#.to_owned(),
             ),
             ("opts str '' name new-workspace", "a name cannot be empty or blank".to_owned()),
             (

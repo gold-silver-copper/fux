@@ -229,7 +229,8 @@ pub enum Until {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wait {
     pub until: Vec<Until>,
-    pub timeout: Duration,
+    /// How long at most; if unsaid, the server's `wait-seconds`.
+    pub timeout: Option<Duration>,
     /// What came since it began, or the screen, as the wait ends.
     pub print: bool,
     /// Only what comes after it began counts: text that appears anew, a
@@ -239,9 +240,12 @@ pub struct Wait {
     pub marks: bool,
 }
 
-/// How long a wait lasts at most if `timeout` does not say: well inside
-/// what a tool running a command waits for it.
-pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+impl Wait {
+    /// How long it waits at most.
+    pub fn limit(&self) -> Duration {
+        self.timeout.unwrap_or(crate::config::WAIT)
+    }
+}
 
 /// What `send-mouse` does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -436,9 +440,10 @@ pub enum Command {
         history: Option<usize>,
         view: CaptureView,
         json: bool,
-        /// Read once the pane settles, waiting this long at most, and said
-        /// with its state; at once, as it is, without.
-        settle: Option<Duration>,
+        /// Read once the pane settles, waiting this long at most (if unsaid,
+        /// the server's `wait-seconds`), and said with its state; at once,
+        /// as it is, without.
+        settle: Option<Option<Duration>>,
     },
     Reorder {
         subject: Subject,

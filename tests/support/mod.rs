@@ -38,6 +38,15 @@ pub const UNCHANGED: &str = if PROBED {
 };
 /// The state of a program asleep, or still at work, once quiet.
 pub const ASLEEP: &str = if PROBED { "busy" } else { "settled" };
+
+/// The state line of pane `pane`'s program asleep, or still at work, once
+/// quiet: busy, with how to wait on.
+pub fn asleep(pane: &str) -> String {
+    match PROBED {
+        true => format!("busy · `{pane} opts wait` waits on"),
+        false => ASLEEP.to_owned(),
+    }
+}
 /// The status of a text wait on a program that reads its terminal, the
 /// text not come: told at once (7), else at the wait's limit (124).
 pub const CANNOT_COME: i32 = if PROBED { 7 } else { 124 };

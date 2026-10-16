@@ -35,9 +35,9 @@ impl std::fmt::Display for Error {
         match self {
             Error::UnknownOption { option } => write!(
                 f,
-                "no setting {option:?}; the settings are shell, history-lines, journal-bytes, \
-                 journal-total, clipboard, buffers, bell, titles, shell-marks and \
-                 update-environment"
+                "no setting {option:?}; the settings are shell, history-lines, wait-seconds, \
+                 journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks \
+                 and update-environment"
             ),
             Error::NotANumber { option } => write!(f, "{option}: not a number"),
             Error::OutOfRange { option, min, max } => {
@@ -63,6 +63,8 @@ impl std::error::Error for Error {}
 pub struct Config {
     pub shell: Vec<String>,
     pub history_lines: usize,
+    /// How long an action or a wait waits at most, unless it says.
+    pub wait_seconds: u64,
     /// The bytes each pane's journal keeps (`crate::log`).
     pub journal_bytes: usize,
     /// The bytes all panes' journals keep together.
@@ -86,6 +88,12 @@ pub struct Config {
 /// The largest history a pane keeps.
 pub const MAX_HISTORY: usize = 250_000;
 pub const MAX_BUFFERS: usize = 1000;
+/// How long an action or a wait waits at most by default: a build or a
+/// program's startup is waited through, while a wait that cannot be met
+/// still answers well inside what a tool running a command waits for it.
+pub const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The longest `wait-seconds`: a day.
+pub const MAX_WAIT_SECONDS: usize = 86_400;
 /// The most bytes journals may be given: each, or all together.
 pub const MAX_JOURNAL: usize = 1 << 34;
 
@@ -119,6 +127,7 @@ impl Default for Config {
         Self {
             shell: vec![shell],
             history_lines: 10_000,
+            wait_seconds: WAIT.as_secs(),
             journal_bytes: crate::log::JOURNAL_BYTES,
             journal_total: 16 * crate::log::JOURNAL_BYTES,
             clipboard: true,
@@ -177,6 +186,9 @@ impl Config {
                 self.shell = argv;
             }
             "history-lines" => self.history_lines = number(0, MAX_HISTORY)?,
+            "wait-seconds" => {
+                self.wait_seconds = u64::try_from(number(0, MAX_WAIT_SECONDS)?).unwrap_or(0)
+            }
             "journal-bytes" => self.journal_bytes = number(0, MAX_JOURNAL)?,
             "journal-total" => self.journal_total = number(0, MAX_JOURNAL)?,
             "clipboard" => self.clipboard = on()?,
@@ -198,6 +210,13 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+impl Config {
+    /// How long an action or a wait waits at most, unless it says.
+    pub fn wait(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.wait_seconds)
     }
 }
 
