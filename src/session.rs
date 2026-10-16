@@ -658,6 +658,21 @@ impl Reach<'_> {
     }
 }
 
+/// The one item of `items`; of several, why not: `many` says it from how
+/// many there are and their ids.
+fn one<T: Copy + std::fmt::Display>(
+    items: &[T],
+    many: impl FnOnce(usize, String) -> String,
+) -> Result<T, Error> {
+    match items {
+        [item] => Ok(*item),
+        items => {
+            let ids: Vec<String> = items.iter().map(ToString::to_string).collect();
+            Err(Error::NotNamed(many(items.len(), ids.join(" "))))
+        }
+    }
+}
+
 /// A command that failed, told with its code for `--json`: a usage error's
 /// status is 2.
 fn failure(error: Error, origin: &Origin) -> Outcome {
@@ -1136,41 +1151,27 @@ impl Session {
         }
         if let (Kind::Pane, Some(t)) = (kind, tab) {
             let panes = self.root(t).map(Tree::panes).ok_or(Error::NoTab(t))?;
-            return match panes.as_slice() {
-                [pane] => Ok(AnyRef::Pane(*pane)),
-                panes => Err(Error::NotNamed(format!(
-                    "{t} is a tab of {} panes ({}): use a pane's id",
-                    panes.len(),
-                    ids(panes).join(" ")
-                ))),
-            };
+            let many = |n, ids| format!("{t} is a tab of {n} panes ({ids}): use a pane's id");
+            return one(&panes, many).map(AnyRef::Pane);
         }
         // A workspace's id stands for its one tab, or its one pane.
         if let (Kind::Pane | Kind::Tab, Ok(w)) = (kind, text.parse::<WsId>()) {
             let ws = (self.workspaces.iter())
                 .find(|ws| ws.id == w)
                 .ok_or(Error::NoWorkspace(w))?;
-            let (ones, of) = match kind {
+            let many = |of| {
+                move |n, ids| format!("{w} is a workspace of {n} {of}s ({ids}): use a {of}'s id")
+            };
+            return match kind {
                 Kind::Tab => {
                     let tabs: Vec<TabId> = ws.tabs().iter().map(|t| t.id).collect();
-                    match tabs.as_slice() {
-                        [tab] => return Ok(AnyRef::Tab(*tab)),
-                        tabs => (tabs.iter().map(ToString::to_string).collect(), "tab"),
-                    }
+                    one(&tabs, many("tab")).map(AnyRef::Tab)
                 }
                 Kind::Pane | Kind::Workspace => {
                     let panes: Vec<PaneId> = ws.tabs().iter().flat_map(panes_of).collect();
-                    match panes.as_slice() {
-                        [pane] => return Ok(AnyRef::Pane(*pane)),
-                        panes => (ids(panes), "pane"),
-                    }
+                    one(&panes, many("pane")).map(AnyRef::Pane)
                 }
             };
-            return Err(Error::NotNamed(format!(
-                "{w} is a workspace of {} {of}s ({}): use a {of}'s id",
-                ones.len(),
-                ones.join(" ")
-            )));
         }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(None, here)?.id)),
@@ -1195,25 +1196,17 @@ impl Session {
                             if panes.is_empty() {
                                 panes = with(|p| p.title.as_str());
                             }
-                            return match panes.as_slice() {
-                                [pane] => Ok(AnyRef::Pane(*pane)),
-                                [] => Err(no_tab),
-                                panes => Err(Error::NotNamed(format!(
-                                    "{text:?} names {} panes ({}): use an id",
-                                    panes.len(),
-                                    ids(panes).join(" ")
-                                ))),
-                            };
+                            if panes.is_empty() {
+                                return Err(no_tab);
+                            }
+                            let many =
+                                |n, ids| format!("{text:?} names {n} panes ({ids}): use an id");
+                            return one(&panes, many).map(AnyRef::Pane);
                         }
                     };
-                    match panes_of(tab).as_slice() {
-                        [pane] => Ok(AnyRef::Pane(*pane)),
-                        panes => Err(Error::NotNamed(format!(
-                            "{text:?} is a tab of {} panes ({}): use a pane's id",
-                            panes.len(),
-                            ids(panes).join(" ")
-                        ))),
-                    }
+                    let many =
+                        |n, ids| format!("{text:?} is a tab of {n} panes ({ids}): use a pane's id");
+                    one(&panes_of(tab), many).map(AnyRef::Pane)
                 }
             },
             Kind::Tab if text.is_empty() => Ok(AnyRef::Tab(self.tab_target(None, here)?)),
