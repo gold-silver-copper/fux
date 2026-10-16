@@ -41,6 +41,7 @@ pub mod wire;
 pub mod words;
 pub mod workspace;
 
+use json::Json;
 use std::io::PipeReader;
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -127,7 +128,6 @@ fn serve(args: &[String]) -> ExitCode {
 /// `fux status`: what answers on `socket`, as text and as JSON, and
 /// whether it is a server this fux can drive.
 pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> (String, String) {
-    use json::Json;
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
     let left = matches!(probe, client::Probe::Left);
@@ -193,16 +193,13 @@ pub(crate) fn servers() -> Result<(String, String), socket::Error> {
         };
         let path = socket.path().display().to_string();
         lines.push(format!("{name}  {path}  fux {version}\n"));
-        objects.push(json::Json::Object(vec![
-            ("name", json::Json::str(name.clone())),
-            ("socket", json::Json::str(path.clone())),
-            ("version", json::Json::str(version.clone())),
-            (
-                "compatible",
-                json::Json::Bool(protocol == protocol::PROTOCOL),
-            ),
+        objects.push(Json::Object(vec![
+            ("name", Json::str(name.clone())),
+            ("socket", Json::str(path.clone())),
+            ("version", Json::str(version.clone())),
+            ("compatible", Json::Bool(protocol == protocol::PROTOCOL)),
         ]));
     }
-    let json = format!("{}\n", json::Json::Array(objects).render());
+    let json = format!("{}\n", Json::Array(objects).render());
     Ok((lines.concat(), json))
 }
