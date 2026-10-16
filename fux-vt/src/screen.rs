@@ -975,21 +975,15 @@ impl Screen {
         self.structural = self.version;
     }
 
-    fn scroll(&mut self, region: Span, count: u16, up: bool, history: bool) -> Result<(), Error> {
+    fn scroll(&mut self, region: Span, count: u16, direction: Scroll) -> Result<(), Error> {
         if self.grid().lr() {
-            self.scroll_columns(region, count, up);
+            self.scroll_columns(region, count, direction);
             return Ok(());
         }
-        self.scroll_rows(region, count, up, history)
+        self.scroll_rows(region, count, direction)
     }
     /// `scroll` without left and right margins: the rows move.
-    fn scroll_rows(
-        &mut self,
-        region: Span,
-        count: u16,
-        up: bool,
-        history: bool,
-    ) -> Result<(), Error> {
+    fn scroll_rows(&mut self, region: Span, count: u16, direction: Scroll) -> Result<(), Error> {
         // A bounded multi-row scroll can fail after earlier rows have moved
         // (allocation failure). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
@@ -997,23 +991,18 @@ impl Screen {
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {
-            let direction = if up {
-                Scroll::Up { history }
-            } else {
-                Scroll::Down
-            };
             g.scroll(region, count, direction, blank, next, version)
         })?;
         // Rows moved within the screen (lines deleted or put in above
         // them, a region scrolled) are recorded, their text unchanged: a
         // whole screen scrolled into history moves none of its lines.
         if self.prints.is_some()
-            && !(history && region == self.grid().size().lines())
+            && !(direction == Scroll::Up { history: true } && region == self.grid().size().lines())
             && region.len() > count
         {
-            let first = match up {
-                true => region.first(),
-                false => region.first().saturating_add(count),
+            let first = match direction {
+                Scroll::Up { .. } => region.first(),
+                Scroll::Down => region.first().saturating_add(count),
             };
             self.printed(first, 0..0, "");
         }
@@ -1023,8 +1012,9 @@ impl Screen {
     /// its blanks in the pen's colours. Out of line: without margins it is
     /// never reached.
     #[inline(never)]
-    fn scroll_columns(&mut self, region: Span, count: u16, up: bool) {
+    fn scroll_columns(&mut self, region: Span, count: u16, direction: Scroll) {
         let blank = self.blank_style();
+        let up = direction != Scroll::Down;
         self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
     }
     /// IND, and LF, VT and FF: down a line, scrolling at the bottom margin;
@@ -1037,11 +1027,11 @@ impl Screen {
         if g.cursor.row() == g.lines.last() {
             if g.lr() {
                 if g.in_columns() {
-                    self.scroll_columns(g.lines, 1, true);
+                    self.scroll_columns(g.lines, 1, Scroll::Up { history: true });
                 }
                 return Ok(());
             }
-            self.scroll_rows(g.lines, 1, true, true)?;
+            self.scroll_rows(g.lines, 1, Scroll::Up { history: true })?;
         } else {
             // Down a row, stopping at the last.
             let g = self.grid_mut();
@@ -1078,7 +1068,7 @@ impl Screen {
         let g = self.grid();
         if g.cursor.row() == g.lines.first() {
             if !g.lr() || g.in_columns() {
-                self.scroll(g.lines, 1, false, false)?;
+                self.scroll(g.lines, 1, Scroll::Down)?;
             }
         } else {
             let g = self.grid_mut();
@@ -2485,12 +2475,20 @@ impl Screen {
                 {
                     g.cursor.pending_wrap = false;
                     g.set_col(g.columns().first());
-                    self.scroll(region, n, byte == b'M', false)?;
+                    let direction = match byte {
+                        b'M' => Scroll::Up { history: false },
+                        _ => Scroll::Down,
+                    };
+                    self.scroll(region, n, direction)?;
                 }
             }
             b'S' | b'T' => {
                 let lines = self.grid().lines;
-                self.scroll(lines, n, byte == b'S', true)?;
+                let direction = match byte {
+                    b'S' => Scroll::Up { history: true },
+                    _ => Scroll::Down,
+                };
+                self.scroll(lines, n, direction)?;
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
             // bottom are set, and the cursor goes home, obeying DECOM;
