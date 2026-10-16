@@ -187,15 +187,9 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), E
     let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
-    let mut buffer = vec![0u8; 64 * 1024];
     // A server that refuses a connection says why and closes it, maybe
     // before the Hello is written: its reason is still there to read.
-    let answer = read_frame(
-        &mut stream,
-        &mut decoder,
-        &mut buffer,
-        Some(Duration::from_secs(5)),
-    );
+    let answer = read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER));
     let version = greeted(&ours, answer, sent)?;
     Ok((stream, decoder, version))
 }
@@ -231,18 +225,34 @@ fn send<'a>(stream: &mut Link, frame: &impl Frame<'a>) -> Result<(), Error> {
         .map_err(failed("writing to the server"))
 }
 
+/// The next frame the server sends, waiting `timeout` at most for each
+/// read; none once it has closed.
 fn read_frame<'d>(
     stream: &mut Link,
     decoder: &'d mut Decoder,
-    buffer: &mut [u8],
     timeout: Option<Duration>,
 ) -> Result<Option<ServerFrame<'d>>, Error> {
     stream.set_read_timeout(timeout);
     while !decoder.ready()? {
-        match stream.read(buffer) {
-            Ok(0) => return Ok(None),
-            Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+        if !read_more(stream, decoder)? {
+            return Ok(None);
+        }
+    }
+    Ok(decoder.frame()?)
+}
+
+/// What the server sent next, read into `decoder`: false once it has
+/// closed.
+fn read_more(stream: &mut Link, decoder: &mut Decoder) -> Result<bool, Error> {
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(false),
+            Ok(n) => {
+                decoder.push(buffer.get(..n).unwrap_or_default());
+                return Ok(true);
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 let why = "the server did not answer in time";
                 return Err(Error::Failed(why.to_owned()));
@@ -250,7 +260,6 @@ fn read_frame<'d>(
             Err(e) => return Err(failed("reading from the server")(e)),
         }
     }
-    Ok(decoder.frame()?)
 }
 
 /// A connection to the server for requests: each sent whole, and answered
@@ -259,7 +268,6 @@ fn read_frame<'d>(
 pub struct Requests {
     stream: Link,
     decoder: Decoder,
-    buffer: Vec<u8>,
     /// The pieces of a reply too large for one frame, so far.
     parts: Vec<u8>,
 }
@@ -270,7 +278,6 @@ impl Requests {
         Ok(Requests {
             stream,
             decoder,
-            buffer: vec![0u8; 64 * 1024],
             parts: Vec::new(),
         })
     }
@@ -284,14 +291,9 @@ impl Requests {
             if let Some(reply) = self.take(out)? {
                 return Ok(reply);
             }
-            match self.stream.read(&mut self.buffer) {
-                Ok(0) => {
-                    let closed = "the server closed the connection";
-                    return Err(Error::Failed(closed.to_owned()));
-                }
-                Ok(n) => self.decoder.push(self.buffer.get(..n).unwrap_or_default()),
-                Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                Err(e) => return Err(failed("reading from the server")(e)),
+            if !read_more(&mut self.stream, &mut self.decoder)? {
+                let closed = "the server closed the connection";
+                return Err(Error::Failed(closed.to_owned()));
             }
         }
     }
@@ -360,14 +362,8 @@ pub fn environment() -> Vec<(String, String)> {
 /// Stops the server, whatever fux version it is.
 pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
-    let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        match read_frame(
-            &mut stream,
-            &mut decoder,
-            &mut buffer,
-            Some(Duration::from_secs(5)),
-        ) {
+        match read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER)) {
             Ok(Some(ServerFrame::Done { .. })) | Ok(None) => return Ok(()),
             Ok(Some(_)) => {}
             Err(error) => return Err(error),
@@ -1123,13 +1119,8 @@ fn attached(
                 }
             }
         }
-        if is(STREAM) {
-            match stream.read(&mut buffer) {
-                Ok(0) => return Ok("the server closed the connection".into()),
-                Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
-                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
-                Err(e) => return Err(failed("reading from the server")(e)),
-            }
+        if is(STREAM) && !read_more(stream, decoder)? {
+            return Ok("the server closed the connection".into());
         }
     }
 }
@@ -1155,8 +1146,7 @@ mod tests {
         let mut client = Link::socket(client)?;
         server(&mut peer);
         let mut decoder = Decoder::default();
-        let mut buffer = [0u8; 256];
-        let answer = read_frame(&mut client, &mut decoder, &mut buffer, Some(wait));
+        let answer = read_frame(&mut client, &mut decoder, Some(wait));
         greeted(&ours(), answer, Ok(()))
     }
 

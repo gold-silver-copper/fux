@@ -20,8 +20,9 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// How long a client waits for the server to open its FIFOs.
-const ANSWER: Duration = Duration::from_secs(5);
+/// How long a client waits for a server's answer: its Hello, or the FIFOs
+/// a door's knock asks for.
+pub(crate) const ANSWER: Duration = Duration::from_secs(5);
 
 /// The door beside `socket`.
 pub fn path(socket: &Path) -> PathBuf {
