@@ -14,7 +14,7 @@ use crate::bytes::ByteQueue;
 use crate::command::{AnyRef, Command};
 use crate::id::{ClientId, WsId};
 use crate::wire::{Wire, wire_enum, wire_struct};
-use std::num::NonZeroU16;
+use std::num::{NonZeroU8, NonZeroU16};
 
 /// Bumped on any change to the frames below.
 pub const PROTOCOL: u32 = 9;
@@ -369,28 +369,76 @@ pub enum Scalar {
     Null,
 }
 
-/// The server's answer to a request: its status; why it failed, if it did,
-/// with a stable code; what it says as text, and as JSON where it has a
-/// JSON form; the panes, tabs or workspaces it made or found; a field's
-/// value.
+/// The server's answer to a request: how it ended; what it says as text,
+/// and as JSON where it has a JSON form; the panes, tabs or workspaces it
+/// made or found; a field's value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reply {
-    pub status: u8,
-    pub code: Option<String>,
-    pub message: String,
+    pub end: End,
     pub text: String,
     pub json: String,
     pub ids: Vec<AnyRef<WsId>>,
     pub value: Option<Scalar>,
 }
 
+/// How a request ended: its exit status, and why it failed, if it did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum End {
+    #[default]
+    Done,
+    /// Answered with a status of its own, and the code that names it, no
+    /// failure: a wait met by its program's exit (its status), or a pane
+    /// said as it stands (4 closed, 7 reading short of the text, 124 still
+    /// busy).
+    Answered { status: NonZeroU8, code: String },
+    /// Failed, with its status, its stable code and why.
+    Failed {
+        status: NonZeroU8,
+        code: String,
+        message: String,
+    },
+}
+
+impl End {
+    /// An answer with exit status `status`, which `code` names.
+    pub fn answered(status: u8, code: &str) -> End {
+        NonZeroU8::new(status).map_or(End::Done, |status| End::Answered {
+            status,
+            code: code.to_owned(),
+        })
+    }
+
+    /// A failure with exit status `status` (1 if 0 is given), of kind `code`.
+    pub fn failed(status: u8, code: &str, message: impl Into<String>) -> End {
+        End::Failed {
+            status: NonZeroU8::new(status).unwrap_or(NonZeroU8::MIN),
+            code: code.to_owned(),
+            message: message.into(),
+        }
+    }
+
+    /// The exit status.
+    pub fn status(&self) -> u8 {
+        match self {
+            End::Done => 0,
+            End::Answered { status, .. } | End::Failed { status, .. } => status.get(),
+        }
+    }
+
+    /// The code that names its status, if it has one.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            End::Done => None,
+            End::Answered { code, .. } | End::Failed { code, .. } => Some(code),
+        }
+    }
+}
+
 impl Reply {
-    /// A failure of kind `code`, as `--json` names it: status 1, and why.
+    /// A failure of kind `code`: status 1, and why.
     pub fn failed(code: &str, message: impl Into<String>) -> Reply {
         Reply {
-            status: 1,
-            code: Some(code.to_owned()),
-            message: message.into(),
+            end: End::failed(1, code, message),
             ..Reply::default()
         }
     }
@@ -398,10 +446,14 @@ impl Reply {
 
 wire_enum!(Scalar, "scalar" { 0 => Int(n), 1 => Bool(b), 2 => Str(s), 3 => Null });
 
+wire_enum!(End, "end" {
+    0 => Done,
+    1 => Answered { status, code },
+    2 => Failed { status, code, message },
+});
+
 wire_struct!(Reply {
-    status,
-    code,
-    message,
+    end,
     text,
     json,
     ids,

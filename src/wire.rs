@@ -98,6 +98,15 @@ macro_rules! int_wire {
 }
 int_wire!(u8, u16, u32, u64, i64);
 
+impl Wire for std::num::NonZeroU8 {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.get().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Self::new(u8::get(r)?).ok_or(Error::Bad("status"))
+    }
+}
+
 impl Wire for usize {
     fn put(&self, out: &mut Vec<u8>) {
         u64::try_from(*self).unwrap_or(u64::MAX).put(out);

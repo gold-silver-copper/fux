@@ -12,7 +12,7 @@ use crate::command::{Command, Extent, Input, Kind, Mouse, Until, WsRef};
 use crate::id::{AnyId, ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
 use crate::layout::Axis;
-use crate::protocol::{Context, Reply, Request, Scalar};
+use crate::protocol::{Context, End, Reply, Request, Scalar};
 use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
 use std::io::Write;
 use std::time::Duration;
@@ -637,14 +637,18 @@ pub fn run_capped(
                 let reply = asks
                     .ask(&Request { command, context }, host.out)
                     .map_err(|f| placed(machine, f))?;
-                if met(&reply) && reply.status != 0 {
-                    status = reply.status;
-                }
-                // A failure that answered too (`run`'s pane): its answer is
-                // left, printed before why it failed.
-                let answer = !reply.message.trim().is_empty() && !reply.text.trim().is_empty();
-                if reply.status != 0 && answer {
-                    machine.push(Value::str(reply.text.trim_end()))?;
+                match &reply.end {
+                    End::Answered {
+                        status: answered, ..
+                    } => status = answered.get(),
+                    // A failure that answered too (`run`'s pane): its answer
+                    // is left, printed before why it failed.
+                    End::Failed { message, .. }
+                        if !message.trim().is_empty() && !reply.text.trim().is_empty() =>
+                    {
+                        machine.push(Value::str(reply.text.trim_end()))?;
+                    }
+                    End::Failed { .. } | End::Done => {}
                 }
                 for value in answered(reply, then).map_err(|f| placed(machine, f))? {
                     machine.push(value)?;
@@ -714,36 +718,23 @@ fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
     error
 }
 
-/// Whether a reply with a status other than 0 is a wait met by its
-/// program's exit, which is no failure: that status is the run's (`run`).
-/// Every failure says why.
-fn met(reply: &Reply) -> bool {
-    reply.message.is_empty() && reply.code.is_none()
-}
-
 /// What a reply puts on the stack, `then` saying what it is; a failure,
 /// with its status, if it failed: why, else what it answered.
 pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
-    if reply.status != 0 && !met(&reply) {
-        let message = match (reply.message.trim_end(), reply.text.trim_end()) {
+    if let End::Failed {
+        status,
+        code,
+        message,
+    } = reply.end
+    {
+        let message = match (message.trim_end(), reply.text.trim_end()) {
             ("", text) => text,
             (message, _) => message,
-        }
-        .to_owned();
-        let code = reply.code.unwrap_or_else(|| {
-            match reply.status {
-                3 => "exited",
-                4 => "closed",
-                7 => "stopped",
-                124 => "timeout",
-                _ => "failed",
-            }
-            .to_owned()
-        });
+        };
         return Err(Failed {
-            status: reply.status,
+            status: status.get(),
             code,
-            message,
+            message: message.to_owned(),
         });
     }
     let text = reply.text.trim_end_matches('\n').to_owned();

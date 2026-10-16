@@ -19,7 +19,7 @@ use crate::json::Json;
 use crate::log::Seq;
 use crate::pane::{Pane, Start};
 use crate::process::Ended;
-use crate::protocol::Reply;
+use crate::protocol::{End, Reply};
 use crate::session::Session;
 use std::time::Instant;
 
@@ -262,17 +262,23 @@ impl Waiting {
         if let [one] = answers.as_slice() {
             return Some((*one).clone());
         }
-        let mut stderr = String::new();
-        for answer in answers.iter().filter(|a| !a.message.is_empty()) {
-            stderr.push_str(answer.message.trim_end());
-            stderr.push('\n');
-        }
+        // The first end with a status other than 0, in order, names the
+        // whole: a failure, if one failed, with every pane's why.
+        let first = (answers.iter()).find(|a| a.end.status() != 0);
+        let why: String = (answers.iter())
+            .filter_map(|a| match &a.end {
+                End::Failed { message, .. } => Some(format!("{}\n", message.trim_end())),
+                End::Done | End::Answered { .. } => None,
+            })
+            .collect();
+        let end = match first.map(|a| (a.end.status(), a.end.code().unwrap_or_default())) {
+            None => End::Done,
+            Some((status, code)) if why.is_empty() => End::answered(status, code),
+            Some((status, code)) => End::failed(status, code, why),
+        };
         Some(Reply {
-            status: (answers.iter().map(|a| a.status))
-                .find(|s| *s != 0)
-                .unwrap_or(0),
+            end,
             text: answers.iter().map(|a| a.text.as_str()).collect(),
-            message: stderr,
             json: answers.iter().map(|a| a.json.as_str()).collect(),
             ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
             ..Reply::default()
@@ -292,17 +298,21 @@ enum Told {
 }
 
 impl Told {
-    /// The status a wait that ended so ends with.
-    fn status(&self) -> u8 {
+    /// The status a wait that ended so ends with, and the code that names
+    /// it.
+    fn status(&self) -> (u8, &'static str) {
         match self {
             // As timeout(1): the program's own status, once it exits.
             Told::Found(Found::Exit(ended)) => {
-                u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
+                let status = crate::process::shell_status(*ended);
+                (u8::try_from(status).unwrap_or(u8::MAX), "exited")
             }
-            Told::Found(Found::Stopped) => STOPPED,
-            Told::Found(Found::Text { .. } | Found::Gone | Found::Bell(_) | Found::Settled(_)) => 0,
-            Told::Exited(..) | Told::Replaced => EXITED,
-            Told::TimedOut(_) => TIMED_OUT,
+            Told::Found(Found::Stopped) => (STOPPED, "stopped"),
+            Told::Found(Found::Text { .. } | Found::Gone | Found::Bell(_) | Found::Settled(_)) => {
+                (0, "")
+            }
+            Told::Exited(..) | Told::Replaced => (EXITED, "exited"),
+            Told::TimedOut(_) => (TIMED_OUT, "timeout"),
         }
     }
 }
@@ -313,11 +323,16 @@ impl Wait {
     /// wait's a failure.
     fn gone(&self, id: PaneId) -> Reply {
         if !self.until.contains(&Until::Settled) {
-            return failed(id, GONE, String::new(), format!("{id}: the pane closed"));
+            return failed(
+                id,
+                (GONE, "closed"),
+                String::new(),
+                format!("{id}: the pane closed"),
+            );
         }
         let stdout = format!("{id} closed\n");
         let state = vec![("state", Json::str("closed"))];
-        answer(id, GONE, (stdout, String::new()), state, None)
+        answer(id, (GONE, "closed"), stdout, state, None)
     }
 
     /// The outcome of a wait that ended so in `pane`.
@@ -353,7 +368,7 @@ impl Wait {
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
                 let state = crate::ready::state(pane, now);
                 let calm = self.limit().is_zero() || state != State::Busy;
-                return settled(state, if calm { 0 } else { status }, asked());
+                return settled(state, if calm { (0, "") } else { status }, asked());
             }
             Told::Found(Found::Text { text, line }) => {
                 let fields = vec![
@@ -435,7 +450,7 @@ impl Wait {
         match met {
             Ok(fields) => {
                 let screen = screen.map(|screen| ("screen", Json::str(screen)));
-                answer(id, status, (stdout, String::new()), fields, screen)
+                answer(id, status, stdout, fields, screen)
             }
             Err(message) => failed(id, status, stdout, message),
         }
@@ -446,7 +461,7 @@ impl Wait {
         &self,
         pane: &Pane,
         state: crate::ready::State,
-        status: u8,
+        status: (u8, &'static str),
         body: String,
         since: Since,
     ) -> Reply {
@@ -455,17 +470,16 @@ impl Wait {
         fields.extend(notes);
         let stdout = format!("{line}\n{body}");
         let output = Some(("output", Json::str(body)));
-        answer(pane.id, status, (stdout, String::new()), fields, output)
+        answer(pane.id, status, stdout, fields, output)
     }
 }
 
-/// A wait's failure in pane `id`: why, on stderr, beside what it prints.
-/// It leaves no answer, so no JSON.
-fn failed(id: PaneId, status: u8, text: String, message: String) -> Reply {
+/// A wait's failure in pane `id`, with its status and code: why, on
+/// stderr, beside what it prints. It leaves no answer, so no JSON.
+fn failed(id: PaneId, (status, code): (u8, &str), text: String, message: String) -> Reply {
     Reply {
-        status,
+        end: End::failed(status, code, message),
         text,
-        message,
         ids: vec![AnyRef::Pane(id)],
         ..Reply::default()
     }
@@ -475,8 +489,8 @@ fn failed(id: PaneId, status: u8, text: String, message: String) -> Reply {
 /// then `last`, if any.
 fn answer(
     id: PaneId,
-    status: u8,
-    (stdout, stderr): (String, String),
+    (status, code): (u8, &str),
+    stdout: String,
     fields: Vec<(&'static str, Json<'static>)>,
     last: Option<(&'static str, Json<'static>)>,
 ) -> Reply {
@@ -485,9 +499,8 @@ fn answer(
     all.push(("status", Json::Number(i64::from(status))));
     all.extend(last);
     Reply {
-        status,
+        end: End::answered(status, code),
         text: stdout,
-        message: stderr,
         json: format!("{}\n", Json::Object(all).render()),
         ids: vec![AnyRef::Pane(id)],
         ..Reply::default()

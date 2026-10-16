@@ -9,8 +9,8 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply, Request,
-    Role, ServerFrame,
+    Attach, AttachedFrame, Decoder, End, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply,
+    Request, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
 use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer};
@@ -1062,8 +1062,12 @@ impl Server {
             if over {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
                 let gone = Reply {
-                    status: crate::wait::GONE,
-                    ..Reply::failed("gone", "everything it watched has closed")
+                    end: End::failed(
+                        crate::wait::GONE,
+                        "gone",
+                        "everything it watched has closed",
+                    ),
+                    ..Reply::default()
                 };
                 conn.answer(&mut self.session, gone);
                 continue;

@@ -11,7 +11,7 @@ use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::{PaneId, WsId};
 use crate::keymap::{PAGE, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::KeyPress;
-use crate::protocol::{Reply, Scalar};
+use crate::protocol::{End, Reply, Scalar};
 use crate::script::Failed;
 use crate::session::describe;
 use crate::view::Line;
@@ -167,13 +167,17 @@ impl Open {
 
 /// A reply, or its failure.
 fn answered(reply: Reply) -> Result<Reply, Failed> {
-    match reply.status {
-        0 => Ok(reply),
-        status => Err(Failed {
+    match reply.end {
+        End::Failed {
             status,
-            code: reply.code.unwrap_or_else(|| "failed".to_owned()),
-            message: reply.message,
+            code,
+            message,
+        } => Err(Failed {
+            status: status.get(),
+            code,
+            message,
         }),
+        End::Done | End::Answered { .. } => Ok(reply),
     }
 }
 

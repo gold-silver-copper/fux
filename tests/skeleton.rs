@@ -119,7 +119,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         }
     }
     let reply = reply.ok_or("no reply")?;
-    assert_eq!(reply.status, 0, "{}", reply.message);
+    assert_eq!(reply.end, fux::protocol::End::Done);
     assert!(reply.text.contains("+1 main"), "{}", reply.text);
     Ok(())
 }

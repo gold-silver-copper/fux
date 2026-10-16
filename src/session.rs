@@ -12,7 +12,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::pane::{InputQueue, Pane, Process, Runs, Typed};
 use crate::process::Child;
-use crate::protocol::Reply;
+use crate::protocol::{End, Reply};
 use crate::view::{ClientKind, Mode, View};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
@@ -616,8 +616,8 @@ fn failure(error: Error, origin: &Origin) -> Reply {
         1
     };
     Reply {
-        status,
-        ..Reply::failed(error.code(), error.to_string())
+        end: End::failed(status, error.code(), error.to_string()),
+        ..Reply::default()
     }
 }
 
@@ -2060,7 +2060,7 @@ impl Session {
         // as it comes, so one does not keep the rest from coming back.
         if self.restoring && matches!(command, Command::ResizePane { .. }) {
             let mut outcome = self.run_command(&command, origin);
-            if outcome.status != 0 {
+            if matches!(outcome.end, End::Failed { .. }) {
                 outcome = Reply::default();
             }
             return Begun::Done(outcome);
@@ -2132,7 +2132,7 @@ impl Session {
         match keys {
             Some(command) => {
                 let outcome = self.run_command(&command, origin);
-                if outcome.status != 0 {
+                if matches!(outcome.end, End::Failed { .. }) {
                     return Ok(Begun::Done(outcome));
                 }
             }
@@ -2202,7 +2202,7 @@ impl Session {
             AnyRef::Tab(_) | AnyRef::Workspace(_) => None,
         });
         let Some(pane) = pane
-            .filter(|_| outcome.status == 0)
+            .filter(|_| outcome.end == End::Done)
             .and_then(|p| self.panes.get(&p))
         else {
             return Begun::Done(outcome);
