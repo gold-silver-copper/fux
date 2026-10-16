@@ -204,33 +204,27 @@ pub fn reap(pid: Pid) -> Result<Option<Status>> {
 /// Makes this process the reaper of its descendants' orphans: a program
 /// whose parent exits (a double fork, a daemon) becomes its child, not
 /// init's, so it stays in its [`tree`], where its system calls may be read,
-/// and this process must reap it ([`reap_orphans`]).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// and this process must reap it ([`reap_orphans`]). macOS has no reaper of
+/// orphans but launchd: none are adopted.
 pub fn adopt_orphans() -> Result<()> {
     // SAFETY: prctl with PR_SET_CHILD_SUBREAPER takes numbers and touches
     // no memory.
-    check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }).map(drop)
-}
-
-/// Reaps every child of this process that has exited and that `kept` does
-/// not keep: the orphans it adopted ([`adopt_orphans`]). Its own children
-/// are kept, for whoever waits for them.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
-    for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
-        let _ = reap(pid);
-    }
-}
-
-/// macOS has no reaper of orphans but launchd: none are adopted.
-#[cfg(target_os = "macos")]
-pub fn adopt_orphans() -> Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) })?;
     Ok(())
 }
 
-/// macOS: none were adopted ([`adopt_orphans`]), so none are reaped.
-#[cfg(target_os = "macos")]
-pub fn reap_orphans(_kept: impl Fn(Pid) -> bool) {}
+/// Reaps every child of this process that has exited and that `kept` does
+/// not keep: the orphans it adopted ([`adopt_orphans`]); none on macOS. Its
+/// own children are kept, for whoever waits for them.
+pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
+        let _ = reap(pid);
+    }
+    #[cfg(target_os = "macos")]
+    let _ = kept;
+}
 
 /// The processes this one started, those they started in turn, and the
 /// orphans it adopted ([`adopt_orphans`]); not itself. A runaway tree is
