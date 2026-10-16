@@ -115,7 +115,7 @@ struct Watch {
     /// How far it read the journal, for texts, texts gone and bells: each
     /// look reads only what is new.
     looked: Seq,
-    bell: Option<Seq>,
+    bell: Option<(Seq, Option<String>)>,
     /// A text was found in the echo of what was typed alone.
     echo_skipped: bool,
     revision: u64,
@@ -737,20 +737,15 @@ impl Watch {
                 }
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
                 Until::Settled => settled = self.settled(pane, (began, now), more),
-                Until::Bell => bell = self.bell,
+                Until::Bell => bell = self.bell.clone(),
             }
         }
         // Of a text, a bell and a text gone, the first to come; in one
         // piece, a text gone before a text came (the piece that erased it
         // printed the new one), and a text before the bell that ends it.
         let text = (self.found.clone()).map(|(text, line, at)| (Found::Text { text, line }, at));
-        let bell = bell.map(|at| {
-            let notification = pane.alerts.last.clone();
-            (
-                Found::Bell(notification.filter(|_| pane.alerts.last_notified)),
-                at,
-            )
-        });
+        // The alert found, not the pane's last.
+        let bell = bell.map(|(at, notification)| (Found::Bell(notification), at));
         let first = [gone, text, bell]
             .into_iter()
             .flatten()

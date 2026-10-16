@@ -594,7 +594,10 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
     assert_eq!(head(&done), format!("{pane} {READING} · done 7"));
     assert!(body(&done).contains("out1\nout2\nprompt\n"), "{done}");
     assert_eq!(last_output(&server, &pane)?, "out1\nout2\n");
-    server.ok(&[&enter[..], &["wait-bell", "send-keys"]].concat())?;
+    // A bell then a notification in one write: the wait met the bell,
+    // and says that alert, not the pane's last.
+    let rung = server.ok(&[&enter[..], &["wait-bell", "send-keys", "json"]].concat())?;
+    assert!(rung.contains(r#""notification":null"#), "{rung}");
     let json = server.ok(&["str", &pane, "pane", "opts", "capture", "json"])?;
     for field in [
         r#""command_running":false"#,

@@ -171,11 +171,19 @@ impl Log {
         self.bytes
     }
 
-    /// The first bell rung, or notification sent, after `seq`, if one was.
-    pub fn bell_after(&self, seq: Seq) -> Option<Seq> {
-        self.after(seq)
-            .find(|e| matches!(e.event, Event::Bell | Event::Notification(_)))
-            .map(|e| e.seq)
+    /// The first bell rung, or notification sent, after `seq`, if one was:
+    /// its number, and a notification's text.
+    pub fn bell_after(&self, seq: Seq) -> Option<(Seq, Option<String>)> {
+        self.after(seq).find_map(|e| match &e.event {
+            Event::Bell => Some((e.seq, None)),
+            Event::Notification(text) => Some((e.seq, Some(text.clone()))),
+            Event::Output { .. }
+            | Event::Input { .. }
+            | Event::Action
+            | Event::Title(_)
+            | Event::Done(_)
+            | Event::Resize(_) => None,
+        })
     }
 
     /// The entries after `seq`, oldest first.
@@ -271,7 +279,7 @@ mod tests {
         log.push(Seq(4), now, Event::Bell);
         assert!(log.whole().is_none());
         assert!(log.lost_after(Seq(0)) && !log.lost_after(Seq(1)));
-        assert_eq!(log.bell_after(Seq(2)), Some(Seq(4)));
+        assert_eq!(log.bell_after(Seq(2)), Some((Seq(4), None)));
         assert_eq!(log.after(Seq(0)).count(), 3);
         log.keep(0);
         assert_eq!(log.after(Seq(0)).count(), 0);

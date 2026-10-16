@@ -317,11 +317,9 @@ impl fux_vt::Sink for Sink<'_> {
                 self.happened.push(crate::log::Event::Bell);
                 *self.bell = true;
                 self.alerts.bells = self.alerts.bells.saturating_add(1);
-                self.alerts.last_notified = false;
             }
             fux_vt::Event::Notification(text) => {
                 self.alerts.notifications = self.alerts.notifications.saturating_add(1);
-                self.alerts.last_notified = true;
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
                 self.happened
@@ -447,7 +445,6 @@ pub struct Alerts {
     pub bells: u64,
     pub notifications: u64,
     pub last: Option<String>,
-    pub last_notified: bool,
 }
 
 impl Alerts {
