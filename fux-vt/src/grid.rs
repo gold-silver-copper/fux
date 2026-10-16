@@ -469,16 +469,13 @@ impl Grid {
         Ok(())
     }
 
-    /// Puts a row under the screen's rows, in a slot of its own: `meta`,
-    /// `cells` from its first (the rest blank), its text and its links.
-    /// Room was made for it (`reserve_screen`).
     /// Keeps a row laid out whole in `cells`, as wide as they are, as a
     /// resize makes a grid anew: into history, with its text and links, if
-    /// `history`; else on the screen.
+    /// `history`; else on the screen. Past `written` its cells are blank.
     fn keep_row(
         &mut self,
         meta: Meta,
-        cells: &[Compact],
+        (cells, written): (&[Compact], usize),
         (text, links): (Option<Text>, Option<RowLinks>),
         history: bool,
     ) -> Result<(), Error> {
@@ -487,12 +484,20 @@ impl Grid {
             return Ok(());
         }
         let width = u16::try_from(cells.len()).map_err(|_| Error::Capacity)?;
-        self.history.push(meta.arriving(trimmed(cells), width))?;
-        self.history.attach(text.map(|text| text.exact()), links);
+        let kept = trimmed(cells.get(..written).unwrap_or(cells));
+        self.history.push(meta.arriving(kept, width))?;
+        // A row with neither text nor links, as most are, attaches none.
+        let text = text.filter(|text| !text.is_empty());
+        if text.is_some() || links.is_some() {
+            self.history.attach(text.map(|text| text.exact()), links);
+        }
         self.history.trim();
         Ok(())
     }
 
+    /// Puts a row under the screen's rows, in a slot of its own: `meta`,
+    /// `cells` from its first (the rest blank), its text and its links.
+    /// Room was made for it (`reserve_screen`).
     fn push_screen_row(
         &mut self,
         meta: Meta,
@@ -1681,7 +1686,7 @@ impl Grid {
                 prompt: old.is_some_and(|r| r.prompt),
                 ..Meta::new(id, row_version, wrapped, width)
             };
-            replacement.keep_row(meta, &row, (text, links), is_history)?;
+            replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
         Ok(replacement)
     }

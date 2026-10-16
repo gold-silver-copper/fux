@@ -580,9 +580,9 @@ impl Reflow for Fill<'_> {
             prompt,
             ..Meta::new(id, self.version, wrapped, used)
         };
-        // Past `written` the cells are blank, as history trims them.
         let history = row < self.screen;
-        (self.grid).keep_row(meta, &self.cells, (Some(text), links), history)?;
+        let cells = (self.cells.as_slice(), written);
+        (self.grid).keep_row(meta, cells, (Some(text), links), history)?;
         if let Some(cells) = self.cells.get_mut(..written) {
             cells.fill(BLANK);
         }
