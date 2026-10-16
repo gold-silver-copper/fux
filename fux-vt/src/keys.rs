@@ -8,31 +8,21 @@ pub mod mouse;
 
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// An arrow key's direction.
-pub enum Direction {
-    /// The left arrow.
-    Left,
-    /// The right arrow.
-    Right,
-    /// The up arrow.
-    Up,
-    /// The down arrow.
-    Down,
-}
-
-impl Direction {
-    /// Every direction, left, right, up, down.
-    pub const ALL: [Direction; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
-    /// The direction's name, lower case (`left`, `right`, `up`, `down`), as
-    /// messages write it; key names are `Left` and so on (`NAMED`).
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Left => "left",
-            Self::Right => "right",
-            Self::Up => "up",
-            Self::Down => "down",
-        }
+closed! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// An arrow key's direction.
+    pub enum Direction {
+        /// The direction's name, lower case (`left`, `right`, `up`, `down`),
+        /// as messages write it; key names are `Left` and so on (`NAMED`).
+        pub fn name(self) -> &'static str;
+        /// The left arrow.
+        Left => "left",
+        /// The right arrow.
+        Right => "right",
+        /// The up arrow.
+        Up => "up",
+        /// The down arrow.
+        Down => "down",
     }
 }
 

@@ -347,109 +347,91 @@ const OSC_PREFIX: usize = 64;
 /// (` q`, `$|`, `"p`). A longer request is no setting fux-vt knows.
 const REQUEST_LIMIT: usize = 4;
 
-/// A piece of opt-in behaviour that needs the host's cooperation, turned on
-/// in [`Options`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Feature {
-    /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
-    /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
-    /// [`Event::ColorQuery`]) as [`Event`]s. OSC payloads are buffered up
-    /// to [`OSC_PAYLOAD_LIMIT`].
-    Events,
-    /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
-    /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
-    ExtendedReplies,
-    /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
-    /// [`Feature::ExtendedReplies`] does with the rest: how programs learn
-    /// which modes the terminal knows, synchronized output (2026) among
-    /// them, without what DA2 and DECXCPR say about it.
-    ModeReports,
-    /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
-    /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
-    /// program sets it, and give the host the report to send after a
-    /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
-    /// which the spec allows a terminal that does not know them. Off, the
-    /// mode is not recognized, and DECRQM says so.
-    InBandResize,
-    /// Answer xterm's text-area size query (`CSI 18 t`, ctlseqs' window
-    /// manipulation) with `CSI 8 ; rows ; cols t`, the screen's size in
-    /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
-    /// knows no pixels.
-    SizeReports,
-    /// Mode 2031, colour-scheme change reports
-    /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
-    /// read with [`Screen::mode`], and report it to DECRQM.
-    /// State only: the host knows the colour scheme, and sends the reports
-    /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
-    /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
-    /// recognized, and DECRQM says so.
-    ColorSchemeUpdates,
-    /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
-    /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
-    /// the flag query `CSI ? u`. State only: the host encodes keys, reading
-    /// [`Screen::kitty_keyboard_flags`] and [`Screen::modify_other_keys`].
-    /// A host that cannot encode keys that way must leave this off, or
-    /// programs will believe it can.
-    KittyKeyboard,
-    /// Re-wrap the primary screen and its history at the new width on
-    /// resize, keeping the cursor on its character. The alternate screen is
-    /// resized without reflow, as its programs redraw anyway.
-    Reflow,
-    /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
-    /// one is open has it, read with [`crate::Row::link`]. The URIs are
-    /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
-    /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
-    Hyperlinks,
-    /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
-    /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
-    /// and `L` start a fresh line. An OSC string's first bytes are kept to
-    /// tell one. Off, OSC 133 is ignored.
-    PromptMarks,
-    /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
-    /// DECCKSR, as xterm and the VT520 sum it (`Screen::rectangle_checksum`).
-    /// It lets a program read what its screen shows, so xterm refuses it by
-    /// default, and fux's panes leave it off; esctest reads the screen so.
-    RectangleChecksums,
-    /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
-    /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
-    /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
-    /// r Pt ST`, `Pt` the sequence that sets it, such as `0;1;4:3m`.
-    /// Another request is answered as invalid, `DCS 0 $ r ST`, and a cursor
-    /// shape left to the terminal (DECSCUSR 0, the default) not at all. A
-    /// request's first bytes are kept to tell it, nothing more. Programs
-    /// learn from the pen what the terminal draws: neovim sets a curly
-    /// underline and asks, and draws its diagnostics curly only if `4:3`
-    /// comes back. Off, DECRQSS is ignored, as every other DCS.
-    SettingReports,
-    /// Keep the colours a program sets and answer its queries of them, as
-    /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
-    /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119); `palette.rs`
-    /// says how. Read with [`Screen::palette_color`] and
-    /// [`Screen::dynamic_color`]. OSC payloads are buffered, up to
-    /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
-    /// queries are events, with [`Feature::Events`].
-    Palette,
-}
-
-impl Feature {
-    /// Every feature, in declaration order: a new one goes last, here too,
-    /// as [`Options`] keeps a place for each.
-    pub const ALL: [Feature; 13] = [
-        Feature::Events,
-        Feature::ExtendedReplies,
-        Feature::ModeReports,
-        Feature::InBandResize,
-        Feature::SizeReports,
-        Feature::ColorSchemeUpdates,
-        Feature::KittyKeyboard,
-        Feature::Reflow,
-        Feature::Hyperlinks,
-        Feature::PromptMarks,
-        Feature::RectangleChecksums,
-        Feature::SettingReports,
-        Feature::Palette,
-    ];
+closed! {
+    /// A piece of opt-in behaviour that needs the host's cooperation, turned on
+    /// in [`Options`].
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[non_exhaustive]
+    pub enum Feature {
+        /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
+        /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
+        /// [`Event::ColorQuery`]) as [`Event`]s. OSC payloads are buffered up
+        /// to [`OSC_PAYLOAD_LIMIT`].
+        Events,
+        /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
+        /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
+        ExtendedReplies,
+        /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
+        /// [`Feature::ExtendedReplies`] does with the rest: how programs learn
+        /// which modes the terminal knows, synchronized output (2026) among
+        /// them, without what DA2 and DECXCPR say about it.
+        ModeReports,
+        /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
+        /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
+        /// program sets it, and give the host the report to send after a
+        /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
+        /// which the spec allows a terminal that does not know them. Off, the
+        /// mode is not recognized, and DECRQM says so.
+        InBandResize,
+        /// Answer xterm's text-area size query (`CSI 18 t`, ctlseqs' window
+        /// manipulation) with `CSI 8 ; rows ; cols t`, the screen's size in
+        /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
+        /// knows no pixels.
+        SizeReports,
+        /// Mode 2031, colour-scheme change reports
+        /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
+        /// read with [`Screen::mode`], and report it to DECRQM.
+        /// State only: the host knows the colour scheme, and sends the reports
+        /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
+        /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
+        /// recognized, and DECRQM says so.
+        ColorSchemeUpdates,
+        /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
+        /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
+        /// the flag query `CSI ? u`. State only: the host encodes keys, reading
+        /// [`Screen::kitty_keyboard_flags`] and [`Screen::modify_other_keys`].
+        /// A host that cannot encode keys that way must leave this off, or
+        /// programs will believe it can.
+        KittyKeyboard,
+        /// Re-wrap the primary screen and its history at the new width on
+        /// resize, keeping the cursor on its character. The alternate screen is
+        /// resized without reflow, as its programs redraw anyway.
+        Reflow,
+        /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
+        /// one is open has it, read with [`crate::Row::link`]. The URIs are
+        /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
+        /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
+        Hyperlinks,
+        /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
+        /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
+        /// and `L` start a fresh line. An OSC string's first bytes are kept to
+        /// tell one. Off, OSC 133 is ignored.
+        PromptMarks,
+        /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
+        /// DECCKSR, as xterm and the VT520 sum it (`Screen::rectangle_checksum`).
+        /// It lets a program read what its screen shows, so xterm refuses it by
+        /// default, and fux's panes leave it off; esctest reads the screen so.
+        RectangleChecksums,
+        /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
+        /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
+        /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
+        /// r Pt ST`, `Pt` the sequence that sets it, such as `0;1;4:3m`.
+        /// Another request is answered as invalid, `DCS 0 $ r ST`, and a cursor
+        /// shape left to the terminal (DECSCUSR 0, the default) not at all. A
+        /// request's first bytes are kept to tell it, nothing more. Programs
+        /// learn from the pen what the terminal draws: neovim sets a curly
+        /// underline and asks, and draws its diagnostics curly only if `4:3`
+        /// comes back. Off, DECRQSS is ignored, as every other DCS.
+        SettingReports,
+        /// Keep the colours a program sets and answer its queries of them, as
+        /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
+        /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119); `palette.rs`
+        /// says how. Read with [`Screen::palette_color`] and
+        /// [`Screen::dynamic_color`]. OSC payloads are buffered, up to
+        /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
+        /// queries are events, with [`Feature::Events`].
+        Palette,
+    }
 }
 
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The

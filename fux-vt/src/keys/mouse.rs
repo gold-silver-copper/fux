@@ -12,27 +12,31 @@ use crate::keys::Modifiers;
 use crate::{MouseProtocolEncoding, MouseProtocolMode};
 use std::io::Write;
 
-/// A mouse button.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseButton {
-    /// The left button (button 1).
-    Left,
-    /// The middle button (button 2).
-    Middle,
-    /// The right button (button 3).
-    Right,
-    /// The wheel turned up (button 4).
-    WheelUp,
-    /// The wheel turned down (button 5).
-    WheelDown,
-    /// The wheel tilted left (button 6).
-    WheelLeft,
-    /// The wheel tilted right (button 7).
-    WheelRight,
-    /// The back button (button 8).
-    Back,
-    /// The forward button (button 9).
-    Forward,
+closed! {
+    /// A mouse button.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum MouseButton {
+        /// The button's part of a report's button code.
+        fn code(self) -> u32;
+        /// The left button (button 1).
+        Left => 0,
+        /// The middle button (button 2).
+        Middle => 1,
+        /// The right button (button 3).
+        Right => 2,
+        /// The wheel turned up (button 4).
+        WheelUp => 64,
+        /// The wheel turned down (button 5).
+        WheelDown => 65,
+        /// The wheel tilted left (button 6).
+        WheelLeft => 66,
+        /// The wheel tilted right (button 7).
+        WheelRight => 67,
+        /// The back button (button 8).
+        Back => 128,
+        /// The forward button (button 9).
+        Forward => 129,
+    }
 }
 
 impl MouseButton {
@@ -45,34 +49,6 @@ impl MouseButton {
                 | MouseButton::WheelLeft
                 | MouseButton::WheelRight
         )
-    }
-
-    /// Every button.
-    pub(crate) const ALL: [MouseButton; 9] = [
-        MouseButton::Left,
-        MouseButton::Middle,
-        MouseButton::Right,
-        MouseButton::WheelUp,
-        MouseButton::WheelDown,
-        MouseButton::WheelLeft,
-        MouseButton::WheelRight,
-        MouseButton::Back,
-        MouseButton::Forward,
-    ];
-
-    /// The button's part of a report's button code.
-    fn code(self) -> u32 {
-        match self {
-            MouseButton::Left => 0,
-            MouseButton::Middle => 1,
-            MouseButton::Right => 2,
-            MouseButton::WheelUp => 64,
-            MouseButton::WheelDown => 65,
-            MouseButton::WheelLeft => 66,
-            MouseButton::WheelRight => 67,
-            MouseButton::Back => 128,
-            MouseButton::Forward => 129,
-        }
     }
 
     /// The button a report's button code names, its modifier and motion
