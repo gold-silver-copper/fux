@@ -573,6 +573,9 @@ fn one<T: Copy + std::fmt::Display>(
     }
 }
 
+/// A JSON object's fields, in order.
+type Fields<'a> = Vec<(&'static str, Json<'a>)>;
+
 /// A command that failed, told with its code: a usage error's
 /// status is 2.
 fn failure(error: Error, origin: &Origin) -> Reply {
@@ -2993,7 +2996,7 @@ impl Session {
     }
 
     /// A pane's state, as `ls json` has it.
-    fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Json<'a> {
+    fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Fields<'a> {
         let mut fields = vec![
             ("id", Json::str(p.id.to_string())),
             ("name", Json::str(p.name.as_str())),
@@ -3008,53 +3011,47 @@ impl Session {
             ),
         ];
         fields.extend(crate::capture::state(p, now, self.copying(p.id)));
-        Json::Object(fields)
+        fields
     }
 
     /// A tab and its panes, as `ls json` has them.
-    fn tab_json<'a>(&'a self, t: &'a Tab, now: Instant) -> Json<'a> {
+    fn tab_json<'a>(&'a self, t: &'a Tab, now: Instant) -> Fields<'a> {
         let panes = (t.root().map(Tree::panes).unwrap_or_default().into_iter())
             .filter_map(|id| self.panes.get(&id))
-            .map(|p| self.pane_json(p, now))
+            .map(|p| Json::Object(self.pane_json(p, now)))
             .collect();
-        Json::Object(vec![
+        vec![
             ("id", Json::str(t.id.to_string())),
             ("name", Json::str(t.name.as_str())),
             ("panes", Json::Array(panes)),
-        ])
+        ]
     }
 
     /// A workspace, its tabs and their panes, as `ls json` has them.
-    fn ws_json<'a>(&'a self, ws: &'a Workspace, now: Instant) -> Json<'a> {
-        Json::Object(vec![
+    fn ws_json<'a>(&'a self, ws: &'a Workspace, now: Instant) -> Fields<'a> {
+        let tabs = ws
+            .tabs()
+            .iter()
+            .map(|t| Json::Object(self.tab_json(t, now)));
+        vec![
             ("id", Json::str(ws.id.to_string())),
             ("name", Json::str(ws.name.as_str())),
-            (
-                "tabs",
-                Json::Array(ws.tabs().iter().map(|t| self.tab_json(t, now)).collect()),
-            ),
-        ])
+            ("tabs", Json::Array(tabs.collect())),
+        ]
     }
 
     /// `info` and `get`: one pane, tab or workspace, as JSON, or one field
     /// of its JSON (`get`), a string's text as it is.
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
-        let object = match target {
+        let mut fields = match self.there(target)? {
             AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
             AnyRef::Tab(id) => self.tab(id).map(|t| self.tab_json(t, now)),
             AnyRef::Workspace(id) => self.workspace(id).map(|w| self.ws_json(w, now)),
-        };
-        let object = object.ok_or(match target {
-            AnyRef::Pane(id) => Error::NoPane(id),
-            AnyRef::Tab(id) => Error::NoTab(id),
-            AnyRef::Workspace(id) => Error::NoWorkspace(id),
-        })?;
+        }
+        .unwrap_or_default();
         let Some(field) = get else {
-            return Ok(format!("{}\n", object.render()).into());
-        };
-        let Json::Object(mut fields) = object else {
-            return Ok(Reply::default());
+            return Ok(format!("{}\n", Json::Object(fields).render()).into());
         };
         // A tab of one pane (`run`'s) stands for its pane, whose
         // fields it gives too.
@@ -3063,7 +3060,7 @@ impl Session {
             AnyRef::Pane(_) | AnyRef::Workspace(_) => None,
         };
         let pane = single.and_then(|p| p.first().and_then(|id| self.panes.get(id)));
-        if let Some(Json::Object(more)) = pane.map(|p| self.pane_json(p, now)) {
+        if let Some(more) = pane.map(|p| self.pane_json(p, now)) {
             fields.extend(
                 more.into_iter()
                     .filter(|(name, _)| !["id", "name"].contains(name)),
@@ -3105,7 +3102,7 @@ impl Session {
         let now = Instant::now();
         let workspaces = (self.workspaces.iter())
             .filter(|ws| only.is_none_or(|id| id == ws.id))
-            .map(|ws| self.ws_json(ws, now))
+            .map(|ws| Json::Object(self.ws_json(ws, now)))
             .collect();
         let opt = |v: Option<String>| v.map_or(Json::Null, Json::str);
         let clients = self
@@ -3850,10 +3847,7 @@ mod tests {
     fn the_json_help_names_every_pane_field() -> Result<(), Box<dyn std::error::Error>> {
         let (s, _) = attached(4, 30)?;
         let pane = s.panes.values().next().ok_or("no pane")?;
-        let Json::Object(fields) = s.pane_json(pane, Instant::now()) else {
-            return Err("a pane's JSON is an object".into());
-        };
-        for (name, _) in fields {
+        for (name, _) in s.pane_json(pane, Instant::now()) {
             let named = crate::help::JSON.contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }
