@@ -259,43 +259,6 @@ enum Protection {
     Iso,
 }
 
-/// The most flag sets a kitty keyboard stack holds; a push onto a full stack
-/// drops the oldest, as kitty does, so a runaway program cannot grow it.
-const KEYBOARD_STACK_LIMIT: usize = 32;
-
-/// One screen's kitty keyboard protocol flag stack. The primary and
-/// alternate screens each keep one, so a program that pushes flags on the
-/// alternate screen and exits without popping them leaves the shell's alone.
-#[derive(Clone, Debug, Default)]
-struct KeyboardStack(VecDeque<u8>);
-
-impl KeyboardStack {
-    fn top(&self) -> u8 {
-        self.0.back().copied().unwrap_or(0)
-    }
-    fn push(&mut self, flags: u8) {
-        if self.0.len() >= KEYBOARD_STACK_LIMIT {
-            self.0.pop_front();
-        }
-        self.0.push_back(flags);
-    }
-    fn pop(&mut self, count: u16) {
-        self.0
-            .truncate(self.0.len().saturating_sub(usize::from(count)));
-    }
-    /// `CSI = flags ; mode u`: mode 1 (the default) replaces the top's
-    /// flags, 2 adds to them and 3 removes from them; an empty stack's are 0.
-    fn set(&mut self, flags: u8, mode: u16) {
-        let top = self.top();
-        self.pop(1);
-        self.push(match mode {
-            2 => top | flags,
-            3 => top & !flags,
-            _ => flags,
-        });
-    }
-}
-
 /// Terminal state. Reading a window never changes where subsequent output lands.
 #[derive(Clone, Debug)]
 pub struct Screen {
@@ -350,8 +313,6 @@ pub struct Screen {
     cursor_shape: u16,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
-    primary_keyboard: KeyboardStack,
-    alternate_keyboard: KeyboardStack,
     modify_other_keys: Option<u8>,
     /// The cell the last glyph was printed in, and the state of its
     /// grapheme cluster, while the cursor has not moved nor the row been
@@ -479,8 +440,6 @@ impl Screen {
             cursor_shape: 0,
             mouse: MouseProtocolMode::None,
             encoding: MouseProtocolEncoding::Default,
-            primary_keyboard: KeyboardStack::default(),
-            alternate_keyboard: KeyboardStack::default(),
             modify_other_keys: None,
             last_print: None,
             repeat: None,
@@ -643,27 +602,13 @@ impl Screen {
     /// screen's stack, 0 (legacy key reporting) when it is empty. Always 0
     /// without [`Feature::KittyKeyboard`].
     pub fn kitty_keyboard_flags(&self) -> u8 {
-        self.keyboard().top()
+        self.grid().keyboard.top()
     }
     /// The xterm modifyOtherKeys level set by `CSI > 4 ; Pv m`, `None` when
     /// it is off (`Pv` 0 or absent). Always `None` without
     /// [`Feature::KittyKeyboard`].
     pub fn modify_other_keys(&self) -> Option<u8> {
         self.modify_other_keys
-    }
-    fn keyboard(&self) -> &KeyboardStack {
-        if self.alternate_active {
-            &self.alternate_keyboard
-        } else {
-            &self.primary_keyboard
-        }
-    }
-    fn keyboard_mut(&mut self) -> &mut KeyboardStack {
-        if self.alternate_active {
-            &mut self.alternate_keyboard
-        } else {
-            &mut self.primary_keyboard
-        }
     }
     /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
     /// is counted as CUP addresses it: from the top margin with DECOM set
@@ -967,9 +912,12 @@ impl Screen {
             self.primary.resized(size, &mut next, version)?
         };
         let mut alternate = self.alternate.resized(size, &mut next, version)?;
-        // The links' tables go along, as the cells keep their links.
+        // The links' tables go along, as the cells keep their links, and
+        // the keyboard stacks.
         primary.links = std::mem::take(&mut self.primary.links);
         alternate.links = std::mem::take(&mut self.alternate.links);
+        primary.keyboard = std::mem::take(&mut self.primary.keyboard);
+        alternate.keyboard = std::mem::take(&mut self.alternate.keyboard);
         self.primary = primary;
         self.alternate = alternate;
         self.next_id = next;
@@ -1754,8 +1702,6 @@ impl Screen {
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
                 self.encoding = MouseProtocolEncoding::Default;
-                self.primary_keyboard = KeyboardStack::default();
-                self.alternate_keyboard = KeyboardStack::default();
                 self.modify_other_keys = None;
                 self.structural = self.version;
             }
@@ -1931,8 +1877,9 @@ impl Screen {
     /// margins and the screen's saved cursor stay, and a pending wrap ends,
     /// as ED's does (DEC STD 070, Appendix D.6.1).
     fn clear_alternate(&mut self, pen: Attributes) -> Result<(), Error> {
-        let g = &self.alternate;
+        let g = &mut self.alternate;
         let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
+        let keyboard = std::mem::take(&mut g.keyboard);
         self.alternate.clear(&mut self.next_id, self.version)?;
         let blank = pen.erased();
         let blank = match blank.inline_style() {
@@ -1940,7 +1887,7 @@ impl Screen {
             None => self.alternate.style(blank),
         };
         let g = &mut self.alternate;
-        (g.cursor, g.saved, g.lines) = (cursor, saved, lines);
+        (g.cursor, g.saved, g.lines, g.keyboard) = (cursor, saved, lines, keyboard);
         g.set_columns(columns);
         g.cursor.pending_wrap = false;
         if blank != 0 {
@@ -2259,11 +2206,11 @@ impl Screen {
         // they saturate rather than being refused.
         let flags = |n: u16| u8::try_from(n).unwrap_or(u8::MAX);
         match (intermediates, byte) {
-            (b">", b'u') => self.keyboard_mut().push(flags(p.first(0, 0))),
-            (b"<", b'u') => self.keyboard_mut().pop(p.first(0, 1)),
+            (b">", b'u') => self.grid_mut().keyboard.push(flags(p.first(0, 0))),
+            (b"<", b'u') => self.grid_mut().keyboard.pop(p.first(0, 1)),
             (b"=", b'u') => {
                 let (set, mode) = (flags(p.first(0, 0)), p.first(1, 1));
-                self.keyboard_mut().set(set, mode);
+                self.grid_mut().keyboard.set(set, mode);
             }
             (b"?", b'u') => {
                 let flags = self.kitty_keyboard_flags();

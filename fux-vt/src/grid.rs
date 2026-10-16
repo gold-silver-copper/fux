@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::hash::Hasher;
 use std::ops::Range;
 use std::sync::Arc;
@@ -238,6 +239,43 @@ closed! {
     }
 }
 
+/// The most flag sets a kitty keyboard stack holds; a push onto a full stack
+/// drops the oldest, as kitty does, so a runaway program cannot grow it.
+const KEYBOARD_STACK_LIMIT: usize = 32;
+
+/// One screen's kitty keyboard protocol flag stack. The primary and
+/// alternate screens each keep one, so a program that pushes flags on the
+/// alternate screen and exits without popping them leaves the shell's alone.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct KeyboardStack(VecDeque<u8>);
+
+impl KeyboardStack {
+    pub(crate) fn top(&self) -> u8 {
+        self.0.back().copied().unwrap_or(0)
+    }
+    pub(crate) fn push(&mut self, flags: u8) {
+        if self.0.len() >= KEYBOARD_STACK_LIMIT {
+            self.0.pop_front();
+        }
+        self.0.push_back(flags);
+    }
+    pub(crate) fn pop(&mut self, count: u16) {
+        self.0
+            .truncate(self.0.len().saturating_sub(usize::from(count)));
+    }
+    /// `CSI = flags ; mode u`: mode 1 (the default) replaces the top's
+    /// flags, 2 adds to them and 3 removes from them; an empty stack's are 0.
+    pub(crate) fn set(&mut self, flags: u8, mode: u16) {
+        let top = self.top();
+        self.pop(1);
+        self.push(match mode {
+            2 => top | flags,
+            3 => top & !flags,
+            _ => flags,
+        });
+    }
+}
+
 /// A grid: its screen, rows of `cols` cells in slots, `order` saying which
 /// slot each row is in; and its history (`history.rs`), the rows scrolled
 /// off the screen's top, each kept as the cells it uses. A row's place
@@ -280,6 +318,8 @@ pub(crate) struct Grid {
     /// Whether its screen's cells are yet to be made (`Grid::unmade`):
     /// every row is blank, and `make` makes them.
     unmade: bool,
+    /// The kitty keyboard flags the program on this screen pushed.
+    pub keyboard: KeyboardStack,
 }
 
 /// Which way a scroll moves rows: up, the rows leaving the top going into
@@ -395,6 +435,7 @@ impl Grid {
             columns: size.columns(),
             lr: false,
             unmade: false,
+            keyboard: KeyboardStack::default(),
         }
     }
 
@@ -1676,7 +1717,8 @@ impl Grid {
     }
 
     /// Blanks every row of a recyclable grid and gives each a new identity,
-    /// top to bottom; the cursors, origin and margins are reset.
+    /// top to bottom; the cursors, origin, margins and keyboard stack are
+    /// reset.
     fn renew(&mut self, next: &mut u64, version: u64) {
         for index in 0..self.order.len() {
             let id = next_id(next);
@@ -1690,6 +1732,7 @@ impl Grid {
         self.recent = [(Attributes::default(), 0); RECENT];
         self.cursor = Cursor::default();
         self.saved = Cursor::default();
+        self.keyboard = KeyboardStack::default();
         self.reset_margins();
     }
     /// Whether every slot's cells from `used` to its width are blank, as
