@@ -654,7 +654,8 @@ impl Saved {
             return;
         }
         self.pending = false;
-        let text = session.saved_layout();
+        // Everything, as it is now, its ids kept.
+        let text = session.dump_layout(None, true);
         if text == self.written {
             return;
         }
