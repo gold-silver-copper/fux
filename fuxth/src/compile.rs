@@ -16,164 +16,74 @@ use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-/// The words fuxth itself gives: its core. Everything else is the
-/// standard library, written in fuxth.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Builtin {
-    Drop,
-    Pick,
-    Roll,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Lt,
-    Eq,
-    Len,
-    At,
-    Slice,
-    Concat,
-    Push,
-    Put,
-    Code,
-    Char,
-    Kind,
-    String,
-    Print,
-    Fail,
+/// Expands `Variant "name" takes "effect" "about", ...` to the enum
+/// `Builtin` of those variants, `Builtin::ALL` in that order, and `name`,
+/// `takes`, `effect` and `about`, each a match giving that variant's column.
+macro_rules! builtins {
+    ($($variant:ident $name:literal $takes:literal $effect:literal $about:literal,)*) => {
+        /// The words fuxth itself gives: its core. Everything else is the
+        /// standard library, written in fuxth.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Builtin {
+            $($variant,)*
+        }
+
+        impl Builtin {
+            pub const ALL: [Builtin; [$($name),*].len()] = [$(Builtin::$variant),*];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $name,)*
+                }
+            }
+
+            /// How many values it takes: `pick` and `roll` take a count,
+            /// then as many values as it says (the machine checks those).
+            pub fn takes(self) -> usize {
+                match self {
+                    $(Builtin::$variant => $takes,)*
+                }
+            }
+
+            /// What it does to the stack, as help shows it.
+            pub fn effect(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $effect,)*
+                }
+            }
+
+            /// What it does, in a line, as help says it.
+            pub fn about(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $about,)*
+                }
+            }
+        }
+    };
 }
 
-impl Builtin {
-    pub const ALL: [Builtin; 21] = [
-        Builtin::Drop,
-        Builtin::Pick,
-        Builtin::Roll,
-        Builtin::Add,
-        Builtin::Sub,
-        Builtin::Mul,
-        Builtin::Div,
-        Builtin::Lt,
-        Builtin::Eq,
-        Builtin::Len,
-        Builtin::At,
-        Builtin::Slice,
-        Builtin::Concat,
-        Builtin::Push,
-        Builtin::Put,
-        Builtin::Code,
-        Builtin::Char,
-        Builtin::Kind,
-        Builtin::String,
-        Builtin::Print,
-        Builtin::Fail,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Builtin::Drop => "drop",
-            Builtin::Pick => "pick",
-            Builtin::Roll => "roll",
-            Builtin::Add => "add",
-            Builtin::Sub => "sub",
-            Builtin::Mul => "mul",
-            Builtin::Div => "div",
-            Builtin::Lt => "lt",
-            Builtin::Eq => "eq",
-            Builtin::Len => "len",
-            Builtin::At => "at",
-            Builtin::Slice => "slice",
-            Builtin::Concat => "concat",
-            Builtin::Push => "push",
-            Builtin::Put => "put",
-            Builtin::Code => "code",
-            Builtin::Char => "char",
-            Builtin::Kind => "kind",
-            Builtin::String => "string",
-            Builtin::Print => "print",
-            Builtin::Fail => "fail",
-        }
-    }
-
-    /// What it does to the stack, as help shows it.
-    pub fn effect(self) -> &'static str {
-        match self {
-            Builtin::Drop => "x --",
-            Builtin::Pick => "xn … x0 n -- xn … x0 xn",
-            Builtin::Roll => "xn … x0 n -- xn-1 … x0 xn",
-            Builtin::Add => "n m -- n+m",
-            Builtin::Sub => "n m -- n-m",
-            Builtin::Mul => "n m -- n*m",
-            Builtin::Div => "n m -- n/m",
-            Builtin::Lt => "a b -- a<b",
-            Builtin::Eq => "a b -- a=b",
-            Builtin::Len => "seq -- n",
-            Builtin::At => "seq i -- x",
-            Builtin::Slice => "seq from to -- seq",
-            Builtin::Concat => "list -- seq",
-            Builtin::Push => "seq x -- seq",
-            Builtin::Put => "seq i x -- seq",
-            Builtin::Code => "c -- n",
-            Builtin::Char => "n -- c",
-            Builtin::Kind => "x -- name",
-            Builtin::String => "x -- s",
-            Builtin::Print => "x --",
-            Builtin::Fail => "x --",
-        }
-    }
-
-    /// What it does, in a line, as help says it.
-    pub fn about(self) -> &'static str {
-        match self {
-            Builtin::Drop => "the top value dropped",
-            Builtin::Pick => "a copy of the value n under the top (0 pick copies the top)",
-            Builtin::Roll => "the value n under the top moved to the top (1 roll swaps)",
-            Builtin::Add | Builtin::Sub | Builtin::Mul => "integer arithmetic, checked",
-            Builtin::Div => "integer division, checked; it truncates toward zero",
-            Builtin::Lt => "whether a comes before b: two integers, two strings or two lists",
-            Builtin::Eq => "whether two values are the same, of one kind",
-            Builtin::Len => "how many elements a string or list has",
-            Builtin::At => "element i, from 0 (of a string, a one-character string)",
-            Builtin::Slice => "the elements from `from` up to before `to`",
-            Builtin::Concat => {
-                "a list of strings joined into one string, or a list of lists into one list"
-            }
-            Builtin::Push => "x added at the end (to a string, x is a string)",
-            Builtin::Put => "element i replaced by x (in a string, by a string)",
-            Builtin::Code => "the character code of a one-character string",
-            Builtin::Char => "the one-character string with code n",
-            Builtin::Kind => "integer, boolean, string, list, or the host's kind",
-            Builtin::String => "x as text, as print shows it",
-            Builtin::Print => "print x now, a line",
-            Builtin::Fail => "stop the program, with x as the reason",
-        }
-    }
-
-    /// How many values it takes: `pick` and `roll` take a count, then as
-    /// many values as it says (the machine checks those).
-    pub fn takes(self) -> usize {
-        match self {
-            Builtin::Drop
-            | Builtin::Pick
-            | Builtin::Roll
-            | Builtin::Len
-            | Builtin::Concat
-            | Builtin::Code
-            | Builtin::Char
-            | Builtin::Kind
-            | Builtin::String
-            | Builtin::Print
-            | Builtin::Fail => 1,
-            Builtin::Add
-            | Builtin::Sub
-            | Builtin::Mul
-            | Builtin::Div
-            | Builtin::Lt
-            | Builtin::Eq
-            | Builtin::At
-            | Builtin::Push => 2,
-            Builtin::Slice | Builtin::Put => 3,
-        }
-    }
+builtins! {
+    Drop "drop" 1 "x --" "the top value dropped",
+    Pick "pick" 1 "xn … x0 n -- xn … x0 xn" "a copy of the value n under the top (0 pick copies the top)",
+    Roll "roll" 1 "xn … x0 n -- xn-1 … x0 xn" "the value n under the top moved to the top (1 roll swaps)",
+    Add "add" 2 "n m -- n+m" "integer arithmetic, checked",
+    Sub "sub" 2 "n m -- n-m" "integer arithmetic, checked",
+    Mul "mul" 2 "n m -- n*m" "integer arithmetic, checked",
+    Div "div" 2 "n m -- n/m" "integer division, checked; it truncates toward zero",
+    Lt "lt" 2 "a b -- a<b" "whether a comes before b: two integers, two strings or two lists",
+    Eq "eq" 2 "a b -- a=b" "whether two values are the same, of one kind",
+    Len "len" 1 "seq -- n" "how many elements a string or list has",
+    At "at" 2 "seq i -- x" "element i, from 0 (of a string, a one-character string)",
+    Slice "slice" 3 "seq from to -- seq" "the elements from `from` up to before `to`",
+    Concat "concat" 1 "list -- seq" "a list of strings joined into one string, or a list of lists into one list",
+    Push "push" 2 "seq x -- seq" "x added at the end (to a string, x is a string)",
+    Put "put" 3 "seq i x -- seq" "element i replaced by x (in a string, by a string)",
+    Code "code" 1 "c -- n" "the character code of a one-character string",
+    Char "char" 1 "n -- c" "the one-character string with code n",
+    Kind "kind" 1 "x -- name" "integer, boolean, string, list, or the host's kind",
+    String "string" 1 "x -- s" "x as text, as print shows it",
+    Print "print" 1 "x --" "print x now, a line",
+    Fail "fail" 1 "x --" "stop the program, with x as the reason",
 }
 
 /// The words that read the token after them, or shape the program: no
