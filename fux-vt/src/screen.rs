@@ -2112,14 +2112,10 @@ impl Screen {
                 let _ = write!(out, "{shape} q");
             }
             b"r" => {
+                // Exact: the margins are rows of a screen a u16 counts.
                 let (top, bottom) = self.scroll_region();
-                let (top, bottom) = (u32::from(top), u32::from(bottom));
-                let _ = write!(
-                    out,
-                    "{};{}r",
-                    top.saturating_add(1),
-                    bottom.saturating_add(1)
-                );
+                let (top, bottom) = (top.saturating_add(1), bottom.saturating_add(1));
+                let _ = write!(out, "{top};{bottom}r");
             }
             _ => return Setting::Unknown,
         }
