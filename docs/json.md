@@ -180,7 +180,7 @@ the file, line and word it came from. Its exit status is 1, a usage error's
 
 ```json
 {"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.23.0","protocol":10,
- "server_version":"0.23.0","server_protocol":9,"compatible":true}
+ "server_version":"0.23.0","server_protocol":10,"compatible":true}
 [{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.23.0","compatible":true}]
 ```
 

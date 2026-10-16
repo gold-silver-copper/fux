@@ -102,6 +102,7 @@ impl SocketPath {
 /// or neither.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Choice {
+    /// Neither: `FUX_SOCKET`, else `server.sock`.
     #[default]
     Default,
     /// A socket's path (`socket`).

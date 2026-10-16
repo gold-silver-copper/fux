@@ -2,6 +2,9 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
+/// A JSON object's fields, in order.
+pub type Fields<'a> = Vec<(&'static str, Json<'a>)>;
+
 /// A value to write, its strings borrowed from what it describes where they
 /// can be.
 #[derive(Clone, Debug, PartialEq)]
@@ -11,7 +14,7 @@ pub enum Json<'a> {
     Number(i64),
     String(Cow<'a, str>),
     Array(Vec<Json<'a>>),
-    Object(Vec<(&'static str, Json<'a>)>),
+    Object(Fields<'a>),
     /// JSON written already (an answer's), as it is.
     Raw(Cow<'a, str>),
 }

@@ -963,7 +963,7 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 
 /// What a saved session's requests go to: those that make and shape panes,
 /// tabs and workspaces, and find them; never what stops the server, grants,
-/// sets, or reaches a client, whatever the file says.
+/// sets, streams events or reaches a client, whatever the file says.
 struct Layout<'a>(&'a mut Server);
 
 impl Asks for Layout<'_> {
@@ -975,6 +975,9 @@ impl Asks for Layout<'_> {
             C::Revoke { .. } => Some("revoke"),
             C::Set { .. } => Some("set"),
             C::Client { .. } => Some("a client's words"),
+            // A stream that never ends would hold the restore, and every
+            // request waiting for it, for good.
+            C::Events { .. } => Some("events"),
             C::Ls { .. }
             | C::NewWorkspace { .. }
             | C::NewTab { .. }
@@ -992,7 +995,6 @@ impl Asks for Layout<'_> {
             | C::SwapPane { .. }
             | C::ResizePane { .. }
             | C::SendKeys { .. }
-            | C::Events { .. }
             | C::DumpLayout { .. }
             | C::Log { .. }
             | C::ClearHistory { .. }

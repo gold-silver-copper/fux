@@ -267,9 +267,9 @@ wire_enum!(Sibling, "sibling" {
     1 => Previous,
 });
 
-/// `closed_wire!(Ty "what", …)` expands to `impl Wire for Ty`, for a
-/// fieldless enum whose `ALL` lists every variant: a variant's tag is its
-/// place there, written and read alike. No variant can be missed, nor two
+/// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
+/// a fieldless enum whose `ALL` lists every variant: a variant's one-byte
+/// tag is its place there, written and read alike. No variant can be missed, nor two
 /// share a tag; reordering `ALL` (fux-vt's, fuxix's) changes the wire.
 macro_rules! closed_wire {
     ($($ty:ty, $what:literal);* $(;)?) => {$(

@@ -4,8 +4,9 @@
 
 use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 
-/// Expands `/// doc, Variant (private, n) [if Feature] => kind, ...` to the
-/// enum `Mode` of those variants, `Mode::of` (the mode SM and RM, or with
+/// Expands `/// doc pub enum Mode { /// doc Variant (private, n) if Feature
+/// => kind, ... }` (`if Feature` optional) to that enum, `Mode::of(n,
+/// private, options)` (the mode SM and RM, or with
 /// `private` DECSET and DECRST, name by `n`; with `if Feature` only while
 /// `options` have that feature) and `Mode::kind` (each one's kind).
 macro_rules! modes {

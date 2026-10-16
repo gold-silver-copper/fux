@@ -76,12 +76,11 @@ impl FromStr for ClientId {
     }
 }
 
-/// The last ID of each kind handed out, from 1. IDs are never reused, so
-/// one that would wrap round is refused. A copy taken for something being
-/// made is committed back once it is made, so that a failure part way uses
-/// none up.
-/// The last id of each kind given out, and the next asked for (`id`):
-/// ids count up, and none is given twice.
+/// The last id of each kind given out, from 1, and the next one asked for
+/// (`want`): ids count up and are not given twice, except to a restore,
+/// whose ids they were. One that would wrap, or jump more than `MAX_JUMP`
+/// ahead, is refused. A copy taken for something being made is committed
+/// back once it is made, so that a failure part way uses none up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Ids {
     pane: u32,

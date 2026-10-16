@@ -8,7 +8,7 @@ use crate::command::{
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
 use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
-use crate::json::Json;
+use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::pane::{InputQueue, Pane, Process, Runs, Typed, basename};
@@ -122,8 +122,8 @@ type Picked = (WsId, Option<TabId>, Option<PaneId>);
 enum Here<'a> {
     /// An attached client, where it is.
     Client(ClientId, Place),
-    /// The CLI: its caller's pane, where that is if it is a pane, and its
-    /// working directory.
+    /// The CLI: its caller's pane (if it gave one), where that pane is if
+    /// it is still there (its `pane` the same), and its working directory.
     Cli(Option<PaneId>, Option<Place>, Option<&'a Path>),
 }
 
@@ -571,9 +571,6 @@ fn joined<T: std::fmt::Display>(items: impl IntoIterator<Item = T>, between: &st
     let items: Vec<String> = items.into_iter().map(|item| item.to_string()).collect();
     items.join(between)
 }
-
-/// A JSON object's fields, in order.
-type Fields<'a> = Vec<(&'static str, Json<'a>)>;
 
 /// A command that failed, told with its code: a usage error's
 /// status is 2.
