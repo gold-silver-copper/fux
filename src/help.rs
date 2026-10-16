@@ -149,14 +149,8 @@ pub fn explain(name: &str) -> Option<String> {
             builtin.about()
         ));
     }
-    let (shape, about) = syntax(name)?;
+    let (shape, about) = fuxth::Parsing::named(name)?.syntax();
     Some(format!("{name}  {shape}: {about}\n"))
-}
-
-/// A word of the language's own syntax: how it is written, and what it
-/// does.
-pub(crate) fn syntax(name: &str) -> Option<(&'static str, &'static str)> {
-    fuxth::Parsing::named(name).map(fuxth::Parsing::syntax)
 }
 
 /// The words that build what a word takes, its options or its input: the

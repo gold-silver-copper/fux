@@ -101,7 +101,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", 2, "pane mouse -- [outcome]", "send a mouse event"),
-    word("Input", "signal", 2, "pane name -- [answer]", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH, to the pane's foreground; answers once it exits or settles"),
+    word("Input", "signal", 2, "pane name -- [answer]", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground; answers once it exits or settles"),
     // Reading
     word("Reading", "capture", 2, "pane opts -- capture", "the screen, as the options say"),
     word("Reading", "history", 2, "opts lines -- opts", "capture: lines of history first"),
@@ -238,7 +238,10 @@ pub fn usage(word: &str) -> Option<String> {
         Some(w) => w.effect,
         None => match library().or_else(core) {
             Some(effect) => effect,
-            None => return crate::help::syntax(word).map(|(shape, _)| format!("use: {shape}")),
+            None => {
+                let (shape, _) = fuxth::Parsing::named(word)?.syntax();
+                return Some(format!("use: {shape}"));
+            }
         },
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
@@ -1099,11 +1102,11 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let signal = string(name, &next()?)?;
                 let Some(signal) = fuxix::process::Signal::named(&signal) else {
+                    let all = fuxix::process::Signal::ALL.map(fuxix::process::Signal::name);
+                    let all = crate::words::listed(&all, "or");
                     return Err(fail(
                         Code::BadValue,
-                        format!(
-                            "signal: {signal:?} is not TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT, TSTP or WINCH"
-                        ),
+                        format!("signal: {signal:?} is not {all}"),
                     ));
                 };
                 // From a command line: answers once the program exited or settled.
@@ -1653,7 +1656,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), before, "a name given twice");
         for name in names {
-            assert!(!fuxth::PARSING.contains(&name), "{name}");
+            assert!(fuxth::Parsing::named(name).is_none(), "{name}");
             assert!(
                 fuxth::Builtin::ALL.iter().all(|b| b.name() != name),
                 "{name}"
@@ -1663,6 +1666,22 @@ mod tests {
                 "{name}: a character a shell treats specially"
             );
         }
+    }
+
+    /// `signal`'s help names every signal it takes.
+    #[test]
+    fn every_signal_is_told_of() {
+        let signal = WORDS.iter().find(|w| w.name == "signal");
+        let (named, _) = signal
+            .and_then(|w| w.about.split_once(','))
+            .unwrap_or_default();
+        let mut named: Vec<&str> = named.split_whitespace().collect();
+        let mut all = fuxix::process::Signal::ALL
+            .map(fuxix::process::Signal::name)
+            .to_vec();
+        named.sort_unstable();
+        all.sort_unstable();
+        assert_eq!(named, all);
     }
 
     /// `set`'s help and the README's table name every setting, in order.
