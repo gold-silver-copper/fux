@@ -105,18 +105,13 @@ fn bare(word: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
 }
 
-/// Quotes one word so that `split` reads it back unchanged.
+/// Quotes one word so that `split`, a shell and fuxth read it back unchanged.
 pub fn quote(word: &str) -> String {
     if bare(word) {
         word.to_owned()
     } else {
         format!("'{}'", word.replace('\'', "'\\''"))
     }
-}
-
-/// Words joined for display, each quoted as `split` would need.
-pub fn join(words: &[String]) -> String {
-    words.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ")
 }
 
 /// A command line for a shell to read as typed input, from an argv. Each
@@ -202,7 +197,8 @@ mod tests {
             assert_eq!(split(&quoted).ok(), Some(vec![word.to_owned()]), "{quoted}");
         }
         let argv: Vec<String> = ["grep", "a b", "it's"].map(String::from).to_vec();
-        assert_eq!(split(&join(&argv)).ok(), Some(argv));
+        let joined: Vec<String> = argv.iter().map(|w| quote(w)).collect();
+        assert_eq!(split(&joined.join(" ")).ok(), Some(argv));
     }
 
     #[test]

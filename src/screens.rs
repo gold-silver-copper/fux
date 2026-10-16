@@ -90,20 +90,6 @@ pub enum Effect {
 /// How far PageUp and PageDown move a list.
 const PAGE: usize = 10;
 
-/// A word as fuxth reads it back: bare if nothing in it is special, else
-/// in single quotes.
-pub fn quote(word: &str) -> String {
-    let bare = !word.is_empty()
-        && !word.starts_with('#')
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-    match bare {
-        true => word.to_owned(),
-        false => format!("'{}'", word.replace('\'', "'\\''")),
-    }
-}
-
 /// The words that push a handle to `target`: `str %3 pane`.
 pub fn naming(target: AnyRef<WsId>) -> String {
     format!("str {} {}", describe(target), target.kind().name())
@@ -425,7 +411,11 @@ impl Screen {
             LineAct::Submit => {
                 let text = prompt.line.text();
                 let code = match prompt.rename {
-                    Some(it) => Some(format!("{} str {} rename", naming(it), quote(&text))),
+                    Some(it) => Some(format!(
+                        "{} str {} rename",
+                        naming(it),
+                        crate::words::quote(&text)
+                    )),
                     None => Some(text).filter(|t| !t.trim().is_empty()),
                 };
                 std::iter::once(Effect::Send(Act::Hide))

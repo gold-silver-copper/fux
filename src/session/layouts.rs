@@ -242,7 +242,7 @@ fn asked(id: &str) -> impl Iterator<Item = String> {
 /// Appends a line of words, each quoted as fuxth's tokenizer reads it
 /// back.
 fn push(out: &mut String, line: &[String]) {
-    let words: Vec<String> = line.iter().map(|w| crate::screens::quote(w)).collect();
+    let words: Vec<String> = line.iter().map(|w| crate::words::quote(w)).collect();
     out.push_str(&words.join(" "));
     out.push('\n');
 }

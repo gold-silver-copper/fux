@@ -227,15 +227,13 @@ fn fail(code: &'static str, message: impl Into<String>) -> Failure {
 pub fn usage(word: &str) -> Option<String> {
     let library = || {
         let mut library = crate::help::library().into_iter();
-        Some(library.find(|(name, ..)| *name == word)?.1)
+        library
+            .find(|(name, ..)| *name == word)
+            .map(|(_, effect, ..)| effect)
     };
     let core = || {
-        Some(
-            fuxth::Builtin::ALL
-                .iter()
-                .find(|b| b.name() == word)?
-                .effect(),
-        )
+        let builtin = fuxth::Builtin::ALL.into_iter().find(|b| b.name() == word);
+        builtin.map(|b| b.effect())
     };
     // Fux's, the prelude's or library's, or the core's; else the
     // language's own syntax, said as it is written.
