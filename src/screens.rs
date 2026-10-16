@@ -79,8 +79,8 @@ pub struct Prompt {
     pub rename: Option<AnyRef<WsId>>,
 }
 
-/// What a key in a screen leads to: an action for the server, or fuxth to
-/// run as the client.
+/// What a key leads to, in a screen or through the bindings: an action for
+/// the server, or fuxth to run as the client.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Send(Act),

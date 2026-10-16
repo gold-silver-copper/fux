@@ -3962,7 +3962,7 @@ pub(crate) mod testing {
         pub(crate) fn inputs(&mut self, client: ClientId, inputs: Vec<crate::decode::Input>) {
             use crate::act::Act;
             use crate::decode::Input;
-            use crate::screens::{Effect, Screen};
+            use crate::screens::Screen;
             for input in inputs {
                 let Some(read_only) = self.views.get(&client).map(|v| v.read_only) else {
                     return;
@@ -3977,12 +3977,8 @@ pub(crate) mod testing {
                     }
                     Input::Key(stroke) => {
                         let keymap = self.test_keymap.clone();
-                        let steps = keys.held.press(&keymap, stroke, read_only);
-                        let effects = steps.into_iter().map(|step| match step {
-                            crate::keymap::Step::Send(act) => Effect::Send(act),
-                            crate::keymap::Step::Run(code) => Effect::Run(code),
-                        });
-                        self.effects(client, effects.collect());
+                        let effects = keys.held.press(&keymap, stroke, read_only);
+                        self.effects(client, effects);
                         continue;
                     }
                     Input::Reply(reply) => Act::Reply(reply),

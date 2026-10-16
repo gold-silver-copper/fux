@@ -5,7 +5,7 @@
 use crate::act::Act;
 use crate::decode::Input;
 use crate::door::Link;
-use crate::keymap::{Held, Keymap, Step};
+use crate::keymap::{Held, Keymap};
 use crate::keys::KeyPress;
 use crate::protocol::{
     Attach, AttachedFrame, Context, Decoder, Frame, Hello, Mismatch, PROTOCOL, Reply, Request,
@@ -767,19 +767,20 @@ impl Keyboard {
         if column && stroke.press == escape {
             self.stop(acts);
         }
-        if self.screen != Screen::None {
-            for effect in self.screen.key(stroke.press) {
-                match effect {
-                    Effect::Send(act) => acts.push(act),
-                    Effect::Run(code) => self.run(code),
-                }
-            }
-            return;
-        }
-        for step in self.held.press(&self.keymap, stroke, self.read_only) {
-            match step {
-                Step::Send(act) => acts.push(act),
-                Step::Run(code) => self.run(code),
+        let effects = if self.screen == Screen::None {
+            self.held.press(&self.keymap, stroke, self.read_only)
+        } else {
+            self.screen.key(stroke.press)
+        };
+        self.apply(effects, acts);
+    }
+
+    /// What a key or a paste led to: actions for the server, programs to run.
+    fn apply(&mut self, effects: Vec<Effect>, acts: &mut Vec<Act>) {
+        for effect in effects {
+            match effect {
+                Effect::Send(act) => acts.push(act),
+                Effect::Run(code) => self.run(code),
             }
         }
     }
@@ -804,12 +805,8 @@ impl Keyboard {
             | Input::Mouse(_)
                 if self.read_only => {}
             Input::Paste(text) if self.screen != Screen::None => {
-                for effect in self.screen.paste(&text) {
-                    match effect {
-                        Effect::Send(act) => acts.push(act),
-                        Effect::Run(code) => self.run(code),
-                    }
-                }
+                let effects = self.screen.paste(&text);
+                self.apply(effects, acts);
             }
             Input::Paste(text) => {
                 // A paste is the pane's: the column or a repeat mode ends.
