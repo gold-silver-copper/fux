@@ -55,7 +55,7 @@ impl MouseButton {
     /// bits aside; `None` for 3 (a release or motion with no button named)
     /// and for codes no button has.
     fn from_code(code: u32) -> Option<MouseButton> {
-        let code = code & !(SHIFT | ALT | CTRL | MOTION);
+        let code = code & !NOT_BUTTON;
         Self::ALL.into_iter().find(|button| button.code() == code)
     }
 }
@@ -88,11 +88,13 @@ pub struct MouseEvent {
     pub col: u16,
 }
 
-/// The modifier and motion bits of a report's button code.
-const SHIFT: u32 = 4;
-const ALT: u32 = 8;
-const CTRL: u32 = 16;
+/// Where a report's button code holds the modifiers' bits
+/// (`Modifiers::bits`): Shift 4, Alt 8, Ctrl 16.
+const MODIFIERS_AT: u32 = 2;
+/// The motion bit of a report's button code.
 const MOTION: u32 = 32;
+/// The bits of a report's button code that are not the button's.
+const NOT_BUTTON: u32 = 0b111 << MODIFIERS_AT | MOTION;
 /// The button code of a release in the encodings that do not name the
 /// button, and of motion with no button held.
 const NO_BUTTON: u32 = 3;
@@ -165,8 +167,7 @@ pub fn mouse_bytes(
         _ => NO_BUTTON,
     };
     if mode != MouseProtocolMode::Press {
-        // `SHIFT`, `ALT` and `CTRL`.
-        code |= u32::from(event.mods.bits()) << 2;
+        code |= u32::from(event.mods.bits()) << MODIFIERS_AT;
     }
     if event.action == MouseAction::Motion {
         code |= MOTION;
@@ -215,7 +216,7 @@ pub(crate) fn event(code: u32, x: u32, y: u32, sgr_release: bool) -> Option<Mous
     let col = u16::try_from(x.checked_sub(1)?).ok()?;
     let row = u16::try_from(y.checked_sub(1)?).ok()?;
     let button = MouseButton::from_code(code);
-    let unnamed = code & !(SHIFT | ALT | CTRL | MOTION) == NO_BUTTON;
+    let unnamed = code & !NOT_BUTTON == NO_BUTTON;
     if button.is_none() && !unnamed {
         return None;
     }
@@ -229,7 +230,7 @@ pub(crate) fn event(code: u32, x: u32, y: u32, sgr_release: bool) -> Option<Mous
     Some(MouseEvent {
         action,
         button,
-        mods: Modifiers::from_bits(code >> 2),
+        mods: Modifiers::from_bits(code >> MODIFIERS_AT),
         row,
         col,
     })
