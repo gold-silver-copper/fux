@@ -268,14 +268,15 @@ wire_enum!(Sibling, "sibling" {
 });
 
 /// `closed_wire!(Ty "what", …)` expands to `impl Wire for Ty`, for a
-/// fieldless enum whose `ALL` lists every variant in declaration order: a
-/// variant's tag is its place there. No variant can be missed, nor two share
-/// a tag; reordering the declaration (fux-vt's, fuxix's) changes the wire.
+/// fieldless enum whose `ALL` lists every variant: a variant's tag is its
+/// place there, written and read alike. No variant can be missed, nor two
+/// share a tag; reordering `ALL` (fux-vt's, fuxix's) changes the wire.
 macro_rules! closed_wire {
     ($($ty:ty, $what:literal);* $(;)?) => {$(
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
-                out.push(*self as u8);
+                let place = Self::ALL.iter().position(|v| v == self);
+                out.push(place.and_then(|p| u8::try_from(p).ok()).unwrap_or(u8::MAX));
             }
             fn get(r: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Error> {
                 let tag = <u8 as $crate::wire::Wire>::get(r)?;
@@ -445,3 +446,26 @@ wire_enum!(Command, "command" {
     31 => PasteBuffer { index, target },
     32 => Client { client, action },
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each variant of an enum `closed_wire!` writes reads back as itself,
+    /// and its tag is its place in `ALL`.
+    #[test]
+    fn closed_enums_go_on_the_wire_as_their_place() {
+        fn each<T: Wire + PartialEq + std::fmt::Debug + Copy>(all: &[T]) {
+            for (place, value) in all.iter().enumerate() {
+                let bytes = encode(value);
+                assert_eq!(bytes, [u8::try_from(place).unwrap_or(u8::MAX)], "{value:?}");
+                assert_eq!(T::get(&mut Reader::new(&bytes)).ok(), Some(*value));
+            }
+        }
+        each(&Direction::ALL);
+        each(&MouseButton::ALL);
+        each(&Signal::ALL);
+        each(&fux_vt::ModeStatus::ALL);
+        each(&crate::keys::colour::Scheme::ALL);
+    }
+}
