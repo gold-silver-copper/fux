@@ -6,54 +6,11 @@ use std::path::PathBuf;
 
 /// Why a setting is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
-    UnknownOption {
-        option: String,
-    },
-    NotANumber {
-        option: String,
-    },
-    OutOfRange {
-        option: String,
-        min: usize,
-        max: usize,
-    },
-    NotOnOff {
-        option: String,
-        value: String,
-    },
-    NoProgram,
-    /// A name `update-environment` is given that no variable has.
-    NotAVariable {
-        name: String,
-    },
-    Words(String),
-}
+pub struct Error(String);
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::UnknownOption { option } => write!(
-                f,
-                "no setting {option:?}; the settings are shell, history-bytes, wait-seconds, \
-                 journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks \
-                 and update-environment"
-            ),
-            Error::NotANumber { option } => write!(f, "{option}: not a number"),
-            Error::OutOfRange { option, min, max } => {
-                write!(f, "{option}: out of range, {min} to {max}")
-            }
-            Error::NotOnOff { option, value } => {
-                write!(f, "{option}: {value:?} is not on or off (true or false)")
-            }
-            Error::NoProgram => f.write_str("shell: a program is needed"),
-            Error::NotAVariable { name } => write!(
-                f,
-                "update-environment: {name:?} is no variable's name (letters, digits and _, \
-                 not first a digit)"
-            ),
-            Error::Words(why) => write!(f, "shell: {why}"),
-        }
+        f.write_str(&self.0)
     }
 }
 
@@ -157,32 +114,25 @@ impl Config {
     /// `true` or `false`), a command line for `shell`, names for
     /// `update-environment`.
     pub fn set(&mut self, option: &str, value: &str) -> Result<(), Error> {
-        let name = || option.to_owned();
+        let refused = |why: String| Error(format!("{option}: {why}"));
         let number = |min: usize, max: usize| -> Result<usize, Error> {
-            let n: i128 = value
-                .parse()
-                .map_err(|_| Error::NotANumber { option: name() })?;
+            let n: i128 = value.parse().map_err(|_| refused("not a number".into()))?;
             (usize::try_from(n).ok())
                 .filter(|n| (min..=max).contains(n))
-                .ok_or(Error::OutOfRange {
-                    option: name(),
-                    min,
-                    max,
-                })
+                .ok_or_else(|| refused(format!("out of range, {min} to {max}")))
         };
         let on = || match value {
             "on" | "true" => Ok(true),
             "off" | "false" => Ok(false),
-            other => Err(Error::NotOnOff {
-                option: name(),
-                value: other.to_owned(),
-            }),
+            other => Err(refused(format!(
+                "{other:?} is not on or off (true or false)"
+            ))),
         };
         match option {
             "shell" => {
-                let argv = words::split(value).map_err(|e| Error::Words(e.to_string()))?;
+                let argv = words::split(value).map_err(|e| refused(e.to_string()))?;
                 if argv.first().is_none_or(|p| p.is_empty()) {
-                    return Err(Error::NoProgram);
+                    return Err(refused("a program is needed".into()));
                 }
                 self.shell = argv;
             }
@@ -199,15 +149,19 @@ impl Config {
             "update-environment" => {
                 let names: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
                 if let Some(bad) = names.iter().find(|n| !crate::command::shell_name(n)) {
-                    return Err(Error::NotAVariable { name: bad.clone() });
+                    return Err(refused(format!(
+                        "{bad:?} is no variable's name (letters, digits and _, not first a digit)"
+                    )));
                 }
                 self.update_environment = names;
             }
             "buffers" => self.buffers = number(1, MAX_BUFFERS)?,
             other => {
-                return Err(Error::UnknownOption {
-                    option: other.to_owned(),
-                });
+                return Err(Error(format!(
+                    "no setting {other:?}; the settings are shell, history-bytes, wait-seconds, \
+                     journal-bytes, journal-total, clipboard, buffers, bell, titles, shell-marks \
+                     and update-environment"
+                )));
             }
         }
         Ok(())
