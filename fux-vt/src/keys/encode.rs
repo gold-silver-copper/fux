@@ -345,7 +345,7 @@ pub(crate) fn numbered_key(number: u8, last: char) -> Option<Key> {
 
 closed! {
     /// A key whose legacy bytes are a C0 control or DEL.
-    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) enum Control {
         /// Its byte unmodified, which is also its code in `CSI code u` and
         /// in modifyOtherKeys's `CSI 27 ; mods ; code ~`.
@@ -433,24 +433,14 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & SHIFT_BIT != 0);
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
     let state = Modifiers { shift, ..mods };
-    let (sym, code) = match key {
-        Key::Enter => (Sym::Return, Control::Enter.code().into()),
-        Key::Tab => (Sym::Tab, Control::Tab.code().into()),
-        Key::Escape => (Sym::Escape, Control::Escape.code().into()),
-        Key::Backspace if mods.ctrl => (Sym::BackSpace, CTRL_BACKSPACE.into()),
-        Key::Backspace => (Sym::Delete, Control::Backspace.code().into()),
-        Key::Char(c) => {
+    let (sym, code) = match Form::from(key) {
+        Form::Control(Control::Backspace) if mods.ctrl => (Sym::BackSpace, CTRL_BACKSPACE.into()),
+        Form::Control(control) => (Sym::Control(control), control.code().into()),
+        Form::Text(c) => {
             let c = if shift { c.to_ascii_uppercase() } else { c };
             (Sym::Char(c), u32::from(c))
         }
-        Key::Delete
-        | Key::Insert
-        | Key::Arrow(_)
-        | Key::Home
-        | Key::End
-        | Key::PageUp
-        | Key::PageDown
-        | Key::F(_) => return false,
+        Form::Numbered(..) | Form::Unnumbered(_) => return false,
     };
     if !modified(sym, state, level) {
         return false;
@@ -467,17 +457,15 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     true
 }
 
-/// An ordinary key as xterm's `input.c` sees it: by its keysym. Backspace
-/// is `BackSpace` with Ctrl and `Delete` without, as xterm's backarrow
-/// toggle (`IsBackarrowToggle`) makes it when the key sends DEL.
+/// An ordinary key as xterm's `input.c` sees it: by its keysym, a control
+/// key's being `Return`, `Tab`, `Escape` and, for Backspace, `Delete`.
+/// Backspace is `BackSpace` with Ctrl, as xterm's backarrow toggle
+/// (`IsBackarrowToggle`) makes it when the key sends DEL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sym {
     Char(char),
-    Return,
-    Tab,
-    Escape,
+    Control(Control),
     BackSpace,
-    Delete,
 }
 
 impl Sym {
@@ -502,7 +490,7 @@ impl Sym {
                 ctrl && matches!(c, '@'..='~' | ' ' | '2'..='8' | '/')
                     || matches!(c, '\0'..='\u{1f}' | '\u{7f}')
             }
-            Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => true,
+            Sym::Control(_) | Sym::BackSpace => true,
         }
     }
 }
@@ -518,24 +506,26 @@ fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
     let OtherKeys::Usual = level else {
         return match sym {
             Sym::BackSpace => state != Modifiers::CTRL,
-            Sym::Delete | Sym::Escape | Sym::Return | Sym::Tab => true,
+            Sym::Control(_) => true,
             Sym::Char(c) => state != Modifiers::SHIFT || c == ' ',
         };
     };
-    if sym == Sym::Tab && state == Modifiers::SHIFT {
+    if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT {
         return false;
     }
     // A character's modifiers are filtered first, a predefined key's not.
     let st = match sym {
         Sym::Char(_) => allowed(sym, state),
-        Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => state,
+        Sym::Control(_) | Sym::BackSpace => state,
     };
     let control = sym.control_input() || sym.control_alias(state.ctrl);
     match sym {
         _ if st.is_empty() => false,
-        Sym::BackSpace | Sym::Delete => false,
-        Sym::Return | Sym::Tab => true,
-        Sym::Char(_) | Sym::Escape => !control || st != Modifiers::CTRL && st != Modifiers::SHIFT,
+        Sym::BackSpace | Sym::Control(Control::Backspace) => false,
+        Sym::Control(Control::Enter | Control::Tab) => true,
+        Sym::Char(_) | Sym::Control(Control::Escape) => {
+            !control || st != Modifiers::CTRL && st != Modifiers::SHIFT
+        }
     }
 }
 
@@ -546,7 +536,7 @@ fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
     let text = matches!(sym, Sym::Char(_)) && !sym.control_output();
     if sym.control_input() && !m.shift && !m.alt {
         // Ctrl makes these a control already, which it is left to.
-    } else if matches!(sym, Sym::Return | Sym::Tab) {
+    } else if matches!(sym, Sym::Control(Control::Enter | Control::Tab)) {
         // Enter and Tab keep Ctrl and Shift.
     } else if sym.control_alias(state.ctrl) {
         // Ctrl and Shift on a control are its own.
@@ -565,7 +555,7 @@ fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
         // "special cases of control+meta which are used by some
         // applications, e.g., emacs", and Enter and Tab.
         let control = (sym.control_input() || sym.control_output()) && m.ctrl;
-        if control || matches!(sym, Sym::Return | Sym::Tab) {
+        if control || matches!(sym, Sym::Control(Control::Enter | Control::Tab)) {
             m.alt = false;
             m.ctrl = false;
         }
