@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::hash::Hasher;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -1930,31 +1929,6 @@ impl Grid {
 /// The column one past `col` if a wrap is pending there, else `col`.
 fn past(col: u16, pending_wrap: bool) -> u16 {
     col.saturating_add(u16::from(pending_wrap))
-}
-
-/// Hashes a row's number, a small number, by one multiplication
-/// (Fibonacci hashing), rather than by SipHash, which the default hasher
-/// spends on every lookup: it is no input a program chooses.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SlotHasher(u64);
-
-impl Hasher for SlotHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
-        }
-        self.0 = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-    fn write_usize(&mut self, n: usize) {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        self.write_u64(n);
-    }
-    fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
 }
 
 /// Gives the cells `span` of the row in slot `slot` link `link`, or none:

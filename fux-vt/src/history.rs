@@ -18,11 +18,11 @@
 //! row's record (`Kept`), the cells it keeps and its text count.
 
 use std::collections::{HashMap, VecDeque};
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
-use crate::grid::{MAX_CELLS, MAX_ROWS, SlotHasher};
+use crate::grid::{MAX_CELLS, MAX_ROWS};
 use crate::link::RowLinks;
 use crate::{Error, RowId};
 
@@ -38,6 +38,27 @@ const BLOCKS: usize = 1 << 16;
 
 /// A map by a row's number in the order rows came.
 type ByRow<T> = HashMap<u64, T, BuildHasherDefault<SlotHasher>>;
+
+/// Hashes a row's number, a small number, by one multiplication
+/// (Fibonacci hashing), rather than by SipHash, which the default hasher
+/// spends on every lookup: it is no input a program chooses.
+#[derive(Clone, Copy, Debug, Default)]
+struct SlotHasher(u64);
+
+impl Hasher for SlotHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+        }
+        self.0 = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
 
 /// A row of history: what it is, and where its cells are.
 #[derive(Clone, Copy, Debug)]
