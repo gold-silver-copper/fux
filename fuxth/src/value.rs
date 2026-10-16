@@ -179,10 +179,6 @@ impl<A> List<A> {
         })
     }
 
-    pub fn depth(&self) -> u8 {
-        self.depth
-    }
-
     /// `value` added at the end; `None` past the limits.
     pub fn push(&mut self, value: Value<A>) -> Option<()> {
         let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;

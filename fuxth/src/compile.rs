@@ -98,28 +98,25 @@ pub const PARSING: [&str; 11] = [
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
     words: Vec<(String, usize, RangeInclusive<usize>)>,
-    index: HashMap<String, usize>,
 }
 
 impl Vocabulary {
     /// Adds a word taking `takes` values and giving `gives`; its id, which
     /// the host is called with. A name given twice keeps its first word.
     pub fn add(&mut self, name: &str, takes: usize, gives: RangeInclusive<usize>) -> usize {
-        if let Some(id) = self.index.get(name) {
-            return *id;
+        if let Some(id) = self.words.iter().position(|(n, _, _)| n == name) {
+            return id;
         }
-        let id = self.words.len();
         self.words.push((name.to_owned(), takes, gives));
-        self.index.insert(name.to_owned(), id);
-        id
+        self.words.len().saturating_sub(1)
     }
 
-    /// The word `id`'s name, how many values it takes, and how many it
-    /// gives.
-    pub fn word(&self, id: usize) -> Option<(&str, usize, RangeInclusive<usize>)> {
+    /// How many values the word `id` takes, and how many it gives: none,
+    /// for an id no word has.
+    pub(crate) fn effect(&self, id: usize) -> (usize, RangeInclusive<usize>) {
         self.words
             .get(id)
-            .map(|(name, takes, gives)| (name.as_str(), *takes, gives.clone()))
+            .map_or((0, 0..=0), |(_, takes, gives)| (*takes, gives.clone()))
     }
 }
 
@@ -192,22 +189,13 @@ impl<A> Steps<A> {
     /// call (`dup` is `0 pick`). Longer words stay calls, so a mistake in
     /// one is said as the whole word's, not one of its steps'.
     fn leaf(&self) -> bool {
-        self.ops.len() == 1
-            && self.ops.iter().all(|op| match op {
-                Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_) => true,
-                Op::App(_)
-                | Op::Call(_)
-                | Op::Jump(_)
-                | Op::JumpUnless(_)
-                | Op::SetLocal(_)
-                | Op::GetLocal(_)
-                | Op::SetGlobal(_)
-                | Op::GetGlobal(_)
-                | Op::Mark
-                | Op::Gather
-                | Op::EachStart
-                | Op::EachNext(_) => false,
-            })
+        let [op] = self.ops.as_slice() else {
+            return false;
+        };
+        matches!(
+            op,
+            Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_)
+        )
     }
 }
 
@@ -437,12 +425,11 @@ impl<A: Clone> Compiler<A> {
     fn word(&mut self, token: &Token, text: &str, literal: bool) -> Result<(), Error> {
         if is_number(text) {
             let Ok(n) = text.parse::<i64>() else {
-                return Err(Error {
-                    code: Code::Overflow,
-                    message: "a number past what an integer holds (64 bits)".to_owned(),
-                    place: Some(token.place.clone()),
-                    word: Some(Rc::clone(&token.text)),
-                });
+                return Err(Error::new(
+                    Code::Overflow,
+                    "a number past what an integer holds (64 bits)",
+                    Some(token),
+                ));
             };
             self.code().push(Op::Push(Value::Int(n)), token);
             self.literal = true;
@@ -493,16 +480,15 @@ impl<A: Clone> Compiler<A> {
             }
             Some(Entry::Global(slot)) => self.code().push(Op::GetGlobal(slot), token),
             None => {
-                return Err(Error {
-                    code: Code::UnknownWord,
-                    message: if text.is_empty() {
-                        "no such word: an empty one (str '' pushes an empty string)".to_owned()
+                return Err(Error::new(
+                    Code::UnknownWord,
+                    if text.is_empty() {
+                        "no such word: an empty one (str '' pushes an empty string)"
                     } else {
-                        "no such word".to_owned()
+                        "no such word"
                     },
-                    place: Some(token.place.clone()),
-                    word: Some(Rc::clone(&token.text)),
-                });
+                    Some(token),
+                ));
             }
         }
         Ok(())
@@ -542,12 +528,11 @@ impl<A: Clone> Compiler<A> {
         if self.open.is_empty() {
             return Ok(());
         }
-        Err(Error {
-            code: Code::NotTopLevel,
-            message: "define goes at the top level, outside any definition or block".to_owned(),
-            place: Some(token.place.clone()),
-            word: Some(Rc::clone(&token.text)),
-        })
+        Err(Error::new(
+            Code::NotTopLevel,
+            "define goes at the top level, outside any definition or block",
+            Some(token),
+        ))
     }
 
     /// Whether `name` may be defined (`define`), or named (`let`, which may
@@ -571,32 +556,25 @@ impl<A: Clone> Compiler<A> {
         };
         match why {
             None => Ok(()),
-            Some(why) => Err(Error {
-                code: Code::BadName,
-                message: format!("{text:?} cannot be defined: it is {why}"),
-                place: Some(name.place.clone()),
-                word: Some(Rc::clone(&name.text)),
-            }),
+            Some(why) => Err(Error::new(
+                Code::BadName,
+                format!("{text:?} cannot be defined: it is {why}"),
+                Some(name),
+            )),
         }
     }
 }
 
 fn missing(token: &Token, what: &str) -> Error {
-    Error {
-        code: Code::MissingToken,
-        message: format!("{} needs {what} after it", token.text),
-        place: Some(token.place.clone()),
-        word: Some(Rc::clone(&token.text)),
-    }
+    Error::new(
+        Code::MissingToken,
+        format!("{} needs {what} after it", token.text),
+        Some(token),
+    )
 }
 
 fn unmatched(token: &Token, why: &str) -> Error {
-    Error {
-        code: Code::Unmatched,
-        message: why.to_owned(),
-        place: Some(token.place.clone()),
-        word: Some(Rc::clone(&token.text)),
-    }
+    Error::new(Code::Unmatched, why, Some(token))
 }
 
 fn opened(open: &Open) -> (&Token, &'static str) {
@@ -612,22 +590,20 @@ fn opened(open: &Open) -> (&Token, &'static str) {
 
 fn unclosed(open: &Open) -> Error {
     let (at, what) = opened(open);
-    Error {
-        code: Code::Unclosed,
-        message: format!("this {what} is never closed"),
-        place: Some(at.place.clone()),
-        word: Some(Rc::clone(&at.text)),
-    }
+    Error::new(
+        Code::Unclosed,
+        format!("this {what} is never closed"),
+        Some(at),
+    )
 }
 
 fn mismatched(token: &Token, open: &Open) -> Error {
     let (at, what) = opened(open);
-    Error {
-        code: Code::Unmatched,
-        message: format!("the open block is {what}, from {}", at.place),
-        place: Some(token.place.clone()),
-        word: Some(Rc::clone(&token.text)),
-    }
+    Error::new(
+        Code::Unmatched,
+        format!("the open block is {what}, from {}", at.place),
+        Some(token),
+    )
 }
 
 /// Whether `text` is written as an integer: digits, after a `-` or not.
