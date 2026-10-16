@@ -65,8 +65,8 @@ pub struct Item {
     pub label: String,
     /// The fuxth it runs.
     pub code: String,
-    /// What it is about, as the words that name it (`str @2 tab`).
-    pub about: Option<String>,
+    /// What it is about.
+    pub about: Option<AnyRef>,
 }
 
 /// A line being typed, and what Enter does with it.
@@ -188,22 +188,19 @@ fn menu(target: AnyRef) -> Vec<Item> {
         about: None,
     };
     let mut items = vec![
-        item("rename", format!("me {it} rename-prompt")),
-        item("close", format!("me {it} confirm-close")),
+        item("rename", Open::Rename(target).code()),
+        item("close", Open::Confirm(target).code()),
     ];
     match target {
-        AnyRef::Pane(_) => items.extend([
+        AnyRef::Pane(p) => items.extend([
             item(
                 "terminate the running command",
                 format!("{it} str TERM signal"),
             ),
-            item("swap with…", format!("me {it} choose-pane")),
-            item("move to tab…", format!("me {it} choose-tab-for")),
+            item("swap with…", Open::ChoosePane(p).code()),
+            item("move to tab…", Open::ChooseTab(Some(p)).code()),
             item("move to a new tab", format!("{it} str new-tab move-to")),
-            item(
-                "move to workspace…",
-                format!("me {it} choose-workspace-for"),
-            ),
+            item("move to workspace…", Open::ChooseWorkspace(Some(p)).code()),
             item(
                 "move to a new workspace",
                 format!("{it} str new-workspace move-to"),
@@ -255,7 +252,7 @@ fn chooser(
             Item {
                 label: label.to_owned(),
                 code,
-                about: Some(it),
+                about: Some(*id),
             }
         })
         .collect();
@@ -356,7 +353,7 @@ impl Screen {
     fn list(&mut self, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
         let (at, last) = (list.selected, list.items.len().saturating_sub(1));
         let chosen = list.items.get(at);
-        let about = chosen.and_then(|item| item.about.as_ref());
+        let about = chosen.and_then(|item| item.about);
         // `r` and `x` in a menu, whose rows are about nothing, run nothing.
         let (moved, code) = match list_act(press) {
             None => (at, None),
@@ -368,8 +365,8 @@ impl Screen {
             Some(ListAct::Last) => (last, None),
             Some(ListAct::Cancel) => return vec![Effect::Send(Act::Hide)],
             Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
-            Some(ListAct::Rename) => (at, about.map(|it| format!("me {it} rename-prompt"))),
-            Some(ListAct::Close) => (at, about.map(|it| format!("me {it} confirm-close"))),
+            Some(ListAct::Rename) => (at, about.map(|it| Open::Rename(it).code())),
+            Some(ListAct::Close) => (at, about.map(|it| Open::Confirm(it).code())),
         };
         if let Some(code) = code {
             return vec![Effect::Send(Act::Hide), Effect::Run(code)];
@@ -469,14 +466,14 @@ mod tests {
     }
 
     fn list() -> Screen {
-        let item = |label: &str| Item {
-            label: label.to_owned(),
-            code: format!("me str {label} tab show-tab"),
-            about: Some(format!("str {label} tab")),
+        let item = |n: u32| Item {
+            label: format!("@{n}"),
+            code: format!("me str @{n} tab show-tab"),
+            about: format!("@{n}").parse().ok().map(AnyRef::Tab),
         };
         Screen::List(ListScreen {
             title: "tabs".to_owned(),
-            items: vec![item("@1"), item("@2")],
+            items: vec![item(1), item(2)],
             current: Some(0),
             selected: 0,
             chooser: true,
