@@ -849,7 +849,9 @@ fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
     // The leader's own, and the orphans of the group this process adopted
     // (`adopt_orphans`), its children beside the panes' leaders, with
     // theirs: a few files read, not the whole tree.
-    let adopted = children("self").into_iter().filter(|p| *p != leader && in_group(p));
+    let adopted = children("self")
+        .into_iter()
+        .filter(|p| *p != leader && in_group(p));
     let roots: Vec<Pid> = std::iter::once(leader).chain(adopted).collect();
     let members: Vec<Pid> = (roots.iter())
         .flat_map(|root| std::iter::once(*root).chain(below(*root)))
