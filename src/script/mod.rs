@@ -647,7 +647,7 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
         return failed;
     };
     let error = fuxth::Error {
-        code: fuxth::Code::Host("placed"),
+        code: failed.code.into(),
         message: failed.message,
         place: Some(at.place),
         word: Some(at.text),
