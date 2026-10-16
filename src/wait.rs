@@ -79,7 +79,7 @@ pub struct Waiting {
     /// What each pane said, once it has.
     answers: Vec<Option<Reply>>,
     /// A capture to give once the pane settles (`capture` from a command
-    /// line): its history, view and whether as JSON.
+    /// line): its history and view; the client picks text or JSON.
     pub capture: Option<(Option<usize>, CaptureView)>,
 }
 

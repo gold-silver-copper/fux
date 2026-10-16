@@ -451,8 +451,7 @@ pub(crate) fn basename(program: &str) -> String {
 }
 
 /// What a program rang or announced since it started: bells, and desktop
-/// notifications (OSC 9, 777, 99) with the last one's text, and whether the
-/// last alert was that notification.
+/// notifications (OSC 9, 777, 99) with the last one's text.
 #[derive(Clone, Debug, Default)]
 pub struct Alerts {
     pub bells: u64,

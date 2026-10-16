@@ -997,7 +997,7 @@ impl Session {
 
     /// What `text` names as a pane, tab or workspace, `kind`: its id (`%3`),
     /// or a tab's name (a pane, its tab's one pane); a workspace's name.
-    /// Nothing given, the caller's own.
+    /// A pane, nothing given: the caller's own.
     fn resolve(&self, text: &str, kind: Kind, here: Here) -> Result<AnyRef, Error> {
         let tabs: Vec<&Tab> = (self.workspaces.iter())
             .flat_map(Workspace::tabs)
@@ -3172,7 +3172,6 @@ impl Session {
     }
 }
 
-/// `%3`, `@2` or `+1`.
 /// What a program's terminal holds, unread, up to a mebibyte: read as it
 /// exits, so that its last screen is whole.
 fn unread(process: &Process) -> Vec<u8> {

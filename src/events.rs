@@ -228,7 +228,7 @@ pub struct Subscription {
 
 impl Subscription {
     /// Whether it is told of `event`: one of the stream itself, or where
-    /// one of its targets is or holds.
+    /// its target is or holds.
     pub fn wants(&self, event: &Event) -> bool {
         event.ws.is_none()
             || self.target.is_none_or(|target| match target {

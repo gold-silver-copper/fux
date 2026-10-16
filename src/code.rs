@@ -108,8 +108,9 @@ codes! {
     Gone "gone",
     /// The reader of an event stream fell too far behind.
     Lost "lost",
-    /// The program reads its terminal and the text has not come, or the
-    /// prefix then Esc stopped a run: exit status 7.
+    /// The program reads its terminal and the text has not come: exit
+    /// status 7. A run the prefix then Esc stopped is named so too, with
+    /// status 1.
     Stopped "stopped",
     // A program of words.
     /// A run of more steps than allowed.
