@@ -5,7 +5,7 @@
 //!
 //! A binding runs fuxth: its code is compiled and run by the client, fresh,
 //! each time its keys are typed, the client itself its `me`.
-use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Panel, Seek};
+use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Move, Panel, Seek};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use crate::screens::Effect;
 
@@ -598,9 +598,6 @@ pub enum Held {
     Prefixed,
 }
 
-/// The rows the column, and a screen's list, page by.
-pub const PAGE: usize = 10;
-
 impl Held {
     /// A key typed at the client's terminal while none of its screens is
     /// open (`crate::screens`): what it leads to. `read_only`: it only
@@ -697,17 +694,11 @@ impl Held {
         }
         let count = keymap.column(&path, 0).map_or(0, |c| c.entries.len());
         let last = count.saturating_sub(1);
-        let moved = match (press.mods == Modifiers::NONE).then_some(press.key) {
-            Some(Key::Arrow(Direction::Up)) => Some(selected.saturating_sub(1)),
-            Some(Key::Arrow(Direction::Down)) => Some(selected.saturating_add(1).min(last)),
-            Some(Key::PageUp) => Some(selected.saturating_sub(PAGE)),
-            Some(Key::PageDown) => Some(selected.saturating_add(PAGE).min(last)),
-            Some(Key::Home) => Some(0),
-            Some(Key::End) => Some(last),
-            _ => None,
-        };
-        if let Some(selected) = moved {
-            return self.open(keymap, path, selected);
+        // A list's moves, but by its keys that are not letters, which are
+        // bindings here.
+        let unbound = press.mods == Modifiers::NONE && !matches!(press.key, Key::Char(_));
+        if let Some(ListAct::Move(moved)) = list_act(press).filter(|_| unbound) {
+            return self.open(keymap, path, moved.from(selected, last));
         }
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
             let chosen = keymap.column(&path, selected).and_then(|c| {
@@ -786,12 +777,12 @@ impl Held {
 /// what the chosen entry is about.
 pub fn list_act(press: KeyPress) -> Option<ListAct> {
     match press.plain_key()? {
-        Key::Arrow(Direction::Up) | Key::Char('k') => Some(ListAct::Up),
-        Key::Arrow(Direction::Down) | Key::Char('j') => Some(ListAct::Down),
-        Key::PageUp => Some(ListAct::PageUp),
-        Key::PageDown => Some(ListAct::PageDown),
-        Key::Home => Some(ListAct::First),
-        Key::End => Some(ListAct::Last),
+        Key::Arrow(Direction::Up) | Key::Char('k') => Some(ListAct::Move(Move::Up)),
+        Key::Arrow(Direction::Down) | Key::Char('j') => Some(ListAct::Move(Move::Down)),
+        Key::PageUp => Some(ListAct::Move(Move::PageUp)),
+        Key::PageDown => Some(ListAct::Move(Move::PageDown)),
+        Key::Home => Some(ListAct::Move(Move::First)),
+        Key::End => Some(ListAct::Move(Move::Last)),
         Key::Enter => Some(ListAct::Choose),
         Key::Escape | Key::Char('q') => Some(ListAct::Cancel),
         Key::Char('r') => Some(ListAct::Rename),
@@ -900,6 +891,7 @@ pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::act::PAGE;
 
     fn stroke(name: &str) -> Result<Keystroke, String> {
         key(name).map(Keystroke::from)

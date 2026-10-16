@@ -158,18 +158,41 @@ impl Seek {
 /// What moves a list (a menu, a chooser), made of the client's keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListAct {
-    Up,
-    Down,
-    PageUp,
-    PageDown,
-    First,
-    Last,
+    Move(Move),
     Choose,
     Cancel,
     /// Rename what the chosen entry is about.
     Rename,
     /// Close what the chosen entry is about.
     Close,
+}
+
+/// A move of the selection in a list, or in the command column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Move {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+}
+
+/// The rows a list, and the command column, page by.
+pub const PAGE: usize = 10;
+
+impl Move {
+    /// The row it selects from row `at` of a list whose last is `last`.
+    pub fn from(self, at: usize, last: usize) -> usize {
+        match self {
+            Move::Up => at.saturating_sub(1),
+            Move::Down => at.saturating_add(1).min(last),
+            Move::PageUp => at.saturating_sub(PAGE),
+            Move::PageDown => at.saturating_add(PAGE).min(last),
+            Move::First => 0,
+            Move::Last => last,
+        }
+    }
 }
 
 /// What a line being typed (the prompt, a copy-mode search) is given, made

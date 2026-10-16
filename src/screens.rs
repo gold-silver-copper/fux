@@ -9,7 +9,7 @@
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::PaneId;
-use crate::keymap::{PAGE, confirm_act, copy_act, letter, line_act, list_act};
+use crate::keymap::{confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::KeyPress;
 use crate::protocol::{End, Reply, Scalar};
 use crate::script::Failed;
@@ -357,12 +357,7 @@ impl Screen {
         // `r` and `x` in a menu, whose rows are about nothing, run nothing.
         let (moved, code) = match list_act(press) {
             None => (at, None),
-            Some(ListAct::Up) => (at.saturating_sub(1), None),
-            Some(ListAct::Down) => (at.saturating_add(1).min(last), None),
-            Some(ListAct::PageUp) => (at.saturating_sub(PAGE), None),
-            Some(ListAct::PageDown) => (at.saturating_add(PAGE).min(last), None),
-            Some(ListAct::First) => (0, None),
-            Some(ListAct::Last) => (last, None),
+            Some(ListAct::Move(moved)) => (moved.from(at, last), None),
             Some(ListAct::Cancel) => return vec![Effect::Send(Act::Hide)],
             Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
             Some(ListAct::Rename) => (at, about.map(|it| Open::Rename(it).code())),
@@ -374,10 +369,7 @@ impl Screen {
         list.selected = moved;
         *self = Screen::List(list);
         let shown = self.panel().filter(|_| moved != at);
-        shown
-            .map(|p| Effect::Send(Act::Show(p)))
-            .into_iter()
-            .collect()
+        Vec::from_iter(shown.map(|p| Effect::Send(Act::Show(p))))
     }
 
     fn prompt(&mut self, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
