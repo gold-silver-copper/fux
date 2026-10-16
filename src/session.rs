@@ -2342,25 +2342,23 @@ impl Session {
                     }) => Some(self.resolve_ws(&WsRef::Name(scope.clone()))?),
                     Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => None,
                 };
-                match target {
+                // Its JSON, given as asked, or kept beside its text.
+                let (read, only) = match target {
                     Some(target) => {
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
-                        if !*json && get.is_none() {
-                            self.json = self.ls_one(target, true, None).ok();
+                        let read = self.ls_one(target, get.as_deref())?;
+                        if get.is_some() {
+                            return Ok(read);
                         }
-                        self.ls_one(target, *json, get.as_deref())
+                        (read, Some(target))
                     }
-                    None => {
-                        let all = self.ls_json(scope);
-                        match json {
-                            true => Ok(all),
-                            false => {
-                                self.json = Some(all);
-                                Ok(self.ls_text(scope.map(AnyRef::Workspace)))
-                            }
-                        }
-                    }
+                    None => (self.ls_json(scope), scope.map(AnyRef::Workspace)),
+                };
+                if *json {
+                    return Ok(read);
                 }
+                self.json = Some(read);
+                Ok(self.ls_text(only))
             }
             &Command::KillServer { force } => {
                 if let (Origin::Cli(caller), false) = (origin, force) {
@@ -2861,8 +2859,8 @@ impl Session {
             } => {
                 let pane = self.pane(target, here)?;
                 let copying = self.copying(pane.id);
-                let read = |json| crate::capture::pane(pane, history, view, json, copying);
-                let (text, form) = (read(json), (!json).then(|| read(true)));
+                let read = crate::capture::pane(pane, history, view, true, copying);
+                let (text, form) = crate::capture::asked(read, json);
                 self.json = form;
                 Ok(text)
             }
@@ -2977,8 +2975,10 @@ impl Session {
             ClientAction::Capture { json } => {
                 let mut grid = crate::render::Grid::new(0, 0);
                 crate::render::compose_view(self, view, &mut grid, &mut Placement::default());
-                self.json = (!json).then(|| crate::capture::client(view.id, &grid, true));
-                Ok(crate::capture::client(view.id, &grid, json))
+                let read = crate::capture::client(view.id, &grid);
+                let (text, form) = crate::capture::asked(read, json);
+                self.json = form;
+                Ok(text)
             }
             ClientAction::Zoom => {
                 view.zoom = !view.zoom;
@@ -3314,14 +3314,9 @@ impl Session {
         ])
     }
 
-    /// `ls -t TARGET`: one pane, tab or workspace, as text or JSON, or one
-    /// field of its JSON (`--get`), a string's text as it is.
-    fn ls_one(
-        &mut self,
-        target: AnyRef<WsId>,
-        json: bool,
-        get: Option<&str>,
-    ) -> Result<String, Error> {
+    /// `ls -t TARGET`: one pane, tab or workspace, as JSON, or one field of
+    /// its JSON (`--get`), a string's text as it is.
+    fn ls_one(&mut self, target: AnyRef<WsId>, get: Option<&str>) -> Result<String, Error> {
         let now = Instant::now();
         let object = match target {
             AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
@@ -3334,10 +3329,7 @@ impl Session {
             AnyRef::Workspace(id) => Error::NoWorkspace(id),
         })?;
         let Some(field) = get else {
-            return Ok(match json {
-                true => format!("{}\n", object.render()),
-                false => self.ls_text(Some(target)),
-            });
+            return Ok(format!("{}\n", object.render()));
         };
         let Json::Object(mut fields) = object else {
             return Ok(String::new());

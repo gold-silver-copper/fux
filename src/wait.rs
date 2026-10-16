@@ -207,14 +207,15 @@ impl Waiting {
             && let Some(pane) = session.panes.get(&watch.pane)
         {
             let copying = session.copying(pane.id);
-            let read = crate::capture::pane(pane, history, view, json, copying);
-            outcome.stdout = if json {
-                read
-            } else {
+            let read = crate::capture::pane(pane, history, view, true, copying);
+            outcome.stdout = match crate::capture::asked(read, json) {
+                (read, None) => read,
                 // Its JSON, read at the same moment, for `json` to give.
-                outcome.json = crate::capture::pane(pane, history, view, true, copying);
-                let line = outcome.stdout.lines().next().unwrap_or_default();
-                format!("{line}\n{read}")
+                (read, Some(form)) => {
+                    outcome.json = form;
+                    let line = outcome.stdout.lines().next().unwrap_or_default();
+                    format!("{line}\n{read}")
+                }
             };
         }
         // An answer that starts with the pane's state names the pane itself.
@@ -1389,9 +1390,9 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
         alt,
         ..CaptureView::default()
     };
-    let first = crate::capture::pane(pane, None, view(alt), false, false);
+    let (first, _) = crate::capture::pane(pane, None, view(alt), false, false);
     if first.trim().is_empty() {
-        return crate::capture::pane(pane, None, view(!alt), false, false);
+        return crate::capture::pane(pane, None, view(!alt), false, false).0;
     }
     first
 }

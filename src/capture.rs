@@ -12,15 +12,28 @@ use std::time::Instant;
 /// empty, a blank one a space) and its attributes.
 type Cells<'a> = Vec<(&'a str, Attributes)>;
 
-/// A pane's screen, and `history` rows before it, as `view` asks; with
-/// `copy_mode`, its `--json` says a client is in copy mode on it.
+/// A capture as text, and as JSON if it was asked for too: read once.
+type Read = (String, Option<String>);
+
+/// A capture's form `--json` asks for: its JSON alone, or its text with
+/// its JSON beside it.
+pub fn asked((text, form): Read, json: bool) -> Read {
+    match json {
+        true => (form.unwrap_or(text), None),
+        false => (text, form),
+    }
+}
+
+/// A pane's screen, and `history` rows before it, as `view` asks, with
+/// `json` its JSON too; with `copy_mode`, that says a client is in copy
+/// mode on it.
 pub fn pane(
     pane: &Pane,
     history: Option<usize>,
     view: CaptureView,
     json: bool,
     copy_mode: bool,
-) -> String {
+) -> Read {
     let screen = pane.screen();
     let in_rows = |i: &usize| {
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
@@ -252,8 +265,8 @@ fn rows_of(
 }
 
 /// What a client's terminal shows, row by row, as `capture-client` prints
-/// it.
-pub fn client(client: ClientId, grid: &crate::render::Grid, json: bool) -> String {
+/// it, and as JSON.
+pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
     let lines = (0..grid.rows).map(|y| grid.row_text(y)).collect::<Vec<_>>();
     let lines = lines
         .iter()
@@ -268,7 +281,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid, json: bool) -> Strin
         (grid.rows, grid.cols),
         grid.cursor,
         (lines, view, fux_vt::Color::default()),
-        json.then(Vec::new),
+        Some(Vec::new()),
     )
 }
 
@@ -278,17 +291,13 @@ pub fn client(client: ClientId, grid: &crate::render::Grid, json: bool) -> Strin
 /// that say how it takes input.
 pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
-    let program = pane
-        .process
-        .child()
-        .map(|child| pane.process.job().unwrap_or(child.leader.pid()))
-        .and_then(fuxix::process::name);
-    let idle = now.saturating_duration_since(pane.changed_at).as_millis();
-    let commands = screen.commands();
     // What runs in the foreground: a job the shell started, else the
     // program itself.
     let foreground =
         (pane.process.child()).map(|child| pane.process.job().unwrap_or(child.leader.pid()));
+    let program = foreground.and_then(fuxix::process::name);
+    let idle = now.saturating_duration_since(pane.changed_at).as_millis();
+    let commands = screen.commands();
     let argv = match (&pane.runs, pane.process.job()) {
         (_, Some(job)) => fuxix::process::argv(job),
         (crate::pane::Runs::Program(launch), None) => Some(launch.argv.clone()),
@@ -408,27 +417,31 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
 }
 
 /// A capture as it is printed: its lines, trimmed unless `view.full`, in
-/// SGR with `view.styles`; or with `--json` (`state` given) an object
-/// naming what was captured, with its size, cursor, lines, their style runs
-/// with `view.styles`, and the state.
+/// SGR with `view.styles`; and with `state` given, as `--json` prints it,
+/// an object naming what was captured, with its size, cursor, lines, their
+/// style runs with `view.styles`, and the state.
 fn print(
     (key, id): (&'static str, String),
     (rows, cols): (u16, u16),
     cursor: Option<(u16, u16)>,
     (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, fux_vt::Color),
     state: Option<Vec<(&'static str, Json<'static>)>>,
-) -> String {
+) -> Read {
     // What a selection is drawn with: reverse video, or a background
     // other than the screen's own.
     let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
-    let json = state.is_some();
-    if !view.full {
-        // Blanks are trimmed, unless they show: highlighted with --marks,
-        // styled with --styles (as SGR; JSON's lines read alike either way).
+    // Blanks are trimmed, unless they show: highlighted with --marks,
+    // styled with --styles (as SGR; JSON's lines read alike either way, so
+    // the text's lines, trimmed again, are the JSON's). `view.full` keeps
+    // them all.
+    let trim = |lines: &mut Vec<Cells<'_>>, styled: bool| {
+        if view.full {
+            return;
+        }
         let shows = |a: &Attributes| {
-            (view.marks && highlighted(a)) || (view.styles && !json && *a != Attributes::default())
+            (view.marks && highlighted(a)) || (styled && *a != Attributes::default())
         };
-        for line in &mut lines {
+        for line in lines.iter_mut() {
             while line
                 .last()
                 .is_some_and(|(text, a)| *text == " " && !shows(a))
@@ -439,43 +452,44 @@ fn print(
         while lines.last().is_some_and(Vec::is_empty) {
             lines.pop();
         }
-    }
-    // On a row trimmed away, the cursor is on none printed.
-    let cursor = cursor.filter(|(row, _)| usize::from(*row) < lines.len());
+    };
     let text = |line: &Cells<'_>| match view.marks {
         true => marked(line, &highlighted),
         false => line.iter().map(|(text, _)| *text).collect::<String>(),
     };
-    let mut out = match state {
-        Some(state) => {
-            let number = |n: u16| Json::Number(i64::from(n));
-            let cursor =
-                cursor.map_or(Json::Null, |(y, x)| Json::Array(vec![number(y), number(x)]));
-            let mut fields = vec![
-                (key, Json::str(id)),
-                ("rows", number(rows)),
-                ("cols", number(cols)),
-                ("cursor", cursor),
-                (
-                    "lines",
-                    Json::Array(lines.iter().map(|l| Json::str(text(l))).collect()),
-                ),
-            ];
-            if view.styles {
-                fields.push(("styles", Json::Array(lines.iter().map(runs).collect())));
-            }
-            fields.extend(state);
-            Json::Object(fields).render()
-        }
-        None if view.styles => {
+    trim(&mut lines, view.styles);
+    let mut out = match view.styles {
+        true => {
             let marks = view.marks.then_some(&highlighted);
             let styled: Vec<String> = lines.iter().map(|l| sgr_line(l, marks)).collect();
             styled.join("\n")
         }
-        None => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
+        false => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
     };
     out.push('\n');
-    out
+    let json = state.map(|state| {
+        trim(&mut lines, false);
+        // On a row trimmed away, the cursor is on none printed.
+        let cursor = cursor.filter(|(row, _)| usize::from(*row) < lines.len());
+        let number = |n: u16| Json::Number(i64::from(n));
+        let cursor = cursor.map_or(Json::Null, |(y, x)| Json::Array(vec![number(y), number(x)]));
+        let mut fields = vec![
+            (key, Json::str(id)),
+            ("rows", number(rows)),
+            ("cols", number(cols)),
+            ("cursor", cursor),
+            (
+                "lines",
+                Json::Array(lines.iter().map(|l| Json::str(text(l))).collect()),
+            ),
+        ];
+        if view.styles {
+            fields.push(("styles", Json::Array(lines.iter().map(runs).collect())));
+        }
+        fields.extend(state);
+        format!("{}\n", Json::Object(fields).render())
+    });
+    (out, json)
 }
 
 /// A line with what is highlighted, how programs draw a selection, between
