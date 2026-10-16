@@ -6,7 +6,7 @@
 //!
 //! Linux's `n_tty` (`drivers/tty/n_tty.c`) and the BSD rules macOS keeps
 //! (xnu's `bsd/kern/tty.c`) agree on what is modelled here, but for the few
-//! rules a [`Discipline`] says; [`Kernel`] is the one this build runs on.
+//! rules that follow from [`MACOS`], the kernel this build runs on.
 //!
 //! The model covers text (a UTF-8 character erased whole under `IUTF8`),
 //! carriage returns and newlines (`ICRNL`, `INLCR`, `IGNCR`, `ONLCR`,
@@ -22,85 +22,36 @@
 //! between, and fux reads the master's echo as it comes, so an interrupt's
 //! flush finds none of it left over from earlier writes.
 use fuxix::terminal::Modes;
-use std::marker::PhantomData;
 
-/// The line discipline of the kernel this build runs on.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub type Kernel = Linux;
-#[cfg(target_os = "macos")]
-pub type Kernel = Macos;
+/// Whether this build runs on macOS's BSD line discipline rather than
+/// Linux's `n_tty`: the few rules they differ in follow from it.
+const MACOS: bool = cfg!(target_os = "macos");
 
-/// Where one kernel's rules differ from the other's.
-pub trait Discipline {
-    /// Whether an erase of a character an earlier write typed may retype
-    /// the line instead: macOS's does once the program wrote since
-    /// (`t_rocount`), which fux cannot see in time.
-    const RETYPES: bool;
-    /// Whether the end-of-file character is echoed.
-    const ECHOES_EOF: bool;
-    /// Whether a suspend flushes the echo not yet read, as an interrupt
-    /// does.
-    const SUSPEND_FLUSHES_ECHO: bool;
-    /// Whether `ECHOCTL` echoes a newline that does not end a line as `^J`.
-    const CARET_NEWLINE: bool;
-    /// Whether a kill, echoed, erases the line character by character
-    /// rather than echoing the kill character; `None` when the model
-    /// leaves it out.
-    fn kill_erases(modes: &Modes) -> Option<bool>;
-    /// Whether a word erase takes `c`, a character's first byte, as part
-    /// of a word.
-    fn word(c: u8) -> bool;
+/// Whether a kill, echoed, erases the line character by character rather
+/// than echoing the kill character; `None` when the model leaves it out.
+/// Linux's `eraser` does under `ECHOK` and `ECHOKE` (and `ECHOE`); macOS's
+/// only when every character in the line was echoed since the program last
+/// wrote, which fux cannot see in time.
+fn kill_erases(m: &Modes) -> Option<bool> {
+    (!MACOS).then_some(m.echok && m.echoke)
 }
 
-/// Linux's `n_tty`.
-#[derive(Default, Debug)]
-pub struct Linux;
-
-impl Discipline for Linux {
-    const RETYPES: bool = false;
-    const ECHOES_EOF: bool = false;
-    const SUSPEND_FLUSHES_ECHO: bool = true;
-    const CARET_NEWLINE: bool = true;
-
-    /// `eraser`, which also wants `ECHOE`.
-    fn kill_erases(m: &Modes) -> Option<bool> {
-        Some(m.echok && m.echoke)
-    }
-
-    /// The kernel's `isalnum`, or an underscore: ASCII's, and Latin-1's
-    /// letters, which every UTF-8 lead byte from 0xc0 reads as but two.
-    fn word(c: u8) -> bool {
-        c.is_ascii_alphanumeric() || c == b'_' || (c >= 0xc0 && c != 0xd7 && c != 0xf7)
-    }
-}
-
-/// macOS's BSD line discipline.
-#[derive(Default, Debug)]
-pub struct Macos;
-
-impl Discipline for Macos {
-    const RETYPES: bool = true;
-    const ECHOES_EOF: bool = true;
-    const SUSPEND_FLUSHES_ECHO: bool = false;
-    const CARET_NEWLINE: bool = false;
-
-    /// It erases only when every character in the line was echoed since
-    /// the program last wrote, which fux cannot see in time.
-    fn kill_erases(_: &Modes) -> Option<bool> {
-        None
-    }
-
-    /// A word ends at a blank.
-    fn word(c: u8) -> bool {
+/// Whether a word erase takes `c`, a character's first byte, as part of a
+/// word. On macOS a word ends at a blank; on Linux it is the kernel's
+/// `isalnum`, or an underscore: ASCII's, and Latin-1's letters, which
+/// every UTF-8 lead byte from 0xc0 reads as but two.
+fn word(c: u8) -> bool {
+    if MACOS {
         c != b' ' && c != b'\t'
+    } else {
+        c.is_ascii_alphanumeric() || c == b'_' || (c >= 0xc0 && c != 0xd7 && c != 0xf7)
     }
 }
 
 /// The echo of what is typed into one terminal: the line the kernel holds,
 /// so that an erase or a kill erases what the kernel would.
 #[derive(Default, Debug)]
-pub struct Echo<K = Kernel> {
-    kernel: PhantomData<K>,
+pub struct Echo {
     /// What was typed since the last line end, in line mode.
     line: Vec<u8>,
     /// How much of `line` was typed before this write.
@@ -129,7 +80,7 @@ enum Edit {
     Line,
 }
 
-impl<K: Discipline> Echo<K> {
+impl Echo {
     /// What the kernel echoes as `input` is written under `modes`, after
     /// output processing (`OPOST`, `ONLCR`...). `None` when some byte or
     /// mode is outside the model: the caller then falls back. Once the
@@ -150,7 +101,6 @@ impl<K: Discipline> Echo<K> {
             modes,
             out: Vec::new(),
             known: !(m.opost && m.olcuc),
-            caret_newline: K::CARET_NEWLINE,
         };
         for &c in input {
             if self.byte(&mut write, c).is_none() {
@@ -179,7 +129,8 @@ impl<K: Discipline> Echo<K> {
             // echo not yet read.
             if !m.noflsh {
                 self.line.clear();
-                if K::SUSPEND_FLUSHES_ECHO || is(m.intr, typed) || is(m.quit, typed) {
+                // On macOS a suspend keeps the echo not yet read.
+                if !MACOS || is(m.intr, typed) || is(m.quit, typed) {
                     w.known &= w.out.len() < FLUSHED_WHOLE;
                     w.out.clear();
                 }
@@ -232,7 +183,8 @@ impl<K: Discipline> Echo<K> {
             }
         } else if !is(m.eof, c) {
             w.echo(c);
-        } else if K::ECHOES_EOF {
+        } else if MACOS {
+            // Only macOS echoes the end-of-file character.
             w.eof(c);
         }
         Some(())
@@ -248,7 +200,7 @@ impl<K: Discipline> Echo<K> {
         // byte; macOS echoes a kill's newline under `ECHONL` alone.
         w.known &= !(m.echo && !m.echoe) && !(kind == Edit::Line && !m.echo && m.echonl);
         if kind == Edit::Line && m.echo {
-            match K::kill_erases(m) {
+            match kill_erases(m) {
                 None => w.known = false,
                 Some(true) => {}
                 Some(false) => {
@@ -269,13 +221,15 @@ impl<K: Discipline> Echo<K> {
         while let Some(at) = (self.line.iter()).rposition(|&b| !(m.iutf8 && continuation(b))) {
             let first = *self.line.get(at)?;
             if kind == Edit::Word {
-                if K::word(first) {
+                if word(first) {
                     seen_word = true;
                 } else if seen_word {
                     break;
                 }
             }
-            if K::RETYPES && m.echo && at < self.start {
+            // macOS may retype the line instead, once the program wrote since
+            // (`t_rocount`), which fux cannot see in time.
+            if MACOS && m.echo && at < self.start {
                 w.known = false;
             }
             self.line.truncate(at);
@@ -297,8 +251,6 @@ struct Write<'m> {
     out: Vec<u8>,
     /// False once some of the echo is outside the model.
     known: bool,
-    /// [`Discipline::CARET_NEWLINE`].
-    caret_newline: bool,
 }
 
 impl Write<'_> {
@@ -326,7 +278,8 @@ impl Write<'_> {
         if c == b'\n' && !m.echo {
             // macOS echoes it under `ECHONL` alone.
             self.known &= !m.echonl;
-        } else if m.echo && m.echoctl && caret(c) && (c != b'\n' || self.caret_newline) {
+        // Only Linux echoes a newline that ends no line as `^J`.
+        } else if m.echo && m.echoctl && caret(c) && (c != b'\n' || !MACOS) {
             self.out.extend_from_slice(&[b'^', c ^ 0x40]);
         } else if m.echo {
             self.output(c);
