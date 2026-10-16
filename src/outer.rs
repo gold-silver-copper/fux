@@ -332,30 +332,22 @@ impl Session {
         typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
     }
 
-    /// The terminal of `colour_client(tab)`.
-    fn answering(&self, tab: Option<TabId>) -> Option<&Terminal> {
-        (self.colour_client(tab)).and_then(|c| self.views.get(&c).map(|v| &v.terminal))
-    }
-
-    /// The colours the panes of `tab` are answered with (see the module
-    /// documentation).
-    pub(crate) fn colours_for(&self, tab: Option<TabId>) -> Colours {
-        self.answering(tab).map_or(self.last_colours, |t| t.colours)
-    }
-
-    /// The palette the panes of `tab` are answered with, as `colours_for`:
-    /// the answering client's whole, so that another client's replaces it,
-    /// entries it did not say cleared.
-    pub(crate) fn palette_for(&self, tab: Option<TabId>) -> Palette {
-        self.answering(tab).map_or(self.last_palette, |t| t.palette)
-    }
-
-    /// What the panes of `tab` are told their terminal draws, as
-    /// `colours_for` finds the terminal: nothing in a tab no client shows,
-    /// so a program started there draws in text, which a capture reads.
-    pub(crate) fn graphics_for(&self, tab: Option<TabId>) -> fux_vt::Graphics {
-        let shown = tab.filter(|t| self.views.keys().any(|c| self.shows(*c, *t)));
-        (self.answering(shown)).map_or_else(fux_vt::Graphics::default, Terminal::graphics)
+    /// What the panes of `tab` are answered with, from the terminal of
+    /// `colour_client(tab)`: its colours (see the module documentation); its
+    /// palette whole, so that another client's replaces it, entries it did
+    /// not say cleared; and what they are told their terminal draws, which
+    /// is nothing in a tab no client shows, so a program started there draws
+    /// in text, which a capture reads.
+    pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, fux_vt::Graphics) {
+        let answering = (self.colour_client(tab)).and_then(|c| self.views.get(&c));
+        let answering = answering.map(|v| &v.terminal);
+        let shown = tab.is_some_and(|t| self.views.keys().any(|c| self.shows(*c, t)));
+        (
+            answering.map_or(self.last_colours, |t| t.colours),
+            answering.map_or(self.last_palette, |t| t.palette),
+            (answering.filter(|_| shown))
+                .map_or_else(fux_vt::Graphics::default, Terminal::graphics),
+        )
     }
 
     /// Pane `id`'s program rang the bell: each client showing its workspace

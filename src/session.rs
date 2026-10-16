@@ -1855,9 +1855,7 @@ impl Session {
     /// was dropped.
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
         let tab = self.locate(id).map(|(_, t)| t);
-        let colours = self.colours_for(tab);
-        let palette = self.palette_for(tab);
-        let graphics = self.graphics_for(tab);
+        let (colours, palette, graphics) = self.host_for(tab);
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
