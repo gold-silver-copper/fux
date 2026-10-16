@@ -219,6 +219,19 @@ impl TabStops {
     }
 }
 
+/// How DECRQSS answers a request (`Screen::setting_report`).
+pub(crate) enum Setting {
+    /// The setting, written.
+    Written,
+    /// A request fux-vt does not know, which xterm answers as invalid.
+    Unknown,
+    /// No answer: a cursor shape left to the terminal (DECSCUSR 0 or never
+    /// set), which fux-vt does not know. xterm and Ghostty always know
+    /// theirs, and vim, the program that asks, takes an invalid answer for
+    /// keys.
+    Unanswered,
+}
+
 /// What a CSI sequence came to.
 pub(crate) enum Dispatch {
     /// Carried out, with nothing to answer.
@@ -2144,13 +2157,8 @@ impl Screen {
 
     /// DECRQSS (`DCS $ q Pt ST`): the setting `request` names, written to
     /// `out` as the control function that sets it, in the form xterm
-    /// answers (`do_dcs` and `xtermFormatSGR`, xterm 411 misc.c). `Some(true)`
-    /// for a setting written, `Some(false)` for a request fux-vt does not
-    /// know, which xterm answers as invalid; `None` for a cursor shape
-    /// left to the terminal (DECSCUSR 0 or never set), which fux-vt does
-    /// not know: xterm and Ghostty always know theirs, and vim, the program
-    /// that asks, takes an invalid answer for keys.
-    pub(crate) fn setting_report(&self, request: &[u8], out: &mut String) -> Option<bool> {
+    /// answers (`do_dcs` and `xtermFormatSGR`, xterm 411 misc.c).
+    pub(crate) fn setting_report(&self, request: &[u8], out: &mut String) -> Setting {
         use std::fmt::Write;
         match request {
             b"m" => {
@@ -2160,7 +2168,7 @@ impl Screen {
             b" q" => {
                 let shape = self.cursor_shape;
                 if !(1..=6).contains(&shape) {
-                    return None;
+                    return Setting::Unanswered;
                 }
                 let _ = write!(out, "{shape} q");
             }
@@ -2174,9 +2182,9 @@ impl Screen {
                     bottom.saturating_add(1)
                 );
             }
-            _ => return Some(false),
+            _ => return Setting::Unknown,
         }
-        Some(true)
+        Setting::Written
     }
 
     /// The pen as xterm reports it to DECRQSS (`xtermFormatSGR`): 0, then

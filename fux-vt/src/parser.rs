@@ -3,7 +3,10 @@
 //! Ignored control strings retain no payload. No parser dependency is used.
 
 use crate::mode::{Kind, Mode, ModeStatus};
-use crate::{Error, Reply, Rgb, Screen, Size, screen::Dispatch};
+use crate::{
+    Error, Reply, Rgb, Screen, Size,
+    screen::{Dispatch, Setting},
+};
 
 #[cfg(test)]
 #[path = "../tests/corpus/mod.rs"]
@@ -1275,14 +1278,11 @@ impl Parser {
     #[inline(never)]
     fn dispatch_request(&mut self, request: Option<Bytes<REQUEST_LIMIT>>, sink: &mut impl Sink) {
         let mut setting = String::new();
-        let valid = match request {
-            Some(request) => self.screen.setting_report(request.as_slice(), &mut setting),
-            None => Some(false),
+        let status = match request.map(|r| self.screen.setting_report(r.as_slice(), &mut setting)) {
+            Some(Setting::Written) => '1',
+            Some(Setting::Unknown) | None => '0',
+            Some(Setting::Unanswered) => return,
         };
-        let Some(valid) = valid else {
-            return;
-        };
-        let status = if valid { '1' } else { '0' };
         sink.reply(format!("\x1bP{status}$r{setting}\x1b\\").as_bytes());
     }
 
