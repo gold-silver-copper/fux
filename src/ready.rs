@@ -136,7 +136,7 @@ fn activity(
     // the terminal echoes nothing), the read that took it returned, and
     // the one it is in has taken no key yet, so it waits with no limit.
     let timed = |t: &fuxix::terminal::Termios| {
-        let since = match answered && !t.echoes() {
+        let since = match answered && !t.modes().echo {
             true => Duration::MAX,
             false => since_key,
         };

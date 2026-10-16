@@ -800,7 +800,7 @@ impl Pane {
                 Some(_) => self.at_prompt(),
                 None => (self.process.child())
                     .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
-                    .is_some_and(|t| !t.line_mode()),
+                    .is_some_and(|t| !t.modes().canonical),
             };
         let finished = self.screen().commands().finished;
         let mut happened = Vec::new();
