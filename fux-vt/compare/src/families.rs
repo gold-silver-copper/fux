@@ -250,24 +250,12 @@ fn erase(r: &mut Rng) -> Vec<u8> {
 }
 
 /// The rectangular area operations, on rectangles of small and absent
-/// numbers: DECFRA, DECERA, DECSERA, DECCRA, and DECCARA and DECRARA over
-/// rectangles (DECSACE 2). Their streams are left out: xterm counts a cell
-/// as drawn once DECCRA, DECSERA or a rectangle's attribute change has
-/// written it, where DEC STD 070 (DECSACE) leaves an unoccupied position
-/// alone (`replay --engines xterm --size 1x1 '\e[1;1;1;1${\e[*x\e[1;1;1;1;1$r'`).
-/// So is a DECCARA with no rendition it knows, which DEC STD 070 gives its
-/// default, 0, and xterm ignores (`replay --engines xterm --size 1x1
-/// '\e[1mA\e[2*x\e[1;1;1;1;31$r'`): a colour comes with a rendition.
+/// numbers: DECFRA, DECERA, DECSERA and DECCRA.
 fn rectangles(r: &mut Rng) -> Vec<u8> {
     let corners = [number(r), number(r), number(r), number(r)].join(";");
-    match r.below(4) {
+    match r.below(3) {
         0 => format!("\x1b[{};{corners}$x", pick(r, &["", "35", "113", "233"])),
         1 => format!("\x1b[{corners}${}", pick(r, &["z", "{"])),
-        2 => format!(
-            "\x1b[2*x\x1b[{corners};{}${}",
-            pick(r, &["0", "1", "4;7", "22", "31;1"]),
-            pick(r, &["r", "t"])
-        ),
         _ => format!("\x1b[{corners};1;{};{};1$v", number(r), number(r)),
     }
     .into_bytes()
@@ -804,7 +792,7 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "rectangles",
-        about: "DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECCRA and DECSACE",
+        about: "DECFRA, DECERA, DECSERA and DECCRA",
         status: Status::Decided {
             why: "DEC STD 070's rectangular area operations (5.12.1, level 4), which xterm implements as fux-vt does, and every other engine of the panel ignores, outvoting fux-vt (`replay --engines all --size 4x6 'abcdef\\r\\nghijkl\\e[88;1;2;2;4$x'`)",
             by: XTERM,

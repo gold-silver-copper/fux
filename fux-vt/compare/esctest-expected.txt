@@ -79,6 +79,7 @@ DECRQMTests.test_DECRQM_DEC_DECVCCM  xterm-too: esctest's known xterm bug (Not s
 DECRQMTests.test_DECRQM_DEC_DECXRLM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQSSTests.test_DECRQSS_DECELF  xterm-too: esctest's known xterm bug (Not implemented.)
 DECRQSSTests.test_DECRQSS_DECLFKC  xterm-too: esctest's known xterm bug (Not implemented.)
+DECRQSSTests.test_DECRQSS_DECSACE  not-implemented: deferred: DECSACE, the extent of DECCARA and DECRARA, which fux-vt does not implement; no program in the corpus sends them
 DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSCL  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
 DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports

@@ -256,7 +256,6 @@ impl Attributes {
     pub(crate) const BLINK: u16 = Self::SLOW_BLINK | Self::RAPID_BLINK;
     const UNDERLINE_SHIFT: u32 = 9;
     pub(crate) const UNDERLINE: u16 = 0b111 << Self::UNDERLINE_SHIFT;
-    pub(crate) const SINGLE_UNDERLINE: u16 = 1 << Self::UNDERLINE_SHIFT;
 
     /// Plain attributes with the given colours; add styles with the `with_*`
     /// builders. For consumers that store or transport cells.

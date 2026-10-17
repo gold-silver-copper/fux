@@ -1177,46 +1177,6 @@ impl Grid {
         }
     }
 
-    /// DECCARA and DECRARA: the attributes of the columns `start` to `end`
-    /// of live row `row` changed by `change`, each cell keeping its text,
-    /// its protection and SPA's guard. An empty cell is left as it is, or,
-    /// with `fill`, first takes a space (DEC STD 070, DECSACE: a stream
-    /// leaves unoccupied positions, a rectangle fills them in). A wide
-    /// glyph the edge cuts has its half inside changed alone, as the
-    /// operation counts positions; its first half's attributes draw it.
-    pub fn restyle(
-        &mut self,
-        row: u16,
-        (start, end): (u16, u16),
-        fill: bool,
-        version: u64,
-        change: impl Fn(Attributes) -> Attributes,
-    ) {
-        for col in start..end {
-            let Some(&cell) = self.stored(row, col) else {
-                return;
-            };
-            let empty = !cell.has_contents() && !cell.is_wide_continuation();
-            if empty && !fill {
-                continue;
-            }
-            let old = cell.style();
-            let guarded = self.styles.guarded(old);
-            let style = self.style(change(self.styles.get(old)).with_guard(guarded));
-            self.mutate_row(row, version, col.saturating_add(1), |cells| {
-                let Some(cell) = cells.get_mut(usize::from(col)) else {
-                    return false;
-                };
-                let was = *cell;
-                if empty {
-                    *cell = Compact::ascii(b' ', 0);
-                }
-                cell.set_style(style);
-                *cell != was
-            });
-        }
-    }
-
     /// DECCRA: the cells `columns` of rows `lines`, text and attributes,
     /// copied to the rows and columns from `to`, as far as the screen goes
     /// (DEC STD 070, DECCRA), all read before any is written, so the two
