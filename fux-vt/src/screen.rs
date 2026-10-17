@@ -42,6 +42,8 @@ closed! {
     /// The cursor's style, as DECSCUSR sets it (`CSI Ps SP q`; ctlseqs,
     /// "Set cursor style", VT520): Ps 0 and 1 are both a blinking block, 7
     /// xterm's initial resources. A Ps it lists no style for is ignored.
+    /// Ps 0 is kept apart from 1, as many terminals read it as their own
+    /// shape: a host passes on the program's 0 as 0.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
     pub enum CursorShape {
         /// Its Ps.
@@ -50,7 +52,9 @@ closed! {
         /// DECSCUSR, after RIS, and as DECSCUSR 7 restores it.
         #[default]
         Initial => 7,
-        /// A blinking block (Ps 0 or 1).
+        /// A blinking block, as Ps 0 (or none) names it.
+        Zero => 0,
+        /// A blinking block (Ps 1).
         BlinkingBlock => 1,
         /// A steady block.
         SteadyBlock => 2,
@@ -2412,7 +2416,9 @@ impl Screen {
                 if shape == CursorShape::Initial {
                     return Setting::Unanswered;
                 }
-                let _ = write!(out, "{} q", shape.number());
+                // 0 as the blinking block it is, as xterm answers it.
+                let ps = shape.number().max(1);
+                let _ = write!(out, "{ps} q");
             }
             b"r" => {
                 // Exact: the margins are rows of a screen a u16 counts.
@@ -2495,8 +2501,8 @@ impl Screen {
         let private = intermediates == b"?";
         // DECSCUSR: its intermediate is a space.
         if intermediates == b" " && byte == b'q' {
-            // 0, the default, is a blinking block, as 1 is.
-            let ps = p.first(0, 1);
+            // 0, the default, is a blinking block, as 1 is, kept apart.
+            let ps = p.first(0, 0);
             if let Some(&shape) = CursorShape::ALL.iter().find(|s| s.number() == ps) {
                 self.terminal.cursor_shape = shape;
             }

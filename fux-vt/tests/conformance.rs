@@ -942,17 +942,18 @@ fn parameters_past_the_32nd_are_ignored_and_the_sequence_runs() -> Result {
 }
 
 /// DECSCUSR (`CSI Ps SP q`; ctlseqs, "Set cursor style", VT520): Ps 0,
-/// the default, and 1 are a blinking block; 2 to 6 the steady block, the
-/// underlines and the bars; 7 xterm's initial resources, the shape before
-/// any is set. A Ps ctlseqs lists no style for changes nothing.
+/// the default, and 1 are a blinking block, 0 kept as such (`Zero`); 2 to
+/// 6 the steady block, the underlines and the bars; 7 xterm's initial
+/// resources, the shape before any is set. A Ps ctlseqs lists no style
+/// for changes nothing.
 #[test]
 fn decscusr_sets_the_styles_ctlseqs_lists() -> Result {
     use fux_vt::CursorShape::*;
     let shape = |bytes: &[u8]| -> Result<_> { Ok(run(1, 4, bytes)?.screen().cursor_shape()) };
     assert_eq!(shape(b"")?, Initial);
     for (ps, expected) in [
-        ("0", BlinkingBlock),
-        ("", BlinkingBlock),
+        ("0", Zero),
+        ("", Zero),
         ("1", BlinkingBlock),
         ("2", SteadyBlock),
         ("3", BlinkingUnderline),

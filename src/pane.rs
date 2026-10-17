@@ -1435,10 +1435,7 @@ mod tests {
         let mut pane = pane(5, 20)?;
         pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
         assert!(!pane.screen().mode(Mode::FocusReporting));
-        assert_eq!(
-            pane.screen().cursor_shape(),
-            fux_vt::CursorShape::BlinkingBlock
-        );
+        assert_eq!(pane.screen().cursor_shape(), fux_vt::CursorShape::Zero);
         pane.output(b"\x1b[?1004h\x1bc");
         assert!(!pane.screen().mode(Mode::FocusReporting));
         Ok(())
