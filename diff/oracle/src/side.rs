@@ -2,11 +2,17 @@
 //! (`base`), each read into the model through the same public API.
 //!
 //! Both are one macro, `side!`, so they are read the same way. The base is
-//! the newest `main` (or a commit `diff/oracle.sh` is given), so both sides
-//! share one API and the macro takes no per-side code. A branch that changes
-//! fux-vt's public API can be compared with a temporary local shim here for
-//! the base side; never commit one.
+//! the newest `master` on `origin` (or a commit `diff/oracle.sh` is given),
+//! so both sides share one API and the macro takes no per-side code. A
+//! branch that changes fux-vt's public API can be compared with a temporary
+//! local shim here for the base side; never commit one. Its matches over
+//! fux-vt's enums are exhaustive, so a variant fux-vt adds makes the side
+//! that has it fail to build, not compare wrongly.
 
+/// One side: `side!(work, fux_vt, "work")` expands to `pub mod work`,
+/// which reads the crate `fux_vt` into the model (`model::State`, its
+/// cells, rows, events and errors) through fux-vt's public API, with
+/// `NAME` `"work"` naming the side in a report.
 macro_rules! side {
     (
         $module:ident,
