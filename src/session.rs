@@ -1082,6 +1082,16 @@ impl Session {
         }
     }
 
+    /// The tabs `target` is or holds: a pane's own, a tab, or a
+    /// workspace's every tab.
+    fn tabs_of(&self, target: AnyRef) -> Vec<TabId> {
+        match target {
+            AnyRef::Tab(tab) => vec![tab],
+            AnyRef::Workspace(ws) => self.tab_ids(ws),
+            AnyRef::Pane(pane) => self.locate(pane).map(|(_, tab)| tab).into_iter().collect(),
+        }
+    }
+
     /// The panes `target` names: a pane, or a tab's or workspace's every
     /// pane, in order.
     fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
@@ -2221,14 +2231,7 @@ impl Session {
                             return Err(fail(Code::Size, message));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                        let target = self.there(*target)?;
-                        let tabs: Vec<TabId> = match target {
-                            AnyRef::Tab(tab) => vec![tab],
-                            AnyRef::Workspace(ws) => self.tab_ids(ws),
-                            AnyRef::Pane(pane) => {
-                                self.locate(pane).map(|(_, tab)| tab).into_iter().collect()
-                            }
-                        };
+                        let tabs = self.tabs_of(self.there(*target)?);
                         // A size that would hide one of a tab's panes is refused,
                         // as a split that would is.
                         if size.is_some() {
@@ -2418,11 +2421,6 @@ impl Session {
                 // was its last, and that tab's workspace; a tab's or a
                 // workspace's panes.
                 let mut may_go = vec![self.there(*target)?];
-                // A tab there with no panes (moved out) has none to go.
-                if let AnyRef::Tab(_) | AnyRef::Workspace(_) = target {
-                    let panes = self.panes_of(*target).unwrap_or_default();
-                    may_go.extend(panes.into_iter().map(AnyRef::Pane));
-                }
                 match *target {
                     AnyRef::Pane(pane) => {
                         let place = self.locate(pane).into_iter();
@@ -2431,15 +2429,15 @@ impl Session {
                         );
                         self.close_pane(pane, None);
                     }
-                    AnyRef::Tab(tab) => self.remove_tab(tab),
-                    AnyRef::Workspace(ws) => {
-                        self.tab_ids(ws)
-                            .into_iter()
-                            .for_each(|tab| self.remove_tab(tab));
+                    AnyRef::Tab(_) | AnyRef::Workspace(_) => {
+                        // A tab there with no panes (moved out) has none to go.
+                        let panes = self.panes_of(*target).unwrap_or_default();
+                        may_go.extend(panes.into_iter().map(AnyRef::Pane));
+                        for tab in self.tabs_of(*target) {
+                            self.remove_tab(tab);
+                        }
+                        self.after_close();
                     }
-                }
-                if let AnyRef::Tab(_) | AnyRef::Workspace(_) = target {
-                    self.after_close();
                 }
                 let gone: Vec<AnyRef> = (may_go.into_iter())
                     .filter(|it| self.there(*it).is_err())
