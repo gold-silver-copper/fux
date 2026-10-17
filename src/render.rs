@@ -292,9 +292,9 @@ impl<'a> SameFrame<'a> {
     }
 }
 
-/// Puts a pane's window row on the grid at `line`, the pane's row there, in
-/// the pane's own colours if it has them; the window is `window_cols` wide.
-/// What the row does not cover of the pane's width is blanked.
+/// Puts a pane's window row on the grid at `line`, the pane's row there; the
+/// window is `window_cols` wide. What the row does not cover of the pane's
+/// width is blanked. All of it is in the pane's own colours if it has them.
 fn draw_row(
     grid: &mut Grid,
     pane: PaneId,
@@ -307,9 +307,6 @@ fn draw_row(
     let len = row.map_or(0, |row| row.len());
     if let Some(row) = row {
         grid.put_row(gy, gx, pane, row, width);
-        if let Some(screen) = colours {
-            grid.recolour(gy, gx, width, screen);
-        }
     }
     // At most `width`, which is at most the line's.
     let end = u16::try_from(len).unwrap_or(width).min(width);
@@ -323,6 +320,9 @@ fn draw_row(
         && let Some((gy, x)) = line.at(0, last)
     {
         grid.put(gy, x, CellRef::default());
+    }
+    if let Some(screen) = colours {
+        grid.recolour(gy, gx, line.w(), screen);
     }
 }
 
@@ -520,7 +520,7 @@ impl Grid {
         }
     }
     /// Draws the first `width` cells of row `y` from column `x`, a pane's
-    /// row `put_row` copied, in the colours its program set
+    /// row as `draw_row` put it, blanks too, in the colours its program set
     /// (`pane_colours`): so a pane whose program changed a palette entry,
     /// or its foreground or background, looks through fux as it would
     /// directly in a terminal, and the client's own palette is never
@@ -900,10 +900,10 @@ fn put_panes(
         let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
         let window = at.map_or_else(|| screen.window(), |at| at.top.window());
         let width = rect.w().min(window.cols());
-        // What the pane's screen does not cover of its place is blank.
-        grid.blank(rect.split(Axis::Vertical, window.rows()).1);
+        // What the pane's screen does not cover of its place, rows below
+        // its window's included, is blank.
         let mut pane_keys = Vec::new();
-        for (y, line) in (0..window.rows()).zip(rect.lines()) {
+        for (y, line) in (0..rect.h()).zip(rect.lines()) {
             let row = window.row(y);
             pane_keys.push(row.map(|r| (r.id(), r.version())));
             draw_row(grid, *id, row, (line, window.cols()), colours);
@@ -2504,6 +2504,23 @@ mod tests {
         assert_eq!(inverse(&client, 0, 0), Some(false));
         assert_eq!(inverse(&client, 0, 1), Some(true));
         assert_eq!(inverse(&client, 1, 0), Some(false));
+        Ok(())
+    }
+
+    /// The blanks fux fills itself where a pane's screen is smaller than
+    /// its place (a smaller client attached), past its rows' ends and below
+    /// its last row, are in the pane's colours too: with DECSCNM set they
+    /// are reversed, as the whole screen is (DEC STD 070, Screen Mode).
+    #[test]
+    fn a_reversed_panes_own_blanks_are_reversed() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
+        s.output(PaneId::of(1), b"\x1b[?5ha");
+        s.attach(3, 20, None)?;
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let inverse = |y, x| grid.get(y, x).map(|cell| cell.inverse());
+        assert_eq!(inverse(0, 0), Some(true));
+        assert_eq!(inverse(0, 30), Some(true), "past the row's end");
+        assert_eq!(inverse(4, 0), Some(true), "below the last row");
         Ok(())
     }
 
