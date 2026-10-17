@@ -2150,7 +2150,7 @@ impl Screen {
             handled = true;
             let on = match on {
                 Some(on) => on,
-                None if mode.savable() => self.saved_modes.contains(mode),
+                None if mode.fixed().is_none() => self.saved_modes.contains(mode),
                 None => continue,
             };
             report |= self.set_mode(mode, on)?;
@@ -2176,7 +2176,7 @@ impl Screen {
         }
         for group in p.groups() {
             if let [n] = group
-                && let Some(mode) = Mode::of(*n, true, options).filter(|m| m.savable())
+                && let Some(mode) = Mode::of(*n, true, options).filter(|m| m.fixed().is_none())
             {
                 self.saved_modes.set(mode, self.mode(mode));
             }
@@ -2775,13 +2775,13 @@ impl Screen {
             (b"?$" | b"$", b'p') if modes => {
                 let private = intermediates == b"?$";
                 let mode = Mode::of(n, private, options);
-                let status = match mode.map(|m| (m, m.kind())) {
+                let status = match mode {
                     None if !private && RESET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlyReset,
-                    None | Some((_, Kind::SaveCursor)) => ModeStatus::NotRecognized,
-                    Some((_, Kind::Permanent(true))) => ModeStatus::PermanentlySet,
-                    Some((_, Kind::Permanent(false))) => ModeStatus::PermanentlyReset,
-                    Some((mode, _)) if self.mode(mode) => ModeStatus::Set,
-                    Some(_) => ModeStatus::Reset,
+                    None => ModeStatus::NotRecognized,
+                    Some(mode) => mode.fixed().unwrap_or(match self.mode(mode) {
+                        true => ModeStatus::Set,
+                        false => ModeStatus::Reset,
+                    }),
                 };
                 let (marker, status) = (if private { "?" } else { "" }, status.number());
                 Some(Reply::of(format_args!("\x1b[{marker}{n};{status}$y")))

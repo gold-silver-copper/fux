@@ -160,10 +160,24 @@ modes! {
 pub(crate) const RESET_FOR_GOOD: [u16; 15] = [1, 2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19];
 
 impl Mode {
-    /// Whether XTSAVE saves it and XTRESTORE restores it: not 1048, an
-    /// action, nor a mode set or reset for good.
-    pub(crate) fn savable(self) -> bool {
-        !matches!(self.kind(), Kind::SaveCursor | Kind::Permanent(_))
+    /// What DECRQM reports for a mode SM and RM never change: 1048, an
+    /// action, is not recognized, and DECARM and 2027 are reset or set for
+    /// good. None for every other mode, which XTSAVE saves and XTRESTORE
+    /// restores.
+    pub(crate) fn fixed(self) -> Option<ModeStatus> {
+        match self.kind() {
+            Kind::SaveCursor => Some(ModeStatus::NotRecognized),
+            Kind::Permanent(true) => Some(ModeStatus::PermanentlySet),
+            Kind::Permanent(false) => Some(ModeStatus::PermanentlyReset),
+            Kind::Flag
+            | Kind::Margins
+            | Kind::Frame
+            | Kind::SizeReport
+            | Kind::Origin
+            | Kind::Screen(_)
+            | Kind::Mouse(_)
+            | Kind::Encoding(_) => None,
+        }
     }
 
     const fn bit(self) -> u32 {
