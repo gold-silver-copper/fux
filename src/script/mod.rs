@@ -737,25 +737,32 @@ fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     told(error, true)
 }
 
+/// A reply, or its failure: why, from its message, else from what it said.
+pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
+    match reply.end {
+        End::Failed {
+            status,
+            code,
+            message,
+        } => {
+            let message = match (message.trim_end(), reply.text.trim_end()) {
+                ("", text) => text,
+                (message, _) => message,
+            };
+            Err(Failed {
+                status,
+                code,
+                message: message.to_owned(),
+            })
+        }
+        End::Done | End::Answered { .. } => Ok(reply),
+    }
+}
+
 /// What a reply puts on the stack, `then` saying what it is; a failure,
 /// with its status, if it failed: why, else what it answered.
 pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
-    if let End::Failed {
-        status,
-        code,
-        message,
-    } = reply.end
-    {
-        let message = match (message.trim_end(), reply.text.trim_end()) {
-            ("", text) => text,
-            (message, _) => message,
-        };
-        return Err(Failed {
-            status,
-            code,
-            message: message.to_owned(),
-        });
-    }
+    let reply = succeeded(reply)?;
     let text = reply.text.trim_end_matches('\n').to_owned();
     let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
     // An action's answer is its pane's, when the reply names one pane alone

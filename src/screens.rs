@@ -11,8 +11,8 @@ use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::{KeyPress, Keystroke};
-use crate::protocol::{End, Reply, Scalar, ScreenKind};
-use crate::script::Failed;
+use crate::protocol::{Reply, Scalar, ScreenKind};
+use crate::script::{Failed, succeeded};
 use crate::view::Line;
 
 /// A screen a word asks to open: built with what the server knows (names,
@@ -125,7 +125,7 @@ impl Open {
                 target: Some(target),
                 get: Some("name".to_owned()),
             };
-            let reply = answered(ask(get)?)?;
+            let reply = succeeded(ask(get)?)?;
             Ok(reply.text.trim_end_matches('\n').to_owned())
         };
         Ok(match *self {
@@ -161,22 +161,6 @@ impl Open {
             }
             Open::ChoosePane(source) => chooser(ask, Choices::Panes(source), Some(source), "pane")?,
         })
-    }
-}
-
-/// A reply, or its failure.
-fn answered(reply: Reply) -> Result<Reply, Failed> {
-    match reply.end {
-        End::Failed {
-            status,
-            code,
-            message,
-        } => Err(Failed {
-            status,
-            code,
-            message,
-        }),
-        End::Done | End::Answered { .. } => Ok(reply),
     }
 }
 
@@ -230,7 +214,7 @@ fn chooser(
     moving: Option<PaneId>,
     what: &str,
 ) -> Result<Screen, Failed> {
-    let reply = answered(ask(Command::Client {
+    let reply = succeeded(ask(Command::Client {
         client: None,
         action: ClientAction::Choices(choices),
     })?)?;
