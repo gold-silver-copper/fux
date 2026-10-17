@@ -2155,10 +2155,6 @@ impl Session {
                 ..
             } => {
                 self.want(*ids, starting.restoring)?;
-                let log = log
-                    .as_ref()
-                    .map(|p| open_log(&self.cwd_for(here, None).join(p)))
-                    .transpose()?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 // Its place is out of every client's way: no client follows.
@@ -2176,6 +2172,11 @@ impl Session {
                     .clone()
                     .unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
                 let ws = (self.resolve_ws(&workspace), Some(&workspace));
+                // Opened, and so emptied, once nothing else refuses the run.
+                let log = log
+                    .as_ref()
+                    .map(|p| open_log(&self.cwd_for(here, None).join(p)))
+                    .transpose()?;
                 let made = self.create_tab(ws, name, start, place)?;
                 if let Some(given) = given {
                     self.give_tab_name(made.1, given)?;
@@ -2499,6 +2500,7 @@ impl Session {
                 }
             }
             Command::Log { target, file } => {
+                self.pane(*target)?;
                 let log = match file {
                     Some(file) => Some(open_log(&self.cwd_for(here, None).join(file))?),
                     None => None,
@@ -3768,6 +3770,26 @@ fn push_piece(
 mod tests {
     use super::testing::{attached, output, requests, run, started};
     use super::*;
+
+    /// A run refused (its name is taken) leaves the log file it names as it
+    /// was: the file is emptied only for a run that starts.
+    #[test]
+    fn a_refused_run_leaves_its_log_alone() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = started(Config::default())?;
+        let dir = std::env::temp_dir().join(format!("fux-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let log = dir.join("out.log");
+        let line = format!(
+            "opts str a name str '{}' log-to str /bin/cat program run",
+            log.display()
+        );
+        run(&mut s, &line)?;
+        std::fs::write(&log, "kept")?;
+        assert!(run(&mut s, &line).is_err_and(|e| e.contains("name_taken")));
+        assert_eq!(std::fs::read_to_string(&log)?, "kept");
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
 
     /// Keys sent to a tab's panes go to every one of them or to none: a
     /// pane that has no room for them refuses them before any is sent.
