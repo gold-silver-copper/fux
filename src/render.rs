@@ -596,12 +596,23 @@ impl Grid {
     /// column after it is returned.
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         let mut x = x;
-        for c in text.chars() {
+        // The cell last written, where its cluster starts in `text`, and
+        // whether it is wide: a char of no width joins that cluster (UAX
+        // #29, GB9 and GB9a), on a wide glyph's first half.
+        let mut last: Option<(u16, usize, bool)> = None;
+        for (at, c) in text.char_indices() {
             if c.is_control() {
+                last = None;
                 continue;
             }
             let width = cells(c);
             if width == 0 {
+                let end = at.saturating_add(c.len_utf8());
+                if let Some((x, start, wide)) = last
+                    && let Some(cluster) = text.get(start..end)
+                {
+                    self.set(y, x, CellRef::new(cluster, wide, style));
+                }
                 continue;
             }
             let Some(end) = x
@@ -613,6 +624,7 @@ impl Grid {
             let mut buffer = [0u8; 4];
             let cell = CellRef::new(c.encode_utf8(&mut buffer), width == 2, style);
             self.set(y, x, cell);
+            last = Some((x, at, width == 2));
             if width == 2
                 && let Some(second) = x.checked_add(1)
             {
@@ -2322,6 +2334,28 @@ mod tests {
             let cell = parser.screen().cell(0, x).ok_or("a cell")?;
             assert_eq!(cell.attributes(), *a, "cell {x}");
         }
+        Ok(())
+    }
+
+    /// A character of no width of its own (a combining mark, ZWJ, VS16)
+    /// is part of the cluster before it (UAX #29, GB9 and GB9a), so a panel
+    /// or the bar keeps it on that cell: `cafe` and U+0301 is `café`, four
+    /// cells wide; on a wide glyph it joins the glyph's first half.
+    #[test]
+    fn a_mark_of_no_width_stays_on_the_cell_before() -> Result<(), String> {
+        let mut grid = Grid::new(1, 8);
+        let end = grid.text(0, 0, "cafe\u{301} 界\u{301}x", PANEL, 8);
+        assert_eq!(end, 8);
+        assert_eq!(grid.row_text(0), "cafe\u{301} 界\u{301}x");
+        let fourth = grid.row(0).nth(3).map(|c| c.contents().to_owned());
+        assert_eq!(fourth.as_deref(), Some("e\u{301}"));
+        // Painted, a terminal reads it back so.
+        let mut parser = terminal(1, 8)?;
+        parser
+            .process(&paint(None, &grid))
+            .map_err(|e| e.to_string())?;
+        let row = parser.screen().rows().next().map(|r| r.cells_text());
+        assert_eq!(row.as_deref(), Some("cafe\u{301} 界\u{301}x"));
         Ok(())
     }
 
