@@ -165,10 +165,18 @@ impl Decoder {
             Command::None => None,
             Command::Raster => {
                 // Omitted aspect numbers are 1; the extent is the least
-                // size, not a clip (DEC STD 070, 8.1.2).
+                // size, not a clip, and "does not limit the number of
+                // pixels a device may image" (DEC STD 070, 8.1.2): past
+                // what a picture may hold, it is cut to that, and only
+                // data drawn spoils a picture.
                 if !self.begun {
                     self.aspect = (a.max(1), b.max(1));
                     let (right, bottom) = self.scaled(c, d);
+                    let right = right.min(MAX_SIDE);
+                    let most = u32::try_from(MAX_PIXELS)
+                        .unwrap_or(u32::MAX)
+                        .checked_div(right);
+                    let bottom = bottom.min(MAX_SIDE).min(most.unwrap_or(MAX_SIDE));
                     self.spoilt = !self.grow(right, bottom);
                 }
                 None
@@ -601,6 +609,18 @@ mod tests {
         for gap in ["\n", "\r", "\t", "\x08", "\x0b", "\x0c", " ", "\x7f"] {
             let data = format!("#1;2;0;{gap}0;100#1~");
             assert_eq!(first(data.as_bytes()), blue, "{gap:?}");
+        }
+    }
+
+    /// DEC STD 070, 8.1.2: the raster attributes' extent "does not limit
+    /// the number of pixels a device may image". One past what a picture
+    /// may hold, a side or the pixels, spoils none: the data decides.
+    #[test]
+    fn an_extent_past_the_limits_spoils_no_picture() {
+        let red = Some([255, 0, 0, 255]);
+        for extent in ["\"1;1;5000;10", "\"1;1;10;5000", "\"1;1;4000;4000"] {
+            let data = format!("{extent}#1;2;100;0;0~");
+            assert_eq!(first(data.as_bytes()), red, "{extent}");
         }
     }
 
