@@ -1302,7 +1302,12 @@ impl Server {
                     self.spare = Some(spare);
                     true
                 }
-                Err(e) => !out_of_descriptors(&e),
+                // Not a shortage of descriptors, the process's or the
+                // system's: there is room.
+                Err(e) => !matches!(
+                    fuxix::Errno::from_io_error(&e),
+                    Some(fuxix::Errno::MFILE | fuxix::Errno::NFILE)
+                ),
             };
             match accepted {
                 Ok((stream, _)) if !room => {
@@ -1834,15 +1839,6 @@ impl Server {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
-}
-
-/// Whether an error is a shortage of descriptors, the process's or the
-/// system's.
-fn out_of_descriptors(error: &std::io::Error) -> bool {
-    matches!(
-        fuxix::Errno::from_io_error(error),
-        Some(fuxix::Errno::MFILE | fuxix::Errno::NFILE)
-    )
 }
 
 #[cfg(test)]
