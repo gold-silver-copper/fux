@@ -727,7 +727,7 @@ fn compare_focus(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
         };
         tally.judge(
             || format!("{} focused {focused}", shown(setup.as_bytes())),
-            &ours,
+            ours,
             &theirs,
             None,
         );
