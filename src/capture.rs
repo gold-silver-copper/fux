@@ -47,9 +47,6 @@ pub fn pane(
         .flatten();
     // Where it is among the lines captured, found as they are made.
     let mut cursor = None;
-    // Whether the row before ended in the spacer a wide glyph left, not
-    // fitting at the row's end (`fux_vt::Row::ends_in_spacer`).
-    let mut spacer = false;
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // line each row is part of, and the lines the range touches.
     let line_of: Vec<usize> = read
@@ -73,8 +70,12 @@ pub fn pane(
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
         let mut lead = Attributes::default();
+        // Joined, the spacer a wide glyph left at the row's end, not fitting
+        // there, is no part of the line (`fux_vt::Row::ends_in_spacer`).
+        let spacer = usize::from(view.join && row.ends_in_spacer());
         let cells = row
             .cells()
+            .take(row.len().saturating_sub(spacer))
             .enumerate()
             .filter(|(col, _)| span.contains(col))
             .map(move |(_, cell)| {
@@ -126,10 +127,6 @@ pub fn pane(
         let count = lines.len();
         match lines.last_mut() {
             Some(last) if wraps => {
-                // The spacer is no part of the line.
-                if spacer {
-                    last.pop();
-                }
                 if let Some(col) = at {
                     cursor = Some((count.saturating_sub(1), last.len().saturating_add(col)));
                 }
@@ -143,7 +140,6 @@ pub fn pane(
             }
         }
         wraps = view.join && row.wrapped();
-        spacer = row.ends_in_spacer();
     }
     let (rows, cols) = screen.size().into();
     let cursor =
@@ -564,6 +560,25 @@ mod tests {
             first("abc\x1b[41m\x1b[K\x1b[m\x1b[5G世")?.as_deref(),
             Some("abc  世")
         );
+        Ok(())
+    }
+
+    /// Columns cut from a joined line leave the spacer out only when they
+    /// take its column: cut short of it, the last cell taken is text.
+    #[test]
+    fn columns_cut_short_of_the_spacer_keep_their_last_cell()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let view = CaptureView {
+            join: true,
+            cols: Some((0, 2)),
+            ..CaptureView::default()
+        };
+        let size = fux_vt::Size::new(3, 5)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        // 世 at col 4 does not fit and wraps on, leaving the spacer there.
+        pane.output("abcd\x1b[5G世".as_bytes());
+        let text = super::pane(&pane, None, view, false, false).0;
+        assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
 }
