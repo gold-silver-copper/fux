@@ -47,21 +47,20 @@ impl Door {
     /// another's, or anything else there, is refused.
     pub fn open(socket: &Path) -> io::Result<Door> {
         let path = path(socket);
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if !ours_fifo(&meta) => {
-                return Err(io::Error::other(format!(
-                    "{} is not a FIFO of this user's",
-                    path.display()
-                )));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => fuxix::file::make_fifo(&path, 0o600)?,
-            Err(e) => return Err(e),
+        if let Err(e) = fuxix::file::make_fifo(&path, 0o600)
+            && e.kind() != io::ErrorKind::AlreadyExists
+        {
+            return Err(e);
         }
+        // Whatever is there, checked as it was opened: no symbolic link is
+        // followed, and opening a file or a directory changes nothing.
         let knocks = open_fifo(&path, true, false)?;
         let held = open_fifo(&path, false, true)?;
         if !ours_fifo(&knocks.metadata()?) {
-            return Err(io::Error::other("the door changed as it was opened"));
+            return Err(io::Error::other(format!(
+                "{} is not a FIFO of this user's",
+                path.display()
+            )));
         }
         Ok(Door {
             knocks,
