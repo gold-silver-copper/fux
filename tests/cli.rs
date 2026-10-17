@@ -664,3 +664,19 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     );
     eventually("the file it made there", || Ok(dir.join("here").exists()))
 }
+
+/// An argument that is not UTF-8 text is refused as a usage error, said,
+/// not a panic.
+#[test]
+fn an_argument_that_is_not_text_is_refused() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let out = std::process::Command::new(fux())
+        .arg("str")
+        .arg(std::ffi::OsStr::from_bytes(b"caf\xe9"))
+        .output()
+        .map_err(e)?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.starts_with("fux: usage: "), "{stderr}");
+    Ok(())
+}

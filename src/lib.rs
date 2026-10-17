@@ -110,12 +110,22 @@ pub(crate) fn drain(mut pipe: &PipeReader) {
 /// fuxth on stdin; one word naming a file (with a `/`, or ending `.fux`)
 /// runs it; any other words are a fuxth program.
 pub fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some((SERVE, rest)) = args.split_first().map(|(a, rest)| (a.as_str(), rest)) {
+    // Words are text: an argument that is not is refused, not mangled.
+    let args: Result<Vec<String>, _> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string())
+        .collect();
+    let args = args.map_err(|arg| {
+        let why = format!("an argument is not text: {}", arg.display());
+        script::Failed::new(code::Code::Usage, why)
+    });
+    if let Ok(args) = &args
+        && let Some((SERVE, rest)) = args.split_first().map(|(a, rest)| (a.as_str(), rest))
+    {
         return serve(rest);
     }
     let mut stdout = std::io::stdout();
-    let status = match script::main(&args, &mut stdout) {
+    let status = match args.and_then(|args| script::main(&args, &mut stdout)) {
         Ok(status) => status,
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
