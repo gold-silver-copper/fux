@@ -339,20 +339,10 @@ impl State {
         let top = self.top.iter().rev().zip(other.top.iter().rev());
         let mut top: Vec<Kinds> = top.take(kept).map(|(a, b)| a.union(*b)).collect();
         top.reverse();
-        let outer = if self.outer.len() == other.outer.len() {
-            (self.outer.iter().zip(&other.outer))
-                .map(|(a, b)| a.join(b))
-                .collect()
-        } else {
-            self.outer.clone()
-        };
-        let iters = if self.iters.len() == other.iters.len() {
-            (self.iters.iter().zip(&other.iters))
-                .map(|(a, b)| a.union(*b))
-                .collect()
-        } else {
-            self.iters.clone()
-        };
+        // Both ways have the same `list` and `each` blocks open: blocks
+        // nest, so no jump goes into or out of one.
+        let outer = self.outer.iter().zip(&other.outer);
+        let iters = self.iters.iter().zip(&other.iters);
         State {
             top,
             lo: (self.lo.saturating_add(rest(self))).min(other.lo.saturating_add(rest(other))),
@@ -360,8 +350,8 @@ impl State {
             used: self.used.min(other.used),
             reached: self.reached.min(other.reached),
             bounded: self.bounded,
-            outer,
-            iters,
+            outer: outer.map(|(a, b)| a.join(b)).collect(),
+            iters: iters.map(|(a, b)| a.union(*b)).collect(),
             names: join_names(&self.names, &other.names),
             globals: join_names(&self.globals, &other.globals),
         }
