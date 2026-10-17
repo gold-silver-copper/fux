@@ -105,7 +105,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     let graphics = view.terminal.graphics();
     let Some(cell) = graphics
         .cell
-        .filter(|_| graphics.sixel && matches!(view.mode, Mode::Normal))
+        .filter(|_| graphics.sixel && view.mode.is_normal())
     else {
         return Vec::new();
     };
@@ -213,7 +213,7 @@ impl Frame {
         placement: &Placement,
         focus: Option<PaneId>,
     ) -> Option<Frame> {
-        if !matches!(view.mode, Mode::Normal) {
+        if !view.mode.is_normal() {
             return None;
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
@@ -795,7 +795,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             None => {
                 let (y, x) = screen.cursor_position();
                 if screen.mode(fux_vt::Mode::ShowCursor)
-                    && matches!(view.mode, Mode::Normal)
+                    && view.mode.is_normal()
                     && let Some(at) = rect.at(y, x)
                 {
                     grid.cursor = Some(at);
@@ -808,7 +808,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     // pane's program asked for it and nothing of fux's has the keys, so
     // that the rest of the time the terminal selects text as it does.
     // A client that only watches sends no clicks: its terminal selects.
-    if matches!(view.mode, Mode::Normal)
+    if view.mode.is_normal()
         && !view.read_only
         && let Some(focus) = focus
         && placement.rect(focus).is_some()

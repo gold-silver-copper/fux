@@ -92,6 +92,18 @@ pub enum Mode {
     Copy(Box<Copy>),
 }
 
+impl Mode {
+    /// Whether nothing shows over the panes, so they have the client: its
+    /// pictures, the program's cursor, the mouse, pastes and the composing
+    /// memo are the panes' only then.
+    pub fn is_normal(&self) -> bool {
+        match self {
+            Mode::Normal => true,
+            Mode::Panel(_) | Mode::Copy(_) => false,
+        }
+    }
+}
+
 /// Where a client shows what it is sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientKind {
