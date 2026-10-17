@@ -1753,6 +1753,8 @@ impl Screen {
                 self.links_seen = false;
                 self.primary.reset_links();
                 self.alternate.reset_links();
+                // Nor a picture.
+                self.pictures.clear();
                 self.alternate_active = false;
                 self.clear_on_show = None;
                 // The pen, the character sets, protection and the palette,

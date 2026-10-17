@@ -85,7 +85,10 @@ impl Screen {
     /// Places `picture` at the cursor: its cells take the placeholder, a
     /// row at a time down from the cursor's (scrolling at the bottom, as a
     /// terminal scrolls a sixel picture), clipped at the right edge; the
-    /// cursor ends below it, in its first column. A picture it covers goes.
+    /// cursor ends below it, in its first column. A picture of this screen
+    /// it covers goes, and so does one this screen no longer shows (text
+    /// or an erase over it, its rows gone from history), whose pixels
+    /// nothing can show again.
     pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> Result<(), Error> {
         let cell = self.graphics.cell.unwrap_or(CELL);
         let cells = |pixels: u32, per: u16| {
@@ -116,14 +119,14 @@ impl Screen {
         let alternate = self.alternate_active;
         // Pictures it now covers, wholly or not, are gone: their cells hold
         // its placeholder, not theirs.
-        let covered = |p: &Placement, screen: &Screen| {
+        let gone = |p: &Placement, screen: &Screen| {
             p.alternate == alternate
-                && screen.shown(p).is_some_and(|s| {
+                && screen.shown(p).is_none_or(|s| {
                     let mine = (screen.top_row(top), col, cols, rows);
                     overlaps((s.row, s.col, s.cols, s.rows), mine)
                 })
         };
-        let keep: Vec<bool> = self.pictures.iter().map(|p| !covered(p, self)).collect();
+        let keep: Vec<bool> = self.pictures.iter().map(|p| !gone(p, self)).collect();
         let mut keep = keep.into_iter();
         self.pictures.retain(|_| keep.next().unwrap_or(true));
         self.picture_ids = self.picture_ids.wrapping_add(1);

@@ -296,3 +296,20 @@ fn only_a_main_screen_clear_moves_a_commands_output() -> Result<(), Error> {
     assert_eq!(start(b"\x1b[2J\x1b[H")?, "AFTER");
     Ok(())
 }
+
+/// A picture the screen no longer shows holds no pixels: placing another
+/// lets go of one that text covered, and RIS of every one, as it clears
+/// the cells they covered.
+#[test]
+fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
+    let mut p = crate::Parser::new(Size::of(6, 10), 10)?;
+    let sixel = b"\x1bPq#1;2;100;0;0!6~\x1b\\";
+    p.process(sixel)?;
+    p.process(b"\x1b[1;1Hx\x1b[3;5H")?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    p.process(sixel)?;
+    assert_eq!(p.screen().pictures.len(), 1, "the covered one goes");
+    p.process(b"\x1bc")?;
+    assert_eq!(p.screen().pictures.len(), 0, "RIS lets every one go");
+    Ok(())
+}
