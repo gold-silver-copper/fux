@@ -147,8 +147,9 @@ impl Modifiers {
 
 /// A key with its modifiers, normalized so that equal key presses compare
 /// equal: a character's shift is dropped, as the character says it already
-/// (Shift and `a` arrive as `A`; `S-a` is `a`), and a control letter is
-/// lower case (`C-b`), as terminals cannot tell the two apart.
+/// (Shift and `a` arrive as `A`, and the name `S-a` is read as `A`), and a
+/// control letter is lower case (`C-b`), as terminals cannot tell the two
+/// apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyPress {
     /// The key.
@@ -354,6 +355,11 @@ impl std::str::FromStr for KeyPress {
         } else {
             let mut chars = rest.chars();
             match (chars.next(), chars.next()) {
+                // A letter's shift is its upper case, as it arrives typed
+                // (`S-a` is `A`); a control letter is lower case all the same.
+                (Some(c), None) if !c.is_control() && mods.shift => {
+                    Key::Char(c.to_ascii_uppercase())
+                }
                 (Some(c), None) if !c.is_control() => Key::Char(c),
                 _ => {
                     return Err(Error {
@@ -408,7 +414,10 @@ mod tests {
             ("-", "-"),
             ("C--", "C--"),
             ("T", "T"),
-            ("S-t", "t"),
+            ("S-t", "T"),
+            ("s-M-v", "M-V"),
+            ("S-1", "1"),
+            ("C-S-a", "C-a"),
             ("界", "界"),
             (":", ":"),
         ] {

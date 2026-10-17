@@ -156,30 +156,7 @@ pub fn keys_text(keys: &[KeyPress]) -> String {
 /// A key's name, read: `S-` on a letter is its upper case, as a character
 /// carries its own shift.
 pub fn key(word: &str) -> Result<KeyPress, String> {
-    let press: KeyPress = word
-        .parse()
-        .map_err(|_| format!("{word:?} is no key's name"))?;
-    // A character's shift is dropped in parsing it: `S-` is read again.
-    let mut rest = word;
-    let mut shift = false;
-    while let Some((modifier, tail)) = rest.split_at_checked(2) {
-        if tail.is_empty() {
-            break;
-        }
-        match modifier {
-            "S-" | "s-" => shift = true,
-            "C-" | "c-" | "M-" | "m-" => {}
-            _ => break,
-        }
-        rest = tail;
-    }
-    if let Key::Char(c) = press.key
-        && shift
-        && c.is_ascii_lowercase()
-    {
-        return Ok(KeyPress::new(Key::Char(c.to_ascii_uppercase()), press.mods));
-    }
-    Ok(press)
+    (word.parse()).map_err(|_| format!("{word:?} is no key's name"))
 }
 
 /// Keys from their names, separated by spaces: `t n`.
