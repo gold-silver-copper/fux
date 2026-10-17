@@ -746,9 +746,11 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "wide",
         about: "wide (CJK) and halfwidth characters, at and across the right edge",
-        status: Status::Differs(
-            "on a one-column screen fux-vt drops a wide glyph, carrying out a wrap pending before it, as xterm does where no reference settles it (500 cases of this family agree with xterm alone); avt agrees, and Ghostty, alacritty, libvterm, wezterm and tmux each differ (alacritty and wezterm draw the glyph) (`replay --engines all --size 2x1 ' \\u{3046}'`). With DECAWM off a wide glyph that no longer fits on the row is dropped, as in xterm (`replay --engines xterm --size 2x4 '\\e[?7labc\\u{754c}'`)",
-        ),
+        status: Status::Decided {
+            why: "on a one-column screen fux-vt drops a wide glyph, carrying out a wrap pending before it, as xterm does where no reference settles it (500 cases of this family agree with xterm alone); avt agrees, and Ghostty, alacritty, libvterm, wezterm and tmux each differ (alacritty and wezterm draw the glyph) (`replay --engines all --size 2x1 ' \\u{3046}'`). With DECAWM off a wide glyph that no longer fits on the row is dropped, as in xterm (`replay --engines xterm --size 2x4 '\\e[?7labc\\u{754c}'`)",
+            by: XTERM,
+            authority: Authority::Xterm,
+        },
         ratty_only: false,
         generate: wide,
     },
