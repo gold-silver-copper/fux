@@ -388,7 +388,10 @@ wire! {
         /// stands (closed, reading short of the text, still busy).
         Answered(code: Code),
         /// Failed, with its code and why.
-        Failed { code: Code, message: String },
+        Failed {
+            code: Code,
+            message: String,
+        },
     }
 }
 
