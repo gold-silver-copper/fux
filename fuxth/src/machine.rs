@@ -533,11 +533,7 @@ impl<A: AppValue> Machine<A> {
     /// Counts `n` elements built: past what a run may build in all, or past
     /// what one value may hold, a `too_long` error.
     fn build(&mut self, n: usize) -> Result<(), Error> {
-        if n > LONGEST {
-            return Err(self.too_long(format!(
-                "{n} elements, and a string or list holds at most {LONGEST}"
-            )));
-        }
+        self.fits(n)?;
         self.cost(n);
         self.built = self
             .built
@@ -635,9 +631,7 @@ impl<A: AppValue> Machine<A> {
     fn pushed(&mut self, seq: Sequence<A>, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
-                if list.items().len() >= LONGEST {
-                    return Err(self.too_long(format!("a list holds at most {LONGEST} elements")));
-                }
+                self.fits(list.items().len().saturating_add(1))?;
                 self.build(copied(&list, list.items().len()).saturating_add(1))?;
                 // In place when nothing else holds the list.
                 match Rc::make_mut(&mut list).push(x) {
@@ -646,7 +640,7 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             (Sequence::Str(mut s), Value::Str(x)) => {
-                self.text_fits(s.chars_len().saturating_add(x.chars_len()))?;
+                self.fits(s.chars_len().saturating_add(x.chars_len()))?;
                 self.build(copied(&s, s.chars_len()).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
@@ -655,10 +649,12 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    /// Whether a string `n` characters long may be.
-    fn text_fits(&self, n: usize) -> Result<(), Error> {
+    /// Whether a string or list `n` elements long may be.
+    fn fits(&self, n: usize) -> Result<(), Error> {
         if n > LONGEST {
-            return Err(self.too_long(format!("a string holds at most {LONGEST} characters")));
+            return Err(self.too_long(format!(
+                "{n} elements, and a string or list holds at most {LONGEST}"
+            )));
         }
         Ok(())
     }
@@ -676,7 +672,7 @@ impl<A: AppValue> Machine<A> {
             (Sequence::Str(mut s), Value::Str(x)) => {
                 // One character replaced by x's.
                 let others = s.chars_len().saturating_sub(1);
-                self.text_fits(others.saturating_add(x.chars_len()))?;
+                self.fits(others.saturating_add(x.chars_len()))?;
                 self.build(copied(&s, others).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
