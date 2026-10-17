@@ -103,9 +103,12 @@ impl Screen {
         }
     }
 
-    /// A prompt was drawn: the shell reads its command line, and a line
-    /// submitted before is no longer its.
+    /// A prompt was drawn on the cursor's row, which starts one now: the
+    /// shell reads its command line, and a line submitted before is no
+    /// longer its.
     pub(crate) fn prompted(&mut self) {
+        let row = self.grid().cursor.row();
+        self.grid_mut().set_prompt(row, true);
         self.commands.prompt = true;
         self.submitted = None;
     }

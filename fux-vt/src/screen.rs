@@ -831,8 +831,6 @@ impl Screen {
         if command == b"P" {
             let kind = parts.find_map(|option| option.strip_prefix(b"k="));
             if kind.is_none_or(|k| k == b"i") {
-                let row = self.grid().cursor.row();
-                self.grid_mut().set_prompt(row, true);
                 self.prompted();
             }
             return Ok(());
@@ -851,8 +849,6 @@ impl Screen {
             self.linefeed()?;
         }
         if command != b"L" {
-            let row = self.grid().cursor.row();
-            self.grid_mut().set_prompt(row, true);
             self.prompted();
         }
         Ok(())
