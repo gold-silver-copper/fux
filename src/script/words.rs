@@ -1105,6 +1105,11 @@ impl fuxth::Host for Host<'_> {
                 later(ask(Command::Ls { target, get }, then))
             }
             "json" => match next()? {
+                // Options are no value to convert: what they make is.
+                Value::App(Fux::Opts(_)) => Err(fail(
+                    Code::Unused,
+                    "converts a value: it goes after what the options make (opts capture json)",
+                )),
                 // An answer's JSON as given: of several panes, a line each.
                 Value::App(Fux::Answer(answer)) if answer.json.is_some() => {
                     now(out, Value::str(answer.json.unwrap_or_default()))

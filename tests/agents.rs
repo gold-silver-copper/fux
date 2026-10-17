@@ -3226,8 +3226,8 @@ fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
         "pane",
         "opts",
         "last-output",
-        "json",
         "capture",
+        "json",
     ])?;
     assert!(json.contains("\"cursor\":[1,1]"), "{json}");
     Ok(())
