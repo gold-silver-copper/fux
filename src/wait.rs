@@ -57,7 +57,8 @@ const HOLD: Duration = Duration::from_millis(10);
 
 /// A wait under way.
 pub struct Waiting {
-    watches: Vec<Watch>,
+    /// Each pane it watches, in order, and how far it came there.
+    watches: Vec<(PaneId, Look)>,
     pub(crate) wait: Wait,
     /// The texts it looks for (`wait-text`), in order.
     texts: Vec<String>,
@@ -67,8 +68,12 @@ pub struct Waiting {
     /// How long it waits at most: its own timeout, else the server's.
     pub(crate) limit: Duration,
     follows: Follows,
-    /// What each pane said, once it has.
-    answers: Vec<Option<Reply>>,
+}
+
+/// A pane of a wait: still looked at, or its answer, which no look changes.
+enum Look {
+    Looking(Watch),
+    Told(Reply),
 }
 
 /// What a wait follows, which decides how it reads its panes and what its
@@ -113,7 +118,6 @@ struct Since {
 
 /// One pane a wait watches, and what it found as it began.
 struct Watch {
-    pane: PaneId,
     /// What came after this is new to it.
     start: Start,
     /// Pieces of output it had not read yet were let go.
@@ -180,8 +184,9 @@ impl Waiting {
             })
             .collect();
         Waiting {
-            answers: vec![None; panes.len()],
-            watches: panes.iter().map(|p| Watch::new(p, wait.after)).collect(),
+            watches: (panes.iter())
+                .map(|p| (p.id, Look::Looking(Watch::new(p, wait.after))))
+                .collect(),
             texts,
             deadline: crate::after(now, limit),
             limit,
@@ -201,7 +206,10 @@ impl Waiting {
             .then(|| crate::after(now, PROBE));
         // A pane seen settled is looked at again once its hold is up.
         let held = (self.watches.iter())
-            .filter_map(|w| w.settled_since)
+            .filter_map(|(_, look)| match look {
+                Look::Looking(watch) => watch.settled_since,
+                Look::Told(_) => None,
+            })
             .map(|(since, _)| crate::after(since, HOLD).max(now))
             .min();
         [probe, held]
@@ -223,7 +231,7 @@ impl Waiting {
         let watched = self
             .watches
             .first()
-            .and_then(|w| session.panes.get(&w.pane));
+            .and_then(|(id, _)| session.panes.get(id));
         if let (Some((history, view)), Some(pane)) = (capture, watched) {
             let copying = session.copying(pane.id);
             let (read, form) = crate::capture::pane(pane, history, view, true, copying);
@@ -243,25 +251,27 @@ impl Waiting {
         let (wait, texts, limit) = (&self.wait, self.texts.as_slice(), self.limit);
         let (window, mode) = ((self.began, now), self.follows.mode());
         let late = now >= self.deadline;
-        for (watch, answer) in self.watches.iter_mut().zip(&mut self.answers) {
-            if answer.is_some() {
-                continue;
-            }
-            let Some(pane) = session.panes.get(&watch.pane) else {
-                *answer = Some(wait.gone(watch.pane));
+        for (id, look) in &mut self.watches {
+            let watch = match look {
+                Look::Looking(watch) => watch,
+                Look::Told(_) => continue,
+            };
+            let Some(pane) = session.panes.get(id) else {
+                *look = Look::Told(wait.gone(*id));
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *answer = Some(wait.told(pane, told, limit, watch.since(pane)));
+                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane)));
             } else if late {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *answer = Some(wait.told(pane, told, limit, watch.since(pane)));
+                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane)));
             }
         }
-        let answers: Vec<&Reply> = self
-            .answers
-            .iter()
-            .map(Option::as_ref)
+        let answers: Vec<&Reply> = (self.watches.iter())
+            .map(|(_, look)| match look {
+                Look::Looking(_) => None,
+                Look::Told(reply) => Some(reply),
+            })
             .collect::<Option<_>>()?;
         if let [one] = answers.as_slice() {
             return Some((*one).clone());
@@ -584,7 +594,6 @@ impl Watch {
             false => pane.since,
         };
         Watch {
-            pane: pane.id,
             start,
 
             missed: false,
@@ -1318,6 +1327,44 @@ mod tests {
         let mut parser = fux_vt::Parser::new(fux_vt::Size::new(3, 4)?, 0)?;
         parser.process("aaa界".as_bytes())?;
         assert!(super::on_screen(parser.screen(), "aaa界"));
+        Ok(())
+    }
+
+    /// A pane that has answered is looked at no more: only the one still
+    /// to answer sets when the wait is asked again. (Its settled pane once
+    /// asked for "now" on every turn, and the server spun a core.)
+    #[test]
+    fn an_answered_pane_sets_no_time_to_look_again() -> Result<(), String> {
+        use crate::command::{Until, Wait};
+        use std::time::{Duration, Instant};
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        crate::session::testing::run(&mut session, "%1 opts horizontal split")?;
+        let ids = [crate::id::PaneId::of(1), crate::id::PaneId::of(2)];
+        let panes: Vec<_> = ids.iter().filter_map(|id| session.panes.get(id)).collect();
+        let wait = Wait {
+            until: vec![Until::Settled],
+            timeout: None,
+            print: false,
+            after: false,
+            marks: false,
+        };
+        let began = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .ok_or("no instant a second back")?;
+        let limit = Duration::from_secs(60);
+        let mut waiting = super::Waiting::new(&panes, wait, super::Follows::Wait, began, limit);
+        assert!(waiting.answer(&session, began).is_none());
+        // %2 changes on screen before its hold is up, so it settles later;
+        // %1, still, answers at its hold.
+        let two = session.panes.get_mut(&ids[1]).ok_or("no %2")?;
+        two.revision += 1;
+        let later = crate::after(began, super::HOLD);
+        assert!(waiting.answer(&session, later).is_none());
+        let two = session.panes.get_mut(&ids[1]).ok_or("no %2")?;
+        two.revision += 1;
+        let far = crate::after(began, Duration::from_secs(2));
+        assert!(waiting.answer(&session, far).is_none());
+        assert!(waiting.due() > Instant::now());
         Ok(())
     }
 
