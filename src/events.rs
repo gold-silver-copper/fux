@@ -386,7 +386,8 @@ mod tests {
         ];
         let mut lines = Vec::new();
         for what in what {
-            // A new kind of event is listed above, or this does not compile.
+            // A new kind of event does not compile here until it has an
+            // arm; whoever adds the arm adds its value to the list above.
             match what {
                 What::Created(_)
                 | What::Renamed(_)

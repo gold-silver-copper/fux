@@ -1,7 +1,8 @@
 //! What each word leaves on the stack, a row per word, target kind, wait
 //! and context, each asserting the whole stack the word leaves above a
 //! sentinel. The rows hold what the words do (BASE's behaviour, wrong parts
-//! included); a fix changes its rows. Expected stacks are written by hand.
+//! included, then each fix since, as T4 and T5); a fix changes its rows.
+//! Expected stacks are written by hand.
 use crate::session::testing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,8 +41,9 @@ const fn row(
     }
 }
 
-/// The words whose effect is a range or whose target is a pane, a tab or
-/// a workspace, as at 8fe55f1e, and the target kinds each was given.
+/// The words whose target is a pane, a tab or a workspace (or, at
+/// 8fe55f1e, whose effect was a range), and the target kinds each was
+/// given.
 const WORDS: &[&str] = &[
     "send-keys",
     "send-mouse",

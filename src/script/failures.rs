@@ -2,8 +2,9 @@
 //! exit status it fails with. At least one row per error code an agent can
 //! cause from a command line or a key, and one per path to it; the codes
 //! only a real server, socket or file can give are listed apart with why.
-//! The rows hold what fux does at 8fe55f1e; a change of code or status
-//! changes its row, and is listed in the PR as a change for agents.
+//! The rows hold what fux does: BASE's (8fe55f1e) codes and statuses, then
+//! each change since (T4, T5); a change of code or status changes its row,
+//! and is listed in the PR as a change for agents.
 use crate::code::Code;
 use crate::session::testing;
 
@@ -95,6 +96,7 @@ const ROWS: &[Fails] = &[
     fails("call_depth", Cli, "define f f 1 end f", "fails call_depth 1"),
     fails("type", Cli, "str a 1 add", "fails type 1"),
     fails("type", Cli, "5 70000 0 mouse", "fails type 1"),
+    fails("too_long", Cli, "define deep let x list x end deep end 0 deep", "fails too_long 1"),
     fails("div_by_zero", Cli, "1 0 div", "fails div_by_zero 1"),
     fails("overflow", Cli, "9223372036854775807 1 add", "fails overflow 1"),
     fails("unset", Cli, "false if 1 let n then n", "fails unset 1"),
@@ -133,7 +135,6 @@ const ELSEWHERE: &[(&str, &str)] = &[
     ("check", "a fuxth file with mistakes: check reads a file"),
     ("output", "writing to a closed stdout: the CLI"),
     ("nested", "attach from inside a fux pane: the CLI with FUX_PANE"),
-    ("too_long", "a typed line past the PTY's line limit: needs a process"),
     ("steps", "a key's program past its step budget: the client runs it with one, this harness without"),
     ("contract", "a word of fux's leaving a count its effect doesn't allow: no input can cause it"),
 ];
