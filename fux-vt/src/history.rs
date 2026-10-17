@@ -279,16 +279,11 @@ impl History {
             self.block(kept.block())?.get(Self::cells_of(kept)?)?
         };
         let number = self.number(index)?;
-        let text = if kept.flags() & TEXT != 0 {
-            self.texts.get(&number).unwrap_or(&NO_TEXT)
-        } else {
-            &NO_TEXT
-        };
-        let links = if kept.flags() & LINKED != 0 {
-            self.linked.get(&number)
-        } else {
-            None
-        };
+        // Looked up only for a row its flags say has some.
+        let text = (kept.flags() & TEXT != 0).then(|| self.texts.get(&number));
+        let text = text.flatten().unwrap_or(&NO_TEXT);
+        let links = (kept.flags() & LINKED != 0).then(|| self.linked.get(&number));
+        let links = links.flatten();
         Some(Found {
             kept,
             cells,
