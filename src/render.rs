@@ -1255,7 +1255,7 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
     let key_width = column
         .entries
         .iter()
-        .map(|e| width(&e.key))
+        .map(|e| width(&e.key.to_string()))
         .max()
         .unwrap_or(0);
     let mut entries: Vec<Line<'_>> = Vec::new();
@@ -1268,8 +1268,8 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
             heading = Some(group);
         }
         let more = if entry.layer { "…" } else { "" };
-        let key = &entry.key;
-        let pad = usize::from(key_width.saturating_sub(width(key)));
+        let key = entry.key.to_string();
+        let pad = usize::from(key_width.saturating_sub(width(&key)));
         let mut attrs = PANEL;
         if index == column.selected {
             attrs = attrs.with_inverse(true);

@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(queued_focused(&mut s, c), b"\x02");
         let at = (s.test_keymap.column(&[], 0).ok_or("a column")?.entries)
             .iter()
-            .position(|e| e.key == "g")
+            .position(|e| e.key.to_string() == "g")
             .ok_or("the layer is listed")?;
         s.input(c, b"\x02");
         s.input(c, &downs(at));

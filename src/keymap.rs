@@ -482,7 +482,7 @@ impl Keymap {
                     }
                 };
                 Some(ColumnEntry {
-                    key: key.to_string(),
+                    key: *key,
                     label,
                     group,
                     layer,
@@ -497,7 +497,7 @@ impl Keymap {
                     group => group.to_owned(),
                 };
                 ColumnEntry {
-                    key: key.to_string(),
+                    key: *key,
                     label: binding.label.clone(),
                     group,
                     layer: false,
@@ -703,7 +703,7 @@ impl Held {
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
             let chosen = keymap.column(&path, selected).and_then(|c| {
                 let entry = c.entries.into_iter().nth(c.selected)?;
-                Some((key(&entry.key).ok()?, entry.root))
+                Some((entry.key, entry.root))
             });
             return match chosen {
                 // A key bound without the prefix, listed after the rest.
@@ -1005,7 +1005,7 @@ mod tests {
             "{entries:?}"
         );
         assert_eq!(
-            entries.first().map(|e| e.key.as_str()),
+            entries.first().map(|e| e.key.to_string()).as_deref(),
             Some("v"),
             "Panes come first"
         );

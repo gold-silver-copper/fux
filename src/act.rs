@@ -10,7 +10,7 @@ use crate::command::AnyRef;
 use crate::keys::colour::Scheme;
 use crate::keys::decode::Reply;
 use crate::keys::mouse::{MouseAction, MouseEvent};
-use crate::keys::{Keystroke, Kitty, Modifiers};
+use crate::keys::{KeyPress, Keystroke, Kitty, Modifiers};
 use crate::wire::{closed_wire, wire, wire_enum, wire_struct};
 use fux_vt::ModeStatus;
 
@@ -79,7 +79,7 @@ wire! {
     /// under, and whether it opens a layer of more keys.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct ColumnEntry {
-        pub key: String,
+        pub key: KeyPress,
         pub label: String,
         pub group: String,
         pub layer: bool,
