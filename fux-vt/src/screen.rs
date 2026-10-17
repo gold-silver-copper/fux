@@ -1843,11 +1843,10 @@ impl Screen {
     /// protection, ED and EL with ISO's alone (xterm's `do_erase_display`
     /// and `do_erase_line`). Whether it erased: ED and EL under DEC
     /// protection erase every cell, as `csi` does without. The rest is as
-    /// for ED and EL. As in xterm, an ED of the whole screen (2, or 0 from
-    /// the first cell, or 1 from the last) that finds no protected glyph
-    /// ends the protection: until the next DECSCA or SPA, erases leave
-    /// nothing. Out of line: inlined, the tmux recordings count up to 0.35%
-    /// more instructions (fux-bench).
+    /// for ED and EL. An erase that finds no protected glyph leaves the
+    /// protection as it is (DEC STD 070, 5.11.1.2; ECMA-48 8.3.140), where
+    /// xterm ends it after an ED of the whole screen. Out of line: inlined,
+    /// the tmux recordings count up to 0.35% more instructions (fux-bench).
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) -> bool {
         if !private && self.protection != Protection::Iso {
@@ -1855,19 +1854,9 @@ impl Screen {
         }
         let blank = self.blank_style();
         let version = self.version;
-        let g = self.grid_mut();
-        let ((row, col), size) = (g.cursor.at(), g.size());
-        let found = g.erase_in(display, part, |g, y, start, end| {
+        self.grid_mut().erase_in(display, part, |g, y, start, end| {
             g.erase_unprotected(y, start, end, blank, version)
         });
-        let whole = match part {
-            Erase::Below => (row, col) == (0, 0),
-            Erase::Above => (row, col) == (size.lines().last(), size.columns().last()),
-            Erase::All => true,
-        };
-        if display && whole && !found {
-            self.protection = Protection::Off;
-        }
         true
     }
 
@@ -2492,8 +2481,7 @@ impl Screen {
                 self.with_grid(|g, _, v| {
                     g.erase_in(byte == b'J', part, |g, y, start, end| {
                         g.erase(y, start, end, a, v);
-                        false
-                    })
+                    });
                 });
                 if byte == b'J' && part == Erase::All {
                     self.screen_erased();

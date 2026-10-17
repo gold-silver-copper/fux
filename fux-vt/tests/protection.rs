@@ -73,13 +73,15 @@ fn iso_protection_keeps_glyphs_from_every_erase() -> Result {
 }
 
 /// What erasing leaves is the terminal's, set by the last DECSCA (any
-/// DECSCA, 0 too) or SPA, and, as in xterm (`do_erase_display`), an ED of
-/// the whole screen that finds no protected glyph ends it: glyphs
-/// protected after that are erased by every erase, until the next DECSCA
-/// or SPA.
+/// DECSCA, 0 too) or SPA. An ED of the whole screen that finds no
+/// protected glyph changes none of it: DECSCA's attribute stays until
+/// another DECSCA, DECSTR or RIS (DEC STD 070, 5.11.1.2, and Soft
+/// Terminal Reset), and SPA's guarded area until EPA (ECMA-48 8.3.140),
+/// where xterm ends the protection (`do_erase_display`).
 #[test]
-fn an_erase_that_finds_no_protected_glyph_ends_the_protection() -> Result {
-    assert_eq!(after("\x1b[1\"q\x1b[?2Jab\x1b[1;1H\x1b[?2K")?, ["", ""]);
+fn an_erase_that_finds_no_protected_glyph_keeps_the_protection() -> Result {
+    assert_eq!(after("\x1b[1\"q\x1b[?2Jab\x1b[1;1H\x1b[?2K")?, ["ab", ""]);
+    assert_eq!(after("\x1bV\x1b[2Jab\x1b[1;1H\x1b[2K")?, ["ab", ""]);
     assert_eq!(
         after("\x1b[1\"q\x1b[?2Jab\x1b[0\"qcd\x1b[1;1H\x1b[?2K")?,
         ["ab", ""]

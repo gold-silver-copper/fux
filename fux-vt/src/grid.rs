@@ -1060,8 +1060,7 @@ impl Grid {
     }
 
     /// ED (`display`) or EL of `part`, from the cursor, ending a pending
-    /// wrap: `erase` erases each row's span, and says whether it found
-    /// something it left; whether any did. A row ED erases whole is no
+    /// wrap: `erase` erases each row's span. A row ED erases whole is no
     /// prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
     /// leave the mark (a shell redrawing its prompt erases from it).
     #[inline]
@@ -1069,11 +1068,10 @@ impl Grid {
         &mut self,
         display: bool,
         part: Erase,
-        mut erase: impl FnMut(&mut Self, u16, u16, u16) -> bool,
-    ) -> bool {
+        mut erase: impl FnMut(&mut Self, u16, u16, u16),
+    ) {
         self.cursor.pending_wrap = false;
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
-        let mut found = false;
         if display {
             for y in 0..self.size.rows() {
                 let whole = match part {
@@ -1082,7 +1080,7 @@ impl Grid {
                     Erase::All => true,
                 };
                 if whole {
-                    found |= erase(self, y, 0, cols);
+                    erase(self, y, 0, cols);
                     self.set_prompt(y, false);
                 }
             }
@@ -1092,23 +1090,15 @@ impl Grid {
             Erase::Above => (0, col.saturating_add(1).min(cols)),
             Erase::All => (0, cols),
         };
-        erase(self, row, start, end) | found
+        erase(self, row, start, end);
     }
 
     /// `erase`, leaving protected glyphs (DECSCA, SPA) as they are: each
     /// run of unprotected cells between them is erased, as xterm's
     /// `ClearInLine2` erases around them. A wide glyph's second half is
-    /// protected if its first half is. Whether there was a protected glyph
-    /// in the span. Out of line, as protection is rare.
+    /// protected if its first half is. Out of line, as protection is rare.
     #[inline(never)]
-    pub fn erase_unprotected(
-        &mut self,
-        row: u16,
-        start: u16,
-        end: u16,
-        style: u32,
-        version: u64,
-    ) -> bool {
+    pub fn erase_unprotected(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) {
         let end = end.min(self.size.cols());
         let cells = self.live_cells(row);
         let protected = |at: usize| {
@@ -1123,10 +1113,8 @@ impl Grid {
         };
         let mut runs = Vec::new();
         let mut from = start;
-        let mut found = false;
         for col in start..end {
             if protected(usize::from(col)) {
-                found = true;
                 if from < col {
                     runs.push((from, col));
                 }
@@ -1139,7 +1127,6 @@ impl Grid {
         for (from, to) in runs {
             self.erase(row, from, to, style, version);
         }
-        found
     }
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
