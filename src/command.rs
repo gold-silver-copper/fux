@@ -732,8 +732,10 @@ impl Command {
 /// When the wait a command then does is armed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Armed {
-    /// Before it acts, in these panes: what its input or signal brings is
-    /// what the wait sees (send-keys, send-mouse, signal).
+    /// From just before it acts, in these panes: the wait is made once it
+    /// has acted, counting from its input (`Pane::since`), so what its
+    /// input or signal brings is what the wait sees (send-keys,
+    /// send-mouse, signal).
     Before(AnyRef),
     /// Once it has started its pane's program, on that pane, before the
     /// server reads what the program writes (run, split, respawn).

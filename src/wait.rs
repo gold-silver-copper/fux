@@ -5,8 +5,9 @@
 //! or its time comes (`Waiting::due`).
 //!
 //! A wait counts from a number in its pane's log (`crate::log`): what came
-//! after it is new to it. That is the action it was armed before, else the
-//! last action's input to the pane, or its program's start. Text is looked
+//! after it is new to it. That is the input of the action it follows
+//! (made once the action has acted, in the same turn), else the last
+//! action's input to the pane, or its program's start. Text is looked
 //! for in what was printed since, piece by piece as the pane recorded it
 //! (`Pane::prints`), on the line each piece went on wherever that line is
 //! now (on the screen, in history, or let go), and in the piece's own text,
@@ -75,7 +76,7 @@ pub enum Follows {
     /// Nothing: a bare `wait`, which on a pane that may go on alone
     /// (`waiting`, or quiet with nothing known) waits for something new.
     Wait,
-    /// The action it was armed before (send-keys, send-mouse, signal).
+    /// An action (send-keys, send-mouse, signal), counted from its input.
     Action,
     /// The program a command has just started (run, split, respawn): its
     /// screen is blank, so a text is gone only once it has appeared.
