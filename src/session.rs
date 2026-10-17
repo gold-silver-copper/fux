@@ -2322,13 +2322,20 @@ impl Session {
                 // release leaves it held.
                 let unheld = |button| p.mouse_held.filter(|held| *held != button);
                 let (events, held) = match mouse {
-                    Mouse::Click(button) => (
-                        vec![event(Press, Some(button)), event(Release, Some(button))],
-                        unheld(button),
-                    ),
-                    Mouse::Press(button) => (vec![event(Press, Some(button))], Some(button)),
-                    Mouse::Wheel(button) => (vec![event(Press, Some(button))], p.mouse_held),
-                    Mouse::Release(button) => (vec![event(Release, Some(button))], unheld(button)),
+                    Mouse::Click(button) => {
+                        let button = button.reported();
+                        let events = vec![event(Press, Some(button)), event(Release, Some(button))];
+                        (events, unheld(button))
+                    }
+                    Mouse::Press(button) => {
+                        let button = button.reported();
+                        (vec![event(Press, Some(button))], Some(button))
+                    }
+                    Mouse::Wheel(way) => (vec![event(Press, Some(way.reported()))], p.mouse_held),
+                    Mouse::Release(button) => {
+                        let button = button.reported();
+                        (vec![event(Release, Some(button))], unheld(button))
+                    }
                     Mouse::Move => (vec![event(Motion, p.mouse_held)], p.mouse_held),
                 };
                 let mode = p.screen().mouse_protocol_mode();

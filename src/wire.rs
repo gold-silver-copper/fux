@@ -3,8 +3,9 @@
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
-    AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
-    PanePick, PaneResize, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, WsRef,
+    AnyRef, Button, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse,
+    MoveTo, PanePick, PaneResize, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait,
+    Wheel, WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
@@ -427,6 +428,19 @@ wire_struct!(Wait {
     after,
     marks
 });
+wire_enum!(Button, "button" {
+    0 => Left,
+    1 => Middle,
+    2 => Right,
+    3 => Back,
+    4 => Forward,
+});
+wire_enum!(Wheel, "wheel" {
+    0 => Up,
+    1 => Down,
+    2 => Left,
+    3 => Right,
+});
 wire_enum!(Mouse, "mouse" {
     0 => Click(b),
     1 => Press(b),
@@ -502,6 +516,23 @@ mod tests {
         each(&Signal::ALL);
         each(&fux_vt::ModeStatus::ALL);
         each(&crate::keys::colour::Scheme::ALL);
+    }
+
+    /// A button `send-mouse` presses is never the wheel, and the wheel
+    /// turns only as the wheel: each reports as what it is.
+    #[test]
+    fn buttons_and_the_wheel_report_as_themselves() {
+        use crate::command::{Button, Wheel};
+        let buttons = [
+            Button::Left,
+            Button::Middle,
+            Button::Right,
+            Button::Back,
+            Button::Forward,
+        ];
+        assert!(buttons.iter().all(|b| !b.reported().is_wheel()));
+        let ways = [Wheel::Up, Wheel::Down, Wheel::Left, Wheel::Right];
+        assert!(ways.iter().all(|w| w.reported().is_wheel()));
     }
 
     /// A share of a tab is 1 to 100 percent, from the wire too: 250 would

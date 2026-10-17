@@ -248,13 +248,57 @@ pub struct Wait {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mouse {
     /// A press and its release.
-    Click(MouseButton),
-    Press(MouseButton),
-    Release(MouseButton),
+    Click(Button),
+    Press(Button),
+    Release(Button),
     /// The wheel turned: one notch.
-    Wheel(MouseButton),
+    Wheel(Wheel),
     /// The pointer moves, no button held.
     Move,
+}
+
+/// A button `send-mouse` presses and releases: never the wheel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
+}
+
+/// A way the wheel turns, which is pressed and never released.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wheel {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Button {
+    /// The button a report names.
+    pub fn reported(self) -> MouseButton {
+        match self {
+            Button::Left => MouseButton::Left,
+            Button::Middle => MouseButton::Middle,
+            Button::Right => MouseButton::Right,
+            Button::Back => MouseButton::Back,
+            Button::Forward => MouseButton::Forward,
+        }
+    }
+}
+
+impl Wheel {
+    /// The button a report names.
+    pub fn reported(self) -> MouseButton {
+        match self {
+            Wheel::Up => MouseButton::WheelUp,
+            Wheel::Down => MouseButton::WheelDown,
+            Wheel::Left => MouseButton::WheelLeft,
+            Wheel::Right => MouseButton::WheelRight,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -4,11 +4,10 @@
 use super::{Ask, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits};
 use crate::code::Code;
 use crate::command::{
-    AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
-    Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, WsRef,
+    AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
+    PaneResize, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, Wheel, WsRef,
 };
 use crate::keys::Direction;
-use crate::keys::mouse::MouseButton;
 use crate::layout::Axis;
 use fuxth::{Done, Failure, Value};
 use std::time::Duration;
@@ -1051,13 +1050,13 @@ impl fuxth::Host for Host<'_> {
                 let action = string(name, &next()?)?;
                 let (row, col) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let mouse = match action.as_str() {
-                    "click" => Mouse::Click(MouseButton::Left),
-                    "right" => Mouse::Click(MouseButton::Right),
-                    "middle" => Mouse::Click(MouseButton::Middle),
-                    "press" => Mouse::Press(MouseButton::Left),
-                    "release" => Mouse::Release(MouseButton::Left),
-                    "wheel-up" => Mouse::Wheel(MouseButton::WheelUp),
-                    "wheel-down" => Mouse::Wheel(MouseButton::WheelDown),
+                    "click" => Mouse::Click(Button::Left),
+                    "right" => Mouse::Click(Button::Right),
+                    "middle" => Mouse::Click(Button::Middle),
+                    "press" => Mouse::Press(Button::Left),
+                    "release" => Mouse::Release(Button::Left),
+                    "wheel-up" => Mouse::Wheel(Wheel::Up),
+                    "wheel-down" => Mouse::Wheel(Wheel::Down),
                     "move" => Mouse::Move,
                     other => {
                         return Err(fail(
