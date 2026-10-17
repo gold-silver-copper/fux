@@ -83,22 +83,18 @@ const LINKED: u8 = 4;
 const TEXT: u8 = 8;
 
 impl Kept {
+    /// What `row` is kept as, its cells at `start` in block `block`.
     #[inline]
-    fn new(
-        id: RowId,
-        version: u64,
-        (block, start): (u16, u16),
-        len: u16,
-        width: u16,
-        flags: u8,
-    ) -> Self {
+    fn new(row: &Arriving<'_>, (block, start): (u16, u16)) -> Self {
+        let flags = (if row.wrapped { WRAPPED } else { 0 }) | (if row.prompt { PROMPT } else { 0 });
+        let len = u16::try_from(row.cells.len()).unwrap_or(u16::MAX);
         Self {
-            id,
-            version,
+            id: row.id,
+            version: row.version,
             place: u64::from(block)
                 | u64::from(start & 0xfff) << 16
                 | u64::from(len) << 28
-                | u64::from(width) << 44
+                | u64::from(row.width) << 44
                 | u64::from(flags & 0xf) << 60,
         }
     }
@@ -399,24 +395,10 @@ impl History {
             [cell] => self.newest.push(*cell),
             cells => self.newest.extend_from_slice(cells),
         }
-        self.keep(row, (self.newest_block, start));
-        Ok(())
-    }
-
-    /// Notes `row`, its cells at `place`, after the rows there are.
-    fn keep(&mut self, row: Arriving<'_>, place: (u16, u16)) {
-        let len = row.cells.len();
-        let flags = (if row.wrapped { WRAPPED } else { 0 }) | (if row.prompt { PROMPT } else { 0 });
-        let len16 = u16::try_from(len).unwrap_or(u16::MAX);
         self.cells = self.cells.saturating_add(len);
-        self.rows.push_back(Kept::new(
-            row.id,
-            row.version,
-            place,
-            len16,
-            row.width,
-            flags,
-        ));
+        self.rows
+            .push_back(Kept::new(&row, (self.newest_block, start)));
+        Ok(())
     }
 
     /// Lets the oldest row go, and its links; and, once
