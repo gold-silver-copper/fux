@@ -11,7 +11,7 @@
 //! - Where the system does not say (a probe that failed), a quiet screen
 //!   is taken as settled after a longer while, and said to be a guess.
 use crate::pane::{Pane, Process};
-use crate::process::Ended;
+use crate::process::{Child, Ended, told};
 use fuxix::process::Activity;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -49,12 +49,12 @@ impl State {
     /// The word an answer starts with.
     pub fn word(self) -> String {
         match self {
-            State::Reading => "reading".into(),
-            State::Waiting => "waiting".into(),
-            State::Settled => "settled".into(),
-            State::Busy => "busy".into(),
-            State::Absent => "empty".into(),
-            State::Exited(ended) => crate::process::told(ended),
+            Self::Reading => "reading".into(),
+            Self::Waiting => "waiting".into(),
+            Self::Settled => "settled".into(),
+            Self::Busy => "busy".into(),
+            Self::Absent => "empty".into(),
+            Self::Exited(ended) => told(ended),
         }
     }
 }
@@ -104,7 +104,7 @@ pub fn state(pane: &Pane, now: Instant) -> State {
 /// foreground group (its program dropped its terminal, or is gone, its end
 /// not yet heard), its first process's own group: busy once none is left
 /// in it. A shell back at its prompt, reading, reads.
-fn activity(pane: &Pane, child: &crate::process::Child, now: Instant) -> Activity {
+fn activity(pane: &Pane, child: &Child, now: Instant) -> Activity {
     // How long ago the last key went to the program: forever, if none has
     // (a read timed from a key waits with no limit before one); and whether
     // the screen changed after it: the program answered it.
@@ -156,7 +156,7 @@ fn activity(pane: &Pane, child: &crate::process::Child, now: Instant) -> Activit
 
 /// What the program of `child`, `pane`'s, is blocked in by `now`
 /// (`activity`); `None` while keys wait in its terminal unread.
-pub fn taking(pane: &Pane, child: &crate::process::Child, now: Instant) -> Option<Activity> {
+pub fn taking(pane: &Pane, child: &Child, now: Instant) -> Option<Activity> {
     let activity = activity(pane, child, now);
     (!keys_unread(child.master.slave_path())).then_some(activity)
 }

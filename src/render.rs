@@ -11,7 +11,7 @@ use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, View};
-use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Rgb, Row};
+use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -294,7 +294,7 @@ fn draw_row(
     pane: PaneId,
     row: Option<Row<'_>>,
     (line, window_cols): (Rect, u16),
-    colours: Option<&fux_vt::Screen>,
+    colours: Option<&Screen>,
 ) {
     let (gy, gx, width) = (line.y(), line.x(), line.w().min(window_cols));
     // The pane's own row, well formed, goes whole onto the cells.
@@ -324,16 +324,16 @@ fn draw_row(
 /// the end, so that a grid none of whose cells has one, as most, holds
 /// nothing; and two grids whose cells have the same links are equal.
 #[derive(Clone, Debug, Default)]
-struct Links(Vec<Option<(PaneId, fux_vt::Hyperlink)>>);
+struct Links(Vec<Option<(PaneId, Hyperlink)>>);
 
 impl Links {
     /// The link of cell `i`.
-    fn get(&self, i: usize) -> Option<(PaneId, &fux_vt::Hyperlink)> {
+    fn get(&self, i: usize) -> Option<(PaneId, &Hyperlink)> {
         let (pane, link) = self.0.get(i)?.as_ref()?;
         Some((*pane, link))
     }
     /// Gives cell `i` of a grid of `len` cells `link`.
-    fn set(&mut self, i: usize, link: Option<(PaneId, &fux_vt::Hyperlink)>, len: usize) {
+    fn set(&mut self, i: usize, link: Option<(PaneId, &Hyperlink)>, len: usize) {
         if link.is_some() && self.0.is_empty() {
             self.0.resize(len, None);
         }
@@ -390,7 +390,7 @@ impl Grid {
         }
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
-    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &fux_vt::Hyperlink)> {
+    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
         self.links.get(self.index(y, x)?)
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
@@ -520,7 +520,7 @@ impl Grid {
     /// directly in a terminal, and the client's own palette is never
     /// changed (fux sends it no OSC 4, 10 or 11). Each pane's colours are
     /// its own.
-    fn recolour(&mut self, y: u16, x: u16, width: u16, screen: &fux_vt::Screen) {
+    fn recolour(&mut self, y: u16, x: u16, width: u16, screen: &Screen) {
         let Some(start) = self.index(y, x) else {
             return;
         };
@@ -656,7 +656,7 @@ impl Grid {
 /// colour is the foreground's, and stays. With DECSCNM set (DEC STD 070,
 /// Screen Mode: the screen in reverse video), every cell's inverse is
 /// turned over, so a reversed glyph shows plain.
-fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
+fn pane_colours(attributes: Attributes, screen: &Screen) -> Attributes {
     let colour = |c: Color, default: Option<Rgb>| match c {
         Color::Idx(n) => screen.palette_color(n).map_or(c, Color::Rgb),
         Color::Default => default.map_or(c, Color::Rgb),
@@ -673,7 +673,7 @@ fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
 /// Whether a pane is drawn in colours of its own (`pane_colours`): its
 /// program changed some, or set DECSCNM. Its rows then depend on more
 /// than their keys, so a frame with it is not memo'd (`Frame::of`).
-fn own_colours(screen: &fux_vt::Screen) -> bool {
+fn own_colours(screen: &Screen) -> bool {
     screen.colors_changed() || screen.mode(fux_vt::Mode::ReverseVideo)
 }
 
@@ -1308,7 +1308,7 @@ pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
 /// spec asks a multiplexer to make it (`references/modern/osc8_hyperlinks.md`,
 /// "Hover underlining and the `id` parameter"). A terminal that does not
 /// know OSC 8 ignores it.
-fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &fux_vt::Hyperlink)>) {
+fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &Hyperlink)>) {
     match link {
         Some((pane, link)) => {
             let (key, uri) = (link.key(), link.uri());

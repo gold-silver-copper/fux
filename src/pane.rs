@@ -1,10 +1,10 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::bytes::ByteQueue;
 use crate::id::PaneId;
-use crate::process::Child;
-use fux_vt::Feature;
+use crate::process::{Child, Ended, Pid};
+use fux_vt::{Feature, Print, Row, RowId, Screen, Size};
 use fuxix::process::Activity;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// The largest single piece of input: a whole paste and its envelope.
@@ -28,10 +28,7 @@ pub enum Error {
     /// The queue is full, or refusing until the program reads.
     NotReading,
     /// No terminal of this size.
-    Terminal {
-        size: fux_vt::Size,
-        source: fux_vt::Error,
-    },
+    Terminal { size: Size, source: fux_vt::Error },
 }
 
 impl std::fmt::Display for Error {
@@ -361,28 +358,28 @@ pub enum Process {
     HungUp(Child),
     /// The program `fux run` started exited so: the pane stays, its last
     /// screen kept to be read.
-    Exited(crate::process::Ended),
+    Exited(Ended),
 }
 
 impl Process {
     pub fn child(&self) -> Option<&Child> {
         match self {
-            Process::Absent | Process::Exited(_) => None,
-            Process::Reading(child) | Process::HungUp(child) => Some(child),
+            Self::Absent | Self::Exited(_) => None,
+            Self::Reading(child) | Self::HungUp(child) => Some(child),
         }
     }
 
     /// How its program ended, once it has.
-    pub fn exit_status(&self) -> Option<crate::process::Ended> {
+    pub fn exit_status(&self) -> Option<Ended> {
         match self {
-            Process::Exited(status) => Some(*status),
-            Process::Absent | Process::Reading(_) | Process::HungUp(_) => None,
+            Self::Exited(status) => Some(*status),
+            Self::Absent | Self::Reading(_) | Self::HungUp(_) => None,
         }
     }
 
     /// The terminal's foreground process group, if it is not the
     /// program's own: a job the shell runs.
-    pub fn job(&self) -> Option<crate::process::Pid> {
+    pub fn job(&self) -> Option<Pid> {
         let child = self.child()?;
         let group = fuxix::terminal::foreground_group(&child.master)?;
         (group != child.leader.pid()).then_some(group)
@@ -391,9 +388,9 @@ impl Process {
     /// The program's terminal hung up: it is read no more, and waits to be
     /// reaped.
     pub fn stop_reading(&mut self) {
-        *self = match std::mem::replace(self, Process::Absent) {
-            Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
-            other @ (Process::Absent | Process::Exited(_)) => other,
+        *self = match std::mem::replace(self, Self::Absent) {
+            Self::Reading(child) | Self::HungUp(child) => Self::HungUp(child),
+            other @ (Self::Absent | Self::Exited(_)) => other,
         };
     }
 }
@@ -484,12 +481,12 @@ pub struct Pane {
     /// to read as it did brings nothing new; and where each was and what
     /// it showed ([`shows`]): a row drawn again to show as it did is no
     /// change.
-    pub before: std::collections::HashMap<fux_vt::RowId, (Cells, (u16, u64))>,
+    pub before: HashMap<RowId, (Cells, (u16, u64))>,
     /// The rows printed on since then, as they read after the last piece
     /// that printed on them: what the next piece finds there.
-    seen: std::collections::HashMap<fux_vt::RowId, Cells>,
+    seen: HashMap<RowId, Cells>,
     /// What each row showed as the screen was last seen to change.
-    shown_rows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
+    shown_rows: HashMap<RowId, (u16, u64)>,
     /// Where each piece of output came from (`crate::classify`).
     classes: crate::classify::Classes,
     /// The bytes of output read since the last action's input, as far as
@@ -538,7 +535,7 @@ pub struct Start {
 
 impl Start {
     /// Counting from `from`, `screen` as it is now.
-    pub fn at(from: crate::log::Seq, screen: &fux_vt::Screen) -> Start {
+    pub fn at(from: crate::log::Seq, screen: &Screen) -> Start {
         Start {
             from,
             finished: screen.commands().finished,
@@ -615,9 +612,9 @@ impl Typed {
 }
 
 /// `rows` by `cols`, a zero taken as one: a pane always has a cell.
-pub fn size(rows: u16, cols: u16) -> fux_vt::Size {
+pub fn size(rows: u16, cols: u16) -> Size {
     let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
-    fux_vt::Size::from((one(rows), one(cols)))
+    Size::from((one(rows), one(cols)))
 }
 
 impl Pane {
@@ -625,7 +622,7 @@ impl Pane {
         id: PaneId,
         name: String,
         runs: Runs,
-        size: fux_vt::Size,
+        size: Size,
         history: usize,
     ) -> Result<Pane, Error> {
         let mut parser = fux_vt::Parser::with_options(size, history, OPTIONS)
@@ -651,9 +648,9 @@ impl Pane {
             written_at: None,
             record: crate::log::Log::new(crate::log::JOURNAL_BYTES),
             since: Start::default(),
-            before: std::collections::HashMap::new(),
-            seen: std::collections::HashMap::new(),
-            shown_rows: std::collections::HashMap::new(),
+            before: HashMap::new(),
+            seen: HashMap::new(),
+            shown_rows: HashMap::new(),
             classes: crate::classify::Classes::default(),
             redraws: 0,
             nonce: None,
@@ -801,7 +798,7 @@ impl Pane {
             // every run is, and the rows it printed on are not read.
             let tell = self.redraws < REDRAWS;
             self.redraws = self.redraws.saturating_add(run.len());
-            let held = |p: &fux_vt::Print<'_>| {
+            let held = |p: &Print<'_>| {
                 tell.then(|| (self.seen.get(&p.row)).or(self.before.get(&p.row).map(|b| &b.0)))
                     .flatten()
             };
@@ -809,7 +806,7 @@ impl Pane {
             // every run is whole (`Printed`).
             let fresh = match tell {
                 true => (prints.iter().zip(&echo))
-                    .map(|(p, e): (fux_vt::Print<'_>, &crate::classify::Echo)| {
+                    .map(|(p, e): (Print<'_>, &crate::classify::Echo)| {
                         let echo = *e != crate::classify::Echo::Not;
                         held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
                     })
@@ -824,8 +821,7 @@ impl Pane {
             // printed on no more, and finding one there would read all of
             // history); rows scrolled off since are let go.
             if tell {
-                let rows: std::collections::HashMap<_, _> =
-                    live(screen).map(|(_, row)| (row.id(), row)).collect();
+                let rows: HashMap<_, _> = live(screen).map(|(_, row)| (row.id(), row)).collect();
                 let mut last = None;
                 for print in prints.iter() {
                     if last.replace(print.row) == Some(print.row) {
@@ -924,7 +920,7 @@ impl Pane {
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    pub fn resize(&mut self, size: fux_vt::Size) {
+    pub fn resize(&mut self, size: Size) {
         if self.size() == size {
             return;
         }
@@ -945,11 +941,11 @@ impl Pane {
         }
     }
 
-    pub fn size(&self) -> fux_vt::Size {
+    pub fn size(&self) -> Size {
         self.screen().size()
     }
 
-    pub fn screen(&self) -> &fux_vt::Screen {
+    pub fn screen(&self) -> &Screen {
         self.parser.screen()
     }
 
@@ -1291,7 +1287,7 @@ pub struct Cells {
 
 impl Cells {
     /// Reads `row` into these cells, in the room they have.
-    fn read(&mut self, row: &fux_vt::Row<'_>) {
+    fn read(&mut self, row: &Row<'_>) {
         self.text.clear();
         self.at.clear();
         for (col, c) in row.cells().enumerate() {
@@ -1310,7 +1306,7 @@ impl Cells {
 }
 
 /// The cells of `row`.
-pub fn row_cells(row: &fux_vt::Row<'_>) -> Cells {
+pub fn row_cells(row: &Row<'_>) -> Cells {
     let mut cells = Cells::default();
     cells.read(row);
     cells
@@ -1327,7 +1323,7 @@ fn text_from(row: &Cells, col: u16) -> &str {
 
 /// Whether `row`, a row's cells, holds what `print` printed at its
 /// columns, a wide character's two cells as one.
-pub fn holds_at(row: &Cells, print: &fux_vt::Print<'_>) -> bool {
+pub fn holds_at(row: &Cells, print: &Print<'_>) -> bool {
     text_from(row, print.cols.0).starts_with(print.text)
 }
 
@@ -1336,7 +1332,7 @@ pub fn holds_at(row: &Cells, print: &fux_vt::Print<'_>) -> bool {
 /// of the line typed (a line editor drawing it again, its prompt and all),
 /// those from the first that differs from what stood in its cell to the
 /// last; of other output, all of it (its row may have been erased since).
-pub fn changed(row: &Cells, print: &fux_vt::Print<'_>, echo: bool) -> (usize, usize) {
+pub fn changed(row: &Cells, print: &Print<'_>, echo: bool) -> (usize, usize) {
     let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
     let text: Vec<char> = print.text.chars().collect();
     if !echo {
@@ -1355,7 +1351,7 @@ pub fn changed(row: &Cells, print: &fux_vt::Print<'_>, echo: bool) -> (usize, us
 }
 
 /// What `row` shows, its text and colours, as one number.
-pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
+pub fn shows(row: &Row<'_>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for cell in row.cells() {
@@ -1366,14 +1362,14 @@ pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
 }
 
 /// The screen's rows, from the top, and where each is.
-fn live(screen: &fux_vt::Screen) -> impl Iterator<Item = (u16, fux_vt::Row<'_>)> {
+fn live(screen: &Screen) -> impl Iterator<Item = (u16, Row<'_>)> {
     let window = screen.window();
     (0..window.rows()).filter_map(move |y| Some((y, window.row(y)?)))
 }
 
 /// Past four times the screen's rows, keeps in `map` only the rows on the
 /// screen: rows scrolled off are printed on no more.
-pub fn prune<V>(map: &mut std::collections::HashMap<fux_vt::RowId, V>, screen: &fux_vt::Screen) {
+pub fn prune<V>(map: &mut HashMap<RowId, V>, screen: &Screen) {
     if map.len() > usize::from(screen.size().rows()).saturating_mul(4) {
         let rows: std::collections::HashSet<_> = live(screen).map(|(_, row)| row.id()).collect();
         map.retain(|id, _| rows.contains(id));
@@ -1382,14 +1378,14 @@ pub fn prune<V>(map: &mut std::collections::HashMap<fux_vt::RowId, V>, screen: &
 
 /// The first row of the line the cursor is on (a line wider than the
 /// screen wraps from rows above).
-fn cursor_line(screen: &fux_vt::Screen) -> Option<fux_vt::RowId> {
+fn cursor_line(screen: &Screen) -> Option<RowId> {
     let row = screen.window().row(screen.cursor_position().0)?;
     Some(line_top(row).id())
 }
 
 /// The first row of the line `row` is on.
-pub fn line_top(mut row: fux_vt::Row<'_>) -> fux_vt::Row<'_> {
-    while let Some(up) = row.above().filter(fux_vt::Row::wrapped) {
+pub fn line_top(mut row: Row<'_>) -> Row<'_> {
+    while let Some(up) = row.above().filter(Row::wrapped) {
         row = up;
     }
     row
