@@ -190,10 +190,6 @@ impl Order {
         let at = self.at(row)?;
         self.slots.get_mut(at)
     }
-    #[inline]
-    fn front(&self) -> Option<&usize> {
-        self.get(0)
-    }
     /// Puts `slot` under the last row.
     fn push_back(&mut self, slot: usize) {
         if self.top != 0 {
@@ -1468,7 +1464,7 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<(), Error> {
-        let Some(&slot) = self.order.front() else {
+        let Some(&slot) = self.order.get(0) else {
             return Ok(());
         };
         let taken = take_row(
