@@ -26,11 +26,11 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--threshold PERCENT]
        fux-bench info [--json FILE]
        fux-bench feel [--muxes LIST] [--parts LIST] [--keys N] [--json FILE]
 
-(default)  every workload on REF (default master), built in a temporary
-           worktree, and on the working tree, alternating, in instructions
-           retired; flags a workload more than PERCENT (default 3) above
-           REF and beyond the noise of its repeats (default 5). Exit 1 if
-           one is flagged. Run it built as fux is:
+(default)  every workload on REF (default master) and on the working tree,
+           both built by one recipe (git archive at paths of one length,
+           one target dir), alternating, in instructions retired; flags a
+           workload more than PERCENT (default 3) above REF and beyond the
+           noise of its repeats (default 5). Exit 1 if one is flagged:
              cargo run --release --manifest-path bench/Cargo.toml -- --against master
            --only runs the workloads whose names contain TEXT.
 list       the workloads.

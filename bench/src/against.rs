@@ -1,12 +1,17 @@
 //! `--against REF`: every workload on REF and on the working tree, in
 //! instructions retired.
 //!
-//! REF is checked out in a temporary worktree, and this crate's source as
-//! it is in the working tree is copied into it and built there, with fux's
-//! release profile: so both sides run the same workloads, each linked
-//! against its own fux, fux-vt and fuxix, as separate binaries (one binary
-//! cannot link two copies of a crate of one version). The working tree's
-//! side is this binary.
+//! Both sides are built by one recipe (`build`): each side's tree is
+//! `git archive`d into a path of one length (`src/old-TREE`,
+//! `src/new-TREE`), built with fux's release profile into one target dir,
+//! and run from names of one length (`run/old`, `run/new`). REF's side is
+//! REF's tree with the working tree's `bench/` in it, so both sides run
+//! the same workloads, each linked against its own fux, fux-vt and fuxix
+//! (one binary cannot link two copies of a crate of one version). The
+//! working tree's side is the working tree as it is, changes and untracked
+//! files included. A path of another length moves the counts (by 1% on
+//! `ready/probe`); one recipe for both keeps an A/A run, `--against HEAD`
+//! on a clean tree, at no difference.
 //!
 //! Each workload runs as a child process of its own, counted (`count`),
 //! and so does its baseline (`workloads`), `--repeats` times on each
@@ -19,7 +24,7 @@ use crate::count::Counter;
 use crate::workloads;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -53,68 +58,137 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// A directory for a run, and REF's worktree in it, removed when dropped.
-struct Scratch {
-    root: PathBuf,
-    dir: PathBuf,
-    worktree: Option<PathBuf>,
+/// `git` with a temporary index of its own at `index`.
+fn git_index(root: &Path, index: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_INDEX_FILE", index)
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if let Some(worktree) = &self.worktree {
-            let path = worktree.to_string_lossy();
-            let _ = git(&self.root, &["worktree", "remove", "--force", &path]);
-        }
-        let _ = std::fs::remove_dir_all(&self.dir);
-        let _ = git(&self.root, &["worktree", "prune"]);
-    }
+/// The working tree as a git tree: HEAD with every change in it, tracked
+/// or not (but ignored files), written with an index of its own, so the
+/// checkout's index and stash are untouched.
+fn working_tree(root: &Path, place: &Path) -> Result<String, String> {
+    let index = place.join("index");
+    let _ = std::fs::remove_file(&index);
+    git_index(root, &index, &["read-tree", "HEAD"])?;
+    git_index(root, &index, &["add", "-A", "."])?;
+    let tree = git_index(root, &index, &["write-tree"]);
+    let _ = std::fs::remove_file(&index);
+    tree
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
-    for entry in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
-        let entry = entry.map_err(|e| format!("{}: {e}", from.display()))?;
-        let path = entry.path();
-        let target = to.join(entry.file_name());
-        if path.is_dir() {
-            copy_tree(&path, &target)?;
-        } else {
-            std::fs::copy(&path, &target).map_err(|e| format!("{}: {e}", path.display()))?;
-        }
-    }
-    Ok(())
+/// `commit`'s tree with its `bench/` replaced by `bench`'s: REF's crates
+/// under the working tree's workloads.
+fn with_bench(root: &Path, place: &Path, commit: &str, bench: &str) -> Result<String, String> {
+    let index = place.join("index");
+    let _ = std::fs::remove_file(&index);
+    git_index(root, &index, &["read-tree", commit])?;
+    git_index(
+        root,
+        &index,
+        &["rm", "-r", "-q", "--cached", "--ignore-unmatch", "bench"],
+    )?;
+    git_index(root, &index, &["read-tree", "--prefix=bench/", bench])?;
+    let tree = git_index(root, &index, &["write-tree"]);
+    let _ = std::fs::remove_file(&index);
+    tree
 }
 
-/// Builds this crate's source, as it is in `root`, against REF's crates in
-/// `worktree`: the binary.
-fn build(root: &Path, worktree: &Path, target: &Path) -> Result<PathBuf, String> {
-    let bench = worktree.join("bench");
-    let _ = std::fs::remove_dir_all(&bench);
-    copy_tree(&root.join("bench/src"), &bench.join("src"))?;
-    for file in ["Cargo.toml", "Cargo.lock"] {
-        let from = root.join("bench").join(file);
-        if from.exists() {
-            std::fs::copy(&from, bench.join(file))
-                .map_err(|e| format!("{}: {e}", from.display()))?;
+/// The two sides: REF is `old`, the working tree `new`. Their names have
+/// one length, so their sources, and the binaries run, sit at paths of
+/// one length (a path of another length moves the counts).
+const SIDES: [&str; 2] = ["old", "new"];
+
+/// Builds `tree` as side `side`, by the one recipe both sides share:
+/// `git archive` into `place/src/SIDE-TREE`, built with fux's release
+/// profile into the one target dir `place/target`, from the source's own
+/// `bench/` so its toolchain file applies, and the binary kept as
+/// `place/bin/SIDE-TREE`. A binary kept from an earlier run is reused, and
+/// one of the other side's name too unless both sides are this tree (an
+/// A/A run builds twice). The source is removed after its build.
+fn build(
+    root: &Path,
+    place: &Path,
+    side: &str,
+    tree: &str,
+    other: &str,
+) -> Result<PathBuf, String> {
+    let bin = place.join("bin");
+    std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let kept = bin.join(format!("{side}-{tree}"));
+    if kept.exists() {
+        return Ok(kept);
+    }
+    if tree != other {
+        for name in SIDES.iter().filter(|s| **s != side) {
+            let theirs = bin.join(format!("{name}-{tree}"));
+            if theirs.exists() {
+                return Ok(theirs);
+            }
         }
     }
-    // From the worktree, so that REF's toolchain file applies to it.
+    let src = place.join("src").join(format!("{side}-{tree}"));
+    let _ = std::fs::remove_dir_all(&src);
+    std::fs::create_dir_all(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let mut archive = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["archive", "--format=tar", tree])
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git archive: {e}"))?;
+    let tar = Command::new("tar")
+        .arg("-x")
+        .arg("-C")
+        .arg(&src)
+        .stdin(archive.stdout.take().ok_or("git archive: no output")?)
+        .status()
+        .map_err(|e| format!("tar: {e}"))?;
+    let archived = archive.wait().map_err(|e| format!("git archive: {e}"))?;
+    if !tar.success() || !archived.success() {
+        return Err(format!("git archive {tree} into {} failed", src.display()));
+    }
+    let bench = src.join("bench");
     let out = Command::new("cargo")
         .args(["build", "--release", "--quiet", "--manifest-path"])
         .arg(bench.join("Cargo.toml"))
         .arg("--target-dir")
-        .arg(target)
+        .arg(place.join("target"))
+        .env_remove("CARGO_TARGET_DIR")
         .current_dir(&bench)
         .output()
         .map_err(|e| format!("cargo: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "building REF failed:\n{}",
+            "building {side} ({tree}) failed:\n{}",
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    Ok(target.join("release/fux-bench"))
+    let built = place.join("target/release/fux-bench");
+    std::fs::copy(&built, &kept).map_err(|e| format!("{}: {e}", built.display()))?;
+    let _ = std::fs::remove_dir_all(&src);
+    Ok(kept)
+}
+
+/// Where `against` keeps its builds: `$CARGO_TARGET_DIR/fux-bench-against`
+/// if that is set, else `bench/target/against`.
+fn place(root: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || root.join("bench/target/against"),
+        |dir| PathBuf::from(dir).join("fux-bench-against"),
+    )
 }
 
 /// A run's count and what it printed, or why it failed.
@@ -207,11 +281,6 @@ fn painted(stdout: &str) -> Option<(u64, u64)> {
 }
 
 pub fn run(options: &Options) -> Result<bool, String> {
-    if cfg!(debug_assertions) {
-        return Err("a debug build: run `cargo run --release --manifest-path \
-                    bench/Cargo.toml -- --against REF`, built as fux is"
-            .into());
-    }
     let started = Instant::now();
     let root = root().canonicalize().map_err(|e| e.to_string())?;
     let reference = git(
@@ -236,50 +305,31 @@ pub fn run(options: &Options) -> Result<bool, String> {
     }
     let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
 
-    // REF's worktree, removed after; its build is kept beside it, so that
-    // only the crates under test build again next time.
-    let place = root.join("bench/target/against");
-    let mut scratch = Scratch {
-        root: root.clone(),
-        dir: place.join("run"),
-        worktree: None,
-    };
-    let worktree = scratch.dir.join("ref");
-    if worktree.exists() {
-        // Left by a run that was stopped.
-        let _ = git(
-            &root,
-            &["worktree", "remove", "--force", &worktree.to_string_lossy()],
-        );
-    }
-    let _ = std::fs::remove_dir_all(&scratch.dir);
-    let _ = git(&root, &["worktree", "prune"]);
-    std::fs::create_dir_all(&scratch.dir).map_err(|e| e.to_string())?;
-    // The working tree's side: this binary, copied, so a build meanwhile
-    // cannot change it.
-    let new = scratch.dir.join("fux-bench-new");
-    let me = std::env::current_exe().map_err(|e| e.to_string())?;
-    std::fs::copy(&me, &new).map_err(|e| format!("{}: {e}", me.display()))?;
+    let place = place(&root);
+    std::fs::create_dir_all(&place).map_err(|e| format!("{}: {e}", place.display()))?;
+    let new_tree = working_tree(&root, &place)?;
+    let bench_tree = git(&root, &["rev-parse", &format!("{new_tree}:bench")])?;
+    let old_tree = with_bench(&root, &place, &reference, &bench_tree)?;
     let short = reference.get(..12).unwrap_or(&reference).to_owned();
     eprintln!(
-        "building {} ({short}) in a worktree, with this crate's source…",
-        options.reference
+        "building {} ({short}) and the working tree by one recipe, in {}…",
+        options.reference,
+        place.display()
     );
-    git(
-        &root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            "--quiet",
-            &worktree.to_string_lossy(),
-            &reference,
-        ],
-    )?;
-    scratch.worktree = Some(worktree.clone());
     let build_started = Instant::now();
-    let old = build(&root, &worktree, &place.join("target"))?;
+    let old = build(&root, &place, "old", &old_tree, &new_tree)?;
+    let new = build(&root, &place, "new", &new_tree, &old_tree)?;
     let build_secs = build_started.elapsed().as_secs_f64();
+    // Run from names of one length, copied, so a build meanwhile cannot
+    // change them.
+    let run = place.join("run");
+    let _ = std::fs::remove_dir_all(&run);
+    std::fs::create_dir_all(&run).map_err(|e| format!("{}: {e}", run.display()))?;
+    let mut binaries = SIDES.map(|side| run.join(side));
+    for (from, to) in [&old, &new].into_iter().zip(&mut binaries) {
+        std::fs::copy(from, &*to).map_err(|e| format!("{}: {e}", from.display()))?;
+    }
+    let [old, new] = binaries;
 
     // Repeats alternate the sides: REF first in even ones, the working tree
     // first in odd ones.
@@ -431,6 +481,8 @@ pub fn run(options: &Options) -> Result<bool, String> {
         "ref": options.reference,
         "ref_commit": reference,
         "working_tree_commit": head,
+        "trees": { "old": old_tree, "new": new_tree },
+        "recipe": "git archive into paths of one length, one target dir, run as run/old and run/new",
         "working_tree_changed": dirty,
         "counter": counter.name(),
         "counter_setup": counter_setup,

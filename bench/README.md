@@ -66,17 +66,24 @@ bytes per frame in the JSON.
 
 ## How `--against` counts
 
-1. REF is checked out in a worktree under `bench/target/against/run`
-   (removed after the run, or at the next one). The working tree's copy of
-   this crate is built there with REF's toolchain file, so both sides run
-   the same workloads against their own fux, fux-vt and fuxix. REF's build
-   directory, `bench/target/against/target`, is kept.
-2. The working tree's side is the running binary: run it with `cargo run
-   --release`. A debug build refuses.
+1. Both sides are built by one recipe. Each side's tree (REF's, with the
+   working tree's `bench/` in it, and the working tree's as it is, changes
+   and untracked files included) is `git archive`d into a path of one
+   length, `src/old-TREE` and `src/new-TREE`, built with fux's release
+   profile into one target dir, and kept as `bin/old-TREE` and
+   `bin/new-TREE`, all under `$CARGO_TARGET_DIR/fux-bench-against` (or
+   `bench/target/against`). A tree already built is not built again.
+2. The binaries run as `run/old` and `run/new`, names of one length: a
+   path of another length moves the counts. `--against HEAD` on a clean
+   tree builds the one tree twice and is the self-test: it flags nothing.
 3. Each workload and its baseline run as child processes, counted by
-   `/usr/bin/time -l` on macOS, or on Linux by `perf stat -e
-   instructions:u` (with `kernel.perf_event_paranoid` at 2 or less), else
-   valgrind's cachegrind (about fifty times slower).
+   `/usr/bin/time -l` on macOS, or on Linux by `bench/perf.sh` (`perf stat
+   -e instructions:u` pinned to one core type, with
+   `kernel.perf_event_paranoid` at 2 or less; `FUX_PERF` names perf if it
+   is not on PATH, `FUX_PERF_CPUS` the CPUs), else valgrind's cachegrind
+   (about fifty times slower). A perf count whose PMU ran for less than all
+   the time it was enabled (multiplexed, or moved between core types) is
+   refused, never scaled.
 4. Each side runs `--repeats` times, alternating which side goes first.
 5. A side's count is the fewest instructions of its runs less the fewest
    of its baseline's (on macOS kernel work for the process only adds). Its
