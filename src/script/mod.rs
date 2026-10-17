@@ -962,7 +962,7 @@ impl Asks for Settings<'_> {
                 Some(server) => server.ask(asked, out),
                 None => match crate::config::Config::default().set(option, value) {
                     Ok(()) => Ok(Reply::default()),
-                    Err(error) => Err(Failed::new(Code::Config, error.to_string())),
+                    Err(crate::config::Refused(code, why)) => Err(Failed::new(code, why)),
                 },
             },
             R::Reads

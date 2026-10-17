@@ -1,6 +1,7 @@
 //! The server's settings: what every pane and client of it shares, set by
 //! the `set` word from a client's config or command line. Key bindings and
 //! the prefix are each client's own (`crate::keymap`).
+use crate::code::Code;
 use crate::log::JOURNAL_BYTES;
 use crate::words;
 use std::path::PathBuf;
@@ -9,7 +10,8 @@ use std::time::Duration;
 /// `settings! { /// doc  field "name": Type = default, parse; … }` expands
 /// to the struct `Config` of those fields, its `Default`, `NAMES` (every
 /// setting's name, in order) and `Config::set`, which reads a setting's
-/// text with its `parse` (a `&str` to `Result<Type, String>`).
+/// text with its `parse` (a `&str` to `Result<Type, E>`, `E` a `String`,
+/// refused as `config`, or a `Refused` with its own code).
 macro_rules! settings {
     ($($(#[$doc:meta])* $field:ident $name:literal: $ty:ty = $default:expr, $parse:expr;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,13 +34,13 @@ macro_rules! settings {
             /// Sets setting `name` to `value`, its text: a number, `on` or
             /// `off` (or `true` or `false`), a command line for `shell`,
             /// names for `update-environment`. A setting refused says why.
-            pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
-                let refused = |why: String| format!("{name}: {why}");
+            pub fn set(&mut self, name: &str, value: &str) -> Result<(), Refused> {
+                let named = |Refused(code, why)| Refused(code, format!("{name}: {why}"));
                 match name {
-                    $($name => self.$field = $parse(value).map_err(refused)?,)*
+                    $($name => self.$field = $parse(value).map_err(|e| named(e.into()))?,)*
                     other => {
                         let all = words::listed(NAMES, "and");
-                        return Err(format!("no setting {other:?}; the settings are {all}"));
+                        return Err(format!("no setting {other:?}; the settings are {all}").into());
                     }
                 }
                 Ok(())
@@ -71,6 +73,17 @@ settings! {
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter has not is unset.
     update_environment "update-environment": Vec<String> = KEPT.map(str::to_owned).to_vec(), names;
+}
+
+/// Why a setting is refused: its code (`config`, or its value's own, as
+/// `open_quote` for a shell's line), and why.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Refused(pub Code, pub String);
+
+impl From<String> for Refused {
+    fn from(why: String) -> Refused {
+        Refused(Code::Config, why)
+    }
 }
 
 /// What `update-environment` names at first.
@@ -163,13 +176,15 @@ impl Shell {
     }
 
     /// A command line, split as a shell splits it: a program first.
-    pub fn parse(value: &str) -> Result<Shell, String> {
-        match words::split(value)?.split_first() {
+    pub fn parse(value: &str) -> Result<Shell, Refused> {
+        let words =
+            words::split(value).map_err(|why| Refused(Code::Lang(fuxth::Code::OpenQuote), why))?;
+        match words.split_first() {
             Some((program, args)) if !program.is_empty() => Ok(Shell {
                 program: program.clone(),
                 args: args.to_vec(),
             }),
-            Some(_) | None => Err("a program is needed".into()),
+            Some(_) | None => Err(Refused::from("a program is needed".to_owned())),
         }
     }
 
@@ -218,7 +233,7 @@ mod tests {
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
         assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
         assert!(config.set("history-bytes", "lots").is_err());
-        let below = config.set("history-bytes", "-1").map_err(|e| e.to_string());
+        let below = config.set("history-bytes", "-1").map_err(|e| e.1);
         assert!(below.is_err_and(|e| e.contains("out of range")));
         assert!(config.set("buffers", "0").is_err());
         assert!(config.set("nonsense", "1").is_err());

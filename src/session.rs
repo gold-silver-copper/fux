@@ -2539,7 +2539,7 @@ impl Session {
                 // each client's next paint.
                 self.config
                     .set(option, value)
-                    .map_err(|m| fail(Code::Config, m))?;
+                    .map_err(|crate::config::Refused(code, why)| fail(code, why))?;
                 self.configured();
                 Ok(Reply::default())
             }
@@ -3336,7 +3336,7 @@ pub(crate) mod testing {
     /// named after it), started.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
         let config = Config {
-            shell: crate::config::Shell::parse("/bin/sh")?,
+            shell: crate::config::Shell::parse("/bin/sh").map_err(|e| e.1)?,
             ..config
         };
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);

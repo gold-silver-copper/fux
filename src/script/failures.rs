@@ -80,6 +80,7 @@ const ROWS: &[Fails] = &[
     fails("read", Cli, "str /nonexistent.fux check", "fails read 1"),
     fails("open_quote", Cli, "str 'abc", "fails open_quote 1"),
     fails("open_quote", Cli, "opts str \"'abc\" command run", "fails open_quote 1"),
+    fails("open_quote", Cli, "str shell str \"'abc\" set", "fails open_quote 1"),
     fails("unknown_word", Cli, "nosuchword", "fails unknown_word 1"),
     fails("missing_token", Cli, "str", "fails missing_token 1"),
     fails("bad_name", Cli, "define 1 end", "fails bad_name 1"),
