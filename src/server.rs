@@ -1048,8 +1048,12 @@ impl Server {
         ready.clear();
         let slots = &mut self.slots;
         slots.clear();
-        // Built afresh, as it borrows the descriptors.
+        // Built afresh, as it borrows the descriptors; each with its slot.
         let mut fds = Vec::new();
+        let mut add = |fd, slot| {
+            fds.push(fd);
+            slots.push(slot);
+        };
         if let Phase::Serving {
             listening,
             resting: None,
@@ -1057,19 +1061,15 @@ impl Server {
         {
             for (grant, (_, listening)) in listening.iter().enumerate() {
                 if let Some(listener) = &listening.listener {
-                    fds.push(PollFd::new(listener, PollFlags::IN));
-                    slots.push(Slot::Listener(grant));
+                    add(PollFd::new(listener, PollFlags::IN), Slot::Listener(grant));
                 }
                 if let Some(door) = &listening.door {
-                    fds.push(PollFd::new(door.fd(), PollFlags::IN));
-                    slots.push(Slot::Door(grant));
+                    add(PollFd::new(door.fd(), PollFlags::IN), Slot::Door(grant));
                 }
             }
         }
-        fds.push(PollFd::new(&self.children, PollFlags::IN));
-        slots.push(Slot::Children);
-        fds.push(PollFd::new(&self.stops, PollFlags::IN));
-        slots.push(Slot::Stops);
+        add(PollFd::new(&self.children, PollFlags::IN), Slot::Children);
+        add(PollFd::new(&self.stops, PollFlags::IN), Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is open only while it has
             // something to write.
@@ -1081,8 +1081,7 @@ impl Server {
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
-            fds.push(PollFd::new(&conn.stream, flags));
-            slots.push(Slot::Conn(i));
+            add(PollFd::new(&conn.stream, flags), Slot::Conn(i));
             // Polled for its hangup, and for room to write what waits.
             if let Stage::Attached(attached) = &conn.stage
                 && let Some(tty) = &attached.tty
@@ -1091,8 +1090,7 @@ impl Server {
                     true => PollFlags::HUP,
                     false => PollFlags::OUT,
                 };
-                fds.push(PollFd::new(&tty.fd, flags));
-                slots.push(Slot::Tty(i));
+                add(PollFd::new(&tty.fd, flags), Slot::Tty(i));
             }
         }
         for (id, pane) in &self.session.panes {
@@ -1101,8 +1099,7 @@ impl Server {
                 if !pane.input.is_empty() {
                     flags |= PollFlags::OUT;
                 }
-                fds.push(PollFd::new(&child.master, flags));
-                slots.push(Slot::Pane(*id));
+                add(PollFd::new(&child.master, flags), Slot::Pane(*id));
             }
         }
         match fuxix::poll::poll(&mut fds, timeout) {
