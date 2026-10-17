@@ -582,25 +582,6 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     view.dirty = true;
     view.notice = None;
 
-    // The search line the client types, shown; the search it asks for.
-    if let CopyAct::Typing(line) = act {
-        copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
-        return;
-    }
-    if let CopyAct::Find { query, seek } = act {
-        copy.typing = None;
-        let query = clean(&query);
-        if query.is_empty() {
-            return;
-        }
-        let search = Search { query, seek };
-        copy.search = Some(search.clone());
-        if let Some(at) = copy.resolve(screen) {
-            jump(copy, screen, height, at, &search, &mut view.notice);
-        }
-        return;
-    }
-
     let Some(at) = copy.resolve(screen) else {
         return;
     };
@@ -615,7 +596,22 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     };
     let mut target: Option<Place<'_>> = None;
     match act {
-        CopyAct::Enter | CopyAct::Typing(_) | CopyAct::Find { .. } => return,
+        CopyAct::Enter => return,
+        // The search line the client types, shown; the search it asks for.
+        CopyAct::Typing(line) => {
+            copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
+            return;
+        }
+        CopyAct::Find { query, seek } => {
+            copy.typing = None;
+            let query = clean(&query);
+            if !query.is_empty() {
+                let search = Search { query, seek };
+                copy.search = Some(search.clone());
+                jump(copy, screen, height, at, &search, &mut view.notice);
+            }
+            return;
+        }
         CopyAct::Leave => {
             leave(session, client);
             return;
