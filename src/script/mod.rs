@@ -367,13 +367,24 @@ fn libraries() -> Result<Compiler<Fux>, Failed> {
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
 /// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
 /// `str` takes. Nor may `define` or `let` give one as a name: it
-/// would always be the handle.
+/// would always be the handle. Nor may `let` take the name of a word an id
+/// becomes (`pane`): every id would then push its value.
 fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     let mut out = Vec::with_capacity(tokens.len());
     let mut after: Option<&str> = None;
     for token in tokens {
         let id = token.text.parse::<AnyRef>().ok();
+        let kinds = [Kind::Pane, Kind::Tab, Kind::Workspace];
         match (after, id) {
+            (Some("let"), None) if kinds.iter().any(|k| k.name() == &*token.text) => {
+                return Err(Failed::new(
+                    Code::BadName,
+                    format!(
+                        "{}: {}: cannot be let: a {} id is `str ID {}`",
+                        token.place, token.text, token.text, token.text
+                    ),
+                ));
+            }
             (Some("define" | "let"), Some(id)) => {
                 return Err(Failed::new(
                     Code::BadName,
