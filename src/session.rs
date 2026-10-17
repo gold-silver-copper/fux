@@ -2939,10 +2939,11 @@ impl Session {
     }
 
     /// `info` and `get`: one pane, tab or workspace, as JSON, or one field
-    /// of its JSON (`get`), a string's text as it is.
+    /// of its JSON (`get`), a string's text as it is. `target` is there
+    /// (`there`, by its caller).
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
-        let mut fields = match self.there(target)? {
+        let mut fields = match target {
             AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
             AnyRef::Tab(id) => self.tab(id).map(|t| self.tab_json(t, now)),
             AnyRef::Workspace(id) => self.workspace(id).map(|w| self.ws_json(w, now)),
@@ -2989,7 +2990,6 @@ impl Session {
                 return Err(fail(Code::NoField, message));
             }
         };
-        drop(names);
         Ok(Reply {
             value: scalar,
             ..text.into()
