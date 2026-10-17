@@ -220,8 +220,6 @@ pub enum Error {
     TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
-    // What failed below the session.
-    Usage(command::Usage),
     /// Any other failure, made in one place and told apart by its code
     /// alone: its code, and why.
     Failed {
@@ -254,7 +252,6 @@ impl Error {
             Error::NoRows | Error::SelectionTooLarge => Code::Selection,
             Error::NameReadAsTarget(_) => Code::BadName,
             Error::NameTaken(_) | Error::TabNameTaken(..) => Code::NameTaken,
-            Error::Usage(_) => Code::Usage,
             Error::Failed { code, .. } => *code,
         }
     }
@@ -300,7 +297,6 @@ impl std::fmt::Display for Error {
                 f,
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
             ),
-            Error::Usage(error) => error.fmt(f),
             Error::Failed { message, .. } => f.write_str(message),
         }
     }
@@ -582,6 +578,11 @@ fn one<T: Copy + std::fmt::Display>(
 fn joined<T: std::fmt::Display>(items: impl IntoIterator<Item = T>, between: &str) -> String {
     let items: Vec<String> = items.into_iter().map(|item| item.to_string()).collect();
     items.join(between)
+}
+
+/// A value a command can't take, as `Usage` says why.
+fn bad_value(usage: command::Usage) -> Error {
+    fail(Code::BadValue, usage.to_string())
 }
 
 /// A command that failed, told with its code: a usage error's
@@ -1017,10 +1018,14 @@ impl Session {
         let named = || -> Result<&Tab, Error> {
             match tabs.as_slice() {
                 [tab] => Ok(*tab),
-                [] => Err(fail(
-                    Code::NoTarget,
-                    format!("no {} named {text:?}", kind.name()),
-                )),
+                [] => {
+                    let code = match kind {
+                        Kind::Pane => Code::NoPane,
+                        Kind::Tab => Code::NoTab,
+                        Kind::Workspace => Code::NoWorkspace,
+                    };
+                    Err(fail(code, format!("no {} named {text:?}", kind.name())))
+                }
                 many => {
                     let each: Vec<String> = (many.iter())
                         .map(|t| format!("{} {}", t.id, joined(panes_of(t), " ")))
@@ -1073,7 +1078,7 @@ impl Session {
             }
             Kind::Tab => named().map(|tab| AnyRef::Tab(tab.id)),
             Kind::Workspace => {
-                let ws = command::parse_workspace(text).map_err(Error::Usage)?;
+                let ws = command::parse_workspace(text).map_err(bad_value)?;
                 Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
             }
         }
@@ -1371,9 +1376,7 @@ impl Session {
         workspace: Option<&str>,
     ) -> Result<ClientId, Error> {
         let ws = match workspace {
-            Some(name) => {
-                self.resolve_ws(&command::parse_workspace(name).map_err(Error::Usage)?)?
-            }
+            Some(name) => self.resolve_ws(&command::parse_workspace(name).map_err(bad_value)?)?,
             None => {
                 // A server whose session did not come back starts afresh.
                 if self.workspaces.is_empty() {
@@ -4366,7 +4369,7 @@ mod tests {
         ));
         assert!(matches!(
             s.attach(10, 40, Some("+x")),
-            Err(Error::Usage(command::Usage::Not(Kind::Workspace, _)))
+            Err(e) if e.code() == Code::BadValue
         ));
         Ok(())
     }
