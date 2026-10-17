@@ -1,10 +1,9 @@
 //! A pane's journal: what happens in it, recorded as it happens, on one
 //! counter: the output fux reads, each piece numbered as the screen took
 //! it, and what it printed; bells, notifications, titles, shell commands'
-//! ends and resizes. Every question an
-//! agent asks (what came since its input, which came first, is this text
-//! the echo of what it typed) is answered from the record, never by
-//! comparing screens afterwards.
+//! ends and resizes. Every question an agent asks (what came since its
+//! input, which came first, is this text the echo of what it typed) is
+//! answered from the record, never by comparing screens afterwards.
 //!
 //! The counter is fux-vt's: each piece of output processed takes the next
 //! number, and every row keeps the number of the piece that last changed

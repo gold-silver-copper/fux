@@ -671,10 +671,10 @@ impl Pane {
     /// BSU, to `CSI ? 2026 l`, ESU, or whatever else resets the mode, found
     /// as the parser reads it: `fux_vt::FrameScan`) is held, unread, until
     /// it ends, then read whole, as alacritty does: the screen is always at
-    /// the end of a frame, so a client is never painted half of one. A frame is read
-    /// anyway once [`FRAME_TIMEOUT`] passes ([`Pane::release_frame`]) or it
-    /// grows past [`FRAME_LIMIT`]; after that the program's output is read as
-    /// it comes until its next BSU.
+    /// the end of a frame, so a client is never painted half of one. A
+    /// frame is read anyway once [`FRAME_TIMEOUT`] passes
+    /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
+    /// that the program's output is read as it comes until its next BSU.
     pub fn output(&mut self, bytes: &[u8]) {
         self.output_at(bytes, Instant::now())
     }
@@ -761,8 +761,8 @@ impl Pane {
     }
 
     /// Gives `run`, which came from `origin`, to the screen, as `feed`
-    /// does, and records it: its number, what it printed, the rows it let
-    /// go, a bell it rang.
+    /// does, and records it: its number and what it printed, an entry kept
+    /// only if it printed something; the rows it let go, a bell it rang.
     fn record(&mut self, run: &[u8], origin: log::Origin, until_frame: bool) -> Option<usize> {
         if run.is_empty() {
             return None;
@@ -1085,9 +1085,10 @@ impl Pane {
             }
     }
 
-    /// Writes a piece of input, `unit` its kind, and records it: its
-    /// number, the terminal's modes then, the line the cursor is on.
-    /// Whether what follows it is told exactly, needing no pace.
+    /// Writes a piece of input, `unit` its kind, and tells the classifier
+    /// of it (the terminal's modes then, the line the cursor is on, whether
+    /// it is typed ahead), and sets the pace for the next. Whether what
+    /// follows it is told exactly, needing no pace.
     fn write_unit(&mut self, bytes: Vec<u8>, unit: log::Unit, now: Instant) -> bool {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
