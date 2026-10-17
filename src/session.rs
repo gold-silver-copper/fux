@@ -1099,66 +1099,15 @@ impl Session {
         })
     }
 
-    /// Sends `inputs` to pane `id`'s program, a piece at a time
-    /// (`crate::log::Unit`): text typed in a row is one piece, keys that
-    /// edit the line in a row another, and each other key, a lone Escape
-    /// and a paste each their own. So in `keys str msg text str Enter key` the Enter is
-    /// read alone, as a submit, not as a newline pasted with the text, and
-    /// what follows each piece is told apart (`crate::classify`).
+    /// Sends `inputs` to pane `id`'s program, a piece at a time (`units`).
     fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
-        use crate::log::Unit;
         let p = self.pane_mut(id)?;
         p.note_input();
-        let (mode, bracketed) = (
-            p.screen().key_mode(),
-            p.screen().mode(fux_vt::Mode::BracketedPaste),
-        );
-        let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
-        // Whether the last piece takes more, an edit: text, or keys.
-        let mut last: Option<bool> = None;
-        for input in inputs {
-            let mut bytes = Vec::new();
-            let unit = match input {
-                Input::Key(key) => {
-                    crate::encode::key_bytes((*key).into(), mode, &mut bytes);
-                    crate::command::unit(*key)
-                }
-                Input::Text(text) => {
-                    // A line end in text submits the line, read alone.
-                    let mut rest = text.as_str();
-                    while let Some(at) = rest.find(['\r', '\n']) {
-                        let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
-                        if !part.is_empty() {
-                            push_piece(&mut units, &mut last, part.as_bytes(), true);
-                        }
-                        let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
-                        units.push((end.as_bytes().to_vec(), Unit::Submit));
-                        last = None;
-                        rest = after;
-                    }
-                    if !rest.is_empty() {
-                        push_piece(&mut units, &mut last, rest.as_bytes(), true);
-                    }
-                    continue;
-                }
-                Input::Paste(text) => {
-                    crate::encode::paste(text, bracketed, &mut bytes);
-                    units.push((bytes, paste_unit(text, bracketed)));
-                    last = None;
-                    continue;
-                }
-            };
-            if unit == Unit::Edit && bytes != b"\x1b" {
-                push_piece(&mut units, &mut last, &bytes, false);
-            } else {
-                units.push((bytes, unit));
-                last = None;
-            }
-        }
-        p.send(units, Instant::now())?;
-        Ok(())
+        let units = units(p, inputs);
+        Ok(p.send(units, Instant::now())?)
     }
 
+    /// `pane_mut`, for input: a pane whose program has exited takes none.
     /// `pane_mut`, for input: a pane whose program has exited takes none.
     fn live_pane_mut(&mut self, id: PaneId) -> Result<&mut Pane, Error> {
         let pane = self.pane_mut(id)?;
@@ -2564,13 +2513,19 @@ impl Session {
             &Command::SendKeys {
                 target, ref inputs, ..
             } => {
-                let panes = self.panes_of(target)?;
-                // Every pane must take them, or none is sent them.
-                for &id in &panes {
-                    self.live_pane_mut(id)?;
+                // Every pane must take them, or none is sent them: each
+                // one's, as its program takes keys, are made and fit first.
+                let mut each = Vec::new();
+                for id in self.panes_of(target)? {
+                    let pane = self.live_pane_mut(id)?;
+                    let units = units(pane, inputs);
+                    pane.room_for(&units)?;
+                    each.push((id, units));
                 }
-                for id in panes {
-                    self.send_inputs(id, inputs)?;
+                for (id, units) in each {
+                    let pane = self.pane_mut(id)?;
+                    pane.note_input();
+                    pane.send(units, Instant::now())?;
                 }
                 Ok(Reply::default())
             }
@@ -3735,6 +3690,63 @@ fn paste_unit(text: &str, bracketed: bool) -> crate::log::Unit {
     }
 }
 
+/// `inputs` as pane `p`'s program takes them, a piece at a time
+/// (`crate::log::Unit`): text typed in a row is one piece, keys that
+/// edit the line in a row another, and each other key, a lone Escape
+/// and a paste each their own. So in `keys str msg text str Enter key` the Enter is
+/// read alone, as a submit, not as a newline pasted with the text, and
+/// what follows each piece is told apart (`crate::classify`).
+fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, crate::log::Unit)> {
+    use crate::log::Unit;
+    let (mode, bracketed) = (
+        p.screen().key_mode(),
+        p.screen().mode(fux_vt::Mode::BracketedPaste),
+    );
+    let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
+    // Whether the last piece takes more, an edit: text, or keys.
+    let mut last: Option<bool> = None;
+    for input in inputs {
+        let mut bytes = Vec::new();
+        let unit = match input {
+            Input::Key(key) => {
+                crate::encode::key_bytes((*key).into(), mode, &mut bytes);
+                crate::command::unit(*key)
+            }
+            Input::Text(text) => {
+                // A line end in text submits the line, read alone.
+                let mut rest = text.as_str();
+                while let Some(at) = rest.find(['\r', '\n']) {
+                    let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
+                    if !part.is_empty() {
+                        push_piece(&mut units, &mut last, part.as_bytes(), true);
+                    }
+                    let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
+                    units.push((end.as_bytes().to_vec(), Unit::Submit));
+                    last = None;
+                    rest = after;
+                }
+                if !rest.is_empty() {
+                    push_piece(&mut units, &mut last, rest.as_bytes(), true);
+                }
+                continue;
+            }
+            Input::Paste(text) => {
+                crate::encode::paste(text, bracketed, &mut bytes);
+                units.push((bytes, paste_unit(text, bracketed)));
+                last = None;
+                continue;
+            }
+        };
+        if unit == Unit::Edit && bytes != b"\x1b" {
+            push_piece(&mut units, &mut last, &bytes, false);
+        } else {
+            units.push((bytes, unit));
+            last = None;
+        }
+    }
+    units
+}
+
 /// Adds `bytes`, an edit that is `text` typed or else keys, to the last
 /// piece if that is an edit of the same kind, else as a piece of its own.
 fn push_piece(
@@ -3756,6 +3768,22 @@ fn push_piece(
 mod tests {
     use super::testing::{attached, output, requests, run, started};
     use super::*;
+
+    /// Keys sent to a tab's panes go to every one of them or to none: a
+    /// pane that has no room for them refuses them before any is sent.
+    #[test]
+    fn keys_for_several_panes_go_to_all_or_none() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 opts split drop")?;
+        let second = s.panes.get_mut(&PaneId::of(2)).ok_or("no %2")?;
+        // Its program reads nothing: the queue refuses everything now.
+        assert!(second.input.push(vec![0; 1 << 30]).is_err());
+        let sent = run(&mut s, "@1 keys str x text send-keys");
+        assert!(sent.is_err_and(|e| e.contains("not_reading")), "refused");
+        let first = s.panes.get(&PaneId::of(1)).ok_or("no %1")?;
+        assert_eq!(first.input.len(), 0, "the first pane got none");
+        Ok(())
+    }
 
     /// `set history-bytes` changes every pane's history, not only the next
     /// pane's.

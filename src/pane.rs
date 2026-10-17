@@ -1027,17 +1027,24 @@ impl Pane {
         units: Vec<(Vec<u8>, crate::log::Unit)>,
         now: Instant,
     ) -> Result<(), Error> {
+        self.room_for(&units)?;
+        self.pace.waiting.extend(units);
+        self.release_paced(now);
+        Ok(())
+    }
+
+    /// Whether it takes `units` now, as `send` would: refused whole if
+    /// they and what waits to be paced are more than its queue's room.
+    pub fn room_for(&self, units: &[(Vec<u8>, crate::log::Unit)]) -> Result<(), Error> {
         let held: usize = self.pace.waiting.iter().map(|(b, _)| b.len()).sum();
         let total = units
             .iter()
             .map(|(b, _)| b.len())
             .fold(held, usize::saturating_add);
-        if total > self.input.room() {
-            return Err(Error::NotReading);
+        match total > self.input.room() {
+            true => Err(Error::NotReading),
+            false => Ok(()),
         }
-        self.pace.waiting.extend(units);
-        self.release_paced(now);
-        Ok(())
     }
 
     /// When paced input is to be looked at again.
