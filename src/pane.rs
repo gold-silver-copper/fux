@@ -1369,13 +1369,6 @@ pub fn shows(row: &fux_vt::Row<'_>) -> u64 {
     hasher.finish()
 }
 
-/// The screen's rows as they read now, by row.
-pub fn rows_now(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, Cells> {
-    live(screen)
-        .map(|(_, row)| (row.id(), row_cells(&row)))
-        .collect()
-}
-
 /// The screen's rows, from the top, and where each is.
 fn live(screen: &fux_vt::Screen) -> impl Iterator<Item = (u16, fux_vt::Row<'_>)> {
     let window = screen.window();

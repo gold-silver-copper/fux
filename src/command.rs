@@ -269,9 +269,6 @@ wire! {
         pub timeout: Option<Duration>,
         /// What came since it began, or the screen, as the wait ends.
         pub print: bool,
-        /// Only what comes after it began counts: text that appears anew, a
-        /// screen that changed (send-keys' waits, armed before the keys).
-        pub after: bool,
         /// What it prints with reverse video marked, as `capture`'s `marks`.
         pub marks: bool,
     }

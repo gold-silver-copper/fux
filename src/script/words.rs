@@ -463,12 +463,12 @@ fn keys(value: &mut Value<Fux>) -> Result<&mut Keys, Failure> {
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
 
-/// The wait an action makes, armed before it when `after`: what it names;
-/// or, from a command line (`settle`) or given any wait word (`timeout`
-/// alone), for each pane to settle.
-fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Wait> {
+/// The wait an action makes: what it names; or, from a command line
+/// (`settle`) or given any wait word (`timeout` alone), for each pane to
+/// settle.
+fn wait(waits: &Waits, settle: bool) -> Option<Wait> {
     let named = *waits != Waits::default();
-    (named || settle).then(|| waited(waits, after))
+    (named || settle).then(|| waited(waits))
 }
 
 /// `command`, then `wait` if there is one.
@@ -481,7 +481,7 @@ fn followed(command: Command, wait: Option<Wait>) -> Request {
 
 /// A wait for what `waits` names, else for the pane to settle, said with
 /// what came.
-fn waited(waits: &Waits, after: bool) -> Wait {
+fn waited(waits: &Waits) -> Wait {
     let settles = waits.until.is_empty();
     Wait {
         until: if settles {
@@ -491,7 +491,6 @@ fn waited(waits: &Waits, after: bool) -> Wait {
         },
         timeout: waits.timeout,
         print: settles,
-        after,
         marks: waits.marks,
     }
 }
@@ -824,7 +823,7 @@ impl fuxth::Host for Host<'_> {
                             log: built.log,
                             ids: built.ids,
                         };
-                        let run = followed(run, wait(&built.waits, false, self.settle));
+                        let run = followed(run, wait(&built.waits, self.settle));
                         return later(ask(run, Then::Handle(Kind::Pane)));
                     }
                     "new-tab" => Command::NewTab {
@@ -875,7 +874,7 @@ impl fuxth::Host for Host<'_> {
                     run,
                     id,
                 };
-                let split = followed(split, wait(&built.waits, false, self.settle));
+                let split = followed(split, wait(&built.waits, self.settle));
                 later(ask(split, Then::Handle(Kind::Pane)))
             }
             "respawn" => {
@@ -887,7 +886,7 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     argv: built.argv,
                 };
-                let respawn = followed(respawn, wait(&built.waits, false, self.settle));
+                let respawn = followed(respawn, wait(&built.waits, self.settle));
                 later(ask(respawn, Then::Handle(Kind::Pane)))
             }
             // ----------------------------------------------------- waiting
@@ -925,7 +924,7 @@ impl fuxth::Host for Host<'_> {
                 let built = finished(name, next()?)?;
                 // With a wait's time either way: on a tab or workspace, for
                 // each of its panes.
-                let wait = Request::Wait(p, waited(&built.waits, false));
+                let wait = Request::Wait(p, waited(&built.waits));
                 later(ask(wait, Then::Outcome))
             }
             // ------------------------------------------------------- input
@@ -1013,7 +1012,7 @@ impl fuxth::Host for Host<'_> {
                     // Its answer, empty, as send-keys to a pane leaves one.
                     return later(ask(typed, Then::Outcome));
                 }
-                let then = wait(&built.waits, true, self.settle);
+                let then = wait(&built.waits, self.settle);
                 let target =
                     target(&to).map_err(|_| wrong("a pane, tab, workspace or client", &to))?;
                 let keys = Command::SendKeys {
@@ -1054,7 +1053,7 @@ impl fuxth::Host for Host<'_> {
                 let Value::App(Fux::Mouse(m)) = &m else {
                     return Err(wrong("a mouse event (from mouse)", &m));
                 };
-                let then = wait(&m.waits, true, self.settle);
+                let then = wait(&m.waits, self.settle);
                 let mouse = Command::SendMouse {
                     target: p,
                     mouse: m.mouse,
@@ -1068,7 +1067,7 @@ impl fuxth::Host for Host<'_> {
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
                 // From a command line: answers once the program exited or settled.
-                let then = wait(&Waits::default(), true, self.settle);
+                let then = wait(&Waits::default(), self.settle);
                 let signal = followed(Command::Signal { target: p, signal }, then);
                 later(ask(signal, Then::Outcome))
             }
@@ -1610,15 +1609,15 @@ mod tests {
     /// (`wait-seconds`), unless they say: one deadline for both.
     #[test]
     fn waits_leave_their_limit_to_the_server() {
-        let settle = waited(&Waits::default(), false);
+        let settle = waited(&Waits::default());
         assert_eq!((settle.until, settle.timeout), (vec![Until::Settled], None));
-        let action = wait(&Waits::default(), true, true).map(|w| w.timeout);
+        let action = wait(&Waits::default(), true).map(|w| w.timeout);
         assert_eq!(action, Some(None));
         let said = Waits {
             timeout: Some(Duration::from_secs(5)),
             ..Waits::default()
         };
-        assert_eq!(waited(&said, false).timeout, Some(Duration::from_secs(5)));
+        assert_eq!(waited(&said).timeout, Some(Duration::from_secs(5)));
     }
 
     /// An answer in a list is its object; one of several panes, an array of

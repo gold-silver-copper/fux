@@ -1911,7 +1911,6 @@ impl Session {
                     until: vec![crate::command::Until::Settled],
                     timeout,
                     print: false,
-                    after: false,
                     marks: false,
                 };
                 let pane = self.pane(target)?;
@@ -1930,18 +1929,18 @@ impl Session {
             Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
             Request::Revoke(socket) => return Ok(Begun::Grant(socket, None)),
         };
-        let panes = (self.panes_of(target)?.into_iter())
-            .map(|id| self.pane(id))
-            .collect::<Result<Vec<_>, _>>()?;
-        // Armed before any keys go in: what the keys bring is what it sees.
+        // What the action brings counts from its input (`Pane::since`).
         let follows = action.as_ref().map_or(Follows::Wait, |_| Follows::Action);
-        let waiting = Waiting::new(&panes, wait, follows, now, self.config.wait);
         if let Some(command) = action {
             let outcome = self.run_command(&command, origin);
             if matches!(outcome.end, End::Failed { .. }) {
                 return Ok(Begun::Done(outcome));
             }
         }
+        let panes = (self.panes_of(target)?.into_iter())
+            .map(|id| self.pane(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let waiting = Waiting::new(&panes, wait, follows, now, self.config.wait);
         Ok(self.wait_on(waiting, now))
     }
 
@@ -2429,6 +2428,8 @@ impl Session {
                 let group = self.signalled(target)?;
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))?;
+                // An action: what it brings counts from here.
+                self.pane_mut(target)?.note_input();
                 Ok(Reply::default())
             }
             // From the command line each says what it closed, so a script

@@ -66,7 +66,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   `run` or `respawn` a text must show before it can go). Failed (exited first,
   timed out), it answers the state line and the pane's last lines, and says
   why on stderr. A wait counts what the program printed since your
-  last input to the pane (or since it started): lines scrolled away, and
+  last input or signal (or since it started): lines scrolled away, and
   text drawn over in the same breath (`printf 'READY\rxxxxx'`), too; it
   never starts too late. It never matches what you typed: the echo of your
   keys (the terminal's own, for a program that reads lines; the shell's as

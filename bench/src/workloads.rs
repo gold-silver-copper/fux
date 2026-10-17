@@ -688,7 +688,6 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
         until: vec![fux::command::Until::Text("a text never written".into())],
         timeout: Some(std::time::Duration::from_secs(3600)),
         print: true,
-        after: true,
         marks: false,
     };
     let now = std::time::Instant::now();

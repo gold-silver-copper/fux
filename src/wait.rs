@@ -21,6 +21,7 @@ use crate::log::Seq;
 use crate::pane::{Pane, Start};
 use crate::process::Ended;
 use crate::protocol::{End, Reply};
+use crate::ready::State;
 use crate::session::Session;
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
@@ -93,13 +94,14 @@ pub enum Follows {
 }
 
 impl Follows {
-    /// Whether its program has just started, and whether it waits for
-    /// something new (a bare `wait`).
-    fn mode(&self) -> (bool, bool) {
+    /// Whether its program has just started, whether it waits for
+    /// something new (a bare `wait`), and whether it follows an action.
+    fn mode(&self) -> (bool, bool, bool) {
         match self {
-            Follows::Started => (true, false),
-            Follows::Wait => (false, true),
-            Follows::Action | Follows::Capture(..) => (false, false),
+            Follows::Started => (true, false, false),
+            Follows::Wait => (false, true, false),
+            Follows::Action => (false, false, true),
+            Follows::Capture(..) => (false, false, false),
         }
     }
 }
@@ -122,9 +124,6 @@ struct Watch {
     start: Start,
     /// Pieces of output it had not read yet were let go.
     missed: bool,
-    /// The screen's rows as they read when it began, if it began after the
-    /// last action (else the pane's, `Pane::before`).
-    before: Option<std::collections::HashMap<fux_vt::RowId, crate::pane::Cells>>,
     /// The first text found: which, its line, and when it came.
     found: Option<(String, String, Seq)>,
     /// The text printed on each row, runs that go on from each other
@@ -160,7 +159,7 @@ enum Found {
     Exit(Ended),
     Bell(Option<String>),
     /// The pane settled, so.
-    Settled(crate::ready::State),
+    Settled(State),
     /// The program reads its terminal; the text waited for has not come
     /// (or gone).
     Stopped,
@@ -185,7 +184,7 @@ impl Waiting {
             .collect();
         Waiting {
             watches: (panes.iter())
-                .map(|p| (p.id, Look::Looking(Watch::new(p, wait.after))))
+                .map(|p| (p.id, Look::Looking(Watch::new(p))))
                 .collect(),
             texts,
             deadline: crate::after(now, limit),
@@ -261,10 +260,10 @@ impl Waiting {
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane)));
+                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane), mode.2));
             } else if late {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane)));
+                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane), mode.2));
             }
         }
         let answers: Vec<&Reply> = (self.watches.iter())
@@ -336,9 +335,9 @@ impl Wait {
         said(id, "closed".into(), Vec::new(), body, end)
     }
 
-    /// The outcome of a wait that ended so in `pane`.
-    fn told(&self, pane: &Pane, told: Told, limit: Duration, since: Since) -> Reply {
-        use crate::ready::State;
+    /// The outcome of a wait that ended so in `pane`, after an action if
+    /// `action`.
+    fn told(&self, pane: &Pane, told: Told, limit: Duration, since: Since, action: bool) -> Reply {
         let (id, now) = (pane.id, Instant::now());
         let state = || crate::ready::state(pane, now);
         let came = || since_text(pane, since, self.marks);
@@ -464,7 +463,7 @@ impl Wait {
                 (state(), None, last(1), end)
             }
         };
-        let mut notes = self.notes(pane, state, since);
+        let mut notes = self.notes(pane, state, since, action);
         // What met it, or with nothing met, what waits on while it is busy.
         match met {
             Some(met) => notes.push(met),
@@ -507,8 +506,8 @@ fn said(id: PaneId, state: String, notes: Vec<Note>, body: Note, end: End) -> Re
 
 impl Wait {
     /// What a state line says after the state: a shell command that ended,
-    /// keys read that drew nothing, keys not read yet.
-    fn notes(&self, pane: &Pane, state: crate::ready::State, since: Since) -> Vec<Note> {
+    /// an action's keys read that drew nothing, keys not read yet.
+    fn notes(&self, pane: &Pane, state: State, since: Since, action: bool) -> Vec<Note> {
         let mut notes = Vec::new();
         let commands = pane.screen().commands();
         if commands.finished > since.start.finished {
@@ -516,7 +515,7 @@ impl Wait {
             let said = status.map_or_else(|| "done".to_owned(), |s| format!("done {s}"));
             notes.push((said, vec![("done", status.map_or(Json::Null, Json::int))]));
         }
-        if self.after && pane.revision == since.revision && state == crate::ready::State::Reading {
+        if action && pane.revision == since.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
         }
         let queued = pane.input_queued();
@@ -584,20 +583,15 @@ impl Until {
 }
 
 impl Watch {
-    /// How `pane` stands as a wait begins: one armed before an action
-    /// (`after`) counts from now, any other from the last action's input to
-    /// the pane, or its program's start.
-    fn new(pane: &Pane, after: bool) -> Watch {
-        let screen = pane.screen();
-        let start = match after {
-            true => Start::at(Seq(screen.version()), screen),
-            false => pane.since,
-        };
+    /// How `pane` stands as a wait begins: it counts from the last action's
+    /// input to the pane (the action's own, for a wait that follows one), or
+    /// its program's start.
+    fn new(pane: &Pane) -> Watch {
+        let start = pane.since;
         Watch {
             start,
 
             missed: false,
-            before: after.then(|| crate::pane::rows_now(screen)),
             found: None,
             stream: std::collections::HashMap::new(),
             appeared: std::collections::HashMap::new(),
@@ -620,11 +614,11 @@ impl Watch {
         wait: &Wait,
         texts: &[String],
         window: (Instant, Instant),
-        mode: (bool, bool),
+        mode: (bool, bool, bool),
     ) -> Option<Told> {
         // An action's wait answers once all its keys went in: what the
         // first brought is no answer to the rest.
-        if wait.after && pane.starts == self.starts && pane.holds_keys() {
+        if mode.2 && pane.starts == self.starts && pane.holds_keys() {
             return None;
         }
         let told = if pane.starts != self.starts {
@@ -675,12 +669,12 @@ impl Watch {
         wait: &Wait,
         texts: &[String],
         (began, now): (Instant, Instant),
-        (fresh, more): (bool, bool),
+        (fresh, more, action): (bool, bool, bool),
     ) -> Option<Found> {
         // Any wait's answer reads the journal: past its budget, it says so.
         self.missed |= pane.record.lost_after(self.looked);
         if !texts.is_empty() && self.found.is_none() {
-            self.read_prints(pane, texts);
+            self.read_prints(pane, texts, action);
         }
         // What came since the last look: the pieces that printed a text
         // waited to go, and the first bell.
@@ -746,7 +740,7 @@ impl Watch {
         if !shown || wait.until.contains(&Until::Settled) {
             return None;
         }
-        if crate::ready::state(pane, now) != crate::ready::State::Reading {
+        if crate::ready::state(pane, now) != State::Reading {
             self.reading_since = None;
             return None;
         }
@@ -759,7 +753,7 @@ impl Watch {
     /// Reads what was printed since it last read, in the order it came:
     /// the first of `texts` that a piece of output printed, on its line or
     /// in the piece itself, is found.
-    fn read_prints(&mut self, pane: &Pane, texts: &[String]) {
+    fn read_prints(&mut self, pane: &Pane, texts: &[String], action: bool) {
         // Rows scrolled off are printed on no more: a long wait lets them go.
         crate::pane::prune(&mut self.stream, pane.screen());
         let pieces = pane.record.printed_after(self.looked.max(self.start.from));
@@ -769,9 +763,9 @@ impl Watch {
         let runs = pieces.flat_map(|(seq, p)| p.runs().map(move |(r, e, f)| (seq, r, e, f)));
         for (seq, whole, echo, fresh) in runs {
             // Only what it changed is news: what it printed as its row held
-            // it, just before or as the wait began, is drawn again.
-            let fresh = match self.before.as_ref().and_then(|b| b.get(&whole.row)) {
-                Some(row) => {
+            // it as the action began (`Pane::before`) is drawn again.
+            let fresh = match pane.before.get(&whole.row).filter(|_| action) {
+                Some((row, _)) => {
                     let echo = *echo != crate::classify::Echo::Not;
                     let (a, b) = crate::pane::changed(row, &whole, echo);
                     (fresh.0.max(a), fresh.1.min(b))
@@ -884,7 +878,6 @@ impl Watch {
         (began, now): (Instant, Instant),
         more: bool,
     ) -> Option<Found> {
-        use crate::ready::State;
         let state = crate::ready::state(pane, now);
         // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
         // with nothing known) waits for something new, what it waits on or
@@ -1340,7 +1333,6 @@ mod tests {
             until: vec![Until::Settled],
             timeout: None,
             print: false,
-            after: false,
             marks: false,
         };
         let began = Instant::now()
@@ -1376,7 +1368,6 @@ mod tests {
             until: vec![Until::Text("cost$$".into())],
             timeout: None,
             print: false,
-            after: false,
             marks: false,
         };
         let (now, limit) = (Instant::now(), Duration::from_secs(60));
