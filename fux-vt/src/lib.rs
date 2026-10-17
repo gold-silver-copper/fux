@@ -571,11 +571,7 @@ impl<'a> Window<'a> {
                 if cell.is_wide_continuation() || self.spacer(y, x) {
                     continue;
                 }
-                let text = if cell.has_contents() {
-                    cell.contents()
-                } else {
-                    " "
-                };
+                let text = cell.shown();
                 if output
                     .len()
                     .checked_add(text.len())

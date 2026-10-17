@@ -300,9 +300,10 @@ or the rows from one up in history (`Row::window`), never short of rows;
 reading it never changes where output lands. History rows are padded or
 clipped to it unchanged, and a wide glyph cut by its edge reads as blank.
 `Window::text` copies between inclusive endpoints: wide halves become
-their first half, soft wraps join, padding at hard line ends and past a
-history row's width is not copied, and cell and byte limits are checked
-before anything grows.
+their first half, soft wraps join, a picture's cells read as blanks
+(`CellRef::shown`), padding at hard line ends and past a history row's
+width is not copied, and cell and byte limits are checked before anything
+grows.
 
 Marks are not consumed, so readers share them. `changed_since` says
 whether the screen may have changed (any processing counts);

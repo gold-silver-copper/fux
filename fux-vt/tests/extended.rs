@@ -877,6 +877,23 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     Ok(())
 }
 
+/// A copy reads a picture's cells as a reader sees them, as blanks
+/// (`CellRef::shown`), not as the placeholder that marks them.
+#[test]
+fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
+    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // 2 cells by 2 at row 1 col 3, and a `z` after them on its first row.
+    p.process(b"\r\n   \x1bPq#1;2;100;0;0!6~-!6~\x1b\\\x1b[2;8Hz")?;
+    assert_eq!(p.screen().pictures().count(), 1);
+    let copied = p.screen().window().text((1, 0), (1, 9), 100, 100)?;
+    assert_eq!(copied, "       z");
+    Ok(())
+}
+
 /// The host's graphics are what a program is told: sixel in DA1, and the
 /// cell's and the screen's pixel sizes.
 #[test]
