@@ -1957,22 +1957,10 @@ impl Session {
     /// the granted workspace; one that names, or comes from, anything
     /// outside it, or reaches what is everyone's (the config, the buffers,
     /// clients, the server), is refused.
-    fn scoped(&self, request: Request, scope: &str, origin: &Origin) -> Result<Request, Error> {
+    fn scoped(&self, mut request: Request, scope: &str, origin: &Origin) -> Result<Request, Error> {
         // With no target, one that would act anywhere acts on the granted
         // workspace.
-        let mut request = request;
         let ws = self.resolve_ws(&WsRef::Name(scope.to_owned())).ok();
-        let place = || Some(WsRef::Name(scope.to_owned()));
-        // The granted workspace, which may be gone: then nothing.
-        let whole = || {
-            let gone = || {
-                fail(
-                    Code::NotGranted,
-                    format!("workspace {scope} (grant) is gone"),
-                )
-            };
-            ws.map(AnyRef::Workspace).ok_or_else(gone)
-        };
         if let Request::Do(command) | Request::Then(command, _) = &mut request
             && let Command::Run {
                 workspace: at @ None,
@@ -1982,12 +1970,17 @@ impl Session {
                 target: at @ None, ..
             } = command
         {
-            *at = place();
+            *at = Some(WsRef::Name(scope.to_owned()));
         }
         if let Request::Do(Command::DumpLayout { target: at @ None })
         | Request::Events(at @ None, _) = &mut request
         {
-            *at = Some(whole()?);
+            // The granted workspace, which may be gone: then nothing.
+            let gone = fail(
+                Code::NotGranted,
+                format!("workspace {scope} (grant) is gone"),
+            );
+            *at = Some(ws.map(AnyRef::Workspace).ok_or(gone)?);
         }
         let reach = Reach {
             session: self,
