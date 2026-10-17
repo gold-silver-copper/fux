@@ -81,8 +81,8 @@ settings! {
 pub struct Refused(pub Code, pub String);
 
 impl From<String> for Refused {
-    fn from(why: String) -> Refused {
-        Refused(Code::Config, why)
+    fn from(why: String) -> Self {
+        Self(Code::Config, why)
     }
 }
 

@@ -67,13 +67,12 @@ pub(crate) fn number(text: &str) -> Option<u32> {
 /// `cN`, or `N` alone.
 impl FromStr for ClientId {
     type Err = Usage;
-    fn from_str(text: &str) -> Result<ClientId, Usage> {
+    fn from_str(text: &str) -> Result<Self, Usage> {
         let n = text
             .strip_prefix('c')
             .and_then(number)
             .or_else(|| number(text));
-        n.map(ClientId)
-            .ok_or_else(|| Usage::NotClient(text.to_owned()))
+        n.map(Self).ok_or_else(|| Usage::NotClient(text.to_owned()))
     }
 }
 

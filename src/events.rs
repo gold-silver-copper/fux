@@ -177,9 +177,9 @@ impl Ending {
     /// Its line, the stream's last, which is of no pane.
     pub fn line(&self, json: bool) -> String {
         let (name, fields) = match self {
-            Ending::Gone => ("gone", Vec::new()),
-            Ending::Lost => ("lost", Vec::new()),
-            Ending::Stopped(reason) => ("stopped", vec![("reason", Json::str(reason.clone()))]),
+            Self::Gone => ("gone", Vec::new()),
+            Self::Lost => ("lost", Vec::new()),
+            Self::Stopped(reason) => ("stopped", vec![("reason", Json::str(reason.clone()))]),
         };
         line(name, None, fields, json)
     }
@@ -187,7 +187,7 @@ impl Ending {
     /// The stream's reply, as it ends.
     pub fn reply(&self) -> Reply {
         match self {
-            Ending::Gone => Reply {
+            Self::Gone => Reply {
                 end: End::Failed {
                     status: crate::wait::GONE,
                     code: Code::Gone,
@@ -195,8 +195,8 @@ impl Ending {
                 },
                 ..Reply::default()
             },
-            Ending::Lost => Reply::failed(Code::Lost, "events: the reader fell too far behind"),
-            Ending::Stopped(_) => Reply::default(),
+            Self::Lost => Reply::failed(Code::Lost, "events: the reader fell too far behind"),
+            Self::Stopped(_) => Reply::default(),
         }
     }
 }

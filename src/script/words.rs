@@ -5,8 +5,8 @@ use super::{Ask, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Wa
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Until, Wait, Wheel,
-    WsRef,
+    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Until, Usage, Wait,
+    Wheel, WsRef,
 };
 use crate::keys::Direction;
 use crate::layout::Axis;
@@ -644,12 +644,9 @@ impl fuxth::Host for Host<'_> {
             "here" => resolve(String::new(), Kind::Pane),
             "client" => {
                 let text = string(&next()?)?;
-                let id = text.parse().map_err(|_| {
-                    fail(
-                        Code::BadValue,
-                        format!("{text:?} is not a client: clients are cN"),
-                    )
-                })?;
+                let id = text
+                    .parse()
+                    .map_err(|e: Usage| fail(Code::BadValue, e.to_string()))?;
                 now(out, Value::App(Fux::Client(id)))
             }
             "me" => match self.context.client {

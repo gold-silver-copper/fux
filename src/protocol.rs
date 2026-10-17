@@ -66,11 +66,11 @@ pub struct Mismatch {
 impl Mismatch {
     /// Whether a client that said `client` can go on with a server that
     /// said `server`: either may ask, holding both.
-    pub fn between(client: &Hello, server: &Hello) -> Result<(), Mismatch> {
+    pub fn between(client: &Hello, server: &Hello) -> Result<(), Self> {
         if client.role == Role::Kill || client.protocol == server.protocol {
             return Ok(());
         }
-        Err(Mismatch {
+        Err(Self {
             protocol: server.protocol,
             version: server.version.clone(),
         })
@@ -411,24 +411,24 @@ impl End {
 
 /// An answer of `text` alone.
 impl From<String> for Reply {
-    fn from(text: String) -> Reply {
-        Reply {
+    fn from(text: String) -> Self {
+        Self {
             text,
-            ..Reply::default()
+            ..Self::default()
         }
     }
 }
 
 impl Reply {
     /// A failure of kind `code`, with its exit status, and why.
-    pub fn failed(code: Code, message: impl Into<String>) -> Reply {
-        Reply {
+    pub fn failed(code: Code, message: impl Into<String>) -> Self {
+        Self {
             end: End::Failed {
                 status: code.status(),
                 code,
                 message: message.into(),
             },
-            ..Reply::default()
+            ..Self::default()
         }
     }
 }

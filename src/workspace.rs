@@ -96,11 +96,11 @@ impl Workspace {
         (tab, tab_name): (TabId, String),
         (root, fit): (Option<Tree>, Fit),
         clients: impl Iterator<Item = ClientId>,
-    ) -> Workspace {
+    ) -> Self {
         let tab = Tab::new(tab, tab_name, (root, fit), clients);
         let shown = tab.seats.keys().map(|c| (*c, tab.id)).collect();
         let (tabs, viewers) = (vec![tab], BTreeSet::new());
-        Workspace {
+        Self {
             id,
             name,
             tabs,

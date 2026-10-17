@@ -5,6 +5,7 @@ use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
+use crate::log::Unit;
 use crate::wire::wire;
 use std::time::Duration;
 
@@ -40,9 +41,9 @@ wire! {
 impl AnyRef {
     pub fn kind(&self) -> Kind {
         match self {
-            AnyRef::Pane(_) => Kind::Pane,
-            AnyRef::Tab(_) => Kind::Tab,
-            AnyRef::Workspace(_) => Kind::Workspace,
+            Self::Pane(_) => Kind::Pane,
+            Self::Tab(_) => Kind::Tab,
+            Self::Workspace(_) => Kind::Workspace,
         }
     }
 }
@@ -51,9 +52,9 @@ impl AnyRef {
 impl std::fmt::Display for AnyRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AnyRef::Pane(id) => id.fmt(f),
-            AnyRef::Tab(id) => id.fmt(f),
-            AnyRef::Workspace(id) => id.fmt(f),
+            Self::Pane(id) => id.fmt(f),
+            Self::Tab(id) => id.fmt(f),
+            Self::Workspace(id) => id.fmt(f),
         }
     }
 }
@@ -61,10 +62,10 @@ impl std::fmt::Display for AnyRef {
 /// `%N`, `@N` or `+N`: the id of the kind its sigil says.
 impl std::str::FromStr for AnyRef {
     type Err = ();
-    fn from_str(text: &str) -> Result<AnyRef, ()> {
-        (text.parse().map(AnyRef::Pane))
-            .or_else(|_| text.parse().map(AnyRef::Tab))
-            .or_else(|_| text.parse().map(AnyRef::Workspace))
+    fn from_str(text: &str) -> Result<Self, ()> {
+        (text.parse().map(Self::Pane))
+            .or_else(|_| text.parse().map(Self::Tab))
+            .or_else(|_| text.parse().map(Self::Workspace))
             .map_err(drop)
     }
 }
@@ -316,11 +317,11 @@ impl Button {
     /// The button a report names.
     pub fn reported(self) -> MouseButton {
         match self {
-            Button::Left => MouseButton::Left,
-            Button::Middle => MouseButton::Middle,
-            Button::Right => MouseButton::Right,
-            Button::Back => MouseButton::Back,
-            Button::Forward => MouseButton::Forward,
+            Self::Left => MouseButton::Left,
+            Self::Middle => MouseButton::Middle,
+            Self::Right => MouseButton::Right,
+            Self::Back => MouseButton::Back,
+            Self::Forward => MouseButton::Forward,
         }
     }
 }
@@ -329,10 +330,10 @@ impl Wheel {
     /// The button a report names.
     pub fn reported(self) -> MouseButton {
         match self {
-            Wheel::Up => MouseButton::WheelUp,
-            Wheel::Down => MouseButton::WheelDown,
-            Wheel::Left => MouseButton::WheelLeft,
-            Wheel::Right => MouseButton::WheelRight,
+            Self::Up => MouseButton::WheelUp,
+            Self::Down => MouseButton::WheelDown,
+            Self::Left => MouseButton::WheelLeft,
+            Self::Right => MouseButton::WheelRight,
         }
     }
 }
@@ -562,8 +563,8 @@ pub enum Usage {
 impl std::fmt::Display for Usage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Usage::Not(kind, text) => write!(f, "{text:?} is not a {}", kind.name()),
-            Usage::NotClient(text) => write!(f, "{text:?} is not a client: clients are cN"),
+            Self::Not(kind, text) => write!(f, "{text:?} is not a {}", kind.name()),
+            Self::NotClient(text) => write!(f, "{text:?} is not a client: clients are cN"),
         }
     }
 }
@@ -635,9 +636,9 @@ impl Reaches<'_> {
     /// Whether every client's screen is as it was after it.
     pub fn shows_nothing_new(self) -> bool {
         match self {
-            Reaches::Reads | Reaches::Streams => true,
-            Reaches::Shapes | Reaches::Server | Reaches::Settings { .. } => false,
-            Reaches::Buffers { reads } | Reaches::Client { reads } => reads,
+            Self::Reads | Self::Streams => true,
+            Self::Shapes | Self::Server | Self::Settings { .. } => false,
+            Self::Buffers { reads } | Self::Client { reads } => reads,
         }
     }
 }
@@ -775,10 +776,10 @@ impl Request {
     /// What it reaches.
     pub fn reaches(&self) -> Reaches<'_> {
         match self {
-            Request::Do(command) | Request::Then(command, _) => command.reaches(),
-            Request::Wait(..) | Request::Capture(..) => Reaches::Reads,
-            Request::Events(..) => Reaches::Streams,
-            Request::Grant(..) | Request::Revoke(_) => Reaches::Server,
+            Self::Do(command) | Self::Then(command, _) => command.reaches(),
+            Self::Wait(..) | Self::Capture(..) => Reaches::Reads,
+            Self::Events(..) => Reaches::Streams,
+            Self::Grant(..) | Self::Revoke(_) => Reaches::Server,
         }
     }
 }
@@ -787,8 +788,7 @@ impl Request {
 /// of the line typed (a character, BSpace, Delete, Tab, the cursor keys,
 /// and the line editor's control keys that move or delete), else a key
 /// that does something (Enter, Escape, a control or function key).
-pub fn unit(key: KeyPress) -> crate::log::Unit {
-    use crate::log::Unit;
+pub fn unit(key: KeyPress) -> Unit {
     use fux_vt::keys::{Key, Modifiers};
     match (key.key, key.mods) {
         (Key::Char(_), Modifiers::NONE | Modifiers::SHIFT)

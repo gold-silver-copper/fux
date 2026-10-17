@@ -1,4 +1,5 @@
 //! One attached client's own view of the shared state.
+use crate::act::{Edit, Panel};
 use crate::copy::Copy;
 use crate::id::ClientId;
 
@@ -47,8 +48,7 @@ impl<const MAX: usize> Line<MAX> {
     /// An edit of the line: typed text (one line of it, nothing that
     /// controls, unless the line would pass `MAX` bytes), or a move or a
     /// deletion.
-    pub fn edit(&mut self, edit: &crate::act::Edit) {
-        use crate::act::Edit;
+    pub fn edit(&mut self, edit: &Edit) {
         match edit {
             Edit::Insert(text) => {
                 let typed: String = (text.chars())
@@ -88,7 +88,7 @@ impl<const MAX: usize> Line<MAX> {
 /// whose cursor the server keeps.
 pub enum Mode {
     Normal,
-    Panel(crate::act::Panel),
+    Panel(Panel),
     Copy(Box<Copy>),
 }
 

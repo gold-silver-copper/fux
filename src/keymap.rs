@@ -335,8 +335,8 @@ pub const DEFAULTS: &[(&str, bool, Bindings)] = &[
 ];
 
 impl Default for Keymap {
-    fn default() -> Keymap {
-        let mut keymap = Keymap {
+    fn default() -> Self {
+        let mut keymap = Self {
             prefix: KeyPress::new(Key::Char('b'), Modifiers::CTRL),
             bindings: Layer::default(),
             root: Vec::new(),
