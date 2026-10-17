@@ -3,7 +3,7 @@
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
-    AnyRef, Button, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse,
+    AnyRef, Button, CaptureView, Choices, ClientAction, Command, Env, Extent, Input, Kind, Mouse,
     MoveTo, PanePick, PaneResize, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait,
     Wheel, WsRef,
 };
@@ -168,6 +168,24 @@ impl Wire for std::path::PathBuf {
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let len = u32::get(r)? as usize;
         Ok(std::ffi::OsString::from_vec(r.bytes(len)?.to_vec()).into())
+    }
+}
+
+/// Variables, each name checked as it is read: one no shell takes is
+/// refused.
+impl Wire for Env {
+    fn put(&self, out: &mut Vec<u8>) {
+        let vars = self.as_slice();
+        u32::try_from(vars.len()).unwrap_or(u32::MAX).put(out);
+        vars.iter().for_each(|var| var.put(out));
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let mut env = Env::default();
+        for (name, value) in Vec::<(String, String)>::get(r)? {
+            env.push(name, value)
+                .map_err(|_| Error::Bad("variable name"))?;
+        }
+        Ok(env)
     }
 }
 
@@ -533,6 +551,17 @@ mod tests {
         assert!(buttons.iter().all(|b| !b.reported().is_wheel()));
         let ways = [Wheel::Up, Wheel::Down, Wheel::Left, Wheel::Right];
         assert!(ways.iter().all(|w| w.reported().is_wheel()));
+    }
+
+    /// A variable's name from the wire is one a shell takes, as from the
+    /// `env` word: `A=B` (or a NUL) would set another, or none.
+    #[test]
+    fn a_variable_name_no_shell_takes_is_refused() {
+        let vars = |name: &str| encode(&vec![(name.to_owned(), "x".to_owned())]);
+        assert!(Env::get(&mut Reader::new(&vars("A=B"))).is_err());
+        assert!(Env::get(&mut Reader::new(&vars("A\0"))).is_err());
+        let fine = Env::get(&mut Reader::new(&vars("A_1"))).ok();
+        assert_eq!(fine.map(|env| encode(&env)), Some(vars("A_1")));
     }
 
     /// A share of a tab is 1 to 100 percent, from the wire too: 250 would

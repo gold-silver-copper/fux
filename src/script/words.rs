@@ -739,15 +739,9 @@ impl fuxth::Host for Host<'_> {
             "env" => {
                 let mut o = next()?;
                 let (key, value) = (string(name, &next()?)?, text(name, &next()?)?);
-                if !crate::command::shell_name(&key) {
-                    return Err(fail(
-                        Code::BadValue,
-                        format!(
-                            "{key:?} is no variable's name (letters, digits and _, not first a digit)"
-                        ),
-                    ));
-                }
-                option(name, &mut o)?.env.push((key, value));
+                let env = &mut option(name, &mut o)?.env;
+                env.push(key, value)
+                    .map_err(|why| fail(Code::BadValue, why))?;
                 now(out, o)
             }
             // On a capture's options, and on what a wait prints,

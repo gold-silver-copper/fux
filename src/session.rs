@@ -2110,7 +2110,7 @@ impl Session {
                 self.want(*ids, starting.restoring)?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd, env), cwd.as_path(), &starting);
+                let start = (Start::Shell(cmd, env.as_slice()), cwd.as_path(), &starting);
                 let place = (fit, self.start_size(fit, here));
                 let made = self.create_workspace((name.clone(), None), start, place)?;
                 self.follow(here, made.0, None);
@@ -2131,7 +2131,7 @@ impl Session {
                 }
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd, env), cwd.as_path(), &starting);
+                let start = (Start::Shell(cmd, env.as_slice()), cwd.as_path(), &starting);
                 let place = (fit, self.start_size(fit, here));
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
@@ -2167,7 +2167,11 @@ impl Session {
                 let derived = Some(crate::pane::named(argv)).filter(|n| check_name(n).is_ok());
                 let given = name.clone();
                 let name = name.clone().or(derived);
-                let start = (Start::Program(argv, env), cwd.as_path(), &starting);
+                let start = (
+                    Start::Program(argv, env.as_slice()),
+                    cwd.as_path(),
+                    &starting,
+                );
                 let workspace = workspace
                     .clone()
                     .unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
@@ -2195,7 +2199,7 @@ impl Session {
                 ..
             } => {
                 let id = self.pane(target)?.id;
-                self.respawn(id, kill, (env, argv), &starting)?;
+                self.respawn(id, kill, (env.as_slice(), argv), &starting)?;
                 Ok(Reply {
                     ids: vec![AnyRef::Pane(id)],
                     ..format!("{id}\n").into()
@@ -2403,8 +2407,8 @@ impl Session {
                 tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
                 let start = match run {
-                    true => Start::Program(cmd, env),
-                    false => Start::Shell(cmd, env),
+                    true => Start::Program(cmd, env.as_slice()),
+                    false => Start::Shell(cmd, env.as_slice()),
                 };
                 let pane = new_pane(self, &mut ids, (start, &cwd, &starting), size)?;
                 let tab = tab_of(&mut self.workspaces, target)?;

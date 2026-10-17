@@ -106,7 +106,7 @@ pub struct Opts {
     pub name: Option<String>,
     pub size: Option<fux_vt::Size>,
     pub cwd: Option<String>,
-    pub env: Vec<(String, String)>,
+    pub env: crate::command::Env,
     pub argv: Vec<String>,
     pub typed: Option<String>,
     pub axis: Option<Axis>,

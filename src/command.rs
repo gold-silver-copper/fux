@@ -320,7 +320,7 @@ pub enum Command {
         size: Size,
         /// Where its shell starts (default: the caller's directory).
         cwd: Option<String>,
-        env: Vec<(String, String)>,
+        env: Env,
         /// The ids it makes, if asked for (`id`, as saved sessions have).
         ids: Wanted,
     },
@@ -330,7 +330,7 @@ pub enum Command {
         cmd: Vec<String>,
         size: Size,
         cwd: Option<String>,
-        env: Vec<(String, String)>,
+        env: Env,
         ids: Wanted,
     },
     Split {
@@ -339,7 +339,7 @@ pub enum Command {
         cmd: Vec<String>,
         /// Where its shell starts (default: where the split pane's is).
         cwd: Option<String>,
-        env: Vec<(String, String)>,
+        env: Env,
         /// `cmd` is the program, started in place of a shell, as `run`
         /// starts one.
         run: bool,
@@ -355,7 +355,7 @@ pub enum Command {
         name: Option<String>,
         size: Size,
         cwd: Option<String>,
-        env: Vec<(String, String)>,
+        env: Env,
         argv: Vec<String>,
         /// A file everything the program writes goes to too.
         log: Option<String>,
@@ -368,7 +368,7 @@ pub enum Command {
         target: PaneId,
         /// Ends it first if it still runs.
         kill: bool,
-        env: Vec<(String, String)>,
+        env: Env,
         /// Another program instead: the one it ran without.
         argv: Vec<String>,
         /// Then waits, as run's does.
@@ -573,11 +573,33 @@ pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
     }
 }
 
-/// Whether `name` is a variable's name a shell takes: letters, digits and
-/// `_`, not first a digit.
-pub fn shell_name(name: &str) -> bool {
-    (name.chars().next()).is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+/// Refused, saying why, unless `name` is a variable's name a shell takes:
+/// letters, digits and `_`, not first a digit.
+pub fn var_name(name: &str) -> Result<(), String> {
+    let first = (name.chars().next()).is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    match first && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        true => Ok(()),
+        false => Err(format!(
+            "{name:?} is no variable's name (letters, digits and _, not first a digit)"
+        )),
+    }
+}
+
+/// Variables a pane's program is given, a name and a value each: every
+/// name one `var_name` takes, from words and the wire alike.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Env(Vec<(String, String)>);
+
+impl Env {
+    /// `name` set to `value` too: refused unless `name` is a variable's.
+    pub fn push(&mut self, name: String, value: String) -> Result<(), String> {
+        var_name(&name)?;
+        self.0.push((name, value));
+        Ok(())
+    }
+    pub fn as_slice(&self) -> &[(String, String)] {
+        &self.0
+    }
 }
 
 /// What a command reaches, which decides where it may run (a saved

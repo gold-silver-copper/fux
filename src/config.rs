@@ -187,12 +187,10 @@ impl Shell {
 /// Variables' names, separated by blanks.
 fn names(value: &str) -> Result<Vec<String>, String> {
     let names: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
-    match names.iter().find(|n| !crate::command::shell_name(n)) {
-        Some(bad) => Err(format!(
-            "{bad:?} is no variable's name (letters, digits and _, not first a digit)"
-        )),
-        None => Ok(names),
-    }
+    names
+        .iter()
+        .try_for_each(|name| crate::command::var_name(name))?;
+    Ok(names)
 }
 
 /// The config file, a fuxth program each client runs as it attaches (and
