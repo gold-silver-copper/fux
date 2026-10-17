@@ -84,19 +84,15 @@ pub enum Origin {
 /// A command line's caller on the CLI.
 #[derive(Clone, Debug, Default)]
 pub struct Caller {
-    /// Its pane (`FUX_PANE`), if it runs in one of this server's.
-    pub pane: Option<PaneId>,
+    /// The pane it gave (`FUX_PANE`), of the server `within` says.
+    pub gave: Option<PaneId>,
+    /// The server whose pane it runs in, by its `FUX_SERVER`.
+    pub within: Within,
     /// Its working directory.
     pub cwd: Option<PathBuf>,
-    /// The `FUX_PANE` it gave of another server's pane (its `FUX_SERVER`
-    /// is not this server's), which nothing here is done to.
-    pub stray: Option<PaneId>,
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
     pub env: Vec<(String, String)>,
-    /// It runs in one of this server's panes (its `FUX_SERVER` is this
-    /// server's), whether or not it gave the pane.
-    pub inside: bool,
     /// It brings back a saved session: the ids asked for are the ones it
     /// had, and programs wait for `respawn`.
     pub restoring: bool,
@@ -104,6 +100,30 @@ pub struct Caller {
     /// told to reach the server by, so that what runs there is held to the
     /// grant too.
     pub grant: Option<PathBuf>,
+}
+
+/// The server whose pane a caller on the CLI runs in, as its
+/// `FUX_SERVER` says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Within {
+    /// None said: a pane it gives is taken as this server's.
+    #[default]
+    Unsaid,
+    /// This server: it runs in one of its panes, whether or not it gave it.
+    This,
+    /// Another server: the pane it gave is that server's, and nothing here
+    /// is done to it.
+    Other,
+}
+
+impl Caller {
+    /// Its pane, if it gave one of this server's.
+    fn pane(&self) -> Option<PaneId> {
+        match self.within {
+            Within::Unsaid | Within::This => self.gave,
+            Within::Other => None,
+        }
+    }
 }
 
 /// Where an attached client is: the workspace and tab it is shown, and the
@@ -561,7 +581,9 @@ fn failure(error: Error, origin: &Origin) -> Reply {
         (
             Error::NoPaneGiven | Error::NoWorkspaceGiven,
             Origin::Cli(Caller {
-                stray: Some(pane), ..
+                gave: Some(pane),
+                within: Within::Other,
+                ..
             }),
         ) => fail(
             Code::StrayPane,
@@ -689,7 +711,7 @@ impl Session {
                 Ok(Here::Client(client, place))
             }
             Origin::Cli(ref caller) => {
-                let pane = caller.pane;
+                let pane = caller.pane();
                 let at = pane.and_then(|p| self.locate(p));
                 let at = at.map(|(ws, tab)| Place { ws, tab, pane });
                 Ok(Here::Cli(pane, at, caller.cwd.as_deref()))
@@ -2076,8 +2098,12 @@ impl Session {
             }
             &Command::KillServer { force } => {
                 if let (Origin::Cli(caller), false) = (origin, force) {
-                    let pane = caller.pane.filter(|p| self.panes.contains_key(p));
-                    if pane.is_some() || caller.inside {
+                    let pane = caller.pane().filter(|p| self.panes.contains_key(p));
+                    let inside = match caller.within {
+                        Within::This => true,
+                        Within::Unsaid | Within::Other => false,
+                    };
+                    if pane.is_some() || inside {
                         let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
                         let message = format!(
                             "this runs in{pane} a pane of the server it would stop, with everything \

@@ -14,7 +14,7 @@ use crate::protocol::{
     ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer};
+use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer, Within};
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
@@ -1634,9 +1634,11 @@ impl Server {
         } = context;
         // A pane of another server's (FUX_PANE kept as FUX_SOCKET chose
         // this one) is not the caller's here.
-        let ours = server.as_deref().is_none_or(|s| s == session.server_id);
-        let inside = server.as_deref() == Some(session.server_id.as_str());
-        let (pane, stray) = if ours { (pane, None) } else { (None, pane) };
+        let within = match server {
+            None => Within::Unsaid,
+            Some(s) if s == session.server_id => Within::This,
+            Some(_) => Within::Other,
+        };
         let cwd = Some(PathBuf::from(cwd)).filter(|p| p.is_dir());
         use crate::command::Command;
         let granting = if let Command::Grant { workspace, socket } = &command {
@@ -1686,11 +1688,10 @@ impl Server {
             }
             Some(client) => Origin::Client(client),
             None => Origin::Cli(Caller {
-                pane,
+                gave: pane,
+                within,
                 cwd,
-                stray,
                 env,
-                inside,
                 grant: conn.grant.clone(),
                 restoring,
             }),
