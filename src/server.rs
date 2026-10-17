@@ -719,20 +719,6 @@ impl Saved {
     fn restoring(&self) -> bool {
         (self.restore.as_ref()).is_some_and(|thread| !thread.is_finished())
     }
-
-    /// The last save: the server stops. With `keep`, the layout as it is,
-    /// before its panes end, is what the next brings back; else none is
-    /// (the server was stopped on purpose, or its last pane closed).
-    fn stop(mut self, session: &Session, keep: bool) {
-        match keep {
-            true => self.save(session),
-            false => self.forget_file(),
-        }
-    }
-
-    fn forget_file(&self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
 }
 
 /// `fux grant`: a socket made at `socket` (from the caller's directory
@@ -814,7 +800,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let mut saved = Saved::of(socket);
     let restoring = match &mut saved {
         Some(saved) if fresh => {
-            saved.forget_file();
+            let _ = std::fs::remove_file(&saved.path);
             false
         }
         Some(saved) => {
@@ -1158,9 +1144,17 @@ impl Server {
             return;
         }
         log!("{reason}");
-        // Nothing more is saved (or what was, forgotten).
-        if let Some(saved) = self.saved.take() {
-            saved.stop(&self.session, keep);
+        // Nothing more is saved (or what was, forgotten). The last save:
+        // with `keep`, the layout as it is, before its panes end, is what
+        // the next server brings back; else none is (the server was stopped
+        // on purpose, or its last pane closed).
+        if let Some(mut saved) = self.saved.take() {
+            match keep {
+                true => saved.save(&self.session),
+                false => {
+                    let _ = std::fs::remove_file(&saved.path);
+                }
+            }
         }
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
