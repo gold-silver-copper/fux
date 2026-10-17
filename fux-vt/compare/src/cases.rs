@@ -121,13 +121,13 @@ pub const CASES: &[Named] = &[
     ),
     ("ed-ends-a-pending-wrap", "erase", (2, 5), &["abcde\\e[JX"]),
     (
-        "resetting-autowrap-keeps-a-pending-wrap",
+        "resetting-autowrap-ends-a-pending-wrap",
         "autowrap",
         (2, 5),
         &["abcde\\e[?7l\\e[?7hX"],
     ),
     (
-        "a-wrap-is-left-pending-with-autowrap-off",
+        "no-wrap-is-left-pending-with-autowrap-off",
         "autowrap",
         (2, 2),
         &["\\e[?7lca\\e[?7hX"],

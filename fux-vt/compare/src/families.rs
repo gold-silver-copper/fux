@@ -761,9 +761,12 @@ pub const FAMILIES: &[Family] = &[
         name: "autowrap",
         about: "DECAWM on and off",
         status: Status::Decided {
-            why: "with DECAWM off a glyph in the last column leaves a wrap pending, which DEC STD 070 (Appendix D.6.1) does not, and resetting DECAWM keeps one, though the appendix lists it among what clears it: fux-vt follows xterm in both (departures: fux-vt/README.md). xterm, Ghostty, alacritty and xterm.js leave the wrap pending with DECAWM off; libvterm, avt, wezterm and tmux do not, and outvote fux-vt in the default panel (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`)",
-            by: XTERM,
-            authority: Authority::Xterm,
+            why: "a glyph in the last column sets the Last Column Flag only with DECAWM set, and resetting DECAWM clears it, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; every engine of the panel keeps a wrap pending through a reset of DECAWM (`replay --engines all --size 2x5 'abcde\\e[?7l\\e[?7hX'`), and xterm, Ghostty, alacritty and xterm.js leave one pending with DECAWM off, which libvterm, avt, wezterm and tmux do not (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`). No engine follows the appendix all through, so the test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, Appendix D.6.1",
+                test: "conformance::the_last_column_flag_is_set_with_autowrap_alone",
+            },
         },
         ratty_only: false,
         generate: autowrap,

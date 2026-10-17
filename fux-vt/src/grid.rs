@@ -17,9 +17,12 @@ use crate::{Attributes, CellRef, Error, Row, RowId};
 pub(crate) struct Cursor {
     row: u16,
     col: u16,
-    /// DEC STD 070's Last Column Flag (Appendix D.6.1): a glyph went into
-    /// the last column, so the next one, with autowrap on, first moves to
-    /// the start of the next line.
+    /// A glyph went into the last column, and the cursor waits past it:
+    /// with autowrap on, DEC STD 070's Last Column Flag (Appendix D.6.1),
+    /// so the next glyph first moves to the start of the next line; with
+    /// it off, the next glyph overwrites the last column, and the flag
+    /// (`Screen::pending_wrap`) is not set. A mark joins the glyph either
+    /// way. DECAWM's changes, DECSTR and DECSC treat it so.
     pub pending_wrap: bool,
     /// Origin mode (DECOM).
     pub origin: bool,

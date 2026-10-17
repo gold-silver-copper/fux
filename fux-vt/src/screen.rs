@@ -564,18 +564,19 @@ impl Screen {
     }
     /// The cursor's row and column, always on the screen. A glyph printed
     /// in the last column (or at the right margin) leaves the cursor on
-    /// it, with [`pending_wrap`](Self::pending_wrap) set, as xterm does.
+    /// it, with [`pending_wrap`](Self::pending_wrap) set while autowrap is
+    /// on.
     pub fn cursor_position(&self) -> (u16, u16) {
         self.grid().cursor.at()
     }
     /// DEC STD 070's Last Column Flag: a glyph went into the last column,
-    /// or the right margin's (DECSLRM, with DECLRMM set),
-    /// and the next one, with autowrap on, first moves to the start of the
-    /// next line, wherever the cursor waits (a margin reset since leaves
-    /// it where the margin was). Cursor movements, line feeds and edits
-    /// end it; DECSC and SCOSC save it with the cursor.
+    /// or the right margin's (DECSLRM, with DECLRMM set), with autowrap
+    /// on, and the next one first moves to the start of the next line,
+    /// wherever the cursor waits (a margin reset since leaves it where the
+    /// margin was). Cursor movements, line feeds, edits and resetting
+    /// autowrap end it; DECSC and SCOSC save it with the cursor.
     pub fn pending_wrap(&self) -> bool {
-        self.grid().cursor.pending_wrap
+        self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap)
     }
     /// Whether `mode` is set, as DECRQM reports it. The alternate screen's
     /// three modes are set together, while it is shown; DECARM and 1048
@@ -651,7 +652,9 @@ impl Screen {
         let col = if options.identity().is_some() {
             g.cursor.col()
         } else {
-            g.next_column()
+            g.cursor
+                .col()
+                .saturating_add(u16::from(self.pending_wrap()))
         };
         // In origin mode the column counts from the left margin, as xterm
         // reports it.
@@ -1663,9 +1666,12 @@ impl Screen {
     /// DECSC, into the grid shown (`Saved`).
     fn save(&mut self) {
         let (attributes, charsets, protect) = (self.attributes, self.charsets, self.protect);
+        let pending_wrap = self.pending_wrap();
         let g = self.grid_mut();
+        let mut cursor = g.cursor;
+        cursor.pending_wrap = pending_wrap;
         g.saved = Saved {
-            cursor: g.cursor,
+            cursor,
             attributes,
             charsets,
             protect,
@@ -1913,6 +1919,10 @@ impl Screen {
     /// reporting, mouse modes and kitty keyboard flags stay as they are,
     /// as in xterm.
     fn soft_reset(&mut self) {
+        // DECAWM comes back on with no wrap pending if it was off.
+        if !self.mode(Mode::Autowrap) {
+            self.grid_mut().cursor.pending_wrap = false;
+        }
         self.modes.reset(Modes::SOFT_RESET);
         self.attributes = Attributes::default();
         self.pen_changed();
@@ -2089,7 +2099,14 @@ impl Screen {
     #[inline(never)]
     fn set_mode(&mut self, mode: Mode, on: bool) -> Result<bool, Error> {
         match mode.kind() {
-            Kind::Flag => self.modes.set(mode, on),
+            Kind::Flag => {
+                // Resetting DECAWM ends a pending wrap (DEC STD 070,
+                // Appendix D.6.1), and setting it again starts with none.
+                if mode == Mode::Autowrap && !(on && self.mode(mode)) {
+                    self.grid_mut().cursor.pending_wrap = false;
+                }
+                self.modes.set(mode, on);
+            }
             // DECLRMM: reset, the margins go back to the screen's edges (DEC
             // STD 070, DECLRMM; xterm's `set_left_right_margin_mode`).
             Kind::Margins => {

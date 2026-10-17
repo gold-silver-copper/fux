@@ -74,8 +74,9 @@ fn autowrap_disabled_overwrites_without_scrolling() -> Result {
     assert_eq!(lines(&p), ["abf", ""]);
     assert_eq!(p.screen().history_len(), 0);
     assert!(!p.screen().mode(Mode::Autowrap));
+    // No wrap was left pending (DEC STD 070, Appendix D.6.1).
     p.process(b"\x1b[?7hG")?;
-    assert_eq!(lines(&p), ["abf", "G"]);
+    assert_eq!(lines(&p), ["abG", ""]);
     assert!(p.screen().mode(Mode::Autowrap));
     Ok(())
 }

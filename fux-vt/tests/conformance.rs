@@ -80,6 +80,38 @@ fn a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it() -
     Ok(())
 }
 
+/// DEC STD 070, Appendix D.6.1: a glyph in the last column sets the Last
+/// Column Flag "when Auto Wrap Mode is set", and RESET_MODE
+/// (AUTO_WRAP_MODE) is among the controls that clear it. So with DECAWM
+/// off no wrap is left pending, and the next glyph overwrites the last
+/// column, DECAWM set again or not; and resetting DECAWM ends a pending
+/// wrap. xterm 411 keeps the flag in both (`fux-vt-compare replay
+/// --engines xterm --size 2x5 'abcde\e[?7l\e[?7hX'`).
+#[test]
+fn the_last_column_flag_is_set_with_autowrap_alone() -> Result {
+    for text in ["abcde", "abcd\u{e9}"] {
+        let p = run(2, 5, format!("\x1b[?7l{text}").as_bytes())?;
+        assert_eq!(p.screen().cursor_position(), (0, 4), "{text:?}");
+        assert!(!p.screen().pending_wrap(), "{text:?}");
+        let p = run(2, 5, format!("\x1b[?7l{text}\x1b[?7hX").as_bytes())?;
+        assert_eq!(lines(&p), ["abcdX", ""], "{text:?}");
+    }
+    let p = run(2, 5, b"abcde\x1b[?7l")?;
+    assert!(!p.screen().pending_wrap());
+    let p = run(2, 5, b"abcde\x1b[?7l\x1b[?7hX")?;
+    assert_eq!(lines(&p), ["abcdX", ""]);
+    assert!(!p.screen().row_wrapped(0));
+    // No flag for DECSC to save, nor for DECSTR, which sets DECAWM, to
+    // carry out; a mark still joins the glyph in the last column.
+    for then in [&b"\x1b7\x1b[?7h\x1b8"[..], b"\x1b[!p"] {
+        let p = run(2, 5, &[&b"\x1b[?7labcde"[..], then, b"X"].concat())?;
+        assert_eq!(lines(&p), ["abcdX", ""], "{then:?}");
+    }
+    let p = run(1, 5, "\x1b[?7labcde\u{301}".as_bytes())?;
+    assert_eq!(lines(&p), ["abcde\u{301}"]);
+    Ok(())
+}
+
 /// DEC STD 070, Appendix D.6.1: with autowrap on, a glyph that does not fit
 /// in what is left of the line moves to the start of the next one, so the
 /// line goes on there: the row it leaves is soft-wrapped, however its last
