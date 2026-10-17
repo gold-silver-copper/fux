@@ -356,8 +356,9 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A knock's two FIFOs made in `dir` with `mode`, opened as a client
-    /// holds them: down to read, up to read and write.
+    /// A knock's two FIFOs made in `dir` with `mode`, opened: down to
+    /// read, as a client holds it; up to read and write, so no reader is
+    /// needed (a client holds it write-only).
     fn fifos_of(dir: &Path, name: &str, mode: u32) -> io::Result<[File; 2]> {
         let [up, down] = fifos(dir, name);
         for path in [&up, &down] {

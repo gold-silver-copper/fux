@@ -100,10 +100,11 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     }
 }
 
-/// What the foreground group of `child`'s terminal is blocked in, as `pane`'s last key and its screen since say by `now`. With no
-/// foreground group (its program dropped its terminal, or is gone, its end
-/// not yet heard), its first process's own group: busy once none is left
-/// in it. A shell back at its prompt, reading, reads.
+/// What the foreground group of `child`'s terminal is blocked in, as
+/// `pane`'s last key and its screen since say by `now`. With no foreground
+/// group (its program dropped its terminal, or is gone, its end not yet
+/// heard), its first process's own group: busy once none is left in it. A
+/// shell back at its prompt, reading, reads.
 fn activity(pane: &Pane, child: &Child, now: Instant) -> Activity {
     // How long ago the last key went to the program: forever, if none has
     // (a read timed from a key waits with no limit before one); and whether
