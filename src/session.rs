@@ -211,6 +211,8 @@ pub enum Error {
     SelectionTooLarge,
     // A name that cannot be given.
     NameTaken(String),
+    /// A tab name given before: those tabs, then their panes.
+    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
     /// Any other failure, made in one place and told apart by its code
@@ -244,7 +246,7 @@ impl Error {
             Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
             Self::NoRows | Self::SelectionTooLarge => Code::Selection,
             Self::NameReadAsTarget(_) => Code::from(Lang::BadName),
-            Self::NameTaken(_) => Code::NameTaken,
+            Self::NameTaken(_) | Self::TabNameTaken(..) => Code::NameTaken,
             Self::Failed { code, .. } => *code,
         }
     }
@@ -275,6 +277,16 @@ impl std::fmt::Display for Error {
             Self::NoRows => f.write_str("the pane has no rows"),
             Self::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
+            Self::TabNameTaken(name, tabs, panes) => {
+                let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))
+                    .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
+                let ids = joined(ids, " ");
+                let kills = joined(tabs, " tab kill`, `fux str ");
+                write!(
+                    f,
+                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
+                )
+            }
             Self::NameReadAsTarget(name) => write!(
                 f,
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
@@ -3268,15 +3280,8 @@ fn no_tab_named<'a>(
     // `run` with such a name: `str NAME tab` would not know which, so the
     // program is not started. The tabs, then their panes.
     let panes = (tabs.iter()).flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
-    let ids = (tabs.iter().map(|t| AnyRef::Tab(t.id))).chain(panes.map(AnyRef::Pane));
-    let ids = joined(ids, " ");
-    let kills = joined(tabs.iter().map(|t| t.id), " tab kill`, `fux str ");
-    Err(fail(
-        Code::NameTaken,
-        format!(
-            "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
-        ),
-    ))
+    let tabs = tabs.iter().map(|t| t.id).collect();
+    Err(Error::TabNameTaken(name.to_owned(), tabs, panes.collect()))
 }
 
 /// The item after the one at `index` among `items`, or before it, going
