@@ -452,7 +452,7 @@ fn window_size() -> fux_vt::Size {
 /// How a client attaches: to which workspace, whether it only watches, its
 /// keys, its config run already, and what was wrong with that config.
 pub struct Attaching {
-    pub workspace: Option<String>,
+    pub workspace: Option<crate::command::WsRef>,
     pub read_only: bool,
     pub keymap: Keymap,
     pub problem: Option<String>,

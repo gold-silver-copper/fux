@@ -242,7 +242,7 @@ pub enum Bound {
 pub enum Local {
     /// This terminal, or a client of no terminal of `size`.
     Attach {
-        workspace: Option<String>,
+        workspace: Option<WsRef>,
         read_only: bool,
         size: Option<fux_vt::Size>,
     },

@@ -295,7 +295,7 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {
         pub size: fux_vt::Size,
-        pub workspace: Option<String>,
+        pub workspace: Option<crate::command::WsRef>,
         pub read_only: bool,
         pub env: Vec<(String, std::ffi::OsString)>,
     }
@@ -648,7 +648,7 @@ mod tests {
         round_trip!(Hello, 1, hello(Role::Attach));
         round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Kill)));
         let size = crate::session::default_size();
-        let workspace = Some("main".to_owned());
+        let workspace = Some(crate::command::WsRef::Name("main".to_owned()));
         round_trip!(
             Attach,
             2,

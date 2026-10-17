@@ -1259,10 +1259,7 @@ impl fuxth::Host for Host<'_> {
             // ----------------------------------------------------- clients
             "attach" | "watch" | "attach-to" => {
                 let workspace = match name {
-                    "attach-to" => Some(match workspace(&next()?)? {
-                        WsRef::Id(w) => w.to_string(),
-                        WsRef::Name(n) => n,
-                    }),
+                    "attach-to" => Some(workspace(&next()?)?),
                     _ => None,
                 };
                 let read_only = name == "watch";

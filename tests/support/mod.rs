@@ -370,7 +370,7 @@ impl Client {
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         let attach = Attach {
             size: sized(rows, cols)?,
-            workspace: workspace.map(str::to_owned),
+            workspace: workspace.map(|name| fux::command::WsRef::Name(name.to_owned())),
             read_only,
             env: Vec::new(),
         };

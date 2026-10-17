@@ -1335,7 +1335,9 @@ impl Session {
         cols: u16,
         workspace: Option<&str>,
     ) -> Result<ClientId, Error> {
-        self.attach_as(ClientKind::Terminal, rows, cols, workspace)
+        let workspace = workspace.map(command::parse_workspace).transpose();
+        let workspace = workspace.map_err(bad_value)?;
+        self.attach_as(ClientKind::Terminal, rows, cols, workspace.as_ref())
     }
 
     /// `attach`, for a client of `kind`.
@@ -1344,10 +1346,10 @@ impl Session {
         kind: ClientKind,
         rows: u16,
         cols: u16,
-        workspace: Option<&str>,
+        workspace: Option<&WsRef>,
     ) -> Result<ClientId, Error> {
         let ws = match workspace {
-            Some(name) => self.resolve_ws(&command::parse_workspace(name).map_err(bad_value)?)?,
+            Some(workspace) => self.resolve_ws(workspace)?,
             None => {
                 // A server whose session did not come back starts afresh.
                 if self.workspaces.is_empty() {

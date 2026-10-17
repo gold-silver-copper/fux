@@ -1585,7 +1585,7 @@ impl Server {
                     return Ok(false);
                 };
                 let (passed, kind) = (passed.take(), *kind);
-                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_deref()) {
+                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_ref()) {
                     Ok(client) => {
                         if let Some(view) = session.views.get_mut(&client) {
                             view.read_only = read_only;
