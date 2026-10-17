@@ -339,19 +339,20 @@ fn one_of<T: Copy>(word: &str, value: &Value<Fux>, all: &[(&str, T)]) -> Result<
     })
 }
 
-/// A size to lay a tab out on: columns and rows each 1 to 500.
-fn laid_out(word: &str, cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::Size, Failure> {
-    let (cols, rows) = (int(word, cols)?, int(word, rows)?);
-    let cell = |n: i64| u16::try_from(n).ok().filter(|n| (1..=500).contains(n));
-    cell(cols)
-        .zip(cell(rows))
-        .and_then(|(cols, rows)| fux_vt::Size::new(rows, cols).ok())
-        .ok_or_else(|| {
-            fail(
-                Lang::Range,
-                format!("size {cols} {rows}: columns and rows each 1 to 500"),
-            )
-        })
+/// A size: columns and rows each 1 to `most` (a tab's laid out on, 500;
+/// a client's, as many as a cell holds).
+fn laid_out(
+    word: &str,
+    cols: &Value<Fux>,
+    rows: &Value<Fux>,
+    most: u16,
+) -> Result<fux_vt::Size, Failure> {
+    let cells = 1..=i64::from(most);
+    let (cols, rows) = (
+        within(word, cols, cells.clone())?,
+        within(word, rows, cells)?,
+    );
+    fux_vt::Size::new(rows, cols).map_err(|e| fail(Lang::Range, e.to_string()))
 }
 
 /// The pane a value is: a pane, or an action's answer of one.
@@ -729,7 +730,7 @@ impl fuxth::Host for Host<'_> {
             }
             "size" => {
                 let mut o = next()?;
-                let size = laid_out(name, &next()?, &next()?)?;
+                let size = laid_out(name, &next()?, &next()?, 500)?;
                 option(name, &mut o)?.size = Some(size);
                 now(out, o)
             }
@@ -1164,17 +1165,14 @@ impl fuxth::Host for Host<'_> {
             "resize" | "resize-auto" => {
                 let target = target(name, &next()?)?;
                 let size = match name {
-                    "resize" => Some(laid_out(name, &next()?, &next()?)?),
+                    "resize" => Some(laid_out(name, &next()?, &next()?, 500)?),
                     _ => None,
                 };
                 tell(Command::Resize(Resized::Tabs(target, size)))
             }
             "resize-client" => {
                 let c = client(name, &next()?)?;
-                let (cols, rows) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
-                let size = fux_vt::Size::new(rows, cols)
-                    .ok()
-                    .ok_or_else(|| fail(Lang::Range, "columns and rows each from 1"))?;
+                let size = laid_out(name, &next()?, &next()?, u16::MAX)?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
@@ -1302,9 +1300,7 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "headless" => {
-                let (cols, rows) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
-                let size = fux_vt::Size::new(rows, cols)
-                    .map_err(|_| fail(Lang::Range, "a size of at least 1 by 1"))?;
+                let size = laid_out(name, &next()?, &next()?, u16::MAX)?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,

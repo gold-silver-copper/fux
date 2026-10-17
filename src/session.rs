@@ -4387,7 +4387,10 @@ mod tests {
         let times = failed(&mut s, "keys str a text str 2 times");
         assert!(times.starts_with("type: "), "{times}");
         let none = failed(&mut s, "keys str a text 0 times");
-        assert!(none.contains("0 is out of range: 1 to 1000 (use: "), "{none}");
+        assert!(
+            none.contains("0 is out of range: 1 to 1000 (use: "),
+            "{none}"
+        );
         // The core's words say how they are used too; a library word is
         // told by its own name, not the word inside it that fails.
         for code in ["slice", "str a 1 add"] {
