@@ -1018,7 +1018,7 @@ builtins! { m host;
                 if !s.is_ascii() {
                     m.cost(i);
                 }
-                s.char_at(i).map(|c| Value::str(c.to_string()))
+                Some(Value::str(s.part(i, i.saturating_add(1))))
             }
             Sequence::List(list) => list.items().get(i).cloned(),
         };
