@@ -297,7 +297,7 @@ wire! {
         pub size: fux_vt::Size,
         pub workspace: Option<String>,
         pub read_only: bool,
-        pub env: Vec<(String, String)>,
+        pub env: Vec<(String, std::ffi::OsString)>,
     }
 }
 
@@ -326,7 +326,7 @@ wire! {
         pub cwd: std::path::PathBuf,
         pub pane: Option<PaneId>,
         pub server: Option<String>,
-        pub env: Vec<(String, String)>,
+        pub env: Vec<(String, std::ffi::OsString)>,
         pub client: Option<ClientId>,
         pub restoring: bool,
     }

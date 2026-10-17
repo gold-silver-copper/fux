@@ -88,7 +88,7 @@ pub struct Caller {
     pub cwd: Option<PathBuf>,
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(String, std::ffi::OsString)>,
     pub came: Came,
 }
 
@@ -387,7 +387,7 @@ pub struct Session {
 /// command (the first shell) starts as `Starting::default()` says.
 #[derive(Clone, Debug, Default)]
 struct Starting {
-    set: Vec<(String, String)>,
+    set: Vec<(String, std::ffi::OsString)>,
     unset: Vec<String>,
     /// The socket they reach the server by, if not its own: a grant's.
     socket: Option<PathBuf>,
@@ -781,12 +781,13 @@ impl Session {
         }
         let socket = fresh.socket.as_deref().unwrap_or(socket);
         let mut vars = vec![
-            ("FUX_PANE", id.to_string()),
-            ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
-            ("FUX_SERVER", self.server_id.clone()),
+            ("FUX_PANE", id.to_string().into()),
+            ("FUX_SOCKET", socket.as_os_str().to_owned()),
+            ("FUX_SERVER", self.server_id.clone().into()),
         ];
-        let given = (fresh.set.iter()).chain(env).chain(&marks.env);
-        vars.extend(given.map(|(k, v)| (k.as_str(), v.clone())));
+        vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
+        let given = env.iter().chain(&marks.env);
+        vars.extend(given.map(|(k, v)| (k.as_str(), v.into())));
         vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
         let mut unset: Vec<String> = (fresh.unset.iter())
             .filter(|name| !env.iter().any(|(k, _)| k == *name))

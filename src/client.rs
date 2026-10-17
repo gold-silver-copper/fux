@@ -342,11 +342,12 @@ pub fn context() -> Context {
     }
 }
 
-/// This process's environment, as far as it is UTF-8: the server gives
-/// panes started for it what `update-environment` names of it.
-pub fn environment() -> Vec<(String, String)> {
+/// This process's environment, its values as the bytes they are, its
+/// names as far as they are UTF-8 (as every name `update-environment`
+/// takes is): the server gives panes started for it what that names of it.
+pub fn environment() -> Vec<(String, std::ffi::OsString)> {
     std::env::vars_os()
-        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
         .collect()
 }
 

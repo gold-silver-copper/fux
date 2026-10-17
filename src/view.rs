@@ -124,7 +124,7 @@ pub struct View {
     pub read_only: bool,
     /// Its terminal's environment, of which panes started from its keys
     /// take what `update-environment` names.
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(String, std::ffi::OsString)>,
 }
 
 impl View {

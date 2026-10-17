@@ -147,16 +147,27 @@ impl Wire for String {
     }
 }
 
-/// A path, as its bytes: on Unix a path is any bytes, never made text.
-impl Wire for std::path::PathBuf {
+/// A system's string, as its bytes: on Unix a path or a variable's value
+/// is any bytes, never made text.
+impl Wire for std::ffi::OsString {
     fn put(&self, out: &mut Vec<u8>) {
-        let bytes = self.as_os_str().as_bytes();
+        let bytes = self.as_bytes();
         u32::try_from(bytes.len()).unwrap_or(u32::MAX).put(out);
         out.extend_from_slice(bytes);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let len = u32::get(r)? as usize;
-        Ok(std::ffi::OsString::from_vec(r.bytes(len)?.to_vec()).into())
+        Ok(std::ffi::OsString::from_vec(r.bytes(len)?.to_vec()))
+    }
+}
+
+/// A path, as its bytes.
+impl Wire for std::path::PathBuf {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.as_os_str().to_owned().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        std::ffi::OsString::get(r).map(Self::from)
     }
 }
 

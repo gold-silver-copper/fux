@@ -24,7 +24,7 @@ pub struct Child {
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
-    (env, unset): (&[(&str, String)], &[String]),
+    (env, unset): (&[(&str, std::ffi::OsString)], &[String]),
     size: fux_vt::Size,
 ) -> Result<Child, String> {
     let program = argv.first().ok_or("no program to run")?;
