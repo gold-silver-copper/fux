@@ -365,13 +365,10 @@ fn origin_mode_addresses_columns_from_the_left_margin() -> Result {
     Ok(())
 }
 
-/// HT and CHT stop at the right margin with DECLRMM set, wherever the
-/// cursor is, as xterm's `TabToNextStop` has it; DEC STD 070 (HT, note 1)
-/// stops there only from inside the scrolling region, going on to the
-/// next stop or the last column from right of the margin (see the README's
-/// departures). CBT stops at the left margin in origin mode
-/// (`TabToPrevStop`; esctest's CHT_IgnoresScrollingRegion and
-/// DECSET_DECAWM_NoLineWrapOnTabWithLeftRightMargin).
+/// HT and CHT stop at the right margin with DECLRMM set, from inside the
+/// scrolling region; from right of the margin they go on to the next stop
+/// or the last column (DEC STD 070, HT, note 1). CBT stops at the left
+/// margin in origin mode (`TabToPrevStop`).
 #[test]
 fn tabs_stop_at_the_right_margin() -> Result {
     let p = run(
@@ -379,7 +376,7 @@ fn tabs_stop_at_the_right_margin() -> Result {
         12,
         b"\x1b[?69h\x1b[3;8s\x1b[2;10H\t1\x1b[2;1H\t2\x1b[3;5H\x1b[2I3\x1b[4;8H\x1b[Z4\x1b[?6h\x1b[3;5H\x1b[3Z5",
     )?;
-    assert_eq!(lines(&p), ["", "       2", "  5    3", "4", "", ""]);
+    assert_eq!(lines(&p), ["", "       2   1", "  5    3", "4", "", ""]);
     let mut p = Parser::new(Size::new(3, 80)?, 0)?;
     p.process(b"\x1b[?69h\x1b[10;20s")?;
     for col in [8, 16, 19, 19] {

@@ -893,3 +893,25 @@ fn a_wide_glyph_with_no_room_is_not_printed() -> Result {
     assert!(p.screen().row_wrapped(0));
     Ok(())
 }
+
+/// DEC STD 070, HT (p. 5-67), note 1: with no stop before the right
+/// margin, HT stops at it; from right of the margin, or on a line outside
+/// the scrolling region, it goes on to the next stop or the line's last
+/// column, whichever comes first. CHT moves as that many HTs.
+#[test]
+fn a_tab_from_right_of_the_margin_or_outside_the_region_goes_on() -> Result {
+    let margins = "\x1b[?69h\x1b[3;8s\x1b[2;3r";
+    for (moves, expected) in [
+        // Inside: at the right margin, column 8.
+        ("\x1b[2;1H\t", (1, 7)),
+        // Right of the margin: no stop before the last column.
+        ("\x1b[2;10H\t", (1, 11)),
+        // Outside the region: the stop at column 9, past the margin.
+        ("\x1b[4;1H\t", (3, 8)),
+        ("\x1b[4;1H\x1b[2I", (3, 11)),
+    ] {
+        let p = run(4, 12, format!("{margins}{moves}").as_bytes())?;
+        assert_eq!(p.screen().cursor_position(), expected, "{moves:?}");
+    }
+    Ok(())
+}

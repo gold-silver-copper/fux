@@ -1565,19 +1565,22 @@ impl Screen {
     }
     /// Moves the cursor `count` tab stops forward, stopping at the last
     /// column, or back, stopping at the first.
-    /// With DECLRMM set, forward stops at the right margin, wherever the
-    /// cursor is, as xterm's `TabToNextStop` has it (DEC STD 070's HT goes
-    /// on to the last column from right of the margin, or outside the
-    /// scrolling region: see the README's departures); back, in origin
-    /// mode, at the left margin (`TabToPrevStop`). Without margins the
-    /// right margin is the last column.
+    /// Forward stops at the right margin, but from right of it or from a
+    /// line outside the scrolling region goes on to the last column (DEC
+    /// STD 070, HT, note 1; xterm's `TabToNextStop` stops at the margin
+    /// wherever the cursor is). Back, in origin mode, stops at the left
+    /// margin (`TabToPrevStop`). Without margins the right margin is the
+    /// last column.
     ///
     /// Each stop is found from the last, never past the column it stops
     /// at, and once the cursor stops moving the rest of the count is
     /// spent: the work is the line's width at most, whatever the count.
     fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
-        let (mut col, last) = (g.cursor.col(), g.columns().last());
+        let (mut col, mut last) = (g.cursor.col(), g.columns().last());
+        if col > last || !g.lines.contains(g.cursor.row()) {
+            last = g.size().columns().last();
+        }
         let first = g.addressed().1.first();
         for _ in 0..count {
             let to = if forward {
