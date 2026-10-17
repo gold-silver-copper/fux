@@ -469,6 +469,34 @@ fn a_depth_past_any_stack_is_checked_at_once() {
     );
 }
 
+/// `each` finds each character of a string at once, whatever the
+/// characters are: walking a string of non-ASCII ones takes about as long
+/// as walking one as long of ASCII ones.
+#[test]
+fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
+    let walk = |c: &str| -> Result<std::time::Duration, Error> {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", "0 ask 0 swap each drop 1 add end")?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut host = Toy { asked: Vec::new() };
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
+        machine.push(Value::str(
+            std::iter::repeat_n(c, 100_000).collect::<String>(),
+        ))?;
+        let started = std::time::Instant::now();
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Finished);
+        assert_eq!(machine.stack(), ints(&[100_000]).as_slice());
+        Ok(started.elapsed())
+    };
+    let ascii = walk("e")?;
+    let other = walk("é")?;
+    assert!(
+        other < ascii * 5 + std::time::Duration::from_millis(100),
+        "{other:?} against {ascii:?}"
+    );
+    Ok(())
+}
+
 /// What the checker can't know it never refuses: a definition that leaves
 /// one value or two, called where two more are taken after; a loop at the
 /// top level that leaves values, then words that take them; a value that

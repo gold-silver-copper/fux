@@ -147,7 +147,8 @@ pub struct Machine<A> {
     /// Where each open `list` began on the stack: nothing below may be
     /// taken inside it.
     marks: Vec<usize>,
-    /// Each open `each`: what it walks, and the next element's index.
+    /// Each open `each`: what it walks, and where its next element is: an
+    /// index in a list, a byte in a string (so each step finds it at once).
     iters: Vec<(Value<A>, usize)>,
     limits: Limits,
     /// What application words give, kept between calls.
@@ -405,14 +406,7 @@ impl<A: AppValue> Machine<A> {
                 }
                 Op::EachNext(out) => {
                     let out = *out;
-                    let next = match self.iters.last_mut() {
-                        Some((seq, at)) => {
-                            let item = element(seq, *at);
-                            *at = at.saturating_add(1);
-                            item
-                        }
-                        None => None,
-                    };
+                    let next = (self.iters.last_mut()).and_then(|(seq, at)| next(seq, at));
                     match next {
                         Some(item) => self.push(item)?,
                         None => {
@@ -894,6 +888,24 @@ impl<A: AppValue> Machine<A> {
 /// changed in place). What is copied is built.
 fn copied<T>(rc: &Rc<T>, n: usize) -> usize {
     if Rc::strong_count(rc) > 1 { n } else { 0 }
+}
+
+/// The element of `seq` at `at` (a byte in a string, an index in a list),
+/// and `at` moved past it.
+fn next<A: Clone>(seq: &Value<A>, at: &mut usize) -> Option<Value<A>> {
+    match seq {
+        Value::Str(s) => {
+            let c = s.get(*at..).and_then(|rest| rest.chars().next());
+            *at = at.saturating_add(c.map_or(1, char::len_utf8));
+            c.map(|c| Value::str(c.to_string()))
+        }
+        Value::List(list) => {
+            let item = list.items().get(*at).cloned();
+            *at = at.saturating_add(1);
+            item
+        }
+        Value::Int(_) | Value::Bool(_) | Value::App(_) => None,
+    }
 }
 
 /// Element `i` of a string (a one-character string) or a list.
