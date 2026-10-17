@@ -475,6 +475,11 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(row(8, "界\x1b[2b".as_bytes())?, "界界界");
     assert_eq!(row(8, "e\u{301}\x1b[2b".as_bytes())?, "e\u{301}ee");
     assert_eq!(row(8, b"\x1b(0q\x1b[2b")?, "\u{2500}\u{2500}\u{2500}");
+    // After a single shift, the character it invoked: ECMA-48 (8.3.103)
+    // repeats the graphic character "represented by one or more bit
+    // combinations", here SS2 and `q` in DEC Special Graphics. xterm prints
+    // the byte again in GL (`replay --engines xterm '\e*0\eNq\e[3b'`).
+    assert_eq!(row(8, b"\x1b*0\x1bNq\x1b[2b")?, "\u{2500}\u{2500}\u{2500}");
     assert_eq!(lines(&run(2, 8, b"abcdefg\x1b[3b")?), ["abcdefgg", "gg"]);
     assert_eq!(lines(&run(1, 1, "#界\x1b[4b".as_bytes())?), [""]);
     // Nothing to repeat: at the start, or after a control, a sequence or a

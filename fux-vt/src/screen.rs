@@ -1211,7 +1211,7 @@ impl Screen {
         // still carries out (`replay --engines xterm --size 3x1 'a\u{754c}'`).
         // It is still the preceding graphic character, which REP repeats.
         if width > self.grid().size().cols() {
-            self.repeat = Some(raw);
+            self.repeat = Some(c);
             if self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap) {
                 let end = self.grid().line_end();
                 self.wrap(end, 0, width)?;
@@ -1258,7 +1258,7 @@ impl Screen {
             return Ok(());
         }
         // What REP repeats: the last glyph printed, not a mark.
-        self.repeat = Some(raw);
+        self.repeat = Some(c);
         let Some(end) = self.wrap_for(width)? else {
             return Ok(());
         };

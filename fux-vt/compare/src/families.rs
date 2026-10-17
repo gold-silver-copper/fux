@@ -915,7 +915,7 @@ pub const FAMILIES: &[Family] = &[
         name: "repeat",
         about: "REP (CSI b) after a glyph",
         status: Status::Decided {
-            why: "ECMA-48 (8.3.103) repeats the preceding graphic character and leaves REP undefined after a control function, and knows no grapheme cluster, so xterm decides both: after another REP, xterm, xterm.js and tmux repeat nothing, as fux-vt does, where Ghostty, alacritty, libvterm, avt and wezterm repeat the glyph again and outvote fux-vt (`replay --engines all --size 1x8 '-\\e[2b\\e[2b'`); after a cluster, xterm repeats the character that took the cell, as fux-vt does, and Ghostty agrees (`replay --engines all --size 1x8 'e\\u{301}\\e[2b'`). Also the one-column split of `wide`",
+            why: "ECMA-48 (8.3.103) repeats the preceding graphic character and leaves REP undefined after a control function, and knows no grapheme cluster, so xterm decides both: after another REP, xterm, xterm.js and tmux repeat nothing, as fux-vt does, where Ghostty, alacritty, libvterm, avt and wezterm repeat the glyph again and outvote fux-vt (`replay --engines all --size 1x8 '-\\e[2b\\e[2b'`); after a cluster, xterm repeats the character that took the cell, as fux-vt does, and Ghostty agrees (`replay --engines all --size 1x8 'e\\u{301}\\e[2b'`). After a single shift, ECMA-48 decides: the graphic character \"represented by one or more bit combinations\" is the one the shift invoked, where xterm prints the byte again in GL (`replay --engines xterm '\\e*0\\eNq\\e[3b'`); no generator here sends both, and `conformance::rep_repeats_the_preceding_graphic_character` checks it. Also the one-column split of `wide`",
             by: XTERM,
             authority: Authority::Xterm,
         },
