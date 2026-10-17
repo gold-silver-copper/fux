@@ -1654,7 +1654,7 @@ impl Server {
             Some(s) if s == session.server_id => Within::This,
             Some(_) => Within::Other,
         };
-        let cwd = Some(PathBuf::from(cwd)).filter(|p| p.is_dir());
+        let cwd = Some(cwd).filter(|p| p.is_dir());
         use crate::command::Command;
         let granting = if let Command::Grant { workspace, socket } = &command {
             Some((socket.clone(), Some(workspace.clone())))

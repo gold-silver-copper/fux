@@ -278,7 +278,7 @@ impl Frame<'_> for AttachedFrame {
 /// back a saved session.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Context {
-    pub cwd: String,
+    pub cwd: std::path::PathBuf,
     pub pane: Option<PaneId>,
     pub server: Option<String>,
     pub env: Vec<(String, String)>,

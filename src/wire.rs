@@ -11,6 +11,7 @@ use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
 use fuxix::process::Signal;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::time::Duration;
 
 /// Why bytes are not the value they should be.
@@ -153,6 +154,19 @@ impl Wire for String {
         let len = u32::get(r)? as usize;
         let bytes = r.bytes(len)?;
         String::from_utf8(bytes.to_vec()).map_err(|_| Error::NotUtf8)
+    }
+}
+
+/// A path, as its bytes: on Unix a path is any bytes, never made text.
+impl Wire for std::path::PathBuf {
+    fn put(&self, out: &mut Vec<u8>) {
+        let bytes = self.as_os_str().as_bytes();
+        u32::try_from(bytes.len()).unwrap_or(u32::MAX).put(out);
+        out.extend_from_slice(bytes);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let len = u32::get(r)? as usize;
+        Ok(std::ffi::OsString::from_vec(r.bytes(len)?.to_vec()).into())
     }
 }
 

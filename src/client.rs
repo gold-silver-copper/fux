@@ -339,9 +339,7 @@ impl Requests {
 pub fn context() -> Context {
     let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
     Context {
-        cwd: std::env::current_dir()
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        cwd: std::env::current_dir().unwrap_or_default(),
         pane: var("FUX_PANE").and_then(|p| p.parse().ok()),
         server: var("FUX_SERVER"),
         env: environment(),

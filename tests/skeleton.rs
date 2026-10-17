@@ -95,7 +95,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
             get: None,
         },
         context: Context {
-            cwd: String::new(),
+            cwd: std::path::PathBuf::new(),
             pane: None,
             server: None,
             env: Vec::new(),

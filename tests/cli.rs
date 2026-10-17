@@ -638,3 +638,28 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
     );
     Ok(Ok(()))
 }
+
+/// A caller in a directory whose name is not UTF-8 starts what it runs
+/// there: the path's bytes reach the server as they are, not made text.
+#[test]
+fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let server = Server::start("")?;
+    let dir = server.dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    std::fs::create_dir(&dir).map_err(e)?;
+    let out = std::process::Command::new(fux())
+        .args(["opts", "str", "touch here", "command", "run"])
+        .current_dir(&dir)
+        .env("FUX_SOCKET", &server.socket)
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .output()
+        .map_err(e)?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    eventually("the file it made there", || Ok(dir.join("here").exists()))
+}
