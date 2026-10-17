@@ -394,15 +394,20 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
         return Ok(());
     };
     let instead = match *option {
-        "wait-text" | "wait-gone" | "wait-exit" | "wait-bell" if word == "capture" => {
+        option
+            if word == "capture"
+                && crate::help::WAITING.split_whitespace().any(|w| w == option) =>
+        {
             "it reads once the pane settles (within timeout, wait-seconds if not said); \
              to wait for something first: PANE opts … wait, then PANE opts capture"
                 .to_owned()
         }
         _ => {
+            let takes =
+                |w: &&str| crate::help::options(w).is_some_and(|mut t| t.any(|t| t == *option));
             let on: Vec<&str> = (crate::help::OPTIONS.iter())
-                .filter(|(_, takes)| takes.split_whitespace().any(|t| t == *option))
-                .map(|(word, _)| *word)
+                .map(|(word, ..)| *word)
+                .filter(takes)
                 .collect();
             format!("{option} goes on {}", on.join(", "))
         }
