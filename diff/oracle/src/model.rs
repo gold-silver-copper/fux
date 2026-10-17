@@ -168,6 +168,7 @@ pub enum Heard {
     Title(Vec<u8>),
     IconName(Vec<u8>),
     Bell,
+    Notification(Vec<u8>),
     Clipboard {
         selection: Vec<u8>,
         data: Vec<u8>,

@@ -174,6 +174,7 @@ macro_rules! side {
                         vt::Event::Title(t) => Heard::Title(t.to_vec()),
                         vt::Event::IconName(t) => Heard::IconName(t.to_vec()),
                         vt::Event::Bell => Heard::Bell,
+                        vt::Event::Notification(n) => Heard::Notification(n.to_vec()),
                         vt::Event::Clipboard { selection, data } => Heard::Clipboard {
                             selection: selection.to_vec(),
                             data: data.to_vec(),
@@ -439,7 +440,7 @@ macro_rules! side {
                         g: *g,
                         b: *b,
                     }),
-                    Color::Default | Color::Other(_) => vt::Color::Default,
+                    Color::Default => vt::Color::Default,
                 }
             }
 
@@ -455,13 +456,13 @@ macro_rules! side {
                         Underline::Curly => vt::UnderlineStyle::Curly,
                         Underline::Dotted => vt::UnderlineStyle::Dotted,
                         Underline::Dashed => vt::UnderlineStyle::Dashed,
-                        Underline::None | Underline::Other(_) => vt::UnderlineStyle::None,
+                        Underline::None => vt::UnderlineStyle::None,
                     })
                     .with_inverse(s.inverse)
                     .with_blink(match s.blink {
                         Blink::Slow => vt::Blink::Slow,
                         Blink::Rapid => vt::Blink::Rapid,
-                        Blink::None | Blink::Other(_) => vt::Blink::None,
+                        Blink::None => vt::Blink::None,
                     })
                     .with_hidden(s.hidden)
                     .with_strikeout(s.strikeout)
