@@ -40,15 +40,10 @@ closed! {
 }
 
 impl MouseButton {
-    /// Whether this is the wheel, whose turns are presses never released.
+    /// Whether this is the wheel, whose turns are presses never released:
+    /// its codes, and buttons 6 and 7's, add 64 (ctlseqs).
     pub fn is_wheel(self) -> bool {
-        matches!(
-            self,
-            MouseButton::WheelUp
-                | MouseButton::WheelDown
-                | MouseButton::WheelLeft
-                | MouseButton::WheelRight
-        )
+        (64..128).contains(&self.code())
     }
 
     /// The button a report's button code names, its modifier and motion
@@ -147,10 +142,9 @@ pub fn mouse_bytes(
     let reported = match (mode, event.action) {
         (MouseProtocolMode::None, _) => false,
         // X10 knew three buttons: "Cb is button−1, where button is 1, 2 or 3".
-        (MouseProtocolMode::Press, MouseAction::Press) => matches!(
-            event.button,
-            Some(MouseButton::Left | MouseButton::Middle | MouseButton::Right)
-        ),
+        (MouseProtocolMode::Press, MouseAction::Press) => {
+            event.button.is_some_and(|b| b.code() < 3)
+        }
         (_, MouseAction::Press) => event.button.is_some(),
         (MouseProtocolMode::Press, _) => false,
         (_, MouseAction::Release) => !wheel,
