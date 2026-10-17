@@ -496,14 +496,13 @@ pub struct Pane {
     /// what came since is what it brought.
     pub since: Start,
     /// The screen's rows as they read then, by row: a line printed again
-    /// to read as it did brings nothing new.
-    pub before: std::collections::HashMap<fux_vt::RowId, Cells>,
+    /// to read as it did brings nothing new; and where each was and what
+    /// it showed ([`shows`]): a row drawn again to show as it did is no
+    /// change.
+    pub before: std::collections::HashMap<fux_vt::RowId, (Cells, (u16, u64))>,
     /// The rows printed on since then, as they read after the last piece
     /// that printed on them: what the next piece finds there.
     seen: std::collections::HashMap<fux_vt::RowId, Cells>,
-    /// Where each row of the screen was then and what it showed
-    /// ([`shows`]): a row drawn again to show as it did is no change.
-    pub before_shows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
     /// What each row showed as the screen was last seen to change.
     shown_rows: std::collections::HashMap<fux_vt::RowId, (u16, u64)>,
     /// Where each piece of output came from (`crate::classify`).
@@ -669,7 +668,6 @@ impl Pane {
             since: Start::default(),
             before: std::collections::HashMap::new(),
             seen: std::collections::HashMap::new(),
-            before_shows: std::collections::HashMap::new(),
             shown_rows: std::collections::HashMap::new(),
             classes: crate::classify::Classes::default(),
             redraws: 0,
@@ -820,7 +818,7 @@ impl Pane {
             let tell = self.redraws < REDRAWS;
             self.redraws = self.redraws.saturating_add(run.len());
             let held = |p: &fux_vt::Print<'_>| {
-                tell.then(|| self.seen.get(&p.row).or(self.before.get(&p.row)))
+                tell.then(|| (self.seen.get(&p.row)).or(self.before.get(&p.row).map(|b| &b.0)))
                     .flatten()
             };
             // What each run changed, told only within `REDRAWS`: past it
@@ -993,11 +991,12 @@ impl Pane {
     pub fn note_input(&mut self) {
         self.since = Start::at(crate::log::Seq(self.parser.tick()), self.parser.screen());
         self.redraws = 0;
-        self.before = rows_now(self.screen());
-        self.before_shows = (live(self.screen()))
-            .map(|(y, row)| (row.id(), (y, shows(&row))))
+        self.before = (live(self.screen()))
+            .map(|(y, row)| (row.id(), (row_cells(&row), (y, shows(&row)))))
             .collect();
-        self.shown_rows.clone_from(&self.before_shows);
+        self.shown_rows = (self.before.iter())
+            .map(|(id, (_, shows))| (*id, *shows))
+            .collect();
         self.seen.clear();
     }
 

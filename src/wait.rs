@@ -1287,7 +1287,7 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
     // A row drawn again to show as it did at the input brings nothing.
     let new = |r: &fux_vt::Row<'_>| {
         (r.version() > start.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
-            && (pane.before_shows.get(&r.id())).is_none_or(|was| {
+            && (pane.before.get(&r.id())).is_none_or(|(_, was)| {
                 window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)
             })
     };
