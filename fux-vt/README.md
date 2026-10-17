@@ -348,8 +348,21 @@ case to replay (`fux-vt/compare/run.sh replay --engines all --size RxC
 - **REP after a control function** repeats nothing until a character is
   printed; ECMA-48 leaves it undefined (`1x8 '-\e[2b\e[2b'`).
 
-One departure from DEC STD 070 remains, until each glyph keeps which
-protection it has:
+Two departures from the standards remain. The first, from mode 2027's
+spec (`references/modern/mode_2027_grapheme_clusters.tex`, "Grapheme
+Cluster"), whose emoji rules its join rule cannot meet:
+
+- **A cluster takes its string width** (unicode-width) as characters join
+  it, where the spec moves the cursor on a join only for VS16. Its
+  "Emoji" section wants a flag (two regional indicators, each one column
+  alone) and an emoji modifier sequence two columns, which no VS16 makes;
+  and a conjunct, or a Prepend character with what follows, is drawn in
+  its string width by a host terminal that measures so, as Ghostty draws
+  conjuncts and flags (`1x6 '\u{600}1x'`: two columns, where the join
+  rule would leave one).
+
+The second, from DEC STD 070, until each glyph keeps which protection it
+has:
 
 - **DECSED and DECSEL spare ISO-protected glyphs** too, as xterm does "for
   backward compatibility"; DEC STD 070 (5.11.1.2) knows DECSCA's attribute
