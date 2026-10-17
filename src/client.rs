@@ -899,15 +899,15 @@ const STOPPED: &str = "detached by a signal";
 /// The signals an attached client answers: a new size, and those that
 /// detach it.
 struct Signals {
-    winch: std::io::PipeReader,
-    stops: std::io::PipeReader,
+    winch: crate::SignalPipe,
+    stops: crate::SignalPipe,
 }
 
 impl Signals {
     fn new() -> Result<Signals, Error> {
         Ok(Signals {
-            winch: crate::signal_pipe(&[SIGWINCH])?,
-            stops: crate::signal_pipe(&crate::STOPS)?,
+            winch: crate::SignalPipe::new(&[SIGWINCH])?,
+            stops: crate::SignalPipe::new(&crate::STOPS)?,
         })
     }
 }
@@ -925,11 +925,15 @@ impl Raw {
         if let Ok(mut saved) = SAVED.lock() {
             *saved = Some(original);
         }
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            restore();
-            previous(info);
-        }));
+        // Wrapped once per process, however often it attaches.
+        static HOOKED: std::sync::Once = std::sync::Once::new();
+        HOOKED.call_once(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                restore();
+                previous(info);
+            }));
+        });
         // Made before raw mode, so that failing to set it restores too.
         let entered = Raw;
         fuxix::terminal::set_attributes(stdin, &raw).map_err(failed("setting raw mode"))?;
@@ -1032,8 +1036,8 @@ fn attached(
         }
         let mut fds = vec![
             PollFd::new(&*stream, PollFlags::IN),
-            PollFd::new(winch, PollFlags::IN),
-            PollFd::new(stops, PollFlags::IN),
+            PollFd::new(winch.pipe(), PollFlags::IN),
+            PollFd::new(stops.pipe(), PollFlags::IN),
         ];
         // The keys only once the client knows itself, to run them.
         if let Some(keyboard) = &keyboard {
@@ -1057,7 +1061,7 @@ fn attached(
             return Ok(STOPPED.into());
         }
         if is(WINCH) {
-            crate::drain(winch);
+            crate::drain(winch.pipe());
             if terminal {
                 send(stream, &AttachedFrame::Resize(window_size()))?;
             }

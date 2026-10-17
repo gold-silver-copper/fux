@@ -57,21 +57,50 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
 /// The signals that stop a server and detach a client.
 pub(crate) const STOPS: [std::ffi::c_int; 3] = [SIGTERM, SIGINT, SIGHUP];
 
-/// A pipe that becomes readable when any of `signals` arrives: each writes
-/// a byte to the other end, of which it holds a copy. A pipe, not a socket
-/// pair: a sandbox may refuse send(2), which a signal writes a socket with.
-pub(crate) fn signal_pipe(signals: &[std::ffi::c_int]) -> std::io::Result<PipeReader> {
-    let (pipe, write) = std::io::pipe()?;
-    fuxix::io::set_nonblocking(&pipe, true)?;
-    // A signal never waits on a full pipe: one byte there is enough.
-    fuxix::io::set_nonblocking(&write, true)?;
-    for &signal in signals {
-        signal_hook::low_level::pipe::register(signal, write.try_clone()?)?;
-    }
-    Ok(pipe)
+/// A pipe that becomes readable when any of its signals arrives: each
+/// writes a byte to the other end, of which its handler holds a copy.
+/// Dropped, it unregisters them, which closes those copies. A pipe, not a
+/// socket pair: a sandbox may refuse send(2), which a signal writes a
+/// socket with.
+pub(crate) struct SignalPipe {
+    pipe: PipeReader,
+    registered: Vec<signal_hook::SigId>,
 }
 
-/// Reads whatever a signal pipe holds.
+impl SignalPipe {
+    pub(crate) fn new(signals: &[std::ffi::c_int]) -> std::io::Result<SignalPipe> {
+        let (pipe, write) = std::io::pipe()?;
+        fuxix::io::set_nonblocking(&pipe, true)?;
+        // A signal never waits on a full pipe: one byte there is enough.
+        fuxix::io::set_nonblocking(&write, true)?;
+        // Each registered as it is made, so a failure part-way through
+        // unregisters those before it.
+        let mut made = SignalPipe {
+            pipe,
+            registered: Vec::new(),
+        };
+        for &signal in signals {
+            let id = signal_hook::low_level::pipe::register(signal, write.try_clone()?)?;
+            made.registered.push(id);
+        }
+        Ok(made)
+    }
+
+    /// The pipe, to wait on and drain.
+    pub(crate) fn pipe(&self) -> &PipeReader {
+        &self.pipe
+    }
+}
+
+impl Drop for SignalPipe {
+    fn drop(&mut self) {
+        for &id in &self.registered {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
+
+/// Reads whatever a pipe holds.
 pub(crate) fn drain(mut pipe: &PipeReader) {
     let mut buffer = [0u8; 256];
     while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
@@ -207,4 +236,37 @@ pub(crate) fn servers() -> Result<(String, String), socket::Error> {
     }
     let json = format!("{}\n", Json::Array(objects).render());
     Ok((lines.concat(), json))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The descriptors this process holds on the pipe whose inode is `ino`.
+    #[cfg(target_os = "linux")]
+    fn holding(ino: u64) -> usize {
+        let pipe = format!("pipe:[{ino}]");
+        std::fs::read_dir("/proc/self/fd")
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .filter(|link| link.as_os_str() == pipe.as_str())
+            .count()
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_dropped_signal_pipe_leaves_nothing_registered() -> std::io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let signals = [signal_hook::consts::SIGWINCH, signal_hook::consts::SIGUSR2];
+        let pipe = super::SignalPipe::new(&signals)?;
+        let ino = std::fs::metadata(format!(
+            "/proc/self/fd/{}",
+            std::os::fd::AsRawFd::as_raw_fd(&pipe.pipe)
+        ))?
+        .ino();
+        // The read end, and a write end for each signal's handler.
+        assert_eq!(holding(ino), 3);
+        drop(pipe);
+        assert_eq!(holding(ino), 0, "a handler still holds its write end");
+        Ok(())
+    }
 }

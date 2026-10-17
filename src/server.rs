@@ -518,11 +518,11 @@ pub struct Server {
     /// Where the layout is saved, for a server after a crash to bring
     /// back; none if there is nowhere to.
     saved: Option<Saved>,
-    children: std::io::PipeReader,
+    children: crate::SignalPipe,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
     killed: Vec<Leader>,
-    stops: std::io::PipeReader,
+    stops: crate::SignalPipe,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -788,12 +788,12 @@ impl std::error::Error for Error {}
 /// closes.
 pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let listening = Listening::open(socket)?;
-    let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
+    let children = crate::SignalPipe::new(&[SIGCHLD]).map_err(Error::Setup)?;
     // Orphans the panes' programs leave stay the server's to read and reap.
     if let Err(errno) = fuxix::process::adopt_orphans() {
         log!("adopting orphans: {errno}");
     }
-    let stops = crate::signal_pipe(&crate::STOPS).map_err(Error::Setup)?;
+    let stops = crate::SignalPipe::new(&crate::STOPS).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
     let mut session = Session::new(
         crate::config::Config::default(),
@@ -901,11 +901,11 @@ impl Server {
                     Slot::Listener(grant) => self.accept(grant),
                     Slot::Door(grant) => self.open_door(grant),
                     Slot::Children => {
-                        crate::drain(&self.children);
+                        crate::drain(self.children.pipe());
                         self.reap();
                     }
                     Slot::Stops => {
-                        crate::drain(&self.stops);
+                        crate::drain(self.stops.pipe());
                         // A signal (a shutdown, a logout) keeps the layout
                         // for the next server to bring back.
                         self.stop("stopped by a signal".into(), true);
@@ -1079,8 +1079,11 @@ impl Server {
                 }
             }
         }
-        add(PollFd::new(&self.children, PollFlags::IN), Slot::Children);
-        add(PollFd::new(&self.stops, PollFlags::IN), Slot::Stops);
+        add(
+            PollFd::new(self.children.pipe(), PollFlags::IN),
+            Slot::Children,
+        );
+        add(PollFd::new(self.stops.pipe(), PollFlags::IN), Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is open only while it has
             // something to write.
