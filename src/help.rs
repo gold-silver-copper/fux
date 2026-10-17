@@ -174,7 +174,7 @@ pub(crate) const OPTIONS: [(&str, &str); 9] = [
     (
         "capture",
         "history all-history joined full styles marks main-screen alt-screen last-output \
-         rows cols json timeout",
+         rows cols timeout",
     ),
     (
         "wait",

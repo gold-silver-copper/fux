@@ -18,7 +18,7 @@ fux %2 opts wait                                        # settle again (30s), wh
 fux %2 opts str 'listening on' wait-text wait           # wait for a text (case ignored)
 fux %2 opts all-history capture                         # read: the screen once settled
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
-fux %2 opts json capture                                # also: main-screen, last-output, styles, marks
+fux %2 opts capture json                                # also: main-screen, last-output, styles, marks
 fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as a capture counts
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: opts horizontal … split
 fux %2 str TERM signal; fux %2 opts respawn             # stop; start again on a new terminal

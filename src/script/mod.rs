@@ -117,8 +117,6 @@ pub struct Opts {
     pub waits: Waits,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
-    /// `json` among the options: the capture is given as JSON.
-    pub json: bool,
     /// The option words given, for the word they go on to refuse any it
     /// would not use.
     pub given: Vec<&'static str>,
@@ -222,9 +220,6 @@ pub enum Then {
     Handle(Kind),
     /// Its text, as an answer `json` can show as JSON.
     Answer(Said),
-    /// Its text, which is JSON: an answer as [`Then::Answer`] makes, that
-    /// prints it and that `json` gives as it is.
-    Json(Said),
     /// Its text, as a string.
     Text,
     /// A field's value.
@@ -797,11 +792,6 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             }
         },
         Then::Answer(said) => vec![Answer::value(text, json, said)],
-        // Its JSON alone, as its text too.
-        Then::Json(said) => {
-            let json = json.unwrap_or(text);
-            vec![Answer::value(json.clone(), Some(json), said)]
-        }
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
             Some(Scalar::Int(n)) => Value::Int(n),

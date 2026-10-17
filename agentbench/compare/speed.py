@@ -38,7 +38,7 @@ def jobs(bin_, tag):
                "str", "sleep 0.2; echo READY; exec cat", "arg", "run").stdout.split()[0]
     out["wait for a text (0.2s program)"] = ms(lambda: run(bin_, e, pane, "opts", "str", "READY", "wait-text", "wait"))
     out["capture of a quiet pane"] = ms(lambda: run(bin_, e, pane, "opts", "capture"))
-    out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "opts", "all-history", "json", "capture"))
+    out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "opts", "all-history", "capture", "json"))
     def fan():
         for i in range(30):
             run(bin_, e, "opts", "0", "timeout", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c", "arg",

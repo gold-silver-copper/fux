@@ -118,7 +118,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", 1, "handle -- record", "a pane, tab or workspace, all of it"),
     word("Reading", "get", 2, "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
-    word("Reading", "json", 1, "x -- text", "x as JSON; among a capture's options, the capture as JSON"),
+    word("Reading", "json", 1, "x -- text", "x as JSON"),
     word("Reading", "events", 0, "-- ", "what happens, a line each, as it happens"),
     word("Reading", "events-json", 0, "-- ", "what happens, as JSON lines"),
     word("Reading", "events-of", 1, "handle -- ", "what happens in a pane, tab or workspace"),
@@ -394,7 +394,6 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
         return Ok(());
     };
     let instead = match *option {
-        "json" => format!("json goes after it: {word} json"),
         "wait-text" | "wait-gone" | "wait-exit" | "wait-bell" if word == "capture" => {
             "it reads once the pane settles (within timeout, wait-seconds if not said); \
              to wait for something first: PANE opts … wait, then PANE opts capture"
@@ -1059,11 +1058,6 @@ impl fuxth::Host for Host<'_> {
             "capture" => {
                 let p = pane(&next()?)?;
                 let built = finished(name, next()?)?;
-                let then = if built.json {
-                    Then::Json(Said::Capture)
-                } else {
-                    Then::Answer(Said::Capture)
-                };
                 // From a command line, or given a timeout, read once the pane
                 // settles.
                 let (history, timeout) = (built.history, built.waits.timeout);
@@ -1079,7 +1073,7 @@ impl fuxth::Host for Host<'_> {
                         view,
                     }),
                 };
-                later(ask(capture, then))
+                later(ask(capture, Then::Answer(Said::Capture)))
             }
             "ls" | "info" | "get" => {
                 let target = match name {
@@ -1093,13 +1087,6 @@ impl fuxth::Host for Host<'_> {
                 later(ask(Command::Ls { target, get }, then))
             }
             "json" => match next()? {
-                // Among the options, as after what they make: `opts json
-                // capture` is `opts capture json`.
-                Value::App(Fux::Opts(mut opts)) => {
-                    opts.json = true;
-                    opts.given.push(name);
-                    now(out, Value::App(Fux::Opts(opts)))
-                }
                 // An answer's JSON as given: of several panes, a line each.
                 Value::App(Fux::Answer(answer)) if answer.json.is_some() => {
                     now(out, Value::str(answer.json.unwrap_or_default()))

@@ -724,7 +724,7 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             keys.contains(READING) && keys.contains("\ndoor-42\n"),
             "{keys}"
         );
-        let capture = server.ok(&["str", sh, "pane", "opts", "json", "capture"])?;
+        let capture = server.ok(&["str", sh, "pane", "opts", "capture", "json"])?;
         assert!(
             capture.starts_with('{') && capture.contains("door-42"),
             "{capture}"

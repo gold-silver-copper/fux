@@ -4271,7 +4271,7 @@ mod tests {
     }
 
     /// A bare id names its pane, tab or workspace, but not as `str`'s text;
-    /// `json` among a capture's options gives JSON; `command` splits a line.
+    /// `json` after a capture gives its JSON; `command` splits a line.
     #[test]
     fn ids_json_and_command_lines_read_as_written() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
@@ -4281,7 +4281,7 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b]2;spool\x07");
         assert_eq!(output(&mut s, "str spool pane")?, "%1\n");
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
-        let json = output(&mut s, "%1 opts json capture")?;
+        let json = output(&mut s, "%1 opts capture json")?;
         assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
         let made = output(&mut s, "opts str 'sh -c \"exit 0\"' command run")?;
         assert!(made.starts_with('%'), "{made}");
@@ -4296,7 +4296,7 @@ mod tests {
     fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
-            let json = output(s, &format!("%1 opts {read} json capture"))?;
+            let json = output(s, &format!("%1 opts {read} capture json"))?;
             let after = json.split("\"cursor\":").nth(1).unwrap_or_default();
             Ok(after
                 .split(",\"lines\"")
@@ -4326,7 +4326,7 @@ mod tests {
         assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
         s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
-        let json = output(&mut s, "%1 opts marks json capture")?;
+        let json = output(&mut s, "%1 opts marks capture json")?;
         assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
         let inverted = output(&mut s, "%1 opts 5 2 rows capture");
         assert!(

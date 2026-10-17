@@ -1672,7 +1672,7 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     assert_eq!(cut("0", "1")?, "A\n");
     assert_eq!(cut("19", "19")?, "Z\n");
     // The cursor, on the empty row after the last line, is on none printed.
-    let json = server.ok(&["str", &pane, "pane", "opts", "json", "capture"])?;
+    let json = server.ok(&["str", &pane, "pane", "opts", "capture", "json"])?;
     assert!(json.contains(r#""cursor":null,"#), "{json}");
     Ok(())
 }
@@ -2612,8 +2612,8 @@ fn a_refused_reading_is_named() -> Outcome {
     Ok(())
 }
 
-/// In a list, an answer is as `json` gives it alone: a capture, one asked
-/// as JSON too, and a listing are their objects.
+/// In a list, an answer is as `json` gives it alone: a capture, another,
+/// and a listing are their objects.
 #[test]
 fn an_answer_in_a_list_is_its_object() -> Outcome {
     let server = Server::start("")?;
@@ -2624,7 +2624,7 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
         &capture,
         &["capture"],
         &capture,
-        &["json", "capture", "ls", "end", "json"],
+        &["capture", "ls", "end", "json"],
     ]
     .concat())?;
     let pane_object = format!("{{\"pane\":\"{pane}\",");
