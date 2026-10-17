@@ -1110,8 +1110,14 @@ impl Pane {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
         let taking = child.and_then(|child| crate::ready::taking(self, child, now));
-        let reading =
-            self.input.is_empty() && matches!(taking, Some(Activity::Reading | Activity::Idle));
+        let reading = self.input.is_empty()
+            && match taking {
+                Some(Activity::Reading | Activity::Idle) => true,
+                Some(
+                    Activity::Busy | Activity::Polling | Activity::Waiting | Activity::Unknown,
+                )
+                | None => false,
+            };
         // Typed ahead: a shell fux marks says whether it reads its line.
         // Another program's line typed ahead ends at Enter: what it draws
         // after is output (`docs/agents.md`, what fux cannot tell). Else
@@ -1122,10 +1128,10 @@ impl Pane {
             Some(_) => !self.at_prompt(),
             None => {
                 unit == crate::log::Unit::Edit
-                    && !matches!(
-                        taking,
-                        Some(Activity::Reading | Activity::Polling | Activity::Idle)
-                    )
+                    && match taking {
+                        Some(Activity::Reading | Activity::Polling | Activity::Idle) => false,
+                        Some(Activity::Busy | Activity::Waiting | Activity::Unknown) | None => true,
+                    }
             }
         };
         let modes = child
