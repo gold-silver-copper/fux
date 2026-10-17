@@ -138,8 +138,10 @@ pub fn main() -> ExitCode {
 }
 
 /// How a client starts a server, in the background: `fux __serve SOCKET`,
-/// with `fresh` to forget what the last one held. A client types it; no
-/// help lists it, though a person can type it too.
+/// with `fresh` to forget what the last one held. A client types it, the
+/// server leading a session of its own (`client::start_server`); no help
+/// lists it. A person can type it too: that server stays in the
+/// terminal's session, and the terminal's hangup or Ctrl-C stops it.
 pub const SERVE: &str = "__serve";
 
 /// A server, started by a client (`client::start_server`).
