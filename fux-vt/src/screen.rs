@@ -2645,14 +2645,20 @@ impl Screen {
             // TBC (ECMA-48 8.3.154): 0 clears the stop at the cursor, 3
             // every stop, the two DEC STD 070 (TBC) defines; the others,
             // for stops kept line by line, do nothing.
-            b'g' => match p.first(0, 0) {
-                0 => {
-                    let col = self.grid().cursor.col();
-                    self.tabs.set(col, false);
+            // TBC: each parameter in turn (DEC STD 070, TBC, p. 5-66), 0
+            // clearing the stop at the cursor and 3 every stop.
+            b'g' => {
+                for group in p.groups() {
+                    match group.first() {
+                        Some(0) => {
+                            let col = self.grid().cursor.col();
+                            self.tabs.set(col, false);
+                        }
+                        Some(3) => self.tabs.clear(),
+                        _ => {}
+                    }
                 }
-                3 => self.tabs.clear(),
-                _ => {}
-            },
+            }
             b'n' => match p.first(0, 0) {
                 5 => return Ok(Dispatch::Reply(Reply::of(format_args!("\x1b[0n")))),
                 6 => {

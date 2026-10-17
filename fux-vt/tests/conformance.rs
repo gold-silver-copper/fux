@@ -673,6 +673,17 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
     Ok(())
 }
 
+/// TBC with several parameters acts on each in turn (DEC STD 070, TBC,
+/// p. 5-66, whose algorithm loops over every parameter, and its revision
+/// note 11): `CSI 0 ; 3 g` clears every stop, and in `CSI 5 ; 0 g` the 0
+/// still clears the stop at the cursor, though 5 does nothing.
+#[test]
+fn tbc_acts_on_each_of_its_parameters() -> Result {
+    assert_eq!(row(20, b"\x1b[0;3g\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[9G\x1b[5;0g\r\tX")?, "                X");
+    Ok(())
+}
+
 /// Modes 1047 and 1048 (xterm's ctlseqs): 1047 switches to the alternate
 /// screen and back, clearing it on the way back; 1048 saves and restores
 /// the cursor as DECSC and DECRC do. Expected values are xterm's

@@ -408,7 +408,17 @@ fn sync_modes(r: &mut Rng) -> Vec<u8> {
 
 fn tabs(r: &mut Rng) -> Vec<u8> {
     match r.below(4) {
-        0 => pick(r, &["\x1bH", "\x1b[g", "\x1b[0g", "\x1b[3g"]),
+        0 => pick(
+            r,
+            &[
+                "\x1bH",
+                "\x1b[g",
+                "\x1b[0g",
+                "\x1b[3g",
+                "\x1b[0;3g",
+                "\x1b[5;0g",
+            ],
+        ),
         1 => csi(r, &["I", "Z"]),
         _ => "\t".to_owned(),
     }
@@ -870,7 +880,7 @@ pub const FAMILIES: &[Family] = &[
         name: "tabs",
         about: "HT, HTS, TBC, CHT and CBT",
         status: Status::Decided {
-            why: "CBT with a wrap pending moves back a tab stop from the last column, the active position, as ECMA-48 (8.3.7) says, and ends the wrap, as DEC STD 070 (Appendix D.6.1) ends it for a control that may move the cursor, and fux-vt does: Ghostty, alacritty, libvterm, avt and wezterm move back; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`). HT and CHT end a pending wrap too (see `controls`), where xterm keeps it. avt, which agrees most, counts a pending wrap as one column past the last (`replay --engines avt --size 1x9 'abcdefghi\\e[Z'`), so the test alone checks it",
+            why: "CBT with a wrap pending moves back a tab stop from the last column, the active position, as ECMA-48 (8.3.7) says, and ends the wrap, as DEC STD 070 (Appendix D.6.1) ends it for a control that may move the cursor, and fux-vt does: Ghostty, alacritty, libvterm, avt and wezterm move back; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`). HT and CHT end a pending wrap too (see `controls`), where xterm keeps it. avt, which agrees most, counts a pending wrap as one column past the last (`replay --engines avt --size 1x9 'abcdefghi\\e[Z'`), so the test alone checks it. TBC with several parameters acts on each in turn, as DEC STD 070's algorithm (TBC, p. 5-66) does, and fux-vt does; xterm and Ghostty read only the first (`replay --engines xterm,ghostty --size 1x20 '\\e[0;3g\\tX'`), and its test (`conformance::tbc_acts_on_each_of_its_parameters`) checks it",
             by: &[],
             authority: Authority::Standard {
                 section: "ECMA-48 8.3.7",
