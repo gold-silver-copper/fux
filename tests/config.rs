@@ -193,6 +193,8 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
         .map_err(e)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("[unset] [yes]"), "{stdout}");
-    assert!(stdout.contains("63 61 66 e9"), "{stdout}");
+    // od spaces its bytes as each system likes.
+    let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(bytes.contains("63 61 66 e9"), "{stdout}");
     Ok(())
 }
