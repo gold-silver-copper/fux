@@ -95,10 +95,14 @@ impl Leader {
     pub fn hang_up(&self) {
         // Found before any signal: once the group's leader dies, its
         // children are on their way to this process, in no one's list.
-        let session = self.session();
-        let _ = fuxix::process::kill_group(self.0, Signal::Hup);
-        for pid in session {
-            let _ = fuxix::process::kill(pid, Signal::Hup);
+        self.signal(self.session(), Signal::Hup);
+    }
+
+    /// Signals its process group, then each of `others`.
+    fn signal(&self, others: Vec<Pid>, signal: Signal) {
+        let _ = fuxix::process::kill_group(self.0, signal);
+        for pid in others {
+            let _ = fuxix::process::kill(pid, signal);
         }
     }
 
@@ -119,10 +123,7 @@ impl Leader {
         // (`nohup cmd &`) too, found first. A program that ended by itself
         // leaves those it meant to (`nohup job & exit`).
         let session = if self.1 { self.session() } else { Vec::new() };
-        let _ = fuxix::process::kill_group(self.0, Signal::Kill);
-        for pid in session {
-            let _ = fuxix::process::kill(pid, Signal::Kill);
-        }
+        self.signal(session, Signal::Kill);
         match fuxix::process::reap(self.0) {
             Ok(None) => Err(self),
             Ok(Some(_)) | Err(_) => Ok(()),
