@@ -606,8 +606,9 @@ impl Grid {
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         let mut x = x;
         // The cell last written, where its cluster starts in `text`, and
-        // whether it is wide: a char of no width joins that cluster (UAX
-        // #29, GB9 and GB9a), on a wide glyph's first half.
+        // whether it is wide: a char of no width that continues that
+        // cluster (UAX #29, as fux-vt decides it) joins it, on a wide
+        // glyph's first half.
         let mut last: Option<(u16, usize, bool)> = None;
         for (at, c) in text.char_indices() {
             if c.is_control() {
@@ -617,6 +618,12 @@ impl Grid {
             let width = cells(c);
             if width == 0 {
                 let end = at.saturating_add(c.len_utf8());
+                // One that does not continue the cluster (U+200B) is dropped.
+                let joins = |&(_, start, _): &(u16, usize, bool)| {
+                    text.get(start..at)
+                        .is_some_and(|before| fux_vt::continues_cluster(before, c))
+                };
+                last = last.filter(joins);
                 if let Some((x, start, wide)) = last
                     && let Some(cluster) = text.get(start..end)
                 {
@@ -2069,6 +2076,27 @@ mod tests {
         let last = u16::MAX.saturating_sub(1);
         let end = grid.text(0, last, "界", Attributes::default(), u16::MAX);
         assert_eq!(end, last);
+    }
+
+    /// fux's own text joins a character of no width to the cell before
+    /// only where it continues that cluster (UAX #29, as fux-vt decides it,
+    /// `continues_cluster`): a combining mark does, a ZERO WIDTH SPACE or
+    /// WORD JOINER (Control under UAX #29) does not, and is dropped.
+    #[test]
+    fn text_joins_only_what_continues_a_cluster() {
+        let mut grid = Grid::new(1, 6);
+        grid.text(
+            0,
+            0,
+            "a\u{200B}b\u{301}c\u{2060}\u{301}",
+            Attributes::default(),
+            6,
+        );
+        let cells: Vec<String> = (0..4)
+            .filter_map(|x| grid.get(0, x))
+            .map(|c| c.shown().to_owned())
+            .collect();
+        assert_eq!(cells, ["a", "b\u{301}", "c", " "]);
     }
 
     #[test]
