@@ -7,7 +7,6 @@ use crate::id::ClientId;
 use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::layout::Placement;
-use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, Notice};
 
@@ -114,8 +113,32 @@ impl Session {
         if shown {
             view.dirty = true;
         }
-        overlay::send_key(self, client, stroke);
+        // Encoded as its program asked.
+        self.type_in(client, |screen, out| {
+            crate::encode::key_bytes(stroke, screen.key_mode(), out)
+        });
         shown
+    }
+
+    /// Types into the client's focused pane what `write` makes for its
+    /// screen: a key or a paste, as its program asked. Refused already, and
+    /// said so: nothing more goes in, nor is said again, so a client typing
+    /// into a program that has stopped reading costs nothing per key.
+    fn type_in(&mut self, client: ClientId, write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>)) {
+        let Some(pane) = self.focused(client) else {
+            return;
+        };
+        self.typed(client);
+        let Some(p) = self.panes.get_mut(&pane) else {
+            return;
+        };
+        if p.input.refusing() {
+            return;
+        }
+        let screen = p.parser.screen();
+        if let Err(error) = p.input.push_with(|out| write(screen, out)) {
+            self.error_to(client, error.to_string());
+        }
     }
 
     fn paste(&mut self, client: ClientId, text: &str) {
@@ -127,20 +150,9 @@ impl Session {
             return;
         }
         view.notice = None;
-        let Some(pane) = self.focused(client) else {
-            return;
-        };
-        self.typed(client);
-        let Some(p) = self.panes.get_mut(&pane) else {
-            return;
-        };
-        let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
-        if let Err(error) = p
-            .input
-            .push_with(|out| crate::encode::paste(text, bracketed, out))
-        {
-            self.error_to(client, error.to_string());
-        }
+        self.type_in(client, |screen, out| {
+            crate::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
+        });
     }
 
     /// The outer terminal gained or lost focus: the client's focused pane
