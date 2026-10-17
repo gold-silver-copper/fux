@@ -186,6 +186,44 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
     Ok(())
 }
 
+/// The DSRs of DEC's other devices (`CSI ? Ps n`), which fux-vt has none
+/// of: the printer (DEC STD 070-7: ?13, none), UDKs (DEC STD 070-11's
+/// `REPORT_UDK_STATUS`: ?23, no UDK extension), the keyboard (the VT520
+/// manual, DSR keyboard report: language unknown, as a VT220 reports it,
+/// the level DA2 gives; status and type are level 4's),
+/// the locator (DEC STD 070-13: ?53, none; ?57;0, unknown), macros (DECMSR:
+/// no space; DECCKSR of none: 0000, under the request's label), data
+/// integrity (DEC STD 070, DSR: ?73 first after power-up or RIS, then ?70)
+/// and sessions (?83, not configured for them).
+#[test]
+fn extended_replies_answer_the_device_status_reports() -> Result {
+    let record = run(
+        REPLIES,
+        b"\x1b[?15n\x1b[?25n\x1b[?26n\x1b[?55n\x1b[?56n\x1b[?62n\x1b[?63;7n\x1b[?75n\x1b[?75n\
+          \x1b[?85n\x1bc\x1b[?75n\x1b[?99n",
+    )?;
+    let expected: [&[u8]; 11] = [
+        b"\x1b[?13n",
+        b"\x1b[?23n",
+        b"\x1b[?27;0n",
+        b"\x1b[?53n",
+        b"\x1b[?57;0n",
+        b"\x1b[0*{",
+        b"\x1bP7!~0000\x1b\\",
+        b"\x1b[?73n",
+        b"\x1b[?70n",
+        b"\x1b[?83n",
+        b"\x1b[?73n",
+    ];
+    assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
+    assert!(
+        run(Options::new(), b"\x1b[?15n\x1b[?75n")?
+            .replies
+            .is_empty()
+    );
+    Ok(())
+}
+
 /// `Feature::ModeReports` answers DECRQM, and nothing else the extended
 /// replies would: no DA2, no DECXCPR. Synchronized output (2026) is how
 /// programs use it: they ask whether the terminal knows the mode

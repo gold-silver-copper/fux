@@ -67,16 +67,9 @@ DECCRATests.test_DECCRA_nonOverlappingSourceAndDest  not-implemented: rectangle 
 DECCRATests.test_DECCRA_overlappingSourceAndDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECDSRTests.test_DECDSR_DECCKSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DECMSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
 DECDSRTests.test_DECDSR_DECXCPR  [fux] not-implemented: DECXCPR (CSI ? 6 n) in fux's panes, which leave extended_replies off; no program in the corpus asks it
-DECDSRTests.test_DECDSR_DSRDECLocatorStatus  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRDataIntegrity  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRKeyboard  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRMultipleSessionStatus  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRPrinterPort  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRUDKLocked  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_LocatorType  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DSRDataIntegrity  departure: the DSR reports of DEC's other devices, as DEC STD 070 gives them (README, ExtendedReplies): its DSR (775) reports the data integrity flag after power-up or RIS as 73, power-up, until it is reported once, then 70; esctest, after its RIS, expects xterm's 70 at once
+DECDSRTests.test_DECDSR_DSRUDKLocked  departure: the DSR reports of DEC's other devices, as DEC STD 070 gives them (README, ExtendedReplies): fux-vt has no UDKs, and the UDK extension's REPORT_UDK_STATUS answers ?23 then, where esctest accepts only 20 (unlocked) or 21 (locked)
 DECERATests.test_DECERA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECERATests.test_DECERA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECERATests.test_DECERA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them

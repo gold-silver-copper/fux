@@ -330,6 +330,29 @@ enum Protection {
     Iso,
 }
 
+/// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR, 775):
+/// power-up (73) until it has been reported once after the screen is made
+/// or RIS, then no error since the last report (70). Four bytes, as a
+/// `u32`: a byte among the screen's flags made the printing paths count
+/// up to 0.3% more instructions (bench-commit), by the loads of its
+/// neighbours the compiler joins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum Integrity {
+    PowerUp,
+    Reported,
+}
+
+impl Integrity {
+    /// The report's number.
+    pub(crate) fn report(self) -> u8 {
+        match self {
+            Integrity::PowerUp => 73,
+            Integrity::Reported => 70,
+        }
+    }
+}
+
 /// Terminal state. Reading a window never changes where subsequent output lands.
 #[derive(Clone, Debug)]
 pub struct Screen {
@@ -381,6 +404,8 @@ pub struct Screen {
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
     modify_other_keys: Option<OtherKeys>,
+    /// What DSR 75 reports of the data integrity flag.
+    pub(crate) integrity: Integrity,
     /// The cell the last glyph was printed in, and the state of its
     /// grapheme cluster, while the cursor has not moved nor the row been
     /// edited since: a character that continues the cluster joins its cell
@@ -501,6 +526,7 @@ impl Screen {
             mouse: MouseProtocolMode::None,
             encoding: MouseProtocolEncoding::Default,
             modify_other_keys: None,
+            integrity: Integrity::PowerUp,
             last_print: None,
             repeat: None,
             link: None,
@@ -1823,6 +1849,7 @@ impl Screen {
                 self.mouse = MouseProtocolMode::None;
                 self.encoding = MouseProtocolEncoding::Default;
                 self.modify_other_keys = None;
+                self.integrity = Integrity::PowerUp;
                 self.structural = self.version;
             }
             // ST (ECMA-48 8.3.143) is done too: it ended the string before

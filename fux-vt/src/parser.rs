@@ -5,7 +5,7 @@
 use crate::mode::{Kind, Mode, ModeStatus, RESET_FOR_GOOD};
 use crate::{
     Error, Reply, Rgb, Screen, Size,
-    screen::{Dispatch, Setting},
+    screen::{Dispatch, Integrity, Setting},
 };
 
 #[cfg(test)]
@@ -1381,16 +1381,48 @@ impl Parser {
     /// Replies enabled by [`Feature::ExtendedReplies`] and
     /// [`Options::identity`] for CSI sequences the screen does not answer
     /// itself.
-    fn query_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
+    #[inline(never)]
+    fn query_reply(&mut self, intermediates: &[u8], byte: u8) -> Option<Reply> {
         let n = self.params.first(0, 0);
         let extended = self.options.has(Feature::ExtendedReplies);
         let modes = extended || self.options.has(Feature::ModeReports);
         let identity = self.options.identity();
         match (intermediates, byte) {
-            (b"?", b'n') if n == 6 && extended => {
-                let (row, col) = self.screen.reported_cursor(&self.options);
-                Some(Reply::of(format_args!("\x1b[?{row};{col}R")))
-            }
+            (b"?", b'n') if extended => match n {
+                6 => {
+                    let (row, col) = self.screen.reported_cursor(&self.options);
+                    Some(Reply::of(format_args!("\x1b[?{row};{col}R")))
+                }
+                // The DSRs of DEC's other devices, which fux-vt has none
+                // of (DEC STD 070, DSR, and its extensions'): no printer
+                // (-7), no UDK extension (-11), a keyboard of unknown
+                // language (as a VT220 reports it, which DA2 says fux-vt
+                // is: the VT520 manual sends its status and type at level
+                // 4 only), no locator (-13), of unknown type, no macro
+                // space and so DECCKSR's checksum of no macros, labelled as
+                // asked.
+                15 => Some(Reply::of(format_args!("\x1b[?13n"))),
+                25 => Some(Reply::of(format_args!("\x1b[?23n"))),
+                26 => Some(Reply::of(format_args!("\x1b[?27;0n"))),
+                55 => Some(Reply::of(format_args!("\x1b[?53n"))),
+                56 => Some(Reply::of(format_args!("\x1b[?57;0n"))),
+                62 => Some(Reply::of(format_args!("\x1b[0*{{"))),
+                63 => {
+                    let label = self.params.first(1, 0);
+                    Some(Reply::of(format_args!("\x1bP{label}!~0000\x1b\\")))
+                }
+                // The data integrity flag: power-up (73), until reported,
+                // then no errors since the last report (70); RIS is a
+                // power-up again.
+                75 => {
+                    let integrity = &mut self.screen.integrity;
+                    let status = std::mem::replace(integrity, Integrity::Reported).report();
+                    Some(Reply::of(format_args!("\x1b[?{status}n")))
+                }
+                // Not configured for multiple sessions.
+                85 => Some(Reply::of(format_args!("\x1b[?83n"))),
+                _ => None,
+            },
             (b">", b'c') if n == 0 => match identity {
                 Some(identity) => {
                     let version = identity.encoded_version();
