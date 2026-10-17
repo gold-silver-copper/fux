@@ -3242,8 +3242,9 @@ fn check_name(name: &str) -> Result<(), Error> {
         return Err(fail(Code::BadName, "a name cannot be empty or blank"));
     }
     // Control characters, and the invisible ones that change how text
-    // around them shows (zero-width, direction overrides).
-    let invisible = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
+    // around them shows (zero-width, direction marks and overrides: UAX #9
+    // 2.6 names U+061C beside U+200E and U+200F).
+    let invisible = |c: char| matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
     if name.chars().any(|c| c.is_control() || invisible(c)) {
         let message = "a name cannot contain control or invisible characters";
         return Err(fail(Code::BadName, message));

@@ -83,6 +83,7 @@ const ROWS: &[Fails] = &[
     fails("missing_token", Cli, "str", "fails missing_token 1"),
     fails("bad_name", Cli, "define 1 end", "fails bad_name 1"),
     fails("bad_name", Cli, "str x let pane", "fails bad_name 1"),
+    fails("bad_name", Cli, "%1 str 'a\u{61C}b' rename", "fails bad_name 1"),
     fails("not_top_level", Cli, "if define x end then", "fails not_top_level 1"),
     fails("unmatched", Cli, "end", "fails unmatched 1"),
     fails("unclosed", Cli, "define x", "fails unclosed 1"),
