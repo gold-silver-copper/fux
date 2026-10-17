@@ -398,10 +398,6 @@ impl Prints {
             text: self.text.get(text.clone()).unwrap_or_default(),
         })
     }
-    /// How many bytes of text the runs hold.
-    pub fn len(&self) -> usize {
-        self.text.len()
-    }
     /// The bytes it takes on the heap: its text and its runs.
     pub fn heap(&self) -> usize {
         let run = std::mem::size_of::<(RowId, std::ops::Range<u16>, std::ops::Range<usize>)>();
