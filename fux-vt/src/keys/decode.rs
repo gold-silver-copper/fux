@@ -1393,7 +1393,12 @@ mod tests {
                     key_bytes(press.into(), mode, &mut bytes);
                     presses(all(&bytes))
                 };
-                if decoded(KeyMode::legacy(false)) != vec![Some(press)] {
+                let legacy = KeyMode::Legacy {
+                    application: false,
+                    other_keys: None,
+                    backarrow: false,
+                };
+                if decoded(legacy) != vec![Some(press)] {
                     // Legacy bytes cannot tell this key (S-Enter is Enter).
                     continue;
                 }

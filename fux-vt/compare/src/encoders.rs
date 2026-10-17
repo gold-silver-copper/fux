@@ -488,9 +488,11 @@ fn compare_keys(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Strin
         let mut legacy = Vec::new();
         fux_vt::keys::encode::key_bytes(
             stroke,
-            fux_vt::keys::encode::KeyMode::legacy(
-                pair.fux.screen().mode(fux_vt::Mode::ApplicationCursor),
-            ),
+            fux_vt::keys::encode::KeyMode::Legacy {
+                application: pair.fux.screen().mode(fux_vt::Mode::ApplicationCursor),
+                other_keys: None,
+                backarrow: false,
+            },
             &mut legacy,
         );
         let verdict = key_verdict(setup, key, mods, &ours, &theirs, &legacy);

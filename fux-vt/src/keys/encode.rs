@@ -94,18 +94,6 @@ impl crate::Screen {
     }
 }
 
-impl KeyMode {
-    /// Legacy keys, in normal or application cursor mode, Backspace
-    /// sending DEL.
-    pub fn legacy(application: bool) -> KeyMode {
-        KeyMode::Legacy {
-            application,
-            other_keys: None,
-            backarrow: false,
-        }
-    }
-}
-
 /// The kitty protocol's progressive enhancements, as a screen holds them.
 const DISAMBIGUATE: u8 = 1;
 const ALTERNATE_KEYS: u8 = 4;
@@ -685,6 +673,12 @@ mod tests {
         other_keys: None,
         backarrow: false,
     };
+    /// Legacy keys in application cursor mode (DECCKM).
+    const APPLICATION: KeyMode = KeyMode::Legacy {
+        application: true,
+        other_keys: None,
+        backarrow: false,
+    };
     const fn kitty_mode(alternate: bool, report: Report) -> KeyMode {
         KeyMode::Kitty { alternate, report }
     }
@@ -1013,7 +1007,7 @@ mod tests {
     fn a_screen_s_flags_pick_its_key_protocol() -> Result<(), crate::Error> {
         for (setup, mode) in [
             ("", LEGACY),
-            ("\x1b[?1h\x1b[>2u", KeyMode::legacy(true)),
+            ("\x1b[?1h\x1b[>2u", APPLICATION),
             ("\x1b[>4;1m\x1b[>16u", USUAL),
             ("\x1b[>4;3m", UNMODIFIED),
             ("\x1b[>4;4m", LEGACY),
@@ -1049,7 +1043,7 @@ mod tests {
     /// which carries it.
     #[test]
     fn legacy_keys_follow_xterm() {
-        let application = KeyMode::legacy(true);
+        let application = APPLICATION;
         for (name, mode, bytes) in [
             ("F1", LEGACY, "\x1bOP"),
             ("C-M-S-F1", LEGACY, "\x1b[1;8P"),
@@ -1187,7 +1181,7 @@ mod tests {
                 };
                 for mode in [
                     LEGACY,
-                    KeyMode::legacy(true),
+                    APPLICATION,
                     USUAL,
                     ALL_MODIFIERS,
                     DISAMBIGUATED,

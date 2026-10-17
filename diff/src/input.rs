@@ -232,7 +232,11 @@ stack!(
     fux,
     |press, application, out| fux::encode::key_bytes(
         press.into(),
-        fux::encode::KeyMode::legacy(application),
+        fux::encode::KeyMode::Legacy {
+            application,
+            other_keys: None,
+            backarrow: false,
+        },
         out
     ),
     |input| {

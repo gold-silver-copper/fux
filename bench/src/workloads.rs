@@ -214,7 +214,11 @@ fn run_shrunk(name: &str, dir: &Path, baseline: bool, shrink: usize) -> Result<D
         ),
         "encode/legacy" => encode(
             &recordings,
-            fux::encode::KeyMode::legacy(false),
+            fux::encode::KeyMode::Legacy {
+                application: false,
+                other_keys: None,
+                backarrow: false,
+            },
             baseline,
             size(STROKES),
         ),
