@@ -794,19 +794,20 @@ fn each_screen_saves_its_own_pen_and_character_sets() -> Result {
 /// Subparts"), as xterm prints it for what real output holds: a Latin-1
 /// byte among UTF-8, a sequence cut off by a control, ESC or the input
 /// that follows (`fux-vt-compare cases invalid-utf8-prints-a-replacement`).
-/// A continuation byte alone xterm reads as Latin-1, and so does fux-vt:
-/// a raw C1 control is ignored, and 0xa0 to 0xbf print, so Latin-1 text
-/// keeps its `£` (`fux-vt-compare replay --engines all --size 1x12
-/// 'price \xa35'`), where the Unicode Standard would print U+FFFD (see
-/// the README's "Departures from the references"). U+FFFD itself prints.
+/// A continuation byte alone is a maximal subpart too: U+FFFD, as
+/// conformance clause C10 has ill-formed input treated as an error, where
+/// xterm reads it as Latin-1 (`fux-vt-compare replay --engines all --size
+/// 1x12 'price \xa35'`). U+FFFD itself prints.
 #[test]
 fn invalid_utf8_prints_a_replacement_character() -> Result {
     assert_eq!(row(12, b"caf\xe9 ok")?, "caf\u{fffd} ok");
     assert_eq!(row(12, b"a\xffb")?, "a\u{fffd}b");
     assert_eq!(row(12, b"a\xe7\x95b")?, "a\u{fffd}b");
     assert_eq!(row(12, b"a\xf0\x9f\rb")?, "b\u{fffd}");
-    assert_eq!(row(12, b"a\x80b")?, "ab");
-    assert_eq!(row(12, b"price \xa35")?, "price \u{a3}5");
+    assert_eq!(row(12, b"a\x80b")?, "a\u{fffd}b");
+    assert_eq!(row(12, b"a\x9c\xbfb")?, "a\u{fffd}\u{fffd}b");
+    assert_eq!(row(12, b"price \xa35")?, "price \u{fffd}5");
+    assert_eq!(row(12, b"a\xe0\x80b")?, "a\u{fffd}\u{fffd}b");
     assert_eq!(row(12, "a\u{fffd}b".as_bytes())?, "a\u{fffd}b");
     // Cut off by ESC, which still begins its sequence.
     let p = run(1, 12, b"a\xe7\x1b[1mb")?;

@@ -989,9 +989,12 @@ pub const FAMILIES: &[Family] = &[
         name: "invalid-utf8",
         about: "invalid and truncated UTF-8, and U+FFFD itself",
         status: Status::Decided {
-            why: "the panel splits on a continuation byte alone: xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), and so does fux-vt, a recorded departure from the Unicode Standard's U+FFFD; Ghostty, libvterm, avt and tmux print U+FFFD, alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`)",
-            by: XTERM,
-            authority: Authority::Xterm,
+            why: "a continuation byte alone is ill-formed, and prints U+FFFD, as the Unicode Standard (3.9, \"U+FFFD Substitution of Maximal Subparts\"; C10) has it and Ghostty, libvterm, avt and tmux do, as fux-vt does; xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`). Of the engines that print U+FFFD, libvterm and tmux split elsewhere (a sequence broken off by the next write's text), so it is checked beside Ghostty and avt",
+            by: &["ghostty", "avt"],
+            authority: Authority::Standard {
+                section: "the Unicode Standard, 3.9",
+                test: "conformance::invalid_utf8_prints_a_replacement_character",
+            },
         },
         ratty_only: false,
         generate: invalid_utf8,

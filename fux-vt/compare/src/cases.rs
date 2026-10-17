@@ -319,6 +319,12 @@ pub const CASES: &[Named] = &[
         &["caf\\xe9 ok"],
     ),
     (
+        "a-continuation-byte-alone-prints-a-replacement",
+        "invalid-utf8",
+        (1, 12),
+        &["price \\xa35"],
+    ),
+    (
         "dcs-payload-holding-0x9c",
         "strings-c1",
         (1, 12),

@@ -1011,11 +1011,9 @@ impl Parser {
             }
             0x20..=0x7e => self.screen.print(char::from(byte))?,
             0xc2..=0xf4 => self.state = State::Utf8(Bytes::of(byte)),
-            // A continuation byte alone is read as Latin-1, as xterm reads
-            // it: a raw C1 control, 0x80 to 0x9f, is ignored, and 0xa0 to
-            // 0xbf print U+00A0 to U+00BF.
-            0x80..=0xbf => self.screen.print(char::from(byte))?,
-            // A byte that starts no UTF-8 sequence: U+FFFD.
+            // A byte that starts no UTF-8 sequence, a continuation byte
+            // alone among them: U+FFFD (Unicode 3.9; C10). xterm reads a
+            // continuation byte alone as Latin-1.
             _ => self.screen.print(char::REPLACEMENT_CHARACTER)?,
         }
         Ok(())
