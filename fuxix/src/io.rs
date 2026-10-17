@@ -82,8 +82,10 @@ pub fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
 /// ones another thread opened before it could set it. Nothing is closed,
 /// so no owner's descriptor stops being valid; each closes when this
 /// process runs another program. It allocates nothing and takes no lock,
-/// so it may run between `fork` and `exec`.
-pub fn cloexec_from(first: i32) -> Result<()> {
+/// so it may run between `fork` and `exec`. `listed` ([`open_end`], taken
+/// before the fork) bounds the fallback where the kernel has no
+/// close_range.
+pub fn cloexec_from(first: i32, listed: Option<i32>) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let start = libc::c_uint::try_from(first).map_err(|_| crate::Errno::INVAL)?;
@@ -102,13 +104,26 @@ pub fn cloexec_from(first: i32) -> Result<()> {
         }
         // Older than Linux 5.11: no such call (ENOSYS) or flag (EINVAL).
     }
-    cloexec_each(first)
+    cloexec_each(first, listed)
 }
 
-/// `cloexec_from` one descriptor at a time, below the number this process
-/// may open (its soft `RLIMIT_NOFILE`): on macOS, on Android, and on Linux
-/// older than 5.11.
-fn cloexec_each(first: i32) -> Result<()> {
+/// One past the highest descriptor this process holds open, as `/dev/fd`
+/// lists them; `None` where they can't be listed. It allocates, so it is
+/// for before `fork`.
+pub fn open_end() -> Option<i32> {
+    let listed = std::fs::read_dir("/dev/fd").ok()?;
+    let fds = listed.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok());
+    fds.max()?.checked_add(1)
+}
+
+/// `cloexec_from` one descriptor at a time: on macOS, on Android, and on
+/// Linux older than 5.11 or where close_range is denied. Below the number
+/// this process may open (its soft `RLIMIT_NOFILE`, which may be 2^30),
+/// and, with `listed`, to the first free number past the listed end: one
+/// opened since the listing took the lowest number free, so those past
+/// the end lie next to it. Its cost follows the descriptors open, not the
+/// limit.
+fn cloexec_each(first: i32, listed: Option<i32>) -> Result<()> {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -119,7 +134,11 @@ fn cloexec_each(first: i32) -> Result<()> {
     for fd in first..end {
         match cloexec_raw(fd) {
             Ok(()) => {}
-            Err(errno) if errno.raw() == libc::EBADF => {}
+            Err(errno) if errno.raw() == libc::EBADF => {
+                if listed.is_some_and(|end| fd >= end) {
+                    return Ok(());
+                }
+            }
             Err(errno) => return Err(errno),
         }
     }
@@ -168,17 +187,46 @@ mod tests {
         assert!(is_cloexec(&file), "std opens close-on-exec");
         let copy = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
         assert!(!is_cloexec(&copy));
-        cloexec_from(copy.as_raw_fd()).map_err(|e| e.to_string())?;
+        cloexec_from(copy.as_raw_fd(), open_end()).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&copy));
         // And one at a time, as where the kernel has no close_range.
         let listed = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
         assert!(!is_cloexec(&listed));
-        cloexec_each(listed.as_raw_fd()).map_err(|e| e.to_string())?;
+        cloexec_each(listed.as_raw_fd(), None).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&listed));
         // Nothing was closed: both still read.
         let mut buffer = [0u8; 1];
         assert_eq!(read(&copy, &mut buffer), Ok(0));
         assert_eq!(read(&file, &mut buffer), Ok(0));
+        Ok(())
+    }
+
+    /// One at a time, the walk goes to the listed end, past any number
+    /// free below it, then on through the run of descriptors opened next
+    /// to it, and ends at the first free number past that: not at the soft
+    /// limit, which may be 2^30.
+    #[test]
+    fn one_at_a_time_ends_past_the_listed_descriptors() -> std::result::Result<(), String> {
+        let file = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
+        let at = |n: i32| -> std::result::Result<OwnedFd, String> {
+            // SAFETY: F_DUPFD takes a number and touches no memory; the copy
+            // is the lowest number free from `n`, without close-on-exec.
+            let raw = check(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, n) })
+                .map_err(|e| e.to_string())?;
+            // SAFETY: `raw` was just opened, and nothing else owns it.
+            Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+        };
+        let low = at(700)?;
+        let below = at(low.as_raw_fd() + 5)?;
+        let end = below.as_raw_fd() + 1;
+        let next = at(end)?;
+        let far = at(next.as_raw_fd() + 10)?;
+        cloexec_each(low.as_raw_fd(), Some(end)).map_err(|e| e.to_string())?;
+        assert!(is_cloexec(&low) && is_cloexec(&below) && is_cloexec(&next));
+        assert!(
+            !is_cloexec(&far),
+            "the walk went past the first free number"
+        );
         Ok(())
     }
 }

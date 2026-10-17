@@ -38,12 +38,13 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | --- | --- | --- | --- |
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
-| `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each below `RLIMIT_NOFILE` (Android: always) | `fcntl` on each below `RLIMIT_NOFILE` | not offered |
+| `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past the descriptors `io::open_end` listed (Android: always) | `fcntl` on each up to past the descriptors `io::open_end` listed | not offered |
+| `io::open_end` | the highest number in `/dev/fd`, before `fork` | the same | not offered |
 | `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group`, `exists` | `kill`, `killpg`, `kill(pid, 0)` | the same | std signals only its own children, and only with SIGKILL |
 | `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
-| `process::lead_session`, `pty::Slave::spawn` | between `fork` and `exec` (`pre_exec`): `io::cloexec_from(3)`, `setsid`, `TIOCSCTTY` | the same | std's spawn makes no session |
+| `process::lead_session`, `pty::Slave::spawn` | `io::open_end` before `fork`; between `fork` and `exec` (`pre_exec`): `io::cloexec_from(3, listed)`, `setsid`, `TIOCSCTTY` | the same | std's spawn makes no session |
 | `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
 | `process::reap` | `waitid(WEXITED, WNOHANG)` | the same, ignoring the stops macOS reports | for a pid, not a `Child` |

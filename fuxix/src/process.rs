@@ -167,8 +167,10 @@ fn setsid() -> Result<()> {
 /// shell.
 pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     use std::os::unix::process::CommandExt;
+    // Listed now: between fork and exec nothing may allocate.
+    let listed = crate::io::open_end();
     let lead = move || -> std::io::Result<()> {
-        crate::io::cloexec_from(3)?;
+        crate::io::cloexec_from(3, listed)?;
         setsid()?;
         if terminal {
             let set = crate::terminal::request(libc::TIOCSCTTY);
