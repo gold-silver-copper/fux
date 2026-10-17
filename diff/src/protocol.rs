@@ -6,7 +6,8 @@
 //! stage it is allowed in, and refuses a size of zero and (as the baseline
 //! does not know it) a `Terminal` where the baseline is compared. A command
 //! is not compared: the baseline's is a command line, the current one's a
-//! typed request.
+//! typed request; nor are an attach and an attached client's input, which
+//! each reads as a type of its own.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
@@ -133,10 +134,15 @@ fn stream(r: &mut Rng) -> Vec<u8> {
     out
 }
 
-/// What the current fux refuses of the whole frame `held` begins with,
-/// whatever its payload, which the baseline takes: a `Terminal`, or a size
-/// of zero, read before the fields after it. A command, which each reads
-/// as a frame of its own, both stop at.
+/// Where the two part, for the whole frame `held` begins with, whatever its
+/// payload: what the current fux refuses that the baseline takes (a
+/// `Terminal`, a `Stderr`, which it no longer has, or a size of zero, read
+/// before the fields after it); and a frame each reads as a type of its
+/// own, which both stop at: a hello of a role the baseline does not know
+/// (`Headless`), a command (the baseline's a command line, the
+/// current one's a typed request), an attach (the current one's has more
+/// fields) and an attached client's input (the baseline's the bytes typed,
+/// the current one's a typed `Act`), whose decoding fux's own tests check.
 fn refused(held: &[u8]) -> Option<String> {
     let (header, rest) = held.split_first_chunk::<4>()?;
     let length = usize::try_from(u32::from_be_bytes(*header)).ok()?;
@@ -146,8 +152,10 @@ fn refused(held: &[u8]) -> Option<String> {
     let cols = payload.get(2..).and_then(<[u8]>::first_chunk::<2>);
     let zero = rows == Some(&[0, 0]) || (rows.is_some() && cols == Some(&[0, 0]));
     match kind {
-        6 | 12 => Some(format!("UnexpectedKind({kind})")),
-        2 | 4 if zero => Some("ZeroSize".into()),
+        6 | 10 | 12 => Some(format!("UnexpectedKind({kind})")),
+        2 | 3 => Some(format!("ReadAsItsOwn({kind})")),
+        1 if payload.get(4) == Some(&3) => Some("Headless".into()),
+        4 if zero => Some("ZeroSize".into()),
         _ => None,
     }
 }
@@ -195,20 +203,34 @@ macro_rules! decoded {
     };
 }
 
-// An unknown kind is one not expected, and an exit reason not UTF-8 is a
-// frame string that is not.
+/// The baseline's error `e` as the current fux names the same failure: a
+/// payload that does not read is one of its wire errors, an unknown kind
+/// one not expected, an exit reason not UTF-8 a frame string that is not.
+fn named(e: baseline::protocol::Error) -> String {
+    use baseline::protocol::Error as Base;
+    use fux::protocol::Error;
+    use fux::wire::Error as Wire;
+    let error = match e {
+        Base::Oversized { bytes, limit } => Error::Oversized { bytes, limit },
+        Base::Empty => Error::Empty,
+        Base::Truncated => Error::Wire(Wire::Truncated),
+        Base::Trailing => Error::Wire(Wire::Trailing),
+        Base::NotUtf8 | Base::ExitNotUtf8 => Error::Wire(Wire::NotUtf8),
+        Base::UnknownKind(kind) => Error::UnexpectedKind(kind),
+        Base::UnknownRole(role) => Error::Wire(Wire::Tag("Role", role)),
+        other @ (Base::BadMarker | Base::BadCount) => return format!("{other:?}"),
+    };
+    format!("{error:?}")
+}
+
 decoded!(base, baseline::protocol::Decoder, |d, _kind| d
     .frame()
-    .map_err(|e| {
-        format!("{e:?}")
-            .replace("UnknownKind", "UnexpectedKind")
-            .replace("ExitNotUtf8", "NotUtf8")
-    })?
+    .map_err(named)?
     .map(|f| f.encode().map_err(|e| format!("{e:?}")))
     .transpose());
 
 decoded!(cur, fux::protocol::Decoder, |d, kind| {
-    use fux::protocol::{Attach, AttachedFrame, Frame, Hello, ServerFrame};
+    use fux::protocol::{AttachedFrame, Frame, Greeting, Hello, ToAttached, ToCommand};
     fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
         frame
             .map(|f| f.encode().map_err(|e| format!("{e:?}")))
@@ -217,9 +239,12 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
     let error = |e| format!("{e:?}");
     match kind {
         Some(1) => again(d.frame::<Hello>().map_err(error)?),
-        Some(2) => again(d.frame::<Attach>().map_err(error)?),
-        Some(3..=5) => again(d.frame::<AttachedFrame>().map_err(error)?),
-        _ => again(d.frame::<ServerFrame>().map_err(error)?),
+        Some(4 | 5) => again(d.frame::<AttachedFrame>().map_err(error)?),
+        // A paint, as to an attached client; output, as to a command
+        // client; the rest as the server's first frames.
+        Some(7) => again(d.frame::<ToAttached>().map_err(error)?),
+        Some(9) => again(d.frame::<ToCommand>().map_err(error)?),
+        _ => again(d.frame::<Greeting>().map_err(error)?),
     }
 });
 
@@ -227,24 +252,20 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
 /// baseline's, then the current fux's.
 fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use baseline::protocol::Stream as Base;
-    use fux::protocol::ServerFrame as Cur;
-    let (mut a, mut b) = (Vec::new(), Vec::new());
-    let streams: [(_, fn(_) -> _); 3] = [
-        (Base::Paint, Cur::Paint),
-        (Base::Stdout, Cur::Stdout),
-        (Base::Stderr, Cur::Stderr),
-    ];
-    for (base, cur) in streams {
+    use fux::protocol::{ToAttached, ToCommand, split_into};
+    let mut a = Vec::new();
+    for base in [Base::Paint, Base::Stdout] {
         let mut queue = baseline::bytes::ByteQueue::default();
         queue.push(b"before");
         base.encode_into(payload, &mut queue);
         a.extend_from_slice(queue.as_slice());
-        let mut queue = fux::bytes::ByteQueue::default();
-        queue.push(b"before");
-        Cur::split_into(payload, cur, &mut queue);
-        b.extend_from_slice(queue.as_slice());
     }
-    (a, b)
+    let mut b = fux::bytes::ByteQueue::default();
+    b.push(b"before");
+    split_into(payload, ToAttached::Paint, &mut b);
+    b.push(b"before");
+    split_into(payload, ToCommand::Stdout, &mut b);
+    (a, b.as_slice().to_vec())
 }
 
 /// `spec`, encoded by the baseline.

@@ -4,21 +4,60 @@
 //! them; `docs/json.md` lists them all.
 use std::num::NonZeroU8;
 
-/// `codes! { /// doc  Variant "name", … }` expands to the enum `Code` of
-/// those variants, `Code::ALL` in order, and `Code::name`, each one's name.
+/// The exit statuses, a meaning each, besides 0: what was asked came.
+/// Any failure but these.
+const FAILED: NonZeroU8 = NonZeroU8::MIN;
+/// A command used wrongly.
+const USAGE: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
+/// The program exited, or was started again, before the wait was met.
+const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
+/// The pane waited on closed, or everything an event stream watched.
+const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
+/// The program reads its terminal, and the text waited for has not come
+/// (or gone): fux judges it cannot before the agent types.
+const READING: NonZeroU8 = NonZeroU8::MIN.saturating_add(6);
+/// The time limit came first, the program still at work: as `timeout(1)`.
+const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
+
+/// `codes! { /// doc  Variant "name", Closed "closed" CLOSED, … }` expands
+/// to the enum `Code` of those variants and `Lang`, the language's own
+/// codes; `Code::ALL`, fux's own in order; `Code::status`, each one's exit
+/// status: the one its row names (`Code::Closed => CLOSED`), else `FAILED`,
+/// as for the language's; and `fuxth::Code::from`, each one as the language
+/// takes it (one of fux's as `Host`, by its name).
 macro_rules! codes {
-    ($($(#[$doc:meta])* $variant:ident $name:literal,)*) => {
+    (@status) => {
+        FAILED
+    };
+    (@status $status:ident) => {
+        $status
+    };
+    ($($(#[$doc:meta])* $variant:ident $name:literal $($status:ident)?,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Code {
             $($(#[$doc])* $variant,)*
+            /// One of the language's own (fuxth's), as fuxth names it.
+            Lang(LangCode),
         }
 
         impl Code {
             pub const ALL: &[Code] = &[$(Code::$variant),*];
 
-            pub fn name(self) -> &'static str {
+            /// The exit status a failure, or an answer, of this kind ends
+            /// with.
+            pub fn status(self) -> NonZeroU8 {
                 match self {
-                    $(Code::$variant => $name,)*
+                    $(Code::$variant => codes!(@status $($status)?),)*
+                    Code::Lang(_) => FAILED,
+                }
+            }
+        }
+
+        impl From<Code> for fuxth::Code {
+            fn from(code: Code) -> fuxth::Code {
+                match code {
+                    $(Code::$variant => fuxth::Code::Host($name),)*
+                    Code::Lang(LangCode(code)) => code,
                 }
             }
         }
@@ -66,11 +105,11 @@ codes! {
     IdsExhausted "ids_exhausted",
     /// A value out of what a word takes.
     BadValue "bad_value",
-    /// A command used wrongly: exit status 2.
-    Usage "usage",
+    /// A command used wrongly.
+    Usage "usage" USAGE,
     // What a command meets.
-    /// A program that exited: it takes no input, or exited first.
-    Exited "exited",
+    /// A program that exited, which takes no input.
+    NotRunning "not_running",
     /// A program still running, which a respawn would not end.
     StillRunning "still_running",
     /// A respawn of a pane whose program `run` did not start.
@@ -97,25 +136,27 @@ codes! {
     OwnServer "own_server",
     /// `kill-server` with people attached, not forced.
     PeopleAttached "people_attached",
-    /// What runs from the command line only.
-    CliOnly "cli_only",
     // How a wait ends.
-    /// A wait's limit came first: exit status 124.
-    Timeout "timeout",
-    /// The pane waited on closed: exit status 4.
-    Closed "closed",
-    /// Everything an event stream watched closed: exit status 4.
-    Gone "gone",
+    /// The program exited, or was started again, before the wait was met.
+    Exited "exited" EXITED,
+    /// A wait's limit came first.
+    Timeout "timeout" TIMED_OUT,
+    /// The pane waited on closed.
+    Closed "closed" CLOSED,
+    /// Everything an event stream watched closed.
+    Gone "gone" CLOSED,
     /// The reader of an event stream fell too far behind.
     Lost "lost",
-    /// The program reads its terminal and the text has not come: exit
-    /// status 7. A run the prefix then Esc stopped is named so too, with
-    /// status 1.
-    Stopped "stopped",
+    /// The program reads its terminal and the text has not come.
+    Stopped "stopped" READING,
     // A program of words.
     /// A run of more steps than allowed.
     Steps "steps",
-    /// A word that may only be given as a key's or the prompt's.
+    /// A run the prefix, then Esc, stopped.
+    Cancelled "cancelled",
+    /// A word the client runs itself (attach, server, start, status), which
+    /// runs from the command line only: not a key's, a config's or a saved
+    /// session's.
     NotHere "not_here",
     /// A word a saved session may not hold.
     NotLayout "not_layout",
@@ -145,53 +186,17 @@ codes! {
     NotAClient "not_a_client",
     /// A paste that could not be read.
     Paste "paste",
-    /// A failure of no other kind.
-    Failed "failed",
-    // The language's own (fuxth).
-    /// A quote is never closed.
-    OpenQuote "open_quote",
-    /// A word no definition, builtin or application gives.
-    UnknownWord "unknown_word",
-    /// A parsing word at the end, with nothing to read.
-    MissingToken "missing_token",
-    /// A name that is taken, a number, a parsing word, or reads as an id.
-    BadName "bad_name",
-    /// `define` inside a definition or a block.
-    NotTopLevel "not_top_level",
-    /// `end`, `else`, `then` or `until` with nothing open for it.
-    Unmatched "unmatched",
-    /// A definition or block still open at the end.
-    Unclosed "unclosed",
-    /// A word given fewer values than it takes.
-    StackUnderflow "stack_underflow",
-    /// The stack grew past its limit.
-    StackOverflow "stack_overflow",
-    /// Calls nested past their limit.
-    CallDepth "call_depth",
-    /// A value of the wrong type for a word.
-    Type "type",
-    /// Division or remainder by zero.
-    DivByZero "div_by_zero",
-    /// Arithmetic past what an integer holds.
-    Overflow "overflow",
-    /// A `let` name read before its `let` ran.
-    Unset "unset",
-    /// An index or number out of a word's range.
-    Range "range",
-    /// `fail`: the program stopped itself, saying why.
-    Fail "fail",
-    /// A text or list past its length, or a run that built too much.
-    TooLong "too_long",
-    /// An application word that broke its contract with the language.
-    Contract "contract",
 }
 
 impl Code {
-    /// The exit status a failure of this kind ends with: a usage error's 2,
-    /// any other's 1 (a wait says its own: 3, 4, 7, 124).
-    pub fn status(self) -> NonZeroU8 {
-        let usage = u8::from(self == Code::Usage);
-        NonZeroU8::MIN.saturating_add(usage)
+    /// Every code: fux's own, then the language's.
+    pub fn all() -> impl Iterator<Item = Code> {
+        let lang = fuxth::Code::ALL.iter().map(|c| Code::Lang(LangCode(*c)));
+        Code::ALL.iter().copied().chain(lang)
+    }
+
+    pub fn name(self) -> &'static str {
+        fuxth::Code::from(self).name()
     }
 }
 
@@ -204,31 +209,22 @@ impl std::fmt::Display for Code {
 impl std::str::FromStr for Code {
     type Err = ();
     fn from_str(name: &str) -> Result<Code, ()> {
-        Code::ALL
-            .iter()
-            .copied()
-            .find(|c| c.name() == name)
-            .ok_or(())
+        Code::all().find(|c| c.name() == name).ok_or(())
     }
 }
 
-/// The language's code as fux names it: by its name, which every one of
-/// fuxth's codes, and every one fux's words give the language, has here.
+/// A code of the language's own, never a host's (a host's is one of fux's
+/// own): so a code's name has one meaning, and one status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LangCode(fuxth::Code);
+
+/// The language's code as fux names it, found by its name among them all:
+/// a host's (every host code is one of fux's own, given by
+/// `fuxth::Code::from`; one it does not know is the program's failure,
+/// `fail`), the language's own as it is.
 impl From<fuxth::Code> for Code {
     fn from(code: fuxth::Code) -> Code {
-        code.name().parse().unwrap_or(Code::Failed)
-    }
-}
-
-/// A code as the language takes it from a word of fux's: the language's
-/// own when it is one of them (a word's `type`), else fux's, by its name.
-impl From<Code> for fuxth::Code {
-    fn from(code: Code) -> fuxth::Code {
-        let own = fuxth::Code::ALL
-            .iter()
-            .copied()
-            .find(|c| c.name() == code.name());
-        own.unwrap_or(fuxth::Code::Host(code.name()))
+        (code.name().parse()).unwrap_or(Code::Lang(LangCode(fuxth::Code::Fail)))
     }
 }
 
@@ -236,17 +232,23 @@ impl From<Code> for fuxth::Code {
 mod tests {
     use super::Code;
 
+    /// A host's code fux does not know is no code of the language's: it is
+    /// the program's failure.
+    #[test]
+    fn an_unknown_host_code_is_the_programs_failure() {
+        assert_eq!(Code::from(fuxth::Code::Host("nosuch")).name(), "fail");
+        assert_eq!(Code::from(fuxth::Code::Host("closed")), Code::Closed);
+    }
+
     #[test]
     fn every_code_has_its_own_name_and_the_docs_list_it() {
         let docs = crate::help::JSON;
         let errors = docs.split("## Errors").nth(1).unwrap_or_default();
         let errors = errors.split("\n## ").next().unwrap_or_default();
-        for (i, code) in Code::ALL.iter().enumerate() {
-            assert_eq!(code.name().parse(), Ok(*code), "{code:?}");
-            let named = Code::ALL
-                .iter()
-                .skip(i + 1)
-                .any(|c| c.name() == code.name());
+        for (i, code) in Code::all().enumerate() {
+            assert_eq!(code.name().parse(), Ok(code), "{code:?}");
+            assert_eq!(Code::from(fuxth::Code::from(code)), code);
+            let named = Code::all().skip(i + 1).any(|c| c.name() == code.name());
             assert!(!named, "{code:?} shares its name");
             let listed = errors.contains(&format!("`{}`", code.name()));
             assert!(
@@ -254,14 +256,6 @@ mod tests {
                 "docs/json.md's Errors does not list {}",
                 code.name()
             );
-        }
-    }
-
-    #[test]
-    fn every_code_of_the_language_is_one_of_fuxs() {
-        for code in fuxth::Code::ALL {
-            assert_ne!(Code::from(*code), Code::Failed, "{code:?}");
-            assert_eq!(fuxth::Code::from(Code::from(*code)), *code);
         }
     }
 }

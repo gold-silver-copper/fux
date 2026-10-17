@@ -68,10 +68,20 @@ impl Span {
         Self { first: 0, last }
     }
     /// Margins within this span, the screen's, as DECSTBM and DECSLRM set
-    /// them: `last` past it is its last; `None` unless `first` is before it.
+    /// them: `None` unless `first` is before `last` and `last` is in it
+    /// (DEC STD 070, DECSTBM and DECSLRM, notes 2 and 3).
     pub fn margins(self, first: u16, last: u16) -> Option<Self> {
-        let last = last.min(self.last);
-        (first < last).then_some(Self { first, last })
+        (first < last && last <= self.last).then_some(Self { first, last })
+    }
+    /// The part `first` to `last` of this span, `None` if `first` is past
+    /// `last` or `last` past this span: a side of a rectangle (DEC STD 070,
+    /// 5.12.1).
+    pub fn part(self, first: u16, last: u16) -> Option<Self> {
+        (first <= last && last <= self.last).then_some(Self { first, last })
+    }
+    /// Its rows or columns, in order.
+    pub fn each(self) -> std::ops::RangeInclusive<u16> {
+        self.first..=self.last
     }
     /// The span from `first` on, if it is in this one.
     pub fn starting_at(self, first: u16) -> Option<Self> {

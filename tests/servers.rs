@@ -116,6 +116,46 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     Ok(())
 }
 
+/// A server a client starts is a daemon (daemon(7)): it holds none of the
+/// client's descriptors beyond stdio, and keeps no directory of its busy.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let here = server.dir.join("here");
+    std::fs::create_dir_all(&here).map_err(e)?;
+    let held = here.join("held");
+    let started = {
+        let _guard = spawning()?;
+        let file = std::fs::File::create(&held).map_err(e)?;
+        let _leaked = fuxix::io::duplicate_inheritable(&file).map_err(e)?;
+        Command::new(FUX)
+            .args(["str", "d", "server", "start"])
+            .current_dir(&here)
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_STATE_HOME", rt.join("state"))
+            .env_remove("FUX_SOCKET")
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(e)?
+    };
+    assert!(started.status.success(), "{started:?}");
+    let socket = rt.join("fux").join("d.sock");
+    let pid = serving(&socket).ok_or("no server serves d")?;
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).map_err(e)?;
+    let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).map_err(e)?;
+    let holds = (fds.filter_map(Result::ok))
+        .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+        .any(|target| target == held);
+    let _ = named(&rt, &["str", "d", "server", "force-kill-server"], &[]);
+    assert_eq!(cwd, std::path::Path::new("/"), "the server's directory");
+    assert!(!holds, "the server holds its client's descriptor");
+    Ok(())
+}
+
 /// `fux events` tells what happens, a line each, from `ready` on: a pane
 /// made, a command's end, its bell, its exit, its close.
 #[test]
@@ -300,6 +340,35 @@ fn a_grant_reaches_one_workspace() -> Outcome {
     );
     server.ok(&["str", &socket, "revoke"])?;
     assert!(!granted.exists(), "a revoked grant's socket is gone");
+    Ok(())
+}
+
+/// A revoke ends every connection through the grant, idle ones too: else
+/// one kept open would reach whatever the same path is granted next.
+#[test]
+fn a_revoke_ends_an_idle_connection_through_it() -> Outcome {
+    use fux::protocol::{Frame, Hello, PROTOCOL, Role};
+    use std::io::{Read, Write};
+    let server = Server::start("")?;
+    let granted = server.dir.join("s").join("granted.sock");
+    let socket = granted.to_string_lossy().into_owned();
+    server.ok(&["str", "main", "str", &socket, "grant"])?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&granted).map_err(e)?;
+    // Before the revoke: macOS refuses a timeout on a socket its peer closed.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .map_err(e)?;
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "0".into(),
+        role: Role::Command,
+    };
+    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+    server.ok(&["str", &socket, "revoke"])?;
+    // Told to go, then closed; not left waiting for its next request.
+    let mut told = Vec::new();
+    stream.read_to_end(&mut told).map_err(e)?;
+    assert!(!told.is_empty(), "the connection was closed unsaid");
     Ok(())
 }
 
@@ -724,7 +793,7 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             keys.contains(READING) && keys.contains("\ndoor-42\n"),
             "{keys}"
         );
-        let capture = server.ok(&["str", sh, "pane", "opts", "json", "capture"])?;
+        let capture = server.ok(&["str", sh, "pane", "opts", "capture", "json"])?;
         assert!(
             capture.starts_with('{') && capture.contains("door-42"),
             "{capture}"

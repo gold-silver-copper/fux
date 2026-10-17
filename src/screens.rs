@@ -11,8 +11,8 @@ use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::{KeyPress, Keystroke};
-use crate::protocol::{End, Reply, Scalar};
-use crate::script::Failed;
+use crate::protocol::{Reply, Scalar, ScreenKind};
+use crate::script::{Failed, succeeded};
 use crate::view::Line;
 
 /// A screen a word asks to open: built with what the server knows (names,
@@ -87,6 +87,9 @@ pub enum Effect {
     Run(String),
 }
 
+/// The effect that hides the screen showing.
+pub const HIDE: Effect = Effect::Send(Act::Hide);
+
 /// The words that push a handle to `target`: `str %3 pane`.
 pub fn naming(target: AnyRef) -> String {
     format!("str {} {}", target, target.kind().name())
@@ -125,7 +128,7 @@ impl Open {
                 target: Some(target),
                 get: Some("name".to_owned()),
             };
-            let reply = answered(ask(get)?)?;
+            let reply = succeeded(ask(get)?)?;
             Ok(reply.text.trim_end_matches('\n').to_owned())
         };
         Ok(match *self {
@@ -161,22 +164,6 @@ impl Open {
             }
             Open::ChoosePane(source) => chooser(ask, Choices::Panes(source), Some(source), "pane")?,
         })
-    }
-}
-
-/// A reply, or its failure.
-fn answered(reply: Reply) -> Result<Reply, Failed> {
-    match reply.end {
-        End::Failed {
-            status,
-            code,
-            message,
-        } => Err(Failed {
-            status,
-            code,
-            message,
-        }),
-        End::Done | End::Answered { .. } => Ok(reply),
     }
 }
 
@@ -230,7 +217,7 @@ fn chooser(
     moving: Option<PaneId>,
     what: &str,
 ) -> Result<Screen, Failed> {
-    let reply = answered(ask(Command::Client {
+    let reply = succeeded(ask(Command::Client {
         client: None,
         action: ClientAction::Choices(choices),
     })?)?;
@@ -273,34 +260,44 @@ fn chooser(
 }
 
 impl Default for Screen {
-    fn default() -> Screen {
-        Screen::Keys(Held::Normal)
+    fn default() -> Self {
+        Self::Keys(Held::Normal)
     }
 }
 
 impl Screen {
-    /// Whether it is one of the client's screens, not its bindings.
-    pub fn is_open(&self) -> bool {
-        !matches!(self, Screen::Keys(_))
+    /// What the server draws it as, if it is one of the client's screens;
+    /// nothing for its bindings.
+    pub fn kind(&self) -> Option<ScreenKind> {
+        match self {
+            Self::Keys(_) => None,
+            Self::Copy(_) => Some(ScreenKind::Copy),
+            Self::List(_) | Self::Prompt(_) | Self::Confirm { .. } => Some(ScreenKind::Panel),
+        }
+    }
+
+    /// The server ended its screen of `kind`: closed, if it is still that
+    /// kind (the client may have opened another since).
+    pub fn ended(&mut self, kind: ScreenKind) {
+        if self.kind() == Some(kind) {
+            *self = Self::default();
+        }
     }
 
     /// What opening it sends the server: the panel to draw, or copy mode's
     /// start.
     pub fn opened(&self) -> Option<Act> {
-        match self {
-            Screen::Keys(_) => None,
-            Screen::Copy(_) => Some(Act::Copy(CopyAct::Enter)),
-            Screen::List(_) | Screen::Prompt(_) | Screen::Confirm { .. } => {
-                self.panel().map(Act::Show)
-            }
+        match self.kind()? {
+            ScreenKind::Copy => Some(Act::Copy(CopyAct::Enter)),
+            ScreenKind::Panel => self.panel().map(Act::Show),
         }
     }
 
     /// What the server draws of it.
     pub fn panel(&self) -> Option<Panel> {
         match self {
-            Screen::Keys(_) | Screen::Copy(_) => None,
-            Screen::List(list) => Some(Panel::List(List {
+            Self::Keys(_) | Self::Copy(_) => None,
+            Self::List(list) => Some(Panel::List(List {
                 title: list.title.clone(),
                 items: list.items.iter().map(|i| i.label.clone()).collect(),
                 current: list.current,
@@ -308,13 +305,13 @@ impl Screen {
                 chooser: list.chooser,
                 about: list.about,
             })),
-            Screen::Prompt(prompt) => Some(Panel::Prompt {
+            Self::Prompt(prompt) => Some(Panel::Prompt {
                 title: prompt.title.clone(),
                 before: prompt.line.before().to_owned(),
                 after: prompt.line.after().to_owned(),
                 about: prompt.rename,
             }),
-            Screen::Confirm { question, about } => Some(Panel::Confirm {
+            Self::Confirm { question, about } => Some(Panel::Confirm {
                 question: question.clone(),
                 about: *about,
             }),
@@ -325,32 +322,29 @@ impl Screen {
     /// no screen is open (`read_only`: the client only watches). A screen
     /// closes itself (`Screen::default`) as the key says.
     pub fn key(&mut self, keymap: &Keymap, stroke: Keystroke, read_only: bool) -> Vec<Effect> {
-        if let Screen::Keys(held) = self {
+        if let Self::Keys(held) = self {
             return held.press(keymap, stroke, read_only);
         }
         let press = stroke.press;
         match std::mem::take(self) {
-            Screen::Keys(_) => Vec::new(),
-            Screen::List(list) => self.list(list, press),
-            Screen::Prompt(prompt) => match line_act(press) {
+            Self::Keys(_) => Vec::new(),
+            Self::List(list) => self.list(list, press),
+            Self::Prompt(prompt) => match line_act(press) {
                 Some(act) => self.prompt(prompt, act),
                 None => {
-                    *self = Screen::Prompt(prompt);
+                    *self = Self::Prompt(prompt);
                     Vec::new()
                 }
             },
-            Screen::Confirm { question, about } => match confirm_act(press) {
-                Some(true) => vec![
-                    Effect::Send(Act::Hide),
-                    Effect::Run(format!("{} kill", naming(about))),
-                ],
-                Some(false) => vec![Effect::Send(Act::Hide)],
+            Self::Confirm { question, about } => match confirm_act(press) {
+                Some(true) => vec![HIDE, Effect::Run(format!("{} kill", naming(about)))],
+                Some(false) => vec![HIDE],
                 None => {
-                    *self = Screen::Confirm { question, about };
+                    *self = Self::Confirm { question, about };
                     Vec::new()
                 }
             },
-            Screen::Copy(search) => self.copy(search, press),
+            Self::Copy(search) => self.copy(search, press),
         }
     }
 
@@ -359,13 +353,13 @@ impl Screen {
     pub fn paste(&mut self, text: &str) -> Vec<Effect> {
         let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
-            Screen::Keys(Held::Normal) => vec![Effect::Send(Act::Paste(text.to_owned()))],
-            Screen::Keys(_) => [Act::Hide, Act::Paste(text.to_owned())]
+            Self::Keys(Held::Normal) => vec![Effect::Send(Act::Paste(text.to_owned()))],
+            Self::Keys(_) => [Act::Hide, Act::Paste(text.to_owned())]
                 .map(Effect::Send)
                 .into(),
-            Screen::Prompt(prompt) => self.prompt(prompt, insert),
-            Screen::Copy(Some(search)) => self.copy_search(search, insert),
-            other @ (Screen::List(_) | Screen::Confirm { .. } | Screen::Copy(_)) => {
+            Self::Prompt(prompt) => self.prompt(prompt, insert),
+            Self::Copy(Some(search)) => self.copy_search(search, insert),
+            other @ (Self::List(_) | Self::Confirm { .. } | Self::Copy(_)) => {
                 *self = other;
                 Vec::new()
             }
@@ -380,23 +374,23 @@ impl Screen {
         let (moved, code) = match list_act(press) {
             None => (at, None),
             Some(ListAct::Move(moved)) => (moved.from(at, last), None),
-            Some(ListAct::Cancel) => return vec![Effect::Send(Act::Hide)],
+            Some(ListAct::Cancel) => return vec![HIDE],
             Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
             Some(ListAct::Rename) => (at, about.map(|it| Open::Rename(it).code())),
             Some(ListAct::Close) => (at, about.map(|it| Open::Confirm(it).code())),
         };
         if let Some(code) = code {
-            return vec![Effect::Send(Act::Hide), Effect::Run(code)];
+            return vec![HIDE, Effect::Run(code)];
         }
         list.selected = moved;
-        *self = Screen::List(list);
+        *self = Self::List(list);
         let shown = self.panel().filter(|_| moved != at);
         Vec::from_iter(shown.map(|p| Effect::Send(Act::Show(p))))
     }
 
     fn prompt(&mut self, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
         match act {
-            LineAct::Cancel => vec![Effect::Send(Act::Hide)],
+            LineAct::Cancel => vec![HIDE],
             LineAct::Submit => {
                 let text = prompt.line.text();
                 let code = match prompt.rename {
@@ -407,13 +401,11 @@ impl Screen {
                     )),
                     None => Some(text).filter(|t| !t.trim().is_empty()),
                 };
-                std::iter::once(Effect::Send(Act::Hide))
-                    .chain(code.map(Effect::Run))
-                    .collect()
+                std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
                 prompt.line.edit(&edit);
-                *self = Screen::Prompt(prompt);
+                *self = Self::Prompt(prompt);
                 self.panel()
                     .map(|p| Effect::Send(Act::Show(p)))
                     .into_iter()
@@ -427,7 +419,7 @@ impl Screen {
             return match line_act(press) {
                 Some(act) => self.copy_search(search, act),
                 None => {
-                    *self = Screen::Copy(Some(search));
+                    *self = Self::Copy(Some(search));
                     Vec::new()
                 }
             };
@@ -438,16 +430,17 @@ impl Screen {
             'r' => Some(Seek::Backward),
             _ => None,
         }) {
-            *self = Screen::Copy(Some((seek, Line::new(String::new()))));
+            *self = Self::Copy(Some((seek, Line::new(String::new()))));
             let typing = CopyAct::Typing(Some((seek, String::new(), String::new())));
             return vec![Effect::Send(Act::Copy(typing))];
         }
         let act = copy_act(press);
-        // Leaving and copying end it, here as on the server.
-        if !matches!(act, Some(CopyAct::Leave | CopyAct::Yank)) {
-            *self = Screen::Copy(None);
+        // Leaving and copying end it, as `copy_act`'s bool says, here as on
+        // the server (copy.rs tests that the two agree).
+        if act.as_ref().is_none_or(|(_, ends)| !ends) {
+            *self = Self::Copy(None);
         }
-        act.map(|act| Effect::Send(Act::Copy(act)))
+        act.map(|(act, _)| Effect::Send(Act::Copy(act)))
             .into_iter()
             .collect()
     }
@@ -462,11 +455,11 @@ impl Screen {
             LineAct::Edit(edit) => {
                 line.edit(&edit);
                 let typing = (seek, line.before().to_owned(), line.after().to_owned());
-                *self = Screen::Copy(Some((seek, line)));
+                *self = Self::Copy(Some((seek, line)));
                 return vec![Effect::Send(Act::Copy(CopyAct::Typing(Some(typing))))];
             }
         };
-        *self = Screen::Copy(None);
+        *self = Self::Copy(None);
         vec![Effect::Send(Act::Copy(sent))]
     }
 }
@@ -495,6 +488,22 @@ mod tests {
             chooser: true,
             about: None,
         })
+    }
+
+    /// What the server ended closes only a screen of its kind: copy mode
+    /// ending as a list opens leaves the list.
+    #[test]
+    fn a_screen_closes_only_for_its_own_kind_ending() {
+        let mut screen = list();
+        screen.ended(ScreenKind::Copy);
+        assert_eq!(screen, list());
+        screen.ended(ScreenKind::Panel);
+        assert_eq!(screen, Screen::default());
+        let mut copy = Screen::Copy(None);
+        copy.ended(ScreenKind::Panel);
+        assert_eq!(copy, Screen::Copy(None));
+        copy.ended(ScreenKind::Copy);
+        assert_eq!(copy, Screen::default());
     }
 
     /// A list moves, chooses, renames and closes on the client: each a

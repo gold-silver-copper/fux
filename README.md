@@ -58,13 +58,14 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
 - An action (`run`, `send-keys`, `capture`, a bare `wait` …) answers once
   its pane settles, with its state and what came since: `%3 reading · done
   0`, then the output. A failure prints `fux: CODE: MESSAGE` on stderr,
-  with the file, line and word, and exits 1; an action's or wait's own
-  status is the exit status: 3 the program exited first, 4 the pane closed,
+  with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
+  status is the exit status, while its answer is left (`drop` it, and it
+  is 0): 3 the program exited first, 4 the pane closed,
   7 the program reads its terminal and the waited text has not come, 124
   still busy at the time limit (`SECS timeout`; the `wait-seconds` setting,
   30, by default; `0 timeout` answers at once). A wait met by its program's exit
-  (`wait-exit`) is no failure: the run exits with the program's own status,
-  as `timeout(1)` does.
+  (`wait-exit`) exits 0: the program's own status is in the answer
+  (`%3 exited 2`, `str exited get`), not in fux's.
 - `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
   what stdin says; a single word with spaces is a whole program
   (`fux 'ls json'`). `#` starts a comment. A paste is at most 900 KiB.
@@ -271,7 +272,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `start`, `status`, `servers`, `kill-server`, `force-kill-server`, `version` | the server |
 
 **Key names**, for `key`, `bind` and `prefix`, are tmux's (`C-x`, `M-x`,
-`S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F12`, …) and any
+`S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
 single character, which carries its own shift (`T`, not `S-t`).
 `fux key-names` prints them all.
 

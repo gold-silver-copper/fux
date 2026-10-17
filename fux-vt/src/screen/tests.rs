@@ -1,17 +1,29 @@
 use super::*;
 
 #[test]
-fn sgr_colour_parameters_name_the_sixteen_palette_colours() {
+fn sgr_colour_parameters_name_the_sixteen_palette_colours() -> Result<(), Error> {
+    let mut p = crate::Parser::with_options(Size::of(2, 10), 0, crate::Options::new())?;
+    let layers = |p: &crate::Parser| {
+        let a = p.screen().attributes;
+        (a.foreground(), a.background())
+    };
     for (first, index, selector) in [(30, 0, 38), (40, 0, 48), (90, 8, 38), (100, 8, 48)] {
         for offset in 0..8u8 {
             let n = first + u16::from(offset);
+            p.process(format!("\x1b[0;{n}m").as_bytes())?;
             let colour = Color::Idx(index + offset);
-            assert_eq!(palette(n), Some((selector, colour)), "{n}");
+            let want = match selector {
+                38 => (colour, Color::Default),
+                _ => (Color::Default, colour),
+            };
+            assert_eq!(layers(&p), want, "{n}");
         }
     }
     for n in [0, 29, 38, 39, 48, 49, 89, 98, 99, 108, u16::MAX] {
-        assert_eq!(palette(n), None, "{n}");
+        p.process(format!("\x1b[0;{n}m").as_bytes())?;
+        assert_eq!(layers(&p), (Color::Default, Color::Default), "{n}");
     }
+    Ok(())
 }
 
 /// SGR's flag arms are what `Attributes::FLAGS` says: each row's number
@@ -294,5 +306,22 @@ fn only_a_main_screen_clear_moves_a_commands_output() -> Result<(), Error> {
     };
     assert_eq!(start(b"\x1b[?1049h\x1b[2Jmenu\x1b[?1049l")?, "BEFORE");
     assert_eq!(start(b"\x1b[2J\x1b[H")?, "AFTER");
+    Ok(())
+}
+
+/// A picture the screen no longer shows holds no pixels: placing another
+/// lets go of one that text covered, and RIS of every one, as it clears
+/// the cells they covered.
+#[test]
+fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
+    let mut p = crate::Parser::new(Size::of(6, 10), 10)?;
+    let sixel = b"\x1bPq#1;2;100;0;0!6~\x1b\\";
+    p.process(sixel)?;
+    p.process(b"\x1b[1;1Hx\x1b[3;5H")?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    p.process(sixel)?;
+    assert_eq!(p.screen().pictures.len(), 1, "the covered one goes");
+    p.process(b"\x1bc")?;
+    assert_eq!(p.screen().pictures.len(), 0, "RIS lets every one go");
     Ok(())
 }

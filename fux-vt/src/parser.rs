@@ -2,9 +2,9 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::mode::{Kind, Mode, ModeStatus};
+use crate::mode::{Mode, Modes};
 use crate::{
-    Error, Reply, Rgb, Screen, Size,
+    Error, Rgb, Screen, Size,
     screen::{Dispatch, Setting},
 };
 
@@ -19,6 +19,15 @@ pub(crate) struct Parameters {
     /// group: none until a `:` is read, and each value a group of its own.
     sub: u32,
     len: usize,
+    /// Whether a separator came after the last slot: the parameters past
+    /// it are ignored, and the sequence runs with the first 32, as DEC
+    /// STD 070 (3.5.3.1) lets parameters "beyond the maximum number
+    /// supported" be.
+    full: bool,
+    /// After a private marker, whether a digit or a separator was read,
+    /// which tells `CSI > m`, with no parameter, from `CSI > 0 m`; kept
+    /// only there, as only XTMODKEYS reads it.
+    pub(crate) given: bool,
 }
 impl Default for Parameters {
     fn default() -> Self {
@@ -26,21 +35,25 @@ impl Default for Parameters {
             values: [0; 32],
             sub: 0,
             len: 1,
+            full: false,
+            given: false,
         }
     }
 }
 impl Parameters {
     fn digit(&mut self, byte: u8) {
         // A value too large for a u16 stays at its largest.
-        if let Some(n) = self.len.checked_sub(1).and_then(|i| self.values.get_mut(i))
+        if !self.full
+            && let Some(n) = self.len.checked_sub(1).and_then(|i| self.values.get_mut(i))
             && let Some(digit) = byte.checked_sub(b'0')
         {
             *n = n.saturating_mul(10).saturating_add(u16::from(digit));
         }
     }
-    fn separator(&mut self, colon: bool) -> bool {
+    fn separator(&mut self, colon: bool) {
         let Some(len) = self.len.checked_add(1).filter(|n| *n <= self.values.len()) else {
-            return false;
+            self.full = true;
+            return;
         };
         // The new parameter starts empty: `clear` left what a sequence
         // before put there.
@@ -49,7 +62,6 @@ impl Parameters {
         }
         self.continue_group(self.len, colon);
         self.len = len;
-        true
     }
     /// Marks value `index` as continuing the previous group if `colon`.
     #[inline]
@@ -69,7 +81,7 @@ impl Parameters {
     /// how many there are itself (`Parser::sequence`): the parameter
     /// `len` ends with `value`, and the next begins, continuing its group
     /// if `colon`. The new count, or `None`, with nothing changed, where
-    /// `separator` refuses one past the last slot.
+    /// there is no slot for another (`separator` is then `full`).
     #[inline]
     fn next(&mut self, len: usize, value: u16, colon: bool) -> Option<usize> {
         let more = len.checked_add(1).filter(|n| *n <= self.values.len())?;
@@ -88,10 +100,11 @@ impl Parameters {
     }
     /// Back to one empty parameter, touching only what `separator` and
     /// `digit` read: a CSI or DCS is begun often, so this is kept to
-    /// three stores rather than rewriting all the parameters.
+    /// four stores rather than rewriting all the parameters.
     fn clear(&mut self) {
         self.len = 1;
         self.sub = 0;
+        self.full = false;
         if let Some(value) = self.values.first_mut() {
             *value = 0;
         }
@@ -112,7 +125,7 @@ impl Parameters {
         })
     }
     /// Whether no parameter was given (or only 0, which reads the same).
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len == 1 && self.values.first() == Some(&0)
     }
     /// The first value of the group `index`, or `default` if it is 0 or
@@ -159,6 +172,14 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
         code = code.checked_shl(6)? | u32::from(byte & 0x3f);
     }
     Some((char::from_u32(code)?, length))
+}
+
+/// Whether an OSC's payload keeps `byte`, one that does not end it: a
+/// command string holds 00/08 to 00/13 and 02/00 to 07/14 (ECMA-48 8.3.89,
+/// 5.6), and here the bytes of UTF-8 too; the other controls are left out,
+/// as Williams's DEC parser model ignores them in an OSC string.
+const fn in_command_string(byte: u8) -> bool {
+    !matches!(byte, 0x00..=0x07 | 0x0e..=0x1f | 0x7f)
 }
 
 /// What a UTF-8 lead byte begins: the sequence's length, and the range its
@@ -213,6 +234,27 @@ fn printable(bytes: &[u8]) -> usize {
             .take_while(|b| (0x20..=0x7e).contains(*b))
             .count(),
     )
+}
+
+/// Where the first ESC in `bytes` is: eight bytes at a time, as a word, as
+/// `printable` reads them, then one at a time. XOR with ESC makes an ESC
+/// a zero byte, and a zero byte alone borrows when 1 is taken from it with
+/// its top bit clear; a borrow runs only into the bytes after it, so the
+/// first byte flagged is the first ESC.
+fn esc_in(bytes: &[u8]) -> Option<usize> {
+    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
+    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+    let (words, tail) = bytes.as_chunks::<8>();
+    for (i, word) in words.iter().enumerate() {
+        let x = u64::from_le_bytes(*word) ^ ONES.wrapping_mul(0x1b);
+        let zero = x.wrapping_sub(ONES) & !x & TOPS;
+        if zero != 0 {
+            let first = usize::try_from(zero.trailing_zeros() / 8).ok()?;
+            return i.checked_mul(8)?.checked_add(first);
+        }
+    }
+    let at = tail.iter().position(|&b| b == 0x1b)?;
+    words.len().checked_mul(8)?.checked_add(at)
 }
 
 /// Where the parser is in what it reads, and what it keeps of that: each
@@ -295,6 +337,131 @@ enum Phase {
     Intermediate(Intermediates),
 }
 
+/// Where a frame drawn in synchronized output ends, read from the bytes
+/// a host holds after its BSU ([`Parser::process_until_frame`]) as the
+/// parser will read them, nothing carried out. ESC begins a sequence
+/// anywhere, in a string too, so only what follows each ESC is read: as
+/// `Parser::byte` reads an escape sequence or a CSI (`Phase::next`, the
+/// parameters, controls within, CAN and SUB cancelling). Made by
+/// [`Parser::frame_scan`]; it goes on from where it stopped, so each
+/// sequence is read once however the frame comes split.
+#[derive(Clone, Debug)]
+pub struct FrameScan {
+    /// Where in the held bytes it goes on: past what it has read, or at a
+    /// sequence they end in the middle of.
+    from: usize,
+    params: Parameters,
+    options: Options,
+    /// Whether XTSAVE holds synchronized output set, for XTRESTORE.
+    saved: bool,
+}
+
+impl FrameScan {
+    /// Whether synchronized output is reset by default, as RIS, and DECSTR
+    /// for the modes it names, leave it.
+    const RESET: bool = !Modes::DEFAULT.contains(Mode::SynchronizedOutput);
+    /// Reads `held`, the frame's bytes so far, from where it stopped: how
+    /// many of them go up to and through the sequence that ends
+    /// synchronized output, as the parser carries it out (DECRST naming
+    /// it, XTRESTORE of it saved reset, DECSTR, RIS); `None` if none does.
+    pub fn end(&mut self, held: &[u8]) -> Option<usize> {
+        loop {
+            let Some(esc) = held.get(self.from..).and_then(esc_in) else {
+                self.from = held.len();
+                return None;
+            };
+            let at = self.from.checked_add(esc)?;
+            // A sequence the bytes end in the middle of is read again.
+            let (len, ended) = self.sequence(held.get(at..)?).or_else(|| {
+                self.from = at;
+                None
+            })?;
+            self.from = at.checked_add(len)?;
+            if ended {
+                return Some(self.from);
+            }
+        }
+    }
+
+    /// Reads the sequence `bytes` begins with, at its ESC, as `Parser::byte`
+    /// does: how many bytes it takes (up to an ESC or past CAN or SUB that
+    /// cut it short), and whether it ends the frame; `None` if it goes on
+    /// past them.
+    fn sequence(&mut self, bytes: &[u8]) -> Option<(usize, bool)> {
+        let mut plain = true;
+        for (i, &byte) in bytes.iter().enumerate().skip(1) {
+            match byte {
+                0x18 | 0x1a | 0x1b => return Some((i, false)),
+                0x20..=0x2f => plain = false,
+                b'[' if plain => return self.csi(bytes, i.checked_add(1)?),
+                b'c' if plain => return Some((i.checked_add(1)?, Self::RESET)),
+                // A control string's introducer among them.
+                0x30..=0x7e => return Some((i.checked_add(1)?, false)),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Reads the CSI whose parameters begin at `start` of `bytes`, as
+    /// `sequence` does. Its parameters and intermediates are 0x20 to 0x3f;
+    /// only DECRST's, XTRESTORE's, XTSAVE's and DECSTR's need reading: the
+    /// others are passed at their final byte at once.
+    fn csi(&mut self, bytes: &[u8], start: usize) -> Option<(usize, bool)> {
+        let csi = bytes.get(start..)?;
+        let end = csi.iter().position(|b| !(0x20..0x40).contains(b))?;
+        // Every final byte but `l`, `p`, `r` and `s`.
+        if matches!(
+            csi.get(end),
+            Some(0x40..=0x6b | 0x6d..=0x6f | 0x71 | 0x74..=0x7e)
+        ) {
+            return Some((start.checked_add(end)?.checked_add(1)?, false));
+        }
+        let (mut phase, mut ignored) = (Phase::Entry, false);
+        self.params.clear();
+        for (i, &byte) in bytes.iter().enumerate().skip(start) {
+            let next = match byte {
+                0x18 | 0x1a | 0x1b => return Some((i, false)),
+                0x40..=0x7e if ignored => return Some((i.checked_add(1)?, false)),
+                _ if ignored => continue,
+                _ => phase.next(byte, &mut self.params),
+            };
+            match next {
+                Next::Phase(next) => phase = next,
+                Next::Ignore => ignored = true,
+                Next::Control => {}
+                Next::Final(read) => {
+                    let ended = self.ends(read.as_slice(), byte);
+                    return Some((i.checked_add(1)?, ended));
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether the CSI just read, `intermediates` and `byte` its own,
+    /// ends synchronized output, as `Screen::csi` carries it out: DECRST
+    /// (`CSI ? Pm l`) with it among its parameters, each a group of one as
+    /// `set_modes` reads them; XTRESTORE (`CSI ? Pm r`) of it while XTSAVE
+    /// (`CSI ? Pm s`) holds it reset; DECSTR (`CSI ! p`), which resets it
+    /// with the modes `Modes::SOFT_RESET` names.
+    fn ends(&mut self, intermediates: &[u8], byte: u8) -> bool {
+        let ours = |n: &u16| Mode::of(*n, true, &self.options) == Some(Mode::SynchronizedOutput);
+        let named = || self.params.groups().any(|g| matches!(g, [n] if ours(n)));
+        match (intermediates, byte) {
+            (b"?", b'l') => named(),
+            (b"?", b'r') => !self.saved && named(),
+            // The mode is set while the frame lasts.
+            (b"?", b's') => {
+                self.saved = self.saved || named();
+                false
+            }
+            (b"!", b'p') => Self::RESET && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput),
+            _ => false,
+        }
+    }
+}
+
 /// What a byte makes of a CSI or DCS in a [`Phase`].
 enum Next {
     /// It goes on, in this phase.
@@ -313,28 +480,28 @@ impl Phase {
     /// separators read into `params`.
     fn next(self, byte: u8, params: &mut Parameters) -> Next {
         let read = match self {
-            Phase::Entry => Intermediates::default(),
-            Phase::Param(read) | Phase::Intermediate(read) => read,
+            Self::Entry => Intermediates::default(),
+            Self::Param(read) | Self::Intermediate(read) => read,
         };
         match byte {
             0x00..=0x1f => Next::Control,
             0x20..=0x2f => read
                 .push(byte)
-                .map_or(Next::Ignore, |read| Next::Phase(Phase::Intermediate(read))),
-            0x30..=0x3f if matches!(self, Phase::Intermediate(_)) => Next::Ignore,
+                .map_or(Next::Ignore, |read| Next::Phase(Self::Intermediate(read))),
+            0x30..=0x3f if matches!(self, Self::Intermediate(_)) => Next::Ignore,
             b'0'..=b'9' => {
                 params.digit(byte);
-                Next::Phase(Phase::Param(read))
+                params.given |= !read.as_slice().is_empty();
+                Next::Phase(Self::Param(read))
             }
             b';' | b':' => {
-                if params.separator(byte == b':') {
-                    Next::Phase(Phase::Param(read))
-                } else {
-                    Next::Ignore
-                }
+                params.separator(byte == b':');
+                params.given |= !read.as_slice().is_empty();
+                Next::Phase(Self::Param(read))
             }
-            0x3c..=0x3f if self == Phase::Entry => {
-                Next::Phase(Phase::Param(Intermediates::of(byte)))
+            0x3c..=0x3f if self == Self::Entry => {
+                params.given = false;
+                Next::Phase(Self::Param(Intermediates::of(byte)))
             }
             0x3c..=0x3f => Next::Ignore,
             0x40..=0x7e => Next::Final(read),
@@ -361,7 +528,6 @@ closed! {
     /// A piece of opt-in behaviour that needs the host's cooperation, turned on
     /// in [`Options`].
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[non_exhaustive]
     pub enum Feature {
         /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
         /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
@@ -498,23 +664,25 @@ impl Options {
 
 impl From<Feature> for Options {
     fn from(feature: Feature) -> Self {
-        Options::new().with(feature)
+        Self::new().with(feature)
     }
 }
 
 impl FromIterator<Feature> for Options {
     fn from_iter<I: IntoIterator<Item = Feature>>(features: I) -> Self {
-        features.into_iter().fold(Options::new(), Options::with)
+        features.into_iter().fold(Self::new(), Self::with)
     }
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
-/// (`CSI c`) answers `CSI ? 62 ; 22 c` (VT220 class, ANSI colour), secondary
-/// DA (`CSI > c`) answers `CSI > 1 ; Pv ; 0 c` with `version` encoded as
-/// `major * 10000 + minor * 100 + patch`, XTVERSION (`CSI > q`) answers
-/// `DCS > | name version ST`, and cursor reports (DSR 6n, DECXCPR) give a
-/// cursor waiting to wrap at the last column, as xterm does, rather than
-/// one past it.
+/// (`CSI c`) answers as level 2, the VT220's, with selective erase,
+/// horizontal scrolling, colour text and rectangular editing, and sixel
+/// when the host shows it (`Screen::primary_attributes` writes it);
+/// secondary DA (`CSI > c`) answers `CSI > 1 ; Pv ; 0 c` with `version`
+/// encoded as `major * 10000 + minor * 100 + patch`, XTVERSION (`CSI > q`)
+/// answers `DCS > | name version ST`, and cursor reports (DSR 6n, DECXCPR)
+/// give a cursor waiting to wrap at the last column, as xterm does, rather
+/// than one past it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
     /// The terminal's name, as XTVERSION reports it.
@@ -532,7 +700,7 @@ impl Identity {
     /// The version as DA2's firmware field: its parts, at most three, as
     /// digits in base 100, anything past a `-` or `+` dropped: `0.5.0` is
     /// 500, `1.2` is 102 (a test pins the short forms).
-    fn encoded_version(&self) -> u32 {
+    pub(crate) fn encoded_version(&self) -> u32 {
         let release = self.version.split(['-', '+']).next().unwrap_or_default();
         release.split('.').take(3).fold(0u32, |sum, part| {
             let part = part.parse::<u32>().unwrap_or(0).min(99);
@@ -544,7 +712,6 @@ impl Identity {
 /// A side effect requested by child output. Only delivered with
 /// [`Feature::Events`]; payloads are raw bytes, bounded by [`OSC_PAYLOAD_LIMIT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Event<'a> {
     /// OSC 0 or OSC 2.
     Title(&'a [u8]),
@@ -584,7 +751,6 @@ pub enum Event<'a> {
 /// log or answer it. Sequences cut short by their bounds (too many
 /// parameters or intermediates) are dropped without being reported.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub enum Unhandled<'a> {
     /// `CSI`, its private marker and intermediates, parameters and final byte.
     Csi {
@@ -805,6 +971,16 @@ impl Parser {
     ) -> Result<Option<usize>, Error> {
         self.run::<true>(bytes, sink)
     }
+    /// A [`FrameScan`] for the frame [`Parser::process_until_frame`] just
+    /// stopped at the start of.
+    pub fn frame_scan(&self) -> FrameScan {
+        FrameScan {
+            from: 0,
+            params: Parameters::default(),
+            options: self.options,
+            saved: self.screen.saved_mode(Mode::SynchronizedOutput),
+        }
+    }
     /// Processes `bytes`, stopping after a BSU if `UNTIL_FRAME`; how many
     /// bytes it took if it stopped. A constant, so that `process_with`,
     /// which does not stop, compiles without the check for one.
@@ -935,14 +1111,21 @@ impl Parser {
                     let ended = u16::try_from(value).unwrap_or(u16::MAX);
                     match self.params.next(len, ended, byte == b':') {
                         Some(more) => (len, value) = (more, 0),
+                        // The rest goes byte by byte, ignored up to
+                        // the final byte.
                         None => {
                             self.params.end(len, ended);
-                            self.state = State::CsiIgnore;
+                            self.params.full = true;
+                            self.state = State::Csi(Phase::Param(marker));
                             return Ok((next, false));
                         }
                     }
                 }
-                0x3c..=0x3f if at == 2 => marker = Intermediates::of(byte),
+                0x3c..=0x3f if at == 2 => {
+                    marker = Intermediates::of(byte);
+                    // A parameter follows, or `digit` will say so.
+                    self.params.given = matches!(bytes.get(next), Some(b'0'..=b';'));
+                }
                 0x40..=0x7e => {
                     self.params
                         .end(len, u16::try_from(value).unwrap_or(u16::MAX));
@@ -970,17 +1153,35 @@ impl Parser {
     /// took. Out of line: inlined into `sequence`, it cost each OSC more.
     #[inline(never)]
     fn osc_string(&mut self, bytes: &[u8]) -> usize {
-        let length = bytes
-            .iter()
-            .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
-            .unwrap_or(bytes.len());
         self.osc.clear();
-        let kept = bytes.get(..length.min(self.osc_limit)).unwrap_or_default();
-        self.osc.extend_from_slice(kept);
         // The byte past the limit marks the string overflowed.
+        let room = self.osc_limit.saturating_add(1);
+        let mut length = 0;
+        // Each run up to a control is copied whole, with the control if
+        // the string holds it; a payload with none is one copy.
+        loop {
+            let rest = bytes.get(length..).unwrap_or_default();
+            let run = rest
+                .iter()
+                .position(|&byte| byte < 0x20 || byte == 0x7f)
+                .unwrap_or(rest.len());
+            let control = rest.get(run).copied();
+            let ends = matches!(control, Some(0x07 | 0x18 | 0x1a | 0x1b) | None);
+            let held = control.is_some_and(in_command_string);
+            let kept = run.saturating_add(usize::from(held));
+            let kept = kept.min(room.saturating_sub(self.osc.len()));
+            self.osc
+                .extend_from_slice(rest.get(..kept).unwrap_or_default());
+            length = length.saturating_add(run);
+            if ends {
+                break;
+            }
+            length = length.saturating_add(1);
+        }
         self.state = State::Osc {
-            whole: length <= self.osc_limit,
+            whole: self.osc.len() <= self.osc_limit,
         };
+        self.osc.truncate(self.osc_limit);
         length
     }
 
@@ -993,11 +1194,9 @@ impl Parser {
             }
             0x20..=0x7e => self.screen.print(char::from(byte))?,
             0xc2..=0xf4 => self.state = State::Utf8(Bytes::of(byte)),
-            // A continuation byte alone is read as Latin-1, as xterm reads
-            // it: a raw C1 control, 0x80 to 0x9f, is ignored, and 0xa0 to
-            // 0xbf print U+00A0 to U+00BF.
-            0x80..=0xbf => self.screen.print(char::from(byte))?,
-            // A byte that starts no UTF-8 sequence: U+FFFD.
+            // A byte that starts no UTF-8 sequence, a continuation byte
+            // alone among them: U+FFFD (Unicode 3.9; C10). xterm reads a
+            // continuation byte alone as Latin-1.
             _ => self.screen.print(char::REPLACEMENT_CHARACTER)?,
         }
         Ok(())
@@ -1094,7 +1293,7 @@ impl Parser {
                     self.dispatch_osc(whole, true, sink)?;
                     self.state = State::Ground;
                 }
-                _ if !whole => {}
+                _ if !whole || !in_command_string(byte) => {}
                 _ if self.osc.len() < self.osc_limit => self.osc.push(byte),
                 // What came first stays: a prompt mark, and an OSC 8 too
                 // long to keep, which closes the link, are told by it.
@@ -1167,13 +1366,15 @@ impl Parser {
                         && byte == b'q'
                         && read.as_slice() == b"$"
                         && self.params.is_empty();
-                    // Sixel: `q` with no intermediates; P2 says whether
-                    // undrawn pixels stay clear, which they always do.
+                    // Sixel: `q` with no intermediates.
                     let sixel = byte == b'q' && read.as_slice().is_empty();
                     self.state = if decrqss {
                         State::Request(Some(Bytes::default()))
                     } else if sixel {
-                        self.sixel = Some(crate::sixel::Decoder::new());
+                        self.sixel = Some(crate::sixel::Decoder::new(
+                            self.params.first(0, 0),
+                            self.params.first(1, 0),
+                        ));
                         State::Sixel
                     } else {
                         State::IgnoreString
@@ -1230,18 +1431,13 @@ impl Parser {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
             Dispatch::Unhandled => {
-                if !intermediates.is_empty()
-                    && matches!(
-                        self.screen
-                            .intermediate_csi(&self.params, intermediates, byte),
-                        Dispatch::Done
-                    )
+                match self
+                    .screen
+                    .other_csi(&self.params, intermediates, byte, &self.options)
                 {
-                    return Ok(framed);
-                }
-                match self.query_reply(intermediates, byte) {
-                    Some(reply) => sink.reply(reply.as_bytes()),
-                    None => sink.unhandled(Unhandled::Csi {
+                    Some(Dispatch::Done) => {}
+                    Some(Dispatch::Reply(reply)) => sink.reply(reply.as_bytes()),
+                    Some(Dispatch::Unhandled) | None => sink.unhandled(Unhandled::Csi {
                         params: Params(&self.params),
                         intermediates,
                         action: byte,
@@ -1352,7 +1548,7 @@ impl Parser {
             // number is written `010`) still ask the host for their
             // colours; what they set is kept nowhere.
             _ => {
-                let number = std::str::from_utf8(command).ok();
+                let number = str::from_utf8(command).ok();
                 let number = number.and_then(|n| n.parse::<u8>().ok());
                 if let Some(first) = number.and_then(|n| n.checked_sub(10)).filter(|n| *n < 10) {
                     crate::palette::dynamic(&mut None, first, rest, bel, true, sink);
@@ -1360,81 +1556,5 @@ impl Parser {
             }
         }
         Ok(())
-    }
-
-    /// Replies enabled by [`Feature::ExtendedReplies`] and
-    /// [`Options::identity`] for CSI sequences the screen does not answer
-    /// itself.
-    fn query_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
-        let n = self.params.first(0, 0);
-        let extended = self.options.has(Feature::ExtendedReplies);
-        let modes = extended || self.options.has(Feature::ModeReports);
-        let identity = self.options.identity();
-        match (intermediates, byte) {
-            (b"?", b'n') if n == 6 && extended => {
-                let (row, col) = self.screen.reported_cursor(&self.options);
-                Some(Reply::of(format_args!("\x1b[?{row};{col}R")))
-            }
-            (b">", b'c') if n == 0 => match identity {
-                Some(identity) => {
-                    let version = identity.encoded_version();
-                    Some(Reply::of(format_args!("\x1b[>1;{version};0c")))
-                }
-                None if extended => Some(Reply::of(format_args!("\x1b[>1;10;0c"))),
-                None => None,
-            },
-            (b">", b'q') if n == 0 => {
-                let identity = identity?;
-                let length = identity.name.len().checked_add(identity.version.len())?;
-                if length > Identity::MAX_LEN {
-                    return None;
-                }
-                let (name, version) = (identity.name, identity.version);
-                Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
-            }
-            (b"", b't') if n == 18 && self.options.has(Feature::SizeReports) => {
-                let (rows, cols) = self.screen.size().into();
-                Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
-            }
-            // The cell's and the text area's size in pixels, from the host's
-            // terminal: how a program sizes the pictures it draws.
-            (b"", b't') if n == 16 => {
-                let (width, height) = self.screen.graphics().cell?;
-                Some(Reply::of(format_args!("\x1b[6;{height};{width}t")))
-            }
-            (b"", b't') if n == 14 => {
-                let (height, width) = self.screen.pixel_size()?;
-                Some(Reply::of(format_args!("\x1b[4;{height};{width}t")))
-            }
-            // XTSMGRAPHICS, read: 256 colour registers, and pictures as
-            // large as the screen.
-            (b"?", b'S') if self.screen.graphics().sixel && self.params.first(1, 0) == 1 => match n
-            {
-                1 => Some(Reply::of(format_args!("\x1b[?1;0;256S"))),
-                2 => {
-                    let (height, width) = self.screen.pixel_size()?;
-                    Some(Reply::of(format_args!("\x1b[?2;0;{width};{height}S")))
-                }
-                _ => None,
-            },
-            (b"*", b'y') if self.options.has(Feature::RectangleChecksums) => {
-                Some(self.screen.rectangle_checksum(&self.params))
-            }
-            // DECRQM.
-            (b"?$" | b"$", b'p') if modes => {
-                let private = intermediates == b"?$";
-                let mode = Mode::of(n, private, &self.options);
-                let status = match mode.map(|m| (m, m.kind())) {
-                    None | Some((_, Kind::SaveCursor)) => ModeStatus::NotRecognized,
-                    Some((_, Kind::Permanent(true))) => ModeStatus::PermanentlySet,
-                    Some((_, Kind::Permanent(false))) => ModeStatus::PermanentlyReset,
-                    Some((mode, _)) if self.screen.mode(mode) => ModeStatus::Set,
-                    Some(_) => ModeStatus::Reset,
-                };
-                let (marker, status) = (if private { "?" } else { "" }, status.number());
-                Some(Reply::of(format_args!("\x1b[{marker}{n};{status}$y")))
-            }
-            _ => None,
-        }
     }
 }

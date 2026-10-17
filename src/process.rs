@@ -3,7 +3,7 @@
 pub use fuxix::process::Pid;
 use fuxix::process::{Signal, Status};
 use fuxix::pty::Master;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A pane's program: the leader of a session of its own, started by fux
 /// and not yet reaped. Unreaped, its pid is its group's and its session's
@@ -19,20 +19,18 @@ pub struct Child {
 }
 
 /// Starts `argv` on a new PTY of `size`, in its own session with the PTY as
-/// its controlling terminal, through the launcher in the `fux` binary
-/// (`fuxix::pty::launched`): with `env` set and `unset` removed from the
+/// its controlling terminal: with `env` set and `unset` removed from the
 /// server's environment.
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
-    (env, unset): (&[(&str, String)], &[String]),
+    (env, unset): (&[(&str, std::ffi::OsString)], &[String]),
     size: fux_vt::Size,
 ) -> Result<Child, String> {
     let program = argv.first().ok_or("no program to run")?;
     let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(|e| e.to_string())?;
-    let fux = launcher().map_err(|e| format!("finding the fux binary: {e}"))?;
     let (child, pid) = slave
-        .spawn(&fux, argv, |command| {
+        .spawn(argv, |command| {
             // TERM_PROGRAM is fux's, as tmux sets its own: the outer
             // terminal's would have programs use features of a terminal they
             // are not talking to (Claude Code, under Ghostty, pushed kitty
@@ -57,15 +55,6 @@ pub fn spawn(
         leader: Leader(pid, false),
         master,
     })
-}
-
-/// The `fux` binary to run the launcher from: on Linux the server's own
-/// image, even once its file is replaced or removed.
-fn launcher() -> std::io::Result<PathBuf> {
-    if cfg!(target_os = "linux") {
-        return Ok(PathBuf::from("/proc/self/exe"));
-    }
-    std::env::current_exe()
 }
 
 pub use fuxix::process::Status as Ended;
@@ -106,10 +95,14 @@ impl Leader {
     pub fn hang_up(&self) {
         // Found before any signal: once the group's leader dies, its
         // children are on their way to this process, in no one's list.
-        let session = self.session();
-        let _ = fuxix::process::kill_group(self.0, Signal::Hup);
-        for pid in session {
-            let _ = fuxix::process::kill(pid, Signal::Hup);
+        self.signal(self.session(), Signal::Hup);
+    }
+
+    /// Signals its process group, then each of `others`.
+    fn signal(&self, others: Vec<Pid>, signal: Signal) {
+        let _ = fuxix::process::kill_group(self.0, signal);
+        for pid in others {
+            let _ = fuxix::process::kill(pid, signal);
         }
     }
 
@@ -130,10 +123,7 @@ impl Leader {
         // (`nohup cmd &`) too, found first. A program that ended by itself
         // leaves those it meant to (`nohup job & exit`).
         let session = if self.1 { self.session() } else { Vec::new() };
-        let _ = fuxix::process::kill_group(self.0, Signal::Kill);
-        for pid in session {
-            let _ = fuxix::process::kill(pid, Signal::Kill);
-        }
+        self.signal(session, Signal::Kill);
         match fuxix::process::reap(self.0) {
             Ok(None) => Err(self),
             Ok(Some(_)) | Err(_) => Ok(()),

@@ -74,8 +74,9 @@ fn autowrap_disabled_overwrites_without_scrolling() -> Result {
     assert_eq!(lines(&p), ["abf", ""]);
     assert_eq!(p.screen().history_len(), 0);
     assert!(!p.screen().mode(Mode::Autowrap));
+    // No wrap was left pending (DEC STD 070, Appendix D.6.1).
     p.process(b"\x1b[?7hG")?;
-    assert_eq!(lines(&p), ["abf", "G"]);
+    assert_eq!(lines(&p), ["abG", ""]);
     assert!(p.screen().mode(Mode::Autowrap));
     Ok(())
 }
@@ -193,6 +194,26 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
     Ok(())
 }
 
+/// The blank a wide glyph that did not fit left at a soft-wrapped row's
+/// end is no part of the text, in the row's own last column: a history
+/// row narrower than the window, after a resize without reflow, copies
+/// without it, as at its own width.
+#[test]
+fn a_spacer_in_a_narrower_history_row_is_no_text() -> Result {
+    let mut p = Parser::new(Size::new(2, 5)?, 1 << 10)?;
+    p.process("abcd\u{4e16}\r\n\n".as_bytes())?;
+    assert_eq!(p.screen().history_len(), 2);
+    let text = |p: &Parser| -> Result<String> {
+        let row = p.screen().rows().next().ok_or(Error::InvalidRange)?;
+        let last = p.screen().size().cols().saturating_sub(1);
+        Ok(row.window().text((0, 0), (1, last), 40, 100)?)
+    };
+    assert_eq!(text(&p)?, "abcd\u{4e16}");
+    p.resize(Size::new(2, 10)?)?;
+    assert_eq!(text(&p)?, "abcd\u{4e16}");
+    Ok(())
+}
+
 #[test]
 fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
     let mut p = Parser::new(Size::new(4, 5)?, 0)?;
@@ -275,6 +296,7 @@ fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
 /// only their own forms set them, and a full reset clears both.
 #[test]
 fn focus_and_cursor_shape() -> Result {
+    use fux_vt::CursorShape::{BlinkingBar, Initial, SteadyBar, Zero};
     let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
     for split in 0..stream.len() {
         let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
@@ -282,21 +304,21 @@ fn focus_and_cursor_shape() -> Result {
         p.process(a)?;
         p.process(b)?;
         assert!(p.screen().mode(Mode::FocusReporting), "split {split}");
-        assert_eq!(p.screen().cursor_shape(), 5, "split {split}");
+        assert_eq!(p.screen().cursor_shape(), BlinkingBar, "split {split}");
     }
     let mut p = Parser::new(Size::new(3, 8)?, 0)?;
     p.process(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q")?;
     assert!(!p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 0);
+    assert_eq!(p.screen().cursor_shape(), Zero);
     p.process(b"\x1b[1004h\x1b[3!q\x1b[?4 q")?;
     assert!(!p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 0);
+    assert_eq!(p.screen().cursor_shape(), Zero);
     p.process(b"\x1b[?1004h\x1b[6 q")?;
     assert!(p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 6);
+    assert_eq!(p.screen().cursor_shape(), SteadyBar);
     p.process(b"\x1bc")?;
     assert!(!p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 0);
+    assert_eq!(p.screen().cursor_shape(), Initial);
     Ok(())
 }
 

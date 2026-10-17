@@ -76,15 +76,7 @@ pub(crate) fn default(index: u8) -> Rgb {
             .into(),
         16..=231 => {
             let n = index.saturating_sub(16);
-            let channel = |weight: u8| {
-                level(
-                    n.checked_div(weight)
-                        .unwrap_or(0)
-                        .checked_rem(6)
-                        .unwrap_or(0),
-                )
-            };
-            [channel(36), channel(6), channel(1)].into()
+            [level(n / 36), level(n / 6 % 6), level(n % 6)].into()
         }
         _ => {
             let grey = index
@@ -187,7 +179,7 @@ fn scaled(digits: &[u8]) -> Option<u16> {
     if digits.is_empty() || digits.len() > 4 {
         return None;
     }
-    let value = u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()?;
+    let value = u32::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
     let bits = u32::try_from(digits.len()).ok()?.checked_mul(4)?;
     let largest = 1u32.checked_shl(bits)?.checked_sub(1)?;
     u16::try_from(value.checked_mul(0xffff)?.checked_div(largest)?).ok()
@@ -200,14 +192,14 @@ impl Rgb {
     pub fn parse(spec: &[u8]) -> Option<Self> {
         let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
             // Three channels of 1 to 4 digits each, the digits the high bits.
-            let n = hex.len().checked_div(3)?;
-            if n == 0 || hex.len().checked_rem(3) != Some(0) || n > 4 {
+            let n = hex.len() / 3;
+            if n == 0 || hex.len() % 3 != 0 || n > 4 {
                 return None;
             }
             let shift = u32::try_from(n).ok()?.checked_mul(4)?;
             let channel = |i: usize| -> Option<u16> {
                 let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
-                let value = u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()?;
+                let value = u16::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
                 value.checked_shl(16u32.checked_sub(shift)?)
             };
             [channel(0)?, channel(1)?, channel(2)?]
@@ -264,15 +256,12 @@ pub(crate) fn answer(command: u16, index: Option<u16>, colour: Rgb, bel: bool) -
 
 /// `n` in decimal: at most three digits, as every colour number is.
 fn decimal(out: &mut Reply, n: u16) {
-    let digit = |d: u16| {
-        let d = u8::try_from(d.checked_rem(10).unwrap_or(0)).unwrap_or(0);
-        b'0'.saturating_add(d)
-    };
+    let digit = |d: u16| b'0'.saturating_add(u8::try_from(d % 10).unwrap_or(0));
     if n >= 100 {
-        out.push(&[digit(n.checked_div(100).unwrap_or(0))]);
+        out.push(&[digit(n / 100)]);
     }
     if n >= 10 {
-        out.push(&[digit(n.checked_div(10).unwrap_or(0))]);
+        out.push(&[digit(n / 10)]);
     }
     out.push(&[digit(n)]);
 }
@@ -371,9 +360,9 @@ fn pairs(
 /// OSC 104 (`offset` 0) and OSC 105 (`offset` 256): the colours listed back
 /// to the terminal's own, read as xterm's `ResetAnsiColorRequest` reads
 /// them, up to the first that is no number or is followed by anything but
-/// `;`. With none listed, OSC 104 resets every palette entry, as ctlseqs
-/// says; OSC 105 resets nothing, as in xterm 411, where ctlseqs says every
-/// special colour (the README's "Departures from the references").
+/// `;`. With none listed, OSC 104 resets every palette entry and OSC 105
+/// every special colour, as ctlseqs says (xterm 411 resets no special
+/// colour).
 fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
     let Some(c) = colours else {
         return;
@@ -381,6 +370,8 @@ fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
     if rest.is_empty() {
         if offset == 0 {
             c.reset_palette();
+        } else {
+            c.special = [None; 5];
         }
         return;
     }

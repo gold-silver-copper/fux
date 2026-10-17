@@ -1,4 +1,5 @@
 //! One attached client's own view of the shared state.
+use crate::act::{Edit, Panel};
 use crate::copy::Copy;
 use crate::id::ClientId;
 
@@ -47,8 +48,7 @@ impl<const MAX: usize> Line<MAX> {
     /// An edit of the line: typed text (one line of it, nothing that
     /// controls, unless the line would pass `MAX` bytes), or a move or a
     /// deletion.
-    pub fn edit(&mut self, edit: &crate::act::Edit) {
-        use crate::act::Edit;
+    pub fn edit(&mut self, edit: &Edit) {
         match edit {
             Edit::Insert(text) => {
                 let typed: String = (text.chars())
@@ -88,8 +88,20 @@ impl<const MAX: usize> Line<MAX> {
 /// whose cursor the server keeps.
 pub enum Mode {
     Normal,
-    Panel(crate::act::Panel),
+    Panel(Panel),
     Copy(Box<Copy>),
+}
+
+impl Mode {
+    /// Whether nothing shows over the panes, so they have the client: its
+    /// pictures, the program's cursor, the mouse, pastes and the composing
+    /// memo are the panes' only then.
+    pub fn is_normal(&self) -> bool {
+        match self {
+            Mode::Normal => true,
+            Mode::Panel(_) | Mode::Copy(_) => false,
+        }
+    }
 }
 
 /// Where a client shows what it is sent.
@@ -124,7 +136,7 @@ pub struct View {
     pub read_only: bool,
     /// Its terminal's environment, of which panes started from its keys
     /// take what `update-environment` names.
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(String, std::ffi::OsString)>,
 }
 
 impl View {
@@ -146,19 +158,10 @@ impl View {
         }
     }
 
-    pub fn info(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: false,
-        });
-        self.dirty = true;
-    }
-
-    pub fn error(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: true,
-        });
+    /// Shows a notice, an error's if `error`.
+    pub fn notify(&mut self, text: impl Into<String>, error: bool) {
+        let text = text.into();
+        self.notice = Some(Notice { text, error });
         self.dirty = true;
     }
 }

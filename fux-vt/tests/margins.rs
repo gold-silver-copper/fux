@@ -43,9 +43,9 @@ fn framed(then: &str) -> Result<Parser> {
 /// DECSLRM is recognized only while DECLRMM is set (DEC STD 070, DECSLRM,
 /// note 4): reset, `CSI s` is SCOSC, saving the cursor, as it always was.
 /// Set, margins with the left one left of the right are set and the cursor
-/// goes home, obeying DECOM; others are ignored (note 2). A right margin
-/// past the screen is its last column, as xterm reads it, where DEC STD
-/// 070 ignores the sequence (note 3), as fux-vt reads DECSTBM. Resetting
+/// goes home, obeying DECOM; others are ignored (note 2), and so is one
+/// with a right margin past the screen (note 3), which xterm takes as the
+/// last column. Resetting
 /// DECLRMM puts the margins back at the screen's edges, and DECRQM reports
 /// the mode (esctest's DECSET_DECLRMM, DECRQM_DEC_DECLRMM).
 #[test]
@@ -69,9 +69,10 @@ fn declrmm_lets_decslrm_set_the_margins() -> Result {
     // Left not left of right: ignored, the cursor staying.
     let p = run(3, 8, b"\x1b[?69h\x1b[2;3H\x1b[4;4sX\x1b[5;2sY")?;
     assert_eq!(lines(&p), ["", "  XY", ""]);
-    // A right margin past the screen is its last column.
-    let p = run(3, 8, b"\x1b[?69h\x1b[3;99sabcdefghij")?;
-    assert_eq!(lines(&p), ["abcdefgh", "  ij", ""]);
+    // A right margin past the screen: ignored, the cursor staying.
+    let p = run(3, 8, b"\x1b[?69h\x1b[2;3H\x1b[3;99sX\x1b[3;9sY")?;
+    assert_eq!(lines(&p), ["", "  XY", ""]);
+    assert_eq!(p.screen().left_right_margins(), (0, 7));
     // DECRQM.
     let report = b"\x1b[?69$p\x1b[?69h\x1b[?69$p";
     assert_eq!(replies(3, 8, report)?, ["\x1b[?69;2$y", "\x1b[?69;1$y"]);
@@ -260,6 +261,102 @@ fn edits_stop_at_the_right_margin() -> Result {
     Ok(())
 }
 
+/// DECBI and DECFI (`ESC 6`, `ESC 9`; DEC STD 070, Back Index and Forward
+/// Index): the cursor a column back or forward; from the left margin
+/// back, or the right margin forward, the columns between the margins of
+/// every line of the scrolling region shift one the other way instead, a
+/// blank column coming in at that margin, and the cursor stays. Outside
+/// the margins the cursor moves, and at the page's edge it is ignored.
+/// Either ends a pending wrap. Expected values are from the standard's
+/// algorithms (`decbi`, `decfi`).
+#[test]
+fn decbi_and_decfi_move_or_shift_the_columns() -> Result {
+    let p = framed("\x1b[3;8H\x1b9")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MNPQRST UVWX",
+            "abdefgh ijkl",
+            "mnpqrst uvwx",
+            "0134567 8901",
+            "",
+        ]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 7));
+    let p = framed("\x1b[3;3H\x1b6")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MN OPQRSUVWX",
+            "ab cdefgijkl",
+            "mn opqrsuvwx",
+            "01 234568901",
+            "",
+        ]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 2));
+    for (moves, cursor) in [
+        ("\x1b[3;5H\x1b9", (2, 5)),
+        ("\x1b[3;5H\x1b6", (2, 3)),
+        ("\x1b[1;10H\x1b9", (0, 10)),
+        ("\x1b[1;10H\x1b6", (0, 8)),
+        ("\x1b[1;12H\x1b9", (0, 11)),
+        ("\x1b[1;1H\x1b6", (0, 0)),
+    ] {
+        let p = framed(moves)?;
+        assert_eq!(p.screen().cursor_position(), cursor, "{moves:?}");
+        assert_eq!(lines(&p).get(1).map(String::as_str), Some("MNOPQRSTUVWX"));
+    }
+    // Without margins they are the screen's edges.
+    let p = run(1, 5, b"abcde\x1b9")?;
+    assert_eq!(lines(&p), ["bcde"]);
+    assert_eq!(p.screen().cursor_position(), (0, 4));
+    assert!(!p.screen().pending_wrap());
+    assert_eq!(lines(&run(1, 5, b"abcde\r\x1b6")?), [" abcd"]);
+    Ok(())
+}
+
+/// SL and SR (`CSI Pn SP @`, `CSI Pn SP A`; ECMA-48 8.3.121, 8.3.135):
+/// the data moved Pn columns left or right, blanks coming in, the cursor
+/// staying; within the scrolling region and the left and right margins,
+/// and only with the cursor between them, as xterm bounds them
+/// (`fux-vt-compare replay --engines xterm --size 6x12`).
+#[test]
+fn sl_and_sr_shift_the_columns() -> Result {
+    let p = framed("\x1b[1;1H\x1b[2 @")?;
+    assert_eq!(lines(&p).get(1).map(String::as_str), Some("MNOPQRSTUVWX"));
+    let p = framed("\x1b[3;4H\x1b[2 @")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MNQRST  UVWX",
+            "abefgh  ijkl",
+            "mnqrst  uvwx",
+            "014567  8901",
+            "",
+        ]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 3));
+    let p = framed("\x1b[3;4H\x1b[ A")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MN OPQRSUVWX",
+            "ab cdefgijkl",
+            "mn opqrsuvwx",
+            "01 234568901",
+            "",
+        ]
+    );
+    let p = run(2, 5, b"abcde\r\nfghij\x1b[9 @")?;
+    assert_eq!(lines(&p), ["", ""]);
+    Ok(())
+}
+
 /// DECIC and DECDC (`CSI Pn ' }`, `CSI Pn ' ~`; DEC STD 070, 5.4.3; the
 /// VT510 manual): Pn columns inserted or deleted at the cursor's, in every
 /// line of the scrolling region, between the left and right margins, the
@@ -365,13 +462,10 @@ fn origin_mode_addresses_columns_from_the_left_margin() -> Result {
     Ok(())
 }
 
-/// HT and CHT stop at the right margin with DECLRMM set, wherever the
-/// cursor is, as xterm's `TabToNextStop` has it; DEC STD 070 (HT, note 1)
-/// stops there only from inside the scrolling region, going on to the
-/// next stop or the last column from right of the margin (see the README's
-/// departures). CBT stops at the left margin in origin mode
-/// (`TabToPrevStop`; esctest's CHT_IgnoresScrollingRegion and
-/// DECSET_DECAWM_NoLineWrapOnTabWithLeftRightMargin).
+/// HT and CHT stop at the right margin with DECLRMM set, from inside the
+/// scrolling region; from right of the margin they go on to the next stop
+/// or the last column (DEC STD 070, HT, note 1). CBT stops at the left
+/// margin in origin mode (`TabToPrevStop`).
 #[test]
 fn tabs_stop_at_the_right_margin() -> Result {
     let p = run(
@@ -379,7 +473,7 @@ fn tabs_stop_at_the_right_margin() -> Result {
         12,
         b"\x1b[?69h\x1b[3;8s\x1b[2;10H\t1\x1b[2;1H\t2\x1b[3;5H\x1b[2I3\x1b[4;8H\x1b[Z4\x1b[?6h\x1b[3;5H\x1b[3Z5",
     )?;
-    assert_eq!(lines(&p), ["", "       2", "  5    3", "4", "", ""]);
+    assert_eq!(lines(&p), ["", "       2   1", "  5    3", "4", "", ""]);
     let mut p = Parser::new(Size::new(3, 80)?, 0)?;
     p.process(b"\x1b[?69h\x1b[10;20s")?;
     for col in [8, 16, 19, 19] {

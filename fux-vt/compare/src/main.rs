@@ -30,7 +30,7 @@ mod transparency;
 
 use case::{Case, Snippet, Step};
 use engine::{ENGINES, FUX_VT};
-use families::{FAMILIES, Status};
+use families::{Authority, FAMILIES, Status};
 use rng::Rng;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -423,7 +423,9 @@ fn list() {
     for f in FAMILIES {
         let status = match f.status {
             Status::Agree => "agree".to_owned(),
-            Status::Decided { why, by } => format!("DECIDED by {}: {why}", by.join(", ")),
+            Status::Decided { why, by, authority } => {
+                format!("DECIDED by {authority}, beside {}: {why}", by.join(", "))
+            }
             Status::Differs(why) => format!("DIFFER: {why}"),
         };
         let ratty = if f.ratty_only { " [needs reflow]" } else { "" };
@@ -707,17 +709,31 @@ fn cases(args: &Args) -> Result<bool, String> {
         let outcome = case.run_until(&panel, false)?;
         let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
-        if let Some(Status::Decided { by, .. }) = status {
+        if let Some(Status::Decided { by, authority, .. }) = status {
             let deciders = match by {
-                [one] => format!("{one} decides"),
-                _ => format!("{} decide", by.join(", ")),
+                [] => format!("{authority} decides"),
+                _ => format!("{authority} decides, beside {}", by.join(", ")),
             };
-            match deciders_agree(&outcome.verdicts, by) {
-                Some(true) | None => {
+            // Checked by the standard's cited test, or by xterm agreeing; a
+            // family with neither check fails.
+            let checked = match (authority, deciders_agree(&outcome.verdicts, by)) {
+                (_, Some(false)) => Ok(false),
+                (Authority::Xterm, None) => Err("xterm did not run".to_owned()),
+                (Authority::Standard { .. } | Authority::Xterm, Some(true) | None) => {
+                    authority.check(by).map(|()| true)
+                }
+            };
+            match checked {
+                Ok(true) => {
                     agree = agree.saturating_add(1);
                     println!("ok       {name} (family {family}: {deciders})   {marks}");
                 }
-                Some(false) => {
+                Err(why) => {
+                    ok = false;
+                    differ = differ.saturating_add(1);
+                    println!("FAIL     {name} (family {family}: {deciders}): unchecked, {why}");
+                }
+                Ok(false) => {
                     ok = false;
                     differ = differ.saturating_add(1);
                     println!(
@@ -943,8 +959,30 @@ fn verdicts(args: &Args) -> Result<bool, String> {
     let mut ok = true;
     for &i in &chosen {
         let f = FAMILIES.get(i).ok_or("no such family")?;
+        let unchecked = match f.status {
+            Status::Decided { by, authority, .. } => {
+                authority.check(by).and_then(|()| authority.run()).err()
+            }
+            Status::Agree | Status::Differs(_) => None,
+        };
+        if let Some(why) = unchecked {
+            ok = false;
+            println!("== {}: FAIL, unchecked: {why}", f.name);
+            continue;
+        }
         let panel = match (args.engines.as_deref(), f.status) {
             (Some(list), _) => engines(list)?,
+            // A standard decides, and no engine follows it all through:
+            // its test is the check.
+            (
+                None,
+                Status::Decided {
+                    by: [], authority, ..
+                },
+            ) => {
+                println!("== {} (checked by {authority}, which passes)", f.name);
+                continue;
+            }
             (None, Status::Decided { by, .. }) => engines(&by.join(","))?,
             (None, Status::Agree | Status::Differs(_)) => engines("xterm")?,
         };
@@ -1081,11 +1119,6 @@ fn main() -> ExitCode {
     // and reported there; the default hook would print each one again.
     std::panic::set_hook(Box::new(|_| {}));
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    if let Some((first, rest)) = argv.split_first()
-        && first == fuxix::pty::LAUNCH
-    {
-        return ExitCode::from(fuxix::pty::launched(rest));
-    }
     if let Some((first, rest)) = argv.split_first()
         && first == instructions::CHILD
     {

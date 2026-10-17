@@ -1,9 +1,8 @@
 # Three programs at once, each exiting with its own status; once all have
 # exited, the sum of their statuses. `fux examples/jobs.fux` prints 6, and
-# exits 3: a run whose last wait was met by its program's exit exits with
-# that program's status, as timeout(1) does.
+# exits 0: a met wait for the exit is 0, its program's status read from the
+# pane (`str exited get`).
 # expect: 6
-# status: 3
 
 # n -- pane: a program that exits with status n, started without waiting
 # for it to settle (`0 timeout`), so the next starts at once

@@ -27,6 +27,52 @@ fn cursor_after(input: &[u8]) -> Result<(u16, u16)> {
     Ok((row.saturating_add(1), col.saturating_add(1)))
 }
 
+/// ECMA-48 (5th edition) 7.1: "some or all of the modes may have one
+/// state only", the reset state recommended as the initial one. The ANSI
+/// modes fux-vt has no use for, GATM (1), SRTM (5), VEM (7), HEM (10), PUM
+/// (11), FEAM (13), FETM (14), MATM (15), TTM (16), SATM (17) and TSM
+/// (18), have the reset state only, and so do those that fux-vt performs
+/// in their reset state alone (7.2: "the first state is caused by RM"):
+/// KAM (2) ENABLED, the keyboard never locked; CRM (3) CONTROL, controls
+/// performed; ERM (6) PROTECT, ED, EL and ECH sparing a guarded area; BDSM
+/// (8) EXPLICIT, no implicit bidirectional processing; DCSM (9)
+/// PRESENTATION, as there is no data component. DECRQM answers them
+/// permanently reset (4), set or not. The same numbers as DEC private
+/// modes are others. Three have their set state only, which DECRQM
+/// answers permanently set (3), reset or not: SRM (12) SIMULTANEOUS
+/// (7.2.15; DEC STD 070's SRM: set, local echo off, the default), as
+/// fux-vt never images what is typed; GRCM (21) CUMULATIVE (7.2.8), as an
+/// SGR changes only the renditions it names; ZDM (22) DEFAULT (F.4.2), as
+/// a parameter of 0 is its default. 19, EBM in the 4th edition, "shall not
+/// be used" (8.3.106, F.5.1): not recognized (0).
+#[test]
+fn decrqm_reports_the_ansi_modes_kept_in_one_state() -> Result {
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
+    for (state, modes) in [
+        (
+            4,
+            &[1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18][..],
+        ),
+        (3, &[12, 21, 22]),
+    ] {
+        for n in modes {
+            let ask = format!("\x1b[{n}$p");
+            for change in ["h", "l"] {
+                p.process(format!("\x1b[{n}{change}").as_bytes())?;
+                assert_eq!(
+                    replies(&mut p, ask.as_bytes())?,
+                    format!("^[[{n};{state}$y")
+                );
+            }
+        }
+    }
+    assert_eq!(
+        replies(&mut p, b"\x1b[19$p\x1b[?5$p")?,
+        "^[[19;0$y^[[?5;2$y"
+    );
+    Ok(())
+}
+
 /// DECSCLM (4), DECSCNM (5), DECNKM (66) and DECBKM (67) are kept as modes,
 /// set and reset, and reported by DECRQM, as xterm 411 keeps them; DECARM
 /// (8) is reported permanently reset, as xterm 411 reports it (esctest
@@ -238,7 +284,10 @@ fn decid_is_answered_as_da1() -> Result {
     };
     let options = Options::new().with_identity(Some(identity));
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, options)?;
-    assert_eq!(replies(&mut p, b"\x1bZ\x1b[c")?, "^[[?62;22c^[[?62;22c");
+    assert_eq!(
+        replies(&mut p, b"\x1bZ\x1b[c")?,
+        "^[[?62;6;21;22;28c^[[?62;6;21;22;28c"
+    );
     Ok(())
 }
 

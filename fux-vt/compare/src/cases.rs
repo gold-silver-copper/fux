@@ -82,7 +82,9 @@ pub const CASES: &[Named] = &[
     ),
     // Recorded verdicts (families with `Status::Decided`): each pins one
     // point, and `verdicts` checks it beside the family's deciding engines
-    // (xterm, but for `prompts`).
+    // (xterm, but for `prompts` and `invalid-utf8`), or, for a family no
+    // engine follows all through (`by` empty: its cases the points where
+    // xterm departs from the standard), runs the family's test instead.
     //
     // Prompt marks (OSC 133): A does a fresh line, then marks the row; L
     // does the fresh line alone; ED 2 erases the marks with the rows.
@@ -108,8 +110,8 @@ pub const CASES: &[Named] = &[
         ],
     ),
     (
-        "tab-keeps-a-pending-wrap",
-        "controls",
+        "tab-ends-a-pending-wrap",
+        "pending-wrap",
         (2, 5),
         &["abcde\\tX"],
     ),
@@ -121,14 +123,14 @@ pub const CASES: &[Named] = &[
     ),
     ("ed-ends-a-pending-wrap", "erase", (2, 5), &["abcde\\e[JX"]),
     (
-        "resetting-autowrap-keeps-a-pending-wrap",
-        "autowrap",
+        "resetting-autowrap-ends-a-pending-wrap",
+        "pending-wrap",
         (2, 5),
         &["abcde\\e[?7l\\e[?7hX"],
     ),
     (
-        "a-wrap-is-left-pending-with-autowrap-off",
-        "autowrap",
+        "no-wrap-is-left-pending-with-autowrap-off",
+        "pending-wrap",
         (2, 2),
         &["\\e[?7lca\\e[?7hX"],
     ),
@@ -254,6 +256,18 @@ pub const CASES: &[Named] = &[
         (1, 6),
         &["\\e)0\\x0elqk\\x0fq"],
     ),
+    (
+        "ls2-locks-g2-into-gl",
+        "charset-g2-g3",
+        (1, 4),
+        &["\\e*0\\enqq\\x0fq"],
+    ),
+    (
+        "ss3-shifts-g3-for-one-character",
+        "charset-g2-g3",
+        (1, 4),
+        &["\\e+0\\eOxx"],
+    ),
     ("rep-repeats-the-last-glyph", "repeat", (1, 8), &["-\\e[4b"]),
     (
         "rep-after-rep-repeats-nothing",
@@ -307,10 +321,22 @@ pub const CASES: &[Named] = &[
     ),
     ("cht-and-cbt", "tabs", (1, 20), &["\\e[2IX\\e[ZY"]),
     (
+        "cbt-while-wrap-pending",
+        "tabs",
+        (2, 10),
+        &["abcdefghij\\e[ZX"],
+    ),
+    (
         "invalid-utf8-prints-a-replacement",
         "invalid-utf8",
         (1, 10),
         &["caf\\xe9 ok"],
+    ),
+    (
+        "a-continuation-byte-alone-prints-a-replacement",
+        "invalid-utf8",
+        (1, 12),
+        &["price \\xa35"],
     ),
     (
         "dcs-payload-holding-0x9c",

@@ -24,6 +24,16 @@
 //!   with the flags fux asks of it (5).
 //! - `encode/legacy`, `encode/kitty`: those keys encoded for a pane
 //!   (`fux::encode::key_bytes`), in legacy mode and in every kitty flag.
+//! - `wait/text`: a wait for a text that never comes (`fux::wait::Waiting`)
+//!   on four panes of a session, asked for its answer and when it is due
+//!   after each 64 KiB read of the recordings into the panes: the server's
+//!   look at each output while a wait is armed.
+//! - `ready/probe`: what a pane's program is blocked in
+//!   (`fuxix::process::activity`, which `fux::ready` asks while a wait
+//!   is armed), of a sleeping child, over and over.
+//! - `script/compile`: fuxth's checker and compiler on command lines an
+//!   agent sends (`fux::script::compile`), over and over: what every
+//!   `fux WORDS` does before it runs.
 //!
 //! Each workload has a baseline: the same run without the part measured.
 //! For most that is making the bytes; for `paint/*` it is also feeding the
@@ -31,6 +41,7 @@
 use crate::corpus::{self, Recording};
 use crate::synthetic;
 use std::hint::black_box;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 
 /// fux-vt is fed this much at a time, as `compare`'s `bench` feeds it.
@@ -49,6 +60,19 @@ const KEYS: usize = 1 << 20;
 const KEYSTROKES: usize = 20_000;
 /// Keys encoded, over and over to this many.
 const STROKES: usize = 1 << 20;
+/// Bytes read into the panes of `wait/text`, over and over to this many.
+const WAITED: usize = 4 << 20;
+/// Activity probes, this many.
+const PROBES: usize = 2_000;
+/// Command lines compiled, this many.
+const COMPILES: usize = 2_000;
+/// Command lines an agent sends, as `docs/agents.md` shows them.
+const LINES: [&str; 4] = [
+    "opts str app name str './app --fast' command run",
+    "%2 keys str y text str Enter key send-keys",
+    "%2 opts str 'listening on' wait-text wait",
+    "define twice dup add end list 1 2 3 end each twice end len drop %2 opts all-history capture",
+];
 /// The bytes of a pane's history fux keeps by default.
 const HISTORY: usize = 8 << 20;
 /// The kitty flags fux pushes on a client's terminal (`outer`):
@@ -131,6 +155,18 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
             "encode/kitty",
             "the same keys encoded for a pane with every kitty flag",
         ),
+        (
+            "wait/text",
+            "a wait on four panes asked after each read of every recording, 4 MiB",
+        ),
+        (
+            "ready/probe",
+            "what a sleeping child is blocked in, 2000 times",
+        ),
+        (
+            "script/compile",
+            "fuxth's checker and compiler on four agent command lines, 2000 times",
+        ),
     ] {
         out.push(spec(name.into(), about.into()));
     }
@@ -178,11 +214,18 @@ fn run_shrunk(name: &str, dir: &Path, baseline: bool, shrink: usize) -> Result<D
         ),
         "encode/legacy" => encode(
             &recordings,
-            fux::encode::KeyMode::legacy(false),
+            fux::encode::KeyMode::Legacy {
+                application: false,
+                other_keys: None,
+                backarrow: false,
+            },
             baseline,
             size(STROKES),
         ),
         "encode/kitty" => encode(&recordings, kitty_mode(KITTY_ALL)?, baseline, size(STROKES)),
+        "wait/text" => wait(&recordings, baseline, size(WAITED)),
+        "ready/probe" => ready(baseline, size(PROBES)),
+        "script/compile" => compile(baseline, size(COMPILES)),
         _ => Err(format!("no workload {name:?}; `list` lists them")),
     }
 }
@@ -357,7 +400,9 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     };
     let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
     s.start().map_err(|e| e.to_string())?;
-    let c = s.attach(41, 120, None).map_err(|e| e.to_string())?;
+    let c = s
+        .attach_as(fux::view::ClientKind::Terminal, 41, 120, None)
+        .map_err(|e| e.to_string())?;
     let pane = s.panes.keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
     for r in recordings.iter().take(8) {
@@ -397,12 +442,13 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         if let Some(view) = s.views.get_mut(&c) {
             view.dirty = false;
         }
-        if !fux::render::compose_into(&s, c, &mut spare, &mut placement) {
+        let Some(view) = s.views.get(&c) else {
             continue;
-        }
+        };
+        fux::render::compose_view(&s, view, &mut spare, &mut placement);
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
-        fux::render::paint_into(have.then_some(&shown), &spare, &mut buffer);
+        fux::render::paint_into(&shown, have, &spare, &mut buffer);
         painted = painted.saturating_add(buffer.len());
         frames = frames.saturating_add(1);
         black_box(&buffer);
@@ -431,7 +477,12 @@ fn paint(
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
     let c = s
-        .attach(first.rows.saturating_add(1), first.cols, None)
+        .attach_as(
+            fux::view::ClientKind::Terminal,
+            first.rows.saturating_add(1),
+            first.cols,
+            None,
+        )
         .map_err(|e| e.to_string())?;
     if split {
         let split = fux::command::Command::Split {
@@ -439,10 +490,9 @@ fn paint(
             target: *s.panes.keys().next().ok_or("no pane")?,
             cmd: Vec::new(),
             cwd: None,
-            env: Vec::new(),
+            env: fux::command::Env::default(),
             run: false,
-            ids: Vec::new(),
-            then: None,
+            id: None,
         };
         s.run_command(
             &split,
@@ -472,14 +522,15 @@ fn paint(
                     if baseline || !dirty {
                         continue;
                     }
-                    if !fux::render::compose_into(&s, c, &mut spare, &mut placement) {
+                    let Some(view) = s.views.get(&c) else {
                         continue;
-                    }
+                    };
+                    fux::render::compose_view(&s, view, &mut spare, &mut placement);
                     if have && spare == shown {
                         continue;
                     }
                     buffer.clear();
-                    fux::render::paint_into(have.then_some(&shown), &spare, &mut buffer);
+                    fux::render::paint_into(&shown, have, &spare, &mut buffer);
                     painted = painted.saturating_add(buffer.len());
                     frames = frames.saturating_add(1);
                     black_box(&buffer);
@@ -605,6 +656,122 @@ fn encode(
     }
     Ok(Done {
         units,
+        frames: 0,
+        painted: 0,
+    })
+}
+
+/// A session whose shell pane is real, with `panes` panes in all.
+fn session(panes: usize) -> Result<fux::session::Session, String> {
+    let config = fux::config::Config {
+        history_bytes: HISTORY,
+        ..fux::config::Config::default()
+    };
+    let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
+    s.start().map_err(|e| e.to_string())?;
+    for _ in 1..panes {
+        let split = fux::command::Command::Split {
+            axis: fux::layout::Axis::Horizontal,
+            target: *s.panes.keys().next().ok_or("no pane")?,
+            cmd: Vec::new(),
+            cwd: None,
+            env: fux::command::Env::default(),
+            run: false,
+            id: None,
+        };
+        s.run_command(
+            &split,
+            &fux::session::Origin::Cli(fux::session::Caller::default()),
+        );
+    }
+    Ok(s)
+}
+
+fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, String> {
+    let mut s = session(4)?;
+    let panes: Vec<_> = s.panes.keys().copied().collect();
+    let wait = fux::command::Wait {
+        until: vec![fux::command::Until::Text("a text never written".into())],
+        timeout: Some(std::time::Duration::from_secs(3600)),
+        print: true,
+        marks: false,
+    };
+    let now = std::time::Instant::now();
+    let mut waiting = {
+        let shown: Vec<&fux::pane::Pane> = panes.iter().filter_map(|p| s.panes.get(p)).collect();
+        let follows = fux::wait::Follows::Action;
+        fux::wait::Waiting::new(
+            &shown,
+            wait,
+            follows,
+            now,
+            std::time::Duration::from_secs(3600),
+        )
+    };
+    let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
+    let bytes = repeated(&all, total);
+    let mut units = 0usize;
+    for (n, piece) in pieces(&bytes, PANE_READ).enumerate() {
+        let pane = panes
+            .get(n.checked_rem(panes.len()).unwrap_or(0))
+            .copied()
+            .ok_or("no pane")?;
+        s.output(pane, piece);
+        units = units.saturating_add(piece.len());
+        if baseline {
+            continue;
+        }
+        black_box(waiting.answer(&s, now));
+        black_box(waiting.due());
+    }
+    Ok(Done {
+        units,
+        frames: 0,
+        painted: 0,
+    })
+}
+
+fn ready(baseline: bool, probes: usize) -> Result<Done, String> {
+    // The probe is asked of a child of this process, with no session
+    // around it: a sleep in a group of its own.
+    let mut child = std::process::Command::new("sleep")
+        .arg("3600")
+        .process_group(0)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let pid = fuxix::process::Pid::of(&child).ok_or("no pid")?;
+    for _ in 0..probes {
+        if baseline {
+            black_box(pid);
+            continue;
+        }
+        black_box(fuxix::process::activity(pid, Path::new("/dev/null"), pid));
+    }
+    child.kill().map_err(|e| e.to_string())?;
+    child.wait().map_err(|e| e.to_string())?;
+    Ok(Done {
+        units: probes,
+        frames: 0,
+        painted: 0,
+    })
+}
+
+fn compile(baseline: bool, compiles: usize) -> Result<Done, String> {
+    let lines: Vec<Vec<fuxth::token::Token>> = (LINES.iter())
+        .map(|line| fuxth::token::source("bench", line).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    for n in 0..compiles {
+        let tokens = lines
+            .get(n.checked_rem(lines.len()).unwrap_or(0))
+            .ok_or("no line")?;
+        if baseline {
+            black_box(tokens);
+            continue;
+        }
+        black_box(fux::script::compile(tokens).map_err(|e| format!("{e:?}"))?);
+    }
+    Ok(Done {
+        units: compiles,
         frames: 0,
         painted: 0,
     })

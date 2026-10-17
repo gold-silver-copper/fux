@@ -667,19 +667,6 @@ fn records(path: &Path) -> usize {
 }
 
 fn answer_of(out: &support::Output) -> Result<Answer, String> {
-    // At its time limit (124) a wait says so on stderr alone:
-    // `fux: timeout: …; %4 busy, the screen unchanged …`.
-    if out.stdout.trim().is_empty() && out.status == 124 {
-        let state = (out.stderr.split("; %").nth(1))
-            .and_then(|rest| rest.split([' ', ',']).nth(1))
-            .unwrap_or_default();
-        return Ok(Answer {
-            status: out.status,
-            state: state.to_owned(),
-            raw: out.stderr.trim().to_owned(),
-            ..Answer::default()
-        });
-    }
     let line = out.stdout.lines().next().unwrap_or_default();
     let value = json::parse(line)
         .map_err(|err| format!("fux answered {:?} {:?}: {err}", out.stdout, out.stderr))?;

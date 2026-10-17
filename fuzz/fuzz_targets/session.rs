@@ -10,8 +10,8 @@
 //! has open (`screens::Screen`), else through its bindings (`keymap::Held`,
 //! one keymap all clients share). Its actions go to the session, and its
 //! programs run in-process as that client (a screen one opens opens), as do
-//! the programs the session hands a client (`Outgoing::Run`) and keys sent
-//! to it (`Outgoing::Keys`).
+//! the programs the session hands a client (`ToAttached::Run`) and keys sent
+//! to it (`ToAttached::Keys`).
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
@@ -24,14 +24,30 @@ use fux::id::{ClientId, PaneId};
 use fux::keymap::{Held, Keymap};
 use fux::keys::Keystroke;
 use fux::outer;
-use fux::protocol::{Context, Reply, Request};
-use fux::render::{Grid, compose};
+use fux::protocol::{Asked, Context, Reply, ToAttached};
+use fux::render::{Grid, compose_view, paint_into};
 use fux::screens::{Effect, Screen};
 use fux::script::{Ask, Failed, Host, Local};
 use fux::session::{Begun, Origin, Outgoing, Session};
 use fux::view::Mode;
 use fuxth::Outcome as Ran;
 use libfuzzer_sys::fuzz_target;
+
+/// The client's screen as it should look now, in a grid of its own.
+fn compose(s: &Session, c: ClientId) -> Option<Grid> {
+    let view = s.views.get(&c)?;
+    let mut grid = Grid::new(0, 0);
+    compose_view(s, view, &mut grid, &mut fux::layout::Placement::default());
+    Some(grid)
+}
+
+/// The bytes that turn `old` (or nothing) into `new`.
+fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
+    let mut out = Vec::new();
+    let blank = Grid::new(new.rows, new.cols);
+    paint_into(old.unwrap_or(&blank), old.is_some(), new, &mut out);
+    out
+}
 
 /// Programs from the command line, while clients type: they change what
 /// clients are looking at, and the bindings and layers they are in.
@@ -205,7 +221,10 @@ impl Run {
     }
 
     fn attach(&mut self, rows: u16, cols: u16) {
-        if let Ok(id) = self.s.attach(rows, cols, None) {
+        if let Ok(id) = self
+            .s
+            .attach_as(fux::view::ClientKind::Terminal, rows, cols, None)
+        {
             self.keys.insert(id, Keys::default());
         }
     }
@@ -230,14 +249,14 @@ impl Run {
     /// A request of the session, as a server answers it: begun at once; a
     /// wait not waited on, there being no programs, and no time that both
     /// sessions share.
-    fn ask(&mut self, request: Request) -> Reply {
-        let origin = match request.context.client {
+    fn ask(&mut self, asked: Asked) -> Reply {
+        let origin = match asked.context.client {
             Some(client) if self.s.views.contains_key(&client) => Origin::Client(client),
             Some(_) | None => Origin::Cli(fux::session::Caller::default()),
         };
-        match self.s.begin(request.command, &origin) {
+        match self.s.begin(asked.request, &origin) {
             Begun::Done(outcome) => outcome,
-            Begun::Waiting(_) | Begun::Events(_) => Reply::default(),
+            Begun::Waiting(_) | Begun::Events(_) | Begun::Grant(..) => Reply::default(),
         }
     }
 
@@ -288,8 +307,8 @@ impl Run {
                     // builds it.
                     let context = host.context.clone();
                     let built = open.build(&mut |command| {
-                        Ok(self.ask(Request {
-                            command,
+                        Ok(self.ask(Asked {
+                            request: command.into(),
                             context: context.clone(),
                         }))
                     });
@@ -300,7 +319,7 @@ impl Run {
                 }
                 Ok(Ran::Suspended(Ask::Local(_))) => break Err("not in-process".to_owned()),
                 Ok(Ran::Suspended(Ask::Server {
-                    command,
+                    request,
                     client,
                     then,
                 })) => {
@@ -308,8 +327,7 @@ impl Run {
                     if client.is_some() {
                         context.client = client;
                     }
-                    let request = Request { command, context };
-                    let reply = self.ask(request);
+                    let reply = self.ask(Asked { request, context });
                     let values = fux::script::answered(reply, then);
                     let pushed = values.and_then(|values| {
                         values
@@ -389,7 +407,7 @@ impl Run {
         match outgoing {
             // What fux asks a client's terminal: when it attaches, and
             // after the terminal's answers.
-            Outgoing::Bytes(_, bytes)
+            Outgoing::To(_, ToAttached::Paint(bytes))
                 if [
                     outer::QUERIES,
                     outer::COLOUR_QUERIES,
@@ -398,8 +416,8 @@ impl Run {
                     outer::KITTY_PUSH,
                     outer::BELL,
                 ]
-                .contains(&bytes.as_slice()) => {}
-            Outgoing::Bytes(_, bytes) => {
+                .contains(&&*bytes) => {}
+            Outgoing::To(_, ToAttached::Paint(bytes)) => {
                 // Else OSC 52, with at most MAX_CLIPBOARD bytes of base64.
                 let payload = bytes
                     .strip_prefix(b"\x1b]52;c;")
@@ -412,17 +430,17 @@ impl Run {
                         .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
                 );
             }
-            Outgoing::Exit(client, _) => self.detach(client),
+            Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
+            // Sent only as a client attaches, by the server.
+            Outgoing::To(_, ToAttached::Welcome(..)) => panic!("a welcome from the session"),
             Outgoing::Shutdown { .. } => self.shut = true,
-            Outgoing::Run(client, code) => self.run_as(client, &code),
-            Outgoing::Ended(client) => {
-                if let Some(keys) = self.keys.get_mut(&client)
-                    && keys.screen.is_open()
-                {
-                    keys.screen = Screen::default();
+            Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code),
+            Outgoing::To(client, ToAttached::Ended(kind)) => {
+                if let Some(keys) = self.keys.get_mut(&client) {
+                    keys.screen.ended(kind);
                 }
             }
-            Outgoing::Keys(client, typed) => {
+            Outgoing::To(client, ToAttached::Keys(typed)) => {
                 for input in typed {
                     match input {
                         fux::command::Input::Key(press) => self.press(client, press.into()),
@@ -456,20 +474,21 @@ impl Run {
                     false,
                 )
             });
-            if !fux::render::compose_into(&self.s, c, spare, placement) {
+            let Some(view) = self.s.views.get(&c) else {
                 continue;
-            }
-            let whole = fux::render::compose(&self.s, c);
+            };
+            compose_view(&self.s, view, spare, placement);
+            let whole = compose(&self.s, c);
             assert!(
                 whole.as_ref() == Some(&*spare),
                 "{c}: composed in part, not as whole"
             );
             let old = painted.then_some(&*shown);
-            let fast = fux::render::paint(old, spare);
+            let fast = paint(old, spare);
             let (mut plain_old, mut plain_new) = (shown.clone(), spare.clone());
             plain_old.forget_memo();
             plain_new.forget_memo();
-            let slow = fux::render::paint(painted.then_some(&plain_old), &plain_new);
+            let slow = paint(painted.then_some(&plain_old), &plain_new);
             assert!(fast == slow, "{c}: the memo's paint differs");
             assert_eq!(
                 spare.same_as(shown),
@@ -550,7 +569,9 @@ impl Run {
     }
 
     fn screen_open(&self, client: ClientId) -> bool {
-        self.keys.get(&client).is_some_and(|k| k.screen.is_open())
+        self.keys
+            .get(&client)
+            .is_some_and(|k| k.screen.kind().is_some())
     }
 
     /// What a screen's key or paste led to: actions sent, programs run.
@@ -573,7 +594,7 @@ impl Run {
         };
         let read_only = view.read_only;
         let mut keys = self.keys.remove(&client).unwrap_or_default();
-        if keys.screen.is_open() && !read_only {
+        if keys.screen.kind().is_some() && !read_only {
             let effects = keys.screen.key(&self.keymap, stroke, read_only);
             self.keys.insert(client, keys);
             self.effects(client, effects);

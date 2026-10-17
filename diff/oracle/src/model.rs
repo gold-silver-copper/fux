@@ -14,7 +14,6 @@ pub enum Color {
     Default,
     Idx(u8),
     Rgb(u8, u8, u8),
-    Other(String),
 }
 
 /// An underline's style.
@@ -26,7 +25,6 @@ pub enum Underline {
     Curly,
     Dotted,
     Dashed,
-    Other(String),
 }
 
 /// How a cell blinks.
@@ -35,7 +33,6 @@ pub enum Blink {
     None,
     Slow,
     Rapid,
-    Other(String),
 }
 
 /// Colours and rendition: every attribute fux-vt keeps.
@@ -171,6 +168,7 @@ pub enum Heard {
     Title(Vec<u8>),
     IconName(Vec<u8>),
     Bell,
+    Notification(Vec<u8>),
     Clipboard {
         selection: Vec<u8>,
         data: Vec<u8>,
@@ -179,7 +177,6 @@ pub enum Heard {
         number: u8,
         bel: bool,
     },
-    OtherEvent(String),
     Csi {
         params: Vec<Vec<u16>>,
         intermediates: Vec<u8>,
@@ -189,7 +186,6 @@ pub enum Heard {
         intermediates: Vec<u8>,
         action: u8,
     },
-    OtherUnhandled(String),
 }
 
 /// The options a parser is made with, as fux-vt names them.
@@ -298,11 +294,9 @@ pub struct State {
     pub mouse: String,
     pub encoding: String,
     pub kitty_keyboard_flags: u8,
-    pub modify_other_keys: Option<u8>,
+    pub modify_other_keys: String,
     /// The pen, through `Screen::attributes`.
     pub pen: Style,
-    /// Whether `Screen::bgcolor` and `Screen::inverse` say what the pen says.
-    pub pen_getters_agree: bool,
     /// The link the program has open: its URI and id.
     pub hyperlink: Option<(String, Option<String>)>,
     pub history_len: usize,

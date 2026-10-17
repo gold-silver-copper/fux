@@ -306,9 +306,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         timed_out.stderr
     );
-    // A run whose program exits before the text: its pane on stdout, and
-    // why on one line of stderr, its last lines with it; what the words
-    // before it left is printed first.
+    // A run whose program exits before the text: its pane's answer on
+    // stdout, its last lines with it, and why on one line of stderr; what
+    // the words before it left is printed first.
     let exited = server.fux(&[
         "str",
         "before",
@@ -323,12 +323,11 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     ])?;
     assert_eq!(exited.status, 3, "{}", exited.stderr);
     assert!(
-        exited.stdout.starts_with("before\n%") && exited.stdout.lines().count() == 2,
+        exited.stdout.starts_with("before\n%") && exited.stdout.ends_with(" exited 5\nONE\nTWO\n"),
         "{}",
         exited.stdout
     );
     assert_eq!(exited.stderr.lines().count(), 1, "{}", exited.stderr);
-    assert!(exited.stderr.contains(r"ONE\nTWO"), "{}", exited.stderr);
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;
@@ -398,7 +397,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{inside}"
     );
     assert!(
-        inside.ends_with("(use: PANE TEXT type, which leaves [answer])\n"),
+        inside.ends_with("(use: PANE TEXT type, which leaves answer)\n"),
         "{inside}"
     );
     // Refused before `run` starts anything.
@@ -429,8 +428,8 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     // `help WORD` of no word says so, as help, and where, as any error.
     assert_eq!(
         said(&["help", "no-such-word"])?,
-        "fux: unknown_word: argument 2: help: no word \"no-such-word\" (`fux help` lists \
-         every word)\n"
+        "fux: unknown_word: argument 3: explain: no word \"no-such-word\" (`fux help` \
+         lists every word)\n"
     );
     let named = said(&["1", "let", "+7"])?;
     assert!(
@@ -637,4 +636,76 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
         "the startup ran whole: {screen}"
     );
     Ok(Ok(()))
+}
+
+/// A caller in a directory whose name is not UTF-8 starts what it runs
+/// there: the path's bytes reach the server as they are, not made text.
+/// Linux only: macOS's file systems refuse a name that is not UTF-8.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let server = Server::start("")?;
+    let dir = server.dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    std::fs::create_dir(&dir).map_err(e)?;
+    let out = std::process::Command::new(fux())
+        .args(["opts", "str", "touch here", "command", "run"])
+        .current_dir(&dir)
+        .env("FUX_SOCKET", &server.socket)
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .output()
+        .map_err(e)?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    eventually("the file it made there", || Ok(dir.join("here").exists()))
+}
+
+/// An argument that is not UTF-8 text is refused as a usage error, said,
+/// not a panic.
+#[test]
+fn an_argument_that_is_not_text_is_refused() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let out = std::process::Command::new(fux())
+        .arg("str")
+        .arg(std::ffi::OsStr::from_bytes(b"caf\xe9"))
+        .output()
+        .map_err(e)?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.starts_with("fux: usage: "), "{stderr}");
+    Ok(())
+}
+
+/// A wait's own status (124 here: still busy at the limit) is its answer's:
+/// the run exits with it while the answer is left, as itself, as its JSON,
+/// in a list, or the first of several; an answer dropped takes it away.
+#[test]
+fn an_answers_status_goes_where_the_answer_goes() -> Outcome {
+    let server = Server::start("")?;
+    let ticking = "while :; do date +%s%N; sleep 0.05; done";
+    let started = server.ok(&[
+        "opts", "str", "sh", "program", "str", "-c", "arg", "str", ticking, "arg", "0", "timeout",
+        "run",
+    ])?;
+    let pane = started.split_whitespace().next().unwrap_or_default();
+    let busy = ["str", pane, "pane", "opts", "1", "timeout", "wait"];
+    let status = |before: &[&str], after: &[&str]| -> Result<i32, String> {
+        Ok(server.fux(&[before, &busy[..], after].concat())?.status)
+    };
+    assert_eq!(status(&[], &[])?, 124, "left");
+    assert_eq!(status(&[], &["json"])?, 124, "its JSON");
+    assert_eq!(status(&["list"], &["end"])?, 124, "in a list");
+    assert_eq!(
+        status(&["list"], &["end", "json"])?,
+        124,
+        "the JSON of a list"
+    );
+    assert_eq!(status(&["str", "a"], &["str", "b"])?, 124, "of several");
+    assert_eq!(status(&[], &["drop", "str", "ok"])?, 0, "dropped");
+    Ok(())
 }

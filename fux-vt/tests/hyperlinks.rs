@@ -63,6 +63,25 @@ fn a_link_covers_the_cells_printed_while_it_is_open() -> Result {
     Ok(())
 }
 
+/// `references/modern/osc8_hyperlinks.md`, "The escape sequence": a link
+/// opens at an OSC 8 with a URI, "all subsequent cells that are painted"
+/// take it, and OSC 8 with no URI closes it. So DECRC, which is no OSC 8,
+/// reopens no link that DECSC saw open, and the blank a wide glyph leaves
+/// at a row's end when it wraps, which nothing paints, has no link. A URI
+/// with a byte outside 32 to 126 is undefined ("Encodings"): it opens no
+/// link, as a URI the spec forbids.
+#[test]
+fn only_osc_8_opens_and_closes_a_link_and_only_painted_cells_take_it() -> Result {
+    let p = parser(1, 4, 0, b"\x1b]8;;u\x1b\\a\x1b7\x1b]8;;\x1b\\\x1b8d")?;
+    assert_eq!(uris_at(&p, 0), expected(&["u", "-", "-", "-"]));
+    let p = parser(2, 3, 0, "\x1b]8;;u\x1b\\ab\u{754c}".as_bytes())?;
+    assert_eq!(uris_at(&p, 0), expected(&["u", "u", "-"]));
+    assert_eq!(uris_at(&p, 1), expected(&["u", "u", "-"]));
+    let p = parser(1, 4, 0, "\x1b]8;;http://\u{e4}.example/\x1b\\ab".as_bytes())?;
+    assert_eq!(uris_at(&p, 0), expected(&["-", "-", "-", "-"]));
+    Ok(())
+}
+
 /// The spec's `id`: cells of the same id and URI are one link, wherever
 /// and whenever they were printed; another URI, or no id, is another link.
 #[test]
@@ -253,7 +272,7 @@ fn links_past_their_limits_are_not_opened() -> Result {
         (&format!("id={id}"), "x", true),
         (&format!("id={id}i"), "x", false),
         ("", "http://é", false),
-        ("id=\x01", "x", false),
+        ("id=\t", "x", false),
     ] {
         let p = parser(1, 4, 0, open(params, uri).as_bytes())?;
         assert_eq!(p.screen().link(0, 0).map(|l| l.uri()), Some("x"));

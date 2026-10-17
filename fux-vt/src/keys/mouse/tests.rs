@@ -3,10 +3,9 @@ use crate::keys::decode::{Decoder, Input};
 
 const NONE: Modifiers = Modifiers::NONE;
 
-fn at(action: MouseAction, button: Option<MouseButton>, row: u16, col: u16) -> MouseEvent {
+fn at(action: MouseAction, row: u16, col: u16) -> MouseEvent {
     MouseEvent {
         action,
-        button,
         mods: NONE,
         row,
         col,
@@ -14,15 +13,15 @@ fn at(action: MouseAction, button: Option<MouseButton>, row: u16, col: u16) -> M
 }
 
 fn press(button: MouseButton, row: u16, col: u16) -> MouseEvent {
-    at(MouseAction::Press, Some(button), row, col)
+    at(MouseAction::Press(button), row, col)
 }
 
 fn release(button: MouseButton, row: u16, col: u16) -> MouseEvent {
-    at(MouseAction::Release, Some(button), row, col)
+    at(MouseAction::Release(Some(button)), row, col)
 }
 
 fn motion(button: Option<MouseButton>, row: u16, col: u16) -> MouseEvent {
-    at(MouseAction::Motion, button, row, col)
+    at(MouseAction::Motion(button), row, col)
 }
 
 /// What `event` reports in `mode` and `encoding`; `None` for nothing.
@@ -125,7 +124,7 @@ fn normal_tracking_reports_presses_releases_and_the_wheel_with_modifiers() {
         bytes(b"\x1b[M#!!")
     );
     assert_eq!(
-        default(at(MouseAction::Release, None, 0, 0), mode),
+        default(at(MouseAction::Release(None), 0, 0), mode),
         bytes(b"\x1b[M#!!")
     );
     // The wheel: 64 and 65 (plus 32: '`' and 'a'), never released.
@@ -216,7 +215,7 @@ fn sgr_names_the_button_released_and_ends_a_release_with_m() {
         bytes(b"\x1b[<2;1;1m")
     );
     assert_eq!(
-        sgr(at(MouseAction::Release, None, 0, 0), mode),
+        sgr(at(MouseAction::Release(None), 0, 0), mode),
         bytes(b"\x1b[<3;1;1m")
     );
     assert_eq!(
@@ -300,43 +299,44 @@ fn a_position_the_encoding_cannot_carry_sends_nothing() {
 fn every_report_decodes_to_its_event() {
     for mode in MODES {
         for encoding in [MouseProtocolEncoding::Default, MouseProtocolEncoding::Sgr] {
-            for button in MouseButton::ALL.iter().copied().map(Some).chain([None]) {
-                for action in [
-                    MouseAction::Press,
-                    MouseAction::Release,
-                    MouseAction::Motion,
-                ] {
-                    for (shift, alt, ctrl) in [(false, false, false), (true, true, true)] {
-                        let event = MouseEvent {
-                            action,
-                            button,
-                            mods: Modifiers { ctrl, alt, shift },
-                            row: 7,
-                            col: 200,
-                        };
-                        let Some(sent) = report(event, mode, encoding) else {
-                            continue;
-                        };
-                        let mut inputs = Vec::new();
-                        Decoder::default().bytes(&sent, &mut inputs);
-                        // What the report carries: X10 leaves out the
-                        // modifiers; the default encoding, which button
-                        // was released.
-                        let mut expected = event;
-                        if mode == MouseProtocolMode::Press {
-                            expected.mods = NONE;
-                        }
-                        if encoding == MouseProtocolEncoding::Default
-                            && action == MouseAction::Release
-                        {
-                            expected.button = None;
-                        }
-                        assert_eq!(
-                            inputs,
-                            vec![Input::Mouse(expected)],
-                            "{event:?} {mode:?} {encoding:?} {sent:?}"
-                        );
+            let named = MouseButton::ALL.into_iter().flat_map(|button| {
+                [
+                    MouseAction::Press(button),
+                    MouseAction::Release(Some(button)),
+                    MouseAction::Motion(Some(button)),
+                ]
+            });
+            let unnamed = [MouseAction::Release(None), MouseAction::Motion(None)];
+            for action in named.chain(unnamed) {
+                for (shift, alt, ctrl) in [(false, false, false), (true, true, true)] {
+                    let event = MouseEvent {
+                        action,
+                        mods: Modifiers { ctrl, alt, shift },
+                        row: 7,
+                        col: 200,
+                    };
+                    let Some(sent) = report(event, mode, encoding) else {
+                        continue;
+                    };
+                    let mut inputs = Vec::new();
+                    Decoder::default().bytes(&sent, &mut inputs);
+                    // What the report carries: X10 leaves out the
+                    // modifiers; the default encoding, which button
+                    // was released.
+                    let mut expected = event;
+                    if mode == MouseProtocolMode::Press {
+                        expected.mods = NONE;
                     }
+                    if encoding == MouseProtocolEncoding::Default
+                        && let MouseAction::Release(_) = action
+                    {
+                        expected.action = MouseAction::Release(None);
+                    }
+                    assert_eq!(
+                        inputs,
+                        vec![Input::Mouse(expected)],
+                        "{event:?} {mode:?} {encoding:?} {sent:?}"
+                    );
                 }
             }
         }

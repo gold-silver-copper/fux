@@ -50,7 +50,9 @@ line, the deepest first; `print` prints a value at once.
   application does something (asks a server); the run goes on once it has the
   answer. All of a run's state is data: no threads, no blocking, no Rust
   recursion in running a program, and dropping it stops it. A budget of steps
-  lets the host check for Ctrl-C in a loop that never pauses.
+  lets the host check for Ctrl-C in a loop that never pauses, and
+  `Machine::steps` counts every step taken, through every pause, for a host
+  that caps a run.
 - **Bounded.** 1,000,000 values on the stack, 10,000 nested calls; a string or
   list built holds at most 1,000,000 elements, a run builds at most
   16,000,000 in all, and a list holds at most 16,000,000 in all, counting
@@ -107,7 +109,7 @@ comments at a word's start.
 use fuxth::{Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary, token};
 
 let mut words = Vocabulary::default();
-let ask = words.add("ask", 1, 1..=1);   // takes one value, gives one
+let ask = words.add("ask", 1, 1);   // takes one value, gives one
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
@@ -124,9 +126,10 @@ loop {
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
-host pushes before running the machine again. `print(line)` prints. A word
-gives as many values as its vocabulary says (a range, for one that gives a
-value only sometimes): the checker counts on it, and the machine fails a run
+host pushes before running the machine again; `machine.at()` is the token
+of the word it stopped at, and `machine.next()` the one it takes next, if its
+program has one. `print(line)` prints. A word
+gives as many values as its vocabulary says: the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise. A word that is one step (`dup`
 is `0 pick`) is copied in where it is called, so a mistake in it is placed
 at the call.

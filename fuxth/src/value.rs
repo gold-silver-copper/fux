@@ -117,22 +117,13 @@ impl Text {
 
     /// Character `i` replaced by `other`; nothing if there is none.
     pub fn replace(&mut self, i: usize, other: &Text) {
-        let start = if self.ascii {
-            Some(i).filter(|i| *i < self.text.len())
-        } else {
-            self.text.char_indices().nth(i).map(|(at, _)| at)
-        };
-        let Some(start) = start else {
+        if i >= self.chars {
             return;
-        };
-        let end = (self.text.get(start..))
-            .and_then(|rest| rest.chars().next())
-            .map_or(start, |c| start.saturating_add(c.len_utf8()));
-        let (head, tail) = (self.text.get(..start), self.text.get(end..));
+        }
         let mut text = String::with_capacity(self.text.len().saturating_add(other.text.len()));
-        text.push_str(head.unwrap_or_default());
+        text.push_str(self.part(0, i));
         text.push_str(&other.text);
-        text.push_str(tail.unwrap_or_default());
+        text.push_str(self.part(i.saturating_add(1), self.chars));
         self.text = text;
         self.chars = self.chars.saturating_sub(1).saturating_add(other.chars);
         self.ascii = (self.ascii && other.ascii) || self.text.is_ascii();
@@ -146,15 +137,6 @@ impl Text {
     /// Whether every character is ASCII.
     pub fn is_ascii(&self) -> bool {
         self.ascii
-    }
-
-    /// Character `i`, from 0.
-    pub fn char_at(&self, i: usize) -> Option<char> {
-        if self.ascii {
-            self.text.as_bytes().get(i).map(|b| char::from(*b))
-        } else {
-            self.text.chars().nth(i)
-        }
     }
 
     /// The characters from `from` up to before `to`.
@@ -204,7 +186,7 @@ pub struct List<A> {
 
 /// Two lists are equal when their values are.
 impl<A: PartialEq> PartialEq for List<A> {
-    fn eq(&self, other: &List<A>) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         self.items == other.items
     }
 }
@@ -218,14 +200,14 @@ impl<A> List<A> {
 
     /// A list of `items`; `None` if it would nest deeper than [`NESTING`]
     /// or hold more than [`TOTAL`] in all.
-    pub fn new(items: Vec<Value<A>>) -> Option<List<A>> {
+    pub fn new(items: Vec<Value<A>>) -> Option<Self> {
         let inner = items.iter().map(Value::depth).max().unwrap_or(0);
         let depth = inner.checked_add(1).filter(|d| *d <= NESTING)?;
         let weight = items
             .iter()
             .try_fold(0u64, |all, item| all.checked_add(item.weight()))?;
         let weight = weight.checked_add(1).filter(|w| *w <= TOTAL)?;
-        Some(List {
+        Some(Self {
             items,
             depth,
             weight,
@@ -271,10 +253,8 @@ impl<A: AppValue> Value<A> {
     /// What kind it is, as an error says it.
     pub fn kind(&self) -> &'static str {
         match self {
-            Value::App(a) => a.kind(),
-            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) => {
-                Kind::of(self).said()
-            }
+            Self::App(a) => a.kind(),
+            Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::List(_) => Kind::of(self).said(),
         }
     }
 
@@ -282,8 +262,8 @@ impl<A: AppValue> Value<A> {
     /// `list`, or the application's kind without its article (`pane`).
     pub fn kind_name(&self) -> &'static str {
         match self {
-            Value::App(a) => a.name(),
-            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) => bare(self.kind()),
+            Self::App(a) => a.name(),
+            Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::List(_) => bare(self.kind()),
         }
     }
 
@@ -309,11 +289,11 @@ impl<A: AppValue> Value<A> {
     /// it wasn't.
     fn write_text(&self, out: &mut String, bytes: usize) -> bool {
         match self {
-            Value::Int(n) => out.push_str(&n.to_string()),
-            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Value::Str(s) => out.push_str(s),
+            Self::Int(n) => out.push_str(&n.to_string()),
+            Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Self::Str(s) => out.push_str(s),
             // As deep as lists nest, at most `NESTING`.
-            Value::List(list) => {
+            Self::List(list) => {
                 for (i, item) in list.items.iter().enumerate() {
                     if i > 0 {
                         out.push(' ');
@@ -323,15 +303,15 @@ impl<A: AppValue> Value<A> {
                     }
                 }
             }
-            Value::App(a) => out.push_str(&a.text()),
+            Self::App(a) => out.push_str(&a.text()),
         }
         out.len() <= bytes
     }
 }
 
 impl<A> Value<A> {
-    pub fn str(text: impl Into<String>) -> Value<A> {
-        Value::Str(Rc::new(Text::new(text)))
+    pub fn str(text: impl Into<String>) -> Self {
+        Self::Str(Rc::new(Text::new(text)))
     }
 
     /// How much it holds in all: a list counts its values' weights and
@@ -339,26 +319,17 @@ impl<A> Value<A> {
     /// value goes through about this many things.
     pub fn weight(&self) -> u64 {
         match self {
-            Value::List(list) => list.weight,
-            Value::Str(s) => u64::try_from(s.chars_len()).unwrap_or(u64::MAX).max(1),
-            Value::Int(_) | Value::Bool(_) | Value::App(_) => 1,
+            Self::List(list) => list.weight,
+            Self::Str(s) => u64::try_from(s.chars_len()).unwrap_or(u64::MAX).max(1),
+            Self::Int(_) | Self::Bool(_) | Self::App(_) => 1,
         }
     }
 
     /// How deep it nests: 0 for anything but a list.
     pub fn depth(&self) -> u8 {
         match self {
-            Value::List(list) => list.depth,
-            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => 0,
-        }
-    }
-
-    /// How many elements a string or list has; 0 for anything else.
-    pub fn size(&self) -> usize {
-        match self {
-            Value::Str(s) => s.chars_len(),
-            Value::List(list) => list.items.len(),
-            Value::Int(_) | Value::Bool(_) | Value::App(_) => 0,
+            Self::List(list) => list.depth,
+            Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::App(_) => 0,
         }
     }
 }

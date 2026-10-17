@@ -1,31 +1,34 @@
 //! The server: one thread (but for fuxix's watchdog while a PTY opens on
 //! macOS), one `poll` loop over the listening socket, a signal pipe, every
 //! client and every pane's PTY.
+use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{Event, Snapshot, Subscription};
+use crate::events::{BACKLOG, Ending, Snapshot, Subscription};
 use crate::id::{ClientId, PaneId};
-use crate::json::Json;
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, End, Frame, Hello, MAX_PAYLOAD, Mismatch, Reply, Request, Role,
-    ServerFrame,
+    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
+    ToAttached, ToCommand, split_into,
 };
 use crate::render::{self, Grid};
-use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer};
+use crate::session::{Begun, Caller, Came, Dying, Origin, Outgoing, Session, Timer, Within};
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
+use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
-use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
+use signal_hook::consts::SIGCHLD;
+use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
+use std::mem;
 use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Writes to the server's log, its stderr: `log!("…", args)` expands to
@@ -145,17 +148,22 @@ enum Wake {
     Stop,
     /// A connection's client may be painted (`Conn::paint_due`).
     Paint(usize),
-    /// A connection's wait is to be asked for its answer (`Waiting::due`).
-    Answer,
-    /// The layout is saved, if it changed.
-    Save,
-    /// A restore's thread is looked at again (`Server::after_restore`).
-    Restore,
+    /// The loop runs again, which after every wake asks the waits for
+    /// their answers (`Waiting::due`), saves the layout if it changed, and
+    /// looks at a restore's thread again (`Server::after_restore`).
+    Look,
 }
 
-/// A client's connection: its socket, and where it is in its life.
+/// What a connection comes over: a socket, or a door's two FIFOs, which
+/// carry no descriptor (`crate::door`).
+enum Wire {
+    Socket(UnixStream),
+    Door(crate::door::Fifos),
+}
+
+/// A client's connection: its wire, and where it is in its life.
 struct Conn {
-    stream: UnixStream,
+    wire: Wire,
     decoder: Decoder,
     out: ByteQueue,
     stage: Stage,
@@ -187,7 +195,7 @@ enum Stage {
     /// Its request waits for the restore that runs to end, so that it takes
     /// no id the restore asks for (`Server::request`). It is read only to
     /// notice the client go.
-    Held(Box<Request>),
+    Held(Box<Asked>),
     /// Its request waits for its pane (`wait`): it is answered once the
     /// wait has an answer. It is read only to notice the client go.
     Waiting(Box<Waiting>),
@@ -214,6 +222,19 @@ impl Stage {
             | Stage::Waiting(_)
             | Stage::Events(_) => true,
             Stage::Closing | Stage::Dead => false,
+        }
+    }
+
+    /// Whether a request of its is under way: held, waiting or streaming.
+    fn asked(&self) -> bool {
+        match self {
+            Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => true,
+            Stage::Hello(_)
+            | Stage::Attaching(..)
+            | Stage::Attached(_)
+            | Stage::Command
+            | Stage::Closing
+            | Stage::Dead => false,
         }
     }
 }
@@ -257,7 +278,7 @@ struct PaintClock {
 impl PaintClock {
     /// A paint was made at `now`.
     fn painted(&mut self, now: Instant) {
-        self.next = crate::after(now, PAINT);
+        self.next = after(now, PAINT);
         self.due = self.next;
     }
     /// Pane `pane` wrote, read at `now`: the echo of a keystroke into it is
@@ -268,7 +289,7 @@ impl PaintClock {
             self.echo = None;
             (self.next, self.due) = (now, now);
         } else if now < self.next {
-            self.due = crate::after(now, QUIET).min(self.next);
+            self.due = after(now, QUIET).min(self.next);
         }
     }
 }
@@ -302,7 +323,7 @@ impl TakenTerminal {
     /// for it closed.
     fn give_back(mut self, out: &mut ByteQueue) {
         if self.flush() && !self.out.is_empty() {
-            ServerFrame::split_into(self.out.as_slice(), ServerFrame::Paint, out);
+            split_into(self.out.as_slice(), ToAttached::Paint, out);
         }
     }
 }
@@ -312,9 +333,9 @@ impl TakenTerminal {
 fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
     while !out.is_empty() {
         match fuxix::io::write(&fd, out.as_slice()) {
-            Ok(0) | Err(fuxix::Errno::AGAIN) => break,
+            Ok(0) | Err(Errno::AGAIN) => break,
             Ok(n) => out.take(n),
-            Err(fuxix::Errno::INTR) => continue,
+            Err(Errno::INTR) => continue,
             Err(_) => return false,
         }
     }
@@ -357,15 +378,15 @@ impl Attached {
     fn paint(&mut self, out: &mut ByteQueue, bytes: &[u8]) {
         match &mut self.tty {
             Some(tty) => tty.out.push(bytes),
-            None => ServerFrame::split_into(bytes, ServerFrame::Paint, out),
+            None => split_into(bytes, ToAttached::Paint, out),
         }
     }
 }
 
 impl Conn {
-    fn new(stream: UnixStream, grant: Option<PathBuf>) -> Conn {
+    fn new(wire: Wire, grant: Option<PathBuf>) -> Conn {
         Conn {
-            stream,
+            wire,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
             stage: Stage::Hello(None),
@@ -402,14 +423,22 @@ impl Conn {
     }
 
     /// Moves the connection on to `next`. One that was attached has its
-    /// client detached and its terminal given back; one that is dead stays
-    /// so.
+    /// client detached and its terminal given back, with its own cursor
+    /// shape; one that is dead stays so.
     fn enter(&mut self, session: &mut Session, next: Stage) {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
-        if let Stage::Attached(attached) = std::mem::replace(&mut self.stage, next) {
+        if let Stage::Attached(mut attached) = mem::replace(&mut self.stage, next) {
             session.detach(attached.client);
+            // A cursor shape a pane set is given back as the terminal's own
+            // (`render::cursor_shape`); one never set is left as it was.
+            let mut shape = Vec::new();
+            let initial = fux_vt::CursorShape::Initial;
+            render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut shape);
+            if !shape.is_empty() {
+                attached.paint(&mut self.out, &shape);
+            }
             if let Some(tty) = attached.tty {
                 tty.give_back(&mut self.out);
             }
@@ -418,32 +447,54 @@ impl Conn {
 
     /// Encodes a frame straight into the output; a connection whose frame
     /// cannot be encoded fails.
-    fn send(&mut self, session: &mut Session, frame: &ServerFrame) {
+    fn send<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>) {
         if self.out.push_with(|out| frame.encode_into(out)).is_err() {
             self.enter(session, Stage::Dead);
         }
     }
 
-    /// Answers a request with its outcome, and takes the next.
+    /// Answers a request with its outcome, encoded once and sent in pieces
+    /// as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, reply: Reply) {
         let bytes = crate::wire::encode(&reply);
-        if bytes.len() < MAX_PAYLOAD {
-            self.send(session, &ServerFrame::Reply(Box::new(reply)));
-        } else {
-            // Too large for one frame: in pieces, then the end.
-            ServerFrame::split_into(&bytes, ServerFrame::Part, &mut self.out);
-            self.send(session, &ServerFrame::PartsEnd);
-        }
-        if matches!(self.stage, Stage::Waiting(_) | Stage::Events(_)) {
+        split_into(&bytes, ToCommand::Part, &mut self.out);
+        self.send(session, &ToCommand::PartsEnd);
+        if self.stage.asked() {
             self.enter(session, Stage::Command);
         }
     }
 
+    /// Ends a stream of events so, `json` or not: its last line, then its
+    /// reply.
+    fn ends(&mut self, session: &mut Session, json: bool, ending: &Ending) {
+        let line = ending.line(json);
+        split_into(line.as_bytes(), ToCommand::Stdout, &mut self.out);
+        self.answer(session, ending.reply());
+    }
+
     /// Sends the connection's last frame, its client detached and its
     /// terminal given back first: it closes once what waits is sent.
-    fn end(&mut self, session: &mut Session, frame: &ServerFrame) {
+    fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>) {
         self.enter(session, Stage::Closing);
         self.send(session, frame);
+    }
+
+    /// Sends the client attached here `frame`: bytes for its terminal
+    /// written there if the server took it, else framed; an `Exit` as its
+    /// last frame.
+    fn tell(&mut self, session: &mut Session, frame: &ToAttached) {
+        match frame {
+            ToAttached::Paint(bytes) => {
+                if let Stage::Attached(attached) = &mut self.stage {
+                    attached.paint(&mut self.out, bytes);
+                }
+            }
+            ToAttached::Exit(_) => self.end(session, frame),
+            ToAttached::Welcome(..)
+            | ToAttached::Ended(_)
+            | ToAttached::Run(_)
+            | ToAttached::Keys(_) => self.send(session, frame),
+        }
     }
 
     /// Writes what waits for the client's terminal, as far as it takes it;
@@ -456,7 +507,7 @@ impl Conn {
             && !tty.flush()
         {
             attached.tty = None;
-            self.end(session, &ServerFrame::Exit("detached: the terminal closed"));
+            self.end(session, &ToAttached::Exit("detached: the terminal closed"));
         }
     }
 
@@ -465,7 +516,11 @@ impl Conn {
     /// for its terminal is written too.
     fn flush(&mut self, session: &mut Session) {
         self.flush_tty(session);
-        if !write_out(&self.stream, &mut self.out) {
+        let written = match &self.wire {
+            Wire::Socket(stream) => write_out(stream, &mut self.out),
+            Wire::Door(fifos) => write_out(&fifos.down, &mut self.out),
+        };
+        if !written {
             self.enter(session, Stage::Dead);
         }
     }
@@ -478,11 +533,11 @@ pub struct Server {
     /// Where the layout is saved, for a server after a crash to bring
     /// back; none if there is nowhere to.
     saved: Option<Saved>,
-    children: std::io::PipeReader,
+    children: crate::SignalPipe,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
     killed: Vec<Leader>,
-    stops: std::io::PipeReader,
+    stops: crate::SignalPipe,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -495,7 +550,7 @@ pub struct Server {
     /// A descriptor held in reserve, so that a connection that arrives when
     /// all others are taken can still be accepted and told why it is
     /// refused (bevy-final findings 006 and 012).
-    spare: Option<std::fs::File>,
+    spare: Option<File>,
     shortage: Option<Shortage>,
     /// When an `accept` failure other than a shortage was last logged.
     accept_logged: Option<Instant>,
@@ -551,11 +606,18 @@ impl Saved {
                 let home = std::env::var_os("HOME").map(PathBuf::from)?;
                 Some(home.join(".local").join("state"))
             })?;
-        // `/` read as `%`, and `%` itself as `%25`: no two sockets share one.
-        let name = (socket.path().to_string_lossy())
-            .replace('%', "%25")
-            .replace('/', "%");
-        let name = format!("{}.layout", name.trim_start_matches('%'));
+        // Each part of the path, `%` in it written `%25`, the parts joined
+        // by `%`: no two sockets share one, and one path spelt two ways
+        // (`/run//x.sock`, `/run/./x.sock`) has one.
+        let parts: Vec<String> = (socket.path().components())
+            .filter_map(|part| match part {
+                Component::Normal(_) | Component::ParentDir => {
+                    Some(part.as_os_str().to_string_lossy().replace('%', "%25"))
+                }
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+            })
+            .collect();
+        let name = format!("{}.layout", parts.join("%"));
         Some(Saved {
             path: base.join("fux").join(name),
             written: String::new(),
@@ -571,7 +633,7 @@ impl Saved {
     /// thread of its own, as the server serves it; that thread, if there is
     /// one: it is not saved over while it comes back.
     fn restore(&self, socket: &SocketPath) -> Option<std::thread::JoinHandle<()>> {
-        let text = match std::fs::read_to_string(&self.path) {
+        let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == ErrorKind::NotFound => return None,
             Err(e) => {
@@ -588,7 +650,7 @@ impl Saved {
                     Err(error) => {
                         // Kept aside, not saved over, for a person to look at.
                         let aside = path.with_extension("layout.failed");
-                        let _ = std::fs::rename(&path, &aside);
+                        let _ = fs::rename(&path, &aside);
                         log!(
                             "could not bring back {}: {error}; the file kept as {}",
                             path.display(),
@@ -613,7 +675,7 @@ impl Saved {
         }
         self.save(session);
         self.shape = shape;
-        self.at = crate::after(now, SAVE_EVERY);
+        self.at = after(now, SAVE_EVERY);
     }
 
     /// Saves the layout as it is, if it changed and no restore is under
@@ -639,13 +701,13 @@ impl Saved {
     /// that in place: a crash leaves the old layout or the new, never half.
     fn write(&self, text: &str) -> std::io::Result<()> {
         if let Some(dir) = self.path.parent() {
-            std::fs::DirBuilder::new()
+            fs::DirBuilder::new()
                 .recursive(true)
                 .mode(0o700)
                 .create(dir)?;
         }
         let temporary = self.path.with_extension("layout.new");
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
@@ -653,27 +715,13 @@ impl Saved {
             .open(&temporary)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
-        std::fs::rename(&temporary, &self.path)
+        fs::rename(&temporary, &self.path)
     }
 
     /// Whether a restore is under way: its thread has not ended, however
     /// it ended.
     fn restoring(&self) -> bool {
         (self.restore.as_ref()).is_some_and(|thread| !thread.is_finished())
-    }
-
-    /// The last save: the server stops. With `keep`, the layout as it is,
-    /// before its panes end, is what the next brings back; else none is
-    /// (the server was stopped on purpose, or its last pane closed).
-    fn stop(mut self, session: &Session, keep: bool) {
-        match keep {
-            true => self.save(session),
-            false => self.forget_file(),
-        }
-    }
-
-    fn forget_file(&self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -702,7 +750,7 @@ fn grant(
         Ok(name) => name,
         Err(error) => return failed(error.to_string()),
     };
-    let checked = crate::socket::checked(&path.to_string_lossy(), "grant");
+    let checked = crate::socket::checked(&path, "grant");
     let opened = match checked
         .map_err(Error::Socket)
         .and_then(|s| Listening::open(&s))
@@ -741,12 +789,12 @@ impl std::error::Error for Error {}
 /// closes.
 pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let listening = Listening::open(socket)?;
-    let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
+    let children = crate::SignalPipe::new(&[SIGCHLD]).map_err(Error::Setup)?;
     // Orphans the panes' programs leave stay the server's to read and reap.
     if let Err(errno) = fuxix::process::adopt_orphans() {
         log!("adopting orphans: {errno}");
     }
-    let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
+    let stops = crate::SignalPipe::new(&crate::STOPS).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
     let mut session = Session::new(
         crate::config::Config::default(),
@@ -756,7 +804,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let mut saved = Saved::of(socket);
     let restoring = match &mut saved {
         Some(saved) if fresh => {
-            saved.forget_file();
+            let _ = fs::remove_file(&saved.path);
             false
         }
         Some(saved) => {
@@ -783,7 +831,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         paint_buffer: Vec::new(),
         slots: Vec::new(),
         ready: Vec::new(),
-        spare: std::fs::File::open("/dev/null").ok(),
+        spare: File::open("/dev/null").ok(),
         shortage: None,
         accept_logged: None,
     };
@@ -847,18 +895,18 @@ impl Server {
             }
             let timeout = (self.wakes().map(|(at, _)| at).min())
                 .map(|at| at.saturating_duration_since(Instant::now()));
-            let mut ready = std::mem::take(&mut self.ready);
+            let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
                 match slot {
                     Slot::Listener(grant) => self.accept(grant),
                     Slot::Door(grant) => self.open_door(grant),
                     Slot::Children => {
-                        crate::drain(&self.children);
+                        crate::drain(self.children.pipe());
                         self.reap();
                     }
                     Slot::Stops => {
-                        crate::drain(&self.stops);
+                        crate::drain(self.stops.pipe());
                         // A signal (a shutdown, a logout) keeps the layout
                         // for the next server to bring back.
                         self.stop("stopped by a signal".into(), true);
@@ -881,16 +929,16 @@ impl Server {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
-        let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Save)));
+        let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Look)));
         let restore = (self.saved.as_ref()).filter(|s| s.restore.is_some());
-        let restore = restore.map(|_| (crate::after(Instant::now(), RESTORE_LOOK), Wake::Restore));
+        let restore = restore.map(|_| (after(Instant::now(), RESTORE_LOOK), Wake::Look));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| {
             let Stage::Waiting(waiting) = &conn.stage else {
                 return None;
             };
-            Some((waiting.due(), Wake::Answer))
+            Some((waiting.due(), Wake::Look))
         });
         session
             .chain(grace)
@@ -926,7 +974,7 @@ impl Server {
             }
             // The loop answers waits and saves after every wake: these only
             // set when it wakes.
-            Wake::Answer | Wake::Save | Wake::Restore => {}
+            Wake::Look => {}
         }
         ControlFlow::Continue(())
     }
@@ -950,9 +998,9 @@ impl Server {
                 continue;
             };
             if let Stage::Held(_) = conn.stage
-                && let Stage::Held(held) = std::mem::replace(&mut conn.stage, Stage::Command)
+                && let Stage::Held(held) = mem::replace(&mut conn.stage, Stage::Command)
             {
-                self.request(index, held.command, held.context);
+                self.request(index, held.request, held.context);
             }
         }
     }
@@ -985,31 +1033,16 @@ impl Server {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
             };
-            let (lines, over) = subscription.told(&now, &self.session);
-            if over {
-                ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let gone = Reply {
-                    end: End::Failed {
-                        status: crate::wait::GONE,
-                        code: Code::Gone,
-                        message: "everything it watched has closed".into(),
-                    },
-                    ..Reply::default()
-                };
-                conn.answer(&mut self.session, gone);
-                continue;
+            let (lines, gone) = subscription.told(&now, &self.session);
+            let json = subscription.json;
+            // Behind with lines to tell: they are lost, and so is the stream.
+            let lost = gone.is_none() && !lines.is_empty() && conn.out.len() > BACKLOG;
+            if !lost {
+                split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
             }
-            if lines.is_empty() {
-                continue;
+            if let Some(ending) = gone.or(lost.then_some(Ending::Lost)) {
+                conn.ends(&mut self.session, json, &ending);
             }
-            if conn.out.len() > crate::events::BACKLOG {
-                let lost = Event::stream("lost", Vec::new()).line(subscription.json);
-                ServerFrame::split_into(lost.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                let lost = Reply::failed(Code::Lost, "events: the reader fell too far behind");
-                conn.answer(&mut self.session, lost);
-                continue;
-            }
-            ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
         }
     }
 
@@ -1027,8 +1060,12 @@ impl Server {
         ready.clear();
         let slots = &mut self.slots;
         slots.clear();
-        // Built afresh, as it borrows the descriptors.
+        // Built afresh, as it borrows the descriptors; each with its slot.
         let mut fds = Vec::new();
+        let mut add = |fd, slot| {
+            fds.push(fd);
+            slots.push(slot);
+        };
         if let Phase::Serving {
             listening,
             resting: None,
@@ -1036,19 +1073,18 @@ impl Server {
         {
             for (grant, (_, listening)) in listening.iter().enumerate() {
                 if let Some(listener) = &listening.listener {
-                    fds.push(PollFd::new(listener, PollFlags::IN));
-                    slots.push(Slot::Listener(grant));
+                    add(PollFd::new(listener, PollFlags::IN), Slot::Listener(grant));
                 }
                 if let Some(door) = &listening.door {
-                    fds.push(PollFd::new(door.fd(), PollFlags::IN));
-                    slots.push(Slot::Door(grant));
+                    add(PollFd::new(door.fd(), PollFlags::IN), Slot::Door(grant));
                 }
             }
         }
-        fds.push(PollFd::new(&self.children, PollFlags::IN));
-        slots.push(Slot::Children);
-        fds.push(PollFd::new(&self.stops, PollFlags::IN));
-        slots.push(Slot::Stops);
+        add(
+            PollFd::new(self.children.pipe(), PollFlags::IN),
+            Slot::Children,
+        );
+        add(PollFd::new(self.stops.pipe(), PollFlags::IN), Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is open only while it has
             // something to write.
@@ -1060,8 +1096,18 @@ impl Server {
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
-            fds.push(PollFd::new(&conn.stream, flags));
-            slots.push(Slot::Conn(i));
+            match &conn.wire {
+                Wire::Socket(stream) => add(PollFd::new(stream, flags), Slot::Conn(i)),
+                // Each FIFO for its own way, and for its end.
+                Wire::Door(fifos) => {
+                    if flags.intersects(PollFlags::IN) {
+                        add(PollFd::new(&fifos.up, PollFlags::IN), Slot::Conn(i));
+                    }
+                    if flags.intersects(PollFlags::OUT) {
+                        add(PollFd::new(&fifos.down, PollFlags::OUT), Slot::Conn(i));
+                    }
+                }
+            }
             // Polled for its hangup, and for room to write what waits.
             if let Stage::Attached(attached) = &conn.stage
                 && let Some(tty) = &attached.tty
@@ -1070,8 +1116,7 @@ impl Server {
                     true => PollFlags::HUP,
                     false => PollFlags::OUT,
                 };
-                fds.push(PollFd::new(&tty.fd, flags));
-                slots.push(Slot::Tty(i));
+                add(PollFd::new(&tty.fd, flags), Slot::Tty(i));
             }
         }
         for (id, pane) in &self.session.panes {
@@ -1080,12 +1125,11 @@ impl Server {
                 if !pane.input.is_empty() {
                     flags |= PollFlags::OUT;
                 }
-                fds.push(PollFd::new(&child.master, flags));
-                slots.push(Slot::Pane(*id));
+                add(PollFd::new(&child.master, flags), Slot::Pane(*id));
             }
         }
         match fuxix::poll::poll(&mut fds, timeout) {
-            Ok(_) | Err(fuxix::Errno::INTR) => {}
+            Ok(_) | Err(Errno::INTR) => {}
             Err(error) => log!("poll: {error}"),
         }
         ready.extend(
@@ -1104,12 +1148,20 @@ impl Server {
             return;
         }
         log!("{reason}");
-        // Nothing more is saved (or what was, forgotten).
-        if let Some(saved) = self.saved.take() {
-            saved.stop(&self.session, keep);
+        // Nothing more is saved (or what was, forgotten). The last save:
+        // with `keep`, the layout as it is, before its panes end, is what
+        // the next server brings back; else none is (the server was stopped
+        // on purpose, or its last pane closed).
+        if let Some(mut saved) = self.saved.take() {
+            match keep {
+                true => saved.save(&self.session),
+                false => {
+                    let _ = fs::remove_file(&saved.path);
+                }
+            }
         }
         // The sockets go first: from now on a client finds no server.
-        self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
+        self.phase = Phase::Stopping(after(Instant::now(), STOP_WAIT));
         self.session.grants.clear();
         self.session.shutdown();
         // Every connection still open ends, so no command runs on what is
@@ -1119,47 +1171,34 @@ impl Server {
             // A stream says why it ends, as one of its lines, and ends as a
             // command that is done.
             if let Stage::Events(subscription) = &conn.stage {
-                let reason = Json::str(reason.clone());
-                let stopped = Event::stream("stopped", vec![("reason", reason)]);
-                let line = stopped.line(subscription.json);
-                ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
-                conn.answer(&mut self.session, Reply::default());
+                let json = subscription.json;
+                conn.ends(&mut self.session, json, &Ending::Stopped(reason.clone()));
             }
-            if conn.stage.reads() {
-                conn.end(&mut self.session, &ServerFrame::Exit(&exit));
+            let session = &mut self.session;
+            match conn.stage {
+                Stage::Hello(_) => conn.end(session, &Greeting::Exit(&exit)),
+                Stage::Attaching(..) | Stage::Attached(_) => {
+                    conn.end(session, &ToAttached::Exit(&exit));
+                }
+                Stage::Command | Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => {
+                    conn.end(session, &ToCommand::Exit(&exit));
+                }
+                Stage::Closing | Stage::Dead => {}
             }
         }
     }
 
     fn flush_outbox(&mut self) {
-        for outgoing in std::mem::take(&mut self.session.outbox) {
-            let client = match outgoing {
+        for outgoing in mem::take(&mut self.session.outbox) {
+            let (client, frame) = match outgoing {
                 Outgoing::Shutdown { reason, keep } => {
                     self.stop(reason, keep);
                     continue;
                 }
-                Outgoing::Bytes(client, _)
-                | Outgoing::Exit(client, _)
-                | Outgoing::Run(client, _)
-                | Outgoing::Keys(client, _)
-                | Outgoing::Ended(client) => client,
+                Outgoing::To(client, frame) => (client, frame),
             };
-            let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) else {
-                continue;
-            };
-            let session = &mut self.session;
-            match outgoing {
-                Outgoing::Bytes(_, bytes) => {
-                    if let Stage::Attached(attached) = &mut conn.stage {
-                        attached.paint(&mut conn.out, &bytes);
-                    }
-                }
-                Outgoing::Exit(_, reason) => conn.end(session, &ServerFrame::Exit(&reason)),
-                Outgoing::Run(_, code) => conn.send(session, &ServerFrame::Run(&code)),
-                Outgoing::Keys(_, keys) => conn.send(session, &ServerFrame::Keys(keys)),
-                Outgoing::Ended(_) => conn.send(session, &ServerFrame::Ended),
-                // Stopped above.
-                Outgoing::Shutdown { .. } => {}
+            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                conn.tell(&mut self.session, &frame);
             }
         }
     }
@@ -1176,14 +1215,10 @@ impl Server {
         let client = attached.client;
         // The title and bell marks first: the bar shows the marks.
         let before = session.before_paint(client);
-        if !render::compose_into(
-            session,
-            client,
-            &mut attached.spare,
-            &mut attached.placement,
-        ) {
+        let Some(view) = session.views.get(&client) else {
             return;
-        }
+        };
+        render::compose_view(session, view, &mut attached.spare, &mut attached.placement);
         if !before.is_empty() {
             attached.paint(&mut conn.out, &before);
         }
@@ -1202,15 +1237,15 @@ impl Server {
                     || !attached.spare.same_in(&attached.shown, p.area)
             })
             .collect();
-        let shown = known.then_some(&attached.shown);
+        let shown = &attached.shown;
         // The same screen as the client shows: nothing to send, not even
         // the envelope, whose cursor hide and show would restart a blinking
         // cursor.
-        if shown.is_none_or(|shown| !attached.spare.same_as(shown)) {
+        if !known || !attached.spare.same_as(shown) {
             self.paint_buffer.clear();
-            render::paint_into(shown, &attached.spare, &mut self.paint_buffer);
+            render::paint_into(shown, known, &attached.spare, &mut self.paint_buffer);
             attached.paint(&mut conn.out, &self.paint_buffer);
-            std::mem::swap(&mut attached.shown, &mut attached.spare);
+            mem::swap(&mut attached.shown, &mut attached.spare);
             attached.known = true;
             attached.clock.painted(now);
             // Written now rather than when the next poll says it can be: a
@@ -1262,18 +1297,20 @@ impl Server {
                 return;
             };
             let accepted = listener.accept();
-            let room = match std::fs::File::open("/dev/null") {
+            let room = match File::open("/dev/null") {
                 Ok(spare) => {
                     self.spare = Some(spare);
                     true
                 }
-                Err(e) => !out_of_descriptors(&e),
+                // Not a shortage of descriptors, the process's or the
+                // system's: there is room.
+                Err(e) => !matches!(Errno::from_io_error(&e), Some(Errno::MFILE | Errno::NFILE)),
             };
             match accepted {
                 Ok((stream, _)) if !room => {
                     self.refuse(stream);
                     // Closing it freed a descriptor for the spare.
-                    self.spare = std::fs::File::open("/dev/null").ok();
+                    self.spare = File::open("/dev/null").ok();
                 }
                 Ok((stream, _)) => {
                     if let Some(shortage) = self.shortage.take() {
@@ -1301,7 +1338,7 @@ impl Server {
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
-                    self.conns.push(Conn::new(stream, through));
+                    self.conns.push(Conn::new(Wire::Socket(stream), through));
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 // A peer that gave up before it was accepted: the next may
@@ -1320,7 +1357,7 @@ impl Server {
                     // rests rather than being polled again at once.
                     let now = Instant::now();
                     if let Phase::Serving { resting, .. } = &mut self.phase {
-                        *resting = Some(crate::after(now, ACCEPT_REST));
+                        *resting = Some(after(now, ACCEPT_REST));
                     }
                     if self
                         .accept_logged
@@ -1338,10 +1375,9 @@ impl Server {
         }
     }
 
-    /// Takes the connections knocks at the door bring: each is the server's
-    /// end of a pair relayed to a client's FIFOs, whose owner the door
-    /// checked, as the socket's peer check does. With `grant`, the door
-    /// beside that grant's socket.
+    /// Takes the connections knocks at the door bring: each a client's two
+    /// FIFOs, whose owner the door checked, as the socket's peer check
+    /// does. With `grant`, the door beside that grant's socket.
     fn open_door(&mut self, grant: usize) {
         let Some((
             Listening {
@@ -1352,10 +1388,9 @@ impl Server {
         else {
             return;
         };
-        for stream in door.knocks() {
-            if stream.set_nonblocking(true).is_ok() {
-                self.conns.push(Conn::new(stream, through.clone()));
-            }
+        for fifos in door.knocks() {
+            self.conns
+                .push(Conn::new(Wire::Door(fifos), through.clone()));
         }
     }
 
@@ -1365,7 +1400,7 @@ impl Server {
         let euid = fuxix::process::geteuid();
         if fuxix::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
             && stream.set_nonblocking(true).is_ok()
-            && let Ok(bytes) = ServerFrame::Exit(NO_DESCRIPTORS).encode()
+            && let Ok(bytes) = Greeting::Exit(NO_DESCRIPTORS).encode()
         {
             // A fresh socket's buffer holds the frame; if not, the peer
             // sees the connection close.
@@ -1400,11 +1435,11 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        if flags.contains(PollFlags::OUT) {
+        if flags.intersects(PollFlags::OUT) {
             conn.flush_tty(session);
         }
         if flags.intersects(PollFlags::HUP | PollFlags::ERR) && conn.attached().is_some() {
-            conn.end(session, &ServerFrame::Exit("detached: the terminal closed"));
+            conn.end(session, &ToAttached::Exit("detached: the terminal closed"));
         }
     }
 
@@ -1415,10 +1450,10 @@ impl Server {
         };
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
         // One that is not read learns that its peer is gone by writing.
-        if flags.contains(PollFlags::OUT) || (gone && !conn.stage.reads()) {
+        if flags.intersects(PollFlags::OUT) || (gone && !conn.stage.reads()) {
             conn.flush(&mut self.session);
         }
-        if flags.contains(PollFlags::IN) || gone {
+        if flags.intersects(PollFlags::IN) || gone {
             self.read_conn(index);
         }
     }
@@ -1431,7 +1466,7 @@ impl Server {
             return;
         };
         // Held apart while the frames it lends are handled.
-        let mut decoder = std::mem::take(&mut conn.decoder);
+        let mut decoder = mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
             // A frame it sent may have ended it: it is read no more.
@@ -1439,7 +1474,13 @@ impl Server {
                 break false;
             };
             // A client may send its terminal with its `Attach`.
-            match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
+            let got = match &conn.wire {
+                Wire::Socket(stream) => fuxix::socket::recv_with_fd(stream, &mut self.read_buffer),
+                Wire::Door(fifos) => {
+                    fuxix::io::read(&fifos.up, &mut self.read_buffer).map(|n| (n, None))
+                }
+            };
+            match got {
                 Ok((0, _)) => break true,
                 Ok((n, fd)) => {
                     if let (
@@ -1465,8 +1506,8 @@ impl Server {
                         break false;
                     }
                 }
-                Err(fuxix::Errno::AGAIN) => break false,
-                Err(fuxix::Errno::INTR) => {}
+                Err(Errno::AGAIN) => break false,
+                Err(Errno::INTR) => {}
                 Err(_) => break true,
             }
         };
@@ -1509,17 +1550,17 @@ impl Server {
                 if conn.grant.is_some() && hello.role != Role::Command {
                     let refused = "a socket `fux grant` made takes commands only: no client \
                                    attaches through it, and it stops no server";
-                    conn.end(session, &ServerFrame::Exit(refused));
+                    conn.end(session, &Greeting::Exit(refused));
                     return Ok(true);
                 }
                 let between = Mismatch::between(&hello, &ours);
-                conn.send(session, &ServerFrame::Hello(ours));
+                conn.send(session, &Greeting::Hello(ours));
                 match (between, hello.role) {
                     (Err(mismatch), _) => {
-                        conn.end(session, &ServerFrame::Exit(&mismatch.to_string()));
+                        conn.end(session, &Greeting::Exit(&mismatch.to_string()));
                     }
                     (Ok(()), Role::Kill) => {
-                        conn.end(session, &ServerFrame::Done { status: 0 });
+                        conn.end(session, &Greeting::Done(0));
                         self.stop("stopped by fux force-kill-server".into(), false);
                     }
                     (Ok(()), Role::Attach) => {
@@ -1543,14 +1584,15 @@ impl Server {
                     return Ok(false);
                 };
                 let (passed, kind) = (passed.take(), *kind);
-                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_deref()) {
+                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_ref()) {
                     Ok(client) => {
                         if let Some(view) = session.views.get_mut(&client) {
                             view.read_only = read_only;
                             view.env = env;
                         }
-                        // The client's terminal, if it sent it: taken, the
-                        // client is told before anything is painted.
+                        // The client's terminal, if it sent it, taken or
+                        // not: the client is told so, and its id, before
+                        // anything is painted.
                         let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
                         let taken = tty.as_ref().map(Option::is_some);
                         let tty = tty.flatten().map(TakenTerminal::new);
@@ -1558,15 +1600,9 @@ impl Server {
                             session,
                             Stage::Attached(Box::new(Attached::new(client, tty))),
                         );
-                        if let Some(taken) = taken {
-                            conn.send(session, &ServerFrame::Terminal { taken });
-                        }
-                        // Told its id: its bindings' `me`, a headless
-                        // client's to print.
-                        let id = format!("{client}\n");
-                        conn.send(session, &ServerFrame::Stdout(id.as_bytes()));
+                        conn.send(session, &ToAttached::Welcome(client, taken));
                     }
-                    Err(error) => conn.end(session, &ServerFrame::Exit(&error.to_string())),
+                    Err(error) => conn.end(session, &ToAttached::Exit(&error.to_string())),
                 }
             }
             Stage::Attached(attached) => match decoder.frame()? {
@@ -1578,14 +1614,14 @@ impl Server {
                     attached.known = false;
                     session.resize(attached.client, size.rows(), size.cols());
                 }
-                Some(AttachedFrame::Detach) => conn.end(session, &ServerFrame::Exit("detached")),
+                Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
                 None => return Ok(false),
             },
             Stage::Command => {
-                let Some(Request { command, context }) = decoder.frame()? else {
+                let Some(Asked { request, context }) = decoder.frame()? else {
                     return Ok(false);
                 };
-                self.request(index, command, context);
+                self.request(index, request, context);
             }
             // Nothing more is asked of a waiting command, or a stream. A
             // connection that is ending has had its last word: what came
@@ -1605,26 +1641,29 @@ impl Server {
 
     /// A request from connection `index`: answered now, or once its wait
     /// has its answer, or streamed.
-    fn request(
-        &mut self,
-        index: usize,
-        command: crate::command::Command,
-        context: crate::protocol::Context,
-    ) {
+    fn request(&mut self, index: usize, request: crate::command::Request, context: Context) {
         let restore_runs = self.saved.as_ref().is_some_and(Saved::restoring);
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
         // A restore is the server's own, which no grant's socket makes.
-        let restoring = context.restoring && restore_runs && conn.grant.is_none();
+        let came = match conn.grant.clone() {
+            Some(socket) => Came::Grant(socket),
+            None if context.restoring && restore_runs => Came::Restore,
+            None => Came::Socket,
+        };
         // While a saved session comes back, other requests wait for it,
         // so that none takes an id it asks for.
-        if restore_runs && !restoring {
-            conn.stage = Stage::Held(Box::new(Request { command, context }));
+        let held = match came {
+            Came::Restore => false,
+            Came::Socket | Came::Grant(_) => restore_runs,
+        };
+        if held {
+            conn.stage = Stage::Held(Box::new(Asked { request, context }));
             return;
         }
-        let crate::protocol::Context {
+        let Context {
             cwd,
             pane,
             server,
@@ -1634,46 +1673,12 @@ impl Server {
         } = context;
         // A pane of another server's (FUX_PANE kept as FUX_SOCKET chose
         // this one) is not the caller's here.
-        let ours = server.as_deref().is_none_or(|s| s == session.server_id);
-        let inside = server.as_deref() == Some(session.server_id.as_str());
-        let (pane, stray) = if ours { (pane, None) } else { (None, pane) };
-        let cwd = Some(PathBuf::from(cwd)).filter(|p| p.is_dir());
-        use crate::command::Command;
-        let granting = if let Command::Grant { workspace, socket } = &command {
-            Some((socket.clone(), Some(workspace.clone())))
-        } else if let Command::Revoke { socket } = &command {
-            Some((socket.clone(), None))
-        } else {
-            None
+        let within = match server {
+            None => Within::Unsaid,
+            Some(s) if s == session.server_id => Within::This,
+            Some(_) => Within::Other,
         };
-        if let Some(granting) = granting {
-            let (outcome, revoked) = match conn.grant {
-                // `fux grant` from a granted socket: refused.
-                Some(_) => {
-                    let why = "a socket `grant` made cannot grant another";
-                    (Reply::failed(Code::NotGranted, why), None)
-                }
-                None => match &mut self.phase {
-                    Phase::Serving { listening, .. } => grant(listening, session, granting, cwd),
-                    Phase::Stopping(_) => {
-                        (Reply::failed(Code::Grant, "the server is stopping"), None)
-                    }
-                },
-            };
-            conn.answer(session, outcome);
-            // What waits or streams through a grant revoked ends.
-            for conn in (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
-            {
-                if matches!(
-                    conn.stage,
-                    Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_)
-                ) {
-                    let why = "the grant this came through was revoked";
-                    conn.end(session, &ServerFrame::Exit(why));
-                }
-            }
-            return;
-        }
+        let cwd = Some(cwd).filter(|p| p.is_dir());
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         // A key's or the prompt's program acts where its client is; one
@@ -1686,29 +1691,48 @@ impl Server {
             }
             Some(client) => Origin::Client(client),
             None => Origin::Cli(Caller {
-                pane,
-                cwd,
-                stray,
+                gave: pane,
+                within,
+                cwd: cwd.clone(),
                 env,
-                inside,
-                grant: conn.grant.clone(),
-                restoring,
+                came,
             }),
         };
-        match session.begin(command, &origin) {
+        match session.begin(request, &origin) {
             Begun::Done(outcome) => conn.answer(session, outcome),
+            Begun::Grant(socket, workspace) => {
+                let (outcome, revoked) = match &mut self.phase {
+                    Phase::Serving { listening, .. } => {
+                        grant(listening, session, (socket, workspace), cwd)
+                    }
+                    Phase::Stopping(_) => {
+                        (Reply::failed(Code::Grant, "the server is stopping"), None)
+                    }
+                };
+                conn.answer(session, outcome);
+                // Every connection through a grant revoked ends, idle or
+                // not: one kept would reach what the path is granted next.
+                for conn in
+                    (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
+                {
+                    if conn.stage.reads() {
+                        let why = "the grant this came through was revoked";
+                        conn.end(session, &ToCommand::Exit(why));
+                    }
+                }
+            }
             Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
-                let ready = Event::stream("ready", Vec::new()).line(subscription.json);
-                conn.send(session, &ServerFrame::Stdout(ready.as_bytes()));
+                let ready = crate::events::ready(subscription.json);
+                conn.send(session, &ToCommand::Stdout(ready.as_bytes().into()));
                 conn.enter(session, Stage::Events(subscription));
             }
         }
     }
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
-        if flags.contains(PollFlags::OUT)
+        if flags.intersects(PollFlags::OUT)
             && let Some(pane) = self.session.panes.get_mut(&id)
         {
             pane.write_input();
@@ -1730,8 +1754,8 @@ impl Server {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {
-                Err(fuxix::Errno::AGAIN) => break false,
-                Err(fuxix::Errno::INTR) => continue,
+                Err(Errno::AGAIN) => break false,
+                Err(Errno::INTR) => continue,
                 // EIO: the slave side is closed; the program is gone.
                 Ok(0) | Err(_) => break true,
                 Ok(n) => {
@@ -1785,18 +1809,15 @@ impl Server {
     }
 
     fn reap_killed(&mut self) {
-        let killed = std::mem::take(&mut self.killed);
-        self.killed = killed
-            .into_iter()
-            .filter_map(|l| l.finish().err())
-            .collect();
+        let killed = mem::take(&mut self.killed).into_iter();
+        self.killed = killed.filter_map(|l| l.finish().err()).collect();
     }
 
     /// Kills every closed pane's program, and waits for them, at most a
     /// second: a process stuck in the kernel is left to init rather than
     /// hold the server's exit.
     fn finish(&mut self) {
-        let dying = std::mem::take(&mut self.session.dying);
+        let dying = mem::take(&mut self.session.dying);
         self.killed
             .extend(dying.into_values().filter_map(Dying::kill));
         for _ in 0..500 {
@@ -1809,18 +1830,25 @@ impl Server {
     }
 }
 
-/// Whether an error is a shortage of descriptors, the process's or the
-/// system's.
-fn out_of_descriptors(error: &std::io::Error) -> bool {
-    matches!(
-        fuxix::Errno::from_io_error(error),
-        Some(fuxix::Errno::MFILE | fuxix::Errno::NFILE)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved layout's file is one per socket: an escape in a path never
+    /// makes it another's, and one path spelt two ways has one.
+    #[test]
+    fn a_layout_file_is_one_per_socket() -> Result<(), String> {
+        let file = |path: &str| {
+            let socket = crate::socket::checked(path, "test").map_err(|e| e.to_string())?;
+            Saved::of(&socket)
+                .map(|s| s.path)
+                .ok_or_else(|| "no state directory".to_owned())
+        };
+        assert_ne!(file("/%41/x.sock")?, file("/2541/x.sock")?);
+        assert_eq!(file("/run//x.sock")?, file("/run/x.sock")?);
+        assert_eq!(file("/run/./x.sock")?, file("/run/x.sock")?);
+        Ok(())
+    }
 
     /// A session with a client attached on a connection whose terminal the
     /// server took, the other end of a socket pair standing in for it: the
@@ -1831,7 +1859,7 @@ mod tests {
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
         let (tty, far) = UnixStream::pair().map_err(|e| e.to_string())?;
         tty.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let mut conn = Conn::new(stream, None);
+        let mut conn = Conn::new(Wire::Socket(stream), None);
         let tty = TakenTerminal::new(OwnedFd::from(tty));
         conn.stage = Stage::Attached(Box::new(Attached::new(client, Some(tty))));
         Ok((session, conn, peer, far))
@@ -1853,12 +1881,40 @@ mod tests {
         }
         let path = dir.join("fux").join("s.sock");
         std::fs::write(crate::door::path(&path), "").map_err(|x| e(&x))?;
-        let socket = crate::socket::checked(&path.to_string_lossy(), "test").map_err(|x| e(&x))?;
+        let socket = crate::socket::checked(&path, "test").map_err(|x| e(&x))?;
         let listening = Listening::open(&socket).map_err(|x| e(&x))?;
         assert!(listening.listener.is_some(), "the socket serves");
         assert!(listening.door.is_none(), "with no door");
         drop(listening);
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// A grant from a directory whose name is not UTF-8 is bound at the
+    /// path it names and records, not at a lossy spelling of it. Linux
+    /// only: macOS's file systems refuse a name that is not UTF-8.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_grant_from_a_directory_not_utf8_binds_its_own_path() -> Result<(), String> {
+        use std::os::unix::ffi::OsStrExt;
+        let e = |e: &dyn std::fmt::Display| e.to_string();
+        let dir = (fuxix::file::scratch().map_err(|x| e(&x))?)
+            .join(format!("fux-grant-{}", std::process::id()))
+            .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        let _ = dir.parent().map(std::fs::remove_dir_all);
+        let _ = dir.parent().map(std::fs::create_dir_all);
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let main = crate::command::WsRef::Name("main".into());
+        let mut listening = Vec::new();
+        let asked = ("g.sock".to_owned(), Some(main));
+        let (reply, _) = grant(&mut listening, &mut session, asked, Some(dir.clone()));
+        assert_eq!(reply.end, crate::protocol::End::Done, "{reply:?}");
+        let bound = std::fs::symlink_metadata(dir.join("g.sock")).map_err(|x| e(&x))?;
+        assert!(std::os::unix::fs::FileTypeExt::is_socket(
+            &bound.file_type()
+        ));
+        drop(listening);
+        let _ = dir.parent().map(std::fs::remove_dir_all);
         Ok(())
     }
 
@@ -1870,10 +1926,13 @@ mod tests {
         let mut painted = Vec::new();
         let mut exit = None;
         while let Ok(Some(frame)) = decoder.frame() {
-            if let ServerFrame::Paint(bytes) = frame {
-                painted.extend_from_slice(bytes);
-            } else if let ServerFrame::Exit(reason) = frame {
-                exit = Some(reason.to_owned());
+            match frame {
+                ToAttached::Paint(bytes) => painted.extend_from_slice(&bytes),
+                ToAttached::Exit(reason) => exit = Some(reason.to_owned()),
+                ToAttached::Welcome(..)
+                | ToAttached::Ended(_)
+                | ToAttached::Run(_)
+                | ToAttached::Keys(_) => {}
             }
         }
         (painted, exit)
@@ -1913,11 +1972,35 @@ mod tests {
             tty.out.push(b"end");
         }
         conn.flush_tty(&mut session);
-        conn.end(&mut session, &ServerFrame::Exit("detached"));
+        conn.end(&mut session, &ToAttached::Exit("detached"));
         let (painted, exit) = sent(&conn);
         assert!(painted.ends_with(b"end"), "the last of what waited");
         assert_eq!(exit.as_deref(), Some("detached"));
         assert!(session.views.is_empty(), "the client is detached");
+        Ok(())
+    }
+
+    /// A client let go gives its terminal the cursor's shape back as the
+    /// terminal's own (DECSCUSR 0, then xterm's 7) only if a pane set one:
+    /// by ctlseqs, 0 is a blinking block, which a terminal fux never told
+    /// otherwise was not asked to be.
+    #[test]
+    fn a_cursor_shape_is_given_back_only_once_one_was_set() -> Result<(), String> {
+        use std::io::Read;
+        for (shape, given) in [
+            (fux_vt::CursorShape::Initial, ""),
+            (fux_vt::CursorShape::SteadyBar, "\x1b[0 q\x1b[7 q"),
+        ] {
+            let (mut session, mut conn, _peer, mut far) = with_terminal()?;
+            if let Some(attached) = conn.attached() {
+                attached.shown.modes.cursor_shape = shape;
+            }
+            conn.end(&mut session, &ToAttached::Exit("detached"));
+            far.set_nonblocking(true).map_err(|e| e.to_string())?;
+            let mut written = Vec::new();
+            let _ = far.read_to_end(&mut written);
+            assert_eq!(String::from_utf8_lossy(&written), given, "{shape:?}");
+        }
         Ok(())
     }
 

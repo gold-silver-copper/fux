@@ -9,23 +9,23 @@ pub struct Errno(i32);
 pub type Result<T> = std::result::Result<T, Errno>;
 
 impl Errno {
-    pub const INTR: Errno = Errno(libc::EINTR);
-    pub const AGAIN: Errno = Errno(libc::EAGAIN);
-    pub const INPROGRESS: Errno = Errno(libc::EINPROGRESS);
-    pub const MFILE: Errno = Errno(libc::EMFILE);
-    pub const NFILE: Errno = Errno(libc::ENFILE);
-    pub(crate) const INVAL: Errno = Errno(libc::EINVAL);
+    pub const INTR: Self = Self(libc::EINTR);
+    pub const AGAIN: Self = Self(libc::EAGAIN);
+    pub const INPROGRESS: Self = Self(libc::EINPROGRESS);
+    pub const MFILE: Self = Self(libc::EMFILE);
+    pub const NFILE: Self = Self(libc::ENFILE);
+    pub(crate) const INVAL: Self = Self(libc::EINVAL);
     /// XNU's kernel-private `EREDRIVEOPEN` (`bsd/sys/errno.h`), which no POSIX
     /// call should return: macOS leaks it from `open("/dev/ptmx")` when
     /// concurrent openers keep racing for one PTY. See `pty::open`.
     #[cfg(any(target_os = "macos", test))]
-    pub(crate) const REDRIVEOPEN: Errno = Errno(-6);
-    pub(crate) const NAMETOOLONG: Errno = Errno(libc::ENAMETOOLONG);
+    pub(crate) const REDRIVEOPEN: Self = Self(-6);
+    pub(crate) const NAMETOOLONG: Self = Self(libc::ENAMETOOLONG);
     /// What macOS's `open("/dev/ptmx")` returns when it loses a race with
     /// another process's close, as well as when every PTY is in use (see
     /// `pty::open`); and what opening a FIFO to write without blocking
     /// returns when no one reads it.
-    pub const NXIO: Errno = Errno(libc::ENXIO);
+    pub const NXIO: Self = Self(libc::ENXIO);
 
     /// The number.
     pub fn raw(self) -> i32 {
@@ -33,18 +33,18 @@ impl Errno {
     }
 
     /// The `errno` a call reported as its number rather than in `errno`.
-    pub(crate) const fn from_raw(raw: i32) -> Errno {
-        Errno(raw)
+    pub(crate) const fn from_raw(raw: i32) -> Self {
+        Self(raw)
     }
 
     /// The `errno` behind an I/O error, if it came from the system.
-    pub fn from_io_error(error: &std::io::Error) -> Option<Errno> {
-        error.raw_os_error().map(Errno)
+    pub fn from_io_error(error: &std::io::Error) -> Option<Self> {
+        error.raw_os_error().map(Self)
     }
 
     /// The calling thread's `errno`, read straight after a call failed.
-    pub(crate) fn last() -> Errno {
-        Errno(
+    pub(crate) fn last() -> Self {
+        Self(
             std::io::Error::last_os_error()
                 .raw_os_error()
                 .unwrap_or(libc::EIO),
@@ -59,6 +59,12 @@ pub(crate) fn check(value: libc::c_int) -> Result<libc::c_int> {
     } else {
         Ok(value)
     }
+}
+
+/// `value` as the type a call or a struct field takes, which may differ by
+/// platform: [`Errno::INVAL`] if it does not fit.
+pub(crate) fn fit<T: TryFrom<U>, U>(value: U) -> Result<T> {
+    T::try_from(value).map_err(|_| Errno::INVAL)
 }
 
 /// A byte count, where -1 means the call failed and set `errno`.
@@ -83,7 +89,7 @@ impl std::error::Error for Errno {}
 
 impl From<Errno> for std::io::Error {
     fn from(errno: Errno) -> Self {
-        std::io::Error::from_raw_os_error(errno.0)
+        Self::from_raw_os_error(errno.0)
     }
 }
 

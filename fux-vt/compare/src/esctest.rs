@@ -894,7 +894,7 @@ enum Scope {
 
 /// Why a listed test fails: the first word of its reason.
 const REASONS: &[&str] = &[
-    // fux-vt's README, "Departures from the references".
+    // fux-vt does otherwise on purpose, as its README records.
     "departure:",
     // A choice a spec makes, or leaves to the terminal, that esctest's
     // expectation (xterm's) does not share.

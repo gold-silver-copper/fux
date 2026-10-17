@@ -87,16 +87,17 @@ a bare `wait` …): one object, or a line each for several panes (a tab or
 workspace waited on, or sent keys). A
 pane that settled, still busy at the limit (124), blocked reading its
 terminal before the waited text came or went (7), or whose exit was waited for (`wait-exit`,
-its own status):
+0, its own status in `state`):
 
 ```json
 {"pane":"%3","state":"reading","status":0,"output":"$ make test\n12 tests PASS\n"}
-{"pane":"%4","state":"exited 5","status":5,"output":"bye\n"}
+{"pane":"%4","state":"exited 5","status":0,"output":"bye\n"}
 ```
 
 `state` is the pane's (above), or `closed`: a settling action or bare
-`wait` whose pane closed answers `{"pane":"%3","state":"closed","status":4}`,
-with no `output` and nothing on stderr. `output` is what came since the
+`wait` whose pane closed answers
+`{"pane":"%3","state":"closed","status":4,"code":"closed"}`, with no
+`output` and nothing on stderr. `code` names a status that is not 0. `output` is what came since the
 input, from the line the keys went in on if it changed (its prompt too;
 a `no_change` answer holds nothing), else from the first line that
 changed (a lone Enter, a password or raw keys, which echo nothing), or the
@@ -108,10 +109,10 @@ ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `unread` (bytes of input fux holds, not yet
 taken by the terminal; what waits in the terminal's own buffers is not
 counted). A
-wait for a text or a bell answers what met it:
+wait for a text or a bell answers what met it too:
 
 ```json
-{"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
+{"pane":"%3","state":"busy","met":"text","text":"PASS","line":"12 tests PASS","status":0}
 ```
 
 | `met` | Also |
@@ -119,15 +120,23 @@ wait for a text or a bell answers what met it:
 | `text` | `text`, `line` |
 | `bell` | `notification`: its text, else `null` |
 
-`status` is the exit status. A wait for a text, a bell or the exit that
+`status` is the exit status: an answer left at the end (alone, as its
+JSON or in a list; the first of several) gives the run its status, one
+dropped or taken by a word gives none. A wait for a text, a bell or the exit that
 fails (the program exited first or was started again, 3; the pane closed,
 4; the time limit, 124) ends the
-program with that status and says why on stderr, `fux: CODE: MESSAGE`: it
-leaves no answer to print, but what `run`, `split` or `respawn` started
-is printed first, its pane alone (`%2`, as text, `json` or not), and so are the
-answers of the words before it. A wait on a tab's or a workspace's panes
-that fails in one prints first the answers of those that met it, a line each
-as text, `json` or not (`%3 READY`).
+program with that status and says why on stderr, one line, `fux: CODE:
+MESSAGE`; its answer is printed first, as text, or as JSON when `json`
+follows it, `output` its pane's last lines (three when its program exited,
+one at the time limit; none for a pane closed or started again):
+
+```json
+{"pane":"%3","state":"busy","status":124,"code":"timeout","output":"y\n"}
+```
+
+The answers of the words before it are printed first too. A wait on a
+tab's or a workspace's panes answers a line each, the first failing status
+naming the whole.
 
 ## `events-json`, `X events-of-json`
 
@@ -153,8 +162,8 @@ its journal recorded them, one line each.
 ## Errors
 
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
-the file, line and word it came from. Its exit status is 1, a usage error's
-2, a wait's its own (below). CODE stays; every one fux gives
+the file, line and word it came from. Its exit status is its code's: 1,
+`usage`'s 2, a wait's its own (below). CODE stays; every one fux gives
 (`src/code.rs` says what each means):
 
 - reaching a server: `no_server`, `mismatch`, `client`, `not_granted`,
@@ -162,15 +171,14 @@ the file, line and word it came from. Its exit status is 1, a usage error's
 - what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `id`, `ids_exhausted`, `bad_value`, `usage`;
-- what a command meets: `exited`, `still_running`, `not_run`, `only_shell`,
+- what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `not_reading`, `start`, `size`, `mouse`, `signal`, `log`,
-  `not_a_directory`, `not_headless`, `own_server`, `people_attached`,
-  `cli_only`;
+  `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `exited` (3), `timeout` (124), `closed` (4), `gone` (4),
   `lost`, `stopped` (7);
-- a program of words: `steps`, `not_here`, `not_layout`, `not_config`,
+- a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,
-  `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`, `failed`;
+  `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
@@ -179,8 +187,8 @@ the file, line and word it came from. Its exit status is 1, a usage error's
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.24.0","protocol":10,
- "server_version":"0.24.0","server_protocol":10,"compatible":true}
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.24.0","protocol":11,
+ "server_version":"0.24.0","server_protocol":11,"compatible":true}
 [{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.24.0","compatible":true}]
 ```
 

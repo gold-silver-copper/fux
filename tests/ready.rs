@@ -364,6 +364,38 @@ fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
     Ok(())
 }
 
+/// Keys for a shell at its prompt go in at its pace, a job it left running
+/// in its group notwithstanding: each piece as soon as it reads again, not
+/// held for `PACE` (30 ms) as for a program at work.
+#[test]
+fn keys_for_a_shell_that_left_a_job_are_not_held() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let pane = server
+        .ok(&[
+            "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run",
+        ])?
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let p = ["str", pane.as_str(), "pane"];
+    server.ok(&[&p[..], &["str", "set +m; (sleep 30; :) & disown", "line"]].concat())?;
+    // 100 pieces, typed and erased in turn: held, they take 3 s at least.
+    let mut keys = vec!["str", pane.as_str(), "pane", "keys"];
+    for _ in 0..50 {
+        keys.extend(["str", "x", "text", "str", "BSpace", "key"]);
+    }
+    keys.push("send-keys");
+    let began = std::time::Instant::now();
+    server.ok(&keys)?;
+    let took = began.elapsed();
+    assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+    Ok(())
+}
+
 /// A program that drops its terminal leaves it no foreground group: it is
 /// judged by what it does itself, here waiting on a timer, not busy.
 #[test]

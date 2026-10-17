@@ -1,10 +1,8 @@
 //! What the server does for a client's own screens, which the client owns
 //! (`crate::screens`): the rows of a chooser, made of what only the server
-//! knows; the room a panel has on a screen of a size; and a key the client
-//! sends as literal input to the pane it focuses.
+//! knows; and the room a panel has on a screen of a size.
 use crate::command::{AnyRef, Choices, Kind};
 use crate::id::ClientId;
-use crate::keys::Keystroke;
 use crate::layout::Tree;
 use crate::protocol::{Reply, Scalar};
 use crate::session::{Error, Session};
@@ -104,40 +102,4 @@ pub fn window_start(len: usize, selected: usize, room: usize) -> usize {
         .saturating_add(1)
         .saturating_sub(room)
         .min(len.saturating_sub(room))
-}
-
-/// Rows a chooser or menu shows its items in: it has a title and a help
-/// line.
-pub fn list_room(rows: u16) -> usize {
-    panel_room(rows, 2)
-}
-
-/// Whether the command column has room for its heading, and the rows it
-/// shows its entries in.
-pub fn column_room(rows: u16) -> (bool, usize) {
-    let heading = rows.saturating_sub(1) >= 4;
-    (heading, panel_room(rows, usize::from(heading)))
-}
-
-/// Sends a key to the client's focused pane, encoded as its program asked.
-pub fn send_key(session: &mut Session, client: ClientId, stroke: Keystroke) {
-    let Some(pane) = session.focused(client) else {
-        return;
-    };
-    session.typed(client);
-    let Some(p) = session.panes.get_mut(&pane) else {
-        return;
-    };
-    // Refused already, and said so: the key goes no further. A client
-    // typing into a program that has stopped reading costs nothing per key.
-    if p.input.refusing() {
-        return;
-    }
-    let mode = p.screen().key_mode();
-    if let Err(error) = p
-        .input
-        .push_with(|out| crate::encode::key_bytes(stroke, mode, out))
-    {
-        session.error_to(client, error.to_string());
-    }
 }

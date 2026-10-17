@@ -6,10 +6,8 @@ use crate::act::Act;
 use crate::id::ClientId;
 use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
-use crate::layout::Placement;
-use crate::overlay;
 use crate::session::Session;
-use crate::view::{Mode, Notice};
+use crate::view::Mode;
 
 impl Session {
     /// Actions from a client.
@@ -20,14 +18,12 @@ impl Session {
         let changes = self.changes();
         // Whether any of it may have changed what a client shows.
         let mut shown = false;
+        // A client that only watches sends no other acts than its
+        // terminal's replies and notices: its own keyboard holds the rest
+        // (`Keyboard`), as `read_only` is what it said itself.
         for act in acts {
-            let Some(view) = self.views.get(&client) else {
+            if !self.views.contains_key(&client) {
                 break;
-            };
-            // A client that only watches is answered by its terminal, and
-            // shows notices; nothing else it sends does anything.
-            if view.read_only && !matches!(act, Act::Reply(_) | Act::Notice { .. }) {
-                continue;
             }
             shown |= self.act(client, act);
         }
@@ -67,26 +63,26 @@ impl Session {
             // A notice from before the screen opened or closed is old news;
             // one the screen's keys bring comes after.
             Act::Show(panel) => {
-                let fresh = !matches!(
-                    (self.views.get(&client).map(|v| &v.mode), &panel),
-                    (Some(Mode::Panel(was)), now) if std::mem::discriminant(was) == std::mem::discriminant(now)
-                );
-                if fresh && let Some(view) = self.views.get_mut(&client) {
-                    view.notice = None;
+                if let Some(view) = self.views.get_mut(&client) {
+                    let fresh = match &view.mode {
+                        Mode::Panel(was) => {
+                            std::mem::discriminant(was) != std::mem::discriminant(&panel)
+                        }
+                        Mode::Normal | Mode::Copy(_) => true,
+                    };
+                    if fresh {
+                        view.notice = None;
+                    }
+                    view.mode = Mode::Panel(panel);
                 }
-                self.set_mode(client, Mode::Panel(panel));
             }
             Act::Hide => {
                 if let Some(view) = self.views.get_mut(&client) {
                     view.notice = None;
-                }
-                self.set_mode(client, Mode::Normal);
-            }
-            Act::Notice { text, error } => {
-                if let Some(view) = self.views.get_mut(&client) {
-                    view.notice = Some(Notice { text, error });
+                    view.mode = Mode::Normal;
                 }
             }
+            Act::Notice { text, error } => self.notify_to(client, text, error),
             Act::Copy(act) => crate::copy::act(self, client, act),
         }
         if let Some(view) = self.views.get_mut(&client) {
@@ -114,19 +110,18 @@ impl Session {
         if shown {
             view.dirty = true;
         }
-        overlay::send_key(self, client, stroke);
+        // Encoded as its program asked.
+        self.type_in(client, |screen, out| {
+            crate::encode::key_bytes(stroke, screen.key_mode(), out)
+        });
         shown
     }
 
-    fn paste(&mut self, client: ClientId, text: &str) {
-        let Some(view) = self.views.get_mut(&client) else {
-            return;
-        };
-        // Pastes go to the pane only.
-        if !matches!(view.mode, Mode::Normal) {
-            return;
-        }
-        view.notice = None;
+    /// Types into the client's focused pane what `write` makes for its
+    /// screen: a key or a paste, as its program asked. Refused already, and
+    /// said so: nothing more goes in, nor is said again, so a client typing
+    /// into a program that has stopped reading costs nothing per key.
+    fn type_in(&mut self, client: ClientId, write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>)) {
         let Some(pane) = self.focused(client) else {
             return;
         };
@@ -134,25 +129,38 @@ impl Session {
         let Some(p) = self.panes.get_mut(&pane) else {
             return;
         };
-        let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
-        if let Err(error) = p
-            .input
-            .push_with(|out| crate::encode::paste(text, bracketed, out))
-        {
-            self.error_to(client, error.to_string());
+        if p.input.refusing() {
+            return;
         }
+        let screen = p.parser.screen();
+        if let Err(error) = p.input.push_with(|out| write(screen, out)) {
+            self.notify_to(client, error.to_string(), true);
+        }
+    }
+
+    fn paste(&mut self, client: ClientId, text: &str) {
+        let Some(view) = self.views.get_mut(&client) else {
+            return;
+        };
+        // Pastes go to the pane only.
+        if !view.mode.is_normal() {
+            return;
+        }
+        view.notice = None;
+        self.type_in(client, |screen, out| {
+            crate::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
+        });
     }
 
     /// The outer terminal gained or lost focus: the client's focused pane
     /// hears of it, if it asked.
     fn focus_event(&mut self, client: ClientId, gained: bool) {
-        let Some(pane) = self.focused(client) else {
-            return;
-        };
-        if let Some(p) = self.panes.get_mut(&pane)
-            && p.screen().mode(fux_vt::Mode::FocusReporting)
+        if let Some(p) = self
+            .focused(client)
+            .and_then(|pane| self.panes.get_mut(&pane))
+            && let Some(report) = p.screen().focus_report(gained)
         {
-            let _ = p.input.push(if gained { b"\x1b[I" } else { b"\x1b[O" });
+            let _ = p.input.push(report);
         }
     }
 
@@ -167,31 +175,29 @@ impl Session {
         let Some(view) = self.views.get(&client) else {
             return;
         };
-        let Some(pane) = self
-            .focused(client)
-            .filter(|_| matches!(view.mode, Mode::Normal))
-        else {
+        let Some(pane) = self.focused(client).filter(|_| view.mode.is_normal()) else {
             return;
         };
-        let mut placement = Placement::default();
-        self.placement_into(view, &mut placement);
+        let placement = self.placement(view);
         let Some(rect) = placement.rect(pane) else {
             return;
         };
         let inside = rect.contains(event.row, event.col);
         let seat = self.shown_tab(client).and_then(|t| t.seat(client));
         let held = seat.is_some_and(|s| s.held);
-        let pressed =
-            event.action == MouseAction::Press && event.button.is_some_and(|b| !b.is_wheel());
-        if !(inside || held && event.action != MouseAction::Press) {
+        // A press of a button, not the wheel, holds it; a release lets go.
+        let (press, holds) = match event.action {
+            MouseAction::Press(button) => (true, (!button.is_wheel()).then_some(true)),
+            MouseAction::Release(_) => (false, Some(false)),
+            MouseAction::Motion(_) => (false, None),
+        };
+        if !(inside || held && !press) {
             return;
         }
-        if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client)) {
-            if pressed {
-                seat.held = true;
-            } else if event.action == MouseAction::Release {
-                seat.held = false;
-            }
+        if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client))
+            && let Some(holds) = holds
+        {
+            seat.held = holds;
         }
         // Kept to the pane.
         let (row, col) = rect.clamp(event.row, event.col);
@@ -451,7 +457,7 @@ mod tests {
         assert_eq!(queued_focused(&mut s, c), b"\x02");
         let at = (s.test_keymap.column(&[], 0).ok_or("a column")?.entries)
             .iter()
-            .position(|e| e.key == "g")
+            .position(|e| e.key.to_string() == "g")
             .ok_or("the layer is listed")?;
         s.input(c, b"\x02");
         s.input(c, &downs(at));
@@ -718,7 +724,7 @@ mod tests {
                 refused.push(keys.clone());
                 // Leaving a repeat mode clears what its keys said.
                 if !repeat {
-                    ran.error_to(d, error);
+                    ran.notify_to(d, error, true);
                 }
             }
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
@@ -733,7 +739,7 @@ mod tests {
     fn ran(code: &str) -> Result<String, String> {
         let (mut s, c) = busy()?;
         if let Err(error) = output_as(&mut s, Some(c), code) {
-            s.error_to(c, error);
+            s.notify_to(c, error, true);
         }
         state(&mut s, c)
     }

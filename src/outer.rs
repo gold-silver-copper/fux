@@ -37,13 +37,13 @@
 //! default, and it is the best guess at the terminal the user will come back
 //! to. Before any terminal has answered, nothing is answered.
 use crate::decode::Reply;
-use crate::id::PaneId;
-use crate::id::{ClientId, TabId};
+use crate::id::{ClientId, PaneId, TabId};
+use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
 use crate::view::View;
-use fux_vt::ModeStatus;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
+use fux_vt::{Graphics, ModeStatus};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -163,8 +163,8 @@ pub struct Terminal {
 impl Terminal {
     /// What it draws, as the panes it answers for are told: sixel only with
     /// a known cell size, which pictures are laid out in.
-    pub fn graphics(&self) -> fux_vt::Graphics {
-        fux_vt::Graphics {
+    pub fn graphics(&self) -> Graphics {
+        Graphics {
             cell: self.cell,
             sixel: self.sixel && self.cell.is_some(),
         }
@@ -177,11 +177,12 @@ impl Terminal {
 }
 
 impl Session {
-    /// Asks client `client`'s terminal `queries`, which end with DA1, in its
-    /// paint stream; the client's decoder expects the answers.
-    pub(crate) fn ask(&mut self, client: ClientId, queries: &[u8]) {
+    /// Writes `bytes` to client `client`'s terminal, in its paint stream:
+    /// questions, whose answers the client's decoder expects, or a mode it
+    /// sets.
+    pub(crate) fn ask(&mut self, client: ClientId, bytes: &'static [u8]) {
         if self.views.contains_key(&client) {
-            self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
+            (self.outbox).push(Outgoing::To(client, ToAttached::Paint(bytes.into())));
         }
     }
 
@@ -227,7 +228,7 @@ impl Session {
                     ModeStatus::NotRecognized | ModeStatus::PermanentlyReset => return,
                 };
                 terminal.asked = terminal.asked.saturating_add(1);
-                self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
+                self.ask(client, queries);
             }
             // DA1, the last answer to every round of questions: a change
             // waiting on colours the terminal did not give is told now.
@@ -246,8 +247,7 @@ impl Session {
             // exactly from now on.
             Reply::KittyFlags(_) if !terminal.kitty => {
                 terminal.kitty = true;
-                self.outbox
-                    .push(Outgoing::Bytes(client, KITTY_PUSH.to_vec()));
+                self.ask(client, KITTY_PUSH);
             }
             // From now on the client is painted underline styles; what it
             // shows already, painted plain, is painted again
@@ -339,15 +339,14 @@ impl Session {
     /// not say cleared; and what they are told their terminal draws, which
     /// is nothing in a tab no client shows, so a program started there draws
     /// in text, which a capture reads.
-    pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, fux_vt::Graphics) {
+    pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, Graphics) {
         let answering = (self.colour_client(tab)).and_then(|c| self.views.get(&c));
         let answering = answering.map(|v| &v.terminal);
         let shown = tab.is_some_and(|t| self.views.keys().any(|c| self.shows(*c, t)));
         (
             answering.map_or(self.last_colours, |t| t.colours),
             answering.map_or(self.last_palette, |t| t.palette),
-            (answering.filter(|_| shown))
-                .map_or_else(fux_vt::Graphics::default, Terminal::graphics),
+            (answering.filter(|_| shown)).map_or_else(Graphics::default, Terminal::graphics),
         )
     }
 
@@ -369,6 +368,7 @@ impl Session {
         let Some(tab) = ws.tabs_mut().iter_mut().find(|t| t.holds(id)) else {
             return;
         };
+        let mut rung = Vec::new();
         for view in self.views.values_mut() {
             let Some(&shown) = viewers.get(&view.id) else {
                 continue;
@@ -382,9 +382,10 @@ impl Session {
                 .is_none_or(|last| now.saturating_duration_since(last) >= BELL_GAP)
             {
                 view.last_bell = Some(now);
-                self.outbox.push(Outgoing::Bytes(view.id, BELL.to_vec()));
+                rung.push(view.id);
             }
         }
+        rung.into_iter().for_each(|client| self.ask(client, BELL));
     }
 
     /// What client `client`'s terminal is sent before it is painted: the
@@ -519,15 +520,19 @@ mod tests {
     fn sent(s: &mut Session, c: ClientId) -> Vec<Vec<u8>> {
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut s.outbox)
             .into_iter()
-            .partition(|o| matches!(o, Outgoing::Bytes(to, _) if *to == c));
+            .partition(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(_)) if *to == c));
         s.outbox = rest;
         mine.into_iter()
             .filter_map(|o| match o {
-                Outgoing::Bytes(_, bytes) => Some(bytes),
-                Outgoing::Exit(..)
-                | Outgoing::Run(..)
-                | Outgoing::Keys(..)
-                | Outgoing::Ended(..)
+                Outgoing::To(_, ToAttached::Paint(bytes)) => Some(bytes.into_owned()),
+                Outgoing::To(
+                    _,
+                    ToAttached::Welcome(..)
+                    | ToAttached::Exit(_)
+                    | ToAttached::Ended(_)
+                    | ToAttached::Run(_)
+                    | ToAttached::Keys(_),
+                )
                 | Outgoing::Shutdown { .. } => None,
             })
             .collect()

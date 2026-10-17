@@ -26,7 +26,7 @@ pub(crate) struct Compact {
     word: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<Compact>() == 8);
+const _: () = assert!(size_of::<Compact>() == 8);
 
 /// A blank cell in the default attributes: what a row is past the cells it
 /// keeps.
@@ -100,12 +100,12 @@ impl Compact {
     /// [`Compact::ascii`] makes each: each cell one 64-bit value, the glyph's
     /// byte low and the style high, which a run of them stores as fast as
     /// the machine moves words.
-    pub(crate) fn fill_ascii(cells: &mut [Compact], run: &[u8], style: u32) {
+    pub(crate) fn fill_ascii(cells: &mut [Self], run: &[u8], style: u32) {
         let high = u64::from(style & (STYLE | PROTECTED)) << 32;
         for (cell, &byte) in cells.iter_mut().zip(run) {
             let bits = high | u64::from(byte);
             // Exact: the low half is the byte, the high half the word.
-            *cell = Compact {
+            *cell = Self {
                 text: u32::try_from(bits & 0xffff_ffff).unwrap_or(0).to_le_bytes(),
                 word: u32::try_from(bits >> 32).unwrap_or(0),
             };
@@ -113,7 +113,7 @@ impl Compact {
     }
     /// Whether any of `cells` is either half of a wide glyph: their words
     /// or'd together, which a run of them does without a branch a cell.
-    pub(crate) fn any_halves(cells: &[Compact]) -> bool {
+    pub(crate) fn any_halves(cells: &[Self]) -> bool {
         cells.iter().fold(0, |any, cell| any | cell.word) & HALVES != 0
     }
     /// A blank cell in style 0, the halves `halves` says ([`CellRef`]'s).
@@ -223,7 +223,7 @@ impl Compact {
         let len = usize::try_from(32u32.saturating_sub(word.leading_zeros()).div_ceil(8));
         len.ok()
             .and_then(|len| self.text.get(..len))
-            .and_then(|s| std::str::from_utf8(s).ok())
+            .and_then(|s| str::from_utf8(s).ok())
             .unwrap_or("")
     }
     /// Where a spilled cell's text is in its row's text, and how long it
@@ -307,7 +307,7 @@ impl Text {
         start
             .checked_add(len)
             .and_then(|end| held.get(start..end))
-            .and_then(|s| std::str::from_utf8(s).ok())
+            .and_then(|s| str::from_utf8(s).ok())
             .unwrap_or("")
     }
     /// Bytes of long clusters kept, live or left behind: the row's
@@ -550,13 +550,9 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             let Some(range) = cell.spilled(long) else {
                 continue;
             };
+            // The range's length is the cell's locator byte.
+            let [.., len] = cell.text;
             let (Some(text), Ok(start)) = (old.get(range), u32::try_from(store.len())) else {
-                *cell = cell.blanked();
-                continue;
-            };
-            // Never: the range's length was a `u8`. Blanked as above, so
-            // that no cell points into the text just taken.
-            let Ok(len) = u8::try_from(text.len()) else {
                 *cell = cell.blanked();
                 continue;
             };

@@ -15,6 +15,7 @@
 use fuxix::process::geteuid;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -78,13 +79,12 @@ fn failed<'a, E: Into<io::Error>>(
 }
 
 /// A socket's path, checked: absolute, short enough for `sockaddr_un`, and
-/// naming a file in a directory that has a parent, the directory's own
-/// privacy being checked against that parent's.
+/// naming a file in a directory below `/`, whose privacy is checked as it
+/// is used (`private_directory`).
 #[derive(Clone, Debug)]
 pub struct SocketPath {
     path: PathBuf,
     directory: PathBuf,
-    above: PathBuf,
 }
 
 impl SocketPath {
@@ -181,7 +181,7 @@ fn not_utf8(variable: &str) -> Error {
 /// The socket `name` in fux's directory.
 fn in_directory(name: &str) -> Result<SocketPath, Error> {
     let path = directory()?.join(name);
-    checked(&path.to_string_lossy(), "the socket's directory")
+    checked(path, "the socket's directory")
 }
 
 fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
@@ -198,42 +198,39 @@ fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     Ok(Path::new(value).join("fux"))
 }
 
-pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
+pub(crate) fn checked(value: impl AsRef<Path>, from: &'static str) -> Result<SocketPath, Error> {
     let refused = |why: String| Err(Error::Refused(why));
-    if value.is_empty() {
+    let path = value.as_ref().to_owned();
+    if path.as_os_str().is_empty() {
         return refused(format!(
             "{from} is empty; it must be an absolute socket path"
         ));
     }
-    if value.contains('\0') {
+    if path.as_os_str().as_bytes().contains(&0) {
         return refused(format!("{from} contains a NUL byte"));
     }
-    let path = PathBuf::from(value);
     if !path.is_absolute() {
-        return refused(format!("{from} is {value:?}; it must be an absolute path"));
+        return refused(format!("{from} is {path:?}; it must be an absolute path"));
     }
-    let directories = path
-        .file_name()
+    let directory = (path.file_name())
         .and(path.parent())
-        .and_then(|directory| Some((directory.to_owned(), directory.parent()?.to_owned())));
-    let Some((directory, above)) = directories else {
+        .filter(|directory| directory.parent().is_some())
+        .map(Path::to_owned);
+    let Some(directory) = directory else {
         return refused(format!(
-            "{from} is {value:?}; it must name a socket file in a directory below /"
+            "{from} is {path:?}; it must name a socket file in a directory below /"
         ));
     };
     let limit = fuxix::socket::max_path_len();
     if path.as_os_str().len() > limit {
         return refused(format!(
             "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
-             domain socket on this platform (from {from}): {value}",
-            value.len()
+             domain socket on this platform (from {from}): {}",
+            path.as_os_str().len(),
+            path.display()
         ));
     }
-    Ok(SocketPath {
-        path,
-        directory,
-        above,
-    })
+    Ok(SocketPath { path, directory })
 }
 
 /// The directory holding the socket must be ours, mode 0700. The
@@ -241,25 +238,20 @@ pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Err
 /// root's show as another uid (65534), and what keeps a connection private
 /// is that each side checks the other's user (the server its clients', a
 /// client its server's), whoever could rename what lies above. `create`
-/// makes it when it is missing; nothing that already exists is modified.
-fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
-    let (directory, above) = (socket.directory(), socket.above.as_path());
+/// makes it when it is missing (as a server does, or a client about to
+/// start one); nothing that already exists is modified.
+pub(crate) fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
+    let directory = socket.directory();
     let euid = geteuid();
-    above
-        .canonicalize()
-        .map_err(failed("socket directory parent ", above))?;
-    match fs::symlink_metadata(directory) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
-            match DirBuilder::new().mode(0o700).create(directory) {
-                // Set explicitly: the umask must not decide who reaches the socket.
-                Ok(()) => fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
-                    .map_err(io(directory))?,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(failed("creating ", directory)(error)),
-            }
+    if create {
+        match DirBuilder::new().mode(0o700).create(directory) {
+            // Set explicitly: the umask must not decide who reaches the socket.
+            Ok(()) => fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                .map_err(io(directory))?,
+            // Whatever is there (a symbolic link too) is checked below.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(failed("creating ", directory)(error)),
         }
-        Err(error) => return Err(io(directory)(error)),
-        Ok(_) => {}
     }
     let meta = fs::symlink_metadata(directory).map_err(io(directory))?;
     let mode = meta.permissions().mode();
@@ -286,18 +278,16 @@ fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// Makes the socket's private directory if it is missing, checking it as a
-/// server does; for a client about to start one.
-pub fn prepare_directory(socket: &SocketPath) -> Result<(), Error> {
-    private_directory(socket, true)
-}
-
 /// A client refuses a socket that is not in a private directory of its own
 /// user, or not a socket of its own user.
 pub fn check_client_socket(socket: &SocketPath) -> Result<(), Error> {
     let path = socket.path();
     let meta = match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // Its door is knocked at instead, in the same directory.
+            if crate::door::path(path).exists() {
+                private_directory(socket, false)?;
+            }
             return Err(Error::NoServer(path.to_owned()));
         }
         Err(error) => return Err(io(path)(error)),
@@ -384,17 +374,6 @@ fn probe(path: &Path) -> io::Result<()> {
 pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener>), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
-    let euid = geteuid();
-    let foreign = |meta: &fs::Metadata| !meta.file_type().is_socket() || meta.uid() != euid;
-    let refused = || {
-        Error::Refused(format!(
-            "{} exists and is not a socket owned by you; fux will not replace it",
-            path.display()
-        ))
-    };
-    if fs::symlink_metadata(path).is_ok_and(|meta| foreign(&meta)) {
-        return Err(refused());
-    }
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(".lock");
     let lock_path = PathBuf::from(lock_path);
@@ -420,7 +399,12 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io(path)(error)),
-        Ok(meta) if foreign(&meta) => return Err(refused()),
+        Ok(meta) if !meta.file_type().is_socket() || meta.uid() != geteuid() => {
+            return Err(Error::Refused(format!(
+                "{} exists and is not a socket owned by you; fux will not replace it",
+                path.display()
+            )));
+        }
         Ok(_) if probe(path).is_ok() => {
             return Err(Error::Refused(format!(
                 "another fux server is already listening on {}",
@@ -474,7 +458,7 @@ mod tests {
     }
 
     fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
-        match bind_socket(&checked(&path.to_string_lossy(), "test")?)? {
+        match bind_socket(&checked(path, "test")?)? {
             (endpoint, Some(listener)) => Ok((endpoint, listener)),
             (_, None) => Err(io(path)(io::ErrorKind::PermissionDenied.into())),
         }
@@ -519,11 +503,11 @@ mod tests {
                 "X is \"/s\"; it must name a socket file in a directory below /",
             ),
             (
-                base_directory("TMPDIR", "").and_then(|d| checked(&d.to_string_lossy(), "X")),
+                base_directory("TMPDIR", "").and_then(|d| checked(&d, "X")),
                 "TMPDIR is set but empty; set it to a directory or set FUX_SOCKET",
             ),
             (
-                base_directory("TMPDIR", "rel").and_then(|d| checked(&d.to_string_lossy(), "X")),
+                base_directory("TMPDIR", "rel").and_then(|d| checked(&d, "X")),
                 "TMPDIR is \"rel\", not an absolute path; fix it or set FUX_SOCKET",
             ),
         ] {
@@ -693,6 +677,14 @@ mod tests {
             error.contains("mode 0700") && error.contains("mode 0755"),
             "{error}"
         );
+        // A client is refused there too, though it would knock at a door,
+        // not connect to a socket.
+        let socket = root.join("fux").join("s.sock");
+        fuxix::file::make_fifo(&crate::door::path(&socket), 0o600)?;
+        let socket = checked(&socket, "socket")?;
+        let error = check_client_socket(&socket).err().map(|e| e.to_string());
+        let error = error.unwrap_or_default();
+        assert!(error.contains("mode 0755"), "{error}");
         let _ = fs::remove_dir_all(&root);
         Ok(())
     }

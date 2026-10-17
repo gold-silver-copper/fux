@@ -32,7 +32,7 @@ impl Sink for Record {
             Event::ColorQuery { number, bel } => {
                 format!("color:{number}:{}", if bel { "bel" } else { "st" })
             }
-            Event::Notification(_) | _ => "unknown".to_owned(),
+            Event::Notification(_) => "unknown".to_owned(),
         });
     }
 }
@@ -131,6 +131,25 @@ fn osc_payloads_are_bounded_and_cancellable() -> Result {
     Ok(())
 }
 
+/// ECMA-48 8.3.89 and 5.6: an OSC's command string holds 00/08 to 00/13
+/// (BS to CR) and 02/00 to 07/14. The other controls, 00/00 to 00/06,
+/// 00/14 to 01/15 but CAN, SUB and ESC, and DEL, are left out of the
+/// payload, as Williams's DEC parser model leaves them (`osc_string`
+/// ignores C0); BEL ends the string. Read at once and a byte at a time.
+#[test]
+fn controls_a_command_string_cannot_hold_are_left_out_of_an_osc() -> Result {
+    let input = b"\x1b]2;a\x00b\x01c\x06d\x0e\x1f\x7fe\x08\t\n\x0b\x0c\rf\x07";
+    let mut split = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
+    let mut record = Record::default();
+    for byte in input {
+        split.process_with(&[*byte], &mut record)?;
+    }
+    for events in [run(EVENTS, input)?.events, record.events] {
+        assert_eq!(events, ["title:abcde\x08\t\n\x0b\x0c\rf"]);
+    }
+    Ok(())
+}
+
 #[test]
 fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
     let record = run(
@@ -150,11 +169,12 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
         b"\x1b[?1000;1$y",
         b"\x1b[?1002;2$y",
         b"\x1b[?4242;0$y",
-        // IRM and LNM, the ANSI modes fux-vt keeps; SRM it does not.
+        // IRM and LNM, the ANSI modes fux-vt keeps; SRM, set for good
+        // (ECMA-48 7.2.15: fux-vt never images what is typed).
         b"\x1b[4;2$y",
         b"\x1b[4;1$y",
         b"\x1b[20;2$y",
-        b"\x1b[12;0$y",
+        b"\x1b[12;3$y",
     ];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
     assert!(record.events.is_empty(), "replies do not imply events");
@@ -163,6 +183,44 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
     assert_eq!(
         record.replies,
         [&b"\x1b[?1;2c"[..], b"\x1b[0n"].map(<[u8]>::to_vec)
+    );
+    Ok(())
+}
+
+/// The DSRs of DEC's other devices (`CSI ? Ps n`), which fux-vt has none
+/// of: the printer (DEC STD 070-7: ?13, none), UDKs (DEC STD 070-11's
+/// `REPORT_UDK_STATUS`: ?23, no UDK extension), the keyboard (the VT520
+/// manual, DSR keyboard report: language unknown, as a VT220 reports it,
+/// the level DA2 gives; status and type are level 4's),
+/// the locator (DEC STD 070-13: ?53, none; ?57;0, unknown), macros (DECMSR:
+/// no space; DECCKSR of none: 0000, under the request's label), data
+/// integrity (DEC STD 070, DSR: ?73 first after power-up or RIS, then ?70)
+/// and sessions (?83, not configured for them).
+#[test]
+fn extended_replies_answer_the_device_status_reports() -> Result {
+    let record = run(
+        REPLIES,
+        b"\x1b[?15n\x1b[?25n\x1b[?26n\x1b[?55n\x1b[?56n\x1b[?62n\x1b[?63;7n\x1b[?75n\x1b[?75n\
+          \x1b[?85n\x1bc\x1b[?75n\x1b[?99n",
+    )?;
+    let expected: [&[u8]; 11] = [
+        b"\x1b[?13n",
+        b"\x1b[?23n",
+        b"\x1b[?27;0n",
+        b"\x1b[?53n",
+        b"\x1b[?57;0n",
+        b"\x1b[0*{",
+        b"\x1bP7!~0000\x1b\\",
+        b"\x1b[?73n",
+        b"\x1b[?70n",
+        b"\x1b[?83n",
+        b"\x1b[?73n",
+    ];
+    assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
+    assert!(
+        run(Options::new(), b"\x1b[?15n\x1b[?75n")?
+            .replies
+            .is_empty()
     );
     Ok(())
 }
@@ -380,12 +438,36 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
     // The margins, one-based.
     assert_eq!(ask("\x1bP$qr\x1b\\")?, ["\x1bP1$r1;24r\x1b\\"]);
     assert_eq!(ask("\x1b[3;10r\x1bP$qr\x1b\\")?, ["\x1bP1$r3;10r\x1b\\"]);
-    // A cursor shape a program set; none for the terminal's own.
+    // A cursor shape a program set, 0 as the blinking block it is (1);
+    // none for the terminal's own, before any and after DECSCUSR 7.
     assert_eq!(ask("\x1b[5 q\x1bP$q q\x1b\\")?, ["\x1bP1$r5 q\x1b\\"]);
+    assert_eq!(ask("\x1b[0 q\x1bP$q q\x1b\\")?, ["\x1bP1$r1 q\x1b\\"]);
     assert!(ask("\x1bP$q q\x1b\\")?.is_empty());
-    assert!(ask("\x1b[0 q\x1bP$q q\x1b\\")?.is_empty());
+    assert!(ask("\x1b[5 q\x1b[7 q\x1bP$q q\x1b\\")?.is_empty());
+    // The left and right margins, one-based, the screen's edges without
+    // DECLRMM (DEC STD 070, DECRQSS: DECSLRM's `s`).
+    assert_eq!(ask("\x1bP$qs\x1b\\")?, ["\x1bP1$r1;80s\x1b\\"]);
+    assert_eq!(
+        ask("\x1b[?69h\x1b[3;4s\x1bP$qs\x1b\\")?,
+        ["\x1bP1$r3;4s\x1b\\"]
+    );
+    // DECSCA's selective erase attribute: 1 while DECSCA 1 protects, 0
+    // otherwise, SPA's ISO protection being no DECSCA.
+    for (setup, ps) in [
+        ("", 0),
+        ("\x1b[1\"q", 1),
+        ("\x1b[1\"q\x1b[0\"q", 0),
+        ("\x1bV", 0),
+    ] {
+        let reply = format!("\x1bP1$r{ps}\"q\x1b\\");
+        assert_eq!(
+            ask(&format!("{setup}\x1bP$q\"q\x1b\\"))?,
+            [reply],
+            "{setup:?}"
+        );
+    }
     // Requests fux-vt does not know, a long one among them, are invalid.
-    for request in ["s", "\"q", "t", "$|", "mm", "a long request"] {
+    for request in ["t", "$|", "mm", "a long request"] {
         assert_eq!(
             ask(&format!("\x1bP$q{request}\x1b\\"))?,
             ["\x1bP0$r\x1b\\"],

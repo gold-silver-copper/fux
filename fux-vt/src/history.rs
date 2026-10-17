@@ -73,7 +73,7 @@ pub(crate) struct Kept {
     place: u64,
 }
 
-const _: () = assert!(std::mem::size_of::<Kept>() == 24);
+const _: () = assert!(size_of::<Kept>() == 24);
 const _: () = assert!(BLOCK <= 1 << 12);
 
 /// `Kept`'s flags.
@@ -83,22 +83,18 @@ const LINKED: u8 = 4;
 const TEXT: u8 = 8;
 
 impl Kept {
+    /// What `row` is kept as, its cells at `start` in block `block`.
     #[inline]
-    fn new(
-        id: RowId,
-        version: u64,
-        (block, start): (u16, u16),
-        len: u16,
-        width: u16,
-        flags: u8,
-    ) -> Self {
+    fn new(row: &Arriving<'_>, (block, start): (u16, u16)) -> Self {
+        let flags = (if row.wrapped { WRAPPED } else { 0 }) | (if row.prompt { PROMPT } else { 0 });
+        let len = u16::try_from(row.cells.len()).unwrap_or(u16::MAX);
         Self {
-            id,
-            version,
+            id: row.id,
+            version: row.version,
             place: u64::from(block)
                 | u64::from(start & 0xfff) << 16
                 | u64::from(len) << 28
-                | u64::from(width) << 44
+                | u64::from(row.width) << 44
                 | u64::from(flags & 0xf) << 60,
         }
     }
@@ -210,14 +206,14 @@ impl History {
     }
     /// The bytes the rows hold: each one's record, its cells and its text.
     pub(crate) fn bytes(&self) -> usize {
-        (self.rows.len().saturating_mul(std::mem::size_of::<Kept>()))
-            .saturating_add(self.cells.saturating_mul(std::mem::size_of::<Compact>()))
+        (self.rows.len().saturating_mul(size_of::<Kept>()))
+            .saturating_add(self.cells.saturating_mul(size_of::<Compact>()))
             .saturating_add(self.text)
     }
     /// The most rows the budget holds, and one more, as a row comes in
     /// before the oldest goes.
     fn most_rows(&self) -> usize {
-        (self.budget.checked_div(std::mem::size_of::<Kept>()))
+        (self.budget.checked_div(size_of::<Kept>()))
             .unwrap_or(0)
             .min(MAX_ROWS)
             .saturating_add(1)
@@ -283,16 +279,11 @@ impl History {
             self.block(kept.block())?.get(Self::cells_of(kept)?)?
         };
         let number = self.number(index)?;
-        let text = if kept.flags() & TEXT != 0 {
-            self.texts.get(&number).unwrap_or(&NO_TEXT)
-        } else {
-            &NO_TEXT
-        };
-        let links = if kept.flags() & LINKED != 0 {
-            self.linked.get(&number)
-        } else {
-            None
-        };
+        // Looked up only for a row its flags say has some.
+        let text = (kept.flags() & TEXT != 0).then(|| self.texts.get(&number));
+        let text = text.flatten().unwrap_or(&NO_TEXT);
+        let links = (kept.flags() & LINKED != 0).then(|| self.linked.get(&number));
+        let links = links.flatten();
         Some(Found {
             kept,
             cells,
@@ -337,10 +328,14 @@ impl History {
 
     /// Room for a row of `len` cells, if there is not: a row more in
     /// `rows`, doubling, up to the most the budget holds (`most_rows`);
-    /// and its cells: the newest block grows,
-    /// doubling, until it holds a block; else a block to start, the spare
-    /// if it holds the row, or a block, or for the first block as much as
-    /// its first row needs.
+    /// and its cells, after the newest block's or in a block of its own:
+    /// the newest block grows, doubling, until it holds a block; else a
+    /// block starts, the spare if it holds the row, or a block, or for the
+    /// first block as much as its first row needs. Fails only if there is
+    /// no memory for it. Out of line: a row arriving in history usually
+    /// fits where the last one ended.
+    #[cold]
+    #[inline(never)]
     fn make_room(&mut self, len: usize) -> Result<(), Error> {
         if self.rows.len() == self.rows.capacity() {
             let capacity = self
@@ -364,17 +359,17 @@ impl History {
         if self.older.len() >= BLOCKS.saturating_sub(2) {
             return Err(Error::Capacity);
         }
-        if self.spare.capacity() >= len {
-            return Ok(());
+        if self.spare.capacity() < len {
+            let capacity = if self.newest.capacity() == 0 && self.older.is_empty() {
+                len
+            } else {
+                len.max(BLOCK)
+            };
+            let mut block = Vec::new();
+            crate::reserve(&mut block, capacity)?;
+            self.spare = block;
         }
-        let capacity = if self.newest.capacity() == 0 && self.older.is_empty() {
-            len
-        } else {
-            len.max(BLOCK)
-        };
-        let mut block = Vec::new();
-        crate::reserve(&mut block, capacity)?;
-        self.spare = block;
+        self.start_block();
         Ok(())
     }
 
@@ -386,7 +381,7 @@ impl History {
     pub(crate) fn push(&mut self, row: Arriving<'_>) -> Result<(), Error> {
         let len = row.cells.len();
         if self.rows.len() == self.rows.capacity() || !self.fits(len) {
-            self.room_for(len)?;
+            self.make_room(len)?;
         }
         let start = u16::try_from(self.newest.len()).unwrap_or(0);
         // A row of one cell, as a short line's often is, is stored, not
@@ -395,38 +390,10 @@ impl History {
             [cell] => self.newest.push(*cell),
             cells => self.newest.extend_from_slice(cells),
         }
-        self.keep(row, (self.newest_block, start));
-        Ok(())
-    }
-
-    /// Room for a row of `len` cells, after the newest block's or in a
-    /// block of its own (`make_room`); nothing changed if there is none.
-    /// Out of line, and `make_room` with it: a row arriving in history
-    /// usually fits where the last one ended.
-    #[cold]
-    #[inline(never)]
-    fn room_for(&mut self, len: usize) -> Result<(), Error> {
-        self.make_room(len)?;
-        if !self.fits(len) {
-            self.start_block();
-        }
-        Ok(())
-    }
-
-    /// Notes `row`, its cells at `place`, after the rows there are.
-    fn keep(&mut self, row: Arriving<'_>, place: (u16, u16)) {
-        let len = row.cells.len();
-        let flags = (if row.wrapped { WRAPPED } else { 0 }) | (if row.prompt { PROMPT } else { 0 });
-        let len16 = u16::try_from(len).unwrap_or(u16::MAX);
         self.cells = self.cells.saturating_add(len);
-        self.rows.push_back(Kept::new(
-            row.id,
-            row.version,
-            place,
-            len16,
-            row.width,
-            flags,
-        ));
+        self.rows
+            .push_back(Kept::new(&row, (self.newest_block, start)));
+        Ok(())
     }
 
     /// Lets the oldest row go, and its links; and, once

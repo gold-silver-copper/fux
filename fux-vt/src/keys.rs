@@ -52,8 +52,31 @@ pub enum Key {
     PageUp,
     /// Page Down.
     PageDown,
-    /// `1..=12`.
-    F(u8),
+    /// A function key.
+    F(Function),
+}
+
+/// A function key's number, F1 to F35: the keys kitty's protocol numbers
+/// (its "Functional key definitions", F13 from 57376 to F35 at 57398),
+/// F1 to F12 of them xterm's too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Function(u8);
+
+impl Function {
+    /// The last function key.
+    pub const LAST: u8 = 35;
+    /// F`n`, if there is one (`1..=35`).
+    pub fn new(n: u8) -> Option<Self> {
+        (1..=Self::LAST).contains(&n).then_some(Self(n))
+    }
+    /// Its number, 1 to 35.
+    pub fn number(self) -> u8 {
+        self.0
+    }
+    /// F1 to F`last`, in order.
+    pub(crate) fn up_to(last: u8) -> impl Iterator<Item = Key> {
+        (1..=last).filter_map(Self::new).map(Key::F)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -75,6 +98,11 @@ pub(crate) const CTRL_BIT: u8 = 4;
 pub(crate) const CAPS_LOCK_BIT: u8 = 64;
 pub(crate) const NUM_LOCK_BIT: u8 = 128;
 
+/// The kitty keyboard protocol's five progressive enhancement flags, 1 to
+/// 16 ("The progressive enhancement flags"): the bits of a flags number
+/// read; the rest mean nothing.
+pub(crate) const KITTY_FLAGS: u8 = 0b1_1111;
+
 impl Modifiers {
     /// As xterm's and kitty's modifier bits.
     pub(crate) fn bits(self) -> u8 {
@@ -91,25 +119,25 @@ impl Modifiers {
         }
     }
     /// No modifier.
-    pub const NONE: Modifiers = Modifiers {
+    pub const NONE: Self = Self {
         ctrl: false,
         alt: false,
         shift: false,
     };
     /// Control alone.
-    pub const CTRL: Modifiers = Modifiers {
+    pub const CTRL: Self = Self {
         ctrl: true,
-        ..Modifiers::NONE
+        ..Self::NONE
     };
     /// Alt alone.
-    pub const ALT: Modifiers = Modifiers {
+    pub const ALT: Self = Self {
         alt: true,
-        ..Modifiers::NONE
+        ..Self::NONE
     };
     /// Shift alone.
-    pub const SHIFT: Modifiers = Modifiers {
+    pub const SHIFT: Self = Self {
         shift: true,
-        ..Modifiers::NONE
+        ..Self::NONE
     };
     /// Whether no modifier is held.
     pub fn is_empty(self) -> bool {
@@ -119,8 +147,9 @@ impl Modifiers {
 
 /// A key with its modifiers, normalized so that equal key presses compare
 /// equal: a character's shift is dropped, as the character says it already
-/// (Shift and `a` arrive as `A`; `S-a` is `a`), and a control letter is
-/// lower case (`C-b`), as terminals cannot tell the two apart.
+/// (Shift and `a` arrive as `A`, and the name `S-a` is read as `A`), and a
+/// control letter is lower case (`C-b`), as terminals cannot tell the two
+/// apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyPress {
     /// The key.
@@ -134,9 +163,13 @@ impl KeyPress {
     pub fn new(key: Key, mods: Modifiers) -> Self {
         let mut press = Self { key, mods };
         if let Key::Char(c) = key {
+            // A letter's shift is its upper case, as it arrives typed (`S-a`
+            // is `A`); a control letter is lower case all the same.
             press.mods.shift = false;
-            if press.mods.ctrl && c.is_ascii_alphabetic() {
+            if press.mods.ctrl {
                 press.key = Key::Char(c.to_ascii_lowercase());
+            } else if mods.shift {
+                press.key = Key::Char(c.to_ascii_uppercase());
             }
         }
         press
@@ -201,8 +234,8 @@ pub struct Kitty {
 }
 
 impl From<KeyPress> for Keystroke {
-    fn from(press: KeyPress) -> Keystroke {
-        Keystroke { press, kitty: None }
+    fn from(press: KeyPress) -> Self {
+        Self { press, kitty: None }
     }
 }
 
@@ -241,7 +274,7 @@ fn key_name(key: Key) -> String {
     }
     // Every key but a character and a function key is named above.
     if let Key::F(n) = key {
-        return format!("F{n}");
+        return format!("F{}", n.number());
     }
     if let Key::Char(c) = key {
         return c.to_string();
@@ -308,7 +341,7 @@ impl std::str::FromStr for KeyPress {
             *held = true;
             rest = tail;
         }
-        let key = if rest == "BTab" {
+        let key = if rest.eq_ignore_ascii_case("BTab") {
             mods.shift = true;
             Key::Tab
         } else if let Some((_, key)) = NAMED
@@ -320,7 +353,7 @@ impl std::str::FromStr for KeyPress {
         } else if let Some(n) = rest
             .strip_prefix(['F', 'f'])
             .and_then(|n| n.parse::<u8>().ok())
-            .filter(|n| (1..=12).contains(n))
+            .and_then(Function::new)
         {
             Key::F(n)
         } else {
@@ -342,7 +375,7 @@ impl std::str::FromStr for KeyPress {
 pub fn all_names() -> Vec<String> {
     let mut names: Vec<String> = NAMED.iter().map(|(n, _)| (*n).to_owned()).collect();
     names.push("BTab".into());
-    names.extend((1..=12).map(|n| format!("F{n}")));
+    names.extend(Function::up_to(Function::LAST).map(key_name));
     names
 }
 
@@ -364,6 +397,8 @@ mod tests {
             ("C-M-Left", "C-M-Left"),
             ("S-Up", "S-Up"),
             ("BTab", "BTab"),
+            ("btab", "BTab"),
+            ("BTAB", "BTab"),
             ("S-Tab", "BTab"),
             ("Enter", "Enter"),
             ("enter", "Enter"),
@@ -378,7 +413,10 @@ mod tests {
             ("-", "-"),
             ("C--", "C--"),
             ("T", "T"),
-            ("S-t", "t"),
+            ("S-t", "T"),
+            ("s-M-v", "M-V"),
+            ("S-1", "1"),
+            ("C-S-a", "C-a"),
             ("界", "界"),
             (":", ":"),
         ] {
@@ -388,7 +426,11 @@ mod tests {
                 "{name}"
             );
         }
-        for bad in ["", "F13", "F0", "Nope", "C-", "ab"] {
+        // F1 to F35, as kitty's protocol numbers them; no F0 or F36.
+        for name in ["F13", "F35", "C-F20"] {
+            assert_eq!(parse(name).map(|k| k.to_string()), Some(name.into()));
+        }
+        for bad in ["", "F0", "F36", "F255", "Nope", "C-", "ab"] {
             assert!(parse(bad).is_none(), "{bad}");
         }
         assert_eq!(
@@ -398,5 +440,13 @@ mod tests {
         for name in all_names() {
             assert_eq!(parse(&name).map(|k| k.to_string()), Some(name.clone()));
         }
+    }
+
+    /// One key, one value: Shift and `a` built is the `A` that `S-a` names.
+    #[test]
+    fn a_press_built_is_the_press_named() {
+        let shifted = KeyPress::new(Key::Char('a'), Modifiers::SHIFT);
+        assert_eq!(Some(shifted), parse("S-a"));
+        assert_eq!(shifted, KeyPress::char('A'));
     }
 }

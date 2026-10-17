@@ -1,8 +1,8 @@
 //! Processes: their IDs, signals, sessions, and how they end.
-use crate::errno::{Errno, Result, check};
+use crate::errno::{Errno, Result, check, fit};
 use std::fmt;
 use std::num::NonZeroI32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A process ID, process group or session: always positive. The system
 /// uses 0 and negative numbers for "none" and for groups, and a signal sent
@@ -146,15 +146,45 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
     // SAFETY: `time` is a valid timespec for clock_gettime to fill, and it
     // is read only after the call says it filled it.
     check(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) })?;
-    let seconds = u64::try_from(time.tv_sec).map_err(|_| Errno::INVAL)?;
-    let nanos = u32::try_from(time.tv_nsec).map_err(|_| Errno::INVAL)?;
+    let seconds: u64 = fit(time.tv_sec)?;
+    let nanos: u32 = fit(time.tv_nsec)?;
     Ok(std::time::Duration::new(seconds, nanos))
 }
 
 /// Makes this process the leader of a new session, whose ID is its pid.
-pub fn setsid() -> Result<()> {
+fn setsid() -> Result<()> {
     // SAFETY: setsid takes nothing and touches no memory.
     check(unsafe { libc::setsid() }).map(drop)
+}
+
+/// Has `command`'s program, once spawned, lead a new session, holding no
+/// descriptor but its stdin, stdout and stderr: what this process holds
+/// without close-on-exec, inherited from a shell that leaks descriptors or
+/// opened by a thread racing the spawn, goes no further. With `terminal`,
+/// its stdin, a terminal, becomes the session's controlling terminal. The
+/// spawn clears the signal mask, and `exec` restores the dispositions Rust
+/// and signal handlers changed, so the program starts as it would from a
+/// shell.
+pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
+    use std::os::unix::process::CommandExt;
+    // Listed now: between fork and exec nothing may allocate.
+    let listed = crate::io::open_end();
+    let lead = move || -> std::io::Result<()> {
+        crate::io::cloexec_from(3, listed)?;
+        setsid()?;
+        if terminal {
+            let set = crate::terminal::request(libc::TIOCSCTTY);
+            let steal: libc::c_int = 0;
+            // SAFETY: TIOCSCTTY takes an int and touches no memory.
+            check(unsafe { libc::ioctl(0, set, steal) })?;
+        }
+        Ok(())
+    };
+    // SAFETY: `lead` runs between fork and exec, where only
+    // async-signal-safe calls may be made, and makes only those:
+    // close_range, or fcntl; setsid; ioctl. It allocates nothing, takes
+    // no lock, and its errors are numbers.
+    unsafe { command.pre_exec(lead) };
 }
 
 /// The session of `pid`. `None` if there is none to name: the process is
@@ -174,11 +204,23 @@ pub enum Status {
 }
 
 /// Whether `pid`, a child of this process, has ended, without reaping it:
-/// `None` while it runs, and while it is only stopped. macOS reports a stop
-/// here although only exits are asked for (bevy-final finding 020), so the
-/// report's code decides.
+/// `None` while it runs, and while it is only stopped.
 pub fn ended(pid: Pid) -> Result<Option<Status>> {
-    let id = libc::id_t::try_from(pid.as_raw()).map_err(|_| Errno::INVAL)?;
+    waited(pid, libc::WNOWAIT)
+}
+
+/// Reaps `pid`, a child of this process, if it has ended: `None` while it
+/// runs.
+pub fn reap(pid: Pid) -> Result<Option<Status>> {
+    waited(pid, 0)
+}
+
+/// How `pid`, a child of this process, ended, if it has, `keep` (0 or
+/// `WNOWAIT`) saying whether it stays to be reaped. Only exits and kills
+/// are asked for; macOS reports a stop all the same (bevy-final finding
+/// 020), so the report's code decides.
+fn waited(pid: Pid, keep: libc::c_int) -> Result<Option<Status>> {
+    let id: libc::id_t = fit(pid.as_raw())?;
     let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
     // SAFETY: `info` is a whole siginfo_t, which waitid fills; with WNOHANG
     // and nothing to report, it leaves it zeroed.
@@ -187,7 +229,7 @@ pub fn ended(pid: Pid) -> Result<Option<Status>> {
             libc::P_PID,
             id,
             info.as_mut_ptr(),
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            libc::WEXITED | libc::WNOHANG | keep,
         )
     };
     check(result)?;
@@ -208,23 +250,6 @@ pub fn ended(pid: Pid) -> Result<Option<Status>> {
     })
 }
 
-/// Reaps `pid`, a child of this process, if it has ended: `None` while it
-/// runs.
-pub fn reap(pid: Pid) -> Result<Option<Status>> {
-    let mut status: libc::c_int = 0;
-    // SAFETY: `status` is a live int that waitpid writes.
-    let reaped = check(unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::WNOHANG) })?;
-    if reaped == 0 {
-        return Ok(None);
-    }
-    // Without WUNTRACED only an exit or a kill is reported.
-    Ok(Some(if libc::WIFSIGNALED(status) {
-        Status::Signalled(libc::WTERMSIG(status))
-    } else {
-        Status::Exited(libc::WEXITSTATUS(status))
-    }))
-}
-
 /// Makes this process the reaper of its descendants' orphans: a program
 /// whose parent exits (a double fork, a daemon) becomes its child, not
 /// init's, so it stays in its [`tree`], where its system calls may be read,
@@ -233,7 +258,7 @@ pub fn reap(pid: Pid) -> Result<Option<Status>> {
 pub fn adopt_orphans() -> Result<()> {
     // SAFETY: prctl with PR_SET_CHILD_SUBREAPER takes numbers and touches
     // no memory.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) })?;
     Ok(())
 }
@@ -242,7 +267,7 @@ pub fn adopt_orphans() -> Result<()> {
 /// not keep: the orphans it adopted ([`adopt_orphans`]); none on macOS. Its
 /// own children are kept, for whoever waits for them.
 pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
         let _ = reap(pid);
     }
@@ -253,14 +278,14 @@ pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
 /// The processes this one started, those they started in turn, and the
 /// orphans it adopted ([`adopt_orphans`]); not itself. A runaway tree is
 /// cut short past 4,096.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn tree() -> Vec<Pid> {
     below("self")
 }
 
 /// The processes under `root` (or `self`), by each one's threads'
 /// children: a runaway tree is cut short past 4,096.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn below(root: impl fmt::Display) -> Vec<Pid> {
     let mut found = children(root);
     let mut next = 0;
@@ -274,7 +299,7 @@ fn below(root: impl fmt::Display) -> Vec<Pid> {
 }
 
 /// The children of `pid` (or `self`), by each of its threads'.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn children(pid: impl fmt::Display) -> Vec<Pid> {
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task"));
     (tasks.into_iter().flatten().filter_map(|t| t.ok()))
@@ -294,21 +319,33 @@ pub fn tree() -> Vec<Pid> {
     // SAFETY: a null buffer asks only for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     // Room for processes started between the two calls.
-    let Some(room) = usize::try_from(count).ok().and_then(|c| c.checked_add(64)) else {
-        return Vec::new();
-    };
-    let mut pids: Vec<libc::pid_t> = vec![0; room];
-    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
-        return Vec::new();
-    };
-    // SAFETY: the buffer is `bytes` long and writable.
-    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-    pids.truncate(usize::try_from(listed).unwrap_or(0));
-    pids.into_iter().filter_map(Pid::from_raw).collect()
+    let room = usize::try_from(count).unwrap_or(0).saturating_add(64);
+    let pids = listed(room, |buffer, bytes| {
+        // SAFETY: the buffer is `bytes` long and writable.
+        unsafe { libc::proc_listallpids(buffer, bytes) }
+    });
+    (pids.into_iter().flatten())
+        .filter_map(Pid::from_raw)
+        .collect()
+}
+
+/// What a call fills a buffer of `room` `T`s with, given the buffer and
+/// its length in bytes, and answering how many it wrote: `None` if it
+/// failed.
+#[cfg(target_os = "macos")]
+fn listed<T: Default + Clone>(
+    room: usize,
+    call: impl FnOnce(*mut libc::c_void, libc::c_int) -> libc::c_int,
+) -> Option<Vec<T>> {
+    let mut list = vec![T::default(); room];
+    let bytes = libc::c_int::try_from(size_of_val(list.as_slice())).ok()?;
+    let written = usize::try_from(call(list.as_mut_ptr().cast(), bytes)).ok()?;
+    list.truncate(written);
+    Some(list)
 }
 
 /// `pid`'s command line, when the system says.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn argv(pid: Pid) -> Option<Vec<String>> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let words: Vec<String> = raw
@@ -327,7 +364,7 @@ pub fn argv(_pid: Pid) -> Option<Vec<String>> {
 }
 
 /// The name of `pid`'s program, when the system says.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn name(pid: Pid) -> Option<String> {
     let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
     Some(comm.trim_end_matches('\n').to_owned()).filter(|n| !n.is_empty())
@@ -346,7 +383,7 @@ pub fn name(pid: Pid) -> Option<String> {
 }
 
 /// The current directory of `pid`, when the system says.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn cwd(pid: Pid) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
@@ -356,7 +393,7 @@ pub fn cwd(pid: Pid) -> Option<PathBuf> {
 pub fn cwd(pid: Pid) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
-    let bytes = libc::c_int::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
+    let bytes = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()).ok()?;
     // SAFETY: the buffer is exactly one `proc_vnodepathinfo`, which the call
     // fills; a short return is checked before the value is read.
     let read = unsafe {
@@ -583,7 +620,7 @@ pub enum Activity {
 }
 
 /// What a blocked thread waits in, by its system call.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Blocked {
     /// read and its kind, on this descriptor.
@@ -608,7 +645,7 @@ enum Blocked {
 /// Where the descriptors a poll watches are: an array of `len` `pollfd`s
 /// at `at` in the program's memory (poll), the set of the descriptors below
 /// `len` read from, at `at` (select), or an epoll descriptor (epoll_wait).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Watched {
     Fds { at: u64, len: u64 },
@@ -616,18 +653,38 @@ enum Watched {
     Epoll(u64),
 }
 
+/// What one thread of a process does, as the probe weighs it.
+#[cfg(not(target_os = "macos"))]
+#[derive(Clone, Copy)]
+enum Thread {
+    /// Running, or about to.
+    Runs,
+    /// Waiting for the terminal with no time limit.
+    Reads,
+    /// Waiting for the terminal with a time limit.
+    Polls,
+    /// Blocked on something else.
+    Waits,
+    /// Asleep on a timer.
+    Sleeps,
+    /// Blocked in what cannot be read.
+    Unread,
+    /// Parked on a futex: what the others do decides.
+    Parked,
+    /// Waiting for a child, or ended: doing nothing of its own.
+    Out,
+}
+
 /// What a system call waits for, by its number (`libc::SYS_*`, this
 /// machine's) and its arguments.
 #[cfg(all(
-    any(target_os = "linux", target_os = "android"),
+    not(target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
+fn blocked_in(nr: libc::c_long, args: &[u64]) -> Blocked {
     let arg = |i: usize| args.get(i).copied().unwrap_or(0);
-    let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
-    let Ok(nr) = libc::c_long::try_from(nr) else {
-        return Blocked::Other;
-    };
+    // An `int` timeout, its low 32 bits, is no limit if it is negative.
+    let forever = |t: u64| t & 0x8000_0000 != 0;
     let (fds, set, epoll) = (
         Watched::Fds {
             at: arg(0),
@@ -670,15 +727,15 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
 
 /// Another machine: nothing is known of its system call numbers.
 #[cfg(all(
-    any(target_os = "linux", target_os = "android"),
+    not(target_os = "macos"),
     not(any(target_arch = "x86_64", target_arch = "aarch64"))
 ))]
-fn blocked_in(_nr: u64, _args: &[u64]) -> Blocked {
+fn blocked_in(_nr: libc::c_long, _args: &[u64]) -> Blocked {
     Blocked::Other
 }
 
 /// What thread `tid` of `pid` is blocked in; `None` while it runs.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
     match stat.rsplit_once(')')?.1.split_whitespace().next()? {
@@ -689,8 +746,10 @@ fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
     let Ok(call) = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")) else {
         return Some(Blocked::Unread);
     };
+    // `running`, or the call's number: -1 (`-1 SP PC`) while it is blocked
+    // outside one.
     let mut words = call.split_whitespace();
-    let nr: u64 = words.next()?.parse().ok()?;
+    let nr: libc::c_long = words.next()?.parse().ok()?;
     let args: Vec<u64> = words
         .take(6)
         .filter_map(|w| u64::from_str_radix(w.trim_start_matches("0x"), 16).ok())
@@ -700,33 +759,34 @@ fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
 
 /// Whether `pid`'s descriptor `fd` is the terminal at `tty` (or its own
 /// controlling terminal, as `/dev/tty`).
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
+#[cfg(not(target_os = "macos"))]
+fn is_terminal(pid: Pid, fd: u64, tty: &Path) -> bool {
     std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
-        .is_ok_and(|target| target == tty || target == std::path::Path::new("/dev/tty"))
+        .is_ok_and(|target| target == tty || target == Path::new("/dev/tty"))
 }
 
 /// Whether a poll in `pid` watches the terminal at `tty` for input: a
 /// `pollfd` asking `POLLIN` of it, its bit in the set select reads, or a
 /// descriptor of the epoll set asking `EPOLLIN` (its `fdinfo`). Read from
 /// the program's memory, which a process that may read its system calls
-/// may read too.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
+/// may read too; `None` if what says cannot be read.
+#[cfg(not(target_os = "macos"))]
+fn watches_terminal(pid: Pid, watched: Watched, tty: &Path) -> Option<bool> {
     use std::os::unix::fs::FileExt;
     // `len` bytes of its memory at `at`; none at a null address.
-    let memory = |at: u64, len: u64| -> Vec<u8> {
-        let mut bytes = vec![0; usize::try_from(len).unwrap_or(0)];
-        let read = std::fs::File::open(format!("/proc/{pid}/mem"))
-            .and_then(|mem| mem.read_exact_at(&mut bytes, at));
-        if at == 0 || read.is_err() {
-            bytes.clear();
+    let memory = |at: u64, len: u64| -> Option<Vec<u8>> {
+        if at == 0 {
+            return Some(Vec::new());
         }
-        bytes
+        let mut bytes = vec![0; usize::try_from(len).unwrap_or(0)];
+        std::fs::File::open(format!("/proc/{pid}/mem"))
+            .and_then(|mem| mem.read_exact_at(&mut bytes, at))
+            .ok()?;
+        Some(bytes)
     };
     let fds: Vec<u64> = match watched {
         Watched::Fds { at, len: n } => {
-            let array = memory(at, n.min(1024).saturating_mul(8));
+            let array = memory(at, n.min(1024).saturating_mul(8))?;
             let (pollfds, _) = array.as_chunks::<8>();
             (pollfds.iter())
                 .filter_map(|&[a, b, c, d, events, more, _, _]| {
@@ -737,7 +797,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
         }
         Watched::Set { len: n, at } => {
             let n = n.min(1024);
-            let set = memory(at, n.div_ceil(64).saturating_mul(8));
+            let set = memory(at, n.div_ceil(64).saturating_mul(8))?;
             let (words, _) = set.as_chunks::<8>();
             let words: Vec<u64> = words.iter().map(|w| u64::from_ne_bytes(*w)).collect();
             (0..n)
@@ -749,7 +809,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
                 .collect()
         }
         Watched::Epoll(fd) => std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))
-            .unwrap_or_default()
+            .ok()?
             .lines()
             .filter_map(|line| {
                 // `tfd:        5 events:       19 data: …`
@@ -757,11 +817,11 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
                 let fd = (words.next() == Some("tfd:")).then(|| words.next())??;
                 let events = (words.next() == Some("events:")).then(|| words.next())??;
                 let events = u32::from_str_radix(events, 16).ok()?;
-                (events & 1 != 0).then(|| fd.parse().ok())?
+                (events & libc::EPOLLIN.cast_unsigned() != 0).then(|| fd.parse().ok())?
             })
             .collect(),
     };
-    fds.into_iter().any(|fd| is_terminal(pid, fd, tty))
+    Some(fds.into_iter().any(|fd| is_terminal(pid, fd, tty)))
 }
 
 /// What one process of the group does, by its main thread and its others,
@@ -772,35 +832,33 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
 /// waits for the terminal and none of the others can go on alone, on a
 /// timer or polling: else polling, as it may draw again on its own; else
 /// waiting.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
-    let on_terminal = |blocked: Blocked| match blocked {
-        Blocked::Read(fd) if is_terminal(pid, fd, tty) => Some(Activity::Reading),
-        Blocked::Poll(forever, watched) if watches_terminal(pid, watched, tty) => {
-            Some(if forever {
-                Activity::Reading
-            } else {
-                Activity::Polling
-            })
-        }
-        Blocked::Read(_) | Blocked::Poll(..) | Blocked::Other => Some(Activity::Waiting),
-        Blocked::Sleep => Some(Activity::Busy),
-        Blocked::Unread => Some(Activity::Unknown),
-        Blocked::Child | Blocked::Futex | Blocked::Ended => None,
+#[cfg(not(target_os = "macos"))]
+fn process_activity(pid: Pid, tty: &Path) -> Option<Activity> {
+    let thread = |tid: &str| match thread_blocked(pid, tid) {
+        None => Thread::Runs,
+        Some(Blocked::Read(fd)) if is_terminal(pid, fd, tty) => Thread::Reads,
+        Some(Blocked::Poll(forever, watched)) => match watches_terminal(pid, watched, tty) {
+            Some(true) if forever => Thread::Reads,
+            Some(true) => Thread::Polls,
+            Some(false) => Thread::Waits,
+            None => Thread::Unread,
+        },
+        Some(Blocked::Read(_) | Blocked::Other) => Thread::Waits,
+        Some(Blocked::Sleep) => Thread::Sleeps,
+        Some(Blocked::Unread) => Thread::Unread,
+        Some(Blocked::Futex) => Thread::Parked,
+        Some(Blocked::Child | Blocked::Ended) => Thread::Out,
     };
     let main = pid.to_string();
-    let Some(blocked) = thread_blocked(pid, &main) else {
-        return Some(Activity::Busy);
-    };
-    if matches!(blocked, Blocked::Child | Blocked::Ended) {
-        return None;
+    let first = thread(&main);
+    let (mut reading, mut polling, mut asleep) = (false, false, false);
+    match first {
+        Thread::Runs => return Some(Activity::Busy),
+        Thread::Out => return None,
+        // A main thread asleep is weighed with the others: another may read.
+        Thread::Sleeps => asleep = true,
+        Thread::Reads | Thread::Polls | Thread::Waits | Thread::Unread | Thread::Parked => {}
     }
-    // A main thread asleep is weighed with the others: another may read.
-    let (first, mut asleep) = match on_terminal(blocked) {
-        Some(Activity::Busy) if matches!(blocked, Blocked::Sleep) => (None, true),
-        first => (first, false),
-    };
-    let (mut reading, mut polling) = (false, false);
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
     for task in tasks.filter_map(|t| t.ok()) {
         let Some(tid) = task.file_name().to_str().map(str::to_owned) else {
@@ -809,26 +867,27 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
         if tid == main {
             continue;
         }
-        match thread_blocked(pid, &tid).map(on_terminal) {
-            Some(Some(Activity::Reading)) => reading = true,
-            Some(Some(Activity::Polling)) => polling = true,
-            Some(Some(Activity::Busy)) => asleep = true,
-            Some(Some(Activity::Waiting | Activity::Unknown | Activity::Idle) | None) => {}
-            None => return Some(Activity::Busy),
+        match thread(&tid) {
+            Thread::Runs => return Some(Activity::Busy),
+            Thread::Reads => reading = true,
+            Thread::Polls => polling = true,
+            Thread::Sleeps => asleep = true,
+            Thread::Waits | Thread::Unread | Thread::Parked | Thread::Out => {}
         }
     }
     Some(match first {
-        Some(Activity::Busy) => Activity::Busy,
-        Some(Activity::Waiting | Activity::Idle) => Activity::Waiting,
-        Some(Activity::Unknown) => Activity::Unknown,
-        Some(Activity::Polling) => Activity::Polling,
-        Some(Activity::Reading) if polling || asleep => Activity::Polling,
-        Some(Activity::Reading) => Activity::Reading,
-        None if reading && (polling || asleep) => Activity::Polling,
-        None if reading => Activity::Reading,
-        None if asleep => Activity::Busy,
-        None if polling => Activity::Polling,
-        None => Activity::Waiting,
+        Thread::Runs => Activity::Busy,
+        Thread::Out => return None,
+        Thread::Waits => Activity::Waiting,
+        Thread::Unread => Activity::Unknown,
+        Thread::Polls => Activity::Polling,
+        Thread::Reads if polling || asleep => Activity::Polling,
+        Thread::Reads => Activity::Reading,
+        Thread::Sleeps | Thread::Parked if reading && (polling || asleep) => Activity::Polling,
+        Thread::Sleeps | Thread::Parked if reading => Activity::Reading,
+        Thread::Sleeps | Thread::Parked if asleep => Activity::Busy,
+        Thread::Sleeps | Thread::Parked if polling => Activity::Polling,
+        Thread::Sleeps | Thread::Parked => Activity::Waiting,
     })
 }
 
@@ -838,8 +897,8 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
 /// it, waiting if they wait on something else. Linux and Android tell by
 /// what each thread is blocked in, its system call
 /// (`/proc/PID/task/TID/syscall`).
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
+#[cfg(not(target_os = "macos"))]
+pub fn activity(group: Pid, tty: &Path, leader: Pid) -> Activity {
     let in_group = |pid: &Pid| {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
@@ -878,8 +937,8 @@ pub fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
 }
 
 /// Whether process `pid` itself is blocked reading the terminal at `tty`.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
+#[cfg(not(target_os = "macos"))]
+pub fn reads_terminal(pid: Pid, tty: &Path) -> bool {
     process_activity(pid, tty) == Some(Activity::Reading)
 }
 
@@ -887,19 +946,15 @@ pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
 /// each runs or waits: busy while one of the group's runs (or waits on the
 /// disk, uninterruptible), idle once every one waits.
 #[cfg(target_os = "macos")]
-pub fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
-    let mut pids: Vec<libc::pid_t> = vec![0; 1024];
-    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
+pub fn activity(group: Pid, _tty: &Path, _leader: Pid) -> Activity {
+    let pids = listed(1024, |buffer, bytes| {
+        // SAFETY: the buffer is `bytes` long and writable; the call says
+        // how many IDs it wrote.
+        unsafe { libc::proc_listpgrppids(group.as_raw(), buffer, bytes) }
+    });
+    let Some(pids) = pids else {
         return Activity::Unknown;
     };
-    // SAFETY: the buffer is `bytes` long and writable; the call says
-    // how many IDs it wrote.
-    let listed =
-        unsafe { libc::proc_listpgrppids(group.as_raw(), pids.as_mut_ptr().cast(), bytes) };
-    let Ok(listed) = usize::try_from(listed) else {
-        return Activity::Unknown;
-    };
-    pids.truncate(listed);
     let seen: Vec<Option<bool>> = (pids.into_iter())
         .filter_map(Pid::from_raw)
         .filter_map(running)
@@ -918,7 +973,7 @@ pub fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
 /// Whether process `pid` itself is blocked reading the terminal at `tty`:
 /// never known on macOS, which does not say what a waiting thread waits on.
 #[cfg(target_os = "macos")]
-pub fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
+pub fn reads_terminal(_pid: Pid, _tty: &Path) -> bool {
     false
 }
 
@@ -935,27 +990,18 @@ const IN_USE: i32 = 100;
 fn running(pid: Pid) -> Option<Option<bool>> {
     // `sys/proc_info.h`: the IDs of a process's threads, which `libc` lacks.
     const PROC_PIDLISTTHREADS: libc::c_int = 6;
-    let mut threads: Vec<u64> = vec![0; 256];
-    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(threads.as_slice())) else {
-        return Some(None);
-    };
-    // SAFETY: the buffer is `bytes` long and writable; the call says how
-    // many bytes it wrote.
-    let written = unsafe {
-        libc::proc_pidinfo(
-            pid.as_raw(),
-            PROC_PIDLISTTHREADS,
-            0,
-            threads.as_mut_ptr().cast(),
-            bytes,
-        )
-    };
-    let written = usize::try_from(written).unwrap_or(0);
-    if written == 0 {
+    let threads: Vec<u64> = listed(256, |buffer, bytes| {
+        // SAFETY: the buffer is `bytes` long and writable; the call says how
+        // many bytes it wrote, a thread's ID 8 of them.
+        let written =
+            unsafe { libc::proc_pidinfo(pid.as_raw(), PROC_PIDLISTTHREADS, 0, buffer, bytes) };
+        written.div_euclid(8)
+    })
+    .unwrap_or_default();
+    if threads.is_empty() {
         return exists(pid).then_some(None);
     }
-    threads.truncate(written.div_euclid(std::mem::size_of::<u64>()));
-    let Ok(size) = libc::c_int::try_from(std::mem::size_of::<libc::proc_threadinfo>()) else {
+    let Ok(size) = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()) else {
         return Some(None);
     };
     let mut known = false;
@@ -1004,16 +1050,15 @@ mod probe {
     #[test]
     fn system_calls_are_told_by_what_they_wait_for() {
         use libc::*;
-        let nr = |call: c_long| u64::try_from(call).unwrap_or(u64::MAX);
         for read in [SYS_read, SYS_pread64, SYS_readv, SYS_preadv, SYS_splice] {
-            assert_eq!(blocked_in(nr(read), &[5]), Blocked::Read(5), "{read}");
+            assert_eq!(blocked_in(read, &[5]), Blocked::Read(5), "{read}");
         }
         let fds = Watched::Fds { at: 9, len: 2 };
         let set = Watched::Set { len: 4, at: 9 };
         let epoll = Watched::Epoll(3);
         #[cfg(target_arch = "x86_64")]
         {
-            let poll = nr(SYS_poll);
+            let poll = SYS_poll;
             assert_eq!(blocked_in(poll, &[9, 2, NEVER]), Blocked::Poll(true, fds));
             let int_never = u64::from(u32::MAX);
             assert_eq!(
@@ -1021,7 +1066,7 @@ mod probe {
                 Blocked::Poll(true, fds)
             );
             assert_eq!(blocked_in(poll, &[9, 2, 100]), Blocked::Poll(false, fds));
-            let select = nr(SYS_select);
+            let select = SYS_select;
             assert_eq!(
                 blocked_in(select, &[4, 9, 0, 0, 0]),
                 Blocked::Poll(true, set)
@@ -1030,7 +1075,7 @@ mod probe {
                 blocked_in(select, &[4, 9, 0, 0, 7]),
                 Blocked::Poll(false, set)
             );
-            let epoll_wait = nr(SYS_epoll_wait);
+            let epoll_wait = SYS_epoll_wait;
             assert_eq!(
                 blocked_in(epoll_wait, &[3, 9, 1, NEVER]),
                 Blocked::Poll(true, epoll)
@@ -1040,7 +1085,7 @@ mod probe {
                 Blocked::Poll(false, epoll)
             );
         }
-        let pselect = nr(SYS_pselect6);
+        let pselect = SYS_pselect6;
         assert_eq!(
             blocked_in(pselect, &[4, 9, 0, 0, 0]),
             Blocked::Poll(true, set)
@@ -1049,10 +1094,10 @@ mod probe {
             blocked_in(pselect, &[4, 9, 0, 0, 7]),
             Blocked::Poll(false, set)
         );
-        let ppoll = nr(SYS_ppoll);
+        let ppoll = SYS_ppoll;
         assert_eq!(blocked_in(ppoll, &[9, 2, 0]), Blocked::Poll(true, fds));
         assert_eq!(blocked_in(ppoll, &[9, 2, 7]), Blocked::Poll(false, fds));
-        let pwait = nr(SYS_epoll_pwait);
+        let pwait = SYS_epoll_pwait;
         assert_eq!(
             blocked_in(pwait, &[3, 9, 1, NEVER]),
             Blocked::Poll(true, epoll)
@@ -1061,7 +1106,15 @@ mod probe {
             blocked_in(pwait, &[3, 9, 1, 100]),
             Blocked::Poll(false, epoll)
         );
-        let pwait2 = nr(SYS_epoll_pwait2);
+        // Any negative int is no limit, as poll(2) and epoll_wait(2) read it.
+        let int_minus_two = u64::from((-2i32).cast_unsigned());
+        for minus_two in [(-2i64).cast_unsigned(), int_minus_two] {
+            assert_eq!(
+                blocked_in(pwait, &[3, 9, 1, minus_two]),
+                Blocked::Poll(true, epoll)
+            );
+        }
+        let pwait2 = SYS_epoll_pwait2;
         assert_eq!(
             blocked_in(pwait2, &[3, 9, 1, 0]),
             Blocked::Poll(true, epoll)
@@ -1077,11 +1130,13 @@ mod probe {
             (SYS_waitid, Blocked::Child),
             (SYS_futex, Blocked::Futex),
             (SYS_write, Blocked::Other),
+            // Blocked outside a system call.
+            (-1, Blocked::Other),
         ] {
-            assert_eq!(blocked_in(nr(call), &[]), kind, "{call}");
+            assert_eq!(blocked_in(call, &[]), kind, "{call}");
         }
         assert_eq!(
-            blocked_in(nr(SYS_futex), &[9, 0, 0, 7]),
+            blocked_in(SYS_futex, &[9, 0, 0, 7]),
             Blocked::Sleep,
             "a futex with a limit"
         );
@@ -1115,33 +1170,59 @@ mod probe {
             [&fd[..], &events.to_ne_bytes()[..], &[0, 0][..]].concat()
         };
         let asks = pollfd(libc::POLLIN);
-        assert!(watches_terminal(
-            pid,
-            Watched::Fds {
-                at: address(&asks),
-                len: 1
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Fds {
+                    at: address(&asks),
+                    len: 1
+                },
+                tty
+            ),
+            Some(true)
+        );
         let other = pollfd(libc::POLLPRI);
-        assert!(!watches_terminal(
-            pid,
-            Watched::Fds {
-                at: address(&other),
-                len: 1
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Fds {
+                    at: address(&other),
+                    len: 1
+                },
+                tty
+            ),
+            Some(false)
+        );
         let elsewhere = std::path::Path::new("/nowhere");
-        assert!(!watches_terminal(
-            pid,
-            Watched::Fds {
-                at: address(&asks),
-                len: 1
-            },
-            elsewhere
-        ));
-        assert!(!watches_terminal(pid, Watched::Fds { at: 0, len: 1 }, tty));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Fds {
+                    at: address(&asks),
+                    len: 1
+                },
+                elsewhere
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            watches_terminal(pid, Watched::Fds { at: 0, len: 1 }, tty),
+            Some(false)
+        );
+        Ok(())
+    }
+
+    /// An epoll set whose `fdinfo` cannot be read is not known to watch
+    /// nothing: here, a process that is gone.
+    #[test]
+    fn an_unreadable_epoll_set_is_not_known() -> std::result::Result<(), String> {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&child).ok_or("a pid")?;
+        child.wait().map_err(|e| e.to_string())?;
+        let tty = std::path::Path::new("/dev/tty");
+        assert_eq!(watches_terminal(pid, Watched::Epoll(3), tty), None);
         Ok(())
     }
 
@@ -1164,41 +1245,53 @@ mod probe {
             words.iter().flat_map(|w| w.to_ne_bytes()).collect()
         };
         let watched = set(&[fd]);
-        assert!(watches_terminal(
-            pid,
-            Watched::Set {
-                len: n,
-                at: address(&watched)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: n,
+                    at: address(&watched)
+                },
+                tty
+            ),
+            Some(true)
+        );
         let others = set(&[0]);
-        assert!(!watches_terminal(
-            pid,
-            Watched::Set {
-                len: n,
-                at: address(&others)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: n,
+                    at: address(&others)
+                },
+                tty
+            ),
+            Some(false)
+        );
         let none = set(&[]);
-        assert!(!watches_terminal(
-            pid,
-            Watched::Set {
-                len: n,
-                at: address(&none)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: n,
+                    at: address(&none)
+                },
+                tty
+            ),
+            Some(false)
+        );
         // Below its count only.
-        assert!(!watches_terminal(
-            pid,
-            Watched::Set {
-                len: fd,
-                at: address(&watched)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: fd,
+                    at: address(&watched)
+                },
+                tty
+            ),
+            Some(false)
+        );
         Ok(())
     }
 }

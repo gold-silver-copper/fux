@@ -41,7 +41,12 @@ fn terminal_edge_streams_preserve_primary_history_and_modes() -> Result {
                 assert_eq!(text.trim_end_matches('\n'), "APP");
             }
             4 => {
-                assert_eq!(text.trim_end_matches('\n'), "BEFORE22mAFTERjunkEND");
+                // 8-bit C1 bytes are no controls in UTF-8: each is a
+                // continuation byte alone, U+FFFD (Unicode 3.9).
+                assert_eq!(
+                    text.trim_end_matches('\n'),
+                    "BEFORE\u{fffd}22m\u{fffd}AFTER\u{fffd}junk\u{fffd}END"
+                );
             }
             _ => {}
         }

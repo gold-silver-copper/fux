@@ -5,12 +5,10 @@
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
 use crate::act::{CopyAct, Seek};
-use crate::id::ClientId;
-use crate::id::PaneId;
-use crate::render::shown;
+use crate::id::{ClientId, PaneId};
 use crate::session::{self, Error, Session};
 use crate::view::{Mode, Notice};
-use fux_vt::{CellRef, Row, RowId, Screen};
+use fux_vt::{Row, RowId, Screen};
 
 /// The most cells one copy takes.
 pub const MAX_CELLS: usize = 262_144;
@@ -205,9 +203,9 @@ pub struct Bar<'a> {
 /// A row's cells as (column, class): 0 blank, 1 word, 2 other. The row end
 /// is a blank.
 fn classes(row: Row<'_>) -> Vec<(u16, u8)> {
-    let class = |cell: CellRef<'_>| {
-        let c = cell.contents().chars().next().unwrap_or(' ');
-        if c.is_whitespace() || !cell.has_contents() {
+    let class = |text: &str| {
+        let c = text.chars().next().unwrap_or(' ');
+        if c.is_whitespace() {
             0
         } else if c.is_alphanumeric() || c == '_' {
             1
@@ -215,19 +213,17 @@ fn classes(row: Row<'_>) -> Vec<(u16, u8)> {
             2
         }
     };
-    let mut out: Vec<(u16, u8)> = glyphs(row).map(|(col, cell)| (col, class(cell))).collect();
+    let mut out: Vec<(u16, u8)> = glyphs(row).map(|(col, text)| (col, class(text))).collect();
     let end = out.last().map_or(0, |(c, _)| c.saturating_add(1));
     out.push((end, 0));
     out
 }
 
-/// A row's cells and their columns, but for the second halves of wide
-/// glyphs.
-fn glyphs(row: Row<'_>) -> impl Iterator<Item = (u16, CellRef<'_>)> {
+/// A row's glyphs as a copy takes them (`Row::copied`), and their columns.
+fn glyphs(row: Row<'_>) -> impl Iterator<Item = (u16, &str)> {
     // A row is never wider than a u16 screen.
-    (0..=u16::MAX)
-        .zip(row.cells())
-        .filter(|(_, cell)| !cell.is_wide_continuation())
+    let glyphs = row.copied(0, usize::MAX);
+    glyphs.map_while(|(col, text)| Some((u16::try_from(col).ok()?, text)))
 }
 
 /// A position in the flat sequence of cells: a row and an index into its
@@ -364,9 +360,7 @@ pub fn find<'a>(query: &str, from: Place<'a>, seek: Seek) -> Option<Place<'a>> {
     let mut matches_in = |row: Row<'_>, cols: &mut Vec<u16>| {
         cols.clear();
         folded.clear();
-        folded.extend(
-            glyphs(row).flat_map(|(_, cell)| shown(cell).chars().map(|c| fold(c, ignore_case))),
-        );
+        folded.extend(glyphs(row).flat_map(|(_, text)| text.chars().map(|c| fold(c, ignore_case))));
         let starts: Vec<usize> = (0..folded.len())
             .filter(|at| {
                 folded.get(*at) == Some(&first)
@@ -380,7 +374,7 @@ pub fn find<'a>(query: &str, from: Place<'a>, seek: Seek) -> Option<Place<'a>> {
         }
         // A match: the columns of this row, then, and of each match in it.
         let columns: Vec<u16> = glyphs(row)
-            .flat_map(|(col, cell)| shown(cell).chars().map(move |_| col))
+            .flat_map(|(col, text)| text.chars().map(move |_| col))
             .collect();
         cols.extend(starts.iter().filter_map(|at| columns.get(*at).copied()));
     };
@@ -457,18 +451,14 @@ pub fn text(
             Select::Line => (0, cols.saturating_sub(1)),
             Select::Block => (left, right),
         };
+        // Refused long before it could saturate.
+        cells = cells.saturating_add(usize::from(to.saturating_sub(from)).saturating_add(1));
+        if cells > MAX_CELLS {
+            return Err(Error::SelectionTooLarge);
+        }
         let mut line = String::new();
-        // Starting on the second half of a wide glyph takes the glyph.
-        let row_cells = glyph_start(row, from)..=to;
-        for cell in row_cells.map_while(|col| row.cell(usize::from(col))) {
-            // Refused long before it could saturate.
-            cells = cells.saturating_add(1);
-            if cells > MAX_CELLS {
-                return Err(Error::SelectionTooLarge);
-            }
-            if !cell.is_wide_continuation() {
-                line.push_str(shown(cell));
-            }
+        for (_, glyph) in row.copied(usize::from(from), usize::from(to)) {
+            line.push_str(glyph);
         }
         let joined = kind != Select::Block && row.wrapped() && index < last;
         if joined {
@@ -503,15 +493,19 @@ fn start(session: &mut Session, client: ClientId) {
             view.notice = None;
         }
         Err(error) => {
-            session.error_to(client, error.to_string());
-            session.outbox.push(crate::session::Outgoing::Ended(client));
+            session.notify_to(client, error.to_string(), true);
+            let ended = crate::protocol::ToAttached::Ended(crate::protocol::ScreenKind::Copy);
+            session
+                .outbox
+                .push(crate::session::Outgoing::To(client, ended));
         }
     }
 }
 
 /// Copy mode on the client's focused pane, its cursor where the pane's is.
 fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
-    let pane = place.pane.ok_or(Error::NoPaneToCopy)?;
+    let pane = (place.pane)
+        .ok_or_else(|| session::fail(crate::code::Code::NoPane, "no pane to copy from"))?;
     let screen = session
         .panes
         .get(&pane)
@@ -578,25 +572,8 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     view.dirty = true;
     view.notice = None;
 
-    // The search line the client types, shown; the search it asks for.
-    if let CopyAct::Typing(line) = act {
-        copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
-        return;
-    }
-    if let CopyAct::Find { query, seek } = act {
-        copy.typing = None;
-        let query = clean(&query);
-        if query.is_empty() {
-            return;
-        }
-        let search = Search { query, seek };
-        copy.search = Some(search.clone());
-        if let Some(at) = copy.resolve(screen) {
-            jump(copy, screen, height, at, &search, &mut view.notice);
-        }
-        return;
-    }
-
+    // Its rows gone, the key does nothing: `Session::settle`, after it,
+    // ends copy mode (`hold_copies`) and tells the client.
     let Some(at) = copy.resolve(screen) else {
         return;
     };
@@ -611,7 +588,22 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     };
     let mut target: Option<Place<'_>> = None;
     match act {
-        CopyAct::Enter | CopyAct::Typing(_) | CopyAct::Find { .. } => return,
+        CopyAct::Enter => return,
+        // The search line the client types, shown; the search it asks for.
+        CopyAct::Typing(line) => {
+            copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
+            return;
+        }
+        CopyAct::Find { query, seek } => {
+            copy.typing = None;
+            let query = clean(&query);
+            if !query.is_empty() {
+                let search = Search { query, seek };
+                jump(copy, screen, height, at, &search, &mut view.notice);
+                copy.search = Some(search);
+            }
+            return;
+        }
         CopyAct::Leave => {
             leave(session, client);
             return;
@@ -642,17 +634,16 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         key @ (CopyAct::Next | CopyAct::Previous) => {
             match copy.search.clone() {
                 Some(search) => {
-                    let search = Search {
-                        seek: if key == CopyAct::Next {
-                            search.seek
-                        } else {
-                            search.seek.reversed()
-                        },
-                        ..search
+                    // Previous seeks the other way.
+                    let seek = match (key == CopyAct::Next, search.seek) {
+                        (true, seek) => seek,
+                        (false, Seek::Forward) => Seek::Backward,
+                        (false, Seek::Backward) => Seek::Forward,
                     };
+                    let search = Search { seek, ..search };
                     jump(copy, screen, height, at, &search, &mut view.notice);
                 }
-                None => view.error("no search yet: f or r starts one"),
+                None => view.notify("no search yet: f or r starts one", true),
             }
             return;
         }
@@ -668,7 +659,10 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                         Seek::Backward => "earlier",
                         Seek::Forward => "later",
                     };
-                    view.error(format!("no {which} prompt (shells mark them with OSC 133)"));
+                    view.notify(
+                        format!("no {which} prompt (shells mark them with OSC 133)"),
+                        true,
+                    );
                     return;
                 }
             }
@@ -702,7 +696,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
 /// `col` of `row`, or the first half of the wide glyph whose second half it
 /// is: where copy mode's cursor goes, so that what it highlights is what
 /// `y` copies.
-fn glyph_start(row: fux_vt::Row<'_>, col: u16) -> u16 {
+fn glyph_start(row: Row<'_>, col: u16) -> u16 {
     if row
         .cell(usize::from(col))
         .is_some_and(|c| c.is_wide_continuation())
@@ -769,7 +763,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         Ok(copied) => copied,
         Err(why) => {
             leave(session, client);
-            return session.error_to(client, why);
+            return session.notify_to(client, why, true);
         }
     };
     let characters = copied.chars().count();
@@ -781,7 +775,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         note.push_str(" to buffer 0; too large for the clipboard");
     }
     leave(session, client);
-    session.info_to(client, note);
+    session.notify_to(client, note, false);
 }
 
 #[cfg(test)]
@@ -803,6 +797,39 @@ mod tests {
     /// A place as a row counted from the oldest, and a column.
     fn place((row, col): Place<'_>) -> (usize, u16) {
         (row.index(), col)
+    }
+
+    /// The client's copy-mode keys say which end copy mode; each ends it on
+    /// the server just when the client says it does. The keys tried are
+    /// listed by hand (the letters, the brackets, the named keys
+    /// `copy_act` reads, unmodified): a key given an arm there later (Tab,
+    /// an F-key, a modified letter) is checked only once it joins the list.
+    #[test]
+    fn a_copy_key_ends_copy_mode_where_the_client_says() -> Result<(), String> {
+        use fux_vt::keys::{Key, KeyPress, Modifiers};
+        let mut keys: Vec<Key> = ('a'..='z').chain(['[', ']']).map(Key::Char).collect();
+        keys.extend([
+            Key::Escape,
+            Key::End,
+            Key::Home,
+            Key::PageUp,
+            Key::PageDown,
+            Key::Enter,
+        ]);
+        keys.extend(fux_vt::keys::Direction::ALL.map(Key::Arrow));
+        let acts = keys
+            .into_iter()
+            .filter_map(|k| crate::keymap::copy_act(KeyPress::new(k, Modifiers::NONE)));
+        for (copy_act, ends) in acts {
+            let (mut s, c) = crate::session::testing::attached(6, 30)?;
+            s.output(PaneId::of(1), b"one\r\ntwo");
+            act(&mut s, c, CopyAct::Enter);
+            act(&mut s, c, copy_act.clone());
+            let view = s.views.get(&c).ok_or("no view")?;
+            let copying = matches!(view.mode, Mode::Copy(_));
+            assert_eq!(!copying, ends, "{copy_act:?}");
+        }
+        Ok(())
     }
 
     /// `[` and `]` go to the previous and next prompt a shell marked (OSC
@@ -1034,6 +1061,19 @@ mod tests {
             text(s, Select::Block, (at(0)?, 1), (at(3)?, 2))?,
             "bc\nf\n界x\nas"
         );
+        Ok(())
+    }
+
+    /// The blank a wide glyph that did not fit leaves at a soft-wrapped
+    /// row's end is no part of the text: a copy joins over it.
+    #[test]
+    fn a_wide_glyphs_spacer_is_no_text() -> Result<(), Box<dyn std::error::Error>> {
+        let p = screen("abcd世\r\n".as_bytes(), 3, 5)?;
+        let s = p.screen();
+        let top = s.rows().len() - 3;
+        let at = |i| row(s, top + i);
+        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1))?, "abcd世");
+        assert_eq!(text(s, Select::Line, (at(0)?, 0), (at(1)?, 0))?, "abcd世");
         Ok(())
     }
 }

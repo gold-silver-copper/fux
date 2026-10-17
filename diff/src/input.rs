@@ -93,7 +93,11 @@ fn key(r: &mut Rng) -> String {
 /// in a cursor mode, `$shown` shows a decoded input, and `$due` times a held
 /// line, all as each version takes them: the current fux's keys carry what
 /// a kitty-protocol terminal said beyond the press, and its encoder the
-/// pane's key mode.
+/// pane's key mode. `stack!(cur, fux, |press, application, out| ..., |input|
+/// ..., |deadline, last_output| ...)` expands to `mod cur`: `Decoding`
+/// (each piece's inputs, shown, and the decoder's deadline), `key` (a
+/// named key's bytes in both cursor modes), `paste`, `due` and `Queue`
+/// (an input queue's held lines), all over the crate `fux`.
 macro_rules! stack {
     ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr, $due:expr) => {
         mod $name {
@@ -106,8 +110,8 @@ macro_rules! stack {
             pub struct Decoding(Decoder);
 
             impl Decoding {
-                /// The inputs from `bytes`, read at `now`, and whether and
-                /// until when (after `start`) the decoder waits.
+                /// The inputs from `bytes`, read at `now`, and until when
+                /// (after `start`) the decoder waits, `None` if it does not.
                 pub fn bytes(&mut self, bytes: &[u8], now: Instant, start: Instant) -> String {
                     let mut inputs = Vec::new();
                     self.0.bytes(bytes, &mut inputs);
@@ -125,9 +129,8 @@ macro_rules! stack {
                     let shown: fn(&$fux::decode::Input) -> String = $shown;
                     let inputs: Vec<String> = inputs.iter().map(shown).collect();
                     format!(
-                        "[{}] waiting {} until {:?}",
+                        "[{}] until {:?}",
                         inputs.join(", "),
-                        self.0.waiting(),
                         self.0
                             .deadline()
                             .map(|d| d.saturating_duration_since(start))
@@ -232,7 +235,11 @@ stack!(
     fux,
     |press, application, out| fux::encode::key_bytes(
         press.into(),
-        fux::encode::KeyMode::legacy(application),
+        fux::encode::KeyMode::Legacy {
+            application,
+            other_keys: None,
+            backarrow: false,
+        },
         out
     ),
     |input| {

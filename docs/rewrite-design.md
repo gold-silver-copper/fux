@@ -9,7 +9,8 @@ comparison with other terminals (`fux-vt/compare/`).
 Lines that no longer hold are corrected where they stand, each with what
 changed; the rest is the design as agreed. The largest change since: the
 server reads and writes the attach client's terminal itself, as tmux does,
-once the client hands it over (`Frame::Terminal`, PROTOCOL 2).
+once the client hands it over (PROTOCOL 2; the attach's answer,
+`Welcome`, now says whether the server took it).
 
 **Scope of the first version (decided 2026-09-24): functionality only.** It
 builds everything below that a user sees and uses: panes, tabs, workspaces,
@@ -123,8 +124,8 @@ next piece, a synchronized frame's release, the stop grace, and the rest
 after a refused connection. (Three, as first designed.)
 
 The loop has no threads, channels or task pools of its own, and nothing
-blocks it for long: starting a pane waits for its launcher to report
-(`process::launch`), and a stopping server waits a bounded time for its
+blocks it for long: starting a pane waits for std's spawn to report its
+`exec`, and a stopping server waits a bounded time for its
 panes. (On macOS, opening a PTY can stall in the kernel; fuxix runs that one
 call beside a watchdog thread, `pty::watched`.) The config file
 is read once, bounded, at startup and on `fux reload`.
@@ -154,16 +155,15 @@ A pane owns:
   the flag, it is set straight after. The slave is opened `O_CLOEXEC` too. The server has one
   thread, so no fork can happen in between. Every descriptor the server holds
   is close-on-exec. And whatever the server itself inherited without the
-  flag, the launcher marks every descriptor above stderr close-on-exec before
+  flag, the pane's start marks every descriptor above stderr close-on-exec before
   it runs the program, so a pane's program inherits only stdio; a test
   checks both;
 - a `fux_vt::Parser`;
 - a child process: the configured shell (`set shell`), always, started
-  through the launcher in the `fux` binary (`process::launch`) with the slave
-  as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. The
-  launcher, a program of its own rather than a `pre_exec` hook (which needs
-  `unsafe`), calls `setsid` and takes the slave as its controlling terminal;
-  std's spawn of it clears the signal mask, and `exec` restores SIGPIPE and
+  with the slave as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and
+  `FUX_SOCKET`. Between fork and exec, a `pre_exec` hook in fuxix
+  (`process::lead_session`, its `unsafe` there) calls `setsid` and takes the
+  slave as its controlling terminal; std's spawn clears the signal mask, and `exec` restores SIGPIPE and
   the handlers signal-hook installed. A test checks that a pane's program starts
   with an empty mask and ignores no signal fux ignores (on Linux, where
   /proc shows dispositions). A disposition fux itself inherited as ignored
@@ -491,18 +491,26 @@ is refused with "server speaks protocol N (fux X); restart it with
 `fux kill-server`". The `kill` role is accepted whatever the version, so
 that advice always works.
 
+Corrected since (PROTOCOL 11): the frames below are typed by the point of
+the connection they come at (`src/protocol.rs`: `Greeting`, `AttachedFrame`,
+`ToAttached`, `ToCommand`); `Terminal { taken }`, `Stderr` and
+`Done { status }` to a command are gone.
+
 | Direction | Frame |
 | --- | --- |
-| client → server | `Hello { protocol, version, role: attach\|command\|kill }` |
-| client → server | `Attach { rows, cols, workspace? }` |
-| client → server | `Input(bytes)`, `Resize { rows, cols }`, `Detach` |
-| client → server | `Command { argv, cwd, pane? }` |
-| server → client | `Paint(bytes)`, `Exit(reason)` |
-| server → client | `Terminal { taken }`: whether it took the terminal sent with `Attach` |
-| server → client | `Stdout(bytes)`, `Stderr(bytes)` (repeated as needed), then `Done { status }` |
+| client → server | `Hello { protocol, role: attach\|command\|kill\|headless, version }` |
+| client → server | `Attach { size, workspace?, read_only, env }` |
+| client → server | `Act(act)` (a key, a paste, the mouse, focus, a terminal's reply, a panel shown or hidden, a notice, a copy), `Resize(size)`, `Detach` |
+| client → server | `Asked { request, context }`: a typed request, and where it comes from |
+| server → client | `Hello`, or `Exit(reason)`; to a `kill`, `Done(status)` as it stops |
+| server → attached client | `Welcome { client, taken? }`: its id, and whether the server took the terminal sent with `Attach` |
+| server → attached client | `Paint(bytes)`, `Exit(reason)`, `Ended(kind)`, `Run(code)`, `Keys(keys)` |
+| server → command client | `Stdout(bytes)` (repeated as needed), then the reply in pieces, `Part(bytes)` … `PartsEnd`; or `Exit(reason)` |
 
-The server parses a command's argv, so there is one grammar, one binary, and
-no command encoding to version.
+As agreed, the server parsed a command's argv, so there was one grammar, one
+binary, and no command encoding to version. Corrected since: the client
+runs fuxth itself and sends each request typed; the reply carries the exit
+status, and a failure's code and message.
 
 ## CLI
 

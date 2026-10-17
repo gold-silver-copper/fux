@@ -11,7 +11,7 @@ use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, View};
-use fux_vt::{Attributes, CellRef, Cells, Color, Rgb, Row, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -40,8 +40,8 @@ pub struct Grid {
 /// each a field here and a line in `Modes::diff`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modes {
-    /// DECSCUSR shape for the cursor; 0 is the terminal's default.
-    pub cursor_shape: u16,
+    /// The cursor's shape (DECSCUSR); `Initial` is the terminal's own.
+    pub cursor_shape: CursorShape,
     /// The mouse tracking asked for (1000, 1002 or 1003, always
     /// SGR-encoded), 0 for none: the focused pane's program's, while it
     /// has the keys ([`mouse_level`]).
@@ -49,18 +49,34 @@ pub struct Modes {
 }
 
 impl Modes {
-    /// Appends what turns the terminal's modes from `old`, if known, into these.
-    fn diff(&self, old: Option<&Modes>, out: &mut Vec<u8>) {
-        if old.map(|o| o.mouse) != Some(self.mouse) {
+    /// Appends what turns the terminal's modes, `shown` if `known`, into
+    /// these; its cursor's shape is `shown`'s either way, as a resize,
+    /// which forgets what it shows, leaves the shape.
+    fn diff(&self, shown: &Modes, known: bool, out: &mut Vec<u8>) {
+        if !known || shown.mouse != self.mouse {
             // Off first, as a terminal not known may have any on.
             out.extend_from_slice(MOUSE_OFF.as_bytes());
             if self.mouse != 0 {
                 let _ = write!(out, "\x1b[?{}h\x1b[?1006h", self.mouse);
             }
         }
-        if old.map(|o| o.cursor_shape) != Some(self.cursor_shape) {
-            let _ = write!(out, "\x1b[{} q", self.cursor_shape);
-        }
+        cursor_shape(shown.cursor_shape, self.cursor_shape, out);
+    }
+}
+
+/// Appends what turns the cursor of a client's terminal from `was` into
+/// `shape` (DECSCUSR), nothing if they are the same: its Ps; for
+/// `Initial`, the terminal's own, 0, which most terminals take for theirs,
+/// then 7, xterm's initial resources (ctlseqs), as xterm takes 0 for a
+/// blinking block and the others ignore 7.
+pub fn cursor_shape(was: CursorShape, shape: CursorShape, out: &mut Vec<u8>) {
+    if was == shape {
+        return;
+    }
+    if shape == CursorShape::Initial {
+        out.extend_from_slice(b"\x1b[0 q\x1b[7 q");
+    } else {
+        let _ = write!(out, "\x1b[{} q", shape.number());
     }
 }
 
@@ -95,7 +111,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     let graphics = view.terminal.graphics();
     let Some(cell) = graphics
         .cell
-        .filter(|_| graphics.sixel && matches!(view.mode, Mode::Normal))
+        .filter(|_| graphics.sixel && view.mode.is_normal())
     else {
         return Vec::new();
     };
@@ -203,13 +219,13 @@ impl Frame {
         placement: &Placement,
         focus: Option<PaneId>,
     ) -> Option<Frame> {
-        if !matches!(view.mode, Mode::Normal) {
+        if !view.mode.is_normal() {
             return None;
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
         for (id, rect) in &placement.panes {
             let screen = session.panes.get(id)?.screen();
-            if screen.colors_changed() {
+            if own_colours(screen) {
                 return None;
             }
             panes.push((*id, *rect, screen.size().into()));
@@ -276,24 +292,21 @@ impl<'a> SameFrame<'a> {
     }
 }
 
-/// Puts a pane's window row on the grid at `line`, the pane's row there, in
-/// the pane's own colours if it has them; the window is `window_cols` wide.
-/// What the row does not cover of the pane's width is blanked.
+/// Puts a pane's window row on the grid at `line`, the pane's row there; the
+/// window is `window_cols` wide. What the row does not cover of the pane's
+/// width is blanked. All of it is in the pane's own colours if it has them.
 fn draw_row(
     grid: &mut Grid,
     pane: PaneId,
     row: Option<Row<'_>>,
     (line, window_cols): (Rect, u16),
-    colours: Option<&fux_vt::Screen>,
+    colours: Option<&Screen>,
 ) {
     let (gy, gx, width) = (line.y(), line.x(), line.w().min(window_cols));
     // The pane's own row, well formed, goes whole onto the cells.
     let len = row.map_or(0, |row| row.len());
     if let Some(row) = row {
         grid.put_row(gy, gx, pane, row, width);
-        if let Some(screen) = colours {
-            grid.recolour(gy, gx, width, screen);
-        }
     }
     // At most `width`, which is at most the line's.
     let end = u16::try_from(len).unwrap_or(width).min(width);
@@ -308,22 +321,25 @@ fn draw_row(
     {
         grid.put(gy, x, CellRef::default());
     }
+    if let Some(screen) = colours {
+        grid.recolour(gy, gx, line.w(), screen);
+    }
 }
 
 /// Each cell's hyperlink (OSC 8), with the pane whose it is: none past
 /// the end, so that a grid none of whose cells has one, as most, holds
 /// nothing; and two grids whose cells have the same links are equal.
 #[derive(Clone, Debug, Default)]
-struct Links(Vec<Option<(PaneId, fux_vt::Hyperlink)>>);
+struct Links(Vec<Option<(PaneId, Hyperlink)>>);
 
 impl Links {
     /// The link of cell `i`.
-    fn get(&self, i: usize) -> Option<(PaneId, &fux_vt::Hyperlink)> {
+    fn get(&self, i: usize) -> Option<(PaneId, &Hyperlink)> {
         let (pane, link) = self.0.get(i)?.as_ref()?;
         Some((*pane, link))
     }
     /// Gives cell `i` of a grid of `len` cells `link`.
-    fn set(&mut self, i: usize, link: Option<(PaneId, &fux_vt::Hyperlink)>, len: usize) {
+    fn set(&mut self, i: usize, link: Option<(PaneId, &Hyperlink)>, len: usize) {
         if link.is_some() && self.0.is_empty() {
             self.0.resize(len, None);
         }
@@ -380,7 +396,7 @@ impl Grid {
         }
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
-    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &fux_vt::Hyperlink)> {
+    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
         self.links.get(self.index(y, x)?)
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
@@ -504,13 +520,13 @@ impl Grid {
         }
     }
     /// Draws the first `width` cells of row `y` from column `x`, a pane's
-    /// row `put_row` copied, in the colours its program set
+    /// row as `draw_row` put it, blanks too, in the colours its program set
     /// (`pane_colours`): so a pane whose program changed a palette entry,
     /// or its foreground or background, looks through fux as it would
     /// directly in a terminal, and the client's own palette is never
     /// changed (fux sends it no OSC 4, 10 or 11). Each pane's colours are
     /// its own.
-    fn recolour(&mut self, y: u16, x: u16, width: u16, screen: &fux_vt::Screen) {
+    fn recolour(&mut self, y: u16, x: u16, width: u16, screen: &Screen) {
         let Some(start) = self.index(y, x) else {
             return;
         };
@@ -579,19 +595,34 @@ impl Grid {
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
         let row = self.row(y).filter(|c| !c.is_wide_continuation());
-        row.map(shown).collect::<String>().trim_end().to_owned()
+        row.map(|c| c.shown())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
     }
 
     /// Writes `text` from (y, x), clipped at `limit`, wide glyphs whole; the
     /// column after it is returned.
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         let mut x = x;
-        for c in text.chars() {
+        // The cell last written, where its cluster starts in `text`, and
+        // whether it is wide: a char of no width joins that cell's cluster,
+        // as fux-vt's `Screen::print` appends one to the cell before the
+        // cursor, on a wide glyph's first half.
+        let mut last: Option<(u16, usize, bool)> = None;
+        for (at, c) in text.char_indices() {
             if c.is_control() {
+                last = None;
                 continue;
             }
             let width = cells(c);
             if width == 0 {
+                let end = at.saturating_add(c.len_utf8());
+                if let Some((x, start, wide)) = last
+                    && let Some(cluster) = text.get(start..end)
+                {
+                    self.set(y, x, CellRef::new(cluster, wide, style));
+                }
                 continue;
             }
             let Some(end) = x
@@ -603,6 +634,7 @@ impl Grid {
             let mut buffer = [0u8; 4];
             let cell = CellRef::new(c.encode_utf8(&mut buffer), width == 2, style);
             self.set(y, x, cell);
+            last = Some((x, at, width == 2));
             if width == 2
                 && let Some(second) = x.checked_add(1)
             {
@@ -628,27 +660,28 @@ impl Grid {
 /// the colour it set, and the default foreground and background, if it set
 /// them (OSC 10, 11), as those; each colour it left alone, or reset, as it
 /// is, for the client's terminal to draw in its own. A default underline
-/// colour is the foreground's, and stays.
-fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
+/// colour is the foreground's, and stays. With DECSCNM set (DEC STD 070,
+/// Screen Mode: the screen in reverse video), every cell's inverse is
+/// turned over, so a reversed glyph shows plain.
+fn pane_colours(attributes: Attributes, screen: &Screen) -> Attributes {
     let colour = |c: Color, default: Option<Rgb>| match c {
         Color::Idx(n) => screen.palette_color(n).map_or(c, Color::Rgb),
         Color::Default => default.map_or(c, Color::Rgb),
-        Color::Rgb(..) | _ => c,
+        Color::Rgb(..) => c,
     };
+    let reverse = screen.mode(fux_vt::Mode::ReverseVideo);
     attributes
         .with_foreground(colour(attributes.foreground(), screen.dynamic_color(10)))
         .with_background(colour(attributes.background(), screen.dynamic_color(11)))
         .with_underline_color(colour(attributes.underline_color(), None))
+        .with_inverse(attributes.inverse() != reverse)
 }
 
-/// What a cell shows: its text, or a space if it has none.
-/// A cell's glyph as it is painted and captured: a blank for an empty cell,
-/// and for one a picture covers, which the picture is drawn over.
-pub fn shown(cell: CellRef<'_>) -> &str {
-    match cell.contents() {
-        text if cell.has_contents() && text != fux_vt::PLACEHOLDER => text,
-        _ => " ",
-    }
+/// Whether a pane is drawn in colours of its own (`pane_colours`): its
+/// program changed some, or set DECSCNM. Its rows then depend on more
+/// than their keys, so a frame with it is not memo'd (`Frame::of`).
+fn own_colours(screen: &Screen) -> bool {
+    screen.colors_changed() || screen.mode(fux_vt::Mode::ReverseVideo)
 }
 
 const GRAY_BG: Color = Color::Idx(236);
@@ -702,28 +735,20 @@ pub fn fit(text: &str, cols: u16) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// The client's screen as it should look now, in a grid of its own.
-pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
+/// The client's screen as it should look now, in a grid of its own, as a
+/// test reads it.
+#[cfg(test)]
+pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     let mut grid = Grid::new(0, 0);
-    compose_into(session, client, &mut grid, &mut Placement::default()).then_some(grid)
+    let view = session.views.get(&client)?;
+    compose_view(session, view, &mut grid, &mut Placement::default());
+    Some(grid)
 }
 
-/// Composes the client's screen as it should look now into `grid`, whatever
-/// it held, laying out its panes in `placement`; false if there is no such
-/// client. The grid's cells and the placement are reused, not made again;
-/// the frame's memo, the bar's text and the like are made each time.
-pub fn compose_into(
-    session: &Session,
-    client: ClientId,
-    grid: &mut Grid,
-    placement: &mut Placement,
-) -> bool {
-    let view = session.views.get(&client);
-    view.map(|view| compose_view(session, view, grid, placement))
-        .is_some()
-}
-
-/// Composes a view's screen, as `compose_into` a client's.
+/// Composes a view's screen as it should look now into `grid`, whatever it
+/// held, laying out its panes in `placement`. The grid's cells and the
+/// placement are reused, not made again; the frame's memo, the bar's text
+/// and the like are made each time.
 pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: &mut Placement) {
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
@@ -771,13 +796,13 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                 {
                     grid.cursor = Some(at);
                     // The copy cursor is a block.
-                    grid.modes.cursor_shape = 2;
+                    grid.modes.cursor_shape = CursorShape::SteadyBlock;
                 }
             }
             None => {
                 let (y, x) = screen.cursor_position();
                 if screen.mode(fux_vt::Mode::ShowCursor)
-                    && matches!(view.mode, Mode::Normal)
+                    && view.mode.is_normal()
                     && let Some(at) = rect.at(y, x)
                 {
                     grid.cursor = Some(at);
@@ -790,7 +815,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     // pane's program asked for it and nothing of fux's has the keys, so
     // that the rest of the time the terminal selects text as it does.
     // A client that only watches sends no clicks: its terminal selects.
-    if matches!(view.mode, Mode::Normal)
+    if view.mode.is_normal()
         && !view.read_only
         && let Some(focus) = focus
         && placement.rect(focus).is_some()
@@ -871,14 +896,14 @@ fn put_panes(
         };
         let screen = pane.screen();
         // A pane whose program changed its colours is drawn in them.
-        let colours = screen.colors_changed().then_some(screen);
+        let colours = own_colours(screen).then_some(screen);
         let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
         let window = at.map_or_else(|| screen.window(), |at| at.top.window());
         let width = rect.w().min(window.cols());
-        // What the pane's screen does not cover of its place is blank.
-        grid.blank(rect.split(Axis::Vertical, window.rows()).1);
+        // What the pane's screen does not cover of its place, rows below
+        // its window's included, is blank.
         let mut pane_keys = Vec::new();
-        for (y, line) in (0..window.rows()).zip(rect.lines()) {
+        for (y, line) in (0..rect.h()).zip(rect.lines()) {
             let row = window.row(y);
             pane_keys.push(row.map(|r| (r.id(), r.version())));
             draw_row(grid, *id, row, (line, window.cols()), colours);
@@ -1212,7 +1237,8 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 /// highlighted and, but in a chooser, those that cannot run now dimmed.
 fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), PANEL.with_bold(true))];
-    let capacity = overlay::list_room(view.rows);
+    // Its items' rows: it has a title and a help line.
+    let capacity = overlay::panel_room(view.rows, 2);
     let entries = list.items.iter().enumerate().map(|(i, item)| {
         let marker = if list.current == Some(i) { "*" } else { " " };
         let attrs = PANEL.with_inverse(i == list.selected);
@@ -1234,7 +1260,7 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
     let key_width = column
         .entries
         .iter()
-        .map(|e| width(&e.key))
+        .map(|e| width(&e.key.to_string()))
         .max()
         .unwrap_or(0);
     let mut entries: Vec<Line<'_>> = Vec::new();
@@ -1247,8 +1273,8 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
             heading = Some(group);
         }
         let more = if entry.layer { "…" } else { "" };
-        let key = &entry.key;
-        let pad = usize::from(key_width.saturating_sub(width(key)));
+        let key = entry.key.to_string();
+        let pad = usize::from(key_width.saturating_sub(width(&key)));
         let mut attrs = PANEL;
         if index == column.selected {
             attrs = attrs.with_inverse(true);
@@ -1257,7 +1283,9 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
         let text = &entry.label;
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
     }
-    let (heading, body_room) = overlay::column_room(view.rows);
+    // A heading, if there is room for it, then the entries.
+    let heading = view.rows.saturating_sub(1) >= 4;
+    let body_room = overlay::panel_room(view.rows, usize::from(heading));
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
         lines.push((column.title.as_str().into(), PANEL.with_bold(true)));
@@ -1271,74 +1299,12 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
 
 // ------------------------------------------------------------------ paint
 
-/// The SGR that sets `a` from nothing: an underline style (kitty's `4:n`)
-/// as it is if the client's terminal draws them (`styles`, `outer::styles!`),
-/// else a plain underline, as a terminal that does not know `4:3` draws no
-/// underline at all (xterm, avt) or reads the colon as a semicolon,
-/// underline and italic, and one that does not know 21 may read it as bold
-/// off (alacritty, avt). The underline colour goes either way: see below.
+/// The SGR that sets `a` from nothing, as painted (`SgrForm::Paint`), with
+/// underline styles if the client's terminal draws them (`styles`,
+/// `outer::styles!`).
 pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
     out.extend_from_slice(b"\x1b[0");
-    for (on, _) in a.sgr_flags() {
-        let _ = write!(out, ";{on}");
-    }
-    match a.underline_style() {
-        UnderlineStyle::None => {}
-        style @ (UnderlineStyle::Double
-        | UnderlineStyle::Curly
-        | UnderlineStyle::Dotted
-        | UnderlineStyle::Dashed)
-            if styles =>
-        {
-            let _ = write!(out, ";4:{}", style.number());
-        }
-        // Single, a style the terminal does not draw, or one fux-vt does
-        // not know yet: a plain underline.
-        UnderlineStyle::Single | _ => out.extend_from_slice(b";4"),
-    }
-    // A kind of blink fux-vt does not know yet is drawn as none.
-    match a.blink() {
-        fux_vt::Blink::Slow => out.extend_from_slice(b";5"),
-        fux_vt::Blink::Rapid => out.extend_from_slice(b";6"),
-        fux_vt::Blink::None | _ => {}
-    }
-    // The underline colour in ITU-T T.416's colon form (§13.1.8), with its
-    // empty colour-space slot: a terminal that does not know SGR 58 skips
-    // the whole parameter, where in the semicolon form it would take the
-    // colour's numbers for attributes of their own (`58;2;…` would be dim).
-    // So it goes to every terminal, styles or not: each engine in
-    // `fux-vt/compare` reads `58:5:9` and `58:2::1:2:3` beside 4 and 1 as
-    // 4 and 1 alone, xterm, which has no SGR 58, included (xterm 411
-    // skips an SGR parameter with subparameters other than 38's and 48's).
-    match a.underline_color() {
-        Color::Idx(n) => {
-            let _ = write!(out, ";58:5:{n}");
-        }
-        Color::Rgb(Rgb { r, g, b }) => {
-            let _ = write!(out, ";58:2::{r}:{g}:{b}");
-        }
-        // A kind of colour fux-vt does not know yet is drawn as the default.
-        Color::Default | _ => {}
-    }
-    // `base` is 30 or 40, so no code comes near 255: every sum is exact.
-    let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
-        Color::Idx(n) if n < 8 => {
-            let _ = write!(out, ";{}", base.saturating_add(n));
-        }
-        // The bright colours 8–15 are 90–97 and 100–107.
-        Color::Idx(n) if n < 16 => {
-            let _ = write!(out, ";{}", base.saturating_add(52).saturating_add(n));
-        }
-        Color::Idx(n) => {
-            let _ = write!(out, ";{};5;{n}", base.saturating_add(8));
-        }
-        Color::Rgb(Rgb { r, g, b }) => {
-            let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
-        }
-        Color::Default | _ => {}
-    };
-    color(out, a.foreground(), 30);
-    color(out, a.background(), 40);
+    a.write_sgr(out, fux_vt::SgrForm::Paint { styles });
     out.push(b'm');
 }
 
@@ -1349,7 +1315,7 @@ pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
 /// spec asks a multiplexer to make it (`references/modern/osc8_hyperlinks.md`,
 /// "Hover underlining and the `id` parameter"). A terminal that does not
 /// know OSC 8 ignores it.
-fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &fux_vt::Hyperlink)>) {
+fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &Hyperlink)>) {
     match link {
         Some((pane, link)) => {
             let (key, uri) = (link.key(), link.uri());
@@ -1376,7 +1342,7 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
         before = before.saturating_sub(1);
     }
     grid.get(y, before)
-        .is_some_and(|glyph| fux_vt::continues_cluster(shown(glyph), first))
+        .is_some_and(|glyph| fux_vt::continues_cluster(glyph.shown(), first))
 }
 
 /// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run of
@@ -1447,27 +1413,28 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
         M::None => 0,
         M::Press | M::PressRelease => 1000,
         M::ButtonMotion => 1002,
-        // `AnyMotion`, and a mode fux-vt may add later: the most.
-        M::AnyMotion | _ => 1003,
+        M::AnyMotion => 1003,
     }
 }
 
-/// The bytes that turn `old` (what the client shows, or nothing) into `new`.
-pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
+/// The bytes that turn `old` (what the client shows, or nothing) into
+/// `new`, as a test reads them.
+#[cfg(test)]
+pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
-    paint_into(old, new, &mut out);
+    let blank = Grid::new(new.rows, new.cols);
+    paint_into(old.unwrap_or(&blank), old.is_some(), new, &mut out);
     out
 }
 
-/// Appends the bytes that turn `old` (what the client shows, or nothing)
-/// into `new` to `out`.
-pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
-    if let Some(old) = old
-        && echo(old, new, out)
-    {
+/// Appends the bytes that turn `shown`, what the client shows if `known`
+/// (else what it last showed, whose cursor shape it keeps), into `new` to
+/// `out`.
+pub fn paint_into(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
+    if known && echo(shown, new, out) {
         return;
     }
-    paint_whole(old, new, out);
+    paint_whole(shown, known, new, out);
 }
 
 /// Whether row `y` of two grids of a size shows the same: its cells, and,
@@ -1592,7 +1559,8 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     true
 }
 /// [`paint_into`] without the echo's short way.
-fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
+fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
+    let old = known.then_some(shown);
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     // Learning that the terminal draws underline styles repaints it whole,
     // so that what it shows takes them.
@@ -1649,7 +1617,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                 let text = if wide && cx.saturating_add(1) >= new.cols {
                     " "
                 } else {
-                    shown(cell)
+                    cell.shown()
                 };
                 let attrs = cell.attributes();
                 if current != Some(attrs) {
@@ -1681,7 +1649,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
         hyperlink(out, None);
     }
     out.extend_from_slice(b"\x1b[0m");
-    new.modes.diff(old.map(|o| &o.modes), out);
+    new.modes.diff(&shown.modes, known, out);
     if let Some((y, x)) = new.cursor {
         goto(out, y, x);
         out.extend_from_slice(b"\x1b[?25h");
@@ -1691,7 +1659,50 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
+    /// `compose` into a grid and placement kept, as the server composes:
+    /// false if there is no such client.
+    fn compose_into(s: &Session, c: ClientId, grid: &mut Grid, placement: &mut Placement) -> bool {
+        let view = s.views.get(&c);
+        view.map(|view| compose_view(s, view, grid, placement))
+            .is_some()
+    }
     use super::*;
+
+    /// A client's terminal keeps its own cursor shape until a pane sets
+    /// one: the first paint writes none, a shape a pane set is written as
+    /// its Ps, a program's 0 as 0, and the terminal's own comes back as 0,
+    /// which most terminals take for theirs, then 7, which xterm takes for
+    /// its initial resources (ctlseqs, DECSCUSR), where 0 is a blinking
+    /// block. A full repaint, after a resize, starts from the shape the
+    /// terminal has, which the resize kept.
+    #[test]
+    fn a_cursor_shape_is_written_once_a_pane_sets_one() {
+        // The DECSCUSRs a paint writes, from a terminal whose shape is
+        // `was`, its screen known or not.
+        let paint = |was: CursorShape, known: bool, shape: CursorShape| {
+            let mut old = Grid::new(2, 3);
+            old.modes.cursor_shape = was;
+            let mut new = Grid::new(2, 3);
+            new.modes.cursor_shape = shape;
+            let mut out = Vec::new();
+            paint_into(&old, known, &new, &mut out);
+            let out = String::from_utf8_lossy(&out).into_owned();
+            let shapes = ["\x1b[0 q\x1b[7 q", "\x1b[0 q", "\x1b[5 q", "\x1b[6 q"];
+            shapes
+                .into_iter()
+                .find(|s| out.contains(s))
+                .unwrap_or_default()
+        };
+        use CursorShape::{BlinkingBar, Initial, SteadyBar, Zero};
+        assert_eq!(paint(Initial, false, Initial), "");
+        assert_eq!(paint(Initial, false, BlinkingBar), "\x1b[5 q");
+        assert_eq!(paint(BlinkingBar, true, Zero), "\x1b[0 q");
+        assert_eq!(paint(SteadyBar, true, SteadyBar), "");
+        assert_eq!(paint(SteadyBar, true, Initial), "\x1b[0 q\x1b[7 q");
+        // After a resize the screen is not known, but the shape is.
+        assert_eq!(paint(SteadyBar, false, Initial), "\x1b[0 q\x1b[7 q");
+        assert_eq!(paint(SteadyBar, false, SteadyBar), "");
+    }
 
     /// A terminal of `rows` by `cols`, as a client's, without history.
     fn terminal(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
@@ -1789,7 +1800,7 @@ mod tests {
                 plain_old.forget_memo();
                 plain_new.forget_memo();
                 let mut slow = Vec::new();
-                paint_whole(painted.then_some(&plain_old), &plain_new, &mut slow);
+                paint_whole(&plain_old, painted, &plain_new, &mut slow);
                 if !bytes.starts_with(b"\x1b[?2026h") {
                     short += 1;
                 }
@@ -1939,7 +1950,7 @@ mod tests {
             .map(|y| {
                 window
                     .row(y)
-                    .map(crate::capture::row_text)
+                    .map(|row| row.cells_text().trim_end_matches(' ').to_owned())
                     .unwrap_or_default()
             })
             .collect()
@@ -2043,7 +2054,7 @@ mod tests {
                 );
             }
             other.cursor = Some((1, 1));
-            other.modes.cursor_shape = 3;
+            other.modes.cursor_shape = CursorShape::BlinkingUnderline;
             assert!(compose_into(&s, c, &mut other, &mut Placement::default()));
             assert_eq!(other, fresh, "{rows}x{cols}");
         }
@@ -2273,6 +2284,52 @@ mod tests {
         Ok(())
     }
 
+    /// Paint's SGR: the flags, then the underline (a style only where the
+    /// terminal draws styles) and the blink, then the underline colour in
+    /// its colon form, then the colours in their semicolon forms.
+    #[test]
+    fn paint_writes_the_sgr_every_terminal_reads() {
+        let a = Attributes::new(Color::Idx(9), Color::Rgb([1, 2, 3].into()))
+            .with_bold(true)
+            .with_italic(true)
+            .with_underline_style(fux_vt::UnderlineStyle::Curly)
+            .with_blink(fux_vt::Blink::Slow)
+            .with_underline_color(Color::Idx(5));
+        let double = Attributes::new(Color::Idx(208), Color::Idx(15))
+            .with_underline_style(fux_vt::UnderlineStyle::Double);
+        let painted = |a: Attributes, styles: bool| {
+            let mut out = Vec::new();
+            sgr(&mut out, a, styles);
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        assert_eq!(painted(a, true), "\x1b[0;1;3;4:3;5;58:5:5;91;48;2;1;2;3m");
+        assert_eq!(painted(a, false), "\x1b[0;1;3;4;5;58:5:5;91;48;2;1;2;3m");
+        assert_eq!(painted(double, true), "\x1b[0;4:2;38;5;208;107m");
+        assert_eq!(painted(double, false), "\x1b[0;4;38;5;208;107m");
+    }
+
+    /// A character of no width of its own (a combining mark, ZWJ, VS16)
+    /// is part of the cluster before it (UAX #29, GB9 and GB9a), so a panel
+    /// or the bar keeps it on that cell: `cafe` and U+0301 is `café`, four
+    /// cells wide; on a wide glyph it joins the glyph's first half.
+    #[test]
+    fn a_mark_of_no_width_stays_on_the_cell_before() -> Result<(), String> {
+        let mut grid = Grid::new(1, 8);
+        let end = grid.text(0, 0, "cafe\u{301} 界\u{301}x", PANEL, 8);
+        assert_eq!(end, 8);
+        assert_eq!(grid.row_text(0), "cafe\u{301} 界\u{301}x");
+        let fourth = grid.row(0).nth(3).map(|c| c.contents().to_owned());
+        assert_eq!(fourth.as_deref(), Some("e\u{301}"));
+        // Painted, a terminal reads it back so.
+        let mut parser = terminal(1, 8)?;
+        parser
+            .process(&paint(None, &grid))
+            .map_err(|e| e.to_string())?;
+        let row = parser.screen().rows().next().map(|r| r.cells_text());
+        assert_eq!(row.as_deref(), Some("cafe\u{301} 界\u{301}x"));
+        Ok(())
+    }
+
     /// Underline styles reach a client whose terminal draws them as kitty's
     /// `4:n` (`references/modern/kitty_underlines.html`): double, curly,
     /// dotted and dashed, with their colour; a plain underline is 4. Any
@@ -2414,6 +2471,56 @@ mod tests {
             let expected = format!("\x1b]4;1;rgb:{answer}\x07");
             assert_eq!(String::from_utf8_lossy(&asked), expected, "pane {id}");
         }
+        Ok(())
+    }
+
+    /// DECSCNM (`CSI ? 5 h`; DEC STD 070, Screen Mode: the whole screen in
+    /// reverse video) is drawn: a pane that sets it is painted with every
+    /// cell's inverse turned over, blanks too, so a reversed glyph shows
+    /// plain; the pane beside it is not; the rows it prints later are
+    /// painted so too, and resetting it paints them plain again.
+    #[test]
+    fn a_pane_in_reverse_video_is_painted_reversed() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
+        s.output(PaneId::of(1), b"\x1b[?5ha\x1b[7mb\x1b[27m");
+        s.output(PaneId::of(2), b"a");
+        let mut client = fux_vt::Parser::new(fux_vt::Size::new(6, 41)?, 0)?;
+        let inverse =
+            |p: &fux_vt::Parser, y: u16, x: u16| p.screen().cell(y, x).map(|c| c.inverse());
+        let grid = compose(&s, c).ok_or("a screen")?;
+        client.process(&paint(None, &grid))?;
+        assert_eq!(inverse(&client, 0, 0), Some(true));
+        assert_eq!(inverse(&client, 0, 1), Some(false));
+        assert_eq!(inverse(&client, 0, 2), Some(true));
+        assert_eq!(inverse(&client, 0, 21), Some(false));
+        s.output(PaneId::of(1), b"\r\nc");
+        let next = compose(&s, c).ok_or("a screen")?;
+        client.process(&paint(Some(&grid), &next))?;
+        assert_eq!(inverse(&client, 1, 0), Some(true));
+        s.output(PaneId::of(1), b"\x1b[?5l");
+        let plain = compose(&s, c).ok_or("a screen")?;
+        client.process(&paint(Some(&next), &plain))?;
+        assert_eq!(inverse(&client, 0, 0), Some(false));
+        assert_eq!(inverse(&client, 0, 1), Some(true));
+        assert_eq!(inverse(&client, 1, 0), Some(false));
+        Ok(())
+    }
+
+    /// The blanks fux fills itself where a pane's screen is smaller than
+    /// its place (a smaller client attached), past its rows' ends and below
+    /// its last row, are in the pane's colours too: with DECSCNM set they
+    /// are reversed, as the whole screen is (DEC STD 070, Screen Mode).
+    #[test]
+    fn a_reversed_panes_own_blanks_are_reversed() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
+        s.output(PaneId::of(1), b"\x1b[?5ha");
+        s.attach(3, 20, None)?;
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let inverse = |y, x| grid.get(y, x).map(|cell| cell.inverse());
+        assert_eq!(inverse(0, 0), Some(true));
+        assert_eq!(inverse(0, 30), Some(true), "past the row's end");
+        assert_eq!(inverse(4, 0), Some(true), "below the last row");
         Ok(())
     }
 

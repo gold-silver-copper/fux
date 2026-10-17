@@ -2,15 +2,12 @@
 //! as the same value, so that the server receives what a client's words
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
-use crate::command::{
-    AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
-    PanePick, PaneResize, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
-};
+use crate::command::{Env, Percent};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
-use crate::layout::Axis;
 use fuxix::process::Signal;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::time::Duration;
 
 /// Why bytes are not the value they should be.
@@ -98,22 +95,6 @@ macro_rules! int_wire {
 }
 int_wire!(u8, u16, u32, u64, i64);
 
-/// `nonzero_wire!(NonZeroU8 u8 "status", …)` expands to `impl Wire for
-/// NonZeroU8` and so on: the number's bytes, 0 refused as `Bad("status")`.
-macro_rules! nonzero_wire {
-    ($($ty:ident $int:ident $what:literal),*) => {$(
-        impl Wire for std::num::$ty {
-            fn put(&self, out: &mut Vec<u8>) {
-                self.get().put(out);
-            }
-            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-                Self::new($int::get(r)?).ok_or(Error::Bad($what))
-            }
-        }
-    )*};
-}
-nonzero_wire!(NonZeroU8 u8 "status");
-
 /// Nothing: a value of no bytes, as an empty frame's payload.
 impl Wire for () {
     fn put(&self, _: &mut Vec<u8>) {}
@@ -144,6 +125,13 @@ impl Wire for bool {
     }
 }
 
+/// Values, after their count: a list's, variables', a system string's
+/// bytes.
+fn put_list<T: Wire>(items: &[T], out: &mut Vec<u8>) {
+    u32::try_from(items.len()).unwrap_or(u32::MAX).put(out);
+    items.iter().for_each(|item| item.put(out));
+}
+
 impl Wire for String {
     fn put(&self, out: &mut Vec<u8>) {
         u32::try_from(self.len()).unwrap_or(u32::MAX).put(out);
@@ -153,6 +141,43 @@ impl Wire for String {
         let len = u32::get(r)? as usize;
         let bytes = r.bytes(len)?;
         String::from_utf8(bytes.to_vec()).map_err(|_| Error::NotUtf8)
+    }
+}
+
+/// A system's string, as its bytes: on Unix a path or a variable's value
+/// is any bytes, never made text.
+impl Wire for std::ffi::OsString {
+    fn put(&self, out: &mut Vec<u8>) {
+        put_list(self.as_bytes(), out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Vec::get(r).map(Self::from_vec)
+    }
+}
+
+/// A path, as its bytes.
+impl Wire for std::path::PathBuf {
+    fn put(&self, out: &mut Vec<u8>) {
+        put_list(self.as_os_str().as_bytes(), out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        std::ffi::OsString::get(r).map(Self::from)
+    }
+}
+
+/// Variables, each name checked as it is read: one no shell takes is
+/// refused.
+impl Wire for Env {
+    fn put(&self, out: &mut Vec<u8>) {
+        put_list(self.as_slice(), out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let mut env = Env::default();
+        for (name, value) in Vec::<(String, String)>::get(r)? {
+            env.push(name, value)
+                .map_err(|_| Error::Bad("variable name"))?;
+        }
+        Ok(env)
     }
 }
 
@@ -177,10 +202,7 @@ impl<T: Wire> Wire for Option<T> {
 
 impl<T: Wire> Wire for Vec<T> {
     fn put(&self, out: &mut Vec<u8>) {
-        u32::try_from(self.len()).unwrap_or(u32::MAX).put(out);
-        for item in self {
-            item.put(out);
-        }
+        put_list(self, out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let count = u32::get(r)? as usize;
@@ -253,26 +275,18 @@ text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 
-wire_enum!(Axis, "axis" {
-    0 => Horizontal,
-    1 => Vertical,
-});
-wire_enum!(Kind, "kind" {
-    0 => Pane,
-    1 => Tab,
-    2 => Workspace,
-});
-wire_enum!(Sibling, "sibling" {
-    0 => Next,
-    1 => Previous,
-});
-
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
 /// a fieldless enum whose `ALL` lists every variant: a variant's one-byte
-/// tag is its place there, written and read alike. No variant can be missed, nor two
-/// share a tag; reordering `ALL` (fux-vt's, fuxix's) changes the wire.
+/// tag is its place there, written and read alike. The macro does not
+/// check `ALL`: it is whole, each variant once, as fux-vt's `closed!` and
+/// fuxix's `signals!` make it, so no variant is missed and no two share a
+/// tag (a variant missing from a hand-written one would be put as 255);
+/// reordering `ALL` changes the wire. Each also gets a `const` assertion
+/// that `ALL` has at most 256 places, so every place is a byte: a longer
+/// one doesn't compile.
 macro_rules! closed_wire {
     ($($ty:ty, $what:literal);* $(;)?) => {$(
+        const _: () = assert!(<$ty>::ALL.len() <= 256);
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
                 let place = Self::ALL.iter().position(|v| v == self);
@@ -301,46 +315,57 @@ impl Wire for fux_vt::Size {
     }
 }
 
-/// `wire_enum!(Ty, "what" { 0 => Unit, 1 => Tuple(a, b), 2 => Named { x, y } })`
-/// expands to `impl Wire for Ty`: `put` writes a variant's tag, then its
-/// fields in the order listed; `get` reads the tag, then each field back in
-/// that order (an unknown tag is `Error::Tag("what", tag)`). One list says
-/// both, so the two cannot drift apart. `Ty<T>` takes a parameter that is
-/// itself `Wire`.
+/// `wire_enum!(Ty { Unit, Tuple(a, b), Named { x, y } })` expands to
+/// `impl Wire for Ty`: `put` writes a variant's tag, one byte that is its
+/// place in the list from 0 (`Unit` 0, `Tuple` 1, `Named` 2), then its
+/// fields in the order listed; `get` reads the tag, then each field back
+/// in that order (an unknown tag is `Error::Tag("Ty", tag)`). The places
+/// are those of a hidden `#[repr(u8)] enum Tag { Unit, Tuple, Named }`
+/// beside the impl, so no two variants share one, and a list longer than
+/// 256 does not compile. Reordering the list changes the wire, as any
+/// change to it does (`protocol::PROTOCOL`). `Ty<T>`, of one parameter,
+/// is `Wire` where `T` is. This is for a type declared in another crate
+/// (fux-vt's): a type of fux's own is declared in `wire!`, which writes
+/// this list from the declaration.
 macro_rules! wire_enum {
-    ($ty:ident $(<$g:ident>)?, $what:literal {
-        $($tag:literal => $var:ident $(( $($p:ident),* ))? $({ $($f:ident),* })?),* $(,)?
+    ($ty:ident $(<$g:ident>)? {
+        $($var:ident $(( $($p:ident),+ ))? $({ $($f:ident),* })?),* $(,)?
     }) => {
-        impl$(<$g: $crate::wire::Wire>)? $crate::wire::Wire for $ty$(<$g>)? {
-            fn put(&self, out: &mut Vec<u8>) {
-                match self {$(
-                    Self::$var $(( $($p),* ))? $({ $($f),* })? => {
-                        out.push($tag);
-                        $($($crate::wire::Wire::put($p, out);)*)?
-                        $($($crate::wire::Wire::put($f, out);)*)?
-                    }
-                )*}
+        const _: () = {
+            #[repr(u8)]
+            enum Tag {
+                $($var),*
             }
-            fn get(
-                r: &mut $crate::wire::Reader<'_>,
-            ) -> Result<Self, $crate::wire::Error> {
-                Ok(match <u8 as $crate::wire::Wire>::get(r)? {
-                    $($tag => {
-                        $($(let $p = $crate::wire::Wire::get(r)?;)*)?
+            impl$(<$g: $crate::wire::Wire>)? $crate::wire::Wire for $ty$(<$g>)? {
+                fn put(&self, out: &mut Vec<u8>) {
+                    match self {$(
+                        Self::$var $(( $($p),+ ))? $({ $($f),* })? => {
+                            out.push(Tag::$var as u8);
+                            $($($crate::wire::Wire::put($p, out);)+)?
+                            $($($crate::wire::Wire::put($f, out);)*)?
+                        }
+                    )*}
+                }
+                fn get(
+                    r: &mut $crate::wire::Reader<'_>,
+                ) -> Result<Self, $crate::wire::Error> {
+                    let tag = <u8 as $crate::wire::Wire>::get(r)?;
+                    $(if tag == Tag::$var as u8 {
+                        $($(let $p = $crate::wire::Wire::get(r)?;)+)?
                         $($(let $f = $crate::wire::Wire::get(r)?;)*)?
-                        Self::$var $(( $($p),* ))? $({ $($f),* })?
+                        return Ok(Self::$var $(( $($p),+ ))? $({ $($f),* })?);
                     })*
-                    other => return Err($crate::wire::Error::Tag($what, other)),
-                })
+                    Err($crate::wire::Error::Tag(stringify!($ty), tag))
+                }
             }
-        }
+        };
     };
 }
 pub(crate) use wire_enum;
 
 /// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields
-/// one after another, in the order listed (which is the wire's, not
-/// always the declaration's).
+/// one after another, in the order listed. For a type declared elsewhere;
+/// one declared here says its fields once, in `wire!`.
 macro_rules! wire_struct {
     ($ty:path { $($f:ident),* $(,)? }) => {
         impl $crate::wire::Wire for $ty {
@@ -357,99 +382,77 @@ macro_rules! wire_struct {
 }
 pub(crate) use wire_struct;
 
-wire_enum!(WsRef, "workspace" { 0 => Id(id), 1 => Name(name) });
-wire_enum!(AnyRef, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
-wire_enum!(Pick<T>, "pick" { 0 => Step(s), 1 => Id(id) });
-wire_enum!(PanePick, "pane pick" { 0 => Step(s), 1 => Id(id), 2 => Last, 3 => Toward(d) });
-wire_enum!(MoveTo, "move" {
-    0 => Tab(t),
-    1 => Workspace(w),
-    2 => NewTab,
-    3 => NewWorkspace,
-    4 => Beside(d),
-});
-wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
-wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
-wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To(axis, extent) });
-wire_enum!(Resized, "resized" { 0 => Tabs(t, size), 1 => Client(c, size) });
-wire_enum!(Input, "input" { 0 => Key(k), 1 => Text(t), 2 => Paste(t) });
-wire_struct!(CaptureView {
-    full,
-    join,
-    styles,
-    main,
-    alt,
-    last_output,
-    marks,
-    rows,
-    cols
-});
-wire_enum!(Until, "condition" { 0 => Text(t), 1 => Gone(t), 4 => Exit, 6 => Bell, 7 => Settled });
-wire_struct!(Wait {
-    until,
-    timeout,
-    print,
-    after,
-    marks
-});
-wire_enum!(Mouse, "mouse" {
-    0 => Click(b),
-    1 => Press(b),
-    2 => Release(b),
-    3 => Wheel(b),
-    4 => Move,
-});
-wire_enum!(Choices, "choices" { 0 => Tabs, 1 => Workspaces, 2 => Panes(pane) });
-wire_enum!(ClientAction, "client action" {
-    0 => Detach,
-    1 => Capture,
-    2 => Choices(choices),
-    3 => Run(code),
-    4 => Keys(inputs),
-    10 => Zoom,
-    11 => SelectPane(p),
-    12 => SelectTab(p),
-    13 => SelectWorkspace(p),
-});
+/// A type declared and put on the wire at once, its fields written once:
+///
+/// ```ignore
+/// wire! {
+///     #[derive(Debug)]
+///     pub enum Ty {
+///         Unit,
+///         Tuple(a: A, b: B),
+///         Named { x: X },
+///     }
+/// }
+/// ```
+///
+/// expands to the enum as written (its docs and attributes too), its tuple
+/// variants' fields bare (`Tuple(A, B)`), and then `wire_enum!(Ty { Unit,
+/// Tuple(a, b), Named { x } })`: `a` and `b` only name the fields for its
+/// `Wire` impl, as a macro can't make up those names. A struct, `wire! {
+/// pub struct Ty { pub x: X, y: Y } }`, expands to itself and
+/// `wire_struct!(Ty { x, y })`. So a variant's tag is its place in the
+/// declaration, from 0, and a field's place on the wire its place there.
+macro_rules! wire {
+    (
+        $(#[$m:meta])*
+        $vis:vis enum $ty:ident $(<$g:ident>)? {
+            $(
+                $(#[$vm:meta])*
+                $var:ident
+                $(( $($p:ident: $pt:ty),+ $(,)? ))?
+                $({ $($(#[$fm:meta])* $f:ident: $ft:ty),* $(,)? })?
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$m])*
+        $vis enum $ty $(<$g>)? {
+            $(
+                $(#[$vm])*
+                $var $(( $($pt),+ ))? $({ $($(#[$fm])* $f: $ft),* })?,
+            )*
+        }
+        $crate::wire::wire_enum!($ty $(<$g>)? {
+            $($var $(( $($p),+ ))? $({ $($f),* })?),*
+        });
+    };
+    (
+        $(#[$m:meta])*
+        $vis:vis struct $ty:ident {
+            $($(#[$fm:meta])* $fvis:vis $f:ident: $ft:ty),* $(,)?
+        }
+    ) => {
+        $(#[$m])*
+        $vis struct $ty {
+            $($(#[$fm])* $fvis $f: $ft),*
+        }
+        $crate::wire::wire_struct!($ty { $($f),* });
+    };
+}
+pub(crate) use wire;
 
-wire_enum!(Command, "command" {
-    0 => Ls { target, get },
-    1 => KillServer { force },
-    2 => NewWorkspace { name, cmd, size, cwd, env, ids },
-    3 => NewTab { target, name, cmd, size, cwd, env, ids },
-    4 => Split { axis, target, cmd, cwd, env, run, ids, then },
-    5 => Run { workspace, name, size, cwd, env, argv, log, ids, then },
-    6 => Respawn { target, kill, env, argv, then },
-    7 => Notify { target, text },
-    8 => Resize(what),
-    9 => Wait { target, wait },
-    10 => SendMouse { target, mouse, row, col, then },
-    11 => Kill { target },
-    12 => Signal { target, signal, then },
-    15 => Rename { target, name },
-    16 => MovePane { target, to },
-    17 => SwapPane { target, with },
-    18 => ResizePane { target, by },
-    19 => SendKeys { target, inputs, then },
-    20 => Events { target, json },
-    21 => DumpLayout { target },
-    22 => Grant { workspace, socket },
-    33 => Revoke { socket },
-    23 => Log { target, file },
-    24 => ClearHistory { target },
-    25 => CapturePane { target, history, view, settle },
-    26 => Reorder { target, toward },
-    27 => Set { option, value },
-    28 => Resolve { text, kind },
-    29 => ListBuffers,
-    30 => ShowBuffer { index },
-    31 => PasteBuffer { index, target },
-    32 => Client { client, action },
-});
+impl Wire for Percent {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.get().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Percent::new(u8::get(r)?).ok_or(Error::Bad("percent"))
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::{CaptureView, Command, Extent, Source};
 
     /// Each variant of an enum `closed_wire!` writes reads back as itself,
     /// and its tag is its place in `ALL`.
@@ -467,5 +470,76 @@ mod tests {
         each(&Signal::ALL);
         each(&fux_vt::ModeStatus::ALL);
         each(&crate::keys::colour::Scheme::ALL);
+    }
+
+    /// A button `send-mouse` presses is never the wheel, and the wheel
+    /// turns only as the wheel: each reports as what it is.
+    #[test]
+    fn buttons_and_the_wheel_report_as_themselves() {
+        use crate::command::{Button, Wheel};
+        let buttons = [
+            Button::Left,
+            Button::Middle,
+            Button::Right,
+            Button::Back,
+            Button::Forward,
+        ];
+        assert!(buttons.iter().all(|b| !b.reported().is_wheel()));
+        let ways = [Wheel::Up, Wheel::Down, Wheel::Left, Wheel::Right];
+        assert!(ways.iter().all(|w| w.reported().is_wheel()));
+    }
+
+    /// A variable's name from the wire is one a shell takes, as from the
+    /// `env` word: `A=B` (or a NUL) would set another, or none.
+    #[test]
+    fn a_variable_name_no_shell_takes_is_refused() {
+        let vars = |name: &str| encode(&vec![(name.to_owned(), "x".to_owned())]);
+        assert!(Env::get(&mut Reader::new(&vars("A=B"))).is_err());
+        assert!(Env::get(&mut Reader::new(&vars("A\0"))).is_err());
+        let fine = Env::get(&mut Reader::new(&vars("A_1"))).ok();
+        assert_eq!(fine.map(|env| encode(&env)), Some(vars("A_1")));
+    }
+
+    /// A capture's view goes field by field in the order they are declared
+    /// (full, join, styles, source, marks, rows, cols): the bytes pin it.
+    #[test]
+    fn a_capture_view_keeps_its_bytes() {
+        let view = CaptureView {
+            full: true,
+            join: false,
+            rows: Some((1, 2)),
+            cols: None,
+            styles: true,
+            source: Source::Main,
+            marks: false,
+        };
+        assert_eq!(encode(&view), [1, 0, 1, 1, 0, 1, 0, 1, 0, 2, 0]);
+    }
+
+    /// A command's directory is the path's bytes, UTF-8 or not: one that
+    /// is not still reaches the session as it was named.
+    #[test]
+    fn a_directory_goes_as_its_bytes() {
+        let dir = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
+        let split = Command::Split {
+            axis: crate::layout::Axis::Vertical,
+            target: crate::id::PaneId::of(1),
+            cmd: Vec::new(),
+            cwd: Some(dir.clone()),
+            env: Env::default(),
+            run: false,
+            id: None,
+        };
+        let read = Command::get(&mut Reader::new(&encode(&split))).ok();
+        assert!(matches!(read, Some(Command::Split { cwd: Some(cwd), .. }) if cwd == dir));
+    }
+
+    /// A share of a tab is 1 to 100 percent, from the wire too: 250 would
+    /// give a pane two and a half times the tab.
+    #[test]
+    fn a_percent_past_100_is_refused() {
+        let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();
+        assert!(read(250).is_none() && read(0).is_none());
+        assert_eq!(read(100).map(|e| encode(&e)), Some(vec![1, 100]));
     }
 }

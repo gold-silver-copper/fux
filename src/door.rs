@@ -7,12 +7,13 @@
 //! (mode 0600), and knocks: it writes `c-HEX` and a newline to the door. The
 //! server opens them only if each is a FIFO owned by its user with no access
 //! for others, removes their names, and writes one byte down to say it has.
-//! From then on each side relays between the FIFOs and one end of a socket
-//! pair, whose other end it uses as it would a connected socket: the server
-//! serves it as an accepted connection, the client speaks the protocol on
-//! it. Who may knock is who may write the directory: the user, as for the
-//! socket.
-use std::fs::{File, OpenOptions};
+//! From then on the two FIFOs are the connection: the client writes up and
+//! reads down, the server reads up and writes down, as each would a
+//! connected socket, with read(2), write(2) and poll(2) alone. No
+//! descriptor goes through them. Who may knock is who may write the
+//! directory: the user, as for the socket.
+use fuxix::poll::{Events, PollFd, poll};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
@@ -47,21 +48,20 @@ impl Door {
     /// another's, or anything else there, is refused.
     pub fn open(socket: &Path) -> io::Result<Door> {
         let path = path(socket);
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if !ours_fifo(&meta) => {
-                return Err(io::Error::other(format!(
-                    "{} is not a FIFO of this user's",
-                    path.display()
-                )));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => fuxix::file::make_fifo(&path, 0o600)?,
-            Err(e) => return Err(e),
+        if let Err(e) = fuxix::file::make_fifo(&path, 0o600)
+            && e.kind() != io::ErrorKind::AlreadyExists
+        {
+            return Err(e);
         }
+        // Whatever is there, checked as it was opened: no symbolic link is
+        // followed, and opening a file or a directory changes nothing.
         let knocks = open_fifo(&path, true, false)?;
         let held = open_fifo(&path, false, true)?;
         if !ours_fifo(&knocks.metadata()?) {
-            return Err(io::Error::other("the door changed as it was opened"));
+            return Err(io::Error::other(format!(
+                "{} is not a FIFO of this user's",
+                path.display()
+            )));
         }
         Ok(Door {
             knocks,
@@ -76,10 +76,9 @@ impl Door {
         &self.knocks
     }
 
-    /// The connections the knocks waiting bring: for each, the server's end
-    /// of the pair its relays fill. A knock that names FIFOs not fit to
-    /// open is dropped.
-    pub fn knocks(&mut self) -> Vec<UnixStream> {
+    /// The connections the knocks waiting bring. A knock that names FIFOs
+    /// not fit to open is dropped.
+    pub fn knocks(&mut self) -> Vec<Fifos> {
         let mut buffer = [0u8; 4096];
         loop {
             match self.knocks.read(&mut buffer) {
@@ -116,14 +115,14 @@ impl Door {
 impl Drop for Door {
     fn drop(&mut self) {
         // Its own still: removed.
-        if std::fs::symlink_metadata(&self.path).is_ok_and(|m| ours_fifo(&m)) {
-            let _ = std::fs::remove_file(&self.path);
+        if fs::symlink_metadata(&self.path).is_ok_and(|m| ours_fifo(&m)) {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
 
 /// Whether `meta` is a FIFO of this user's that others cannot reach.
-fn ours_fifo(meta: &std::fs::Metadata) -> bool {
+fn ours_fifo(meta: &fs::Metadata) -> bool {
     meta.file_type().is_fifo()
         && meta.uid() == fuxix::process::geteuid()
         && meta.mode() & 0o077 == 0
@@ -136,12 +135,13 @@ fn knock_name(name: &str) -> Option<&str> {
 }
 
 /// Opens the FIFO at `path` without waiting for its other end, a symbolic
-/// link refused.
+/// link refused, and a terminal there never taken as the server's own.
 fn open_fifo(path: &Path, read: bool, write: bool) -> io::Result<File> {
+    use fuxix::file::{NOCTTY, NOFOLLOW, NONBLOCK};
     OpenOptions::new()
         .read(read)
         .write(write)
-        .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW)
+        .custom_flags(NONBLOCK | NOFOLLOW | NOCTTY)
         .open(path)
 }
 
@@ -156,76 +156,34 @@ fn fifos(dir: &Path, name: &str) -> [PathBuf; 2] {
 
 fn remove(paths: &[PathBuf]) {
     for path in paths {
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 }
 
-/// Opens the FIFOs a knock names, in `dir`, and starts relaying them: the
-/// server's end of the pair.
-fn answer(dir: &Path, name: &str) -> io::Result<UnixStream> {
+/// A door's connection as the server holds it: `up`, read for what the
+/// client sends, and `down`, written with what it is sent; both
+/// nonblocking.
+pub struct Fifos {
+    pub up: File,
+    pub down: File,
+}
+
+/// Opens the FIFOs a knock names, in `dir`, and says so down them.
+fn answer(dir: &Path, name: &str) -> io::Result<Fifos> {
     let name = knock_name(name).ok_or_else(|| io::Error::other("not a knock"))?;
     let paths = fifos(dir, name);
     let [up_path, down_path] = &paths;
-    for path in &paths {
-        if !ours_fifo(&std::fs::symlink_metadata(path)?) {
-            return Err(io::Error::other("not a FIFO of this user's"));
-        }
-    }
+    // Checked as they were opened: no symbolic link is followed, and
+    // opening anything else the private directory may hold changes nothing.
     let up = open_fifo(up_path, true, false)?;
     let mut down = open_fifo(down_path, false, true)?;
     if !ours_fifo(&up.metadata()?) || !ours_fifo(&down.metadata()?) {
-        return Err(io::Error::other("a FIFO changed as it was opened"));
+        return Err(io::Error::other("not a FIFO of this user's"));
     }
     remove(&paths);
-    fuxix::io::set_nonblocking(&down, false)?;
+    // One byte, into a FIFO no one has written: it has room.
     down.write_all(b"+")?;
-    relay(up, down)
-}
-
-/// Starts relaying what comes from `from` to one end of a socket pair, and
-/// what is written to that end into `into`: the other end, which is used as
-/// a connected socket would be. Once `from` ends (the other side gone), its
-/// end is closed, every copy of it, so the other reads its end: a sandbox
-/// that refuses shutdown(2) refuses nothing here.
-fn relay(from: File, into: File) -> io::Result<UnixStream> {
-    fuxix::io::set_nonblocking(&from, false)?;
-    fuxix::io::set_nonblocking(&into, false)?;
-    let (ours, theirs) = UnixStream::pair()?;
-    // Read and written as a file: a sandbox that refuses send(2) allows
-    // write(2).
-    let theirs = File::from(OwnedFd::from(theirs));
-    let back = theirs.try_clone()?;
-    // Closed as `from` ends, to stop the copy back, which holds a copy of
-    // the pair's end.
-    let (stopped, stop) = io::pipe()?;
-    std::thread::spawn(move || {
-        copy(from, &theirs, None);
-        drop(stop);
-    });
-    std::thread::spawn(move || copy(&back, into, Some(&stopped)));
-    Ok(ours)
-}
-
-/// Copies `from` into `into` until either ends, or `stop` does.
-fn copy(mut from: impl Read + AsFd, mut into: impl Write, stop: Option<&io::PipeReader>) {
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        match ready(&from, stop, None) {
-            Ok(true) => {}
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Ok(false) | Err(_) => return,
-        }
-        match from.read(&mut buffer) {
-            Ok(0) => return,
-            Ok(n) => {
-                if into.write_all(buffer.get(..n).unwrap_or_default()).is_err() {
-                    return;
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(_) => return,
-        }
-    }
+    Ok(Fifos { up, down })
 }
 
 /// Waits until `file` has something to read: `Ok(false)` if `stop` ends
@@ -236,13 +194,12 @@ fn ready(
     stop: Option<&io::PipeReader>,
     timeout: Option<Duration>,
 ) -> io::Result<bool> {
-    use fuxix::poll::{Events, PollFd};
     let mut fds = match stop {
         Some(stop) => vec![PollFd::new(file, Events::IN), PollFd::new(stop, Events::IN)],
         None if timeout.is_some() => vec![PollFd::new(file, Events::IN)],
         None => return Ok(true),
     };
-    if fuxix::poll::poll(&mut fds, timeout)? == 0 {
+    if poll(&mut fds, timeout)? == 0 {
         return Err(io::ErrorKind::TimedOut.into());
     }
     Ok(fds
@@ -250,19 +207,21 @@ fn ready(
         .is_none_or(|stopped| stopped.revents().is_empty()))
 }
 
-/// The door beside `socket` opened to knock at, if a server holds it open.
-/// One no server reads, left by a server that stopped, is refused as a
-/// socket left so is.
-fn open_door(socket: &Path) -> io::Result<File> {
-    open_fifo(&path(socket), false, true).map_err(|e| match fuxix::Errno::from_io_error(&e) {
-        Some(fuxix::Errno::NXIO) => io::ErrorKind::ConnectionRefused.into(),
-        _ => e,
-    })
-}
-
-/// Whether a server holds the door beside `socket` open.
-pub fn served(socket: &Path) -> bool {
-    open_door(socket).is_ok()
+/// The door beside `socket` opened to knock at, if a server holds it open
+/// and it is a FIFO of this user's that others cannot reach, checked on
+/// the opened file: whether a server serves it. One no server reads, left
+/// by a server that stopped, is refused as a socket left so is.
+pub(crate) fn open_door(socket: &Path) -> io::Result<File> {
+    let door = match open_fifo(&path(socket), false, true) {
+        Err(e) if fuxix::Errno::from_io_error(&e) == Some(fuxix::Errno::NXIO) => {
+            return Err(io::ErrorKind::ConnectionRefused.into());
+        }
+        opened => opened?,
+    };
+    if !ours_fifo(&door.metadata()?) {
+        return Err(io::Error::other("the door is not a FIFO of this user's"));
+    }
+    Ok(door)
 }
 
 /// Knocks at the door beside `socket`, as a client: its FIFOs, to read and
@@ -280,13 +239,18 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
     let opened = (|| {
         fuxix::file::make_fifo(down_path, 0o600)?;
         let down = open_fifo(down_path, true, false)?;
-        // Read and write: open at once, whether or not the server reads yet.
-        let up = open_fifo(up_path, true, true)?;
+        // Write alone, so that once the server is gone a write fails rather
+        // than waits: opened read and write first, so that the write-only
+        // open finds a reader and comes at once, whether or not the server
+        // reads yet.
+        let either = open_fifo(up_path, true, true)?;
+        let up = open_fifo(up_path, false, true)?;
+        drop(either);
         knocked.write_all(format!("{name}\n").as_bytes())?;
         // The server's byte: it has opened both. Read from the FIFO itself,
         // which shows nothing to poll until the server has written.
-        let mut fds = [fuxix::poll::PollFd::new(&down, fuxix::poll::Events::IN)];
-        if fuxix::poll::poll(&mut fds, Some(ANSWER))? == 0 {
+        let mut fds = [PollFd::new(&down, Events::IN)];
+        if poll(&mut fds, Some(ANSWER))? == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "no server answered at the door",
@@ -294,7 +258,16 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
         }
         let mut byte = [0u8; 1];
         match (&down).read(&mut byte) {
-            Ok(1) => Ok(Link::door(relay(down, up)?)),
+            Ok(1) => {
+                fuxix::io::set_nonblocking(&down, false)?;
+                fuxix::io::set_nonblocking(&up, false)?;
+                Ok(Link {
+                    file: down,
+                    up: Some(up),
+                    timeout: None,
+                    stop: None,
+                })
+            }
             Ok(_) => Err(io::Error::other("the server closed the door")),
             Err(e) => Err(e),
         }
@@ -303,15 +276,16 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
     opened
 }
 
-/// A client's connection to its server: its socket, or one end of a pair
-/// relayed to a door's two FIFOs. Read and written with read(2) and
-/// write(2) alone, and timed and stopped with poll(2): Codex's sandbox
-/// refuses send(2), setsockopt(2) and shutdown(2), even on a socket pair.
+/// A client's connection to its server: its socket, or a door's two FIFOs.
+/// Read and written with read(2) and write(2) alone, and timed and stopped
+/// with poll(2): Codex's sandbox refuses send(2), setsockopt(2) and
+/// shutdown(2), even on a socket pair.
 pub struct Link {
-    /// The socket, read and written as a file.
+    /// What is read: the socket, as a file, or the door's `down`.
     file: File,
-    /// Whether it comes through a door, which carries no descriptor.
-    door: bool,
+    /// What a door's writes go to, its `up`; a socket's go to `file`. A
+    /// door carries no descriptor.
+    up: Option<File>,
     timeout: Option<Duration>,
     /// Ends its reads once its other end closes (`Link::stopper`).
     stop: Option<io::PipeReader>,
@@ -321,16 +295,9 @@ impl Link {
     pub fn socket(socket: UnixStream) -> Link {
         Link {
             file: File::from(OwnedFd::from(socket)),
-            door: false,
+            up: None,
             timeout: None,
             stop: None,
-        }
-    }
-
-    fn door(relayed: UnixStream) -> Link {
-        Link {
-            door: true,
-            ..Link::socket(relayed)
         }
     }
 
@@ -341,12 +308,12 @@ impl Link {
 
     /// What is written to: a terminal can go with it over a socket.
     pub fn output(&self) -> &File {
-        &self.file
+        self.up.as_ref().unwrap_or(&self.file)
     }
 
     /// Whether it is the server's socket: what can carry a descriptor.
     pub fn is_socket(&self) -> bool {
-        !self.door
+        self.up.is_none()
     }
 
     /// What stops it from another thread: dropped, its reads end, as at
@@ -369,7 +336,7 @@ impl Read for Link {
 
 impl Write for Link {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.file.write(bytes)
+        self.output().write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -389,8 +356,9 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A knock's two FIFOs made in `dir` with `mode`, opened as a client
-    /// holds them: down to read, up to read and write.
+    /// A knock's two FIFOs made in `dir` with `mode`, opened: down to
+    /// read, as a client holds it; up to read and write, so no reader is
+    /// needed (a client holds it write-only).
     fn fifos_of(dir: &Path, name: &str, mode: u32) -> io::Result<[File; 2]> {
         let [up, down] = fifos(dir, name);
         for path in [&up, &down] {
@@ -451,7 +419,73 @@ mod tests {
         std::fs::write(&regular, "")?;
         std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600))?;
         assert!(Door::open(&file).is_err(), "a file is no door");
+        // Nor to a client, which neither waits on it nor writes its knock
+        // there, nor counts it as a server's.
+        let started = std::time::Instant::now();
+        assert!(super::knock(&file).is_err(), "knocked at a file");
+        assert!(started.elapsed() < ANSWER, "waited at a file");
+        assert!(open_door(&file).is_err(), "a file served");
+        assert_eq!(std::fs::read(&regular)?, b"", "a knock written to a file");
         drop(door);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// A door's FIFOs are the connection: what the client writes the
+    /// server reads, and back; and a client whose server is gone gets an
+    /// error on writing more than a FIFO holds, and an end on reading, not
+    /// a wait for ever.
+    #[test]
+    fn a_door_client_hears_its_server_go() -> io::Result<()> {
+        let dir = fuxix::file::scratch()?.join(format!("fux-door-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        let socket = dir.join("s.sock");
+        let mut door = Door::open(&socket)?;
+        let (sent, came) = std::sync::mpsc::channel();
+        let client = std::thread::spawn(move || {
+            let mut link = super::knock(&socket)?;
+            link.write_all(b"up")?;
+            let mut back = [0u8; 4];
+            link.read_exact(&mut back)?;
+            sent.send(back == *b"down").map_err(io::Error::other)?;
+            // The server goes here.
+            let mut byte = [0u8; 1];
+            let ended = link.read(&mut byte)?;
+            let wrote = link.write_all(&vec![0u8; 512 * 1024]);
+            sent.send(ended == 0 && wrote.is_err())
+                .map_err(io::Error::other)
+        });
+        let wait = Duration::from_secs(5);
+        let started = std::time::Instant::now();
+        let mut fifos = loop {
+            match door.knocks().pop() {
+                Some(fifos) => break fifos,
+                None if started.elapsed() > wait => return Err(io::ErrorKind::TimedOut.into()),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        };
+        let mut got = [0u8; 2];
+        fuxix::io::set_nonblocking(&fifos.up, false)?;
+        fifos.up.read_exact(&mut got)?;
+        assert_eq!(&got, b"up");
+        fifos.down.write_all(b"down")?;
+        assert_eq!(
+            came.recv_timeout(wait).ok(),
+            Some(true),
+            "it reads what is sent"
+        );
+        drop(fifos);
+        drop(door);
+        assert_eq!(
+            came.recv_timeout(wait).ok(),
+            Some(true),
+            "it hears its server go"
+        );
+        client
+            .join()
+            .map_err(|_| io::Error::other("the client panicked"))??;
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

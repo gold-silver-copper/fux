@@ -1,6 +1,7 @@
 //! The server's settings: what every pane and client of it shares, set by
 //! the `set` word from a client's config or command line. Key bindings and
 //! the prefix are each client's own (`crate::keymap`).
+use crate::code::Code;
 use crate::log::JOURNAL_BYTES;
 use crate::words;
 use std::path::PathBuf;
@@ -9,7 +10,12 @@ use std::time::Duration;
 /// `settings! { /// doc  field "name": Type = default, parse; … }` expands
 /// to the struct `Config` of those fields, its `Default`, `NAMES` (every
 /// setting's name, in order) and `Config::set`, which reads a setting's
-/// text with its `parse` (a `&str` to `Result<Type, String>`).
+/// text with its `parse` (a `&str` to `Result<Type, E>`, `E` a `String`,
+/// refused as `config`, or a `Refused` with its own code). The row
+/// `clipboard "clipboard": bool = true, on;` gives the field `pub clipboard:
+/// bool`, `true` in `Default`, `"clipboard"` in `NAMES`, and in `set` the
+/// arm `"clipboard" => self.clipboard = on(value).map_err(|e|
+/// named(e.into()))?`.
 macro_rules! settings {
     ($($(#[$doc:meta])* $field:ident $name:literal: $ty:ty = $default:expr, $parse:expr;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,13 +38,13 @@ macro_rules! settings {
             /// Sets setting `name` to `value`, its text: a number, `on` or
             /// `off` (or `true` or `false`), a command line for `shell`,
             /// names for `update-environment`. A setting refused says why.
-            pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
-                let refused = |why: String| format!("{name}: {why}");
+            pub fn set(&mut self, name: &str, value: &str) -> Result<(), Refused> {
+                let named = |Refused(code, why)| Refused(code, format!("{name}: {why}"));
                 match name {
-                    $($name => self.$field = $parse(value).map_err(refused)?,)*
+                    $($name => self.$field = $parse(value).map_err(|e| named(e.into()))?,)*
                     other => {
                         let all = words::listed(NAMES, "and");
-                        return Err(format!("no setting {other:?}; the settings are {all}"));
+                        return Err(format!("no setting {other:?}; the settings are {all}").into());
                     }
                 }
                 Ok(())
@@ -48,7 +54,7 @@ macro_rules! settings {
 }
 
 settings! {
-    shell "shell": Vec<String> = vec![default_shell()], shell;
+    shell "shell": Shell = default_shell(), Shell::parse;
     /// The bytes of history each pane keeps, for copy mode and `capture`.
     history_bytes "history-bytes": usize = 8 << 20, number(0, 1 << 30);
     /// How long an action or a wait waits at most, unless it says.
@@ -71,6 +77,17 @@ settings! {
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter has not is unset.
     update_environment "update-environment": Vec<String> = KEPT.map(str::to_owned).to_vec(), names;
+}
+
+/// Why a setting is refused: its code (`config`, or its value's own, as
+/// `open_quote` for a shell's line), and why.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Refused(pub Code, pub String);
+
+impl From<String> for Refused {
+    fn from(why: String) -> Self {
+        Self(Code::Config, why)
+    }
 }
 
 /// What `update-environment` names at first.
@@ -117,13 +134,17 @@ fn shell_of(passwd: &str, uid: u32) -> Option<String> {
     })
 }
 
-/// `SHELL`, else the login shell, else `/bin/sh`.
-fn default_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
+/// `SHELL`, else the login shell, else `/bin/sh`: the program alone, with
+/// no arguments.
+fn default_shell() -> Shell {
+    let program = (std::env::var("SHELL").ok())
         .filter(|s| !s.is_empty())
         .or_else(login_shell)
-        .unwrap_or_else(|| "/bin/sh".into())
+        .unwrap_or_else(|| "/bin/sh".into());
+    Shell {
+        program,
+        args: Vec::new(),
+    }
 }
 
 /// A whole number from `min` to `max`, read from its text.
@@ -146,24 +167,44 @@ fn on(value: &str) -> Result<bool, String> {
     }
 }
 
-/// A command line, split as a shell splits it: a program first.
-fn shell(value: &str) -> Result<Vec<String>, String> {
-    let argv = words::split(value)?;
-    match argv.first().is_none_or(|p| p.is_empty()) {
-        true => Err("a program is needed".into()),
-        false => Ok(argv),
+/// The shell fux starts in a pane: a program, never empty, then its
+/// arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shell {
+    program: String,
+    args: Vec<String>,
+}
+
+impl Shell {
+    /// A command line, split as a shell splits it: a program first.
+    pub fn parse(value: &str) -> Result<Shell, Refused> {
+        let words =
+            words::split(value).map_err(|why| Refused(Code::from(fuxth::Code::OpenQuote), why))?;
+        match words.split_first() {
+            Some((program, args)) if !program.is_empty() => Ok(Shell {
+                program: program.clone(),
+                args: args.to_vec(),
+            }),
+            Some(_) | None => Err(Refused::from("a program is needed".to_owned())),
+        }
+    }
+
+    pub fn program(&self) -> &str {
+        &self.program
+    }
+
+    /// Its command line, the program first.
+    pub fn argv(&self) -> Vec<String> {
+        let all = std::iter::once(&self.program).chain(&self.args);
+        all.cloned().collect()
     }
 }
 
 /// Variables' names, separated by blanks.
 fn names(value: &str) -> Result<Vec<String>, String> {
-    let names: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
-    match names.iter().find(|n| !crate::command::shell_name(n)) {
-        Some(bad) => Err(format!(
-            "{bad:?} is no variable's name (letters, digits and _, not first a digit)"
-        )),
-        None => Ok(names),
-    }
+    (value.split_whitespace())
+        .map(|name| crate::command::var_name(name).map(|()| name.to_owned()))
+        .collect()
 }
 
 /// The config file, a fuxth program each client runs as it attaches (and
@@ -189,9 +230,9 @@ mod tests {
         assert_eq!(config.set("bell", "false"), Ok(()));
         assert!(!config.bell);
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
-        assert_eq!(config.shell, ["/bin/zsh", "-l"]);
+        assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
         assert!(config.set("history-bytes", "lots").is_err());
-        let below = config.set("history-bytes", "-1").map_err(|e| e.to_string());
+        let below = config.set("history-bytes", "-1").map_err(|e| e.1);
         assert!(below.is_err_and(|e| e.contains("out of range")));
         assert!(config.set("buffers", "0").is_err());
         assert!(config.set("nonsense", "1").is_err());

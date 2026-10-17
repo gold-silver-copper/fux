@@ -1,7 +1,8 @@
 //! Unix stream sockets: made one step at a time, because fux sets a
 //! socket's mode between binding it and listening on it, which std's
 //! `UnixListener::bind` does in one.
-use crate::errno::{Errno, Result, check};
+use crate::errno::{Errno, Result, check, check_size, fit};
+use std::mem::zeroed;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -9,7 +10,7 @@ use std::path::Path;
 /// A new Unix stream socket, close-on-exec: atomically where the system
 /// allows, and on macOS, which has no flag for it, straight after.
 pub fn stream() -> Result<OwnedFd> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
     #[cfg(target_os = "macos")]
     let kind = libc::SOCK_STREAM;
@@ -26,7 +27,7 @@ pub fn stream() -> Result<OwnedFd> {
 /// the path's NUL (107 on Linux and Android, 103 on macOS).
 pub fn max_path_len() -> usize {
     // SAFETY: an all-zero sockaddr_un is a valid, empty one.
-    let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let address: libc::sockaddr_un = unsafe { zeroed() };
     address.sun_path.len().saturating_sub(1)
 }
 
@@ -38,11 +39,11 @@ fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
         return Err(Errno::INVAL);
     }
     // SAFETY: an all-zero sockaddr_un is a valid, empty one.
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut address: libc::sockaddr_un = unsafe { zeroed() };
     if bytes.len() > max_path_len() {
         return Err(Errno::NAMETOOLONG);
     }
-    address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| Errno::INVAL)?;
+    address.sun_family = fit(libc::AF_UNIX)?;
     for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
         *slot = libc::c_char::from_ne_bytes([*byte]);
     }
@@ -60,17 +61,7 @@ fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
 
 /// Binds `socket` to `path`, which must not exist.
 pub fn bind(socket: impl AsFd, path: &Path) -> Result<()> {
-    let (address, length) = address(path)?;
-    // SAFETY: the pointer is to a whole sockaddr_un, of which `length`
-    // bytes are the address.
-    let bound = unsafe {
-        libc::bind(
-            socket.as_fd().as_raw_fd(),
-            std::ptr::from_ref(&address).cast(),
-            length,
-        )
-    };
-    check(bound).map(drop)
+    addressed(socket, path, libc::bind)
 }
 
 /// Starts listening on `socket`, with room for `backlog` connections
@@ -83,30 +74,32 @@ pub fn listen(socket: impl AsFd, backlog: i32) -> Result<()> {
 /// Connects `socket` to `path`. On a nonblocking socket a connection that
 /// cannot finish at once fails with `AGAIN` or `INPROGRESS`.
 pub fn connect(socket: impl AsFd, path: &Path) -> Result<()> {
+    addressed(socket, path, libc::connect)
+}
+
+/// Calls `call`, `bind` or `connect`, on `socket` with `path`'s address.
+fn addressed(
+    socket: impl AsFd,
+    path: &Path,
+    call: unsafe extern "C" fn(libc::c_int, *const libc::sockaddr, libc::socklen_t) -> libc::c_int,
+) -> Result<()> {
     let (address, length) = address(path)?;
-    // SAFETY: the pointer is to a whole sockaddr_un, of which `length`
-    // bytes are the address.
-    let connected = unsafe {
-        libc::connect(
-            socket.as_fd().as_raw_fd(),
-            std::ptr::from_ref(&address).cast(),
-            length,
-        )
-    };
-    check(connected).map(drop)
+    let address = std::ptr::from_ref(&address).cast();
+    // SAFETY: `call` is bind or connect, which reads `length` bytes at the
+    // pointer: a whole sockaddr_un, of which `length` bytes are the address.
+    check(unsafe { call(socket.as_fd().as_raw_fd(), address, length) }).map(drop)
 }
 
 /// The effective user ID of the process at the other end of the connected
 /// Unix socket `socket`, as the kernel recorded it.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn peer_uid(socket: impl AsFd) -> Result<u32> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
         gid: 0,
     };
-    let mut length =
-        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(|_| Errno::INVAL)?;
+    let mut length: libc::socklen_t = fit(size_of::<libc::ucred>())?;
     // SAFETY: the pointers are to a whole ucred and its length, which the
     // call fills and updates.
     let got = unsafe {
@@ -139,15 +132,9 @@ pub fn peer_uid(socket: impl AsFd) -> Result<u32> {
 #[repr(C, align(8))]
 struct Control([u8; 64]);
 
-/// `value` as the type a field of a control message has, which differs
-/// between platforms (`usize` on Linux, `u32` on macOS).
-fn fit<T: TryFrom<U>, U>(value: U) -> Result<T> {
-    T::try_from(value).map_err(|_| Errno::INVAL)
-}
-
 /// The size of one descriptor, as the CMSG macros take sizes.
 fn int_size() -> Result<libc::c_uint> {
-    libc::c_uint::try_from(std::mem::size_of::<libc::c_int>()).map_err(|_| Errno::INVAL)
+    fit(size_of::<libc::c_int>())
 }
 
 /// Sends `bytes` on the connected Unix socket `socket` with `fd` attached
@@ -166,7 +153,7 @@ pub fn send_with_fd(socket: impl AsFd, bytes: &[u8], fd: impl AsFd) -> Result<us
     // SAFETY: as above.
     let length = unsafe { libc::CMSG_LEN(int_size()?) };
     // SAFETY: an all-zero msghdr is a valid, empty one.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    let mut message: libc::msghdr = unsafe { zeroed() };
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     // The header and the descriptor fit the buffer, as the SAFETY below says.
@@ -190,7 +177,7 @@ pub fn send_with_fd(socket: impl AsFd, bytes: &[u8], fd: impl AsFd) -> Result<us
     unsafe { std::ptr::write_unaligned(data.cast::<libc::c_int>(), raw) };
     // SAFETY: the message's buffers live for the call.
     let sent = unsafe { libc::sendmsg(socket.as_fd().as_raw_fd(), &message, 0) };
-    usize::try_from(sent).map_err(|_| Errno::last())
+    check_size(sent)
 }
 
 /// Receives into `buffer` from the Unix socket `socket`, and a descriptor
@@ -203,21 +190,21 @@ pub fn recv_with_fd(socket: impl AsFd, buffer: &mut [u8]) -> Result<(usize, Opti
         iov_len: buffer.len(),
     };
     // SAFETY: an all-zero msghdr is a valid, empty one.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    let mut message: libc::msghdr = unsafe { zeroed() };
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.0.as_mut_ptr().cast();
     message.msg_controllen = fit(control.0.len())?;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     let flags = libc::MSG_CMSG_CLOEXEC;
     #[cfg(target_os = "macos")]
     let flags = 0;
     // SAFETY: the message's buffers live for the call, of the sizes given.
     let got = unsafe { libc::recvmsg(socket.as_fd().as_raw_fd(), &mut message, flags) };
-    let got = usize::try_from(got).map_err(|_| Errno::last())?;
+    let got = check_size(got)?;
     // SAFETY: CMSG_LEN computes a size from a number.
-    let empty = usize::try_from(unsafe { libc::CMSG_LEN(0) }).map_err(|_| Errno::INVAL)?;
-    let size = std::mem::size_of::<libc::c_int>();
+    let empty: usize = fit(unsafe { libc::CMSG_LEN(0) })?;
+    let size = size_of::<libc::c_int>();
     let mut received = Vec::new();
     // SAFETY: the kernel filled `msg_controllen` bytes of the control buffer
     // with whole headers: the first is in it, or null.

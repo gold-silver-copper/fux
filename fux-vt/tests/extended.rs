@@ -3,6 +3,7 @@
 //! reported as unhandled; and the opt-in kitty keyboard protocol, identity
 //! replies and reflow on resize.
 
+use fux_vt::keys::encode::OtherKeys;
 use fux_vt::{
     Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Feature, Identity, Options, Parser, Sink, Size,
     Unhandled,
@@ -68,7 +69,6 @@ impl Sink for Record {
                 intermediates,
                 action,
             } => format!("ESC {}{}", text(intermediates), char::from(action)),
-            _ => "?".to_owned(),
         });
     }
 }
@@ -214,11 +214,12 @@ fn a_cluster_joins_across_process_calls_but_not_across_cursor_moves() -> Result 
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process("\u{1f1ef}\x1b[1m\u{1f1f5}".as_bytes())?;
     assert_eq!(cell(&p, 0, 0)?.contents(), "\u{1f1ef}\u{1f1f5}");
-    // Unrelated characters never join, nor anything after a Prepend.
+    // Unrelated characters never join; a Prepend joins what follows it
+    // (UAX #29, GB9b).
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process("ab\u{600}c".as_bytes())?;
     assert_eq!(cell(&p, 0, 1)?.contents(), "b");
-    assert_eq!(cell(&p, 0, 3)?.contents(), "c");
+    assert_eq!(cell(&p, 0, 2)?.contents(), "\u{600}c");
     Ok(())
 }
 
@@ -313,7 +314,7 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
     let mut p = Parser::new(Size::new(5, 20)?, 0)?;
     let record = run(
         &mut p,
-        b"\x1b[>1;2m\x1b[12h\x1b[?1u\x1b*B\x1bn\x1b[2;3:4^\x1b[H\x1b[?25l\x1b[1m\x1b7",
+        b"\x1b[>1;2m\x1b[12h\x1b[?1u\x1b-A\x1b~\x1b[2;3:4^\x1b[H\x1b[?25l\x1b[1m\x1b7",
     )?;
     assert_eq!(
         record.unhandled,
@@ -322,9 +323,10 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
             // SRM: of the ANSI modes, IRM and LNM alone are kept.
             "CSI 12h",
             "CSI ?1u",
-            // G2 is not kept: only G0 and G1 are designated.
-            "ESC *B",
-            "ESC n",
+            // The 96-character sets are not designated, nor shifted into
+            // GR, which UTF-8 leaves no room for.
+            "ESC -A",
+            "ESC ~",
             "CSI 2;3:4^"
         ]
     );
@@ -346,7 +348,7 @@ fn an_identity_answers_device_attributes_and_version_queries() -> Result {
     assert_eq!(
         record.replies,
         [
-            "\x1b[?62;22c",
+            "\x1b[?62;6;21;22;28c",
             "\x1b[>1;500;0c",
             "\x1bP>|ratty 0.5.0\x1b\\",
             "\x1bP>|ratty 0.5.0\x1b\\",
@@ -418,9 +420,14 @@ fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[=3u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 3);
-    // Flags too large for a byte saturate.
+    // Only the spec's five flags are kept ("The progressive enhancement
+    // flags": 1 to 16); other bits mean nothing.
     p.process(b"\x1b[>999u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 255);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 7);
+    p.process(b"\x1b[>32u")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 0);
+    p.process(b"\x1b[=63u")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 31);
     Ok(())
 }
 
@@ -472,15 +479,44 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;2m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(2));
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::All));
     p.process(b"\x1b[>4;0m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     for byte in b"\x1b[>4;1m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(p.screen().modify_other_keys(), Some(1));
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
     p.process(b"\x1b[>4m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
+    // No parameters reset every resource (ctlseqs, XTMODKEYS: "If no
+    // parameters are given, all resources are reset to their initial
+    // values"), modifyOtherKeys among them; 0 alone is modifyKeyboard
+    // ("If Pp is given but Pv is omitted, that resource is reset"), which
+    // leaves modifyOtherKeys, byte by byte too.
+    p.process(b"\x1b[>4;2m")?;
+    let record = run(&mut p, b"\x1b[>m")?;
+    assert_eq!(p.screen().modify_other_keys(), None);
+    assert!(record.unhandled.is_empty());
+    p.process(b"\x1b[>4;2m\x1b[>0m")?;
+    for byte in b"\x1b[>0m" {
+        p.process(&[*byte])?;
+    }
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::All));
+    for byte in b"\x1b[>m" {
+        p.process(&[*byte])?;
+    }
+    assert_eq!(p.screen().modify_other_keys(), None);
+    // `CSI > 4 n` disables it (ctlseqs: "Disable key modifier options",
+    // the resource value -1), until set again; other resources are not
+    // modifyOtherKeys, and `CSI > n` disables modifyFunctionKeys.
+    p.process(b"\x1b[>4;2m\x1b[>4n")?;
+    assert_eq!(p.screen().modify_other_keys(), None);
+    p.process(b"\x1b[>4;1m")?;
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
+    let record = run(&mut p, b"\x1b[>n\x1b[>2n")?;
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
+    assert_eq!(record.unhandled, ["CSI >0n", "CSI >2n"]);
+    p.process(b"\x1b[>4n")?;
     // Other resources are not modifyOtherKeys, and not SGR either.
     let record = run(&mut p, b"\x1b[>1;2mx")?;
     assert_eq!(record.unhandled, ["CSI >1;2m"]);
@@ -579,19 +615,28 @@ fn reflow_keeps_a_cursor_past_the_text_on_its_row() -> Result {
     Ok(())
 }
 
-/// DL and IL move rows across the region's top: the row above it, which
-/// went on into the row that moved, no longer does, so reflow joins it to
-/// nothing that follows.
+/// DL and IL move rows across the region's top, and the row above it
+/// keeps its soft wrap, as xterm keeps it (`fux-vt-compare replay
+/// --engines xterm --size 2x1 '\e[999Cab\e[L'`; soft wrap is xterm's own
+/// notion): reflow then joins it to the row that moved up, as Ghostty,
+/// alacritty and wezterm join them (`replay --engines all --size 4x6
+/// 'abcdefgh\r\nxyz\e[2;1H\e[M' resize:4x12`).
 #[test]
-fn deleting_or_inserting_lines_ends_the_wrap_above() -> Result {
+fn deleting_or_inserting_lines_keeps_the_wrap_above() -> Result {
     let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
     p.process(b"abcdefgh\r\nxyz\x1b[2;1H\x1b[M")?;
-    assert!(!p.screen().row_wrapped(0));
+    assert!(p.screen().row_wrapped(0));
     p.resize(Size::new(4, 12)?)?;
-    assert_eq!(lines(&p), ["abcdef", "xyz", "", ""]);
+    assert_eq!(lines(&p), ["abcdefxyz", "", "", ""]);
     let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
     p.process(b"abcdefgh\x1b[2;1H\x1b[L")?;
-    assert!(!p.screen().row_wrapped(0));
+    assert!(p.screen().row_wrapped(0));
+    // Scrolling down, the row moved to the bottom margin keeps its own,
+    // as xterm keeps it (`--size 6x1 '~!@#\e[3;5r\e[10H\e[2T'`).
+    let mut p = Parser::new(Size::new(6, 1)?, 0)?;
+    p.process(b"~!@#\x1b[3;5r\x1b[10H\x1b[2T")?;
+    let wrapped: Vec<bool> = (0..6).map(|y| p.screen().row_wrapped(y)).collect();
+    assert_eq!(wrapped, [true, true, false, false, true, false]);
     Ok(())
 }
 
@@ -814,8 +859,9 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
         cell: Some((4, 8)),
         sixel: true,
     });
-    // 6 pixels wide and 12 high (two bands): 2 cells by 2, at row 1 col 3.
-    p.process(b"\r\n   \x1bPq#1;2;100;0;0!6~-!6~\x1b\\")?;
+    // 6 pixels wide and 12 high (two bands of square pixels): 2 cells by 2,
+    // at row 1 col 3.
+    p.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\")?;
     let shown: Vec<_> = p
         .screen()
         .pictures()
@@ -838,6 +884,80 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
         0,
         "text over a cell takes it away"
     );
+    Ok(())
+}
+
+/// A copy reads a picture's cells as a reader sees them, as blanks
+/// (`CellRef::shown`), not as the placeholder that marks them.
+#[test]
+fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
+    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // 2 cells by 2 at row 1 col 3, and a `z` after them on its first row.
+    p.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\\x1b[2;8Hz")?;
+    assert_eq!(p.screen().pictures().count(), 1);
+    let copied = p.screen().window().text((1, 0), (1, 9), 100, 100)?;
+    assert_eq!(copied, "       z");
+    Ok(())
+}
+
+/// A picture's size, and one of its pixels.
+type Drawn = ((u32, u32), Option<[u8; 4]>);
+
+/// The size, and the pixel at `x`, `y`, of the picture `sixel` draws.
+fn sixel_pixel(sixel: &str, (x, y): (u32, u32)) -> Result<Drawn> {
+    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    p.process(format!("\x1bP{sixel}\x1b\\").as_bytes())?;
+    let shown = p.screen().pictures().next().ok_or("no picture")?;
+    let picture = shown.picture;
+    Ok(((picture.width, picture.height), picture.pixel(x, y)))
+}
+
+/// DEC STD 070, 7.1 and 8.1.2: a pixel is as tall, to its width, as P1's
+/// macro says (2:1 by default, 4.5:1 for 2, 1:1 for 9), or as the raster
+/// attributes' Pan:Pad say, omitted ones 1; a picture's pixels are square,
+/// so a sixel of tall pixels takes that many rows, of wide ones columns.
+/// Raster attributes after a sixel or a positioning command are ignored.
+#[test]
+fn a_sixel_pixel_has_the_aspect_p1_or_the_raster_attributes_give() -> Result {
+    let size = |sixel: &str| sixel_pixel(sixel, (0, 0)).map(|(size, _)| size);
+    assert_eq!(size("q~")?, (1, 12));
+    assert_eq!(size("0;1;0q~")?, (1, 12));
+    assert_eq!(size("2q~")?, (1, 27));
+    assert_eq!(size("9q~")?, (1, 6));
+    assert_eq!(size("q\"1;1~")?, (1, 6));
+    assert_eq!(size("q\"3;1~")?, (1, 18));
+    assert_eq!(size("q\";0~")?, (1, 6));
+    assert_eq!(size("9q\"1;2~")?, (2, 6));
+    assert_eq!(size("q~\"1;1~")?, (2, 12));
+    assert_eq!(size("q$\"1;1~")?, (1, 12));
+    Ok(())
+}
+
+/// DEC STD 070, 7.2: P2 1 leaves the pixels no sixel sets as they are
+/// (clear); 0 and 2 set them to the background, colour register 0 here,
+/// over the picture and the extent the raster attributes give (8.1.2),
+/// which sixels may draw past: it is no clip.
+#[test]
+fn sixel_background_select_and_extent() -> Result {
+    let red = Some([255, 0, 0, 255]);
+    // A red pixel at 0, 1 of a picture 4 by 6.
+    let picture = "q\"1;1;4;6#1;2;100;0;0A";
+    let at = |p2: &str, x, y| sixel_pixel(&picture.replacen('q', p2, 1), (x, y));
+    assert_eq!(at("0;1q", 0, 0)?, ((4, 6), Some([0; 4])));
+    assert_eq!(at("0;1q", 3, 5)?, ((4, 6), Some([0; 4])));
+    assert_eq!(at("0;1q", 0, 1)?, ((4, 6), red));
+    for p2 in ["q", "0;0q", "0;2q"] {
+        assert_eq!(at(p2, 3, 5)?, ((4, 6), Some([0, 0, 0, 255])), "{p2}");
+        assert_eq!(at(p2, 0, 1)?, ((4, 6), red), "{p2}");
+    }
+    let blue = Some([0, 0, 255, 255]);
+    let defined = sixel_pixel("0;2q\"1;1;2;6#0;2;0;0;100#1;2;100;0;0A", (1, 0))?;
+    assert_eq!(defined, ((2, 6), blue), "register 0 as it ends");
+    assert_eq!(sixel_pixel("0;1q\"1;1;1;1!3~", (2, 5))?.0, (3, 6));
     Ok(())
 }
 

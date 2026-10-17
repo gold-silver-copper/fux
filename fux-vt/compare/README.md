@@ -142,7 +142,7 @@ libvterm, avt and wezterm, all in this process and fast.
 - **xterm.js, tmux and xterm don't vote by default.** They run in
   processes of their own, about 20 times slower. Add them with `--engines
   panel,xterm.js` and so on. `cases` uses every engine.
-- **The panel can be wrong.** Where it splits, xterm and the references
+- **The panel can be wrong.** Where it splits, the standards and xterm
   decide: such a family is "decided" and checked by `verdicts` (see
   "Families").
 
@@ -187,7 +187,7 @@ differ from xterm's.
 | vt100 | vt100 `=0.16.2` | no | fux-vt's ancestor; a speed baseline |
 | xterm.js | `@xterm/headless` 6.0.0 with addon-unicode-graphemes 0.4.0, one Node process (`node/engine.mjs`) | on request | links read from its core, not the public API |
 | tmux | the installed tmux: a private server, one session per terminal, read with `capture-pane` | on request | every step synced by DA1, which no family sends |
-| xterm | the installed xterm under one Xvfb per run, read by printing every page through `printerCommand` | on request | decides most disputed families (`verdicts`) and the corpus; abstains from a case with SGR 58, which it lacks |
+| xterm | the installed xterm (patch 397 or later, for `printRawChars`; CI builds 411) under one Xvfb per run, read by printing every page through `printerCommand` | on request | decides most disputed families (`verdicts`) and the corpus; abstains from a case with SGR 58, which it lacks |
 
 tmux and xterm share the pane program, syncing and SGR decoding in
 `src/engines/pane.rs`.
@@ -278,19 +278,25 @@ The random cases come from families of sequences (`src/families.rs`).
 
 - **Agree** (`Status::Agree`): no seed tried finds a case where the panel
   outvotes fux-vt. `run` checks these by default.
-- **Decided** (`Status::Decided`): the engines split, and fux-vt follows a
-  recorded choice. That choice is what the references say
-  ([`references/README.md`](../../references/README.md) says which settles
-  what), or what xterm does where it departs from them (fux-vt's
-  [README](../README.md), "Departures from the references") or they are
-  silent. Its reason (`why`) names the reference and where the engines
-  stand, and `by` names the engines that decide it: xterm for the VT
-  families, and for a feature xterm lacks (OSC 133), the engines that follow
-  the feature's spec. The default panel's majority is often the side
-  fux-vt chose against, so `run` leaves these out. `verdicts` runs each
-  family's named cases, then random cases from it, beside its deciding
-  engines. `cases` fails a named case of a decided family where those
-  engines outvote fux-vt.
+- **Decided** (`Status::Decided`): the engines split, and a source
+  settles it (`authority`): a standard's section where it speaks
+  (`Authority::Standard`), else xterm 411 (`Authority::Xterm`), as
+  fux-vt's [README](../README.md) orders them. Its reason (`why`) says
+  where the engines stand, and `by` names the engines it is checked
+  beside: xterm for the VT families, and for a feature xterm lacks (OSC
+  133), the engines that follow the feature's spec. A family a standard
+  decides names the fux-vt test whose doc comment cites the section;
+  `by` is empty where no engine follows the standard all through (on
+  screens of one or two columns xterm departs from DEC STD 070), and the
+  test is then the check. `verdicts` runs a standard's test alone (`cargo
+  test --exact`), for every family it decides, and the test must pass. A
+  family xterm decides is checked by xterm agreeing. One whose check
+  can't be made (the test missing, citing something else or failing,
+  xterm not among `by` or not run) fails. The default
+  panel's majority is often the side the source decides against, so
+  `run` leaves these out. `verdicts` runs each family's named cases, then
+  random cases from it, beside `by`. `cases` fails a named case of a
+  decided family where those engines outvote fux-vt.
 - **Differs** (`Status::Differs`): the panel splits on a documented fux-vt
   choice, or on something the engines agree on for reasons of their own,
   or fux-vt has a defect still to fix. The reason says which.
@@ -580,8 +586,9 @@ libghostty-vt's. Both terminals are put in the same modes by the same bytes:
 every mouse tracking mode in every encoding, focus reporting and bracketed
 paste on and off, normal and application cursor keys with modifyOtherKeys 2
 and each kitty flag set 1 to 31. Then each encoder reads the modes from its
-own terminal (`Screen::encode_key`, `encode_mouse`, `encode_focus`,
-`encode_paste`; ghostty's `set_options_from_terminal`) and the bytes are
+own terminal (`Screen::key_mode` for `key_bytes`, `encode_mouse`,
+`focus_report`, the bracketed paste mode for `paste`; ghostty's
+`set_options_from_terminal`) and the bytes are
 compared:
 
 - keys: Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, the page

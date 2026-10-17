@@ -70,15 +70,10 @@ impl Hyperlink {
     }
     /// What the link costs its grid.
     fn cost(&self) -> usize {
-        cost(&self.uri, self.id.as_deref())
+        (self.uri.len())
+            .saturating_add(self.id.as_deref().map_or(0, str::len))
+            .saturating_add(LINK_COST)
     }
-}
-
-/// What a link of `uri` and `id` costs its grid.
-fn cost(uri: &str, id: Option<&str>) -> usize {
-    uri.len()
-        .saturating_add(id.map_or(0, str::len))
-        .saturating_add(LINK_COST)
 }
 
 /// A row's links: runs of cells with one link each, left to right and
@@ -419,8 +414,8 @@ pub(crate) fn parse(payload: &[u8]) -> Option<(&str, Option<&str>)> {
     {
         return None;
     }
-    let uri = std::str::from_utf8(uri).ok()?;
-    let id = id.map(std::str::from_utf8).transpose().ok()?;
+    let uri = str::from_utf8(uri).ok()?;
+    let id = id.map(str::from_utf8).transpose().ok()?;
     Some((uri, id))
 }
 

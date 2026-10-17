@@ -25,9 +25,8 @@ word runs. What is left at the end is printed, a value a line. An action
 answers once its pane settles (30s at most, as a wait waits: the server's
 `wait-seconds`; `SECS timeout` changes it, `0 timeout` answers at once). A
 failure prints `fux: CODE: MESSAGE` on stderr, with how the word is used
-(one of fux's own); an action's or a wait's status is the exit status (3
-exited first, 4 closed, 7 the program is blocked reading its terminal and
-the text has not come, 124 still busy), any other failure 1. Each `fux` is a fresh program.
+(one of fux's own); the exit statuses: `fux help-agents`, under Status.
+Each `fux` is a fresh program.
 
 Most steps have one of these shapes (UPPER = what you fill in):
 
@@ -35,7 +34,7 @@ Most steps have one of these shapes (UPPER = what you fill in):
   fux %2 keys INPUT send-keys           type: str T text, str Enter key, …; answers as run does
   fux %3 str 'make test' line           a shell command: answers `%3 reading · done 0` and its output
   fux %2 opts [WAIT] wait               settle, or wait for str T wait-text, wait-exit, …
-  fux %2 opts READ capture              read once settled: 100 history, marks, json, …
+  fux %2 opts READ capture              read once settled: 100 history, marks, …; then json
   fux %2 str FIELD get                  one value: state, exited, pid, …
 
   fux opts str 'htop -d 5' command run  start htop
@@ -132,9 +131,6 @@ pub fn explain(name: &str) -> Option<String> {
                 }
             }
         }
-        if let Some(example) = example(name) {
-            out.push_str(&format!("\n  {example}\n"));
-        }
         return Some(out);
     }
     if let Some((name, effect, about, code)) = library().into_iter().find(|(n, ..)| *n == name) {
@@ -153,51 +149,43 @@ pub fn explain(name: &str) -> Option<String> {
     Some(format!("{name}  {shape}: {about}\n"))
 }
 
+/// A wait's words, which every word that waits takes, and `marks` for the
+/// screen it prints.
+pub(crate) const WAITING: &str = "wait-text wait-gone wait-exit wait-bell timeout marks";
+
 /// The words that build what a word takes, its options or its input: the
-/// words each uses, which `explain` prints and the word refuses others of.
-/// Words that wait take a wait's words, and `marks` for the screen it
-/// prints.
-pub(crate) const OPTIONS: [(&str, &str); 9] = [
+/// words each uses, which `explain` prints and the word refuses others of;
+/// and whether it waits, taking a wait's words too (`WAITING`).
+pub(crate) const OPTIONS: [(&str, &str, bool); 9] = [
     (
         "run",
-        "name size cwd env command program arg in log-to id \
-         wait-text wait-gone wait-exit wait-bell timeout marks",
+        "name size cwd env command program arg in log-to id",
+        true,
     ),
     (
         "split",
-        "horizontal vertical cwd env command program arg typed id \
-         wait-text wait-gone wait-exit wait-bell timeout marks",
+        "horizontal vertical cwd env command program arg typed id",
+        true,
     ),
-    ("new-tab", "name size cwd env typed in id"),
-    ("new-workspace", "name size cwd env typed id"),
-    (
-        "respawn",
-        "kill-first env command program arg wait-text wait-gone wait-exit wait-bell timeout marks",
-    ),
+    ("new-tab", "name size cwd env typed in id", false),
+    ("new-workspace", "name size cwd env typed id", false),
+    ("respawn", "kill-first env command program arg", true),
     (
         "capture",
         "history all-history joined full styles marks main-screen alt-screen last-output \
-         rows cols json timeout",
+         rows cols timeout",
+        false,
     ),
-    (
-        "wait",
-        "wait-text wait-gone wait-exit wait-bell timeout marks",
-    ),
-    (
-        "send-keys",
-        "text key paste paste-file times wait-text wait-gone wait-exit wait-bell timeout marks",
-    ),
-    (
-        "send-mouse",
-        "wait-text wait-gone wait-exit wait-bell timeout marks",
-    ),
+    ("wait", "", true),
+    ("send-keys", "text key paste paste-file times", true),
+    ("send-mouse", "", true),
 ];
 
-/// The options `name` takes, if it takes any.
-pub(crate) fn options(name: &str) -> Option<std::str::SplitWhitespace<'static>> {
-    (OPTIONS.iter())
-        .find(|(word, _)| *word == name)
-        .map(|(_, takes)| takes.split_whitespace())
+/// The options `name` takes, if it takes any: its own, then a wait's.
+pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> {
+    let (_, takes, waits) = OPTIONS.iter().find(|(word, ..)| *word == name)?;
+    let waiting = if *waits { WAITING } else { "" };
+    Some(takes.split_whitespace().chain(waiting.split_whitespace()))
 }
 
 /// An example of a word in use, as a command line.
@@ -280,8 +268,8 @@ mod tests {
             assert!(explained.contains(&format!("options, {on}")), "{explained}");
         }
         // Each option is a word, which explain lists.
-        for (name, takes) in OPTIONS {
-            for option in takes.split_whitespace() {
+        for (name, ..) in OPTIONS {
+            for option in options(name).into_iter().flatten() {
                 assert!(WORDS.iter().any(|w| w.name == option), "{name} {option}");
             }
         }

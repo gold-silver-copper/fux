@@ -1,6 +1,7 @@
 //! Sixel graphics (DEC STD 070, the VT340's; xterm's ctlseqs, "Sixel
 //! Graphics"): the data of a `DCS P1 ; P2 ; P3 q … ST`, decoded as it
-//! comes into a picture of RGBA pixels. Pixels no sixel paints stay clear.
+//! comes into a picture of RGBA pixels, square ones. Pixels no sixel paints
+//! stay clear, or take the background, as P2 says.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -9,6 +10,9 @@ use std::sync::Arc;
 pub const MAX_SIDE: u32 = 4096;
 /// The most pixels a picture may have in all, which bounds its memory.
 const MAX_PIXELS: usize = 4096 * 2160;
+/// The pixel aspect ratio, tall to wide in hundredths, each macro parameter
+/// P1 selects (DEC STD 070, 7.1).
+const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 100];
 
 /// A picture a program drew: its size in pixels, and its pixels, RGBA, row
 /// by row from the top.
@@ -77,11 +81,21 @@ pub(crate) struct Decoder {
     pixels: Vec<u8>,
     /// The data drew past what a picture may hold: it ends with nothing.
     spoilt: bool,
+    /// A pixel's height to its width.
+    aspect: (u32, u32),
+    /// Pixels no sixel sets take the background (P2 0 or 2), else stay clear.
+    background: bool,
+    /// A sixel or a positioning command came: raster attributes are ignored.
+    begun: bool,
 }
 
 impl Decoder {
-    pub(crate) fn new() -> Box<Decoder> {
-        Box::new(Decoder {
+    /// A decoder for the data of `DCS P1 ; P2 ; P3 q`. P3, the grid size,
+    /// gets the device's grid that fits it best (DEC STD 070, 7.3 and its
+    /// terminology): a screen has one, its pixel, so P3 changes nothing.
+    pub(crate) fn new(p1: u16, p2: u16) -> Box<Self> {
+        let tall = MACRO_ASPECT.get(usize::from(p1)).copied().unwrap_or(200);
+        Box::new(Self {
             palette: vt340_palette(),
             colour: 0,
             command: Command::None,
@@ -93,12 +107,17 @@ impl Decoder {
             height: 0,
             pixels: Vec::new(),
             spoilt: false,
+            aspect: (tall, 100),
+            background: p2 != 1,
+            begun: false,
         })
     }
 
-    /// Reads one byte of the data.
+    /// Reads one byte of the data. Format effectors, SPACE and DELETE are
+    /// ignored in it (DEC STD 070, 8.1 and its coding section): one inside a
+    /// command does not end it.
     pub(crate) fn push(&mut self, byte: u8) {
-        if self.spoilt {
+        if self.spoilt || matches!(byte, 0x08..=0x0d | b' ' | 0x7f) {
             return;
         }
         match byte {
@@ -128,6 +147,7 @@ impl Decoder {
             0x3f..=0x7e => self.sixel(byte.wrapping_sub(0x3f), repeat.unwrap_or(1).max(1)),
             _ => {}
         }
+        self.begun |= matches!(byte, b'$' | b'-' | 0x3f..=0x7e);
     }
 
     fn begin(&mut self, command: Command) {
@@ -142,18 +162,43 @@ impl Decoder {
         let command = std::mem::replace(&mut self.command, Command::None);
         let [a, b, c, d, e] = self.numbers;
         match command {
-            Command::None | Command::Raster => None,
+            Command::None => None,
+            Command::Raster => {
+                // Omitted aspect numbers are 1; the extent is the least
+                // size, not a clip, and "does not limit the number of
+                // pixels a device may image" (DEC STD 070, 8.1.2): past
+                // what a picture may hold, it is cut to that, and only
+                // data drawn spoils a picture.
+                if !self.begun {
+                    self.aspect = (a.max(1), b.max(1));
+                    let (right, bottom) = self.scaled(c, d);
+                    let right = right.min(MAX_SIDE);
+                    let most = u32::try_from(MAX_PIXELS)
+                        .unwrap_or(u32::MAX)
+                        .checked_div(right);
+                    let bottom = bottom.min(MAX_SIDE).min(most.unwrap_or(MAX_SIDE));
+                    self.spoilt = !self.grow(right, bottom);
+                }
+                None
+            }
             Command::Repeat => Some(a.min(MAX_SIDE)),
             Command::Colour => {
-                self.colour = usize::try_from(a).unwrap_or(0).min(255);
-                if self.count >= 4 {
-                    let rgb = match b {
-                        1 => hls(c, d, e),
-                        _ => [percent(c), percent(d), percent(e)],
-                    };
-                    if let Some(slot) = self.palette.get_mut(self.colour) {
-                        *slot = rgb;
+                // A definition in no coordinate system DEC STD 070 (8.1.3)
+                // lists, or past its ranges, is ignored whole, the colour's
+                // selection too; coordinates left out are 0.
+                let rgb = match (self.count, b) {
+                    (0, _) => None,
+                    (_, 1) if c <= 360 && d <= 100 && e <= 100 => Some(hls(c, d, e)),
+                    (_, 2) if c <= 100 && d <= 100 && e <= 100 => {
+                        Some([percent(c), percent(d), percent(e)])
                     }
+                    _ => return None,
+                };
+                self.colour = usize::try_from(a).unwrap_or(0).min(255);
+                if let Some(rgb) = rgb
+                    && let Some(slot) = self.palette.get_mut(self.colour)
+                {
+                    *slot = rgb;
                 }
                 None
             }
@@ -167,8 +212,9 @@ impl Decoder {
         if bits != 0 {
             // Down to its lowest pixel painted: the highest bit set.
             let lowest = 6u32.saturating_sub(bits.leading_zeros().saturating_sub(2));
-            let bottom = self.y.saturating_add(lowest);
-            if !self.grow(right, bottom) {
+            let (left, _) = self.scaled(self.x, 0);
+            let (end, bottom) = self.scaled(right, self.y.saturating_add(lowest));
+            if !self.grow(end, bottom) {
                 self.spoilt = true;
                 return;
             }
@@ -178,15 +224,35 @@ impl Decoder {
                     continue;
                 }
                 let y = self.y.saturating_add(bit);
-                for x in self.x..right {
-                    let at = offset(x, y, self.width).unwrap_or(usize::MAX);
-                    if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
-                        crate::copy_from(pixel, &[r, g, b, 255]);
+                let (_, top) = self.scaled(0, y);
+                let (_, below) = self.scaled(0, y.saturating_add(1));
+                for y in top..below {
+                    for x in left..end {
+                        let at = offset(x, y, self.width).unwrap_or(usize::MAX);
+                        if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
+                            crate::copy_from(pixel, &[r, g, b, 255]);
+                        }
                     }
                 }
             }
         }
         self.x = right.min(MAX_SIDE);
+    }
+
+    /// Where grid position `x`, `y` is in the picture's square pixels: a
+    /// pixel taller than wide takes as many rows, one wider as many columns.
+    fn scaled(&self, x: u32, y: u32) -> (u32, u32) {
+        let (tall, wide) = self.aspect;
+        let by = |n: u32, times: u32, over: u32| {
+            let n = u64::from(n).saturating_mul(u64::from(times));
+            let n = n.checked_div(u64::from(over)).unwrap_or(0);
+            u32::try_from(n).unwrap_or(u32::MAX)
+        };
+        if tall >= wide {
+            (x, by(y, tall, wide))
+        } else {
+            (by(x, wide, tall), y)
+        }
     }
 
     /// Makes room for pixels to `right` and `bottom`, keeping those drawn;
@@ -224,6 +290,14 @@ impl Decoder {
         if self.spoilt || self.width == 0 || self.height == 0 {
             return None;
         }
+        // The background is colour register 0, as it ends (DEC STD 070,
+        // 7.2, leaves it to the device).
+        let [r, g, b] = self.palette.first().copied().unwrap_or([0; 3]);
+        for pixel in self.pixels.as_chunks_mut::<4>().0 {
+            if self.background && pixel[3] == 0 {
+                *pixel = [r, g, b, 255];
+            }
+        }
         Some(Arc::new(Picture {
             width: self.width,
             height: self.height,
@@ -234,36 +308,25 @@ impl Decoder {
 
 /// A sixel colour's share, 0 to 100, as a byte.
 fn percent(n: u32) -> u8 {
-    let scaled = n.min(100).saturating_mul(255).checked_div(100).unwrap_or(0);
+    let scaled = n.saturating_mul(255) / 100;
     u8::try_from(scaled).unwrap_or(u8::MAX)
 }
 
 /// A colour given as hue (0 to 360, blue at 0), lightness and saturation
 /// (0 to 100), as the VT340 reads them, worked in thousandths.
 fn hls(hue: u32, lightness: u32, saturation: u32) -> [u8; 3] {
-    let (l, s) = (
-        i64::from(lightness.min(100)),
-        i64::from(saturation.min(100)),
-    );
+    let (l, s) = (i64::from(lightness), i64::from(saturation));
     // The VT340's hue 0 is blue; the usual wheel's 0 is red, 240° on.
-    let h = i64::from(hue.checked_rem(360).unwrap_or(0)).saturating_add(240);
-    let h = h.checked_rem(360).unwrap_or(0);
+    let h = i64::from(hue % 360).saturating_add(240) % 360;
     // Chroma, and the second-largest channel, both of 0 to 100_000.
     let chroma = 100i64
         .saturating_sub(l.saturating_mul(2).saturating_sub(100).abs())
         .saturating_mul(s)
         .saturating_mul(10);
-    let sector = h.checked_div(60).unwrap_or(0);
-    let within = h
-        .checked_rem(120)
-        .unwrap_or(0)
-        .saturating_mul(1000)
-        .checked_div(60)
-        .unwrap_or(0);
-    let second = chroma
-        .saturating_mul(1000i64.saturating_sub(within.saturating_sub(1000).abs()))
-        .checked_div(1000)
-        .unwrap_or(0);
+    let sector = h / 60;
+    let within = (h % 120).saturating_mul(1000) / 60;
+    let second =
+        chroma.saturating_mul(1000i64.saturating_sub(within.saturating_sub(1000).abs())) / 1000;
     let (r, g, b) = match sector {
         0 => (chroma, second, 0),
         1 => (second, chroma, 0),
@@ -272,15 +335,9 @@ fn hls(hue: u32, lightness: u32, saturation: u32) -> [u8; 3] {
         4 => (second, 0, chroma),
         _ => (chroma, 0, second),
     };
-    let base = l
-        .saturating_mul(1000)
-        .saturating_sub(chroma.checked_div(2).unwrap_or(0));
+    let base = l.saturating_mul(1000).saturating_sub(chroma / 2);
     let byte = |c: i64| {
-        let v = c
-            .saturating_add(base)
-            .saturating_mul(255)
-            .checked_div(100_000)
-            .unwrap_or(0);
+        let v = c.saturating_add(base).saturating_mul(255) / 100_000;
         u8::try_from(v.clamp(0, 255)).unwrap_or(0)
     };
     [byte(r), byte(g), byte(b)]
@@ -324,19 +381,17 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     }
     // Colours as they are if there are few enough, else to the cube.
     let at = |px: u32, py: u32| picture.pixel(x.saturating_add(px), y.saturating_add(py));
-    let mut seen: Vec<[u8; 3]> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     let mut exact = true;
     'scan: for py in 0..height {
         for px in 0..width {
             if let Some([r, g, b, a]) = at(px, py)
                 && a >= 128
-                && !seen.contains(&[r, g, b])
+                && seen.insert([r, g, b])
+                && seen.len() > 256
             {
-                if seen.len() == 256 {
-                    exact = false;
-                    break 'scan;
-                }
-                seen.push([r, g, b]);
+                exact = false;
+                break 'scan;
             }
         }
     }
@@ -355,8 +410,9 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
             .unwrap_or(0);
         u8::try_from(n).unwrap_or(u8::MAX)
     };
+    // In order, for `index` to find a colour by halves.
     let palette: Vec<[u8; 3]> = if exact {
-        seen
+        seen.into_iter().collect()
     } else {
         // In `cube`'s order: blue fastest, then green, then red.
         let mut levels = Vec::new();
@@ -371,7 +427,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     };
     let index = |rgb: [u8; 3]| -> usize {
         if exact {
-            palette.iter().position(|c| *c == rgb).unwrap_or(0)
+            palette.binary_search(&rgb).unwrap_or(0)
         } else {
             cube(rgb)
         }
@@ -380,39 +436,32 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     // the size, square pixels.
     let _ = write!(out, "\x1bP0;1;0q\"1;1;{width};{height}");
     for (i, [r, g, b]) in palette.iter().enumerate() {
-        let share = |c: u8| {
-            u32::from(c)
-                .saturating_mul(100)
-                .checked_div(255)
-                .unwrap_or(0)
-        };
+        let share = |c: u8| u32::from(c).saturating_mul(100) / 255;
         let _ = write!(out, "#{i};2;{};{};{}", share(*r), share(*g), share(*b));
     }
-    let colours = palette.len();
-    let mut band = vec![0u8; usize::try_from(width).unwrap_or(0)];
+    // Each colour's sixels of a band, set in one walk over its pixels.
+    let columns = usize::try_from(width).unwrap_or(0);
+    let mut bands = vec![vec![0u8; columns]; palette.len()];
     let mut top = 0;
     while top < height {
-        // Each colour of the band in turn, from its left, `$` between.
-        let mut first = true;
-        for colour in 0..colours {
-            let mut any = false;
-            for (px, sixel) in (0..width).zip(band.iter_mut()) {
-                *sixel = 0;
-                for bit in 0..6u32 {
-                    let py = top.saturating_add(bit);
-                    if py >= height {
-                        break;
-                    }
-                    if let Some([r, g, b, a]) = at(px, py)
-                        && a >= 128
-                        && index([r, g, b]) == colour
-                    {
-                        *sixel |= 1 << bit;
-                        any = true;
-                    }
+        bands.iter_mut().for_each(|band| band.fill(0));
+        for (px, column) in (0..width).zip(0..) {
+            for bit in 0..6u32 {
+                let py = top.saturating_add(bit);
+                if py < height
+                    && let Some([r, g, b, a]) = at(px, py)
+                    && a >= 128
+                    && let Some(band) = bands.get_mut(index([r, g, b]))
+                    && let Some(sixel) = band.get_mut(column)
+                {
+                    *sixel |= 1 << bit;
                 }
             }
-            if !any {
+        }
+        // Each colour of the band in turn, from its left, `$` between.
+        let mut first = true;
+        for (colour, band) in bands.iter().enumerate() {
+            if band.iter().all(|sixel| *sixel == 0) {
                 continue;
             }
             if !first {
@@ -442,7 +491,8 @@ mod tests {
     use super::*;
 
     fn decode(data: &[u8]) -> Option<Arc<Picture>> {
-        let mut decoder = Decoder::new();
+        // P1 9: square pixels; P2 1: pixels no sixel sets stay clear.
+        let mut decoder = Decoder::new(9, 1);
         data.iter().for_each(|b| decoder.push(*b));
         decoder.finish()
     }
@@ -512,6 +562,63 @@ mod tests {
         // 200 is red's step 4 (204, 80%); 100 green's 2 (85, 33%: 84); 50
         // blue's 1 (51, 20%).
         assert_eq!(pixel(3), Some([204, 84, 51, 255]));
+    }
+
+    /// The colour at the picture's top left, of `data`.
+    fn first(data: &[u8]) -> Option<[u8; 4]> {
+        decode(data).and_then(|p| p.pixel(0, 0))
+    }
+
+    /// DEC STD 070, 8.1.3: a Pu other than 1 (HLS) or 2 (RGB), or a
+    /// coordinate past its range (hue 360, the rest 100), makes "the entire
+    /// color specifier command" ignored, "including the color select
+    /// parameter, Pc"; omitted coordinates are 0.
+    #[test]
+    fn a_colour_specifier_out_of_range_is_ignored_whole() {
+        let red = Some([255, 0, 0, 255]);
+        let blue = Some([0, 0, 255, 255]);
+        // Colour 1 red; then ignored, so it stays red.
+        for bad in [
+            "#1;0;0;0;100",
+            "#1;3;0;0;100",
+            "#1;2;0;0;101",
+            "#1;1;361;50;100",
+        ] {
+            assert_eq!(
+                first(format!("#1;2;100;0;0{bad}#1~").as_bytes()),
+                red,
+                "{bad}"
+            );
+        }
+        // Ignored, it selects nothing: the colour selected before paints.
+        assert_eq!(first(b"#2;2;0;0;100#2#3;2;200;0;0~"), blue);
+        // Hue 360 and an omitted blue are in range.
+        assert_eq!(first(b"#1;2;100;0#1~"), red);
+        assert_eq!(first(b"#1;1;360;50;100#1~"), blue);
+    }
+
+    /// DEC STD 070, 8.1: "Format Effectors (0/8 to 0/13) and SPACE (2/0)
+    /// are ignored within sixel control strings", and DELETE too (its
+    /// coding section): one inside a colour command does not end it.
+    #[test]
+    fn format_effectors_space_and_delete_are_ignored() {
+        let blue = Some([0, 0, 255, 255]);
+        for gap in ["\n", "\r", "\t", "\x08", "\x0b", "\x0c", " ", "\x7f"] {
+            let data = format!("#1;2;0;{gap}0;100#1~");
+            assert_eq!(first(data.as_bytes()), blue, "{gap:?}");
+        }
+    }
+
+    /// DEC STD 070, 8.1.2: the raster attributes' extent "does not limit
+    /// the number of pixels a device may image". One past what a picture
+    /// may hold, a side or the pixels, spoils none: the data decides.
+    #[test]
+    fn an_extent_past_the_limits_spoils_no_picture() {
+        let red = Some([255, 0, 0, 255]);
+        for extent in ["\"1;1;5000;10", "\"1;1;10;5000", "\"1;1;4000;4000"] {
+            let data = format!("{extent}#1;2;100;0;0~");
+            assert_eq!(first(data.as_bytes()), red, "{extent}");
+        }
     }
 
     /// Data that would draw past what a picture may hold makes none.

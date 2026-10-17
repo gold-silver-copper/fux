@@ -3,7 +3,7 @@
 //! A server saves its whole session so, the ids asked for too, and a server
 //! started after a crash or a reboot runs it (through a client, as fuxth
 //! always runs) to bring the session back with the ids it had.
-use super::{MAIN, Session};
+use super::Session;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
 use crate::layout::{Axis, Split, Tree};
@@ -15,40 +15,37 @@ impl Session {
     /// as a fuxth program; with `ids`, the ids to ask for, as a saved
     /// session keeps them.
     pub(crate) fn dump_layout(&self, only: Option<AnyRef>, ids: bool) -> String {
-        let only = match only {
-            Some(AnyRef::Pane(pane)) => self.locate(pane).map(|(_, tab)| AnyRef::Tab(tab)),
-            other => other,
-        };
         let mut out = String::from("# fux: running this makes it again\n");
-        let whole = !matches!(only, Some(AnyRef::Tab(_)));
+        // A tab's or a pane's is its tab alone, not its workspace's part.
+        let whole = match only {
+            None | Some(AnyRef::Workspace(_)) => true,
+            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => false,
+        };
         for ws in &self.workspaces {
-            if matches!(only, Some(AnyRef::Workspace(w)) if w != ws.id) {
-                continue;
-            }
             // The first tab written opens its workspace: one before it may
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
-            for (index, tab) in ws.tabs().iter().enumerate() {
-                if matches!(only, Some(AnyRef::Tab(t)) if t != tab.id) {
+            for tab in ws.tabs() {
+                if !self.takes_in(only, ws.id, tab.id) {
                     continue;
                 }
                 let Some(root) = tab.root() else {
                     continue;
                 };
-                self.dump_tab(ws, (index, tab), root, (whole, opens, ids), &mut out);
+                self.dump_tab(ws, tab, root, (whole, opens, ids), &mut out);
                 opens = false;
             }
         }
         out
     }
 
-    /// The lines that make tab `tab`, the `index`th of `ws`, and its panes:
+    /// The lines that make tab `tab` of `ws`, and its panes:
     /// with `whole`, as part of its workspace, which it `opens` if it is the
     /// first written.
     fn dump_tab(
         &self,
         ws: &Workspace,
-        (index, tab): (usize, &Tab),
+        tab: &Tab,
         root: &Tree,
         (whole, opens, ids): (bool, bool, bool),
         out: &mut String,
@@ -57,11 +54,6 @@ impl Session {
             return;
         };
         let program = self.program(first);
-        let default_name = match program {
-            Some(launch) => pane::named(&launch.argv),
-            None if index == 0 => MAIN.to_owned(),
-            None => crate::workspace::numbered(index.saturating_add(1)),
-        };
         // A saved session makes each workspace, with the ids it had, on a
         // server that has none; a dump run anywhere puts each tab in the
         // workspace of its name, made if there is none (`in`).
@@ -72,8 +64,8 @@ impl Session {
             (false, true) => line.extend([workspace(ws.id), "in".to_owned()]),
             (false, false) => line.extend(string(&ws.name).chain(["in".to_owned()])),
         }
-        let named = tab.given || tab.name != default_name;
-        if named && !makes {
+        // A name fux gave (`main`, `tab-N`, the program's) it gives again.
+        if tab.given && !makes {
             line.extend(string(&tab.name).chain(["name".to_owned()]));
         }
         if let Fit::Fixed(size) = tab.fit() {
@@ -103,7 +95,7 @@ impl Session {
                 &[&pane_name(first), "workspace", "let", &workspace(ws.id)],
             );
         }
-        if named && makes {
+        if tab.given && makes {
             push(out, &[&pane_name(first), "tab", "str", &tab.name, "rename"]);
         }
         if let Tree::Split(axis, split) = root {
@@ -129,7 +121,10 @@ impl Session {
             let Some(p) = self.panes.get(&pane) else {
                 continue;
             };
-            let default = pane::named(self.program(pane).map_or(&self.config.shell, |l| &l.argv));
+            let shell = || pane::basename(self.config.shell.program());
+            let default = self
+                .program(pane)
+                .map_or_else(shell, |l| pane::named(&l.argv));
             if default != p.name {
                 push(out, &[&pane_name(pane), "str", &p.name, "rename"]);
             }
@@ -169,33 +164,28 @@ impl Session {
     /// The options a line gives pane `id`: where it starts, and a program's
     /// variables and words; with `ids`, the id it asks for.
     fn pane_words(&self, id: PaneId, ids: bool, line: &mut Vec<String>) {
-        match self.program(id) {
-            Some(launch) => {
-                line.extend(string(&launch.cwd.to_string_lossy()).chain(["cwd".to_owned()]));
-                for (key, value) in &launch.env {
-                    line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
-                }
-                if ids {
-                    line.extend(asked(&id.to_string()));
-                }
-                let mut words = launch.argv.iter();
-                if let Some(program) = words.next() {
-                    line.extend(string(program).chain(["program".to_owned()]));
-                }
-                for arg in words {
-                    line.extend(string(arg).chain(["arg".to_owned()]));
-                }
-                // Made, and left to run: a replay waits for no program.
-                line.extend(["0".to_owned(), "timeout".to_owned()]);
-            }
-            None => {
-                let cwd = self.cwd_for(super::Here::NOWHERE, Some(id));
-                line.extend(string(&cwd.to_string_lossy()).chain(["cwd".to_owned()]));
-                if ids {
-                    line.extend(asked(&id.to_string()));
-                }
-            }
+        let program = self.program(id);
+        let shell = || self.cwd_for(super::Here::NOWHERE, Some(id));
+        let cwd = program.map_or_else(shell, |launch| launch.cwd.clone());
+        line.extend(string(&cwd.to_string_lossy()).chain(["cwd".to_owned()]));
+        for (key, value) in program.iter().flat_map(|launch| &launch.env) {
+            line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
         }
+        if ids {
+            line.extend(asked(&id.to_string()));
+        }
+        let Some(launch) = program else {
+            return;
+        };
+        let mut words = launch.argv.iter();
+        if let Some(program) = words.next() {
+            line.extend(string(program).chain(["program".to_owned()]));
+        }
+        for arg in words {
+            line.extend(string(arg).chain(["arg".to_owned()]));
+        }
+        // Made, and left to run: a replay waits for no program.
+        line.extend(["0".to_owned(), "timeout".to_owned()]);
     }
 }
 

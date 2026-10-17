@@ -155,12 +155,15 @@ fn the_config_words_examples_check() -> Outcome {
 }
 
 /// `update-environment` names what a new pane takes from the client that
-/// made it: one the client has is passed on; one it lacks is removed, even
-/// though the server has it (here `ENV`, which the test server is given).
+/// made it: one the client has is passed on, as the bytes it is, UTF-8 or
+/// not; one it lacks is removed, even though the server has it (here
+/// `ENV`, which the test server is given).
 #[test]
 fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
-    let server = Server::start("str update-environment str 'ENV FUXT_GIVEN' set")?;
-    let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"";
+    use std::os::unix::ffi::OsStrExt;
+    let server = Server::start("str update-environment str 'ENV FUXT_GIVEN FUXT_BYTES' set")?;
+    let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"; \
+                 printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
     let out = std::process::Command::new(FUX)
         .args([
             "opts",
@@ -185,9 +188,13 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
         .env_remove("FUX_PANE")
         .env_remove("ENV")
         .env("FUXT_GIVEN", "yes")
+        .env("FUXT_BYTES", std::ffi::OsStr::from_bytes(b"caf\xe9"))
         .output()
         .map_err(e)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("[unset] [yes]"), "{stdout}");
+    // od spaces its bytes as each system likes.
+    let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(bytes.contains("63 61 66 e9"), "{stdout}");
     Ok(())
 }

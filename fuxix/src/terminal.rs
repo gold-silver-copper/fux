@@ -11,9 +11,10 @@ type Request = libc::c_ulong;
 #[cfg(not(target_os = "macos"))]
 type Request = libc::Ioctl;
 
-/// A request constant as the C library's `ioctl` takes it.
-pub(crate) fn request(value: impl TryInto<Request>) -> Result<Request> {
-    value.try_into().map_err(|_| Errno::INVAL)
+/// A request constant as the C library's `ioctl` takes it: on macOS, some
+/// are typed narrower.
+pub(crate) fn request(value: impl Into<Request>) -> Request {
+    value.into()
 }
 
 /// A terminal's modes.
@@ -21,7 +22,7 @@ pub(crate) fn request(value: impl TryInto<Request>) -> Result<Request> {
 pub struct Termios(libc::termios);
 
 /// The modes only one kernel has, as nothing on the other.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 mod only {
     use libc::tcflag_t;
     pub const IUCLC: tcflag_t = libc::IUCLC;
@@ -29,9 +30,7 @@ mod only {
     pub const ALTWERASE: tcflag_t = 0;
     pub const ONOEOT: tcflag_t = 0;
     /// The bits that say how tabs are written, and their value for spaces.
-    // TABDLY and TAB3 (XTABS), one value, which the libc crate types
-    // differently for musl.
-    pub const TABS: (tcflag_t, tcflag_t) = (0o14000, 0o14000);
+    pub const TABS: (tcflag_t, tcflag_t) = (libc::TABDLY, libc::XTABS);
     pub const VSTATUS: Option<usize> = None;
 }
 
@@ -224,7 +223,7 @@ pub fn window_size(fd: impl AsFd) -> Option<Size> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let get = request(libc::TIOCGWINSZ).ok()?;
+    let get = request(libc::TIOCGWINSZ);
     // SAFETY: TIOCGWINSZ writes one winsize, and `size` is one.
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), get, &mut size) }).ok()?;
     Size::new(size.ws_row, size.ws_col)
@@ -239,7 +238,7 @@ pub fn set_window_size(fd: impl AsFd, size: Size) -> Result<()> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let set = request(libc::TIOCSWINSZ)?;
+    let set = request(libc::TIOCSWINSZ);
     // SAFETY: TIOCSWINSZ reads one winsize, and `size` is one.
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), set, &size) }).map(drop)
 }

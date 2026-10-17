@@ -1,11 +1,11 @@
 //! What `capture` and `capture-client` print: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state if asked.
-use crate::command::CaptureView;
+use crate::command::{CaptureView, Source};
 use crate::id::ClientId;
 use crate::json::Json;
-use crate::pane::Pane;
-use fux_vt::{Attributes, Color, Mode, MouseProtocolMode, Rgb};
+use crate::pane::{Pane, Process, Runs};
+use fux_vt::{Attributes, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen};
 use std::time::Instant;
 
 /// A captured line's cells, each its glyph (the second cell of a wide one
@@ -36,16 +36,17 @@ pub fn pane(
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
     let alt = screen.mode(Mode::AlternateScreen);
-    let live = view.last_output || if view.main { !alt } else { !view.alt || alt };
+    let live = match view.source {
+        Source::Shown | Source::LastOutput => true,
+        Source::Main => !alt,
+        Source::Alternate => alt,
+    };
     let (cursor_row, cursor_col) = screen.cursor_position();
     let cursor_id = (live && screen.mode(Mode::ShowCursor))
         .then(|| screen.window().row(cursor_row).map(|row| row.id()))
         .flatten();
     // Where it is among the lines captured, found as they are made.
     let mut cursor = None;
-    // Whether the row before ended in a blank no glyph was written to: the
-    // cell a wide glyph left, not fitting at the row's end.
-    let mut padded = false;
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // line each row is part of, and the lines the range touches.
     let line_of: Vec<usize> = read
@@ -69,8 +70,12 @@ pub fn pane(
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
         let mut lead = Attributes::default();
+        // Joined, the spacer a wide glyph left at the row's end, not fitting
+        // there, is no part of the line (`Row::ends_in_spacer`).
+        let spacer = usize::from(view.join && row.ends_in_spacer());
         let cells = row
             .cells()
+            .take(row.len().saturating_sub(spacer))
             .enumerate()
             .filter(|(col, _)| span.contains(col))
             .map(move |(_, cell)| {
@@ -78,7 +83,7 @@ pub fn pane(
                     ("", lead)
                 } else {
                     lead = cell.attributes();
-                    (crate::render::shown(cell), lead)
+                    (cell.shown(), lead)
                 }
             });
         let cells: Cells<'_> = match view.cols {
@@ -122,11 +127,6 @@ pub fn pane(
         let count = lines.len();
         match lines.last_mut() {
             Some(last) if wraps => {
-                // The blank a wide glyph left at the row's end, not fitting
-                // there, is no part of the line.
-                if padded && cells.get(1).is_some_and(|(text, _)| text.is_empty()) {
-                    last.pop();
-                }
                 if let Some(col) = at {
                     cursor = Some((count.saturating_sub(1), last.len().saturating_add(col)));
                 }
@@ -140,7 +140,6 @@ pub fn pane(
             }
         }
         wraps = view.join && row.wrapped();
-        padded = ends_padded(&row);
     }
     let (rows, cols) = screen.size().into();
     let cursor =
@@ -155,19 +154,12 @@ pub fn pane(
     )
 }
 
-/// Whether `row` ends in a blank no glyph was written to: the cell a wide
-/// glyph left, not fitting at the row's end. Of a line wrapped on with that
-/// glyph, it is no part.
-pub(crate) fn ends_padded(row: &fux_vt::Row<'_>) -> bool {
-    (row.cells().last()).is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation())
-}
-
 /// The screen's own background, against which a highlight shows: the
 /// terminal's default if a quarter of the screen has it, else the colour
 /// most of the screen's cells have (a program that paints its whole
 /// screen). Read over the whole screen, whatever part is captured.
-fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
-    let mut counts: Vec<(fux_vt::Color, usize)> = Vec::new();
+fn screen_background(screen: &Screen) -> Color {
+    let mut counts: Vec<(Color, usize)> = Vec::new();
     let mut total = 0usize;
     let rows = screen.rows().skip(screen.history_len());
     for cell in rows.flat_map(|row| row.cells()) {
@@ -178,7 +170,7 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
             None => counts.push((colour, 1)),
         }
     }
-    let default = fux_vt::Color::default();
+    let default = Color::default();
     let plain = (counts.iter())
         .find(|(c, _)| *c == default)
         .map_or(0, |(_, n)| *n);
@@ -192,65 +184,18 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
 
 /// The rows a capture reads, each with the columns of it it reads: the
 /// screen and `history` rows above it (of the main screen with `main-screen`), or
-/// the last command's output between its marks: while one runs, its output
-/// so far, to the cursor.
+/// the last command's output.
 fn rows_of(
-    screen: &fux_vt::Screen,
+    screen: &Screen,
     history: Option<usize>,
     view: CaptureView,
-) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
+) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     let all = 0..usize::MAX;
-    if view.last_output {
-        let commands = screen.commands();
-        let (row, col) = screen.cursor_position();
-        let cursor = (screen.window().row(row)).map(|r| fux_vt::CommandMark { row: r.id(), col });
-        let running = commands.output_start.zip(cursor);
-        let Some((start, end)) = running.or(commands.last_output) else {
-            return Vec::new();
-        };
-        let Some(last) = screen.row_index(end.row) else {
-            return Vec::new();
-        };
-        // A start gone (history's limit cut it, or the screen was cleared or
-        // switched) or below the end: from what is kept above the end, the
-        // screen's top if the start was cleared.
-        let (first, start) = match screen.row_index(start.row) {
-            Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
-            Some(_) => (
-                screen.history_len().min(last),
-                fux_vt::CommandMark { col: 0, ..start },
-            ),
-            None => (0, fux_vt::CommandMark { col: 0, ..start }),
-        };
-        let rows: Vec<fux_vt::Row<'_>> = screen
-            .rows()
-            .skip(first)
-            .take(last.saturating_sub(first).saturating_add(1))
-            .collect();
-        let count = rows.len();
-        return rows
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, row)| {
-                let from = if i == 0 { usize::from(start.col) } else { 0 };
-                // The end mark at a line's start ends the output before it;
-                // past it, the row is the command's whole (the prompt goes on
-                // a row of its own), what it wrote right of the cursor too.
-                let to = match (i.saturating_add(1) == count, end.col) {
-                    (true, 0) => 0,
-                    (true, col) if i == 0 && start.col >= col => 0,
-                    _ => usize::MAX,
-                };
-                (from < to).then_some((row, from..to))
-            })
-            .collect();
-    }
-    let rows: Vec<fux_vt::Row<'_>> = if view.main {
-        screen.main_rows().collect()
-    } else if view.alt {
-        screen.alternate_rows().collect()
-    } else {
-        screen.rows().collect()
+    let rows: Vec<Row<'_>> = match view.source {
+        Source::Shown => screen.rows().collect(),
+        Source::Main => screen.main_rows().collect(),
+        Source::Alternate => screen.alternate_rows().collect(),
+        Source::LastOutput => return last_output(screen),
     };
     let shown = usize::from(screen.size().rows());
     let keep = shown.saturating_add(history.unwrap_or(0));
@@ -258,6 +203,53 @@ fn rows_of(
     rows.into_iter()
         .skip(skip)
         .map(|row| (row, all.clone()))
+        .collect()
+}
+
+/// The last command's output between its marks, a range of each row's
+/// columns: while one runs, its output so far, to the cursor.
+fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
+    let commands = screen.commands();
+    let (row, col) = screen.cursor_position();
+    let cursor = (screen.window().row(row)).map(|r| CommandMark { row: r.id(), col });
+    let running = commands.output_start.zip(cursor);
+    let Some((start, end)) = running.or(commands.last_output) else {
+        return Vec::new();
+    };
+    let Some(last) = screen.row_index(end.row) else {
+        return Vec::new();
+    };
+    // A start gone (history's limit cut it, or the screen was cleared or
+    // switched) or below the end: from what is kept above the end, the
+    // screen's top if the start was cleared.
+    let (first, start) = match screen.row_index(start.row) {
+        Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
+        Some(_) => (
+            screen.history_len().min(last),
+            CommandMark { col: 0, ..start },
+        ),
+        None => (0, CommandMark { col: 0, ..start }),
+    };
+    let rows: Vec<Row<'_>> = screen
+        .rows()
+        .skip(first)
+        .take(last.saturating_sub(first).saturating_add(1))
+        .collect();
+    let count = rows.len();
+    rows.into_iter()
+        .enumerate()
+        .filter_map(|(i, row)| {
+            let from = if i == 0 { usize::from(start.col) } else { 0 };
+            // The end mark at a line's start ends the output before it;
+            // past it, the row is the command's whole (the prompt goes on
+            // a row of its own), what it wrote right of the cursor too.
+            let to = match (i.saturating_add(1) == count, end.col) {
+                (true, 0) => 0,
+                (true, col) if i == 0 && start.col >= col => 0,
+                _ => usize::MAX,
+            };
+            (from < to).then_some((row, from..to))
+        })
         .collect()
 }
 
@@ -277,7 +269,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
         ("client", client.to_string()),
         (grid.rows, grid.cols),
         grid.cursor,
-        (lines, view, fux_vt::Color::default()),
+        (lines, view, Color::default()),
         Some(Vec::new()),
     )
 }
@@ -297,8 +289,8 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     let commands = screen.commands();
     let argv = match (&pane.runs, pane.process.job()) {
         (_, Some(job)) => fuxix::process::argv(job),
-        (crate::pane::Runs::Program(launch), None) => Some(launch.argv.clone()),
-        (crate::pane::Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
+        (Runs::Program(launch), None) => Some(launch.argv.clone()),
+        (Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
     };
     let (exited, signal) = match pane.process.exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
@@ -306,10 +298,13 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         None => (Json::Null, Json::Null),
     };
     // A program a restore brought back, waiting for `respawn`.
-    let paused = matches!(
-        (&pane.process, &pane.runs),
-        (crate::pane::Process::Absent, crate::pane::Runs::Program(_))
-    );
+    let paused = match pane.process {
+        Process::Absent => match pane.runs {
+            Runs::Program(_) => true,
+            Runs::Shell => false,
+        },
+        Process::Reading(_) | Process::HungUp(_) | Process::Exited(_) => false,
+    };
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
         // reading, waiting, busy, exited 0, …: whether to look now.
@@ -332,7 +327,6 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
                 MouseProtocolMode::PressRelease => Json::str("press_release"),
                 MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
                 MouseProtocolMode::AnyMotion => Json::str("any_motion"),
-                _ => Json::str("other"),
             },
         ),
         (
@@ -355,7 +349,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "last_status",
             commands.last_status.map_or(Json::Null, Json::int),
         ),
-        ("bells", Json::int(pane.alerts.count())),
+        ("bells", Json::int(pane.alerts.rung)),
         (
             "notification",
             pane.alerts.last.clone().map_or(Json::Null, Json::str),
@@ -397,7 +391,7 @@ fn print(
     (key, id): (&'static str, String),
     (rows, cols): (u16, u16),
     cursor: Option<(u16, u16)>,
-    (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, fux_vt::Color),
+    (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, Color),
     state: Option<Vec<(&'static str, Json<'static>)>>,
 ) -> Read {
     // What a selection is drawn with: reverse video, or a background
@@ -517,8 +511,7 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
     let colour = |c: Color| match c {
         Color::Idx(n) => Some(Json::int(n)),
         Color::Rgb(Rgb { r, g, b }) => Some(Json::str(format!("#{r:02x}{g:02x}{b:02x}"))),
-        // A kind of colour fux-vt does not know yet is told as the default.
-        Color::Default | _ => None,
+        Color::Default => None,
     };
     let mut fields = Vec::new();
     fields.extend(colour(a.foreground()).map(|c| ("fg", c)));
@@ -535,7 +528,57 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
     fields
 }
 
-/// A row's text, wide glyphs whole and trailing blanks trimmed.
-pub fn row_text(row: fux_vt::Row<'_>) -> String {
-    row.cells_text().trim_end_matches(' ').to_owned()
+#[cfg(test)]
+mod tests {
+    use crate::command::CaptureView;
+    use crate::id::PaneId;
+    use crate::pane::{Pane, Runs};
+
+    /// A soft-wrapped row's last cell is the spacer a wide glyph left, no
+    /// part of the line, only while nothing was painted there: a blank EL
+    /// erased in a colour is a cell the program painted, and shows, so a
+    /// joined capture keeps it, as a copy does (`Row::copied`).
+    #[test]
+    fn a_painted_blank_before_a_wide_glyph_wrapped_on_is_part_of_the_line()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let join = CaptureView {
+            join: true,
+            ..CaptureView::default()
+        };
+        let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
+            let size = fux_vt::Size::new(3, 5)?;
+            let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+            pane.output(output.as_bytes());
+            Ok(super::pane(&pane, None, join, false, false).0)
+        };
+        // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
+        let first = |output| {
+            Ok::<_, Box<dyn std::error::Error>>(captured(output)?.lines().next().map(str::to_owned))
+        };
+        assert_eq!(first("abc\x1b[K\x1b[5G世")?.as_deref(), Some("abc 世"));
+        assert_eq!(
+            first("abc\x1b[41m\x1b[K\x1b[m\x1b[5G世")?.as_deref(),
+            Some("abc  世")
+        );
+        Ok(())
+    }
+
+    /// Columns cut from a joined line leave the spacer out only when they
+    /// take its column: cut short of it, the last cell taken is text.
+    #[test]
+    fn columns_cut_short_of_the_spacer_keep_their_last_cell()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let view = CaptureView {
+            join: true,
+            cols: Some((0, 2)),
+            ..CaptureView::default()
+        };
+        let size = fux_vt::Size::new(3, 5)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        // 世 at col 4 does not fit and wraps on, leaving the spacer there.
+        pane.output("abcd\x1b[5G世".as_bytes());
+        let text = super::pane(&pane, None, view, false, false).0;
+        assert_eq!(text.lines().next(), Some("abc世"));
+        Ok(())
+    }
 }

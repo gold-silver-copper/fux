@@ -25,7 +25,8 @@
 //!   alone), `printerFormFeed: true` (FF ends a print, so the harness knows
 //!   it has all of it), `printerAutoClose: true`, `printRawChars: true`
 //!   (U+FFFD prints as itself, not as `#`, and the second half of a wide
-//!   character as U+FFFF, so widths are xterm's own).
+//!   character as U+FFFF, so widths are xterm's own). An xterm older than
+//!   patch 397 lacks it, and cannot run as an engine (`RAW_PRINT`).
 //! - `allowWindowOps: true` and `disallowedWindowOps` empty: resizing and
 //!   reading the title (`CSI 21 t`) by escape sequence.
 //! - `saveLines: 100000`; `boldColors: false`, so bold does not brighten
@@ -279,9 +280,38 @@ const QUERY: &[u8] = b"\x1b[?4h\x1b[?4l\x1b[6n\
 \x1b[?1$p\x1b[?6$p\x1b[?7$p\x1b[?25$p\x1b[?66$p\x1b[?1004$p\x1b[?2004$p\
 \x1b[?1049$p\x1b[?1047$p\x1b[?47$p\x1b[21t\x1bP$qr\x1b\\\x1bP$qs\x1b\\\x1b[?11i";
 
+/// The first patch with `printRawChars` (xterm's changelog, patch #397).
+/// An older xterm's print drops the second half of a wide character and
+/// gives U+FFFD as `#`, so the cells read from it are not its own: `あい`
+/// reads as two narrow cells.
+const RAW_PRINT: u32 = 397;
+
 fn available() -> Result<(), String> {
     pane::on_path("xterm")?;
-    pane::on_path("Xvfb")
+    pane::on_path("Xvfb")?;
+    let out = Command::new("xterm")
+        .arg("-version")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("xterm -version: {e}"))?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    match patch(&said) {
+        Some(n) if n >= RAW_PRINT => Ok(()),
+        Some(n) => Err(format!(
+            "xterm {n} has no printRawChars (patch {RAW_PRINT}), so its print hides wide characters"
+        )),
+        None => Err(format!("xterm -version says {:?}", said.trim())),
+    }
+}
+
+/// The patch number in `xterm -version`'s `XTerm(411)`.
+fn patch(version: &str) -> Option<u32> {
+    version
+        .trim()
+        .strip_prefix("XTerm(")?
+        .strip_suffix(')')?
+        .parse()
+        .ok()
 }
 
 /// This process's Xvfb, the shell that stops it once this process has
@@ -701,8 +731,16 @@ impl Drop for Xterm {
 #[cfg(test)]
 mod tests {
     use super::{
-        flushed_before_clearing_left, owed_after, repeats_before_printing, sets_underline_colour,
+        RAW_PRINT, flushed_before_clearing_left, owed_after, patch, repeats_before_printing,
+        sets_underline_colour,
     };
+
+    #[test]
+    fn an_xterm_without_print_raw_chars_is_told_apart() {
+        assert_eq!(patch("XTerm(411)\n"), Some(411));
+        assert!(patch("XTerm(390)\n").is_some_and(|n| n < RAW_PRINT));
+        assert_eq!(patch("xterm 411"), None);
+    }
 
     #[test]
     fn a_split_character_and_a_leading_rep_are_found() {

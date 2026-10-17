@@ -72,7 +72,6 @@ impl Sink for Record {
                 entry.extend_from_slice(intermediates);
                 entry.push(action);
             }
-            _ => entry.push(b'?'),
         }
         self.0.push(entry);
     }
@@ -83,8 +82,7 @@ fn color(c: Color) -> u32 {
     match c {
         Color::Idx(i) => 0x100 | u32::from(i),
         Color::Rgb(Rgb { r, g, b }) => 0x0100_0000 | u32::from_be_bytes([0, r, g, b]),
-        // A kind fux-vt adds later hashes as the default until named here.
-        Color::Default | _ => 0,
+        Color::Default => 0,
     }
 }
 

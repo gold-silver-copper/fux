@@ -18,7 +18,7 @@ fux %2 opts wait                                        # settle again (30s), wh
 fux %2 opts str 'listening on' wait-text wait           # wait for a text (case ignored)
 fux %2 opts all-history capture                         # read: the screen once settled
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
-fux %2 opts json capture                                # also: main-screen, last-output, styles, marks
+fux %2 opts capture json                                # also: main-screen, last-output, styles, marks
 fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as a capture counts
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: opts horizontal … split
 fux %2 str TERM signal; fux %2 opts respawn             # stop; start again on a new terminal
@@ -61,10 +61,12 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   each piece of output as it arrives, and where a bell rang among them). A
   text: case ignored, blanks as one, from a word's start (`READY` is not in
   `NOT_READY`); `^T` a line's first word, indented or not, `T$` its last.
-  Met, it answers the line that holds the text (`run`: the pane, then that
-  line; `wait-gone`, the pane's state; after `run` or `respawn` a text must
-  show before it can go). A wait counts what the program printed since your
-  last input to the pane (or since it started): lines scrolled away, and
+  Met, it answers the state line, ending with what met it (`%2 busy · met
+  "READY"`), then the line that holds the text (`wait-gone`: what came; after
+  `run` or `respawn` a text must show before it can go). Failed (exited first,
+  timed out), it answers the state line and the pane's last lines, and says
+  why on stderr. A wait counts what the program printed since your
+  last input or signal (or since it started): lines scrolled away, and
   text drawn over in the same breath (`printf 'READY\rxxxxx'`), too; it
   never starts too late. It never matches what you typed: the echo of your
   keys (the terminal's own, for a program that reads lines; the shell's as
@@ -88,13 +90,13 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   screen (it starts `… earlier lines not kept (past history-bytes)` if lines
   written since were let go, or `… more came than the pane's journal keeps
   (journal-bytes): text may have passed unseen`, 32 MiB by default). Status 3: the program exited first.
-  `wait-exit` answers `%2 exited 0` and what came, with the program's
-  status.
+  A met `wait-exit` answers status 0, `%2 exited 3` and what came: the
+  program's own status is in its state (`str exited get`).
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output; while one runs, its output so far:
-  a full-screen one's is its screen to the cursor's row, whole, whatever
-  `main-screen` or `alt-screen` say), `joined` (with `rows`, a
+  a full-screen one's is its screen to the cursor's row, whole; one of
+  `main-screen`, `alt-screen` and `last-output` at most), `joined` (with `rows`, a
   wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after (in
@@ -147,14 +149,19 @@ the input was. A few cases look the same either way, and are taken so:
 
 ## Status
 
-0 done (settled, or the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr,
-one line (a line end in it shown as `\n`), with how the word is used when
-one of fux's own words was given too few values or the wrong kind; 3 the program exited before the wait;
+Each status means one thing, its code naming which. 0 done (settled, or
+the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr, one line (a line
+end in it shown as `\n`), with how the word is used when one of fux's own
+words was given too few values or the wrong kind; 2 a command used wrongly
+(`usage`); 3 the program exited (or was started again) before the wait;
 4 the pane closed; 7 the program is blocked reading its terminal and the
 text has not come (or gone); 124 still busy at the time limit (with `0 timeout`, a wait for a text
-or the exit not met at once). A wait for the exit (`wait-exit`)
-answers with the program's own status instead, which may be any of these:
-its state line (`exited 3`) tells them apart. Words before a failing one
+or the exit not met at once). A met wait for the exit (`wait-exit`) is 0:
+the program's own status is in its state line (`%2 exited 3`) and in
+`str exited get`, never fux's (nor `fux FILE`'s). A run that does not
+fail exits with the status of the first answer it leaves that has one (as
+itself, its `json`, or in a list): an answer dropped (`wait drop`) or
+taken by a word gives it none. Words before a failing one
 have already acted. `fux ls` (`ls json`, with titles and states) lists everything.
 
 ## A program

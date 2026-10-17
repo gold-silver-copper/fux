@@ -77,8 +77,8 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     for version in 1..=11 {
         wrapped.scroll(Size::of(5, 1).lines(), 1, UP, 0, &mut next, version)?;
     }
-    let (front, back) = wrapped.order.as_slices();
-    assert!(!front.is_empty() && !back.is_empty(), "the order wraps");
+    let order = &wrapped.order;
+    assert!((1..order.len()).contains(&order.top), "the order wraps");
     moves_are_removals_then_insertions(&contiguous);
     moves_are_removals_then_insertions(&wrapped);
     Ok(())
@@ -291,7 +291,7 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         grid.scroll(lines, r.small(rows), UP, 0, &mut next, 999)?;
     }
     let (rows, cols) = grid.size.into();
-    for cursor in [&mut grid.cursor, &mut grid.saved] {
+    for cursor in [&mut grid.cursor, &mut grid.saved.cursor] {
         if r.chance(50) {
             (cursor.row, cursor.col) = (r.small(rows), r.small(cols));
             cursor.pending_wrap = r.chance(30);

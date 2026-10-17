@@ -7,7 +7,7 @@
 //! the bytes are compared. A difference is a failure unless it is one of
 //! the recorded verdicts below, each with who decides it.
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
-use fux_vt::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
+use fux_vt::keys::{Direction, Function, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use fux_vt::{Feature, Options, Parser};
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::{Terminal, TerminalOptions, focus, key as gkey, mouse as gmouse, paste};
@@ -364,7 +364,7 @@ fn keys() -> Vec<(Key, Modifiers)> {
         Key::PageDown,
     ];
     named.extend(Direction::ALL.map(Key::Arrow));
-    named.extend((1..=12).map(Key::F));
+    named.extend((1..=12).filter_map(Function::new).map(Key::F));
     let mut chars: Vec<char> = ('a'..='z').chain('A'..='Z').chain('0'..='9').collect();
     chars.extend("-=[]\\;',./` ".chars());
     chars.extend(SHIFTED.iter().map(|&(c, _)| c));
@@ -437,7 +437,7 @@ fn key_event(
         Key::Arrow(Direction::Down) => K::ArrowDown,
         Key::Arrow(Direction::Left) => K::ArrowLeft,
         Key::Arrow(Direction::Right) => K::ArrowRight,
-        Key::F(n) => match n {
+        Key::F(f) => match f.number() {
             1 => K::F1,
             2 => K::F2,
             3 => K::F3,
@@ -480,7 +480,8 @@ fn compare_keys(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Strin
             continue;
         };
         let mut ours = Vec::new();
-        pair.fux.screen().encode_key(stroke, &mut ours);
+        let screen = pair.fux.screen();
+        fux_vt::keys::encode::key_bytes(stroke, screen.key_mode(), &mut ours);
         let mut theirs = Vec::new();
         encoder
             .encode_to_vec(&event, &mut theirs)
@@ -488,9 +489,11 @@ fn compare_keys(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Strin
         let mut legacy = Vec::new();
         fux_vt::keys::encode::key_bytes(
             stroke,
-            fux_vt::keys::encode::KeyMode::legacy(
-                pair.fux.screen().mode(fux_vt::Mode::ApplicationCursor),
-            ),
+            fux_vt::keys::encode::KeyMode::Legacy {
+                application: pair.fux.screen().mode(fux_vt::Mode::ApplicationCursor),
+                other_keys: None,
+                backarrow: false,
+            },
             &mut legacy,
         );
         let verdict = key_verdict(setup, key, mods, &ours, &theirs, &legacy);
@@ -522,7 +525,11 @@ fn key_verdict(
     let other_keys = setup.contains("\x1b[>4;2m");
     let csi = |b: &[u8]| b.starts_with(b"\x1b[");
     let kitty_form = |b: &[u8]| csi(b) && b.ends_with(b"u") || b.starts_with(b"\x1b[27;");
-    if key == Key::F(3) && ours.ends_with(b"R") && theirs.ends_with(b"~") && flags & 9 == 0 {
+    if Function::new(3).map(Key::F) == Some(key)
+        && ours.ends_with(b"R")
+        && theirs.ends_with(b"~")
+        && flags & 9 == 0
+    {
         return Some("f3");
     }
     if key == Key::Backspace && mods.ctrl && flags & 9 == 0 {
@@ -604,23 +611,20 @@ fn mouse_events() -> Vec<MouseEvent> {
         for mods in all_mods() {
             for button in BUTTONS {
                 out.push(MouseEvent {
-                    action: MouseAction::Press,
-                    button: Some(button),
+                    action: MouseAction::Press(button),
                     mods,
                     row,
                     col,
                 });
                 if !button.is_wheel() {
                     out.push(MouseEvent {
-                        action: MouseAction::Release,
-                        button: Some(button),
+                        action: MouseAction::Release(Some(button)),
                         mods,
                         row,
                         col,
                     });
                     out.push(MouseEvent {
-                        action: MouseAction::Motion,
-                        button: Some(button),
+                        action: MouseAction::Motion(Some(button)),
                         mods,
                         row,
                         col,
@@ -628,8 +632,7 @@ fn mouse_events() -> Vec<MouseEvent> {
                 }
             }
             out.push(MouseEvent {
-                action: MouseAction::Motion,
-                button: None,
+                action: MouseAction::Motion(None),
                 mods,
                 row,
                 col,
@@ -655,7 +658,7 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
                 padding_right: 0,
                 padding_left: 0,
             })
-            .set_any_button_pressed(event.button.is_some() && event.action == MouseAction::Motion)
+            .set_any_button_pressed(matches!(event.action, MouseAction::Motion(Some(_))))
             .set_track_last_cell(false);
         let mut g = gmouse::Event::new().map_err(err("mouse event"))?;
         let mut held = gkey::Mods::empty();
@@ -673,17 +676,18 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
                 .saturating_mul(size)
                 .saturating_add(size / 2)) as f32
         };
-        g.set_action(match event.action {
-            MouseAction::Press => gmouse::Action::Press,
-            MouseAction::Release => gmouse::Action::Release,
-            MouseAction::Motion => gmouse::Action::Motion,
-        })
-        .set_button(event.button.map(ghostty_button))
-        .set_mods(held)
-        .set_position(gmouse::Position {
-            x: px(event.col, CELL.0),
-            y: px(event.row, CELL.1),
-        });
+        let (action, button) = match event.action {
+            MouseAction::Press(button) => (gmouse::Action::Press, Some(button)),
+            MouseAction::Release(button) => (gmouse::Action::Release, button),
+            MouseAction::Motion(held) => (gmouse::Action::Motion, held),
+        };
+        g.set_action(action)
+            .set_button(button.map(ghostty_button))
+            .set_mods(held)
+            .set_position(gmouse::Position {
+                x: px(event.col, CELL.0),
+                y: px(event.row, CELL.1),
+            });
         let mut ours = Vec::new();
         pair.fux.screen().encode_mouse(event, &mut ours);
         let mut theirs = Vec::new();
@@ -710,8 +714,7 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
 fn compare_focus(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), String> {
     let reporting = pair.ghostty.mode(Mode::FOCUS_EVENT).map_err(err("mode"))?;
     for (focused, event) in [(true, focus::Event::Gained), (false, focus::Event::Lost)] {
-        let mut ours = Vec::new();
-        pair.fux.screen().encode_focus(focused, &mut ours);
+        let ours = pair.fux.screen().focus_report(focused).unwrap_or_default();
         let mut buf = [0u8; 16];
         let theirs = if reporting {
             let n = event.encode(&mut buf).map_err(err("focus encode"))?;
@@ -721,7 +724,7 @@ fn compare_focus(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
         };
         tally.judge(
             || format!("{} focused {focused}", shown(setup.as_bytes())),
-            &ours,
+            ours,
             &theirs,
             None,
         );
@@ -810,7 +813,8 @@ fn compare_pastes(
         .collect();
     for text in texts {
         let mut ours = Vec::new();
-        pair.fux.screen().encode_paste(&text, &mut ours);
+        let asked = pair.fux.screen().mode(fux_vt::Mode::BracketedPaste);
+        fux_vt::keys::encode::paste(&text, asked, &mut ours);
         let mut data = text.clone().into_bytes();
         let mut buf = vec![0u8; data.len().saturating_add(16)];
         let n = paste::encode(&mut data, bracketed, &mut buf).map_err(err("paste encode"))?;

@@ -2,21 +2,25 @@
 //! every command that changes them.
 use crate::code::Code;
 use crate::command::{
-    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
-    Pick, Resized, Sibling, SwapWith, WsRef,
+    self, AnyRef, Armed, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
+    PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
-use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
+use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
-use crate::pane::{InputQueue, Pane, Process, Runs, Typed, basename};
-use crate::process::Child;
-use crate::protocol::{End, Reply};
+use crate::log::Unit;
+use crate::pane::{self, InputQueue, Pane, Process, Runs, Typed, basename};
+use crate::process::{self, Child, Ended};
+use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{ClientKind, Mode, View};
+use crate::wait::{Follows, Waiting};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
-use std::collections::{BTreeMap, VecDeque};
+use fux_vt::Size;
+use fuxth::Code as Lang;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 mod layouts;
 use std::time::{Duration, Instant};
@@ -24,18 +28,12 @@ use std::time::{Duration, Instant};
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outgoing {
-    /// Bytes for a client's terminal outside any paint: a copy (OSC 52),
-    /// questions for the terminal, the bell, the keyboard flags pushed.
-    Bytes(ClientId, Vec<u8>),
-    /// Detach a client, telling it why.
-    Exit(ClientId, String),
-    /// fuxth for a client to run as its own, typed at its command prompt.
-    Run(ClientId, String),
-    /// Keys for a client to take as typed at its terminal (`send-keys` to
-    /// a client): its bindings see them.
-    Keys(ClientId, Vec<command::Input>),
-    /// Tell a client the server ended its screen by itself.
-    Ended(ClientId),
+    /// A frame for a client: bytes for its terminal outside any paint (a
+    /// copy, OSC 52; questions for the terminal; the bell; the keyboard
+    /// flags pushed), fuxth to run as its own, keys to take as typed at its
+    /// terminal (`send-keys` to a client), its screen ended by the server,
+    /// or its detach, saying why.
+    To(ClientId, ToAttached<'static>),
     /// Stop the server, saying why; with `keep`, its layout is kept for
     /// the next server to bring back, as after a crash.
     Shutdown { reason: String, keep: bool },
@@ -51,7 +49,7 @@ pub struct Dying {
 impl Dying {
     /// Kills the program, its terminal closed first (a dying writer can hold
     /// on to it); its leader, if it has yet to exit.
-    pub fn kill(self) -> Option<crate::process::Leader> {
+    pub fn kill(self) -> Option<process::Leader> {
         drop(self.child.master);
         self.child.leader.finish().err()
     }
@@ -83,26 +81,54 @@ pub enum Origin {
 /// A command line's caller on the CLI.
 #[derive(Clone, Debug, Default)]
 pub struct Caller {
-    /// Its pane (`FUX_PANE`), if it runs in one of this server's.
-    pub pane: Option<PaneId>,
+    /// The pane it gave (`FUX_PANE`), of the server `within` says.
+    pub gave: Option<PaneId>,
+    /// The server whose pane it runs in, by its `FUX_SERVER`.
+    pub within: Within,
     /// Its working directory.
     pub cwd: Option<PathBuf>,
-    /// The `FUX_PANE` it gave of another server's pane (its `FUX_SERVER`
-    /// is not this server's), which nothing here is done to.
-    pub stray: Option<PaneId>,
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
-    pub env: Vec<(String, String)>,
-    /// It runs in one of this server's panes (its `FUX_SERVER` is this
-    /// server's), whether or not it gave the pane.
-    pub inside: bool,
-    /// It brings back a saved session: the ids asked for are the ones it
-    /// had, and programs wait for `respawn`.
-    pub restoring: bool,
-    /// The socket of the grant it came through: what panes it starts are
-    /// told to reach the server by, so that what runs there is held to the
-    /// grant too.
-    pub grant: Option<PathBuf>,
+    pub env: Vec<(String, std::ffi::OsString)>,
+    pub came: Came,
+}
+
+/// How a caller on the CLI came to the server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Came {
+    /// By the server's own socket.
+    #[default]
+    Socket,
+    /// By the socket of a grant: what panes it starts are told to reach
+    /// the server by, so that what runs there is held to the grant too.
+    Grant(PathBuf),
+    /// It is the server's own restore of a saved session: the ids asked for
+    /// are the ones it had, and programs wait for `respawn`.
+    Restore,
+}
+
+/// The server whose pane a caller on the CLI runs in, as its
+/// `FUX_SERVER` says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Within {
+    /// None said: a pane it gives is taken as this server's.
+    #[default]
+    Unsaid,
+    /// This server: it runs in one of its panes, whether or not it gave it.
+    This,
+    /// Another server: the pane it gave is that server's, and nothing here
+    /// is done to it.
+    Other,
+}
+
+impl Caller {
+    /// Its pane, if it gave one of this server's.
+    fn pane(&self) -> Option<PaneId> {
+        match self.within {
+            Within::Unsaid | Within::This => self.gave,
+            Within::Other => None,
+        }
+    }
 }
 
 /// Where an attached client is: the workspace and tab it is shown, and the
@@ -115,32 +141,36 @@ pub struct Place {
 }
 
 /// Where a select command takes a client: a workspace, and a tab and pane.
-type Picked = (WsId, Option<TabId>, Option<PaneId>);
+type Picked = (WsId, Option<Spot>);
+
+/// Where in a workspace a client is shown: a tab, and a pane in it if
+/// given.
+pub(crate) type Spot = (TabId, Option<PaneId>);
 
 /// What a command that names nothing acts on, found once from its origin.
 #[derive(Clone, Copy)]
 enum Here<'a> {
     /// An attached client, where it is.
     Client(ClientId, Place),
-    /// The CLI: its caller's pane (if it gave one), where that pane is if
-    /// it is still there (its `pane` the same), and its working directory.
-    Cli(Option<PaneId>, Option<Place>, Option<&'a Path>),
+    /// The CLI: its caller's pane (if it gave one) and the workspace that
+    /// pane is in, if it is still there; and its working directory.
+    Cli(Option<(PaneId, Option<WsId>)>, Option<&'a Path>),
 }
 
 impl Here<'_> {
     /// The CLI with no caller: a command run for no one.
-    const NOWHERE: Here<'static> = Here::Cli(None, None, None);
+    const NOWHERE: Here<'static> = Here::Cli(None, None);
 
-    fn place(self) -> Option<Place> {
+    fn ws(self) -> Option<WsId> {
         match self {
-            Here::Client(_, place) => Some(place),
-            Here::Cli(_, at, _) => at,
+            Here::Client(_, place) => Some(place.ws),
+            Here::Cli(pane, _) => pane.and_then(|(_, ws)| ws),
         }
     }
     fn pane(self) -> Option<PaneId> {
         match self {
             Here::Client(_, place) => place.pane,
-            Here::Cli(pane, ..) => pane,
+            Here::Cli(pane, _) => pane.map(|(pane, _)| pane),
         }
     }
     fn client(self) -> Option<ClientId> {
@@ -168,8 +198,6 @@ pub enum Error {
     IdTaken(AnyRef),
     NoClient(ClientId),
     NoBuffer(usize),
-    /// The client focuses no pane.
-    NoPaneToCopy,
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
     OnlyOne(Kind),
     AtEnd(Kind),
@@ -183,12 +211,10 @@ pub enum Error {
     SelectionTooLarge,
     // A name that cannot be given.
     NameTaken(String),
-    /// `run` with a name a tab has: `str NAME tab` would not know which, so the program is not started. The tab and its panes.
+    /// A tab name given before: those tabs, then their panes.
     TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
-    // What failed below the session.
-    Usage(command::Usage),
     /// Any other failure, made in one place and told apart by its code
     /// alone: its code, and why.
     Failed {
@@ -198,9 +224,9 @@ pub enum Error {
 }
 
 /// A failure of kind `code` (see [`Error::Failed`]).
-pub(crate) fn fail(code: Code, message: impl Into<String>) -> Error {
+pub(crate) fn fail(code: impl Into<Code>, message: impl Into<String>) -> Error {
     Error::Failed {
-        code,
+        code: code.into(),
         message: message.into(),
     }
 }
@@ -210,19 +236,18 @@ impl Error {
     /// script to tell failures apart by.
     pub fn code(&self) -> Code {
         match self {
-            Error::NoWorkspace(_) => Code::NoWorkspace,
-            Error::NoPane(_) | Error::NoPaneToCopy => Code::NoPane,
-            Error::NoTab(_) => Code::NoTab,
-            Error::NoPaneGiven | Error::NoWorkspaceGiven => Code::NoTarget,
-            Error::IdTaken(_) => Code::Id,
-            Error::NoClient(_) => Code::NoClient,
-            Error::NoBuffer(_) => Code::NoBuffer,
-            Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => Code::NothingThere,
-            Error::NoRows | Error::SelectionTooLarge => Code::Selection,
-            Error::NameReadAsTarget(_) => Code::BadName,
-            Error::NameTaken(_) | Error::TabNameTaken(..) => Code::NameTaken,
-            Error::Usage(_) => Code::Usage,
-            Error::Failed { code, .. } => *code,
+            Self::NoWorkspace(_) => Code::NoWorkspace,
+            Self::NoPane(_) => Code::NoPane,
+            Self::NoTab(_) => Code::NoTab,
+            Self::NoPaneGiven | Self::NoWorkspaceGiven => Code::NoTarget,
+            Self::IdTaken(_) => Code::Id,
+            Self::NoClient(_) => Code::NoClient,
+            Self::NoBuffer(_) => Code::NoBuffer,
+            Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
+            Self::NoRows | Self::SelectionTooLarge => Code::Selection,
+            Self::NameReadAsTarget(_) => Code::from(Lang::BadName),
+            Self::NameTaken(_) | Self::TabNameTaken(..) => Code::NameTaken,
+            Self::Failed { code, .. } => *code,
         }
     }
 }
@@ -230,77 +255,78 @@ impl Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NoWorkspace(id) => write!(f, "no workspace {id}"),
-            Error::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
-            Error::NoPane(id) => write!(f, "no pane {id}"),
-            Error::NoTab(id) => write!(f, "no tab {id}"),
-            Error::NoWorkspaceGiven => f.write_str(
+            Self::NoWorkspace(id) => write!(f, "no workspace {id}"),
+            Self::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
+            Self::NoPane(id) => write!(f, "no pane {id}"),
+            Self::NoTab(id) => write!(f, "no tab {id}"),
+            Self::NoWorkspaceGiven => f.write_str(
                 "no workspace given: name one (`str NAME workspace`; for new-tab, the \
                      option `str NAME in`)",
             ),
-            Error::IdTaken(id) => write!(
+            Self::IdTaken(id) => write!(
                 f,
                 "id {id}: that id, or a higher one, was given before, and ids are never given twice"
             ),
-            Error::NoClient(id) => write!(f, "no client {id}"),
-            Error::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Error::NoPaneToCopy => f.write_str("no pane to copy from"),
-            Error::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
-            Error::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
-            Error::NoNeighbor { from, direction } => {
+            Self::NoClient(id) => write!(f, "no client {id}"),
+            Self::NoBuffer(index) => write!(f, "no buffer {index}"),
+            Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
+            Self::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
+            Self::NoNeighbor { from, direction } => {
                 write!(f, "no pane {} of {from}", direction.name())
             }
-            Error::NoRows => f.write_str("the pane has no rows"),
-            Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
-            Error::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Error::TabNameTaken(name, tabs, panes) => {
-                let tabs_then_panes = (tabs.iter().map(|t| AnyRef::Tab(*t)))
+            Self::NoRows => f.write_str("the pane has no rows"),
+            Self::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
+            Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
+            Self::TabNameTaken(name, tabs, panes) => {
+                let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))
                     .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
-                let ids = joined(tabs_then_panes, " ");
+                let ids = joined(ids, " ");
                 let kills = joined(tabs, " tab kill`, `fux str ");
                 write!(
                     f,
                     "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
                 )
             }
-            Error::NameReadAsTarget(name) => write!(
+            Self::NameReadAsTarget(name) => write!(
                 f,
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
             ),
-            Error::Usage(error) => error.fmt(f),
-            Error::Failed { message, .. } => f.write_str(message),
+            Self::Failed { message, .. } => f.write_str(message),
         }
     }
 }
 impl std::error::Error for Error {}
 
-impl From<crate::pane::Error> for Error {
-    fn from(error: crate::pane::Error) -> Error {
+impl From<pane::Error> for Error {
+    fn from(error: pane::Error) -> Self {
         let code = match error {
-            crate::pane::Error::NotReading => Code::NotReading,
-            crate::pane::Error::Terminal { .. } => Code::Start,
+            pane::Error::NotReading => Code::NotReading,
+            pane::Error::Terminal { .. } => Code::Start,
         };
         fail(code, error.to_string())
     }
 }
 
 /// `pane`'s program has ended, with `status`: it takes no input.
-fn ended(pane: PaneId, status: crate::process::Ended) -> Error {
+fn ended(pane: PaneId, status: Ended) -> Error {
     let was = match status {
-        crate::process::Ended::Exited(_) => "",
-        crate::process::Ended::Signalled(_) => "was ",
+        Ended::Exited(_) => "",
+        Ended::Signalled(_) => "was ",
     };
-    let told = crate::process::told(status);
-    fail(Code::Exited, format!("the program in {pane} {was}{told}"))
+    let told = format!("the program in {pane} {was}{}", process::told(status));
+    fail(Code::NotRunning, told)
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
 /// for one (`wait`, or an action that settles).
 pub enum Begun {
     Done(Reply),
-    Waiting(Box<crate::wait::Waiting>),
+    Waiting(Box<Waiting>),
     /// `fux events`: a stream, until the client goes.
     Events(Box<crate::events::Subscription>),
+    /// A grant of a socket to the workspace (`grant`), or with none, its
+    /// revoking (`revoke`): the server's, which listens.
+    Grant(String, Option<WsRef>),
 }
 
 /// How long a closing pane's processes have to exit after the hangup.
@@ -315,8 +341,8 @@ const TYPICAL: Rect = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
 /// The most rows, and columns, a client's view is kept to.
 const MOST: u16 = 4096;
 
-pub(crate) fn default_size() -> fux_vt::Size {
-    crate::pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
+pub(crate) fn default_size() -> Size {
+    pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
 }
 
 pub struct Session {
@@ -349,11 +375,6 @@ pub struct Session {
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
-    /// How the panes the command under way starts start.
-    starting: Starting,
-    /// A restore is under way (`Session::restore`): ids come back as they
-    /// were, and programs wait for `respawn`.
-    restoring: bool,
     /// The sockets `fux grant` made, each with the workspace it reaches,
     /// for `ls` to list: the server holds them.
     pub grants: Vec<Grant>,
@@ -365,16 +386,20 @@ pub struct Session {
     pub(crate) test_keymap: crate::keymap::Keymap,
 }
 
-/// How the panes a command starts start: the variables they take from
-/// whoever starts them rather than the server (those `update-environment`
-/// names that the starter has, and those it has not, which they are not
-/// given either).
+/// How the panes a command starts start, passed to what starts them: the
+/// variables they take from whoever starts them rather than the server
+/// (those `update-environment` names that the starter has, and those it
+/// has not, which they are not given either). A pane started for no
+/// command (the first shell) starts as `Starting::default()` says.
 #[derive(Clone, Debug, Default)]
 struct Starting {
-    set: Vec<(String, String)>,
+    set: Vec<(String, std::ffi::OsString)>,
     unset: Vec<String>,
     /// The socket they reach the server by, if not its own: a grant's.
     socket: Option<PathBuf>,
+    /// A restore is under way (`Session::restore`): ids come back as they
+    /// were, and programs wait for `respawn`.
+    restoring: bool,
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
@@ -383,32 +408,12 @@ pub(crate) const MAIN: &str = "main";
 /// The workspace `fux run` starts programs in unless told another.
 pub const RUN_WORKSPACE: &str = "agent";
 
-/// Whether a command leaves every client's screen as it was: it reads the
-/// state, or hands a pane's program something whose effect, if any, comes
-/// back as output.
-fn shows_nothing_new(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Ls { .. }
-            | Command::Resolve { .. }
-            | Command::ListBuffers
-            | Command::ShowBuffer { .. }
-            | Command::CapturePane { .. }
-            | Command::SendKeys { .. }
-            | Command::Signal { .. }
-            | Command::Client {
-                action: ClientAction::Capture,
-                ..
-            }
-    )
-}
-
-/// A log file, made anew: what a program writes may be secret, so it is
-/// the user's alone.
-/// A link is not followed, and a file there already is emptied and made
-/// the user's alone too.
+/// A log file, made if it is not there: what a program writes may be
+/// secret, so it is the user's alone.
+/// A link is not followed. A file there already is made the user's alone
+/// too, and emptied, by `emptied`, once nothing refuses the log.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let failed = |e| fail(Code::Log, format!("the log {}: {e}", path.display()));
     if path.is_symlink() {
         let link = std::io::Error::other("a symbolic link, which a log does not follow");
@@ -417,13 +422,28 @@ fn open_log(path: &Path) -> Result<std::fs::File, Error> {
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .mode(0o600)
         .custom_flags(fuxix::file::NOFOLLOW)
         .open(path)
         .map_err(failed)?;
+    // Its mode is set once the run starts: setting the mode it has asks
+    // now whether that will be allowed, before anything runs.
+    let mode = file.metadata().map_err(failed)?.permissions();
+    file.set_permissions(mode).map_err(failed)?;
+    Ok(file)
+}
+
+/// `file`, a log, made the user's alone and emptied: a FIFO or a terminal
+/// has nothing to empty.
+fn emptied(file: std::fs::File) -> Result<std::fs::File, Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let failed = |e| fail(Code::Log, format!("the log: {e}"));
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
         .map_err(failed)?;
+    if file.metadata().map_err(failed)?.is_file() {
+        file.set_len(0).map_err(failed)?;
+    }
     Ok(file)
 }
 
@@ -478,6 +498,17 @@ impl Reach<'_> {
         }
     }
 
+    /// Whether `request` reaches only the granted workspace.
+    fn request(&self, request: &Request) -> Result<(), Error> {
+        match request {
+            Request::Do(command) | Request::Then(command, _) => self.command(command),
+            Request::Wait(target, _) => self.any(target),
+            Request::Capture(target, ..) => self.pane(*target),
+            Request::Events(target, _) => target.as_ref().map_or(Ok(()), |t| self.any(t)),
+            Request::Grant(..) | Request::Revoke(_) => self.refuse("another grant"),
+        }
+    }
+
     /// Whether `command` reaches only the granted workspace.
     fn command(&self, command: &Command) -> Result<(), Error> {
         match command {
@@ -516,8 +547,7 @@ impl Reach<'_> {
                 Resized::Tabs(target, _) => self.any(target),
                 Resized::Client(..) => self.refuse("a client's size"),
             },
-            Command::SendKeys { target, .. } | Command::Wait { target, .. } => self.any(target),
-            Command::Events { target, .. } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
+            Command::SendKeys { target, .. } => self.any(target),
             Command::Rename { target, .. } => match target {
                 AnyRef::Workspace(_) => self.refuse("renaming the workspace"),
                 AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
@@ -548,7 +578,6 @@ impl Reach<'_> {
                 self.refuse("the paste buffers, which are everyone's")
             }
             Command::Client { .. } => self.refuse("a client's screen"),
-            Command::Grant { .. } | Command::Revoke { .. } => self.refuse("another grant"),
             Command::DumpLayout { target } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
         }
     }
@@ -572,6 +601,11 @@ fn joined<T: std::fmt::Display>(items: impl IntoIterator<Item = T>, between: &st
     items.join(between)
 }
 
+/// A value a command can't take, as `Usage` says why.
+fn bad_value(usage: command::Usage) -> Error {
+    fail(Code::BadValue, usage.to_string())
+}
+
 /// A command that failed, told with its code: a usage error's
 /// status is 2.
 fn failure(error: Error, origin: &Origin) -> Reply {
@@ -581,7 +615,9 @@ fn failure(error: Error, origin: &Origin) -> Reply {
         (
             Error::NoPaneGiven | Error::NoWorkspaceGiven,
             Origin::Cli(Caller {
-                stray: Some(pane), ..
+                gave: Some(pane),
+                within: Within::Other,
+                ..
             }),
         ) => fail(
             Code::StrayPane,
@@ -596,13 +632,13 @@ fn failure(error: Error, origin: &Origin) -> Reply {
 }
 
 impl Session {
-    pub fn new(config: Config, socket: PathBuf, launch: bool) -> Session {
+    pub fn new(config: Config, socket: PathBuf, launch: bool) -> Self {
         // The process and the moment it started: no two runs share both.
         let since = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let server_id = format!("{}-{since:x}", std::process::id());
-        Session {
+        Self {
             workspaces: Vec::new(),
             panes: BTreeMap::new(),
             views: BTreeMap::new(),
@@ -618,8 +654,6 @@ impl Session {
             placed: Placement::default(),
             ids: Ids::default(),
             changes: 0,
-            starting: Starting::default(),
-            restoring: false,
             grants: Vec::new(),
             #[cfg(test)]
             test_keys: BTreeMap::new(),
@@ -631,7 +665,7 @@ impl Session {
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
         let home = home();
-        let start = (Start::Shell(&[], &[]), home.as_path());
+        let start = (Start::Shell(&[], &[]), home.as_path(), &Starting::default());
         let names = (Some(MAIN.into()), None);
         self.create_workspace(names, start, (Fit::Clients, default_size()))
             .map(|_| ())
@@ -690,14 +724,24 @@ impl Session {
         }
         .map(|w| w.id)
     }
+    /// Whether `only` (with nothing, everything) takes in tab `tab` of
+    /// workspace `ws`: its workspace, the tab, or a pane in it.
+    fn takes_in(&self, only: Option<AnyRef>, ws: WsId, tab: TabId) -> bool {
+        match only {
+            None => true,
+            Some(AnyRef::Workspace(w)) => w == ws,
+            Some(AnyRef::Tab(t)) => t == tab,
+            Some(AnyRef::Pane(p)) => self.locate(p).is_some_and(|(_, t)| t == tab),
+        }
+    }
     /// `target`, if it is there; else why not.
     pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
-        let there = match target {
-            AnyRef::Pane(p) => self.panes.get(&p).map(|_| ()).ok_or(Error::NoPane(p)),
+        match target {
+            AnyRef::Pane(p) => self.pane(p).map(|_| ()),
             AnyRef::Tab(t) => self.tab(t).map(|_| ()).ok_or(Error::NoTab(t)),
             AnyRef::Workspace(w) => self.workspace(w).map(|_| ()).ok_or(Error::NoWorkspace(w)),
-        };
-        there.map(|()| target)
+        }
+        .map(|()| target)
     }
 
     // ------------------------------------------------------------- targets
@@ -711,10 +755,8 @@ impl Session {
                 Ok(Here::Client(client, place))
             }
             Origin::Cli(ref caller) => {
-                let pane = caller.pane;
-                let at = pane.and_then(|p| self.locate(p));
-                let at = at.map(|(ws, tab)| Place { ws, tab, pane });
-                Ok(Here::Cli(pane, at, caller.cwd.as_deref()))
+                let pane = caller.pane().map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
+                Ok(Here::Cli(pane, caller.cwd.as_deref()))
             }
         }
     }
@@ -747,10 +789,10 @@ impl Session {
         &self,
         id: PaneId,
         (argv, env): (&[String], &[(String, String)]),
-        cwd: &Path,
-        size: fux_vt::Size,
-    ) -> Result<Option<(crate::process::Child, Option<String>)>, Error> {
-        let (Some(socket), fresh) = (&self.launch, &self.starting) else {
+        (cwd, fresh): (&Path, &Starting),
+        size: Size,
+    ) -> Result<Option<(Child, Option<String>)>, Error> {
+        let Some(socket) = &self.launch else {
             return Ok(None);
         };
         let mut dir = socket.as_os_str().to_owned();
@@ -770,19 +812,20 @@ impl Session {
         }
         let socket = fresh.socket.as_deref().unwrap_or(socket);
         let mut vars = vec![
-            ("FUX_PANE", id.to_string()),
-            ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
-            ("FUX_SERVER", self.server_id.clone()),
+            ("FUX_PANE", id.to_string().into()),
+            ("FUX_SOCKET", socket.as_os_str().to_owned()),
+            ("FUX_SERVER", self.server_id.clone().into()),
         ];
-        let given = (fresh.set.iter()).chain(env).chain(&marks.env);
-        vars.extend(given.map(|(k, v)| (k.as_str(), v.clone())));
+        vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
+        let given = env.iter().chain(&marks.env);
+        vars.extend(given.map(|(k, v)| (k.as_str(), v.into())));
         vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
         let mut unset: Vec<String> = (fresh.unset.iter())
             .filter(|name| !env.iter().any(|(k, _)| k == *name))
             .cloned()
             .collect();
         unset.extend(marks.unset.iter().cloned());
-        let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)
+        let child = process::spawn(&marks.argv, cwd, (&vars, &unset), size)
             .map_err(|m| fail(Code::Start, m))?;
         Ok(Some((child, nonce)))
     }
@@ -794,8 +837,8 @@ impl Session {
         &mut self,
         id: PaneId,
         kill: bool,
-        env: &[(String, String)],
-        argv: &[String],
+        (env, argv): (&[(String, String)], &[String]),
+        starting: &Starting,
     ) -> Result<(), Error> {
         let pane = self.pane(id)?;
         let Runs::Program(launch) = &pane.runs else {
@@ -815,8 +858,13 @@ impl Session {
             launch.env.push((key.clone(), value.clone()));
         }
         let size = pane.size();
-        let (child, nonce) =
-            (self.spawn(id, (&launch.argv, &launch.env), &launch.cwd, size)?).unzip();
+        let spawned = self.spawn(
+            id,
+            (&launch.argv, &launch.env),
+            (&launch.cwd, starting),
+            size,
+        )?;
+        let (child, nonce) = spawned.unzip();
         let history = self.config.history_bytes;
         let pane = self.pane_mut(id)?;
         let old = pane.respawned(
@@ -832,7 +880,7 @@ impl Session {
 
     /// The process group `fux signal` signals in a pane: the job its shell
     /// runs in the foreground, or the program `run` started; never a shell.
-    fn signalled(&self, target: PaneId) -> Result<crate::process::Pid, Error> {
+    fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
         let pane = self.pane(target)?;
         if let Some(status) = pane.process.exit_status() {
             return Err(ended(pane.id, status));
@@ -840,7 +888,7 @@ impl Session {
         // The program `run` started, unless that is a shell (`run -- bash`):
         // its foreground job, if any, is what a signal is for.
         let program = match (&pane.runs, pane.process.child()) {
-            (crate::pane::Runs::Program(launch), Some(child)) => {
+            (Runs::Program(launch), Some(child)) => {
                 // A shell taking commands typed at it: no -c, no script.
                 let shell = launch.argv.split_first().is_some_and(|(p, args)| {
                     let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
@@ -880,7 +928,7 @@ impl Session {
         let tab = (tabs_mut(&mut self.workspaces).find(|t| t.id == id)).ok_or(Error::NoTab(id))?;
         tab.name.clone_from(&name);
         tab.given = true;
-        let mut taken: std::collections::HashSet<String> = (self.workspaces.iter())
+        let mut taken: HashSet<String> = (self.workspaces.iter())
             .flat_map(|ws| std::iter::once(&ws.name).chain(ws.tabs().iter().map(|t| &t.name)))
             .cloned()
             .collect();
@@ -912,15 +960,21 @@ impl Session {
     /// What panes started for `origin` take of its environment: none of
     /// it for one that sent none (a test, a client of no terminal).
     fn starting_for(&self, origin: &Origin) -> Starting {
-        let (env, socket) = match origin {
-            Origin::Cli(caller) => (caller.env.as_slice(), caller.grant.clone()),
+        let (env, socket, restoring) = match origin {
+            Origin::Cli(caller) => match &caller.came {
+                Came::Socket => (caller.env.as_slice(), None, false),
+                Came::Grant(socket) => (caller.env.as_slice(), Some(socket.clone()), false),
+                Came::Restore => (caller.env.as_slice(), None, true),
+            },
             Origin::Client(client) => (
                 self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
                 None,
+                false,
             ),
         };
         let mut fresh = Starting {
             socket,
+            restoring,
             ..Starting::default()
         };
         for name in (self.config.update_environment.iter()).filter(|_| !env.is_empty()) {
@@ -932,23 +986,13 @@ impl Session {
         fresh
     }
 
-    /// The next ids made are `ids` (`id`), each of a kind in `kinds`, at
-    /// most one of each, and none that is there or (outside a restore)
-    /// was ever given.
-    fn want(&mut self, ids: &[AnyRef], kinds: &[Kind]) -> Result<(), Error> {
-        for (i, id) in ids.iter().enumerate() {
-            let twice = ids.iter().take(i).any(|other| other.kind() == id.kind());
-            if twice || !kinds.contains(&id.kind()) {
-                let message =
-                    format!("id {id}: not an id this command makes, or one of a kind given twice");
-                return Err(fail(Code::Id, message));
-            }
-            if self.there(*id).is_ok() {
-                return Err(Error::IdTaken(*id));
-            }
-            self.ids.want(*id, self.restoring)?;
+    /// The next ids made are `wanted`'s (`id`): none that is there or
+    /// (outside a restore) was ever given.
+    fn want(&mut self, wanted: Wanted, again: bool) -> Result<(), Error> {
+        if let Some(id) = wanted.each().find(|id| self.there(*id).is_ok()) {
+            return Err(Error::IdTaken(id));
         }
-        Ok(())
+        self.ids.want(wanted, again)
     }
 
     /// What a command that makes a pane prints: the ids it made, from
@@ -1004,10 +1048,14 @@ impl Session {
         let named = || -> Result<&Tab, Error> {
             match tabs.as_slice() {
                 [tab] => Ok(*tab),
-                [] => Err(fail(
-                    Code::NoTarget,
-                    format!("no {} named {text:?}", kind.name()),
-                )),
+                [] => {
+                    let code = match kind {
+                        Kind::Pane => Code::NoPane,
+                        Kind::Tab => Code::NoTab,
+                        Kind::Workspace => Code::NoWorkspace,
+                    };
+                    Err(fail(code, format!("no {} named {text:?}", kind.name())))
+                }
                 many => {
                     let each: Vec<String> = (many.iter())
                         .map(|t| format!("{} {}", t.id, joined(panes_of(t), " ")))
@@ -1060,9 +1108,19 @@ impl Session {
             }
             Kind::Tab => named().map(|tab| AnyRef::Tab(tab.id)),
             Kind::Workspace => {
-                let ws = command::parse_workspace(text).map_err(Error::Usage)?;
+                let ws = command::parse_workspace(text).map_err(bad_value)?;
                 Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
             }
+        }
+    }
+
+    /// The tabs `target` is or holds: a pane's own, a tab, or a
+    /// workspace's every tab.
+    fn tabs_of(&self, target: AnyRef) -> Vec<TabId> {
+        match target {
+            AnyRef::Tab(tab) => vec![tab],
+            AnyRef::Workspace(ws) => self.tab_ids(ws),
+            AnyRef::Pane(pane) => self.locate(pane).map(|(_, tab)| tab).into_iter().collect(),
         }
     }
 
@@ -1081,64 +1139,24 @@ impl Session {
         })
     }
 
-    /// Sends `inputs` to pane `id`'s program, a piece at a time
-    /// (`crate::log::Unit`): text typed in a row is one piece, keys that
-    /// edit the line in a row another, and each other key, a lone Escape
-    /// and a paste each their own. So in `keys str msg text str Enter key` the Enter is
-    /// read alone, as a submit, not as a newline pasted with the text, and
-    /// what follows each piece is told apart (`crate::classify`).
-    fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
-        use crate::log::Unit;
-        let p = self.pane_mut(id)?;
-        p.note_input();
-        let (mode, bracketed) = (
-            p.screen().key_mode(),
-            p.screen().mode(fux_vt::Mode::BracketedPaste),
-        );
-        let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
-        // Whether the last piece takes more, an edit: text, or keys.
-        let mut last: Option<bool> = None;
-        for input in inputs {
-            let mut bytes = Vec::new();
-            let unit = match input {
-                Input::Key(key) => {
-                    crate::encode::key_bytes((*key).into(), mode, &mut bytes);
-                    crate::command::unit(*key)
-                }
-                Input::Text(text) => {
-                    // A line end in text submits the line, read alone.
-                    let mut rest = text.as_str();
-                    while let Some(at) = rest.find(['\r', '\n']) {
-                        let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
-                        if !part.is_empty() {
-                            push_piece(&mut units, &mut last, part.as_bytes(), true);
-                        }
-                        let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
-                        units.push((end.as_bytes().to_vec(), Unit::Submit));
-                        last = None;
-                        rest = after;
-                    }
-                    if !rest.is_empty() {
-                        push_piece(&mut units, &mut last, rest.as_bytes(), true);
-                    }
-                    continue;
-                }
-                Input::Paste(text) => {
-                    crate::encode::paste(text, bracketed, &mut bytes);
-                    units.push((bytes, paste_unit(text, bracketed)));
-                    last = None;
-                    continue;
-                }
-            };
-            if unit == Unit::Edit && bytes != b"\x1b" {
-                push_piece(&mut units, &mut last, &bytes, false);
-            } else {
-                units.push((bytes, unit));
-                last = None;
-            }
+    /// Sends `inputs` to the programs of `target`'s panes, a piece at a time
+    /// (`units`).
+    fn send_keys(&mut self, target: AnyRef, inputs: &[Input]) -> Result<Reply, Error> {
+        // Every pane must take them, or none is sent them: each one's, as
+        // its program takes keys, are made and fit first.
+        let mut each = Vec::new();
+        for id in self.panes_of(target)? {
+            let pane = self.live_pane_mut(id)?;
+            let units = units(pane, inputs);
+            pane.room_for(&units)?;
+            each.push((id, units));
         }
-        p.send(units, Instant::now())?;
-        Ok(())
+        for (id, units) in each {
+            let pane = self.pane_mut(id)?;
+            pane.note_input();
+            pane.send(units, Instant::now())?;
+        }
+        Ok(Reply::default())
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
@@ -1151,14 +1169,14 @@ impl Session {
     }
 
     /// The size a pane starts at in a new tab laid out on `fit`.
-    fn start_size(&self, fit: Fit, here: Here) -> fux_vt::Size {
+    fn start_size(&self, fit: Fit, here: Here) -> Size {
         let area = self.tab_area(fit, here);
-        crate::pane::size(area.h(), area.w())
+        pane::size(area.h(), area.w())
     }
 
     /// The size a pane split from `target` along `axis` starts at: its
     /// place in the layout once split.
-    fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<fux_vt::Size, Error> {
+    fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<Size, Error> {
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
         let area = self.reference_area(tab, here);
         let mut ids = self.ids;
@@ -1178,7 +1196,7 @@ impl Session {
                 );
                 fail(Code::Size, message)
             })?;
-        Ok(crate::pane::size(rect.h(), rect.w()))
+        Ok(pane::size(rect.h(), rect.w()))
     }
 
     /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
@@ -1190,22 +1208,15 @@ impl Session {
         axis: Axis,
         extent: Extent,
     ) -> Result<String, Error> {
-        let cells = |extent: Extent, of: u16| match extent {
-            Extent::Cells(n) => n,
-            Extent::Percent(p) => {
-                let share = u32::from(of).saturating_mul(u32::from(p)).checked_div(100);
-                share
-                    .and_then(|n| u16::try_from(n).ok())
-                    .unwrap_or(of)
-                    .max(1)
-            }
-        };
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;
         let now = layout::place(&root, area)
             .rect(pane)
             .ok_or(Error::NoPane(pane))?;
-        let len = cells(extent, area.len(axis));
+        let len = match extent {
+            Extent::Cells(n) => n,
+            Extent::Percent(p) => p.of(area.len(axis)),
+        };
         let want = match axis {
             Axis::Horizontal => (len, now.h()),
             Axis::Vertical => (now.w(), len),
@@ -1229,7 +1240,7 @@ impl Session {
     fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsId, Error> {
         match explicit {
             Some(r) => self.resolve_ws(r),
-            None => here.place().map(|p| p.ws).ok_or(Error::NoWorkspaceGiven),
+            None => here.ws().ok_or(Error::NoWorkspaceGiven),
         }
     }
 
@@ -1237,8 +1248,8 @@ impl Session {
 
     fn cwd_for(&self, here: Here, near: Option<PaneId>) -> PathBuf {
         let near = match here {
-            Here::Cli(.., Some(cwd)) => return cwd.to_owned(),
-            Here::Cli(.., None) => near,
+            Here::Cli(_, Some(cwd)) => return cwd.to_owned(),
+            Here::Cli(_, None) => near,
             Here::Client(_, place) => near.or(place.pane),
         };
         let leader = near.and_then(|p| self.panes.get(&p)?.process.child());
@@ -1252,7 +1263,7 @@ impl Session {
     fn start_dir(
         &self,
         here: Here,
-        dir: Option<&str>,
+        dir: Option<&Path>,
         near: Option<PaneId>,
     ) -> Result<PathBuf, Error> {
         let cwd = match dir {
@@ -1283,8 +1294,8 @@ impl Session {
     fn create_workspace(
         &mut self,
         (name, tab_name): (Option<String>, Option<String>),
-        start: (Start<'_>, &Path),
-        (fit, size): (Fit, fux_vt::Size),
+        start: (Start<'_>, &Path, &Starting),
+        (fit, size): (Fit, Size),
     ) -> Result<(WsId, TabId, PaneId), Error> {
         if let Some(name) = &name {
             check_workspace_name(name, &self.workspaces)?;
@@ -1306,16 +1317,16 @@ impl Session {
         Ok(made)
     }
 
-    /// Adds a tab named `name` to workspace `ws`, laid out on `fit`,
-    /// holding one pane that starts what `start` says, `size` to begin with.
-    /// A workspace not there that `wanted` names by its name is made, the
-    /// tab its first.
+    /// Adds a tab named `name` (checked: `run` and `new-tab` check it) to
+    /// workspace `ws`, laid out on `fit`, holding one pane that starts what
+    /// `start` says, `size` to begin with. A workspace not there that
+    /// `wanted` names by its name is made, the tab its first.
     fn create_tab(
         &mut self,
         (ws, wanted): (Result<WsId, Error>, Option<&WsRef>),
         name: Option<String>,
-        start: (Start<'_>, &Path),
-        place: (Fit, fux_vt::Size),
+        start: (Start<'_>, &Path, &Starting),
+        place: (Fit, Size),
     ) -> Result<(WsId, TabId, PaneId), Error> {
         let ws = match (ws, wanted) {
             (Ok(ws), _) => ws,
@@ -1324,9 +1335,6 @@ impl Session {
             }
             (Err(error), _) => return Err(error),
         };
-        if let Some(name) = &name {
-            check_name(name)?;
-        }
         // Found before its pane's program starts, which nothing can then
         // leave running. As for a workspace: the ID first, committed after
         // the pane.
@@ -1345,14 +1353,18 @@ impl Session {
 
     // ------------------------------------------------------------- clients
 
-    /// A client attaches, viewing `workspace` or the first one.
-    pub fn attach(
+    /// A client attaches, viewing `workspace` or the first one (the tests'
+    /// terminal client).
+    #[cfg(test)]
+    pub(crate) fn attach(
         &mut self,
         rows: u16,
         cols: u16,
         workspace: Option<&str>,
     ) -> Result<ClientId, Error> {
-        self.attach_as(ClientKind::Terminal, rows, cols, workspace)
+        let workspace = workspace.map(command::parse_workspace).transpose();
+        let workspace = workspace.map_err(bad_value)?;
+        self.attach_as(ClientKind::Terminal, rows, cols, workspace.as_ref())
     }
 
     /// `attach`, for a client of `kind`.
@@ -1361,12 +1373,10 @@ impl Session {
         kind: ClientKind,
         rows: u16,
         cols: u16,
-        workspace: Option<&str>,
+        workspace: Option<&WsRef>,
     ) -> Result<ClientId, Error> {
         let ws = match workspace {
-            Some(name) => {
-                self.resolve_ws(&command::parse_workspace(name).map_err(Error::Usage)?)?
-            }
+            Some(workspace) => self.resolve_ws(workspace)?,
             None => {
                 // A server whose session did not come back starts afresh.
                 if self.workspaces.is_empty() {
@@ -1383,7 +1393,7 @@ impl Session {
         view.kind = kind;
         self.views.insert(id, view);
         self.workspaces.iter_mut().for_each(|w| w.attach(id));
-        self.show(id, ws, None, None);
+        self.show(id, ws, None);
         self.ask(id, crate::outer::QUERIES);
         self.settle();
         Ok(id)
@@ -1395,27 +1405,27 @@ impl Session {
         self.settle();
     }
 
-    /// Shows `client` workspace `ws`, one there is, and there tab `tab` and
-    /// in it pane `pane`, each if given and there.
-    fn show(&mut self, client: ClientId, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
+    /// Shows `client` workspace `ws`, one there is, and there the tab and
+    /// pane `at` says, each if given and there.
+    fn show(&mut self, client: ClientId, ws: WsId, at: Option<Spot>) {
         for w in &mut self.workspaces {
             if w.id != ws {
                 w.hide(client);
             } else {
                 w.viewers.insert(client);
-                w.show(client, tab, pane);
+                w.show(client, at);
             }
         }
     }
 
     /// The command's client, if it has one, follows what it made or moved:
     /// it is shown it, unzoomed.
-    fn follow(&mut self, here: Here, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
+    fn follow(&mut self, here: Here, ws: WsId, at: Option<Spot>) {
         if let Here::Client(client, _) = here
             && let Some(view) = self.views.get_mut(&client)
         {
             view.zoom = false;
-            self.show(client, ws, tab, pane);
+            self.show(client, ws, at);
         }
     }
 
@@ -1432,25 +1442,11 @@ impl Session {
         true
     }
 
-    /// Gives a client an error notice, if it is still attached.
-    pub fn error_to(&mut self, client: ClientId, text: impl Into<String>) {
+    /// Gives a client a notice, an error's if `error`, if it is still
+    /// attached.
+    pub fn notify_to(&mut self, client: ClientId, text: impl Into<String>, error: bool) {
         if let Some(view) = self.views.get_mut(&client) {
-            view.error(text);
-        }
-    }
-
-    /// Gives a client a notice, if it is still attached.
-    pub fn info_to(&mut self, client: ClientId, text: impl Into<String>) {
-        if let Some(view) = self.views.get_mut(&client) {
-            view.info(text);
-        }
-    }
-
-    /// Sets a client's mode, if it is still attached, for its next paint.
-    pub fn set_mode(&mut self, client: ClientId, mode: Mode) {
-        if let Some(view) = self.views.get_mut(&client) {
-            view.mode = mode;
-            view.dirty = true;
+            view.notify(text, error);
         }
     }
 
@@ -1506,7 +1502,7 @@ impl Session {
     fn tab_area(&self, fit: Fit, here: Here) -> Rect {
         let own = here.client().and_then(|c| self.views.get(&c));
         let client = own.or_else(|| self.views.values().next());
-        fit.area(client.map(Self::pane_area)).unwrap_or(TYPICAL)
+        fit.area(client.map_or(TYPICAL, Self::pane_area))
     }
 
     // -------------------------------------------------------------- repair
@@ -1516,12 +1512,13 @@ impl Session {
     pub fn settle(&mut self) {
         // Out of the session while they are repaired, which reads no view.
         let mut views = std::mem::take(&mut self.views);
-        let ended: Vec<ClientId> = (views.values_mut())
-            .filter_map(|view| self.repair(view).then_some(view.id))
+        let ended: Vec<(ClientId, ScreenKind)> = (views.values_mut())
+            .filter_map(|view| self.repair(view).map(|kind| (view.id, kind)))
             .collect();
         self.views = views;
-        for client in ended {
-            self.outbox.push(Outgoing::Ended(client));
+        for (client, kind) in ended {
+            self.outbox
+                .push(Outgoing::To(client, ToAttached::Ended(kind)));
         }
         self.size_panes();
         self.hold_copies();
@@ -1547,28 +1544,34 @@ impl Session {
                 copy.held_at = Some(screen.mark());
             } else {
                 view.mode = Mode::Normal;
-                view.error("copy mode ended: the history dropped the rows it held");
-                self.outbox.push(Outgoing::Ended(view.id));
+                view.notify(
+                    "copy mode ended: the history dropped the rows it held",
+                    true,
+                );
+                let ended = ToAttached::Ended(ScreenKind::Copy);
+                self.outbox.push(Outgoing::To(view.id, ended));
             }
         }
     }
 
     /// Ends what a view shows if what it is about is gone: copy mode whose
     /// pane closed or is no longer focused, a client's screen about a pane,
-    /// tab or workspace that closed. Whether it did, which its client is
-    /// told (`Outgoing::Ended`), the mode being the client's.
-    fn repair(&self, view: &mut View) -> bool {
+    /// tab or workspace that closed. Which kind it ended, if it did, which
+    /// its client is told (`ToAttached::Ended`), the mode being the client's.
+    fn repair(&self, view: &mut View) -> Option<ScreenKind> {
         use crate::act::{List, Panel};
         let focus = self.focused(view.id);
         // Copy mode's rows are looked for once the panes are sized
         // (`hold_copies`).
-        let gone = match &view.mode {
-            Mode::Copy(copy) if !self.panes.contains_key(&copy.pane) => {
-                "copy mode ended: its pane closed".to_owned()
-            }
-            Mode::Copy(copy) if Some(copy.pane) != focus => {
-                "copy mode ended: its pane is no longer focused".to_owned()
-            }
+        let (kind, gone) = match &view.mode {
+            Mode::Copy(copy) if !self.panes.contains_key(&copy.pane) => (
+                ScreenKind::Copy,
+                "copy mode ended: its pane closed".to_owned(),
+            ),
+            Mode::Copy(copy) if Some(copy.pane) != focus => (
+                ScreenKind::Copy,
+                "copy mode ended: its pane is no longer focused".to_owned(),
+            ),
             Mode::Panel(
                 Panel::List(List {
                     about: Some(about), ..
@@ -1577,12 +1580,14 @@ impl Session {
                     about: Some(about), ..
                 }
                 | Panel::Confirm { about, .. },
-            ) if self.there(*about).is_err() => format!("closed: {} is gone", about),
-            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return false,
+            ) if self.there(*about).is_err() => {
+                (ScreenKind::Panel, format!("closed: {} is gone", about))
+            }
+            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
         };
         view.mode = Mode::Normal;
-        view.error(gone);
-        true
+        view.notify(gone, true);
+        Some(kind)
     }
 
     /// The settings changed: every pane keeps the history they say.
@@ -1630,7 +1635,7 @@ impl Session {
         }
         // With no client, a tab that fits clients is laid out as a typical
         // terminal would show it (`tab_area`).
-        let client = Some(self.views.values().next().map_or(TYPICAL, Self::pane_area));
+        let client = self.views.values().next().map_or(TYPICAL, Self::pane_area);
         let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed_unshown(client));
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
@@ -1647,7 +1652,7 @@ impl Session {
             let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
                 (rows.min(*h), cols.min(*w))
             });
-            let size = crate::pane::size(rows, cols);
+            let size = pane::size(rows, cols);
             if let Some(pane) = self.panes.get_mut(&id)
                 && pane.size() != size
             {
@@ -1702,7 +1707,7 @@ impl Session {
             let closed = why.is_none();
             if let Some(why) = why {
                 for client in &viewers {
-                    self.info_to(*client, format!("{id} {} {why}", pane.label()));
+                    self.notify_to(*client, format!("{id} {} {why}", pane.label()), false);
                 }
             }
             self.end(id, pane.process, closed);
@@ -1765,8 +1770,8 @@ impl Session {
 
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
-    pub fn exited(&mut self, id: PaneId, ended: crate::process::Ended) {
-        let status = crate::process::shell_status(ended);
+    pub fn exited(&mut self, id: PaneId, ended: Ended) {
+        let status = process::shell_status(ended);
         // What a program wrote as it exited may still be on its terminal,
         // unread: its last screen is read whole before it is kept.
         let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
@@ -1787,7 +1792,7 @@ impl Session {
                     self.dying.insert(id, Dying { child, deadline });
                 }
                 for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
-                    self.info_to(client, format!("{id} {}", crate::process::told(ended)));
+                    self.notify_to(client, format!("{id} {}", process::told(ended)), false);
                 }
                 self.touch();
             }
@@ -1855,9 +1860,10 @@ impl Session {
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
             view.dirty = true;
             if dropped {
-                view.error(format!(
-                    "{id} is not reading its input; a terminal reply was dropped"
-                ));
+                view.notify(
+                    format!("{id} is not reading its input; a terminal reply was dropped"),
+                    true,
+                );
             }
         }
     }
@@ -1874,7 +1880,8 @@ impl Session {
             if fits {
                 let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
                 for &client in to {
-                    self.outbox.push(Outgoing::Bytes(client, osc.clone()));
+                    self.outbox
+                        .push(Outgoing::To(client, ToAttached::Paint(osc.clone().into())));
                 }
             }
         }
@@ -1894,138 +1901,117 @@ impl Session {
 
     /// Begins a request from a client: one that waits gives its wait,
     /// which the server asks for its answer until it has one; a stream of
-    /// events, its subscription; any other runs at once.
-    pub fn begin(&mut self, command: Command, origin: &Origin) -> Begun {
-        self.restoring = matches!(
-            origin,
-            Origin::Cli(Caller {
-                restoring: true,
-                ..
-            })
-        );
+    /// events, its subscription; a grant, for the server to make; any other
+    /// runs at once.
+    pub fn begin(&mut self, request: Request, origin: &Origin) -> Begun {
         // A size a saved session asks for that cannot be had here is left
         // as it comes, so one does not keep the rest from coming back.
-        if self.restoring && matches!(command, Command::ResizePane { .. }) {
-            let mut outcome = self.run_command(&command, origin);
-            if matches!(outcome.end, End::Failed { .. }) {
-                outcome = Reply::default();
-            }
-            return Begun::Done(outcome);
+        if let Request::Do(command @ Command::ResizePane { .. }) = &request
+            && self.starting_for(origin).restoring
+        {
+            let outcome = self.run_command(command, origin);
+            return Begun::Done(match outcome.end {
+                End::Failed { .. } => Reply::default(),
+                End::Done | End::Answered(_) => outcome,
+            });
         }
-        self.begin_command(command, origin)
+        self.begin_request(request, origin)
             .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
     }
 
-    /// `begin`'s work: what fails before a command runs is its error.
-    fn begin_command(&mut self, command: Command, origin: &Origin) -> Result<Begun, Error> {
-        let mut command = match self.scope(origin)? {
-            Some(scope) => self.scoped(command, &scope, origin)?,
-            None => command,
+    /// `begin`'s work: what fails before a request runs is its error.
+    fn begin_request(&mut self, request: Request, origin: &Origin) -> Result<Begun, Error> {
+        let request = match self.scope(origin)? {
+            Some(scope) => self.scoped(request, &scope, origin)?,
+            None => request,
         };
-        // Started, then waited for from its first output on.
-        if let Some(wait) = command.take_start_wait() {
-            return Ok(self.start_waiting(&command, *wait, origin));
-        }
-        if let Command::Events { target, json } = command {
-            let target = target.map(|t| self.there(t)).transpose()?;
-            return Ok(Begun::Events(Box::new(crate::events::Subscription {
-                target,
-                json,
-                seen: crate::events::Snapshot::of(self),
-            })));
-        }
-        // From a command line: read once the pane settles, said with its
-        // state.
-        if let Command::CapturePane {
-            target,
-            history,
-            view,
-            settle: Some(limit),
-        } = command
-        {
-            let wait = crate::command::Wait {
-                until: vec![crate::command::Until::Settled],
-                timeout: limit,
-                print: false,
-                after: false,
-                marks: false,
-            };
-            let pane = self.pane(target)?;
-            let now = Instant::now();
-            let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
-            waiting.capture = Some((history, view));
-            return Ok(self.wait_on(waiting, now));
-        }
-        let (target, wait, keys) = if let Command::Wait { target, wait } = command {
-            (target, wait, None)
-        } else if let Some((target, wait)) = command.acting_wait() {
-            (target, wait, Some(command))
-        } else {
-            return Ok(Begun::Done(self.run_command(&command, origin)));
+        let now = Instant::now();
+        let (target, wait, action) = match request {
+            Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
+            Request::Then(command, wait) => match command.armed() {
+                Some(Armed::Before(target)) => (target, *wait, Some(command)),
+                // Started, then waited for from its first output on.
+                Some(Armed::Started) => return Ok(self.start_waiting(&command, *wait, origin)),
+                None => return Err(fail(Code::Unused, "this command takes no wait")),
+            },
+            Request::Wait(target, wait) => (target, wait, None),
+            // Read once the pane settles, said with its state.
+            Request::Capture(target, history, view, timeout) => {
+                let wait = command::Wait {
+                    until: vec![command::Until::Settled],
+                    timeout,
+                    print: false,
+                    marks: false,
+                };
+                let pane = self.pane(target)?;
+                let follows = Follows::Capture(history, view);
+                let waiting = Waiting::new(&[pane], wait, follows, now, self.config.wait);
+                return Ok(self.wait_on(waiting, now));
+            }
+            Request::Events(target, json) => {
+                let target = target.map(|t| self.there(t)).transpose()?;
+                return Ok(Begun::Events(Box::new(crate::events::Subscription {
+                    target,
+                    json,
+                    seen: crate::events::Snapshot::of(self),
+                })));
+            }
+            Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
+            Request::Revoke(socket) => return Ok(Begun::Grant(socket, None)),
         };
+        // What the action brings counts from its input (`Pane::since`).
+        let follows = action.as_ref().map_or(Follows::Wait, |_| Follows::Action);
+        if let Some(command) = action {
+            let outcome = self.run_command(&command, origin);
+            match outcome.end {
+                End::Failed { .. } => return Ok(Begun::Done(outcome)),
+                End::Done | End::Answered(_) => {}
+            }
+        }
         let panes = (self.panes_of(target)?.into_iter())
             .map(|id| self.pane(id))
             .collect::<Result<Vec<_>, _>>()?;
-        let now = Instant::now();
-        // Armed before any keys go in: what the keys bring is what it sees.
-        let mut waiting = crate::wait::Waiting::new(&panes, wait, now, self.config.wait);
-        match keys {
-            Some(command) => {
-                let outcome = self.run_command(&command, origin);
-                if matches!(outcome.end, End::Failed { .. }) {
-                    return Ok(Begun::Done(outcome));
-                }
-            }
-            None => waiting.more = true,
-        }
+        let waiting = Waiting::new(&panes, wait, follows, now, self.config.wait);
         Ok(self.wait_on(waiting, now))
     }
 
     /// A wait's answer, if it has one already; else the wait.
-    fn wait_on(&self, mut waiting: crate::wait::Waiting, now: Instant) -> Begun {
+    fn wait_on(&self, mut waiting: Waiting, now: Instant) -> Begun {
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
         }
     }
 
-    /// A command line from a granted socket, if it may run: with no target,
-    /// one that would act anywhere (`ls`, `run`, `new-tab`, `events`) acts
-    /// on the granted workspace; one that names, or comes from, anything
+    /// A request from a granted socket, if it may run: with no target, one
+    /// that would act anywhere (`ls`, `run`, `new-tab`, `events`) acts on
+    /// the granted workspace; one that names, or comes from, anything
     /// outside it, or reaches what is everyone's (the config, the buffers,
     /// clients, the server), is refused.
-    fn scoped(&self, command: Command, scope: &str, origin: &Origin) -> Result<Command, Error> {
+    fn scoped(&self, mut request: Request, scope: &str, origin: &Origin) -> Result<Request, Error> {
         // With no target, one that would act anywhere acts on the granted
         // workspace.
-        let mut command = command;
         let ws = self.resolve_ws(&WsRef::Name(scope.to_owned())).ok();
-        let place = || Some(WsRef::Name(scope.to_owned()));
-        // The granted workspace, which may be gone: then nothing.
-        let whole = || {
-            let gone = || {
-                fail(
-                    Code::NotGranted,
-                    format!("workspace {scope} (grant) is gone"),
-                )
-            };
-            ws.map(AnyRef::Workspace).ok_or_else(gone)
-        };
-        if let Command::Run {
-            workspace: at @ None,
-            ..
-        }
-        | Command::NewTab {
-            target: at @ None, ..
-        } = &mut command
+        if let Request::Do(command) | Request::Then(command, _) = &mut request
+            && let Command::Run {
+                workspace: at @ None,
+                ..
+            }
+            | Command::NewTab {
+                target: at @ None, ..
+            } = command
         {
-            *at = place();
+            *at = Some(WsRef::Name(scope.to_owned()));
         }
-        if let Command::DumpLayout { target: at @ None }
-        | Command::Events {
-            target: at @ None, ..
-        } = &mut command
+        if let Request::Do(Command::DumpLayout { target: at @ None })
+        | Request::Events(at @ None, _) = &mut request
         {
-            *at = Some(whole()?);
+            // The granted workspace, which may be gone: then nothing.
+            let gone = fail(
+                Code::NotGranted,
+                format!("workspace {scope} (grant) is gone"),
+            );
+            *at = Some(ws.map(AnyRef::Workspace).ok_or(gone)?);
         }
         let reach = Reach {
             session: self,
@@ -2033,8 +2019,8 @@ impl Session {
             scope,
             here: self.here(origin)?,
         };
-        reach.command(&command)?;
-        Ok(command)
+        reach.request(&request)?;
+        Ok(request)
     }
 
     /// Runs a command that starts a program and prints its pane's id, then
@@ -2053,10 +2039,7 @@ impl Session {
             return Begun::Done(outcome);
         };
         let now = Instant::now();
-        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
-        waiting.lead = outcome.text;
-        waiting.made = outcome.ids;
-        waiting.fresh = true;
+        let waiting = Waiting::new(&[pane], wait, Follows::Started, now, self.config.wait);
         self.wait_on(waiting, now)
     }
 
@@ -2066,7 +2049,7 @@ impl Session {
             .execute(command, origin)
             .unwrap_or_else(|error| failure(error, origin));
         self.ids.unwant();
-        if !shows_nothing_new(command) {
+        if !command.reaches().shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
         }
@@ -2083,7 +2066,7 @@ impl Session {
 
     fn execute(&mut self, command: &Command, origin: &Origin) -> Result<Reply, Error> {
         let here = self.here(origin)?;
-        self.starting = self.starting_for(origin);
+        let starting = self.starting_for(origin);
         match command {
             Command::Ls { target, get } => {
                 // Through a grant, the granted workspace alone.
@@ -2110,8 +2093,12 @@ impl Session {
             }
             &Command::KillServer { force } => {
                 if let (Origin::Cli(caller), false) = (origin, force) {
-                    let pane = caller.pane.filter(|p| self.panes.contains_key(p));
-                    if pane.is_some() || caller.inside {
+                    let pane = caller.pane().filter(|p| self.panes.contains_key(p));
+                    let inside = match caller.within {
+                        Within::This => true,
+                        Within::Unsaid | Within::Other => false,
+                    };
+                    if pane.is_some() || inside {
                         let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
                         let message = format!(
                             "this runs in{pane} a pane of the server it would stop, with everything \
@@ -2151,13 +2138,13 @@ impl Session {
                 env,
                 ids,
             } => {
-                self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
+                self.want(*ids, starting.restoring)?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd, env), cwd.as_path());
+                let start = (Start::Shell(cmd, env.as_slice()), cwd.as_path(), &starting);
                 let place = (fit, self.start_size(fit, here));
                 let made = self.create_workspace((name.clone(), None), start, place)?;
-                self.follow(here, made.0, None, None);
+                self.follow(here, made.0, None);
                 Ok(Self::made_ids(made, Kind::Workspace))
             }
             Command::NewTab {
@@ -2169,13 +2156,13 @@ impl Session {
                 env,
                 ids,
             } => {
-                self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
+                self.want(*ids, starting.restoring)?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd, env), cwd.as_path());
+                let start = (Start::Shell(cmd, env.as_slice()), cwd.as_path(), &starting);
                 let place = (fit, self.start_size(fit, here));
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
@@ -2184,7 +2171,7 @@ impl Session {
                 if let Some(name) = name {
                     self.give_tab_name(tab, name.clone())?;
                 }
-                self.follow(here, ws, Some(tab), None);
+                self.follow(here, ws, Some((tab, None)));
                 Ok(Self::made_ids((ws, tab, pane), Kind::Tab))
             }
             Command::Run {
@@ -2196,13 +2183,8 @@ impl Session {
                 argv,
                 log,
                 ids,
-                ..
             } => {
-                self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
-                let log = log
-                    .as_ref()
-                    .map(|p| open_log(&self.cwd_for(here, None).join(p)))
-                    .transpose()?;
+                self.want(*ids, starting.restoring)?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 // Its place is out of every client's way: no client follows.
@@ -2212,19 +2194,33 @@ impl Session {
                     self.check_tab_name(name, None)?;
                 }
                 // Named after its program, if that makes a name.
-                let derived = Some(crate::pane::named(argv)).filter(|n| check_name(n).is_ok());
+                let derived = Some(pane::named(argv)).filter(|n| check_name(n).is_ok());
                 let given = name.clone();
                 let name = name.clone().or(derived);
-                let start = (Start::Program(argv, env), cwd.as_path());
+                let start = (
+                    Start::Program(argv, env.as_slice()),
+                    cwd.as_path(),
+                    &starting,
+                );
                 let workspace = workspace
                     .clone()
                     .unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
                 let ws = (self.resolve_ws(&workspace), Some(&workspace));
+                // Opened before the program starts, and emptied after: a run
+                // refused leaves the file as it was.
+                let log = log
+                    .as_ref()
+                    .map(|p| open_log(&self.cwd_for(here, None).join(p)))
+                    .transpose()?;
                 let made = self.create_tab(ws, name, start, place)?;
+                // Before any of its output is read: it all goes there. One
+                // that can't be emptied stops what was started, before a
+                // name it gives another tab is moved.
+                let log = log.map(emptied).transpose();
+                let log = log.inspect_err(|_| self.close_pane(made.2, None))?;
                 if let Some(given) = given {
                     self.give_tab_name(made.1, given)?;
                 }
-                // Before any of its output is read: it all goes there.
                 if let Some(pane) = self.panes.get_mut(&made.2) {
                     pane.log = log;
                 }
@@ -2235,13 +2231,11 @@ impl Session {
                 kill,
                 ref env,
                 ref argv,
-                ..
             } => {
-                let id = self.pane(target)?.id;
-                self.respawn(id, kill, env, argv)?;
+                self.respawn(target, kill, (env.as_slice(), argv), &starting)?;
                 Ok(Reply {
-                    ids: vec![AnyRef::Pane(id)],
-                    ..format!("{id}\n").into()
+                    ids: vec![AnyRef::Pane(target)],
+                    ..format!("{target}\n").into()
                 })
             }
             Command::Notify { target, text } => {
@@ -2257,7 +2251,7 @@ impl Session {
                     },
                 };
                 for client in to {
-                    self.info_to(client, text.clone());
+                    self.notify_to(client, text.clone(), false);
                 }
                 Ok(Reply::default())
             }
@@ -2273,14 +2267,7 @@ impl Session {
                             return Err(fail(Code::Size, message));
                         }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                        let target = self.there(*target)?;
-                        let tabs: Vec<TabId> = match target {
-                            AnyRef::Tab(tab) => vec![tab],
-                            AnyRef::Workspace(ws) => self.tab_ids(ws),
-                            AnyRef::Pane(pane) => {
-                                self.locate(pane).map(|(_, tab)| tab).into_iter().collect()
-                            }
-                        };
+                        let tabs = self.tabs_of(self.there(*target)?);
                         // A size that would hide one of a tab's panes is refused,
                         // as a split that would is.
                         if size.is_some() {
@@ -2316,18 +2303,8 @@ impl Session {
                 }
                 Ok(Reply::default())
             }
-            Command::Wait { .. }
-            | Command::Events { .. }
-            | Command::Grant { .. }
-            | Command::Revoke { .. } => {
-                let message = "wait, events and grant run from the command line";
-                Err(fail(Code::CliOnly, message))
-            }
             Command::DumpLayout { target } => {
-                let only = match target {
-                    Some(target) => Some(self.there(*target)?),
-                    None => None,
-                };
+                let only = target.map(|t| self.there(t)).transpose()?;
                 Ok(self.dump_layout(only, false).into())
             }
             &Command::SendMouse {
@@ -2335,7 +2312,6 @@ impl Session {
                 mouse,
                 row,
                 col,
-                ..
             } => {
                 let p = self.live_pane_mut(target)?;
                 let size = p.size();
@@ -2350,9 +2326,8 @@ impl Session {
                     return Err(fail(Code::Mouse, message));
                 }
                 let mut report = Vec::new();
-                let event = |action, button| fux_vt::keys::mouse::MouseEvent {
+                let event = |action| fux_vt::keys::mouse::MouseEvent {
                     action,
-                    button,
                     mods: fux_vt::keys::Modifiers::default(),
                     row,
                     col,
@@ -2362,23 +2337,31 @@ impl Session {
                 // in X10 mode), a release; a move while a button is held is
                 // a drag.
                 // Released, or clicked, it is held no more; another button's
-                // release leaves it held.
+                // release leaves it held. X10 reports presses alone: a click
+                // is its press, and a release or the wheel, which it cannot
+                // say, is refused.
                 let unheld = |button| p.mouse_held.filter(|held| *held != button);
-                let (events, held) = match mouse {
-                    Mouse::Click(button) => (
-                        vec![event(Press, Some(button)), event(Release, Some(button))],
-                        unheld(button),
-                    ),
-                    Mouse::Press(button) => (vec![event(Press, Some(button))], Some(button)),
-                    Mouse::Wheel(button) => (vec![event(Press, Some(button))], p.mouse_held),
-                    Mouse::Release(button) => (vec![event(Release, Some(button))], unheld(button)),
-                    Mouse::Move => (vec![event(Motion, p.mouse_held)], p.mouse_held),
+                let (events, held, beyond_x10) = match mouse {
+                    Mouse::Click(button) => {
+                        let button = button.reported();
+                        let events = vec![event(Press(button)), event(Release(Some(button)))];
+                        (events, unheld(button), false)
+                    }
+                    Mouse::Press(button) => {
+                        let button = button.reported();
+                        (vec![event(Press(button))], Some(button), false)
+                    }
+                    Mouse::Wheel(way) => (vec![event(Press(way.reported()))], p.mouse_held, true),
+                    Mouse::Release(button) => {
+                        let button = button.reported();
+                        (vec![event(Release(Some(button)))], unheld(button), true)
+                    }
+                    Mouse::Move => (vec![event(Motion(p.mouse_held))], p.mouse_held, false),
                 };
+                use fux_vt::MouseProtocolMode as Asked;
                 let mode = p.screen().mouse_protocol_mode();
-                let x10 = mode == fux_vt::MouseProtocolMode::Press;
-                // X10 reports presses alone: a click is its press, and a
-                // release or the wheel, which it cannot say, is refused.
-                if x10 && matches!(mouse, Mouse::Wheel(_) | Mouse::Release(_)) {
+                let x10 = mode == Asked::Press;
+                if x10 && beyond_x10 {
                     let message = format!(
                         "the program in {} asked for X10 mouse reports: presses alone, no releases or wheel",
                         p.id
@@ -2386,26 +2369,34 @@ impl Session {
                     return Err(fail(Code::Mouse, message));
                 }
                 for event in events {
-                    let release = event.action == Release;
+                    let release = match event.action {
+                        Release(_) => true,
+                        Press(_) | Motion(_) => false,
+                    };
                     if !p.screen().encode_mouse(event, &mut report) && !(release && x10) {
                         let pane = p.id;
-                        let message = match (event.action, mode) {
-                            (_, fux_vt::MouseProtocolMode::None) => {
+                        let message = match mode {
+                            Asked::None => {
                                 format!("the program in {pane} has not asked for mouse reports")
                             }
-                            (Motion, _) => format!(
-                                "the program in {pane} takes no motion here: with no button pressed it asked for none, \
-                                 and asking for clicks alone (mode 1000) it takes no drags either"
-                            ),
-                            _ => format!(
-                                "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
-                            ),
+                            Asked::Press
+                            | Asked::PressRelease
+                            | Asked::ButtonMotion
+                            | Asked::AnyMotion => match event.action {
+                                Motion(_) => format!(
+                                    "the program in {pane} takes no motion here: with no button pressed it asked for none, \
+                                     and asking for clicks alone (mode 1000) it takes no drags either"
+                                ),
+                                Press(_) | Release(_) => format!(
+                                    "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
+                                ),
+                            },
                         };
                         return Err(fail(Code::Mouse, message));
                     }
                 }
                 p.note_input();
-                p.send(vec![(report, crate::log::Unit::Submit)], Instant::now())?;
+                p.send(vec![(report, Unit::Submit)], Instant::now())?;
                 p.mouse_held = held;
                 Ok(Reply::default())
             }
@@ -2416,10 +2407,13 @@ impl Session {
                 ref cwd,
                 ref env,
                 run,
-                ref ids,
-                then: _,
+                id,
             } => {
-                self.want(ids, &[Kind::Pane])?;
+                let wanted = Wanted {
+                    pane: id,
+                    ..Wanted::default()
+                };
+                self.want(wanted, starting.restoring)?;
                 let target = self.pane(target)?.id;
                 let cwd = self.start_dir(here, cwd.as_deref(), Some(target))?;
                 // The splitting client follows the new pane; from the CLI, the
@@ -2429,16 +2423,15 @@ impl Session {
                     Here::Client(client, _) => vec![client],
                     Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
                 };
+                // Its tab found (by `split_size`) before the program
+                // starts, which nothing can then leave running.
                 let size = self.split_size(target, axis, here)?;
-                // Its tab found before the program starts, which nothing
-                // can then leave running.
-                tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
                 let start = match run {
-                    true => Start::Program(cmd, env),
-                    false => Start::Shell(cmd, env),
+                    true => Start::Program(cmd, env.as_slice()),
+                    false => Start::Shell(cmd, env.as_slice()),
                 };
-                let pane = new_pane(self, &mut ids, (start, &cwd), size)?;
+                let pane = new_pane(self, &mut ids, (start, &cwd, &starting), size)?;
                 let tab = tab_of(&mut self.workspaces, target)?;
                 self.ids = ids;
                 let new = pane.id;
@@ -2455,42 +2448,42 @@ impl Session {
                 let at = self.locate(new).ok_or(Error::NoPane(new))?;
                 Ok(Self::made_ids((at.0, at.1, new), Kind::Pane))
             }
-            &Command::Signal { target, signal, .. } => {
+            &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))?;
+                // An action: what it brings counts from here.
+                self.pane_mut(target)?.note_input();
                 Ok(Reply::default())
             }
             // From the command line each says what it closed, so a script
             // or an agent knows; a key's close shows on the screen anyway.
             Command::Kill { target } => {
-                // What may go with it, said once gone: a pane's tab, if it
-                // was its last, and that tab's workspace; a tab's or a
-                // workspace's panes.
+                // What may go with it, said once gone: a tab's or a
+                // workspace's panes; and what holds it, if it was the last
+                // there: a pane's tab and that tab's workspace, a tab's
+                // workspace.
                 let mut may_go = vec![self.there(*target)?];
-                // A tab there with no panes (moved out) has none to go.
-                if let AnyRef::Tab(_) | AnyRef::Workspace(_) = target {
-                    let panes = self.panes_of(*target).unwrap_or_default();
-                    may_go.extend(panes.into_iter().map(AnyRef::Pane));
-                }
+                let holders = match *target {
+                    AnyRef::Pane(pane) => (self.locate(pane)).map_or([None, None], |(w, t)| {
+                        [Some(AnyRef::Tab(t)), Some(AnyRef::Workspace(w))]
+                    }),
+                    AnyRef::Tab(tab) => [self.tab_workspace(tab).ok().map(AnyRef::Workspace), None],
+                    AnyRef::Workspace(_) => [None, None],
+                };
                 match *target {
-                    AnyRef::Pane(pane) => {
-                        let place = self.locate(pane).into_iter();
-                        may_go.extend(
-                            place.flat_map(|(w, t)| [AnyRef::Tab(t), AnyRef::Workspace(w)]),
-                        );
-                        self.close_pane(pane, None);
-                    }
-                    AnyRef::Tab(tab) => self.remove_tab(tab),
-                    AnyRef::Workspace(ws) => {
-                        self.tab_ids(ws)
-                            .into_iter()
-                            .for_each(|tab| self.remove_tab(tab));
+                    AnyRef::Pane(pane) => self.close_pane(pane, None),
+                    AnyRef::Tab(_) | AnyRef::Workspace(_) => {
+                        // A tab there with no panes (moved out) has none to go.
+                        let panes = self.panes_of(*target).unwrap_or_default();
+                        may_go.extend(panes.into_iter().map(AnyRef::Pane));
+                        for tab in self.tabs_of(*target) {
+                            self.remove_tab(tab);
+                        }
+                        self.after_close();
                     }
                 }
-                if let AnyRef::Tab(_) | AnyRef::Workspace(_) = target {
-                    self.after_close();
-                }
+                may_go.extend(holders.into_iter().flatten());
                 let gone: Vec<AnyRef> = (may_go.into_iter())
                     .filter(|it| self.there(*it).is_err())
                     .collect();
@@ -2512,8 +2505,7 @@ impl Session {
                 self.swap(source, other);
                 Ok(Reply::default())
             }
-            &Command::ResizePane { target, by } => {
-                let pane = self.pane(target)?.id;
+            &Command::ResizePane { target: pane, by } => {
                 let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
                 let area = self.reference_area(tab, here);
                 match by {
@@ -2539,10 +2531,9 @@ impl Session {
                 }
             }
             Command::Log { target, file } => {
-                let log = match file {
-                    Some(file) => Some(open_log(&self.cwd_for(here, None).join(file))?),
-                    None => None,
-                };
+                self.pane(*target)?;
+                let open = |f: &String| emptied(open_log(&self.cwd_for(here, None).join(f))?);
+                let log = file.as_ref().map(open).transpose()?;
                 self.pane_mut(*target)?.log = log;
                 Ok(Reply::default())
             }
@@ -2550,24 +2541,11 @@ impl Session {
                 self.pane_mut(target)?.parser.clear_history();
                 Ok(Reply::default())
             }
-            &Command::SendKeys {
-                target, ref inputs, ..
-            } => {
-                let panes = self.panes_of(target)?;
-                // Every pane must take them, or none is sent them.
-                for &id in &panes {
-                    self.live_pane_mut(id)?;
-                }
-                for id in panes {
-                    self.send_inputs(id, inputs)?;
-                }
-                Ok(Reply::default())
-            }
+            &Command::SendKeys { target, ref inputs } => self.send_keys(target, inputs),
             &Command::CapturePane {
                 target,
                 history,
                 view,
-                ..
             } => {
                 let pane = self.pane(target)?;
                 let copying = self.copying(pane.id);
@@ -2587,7 +2565,7 @@ impl Session {
                 // each client's next paint.
                 self.config
                     .set(option, value)
-                    .map_err(|m| fail(Code::Config, m))?;
+                    .map_err(|crate::config::Refused(code, why)| fail(code, why))?;
                 self.configured();
                 Ok(Reply::default())
             }
@@ -2621,8 +2599,7 @@ impl Session {
             &Command::PasteBuffer { index, target } => {
                 let text = self.buffers.get(index).cloned();
                 let paste = Input::Paste(text.ok_or(Error::NoBuffer(index))?);
-                self.send_inputs(target, &[paste])
-                    .map(|()| Reply::default())
+                self.send_keys(AnyRef::Pane(target), &[paste])
             }
             &Command::Client { client, ref action } => {
                 // The client named (`str c1 client`), else the one the command came from.
@@ -2644,17 +2621,20 @@ impl Session {
                         return crate::overlay::choices(self, client, choices);
                     }
                     ClientAction::Run(ref code) => {
-                        self.outbox.push(Outgoing::Run(client, code.clone()));
+                        self.outbox
+                            .push(Outgoing::To(client, ToAttached::Run(code.clone())));
                         return Ok(Reply::default());
                     }
                     // Taken as typed at its terminal: its bindings see them.
                     ClientAction::Keys(ref inputs) => {
-                        self.outbox.push(Outgoing::Keys(client, inputs.clone()));
+                        self.outbox
+                            .push(Outgoing::To(client, ToAttached::Keys(inputs.clone())));
                         return Ok(Reply::default());
                     }
                     ClientAction::Detach => {
                         self.detach(client);
-                        self.outbox.push(Outgoing::Exit(client, "detached".into()));
+                        self.outbox
+                            .push(Outgoing::To(client, ToAttached::Exit("detached")));
                         return Ok(Reply::default());
                     }
                     ClientAction::Capture => {
@@ -2674,9 +2654,7 @@ impl Session {
                 };
                 // A select shows the client where it picked, unzoomed.
                 match picked {
-                    Some((ws, tab, pane)) => {
-                        self.follow(Here::Client(client, place), ws, tab, pane)
-                    }
+                    Some((ws, at)) => self.follow(Here::Client(client, place), ws, at),
                     None => (self.views.get_mut(&client))
                         .into_iter()
                         .for_each(|v| v.zoom = !v.zoom),
@@ -2785,7 +2763,7 @@ impl Session {
         }
         self.relocate(pane, tab);
         // The moving client follows its pane.
-        self.follow(here, ws, Some(tab), Some(pane));
+        self.follow(here, ws, Some((tab, Some(pane))));
         Ok(format!("{tab}\n"))
     }
 
@@ -2841,7 +2819,7 @@ impl Session {
             }
         };
         let (ws, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        Ok((ws, Some(tab), Some(target)))
+        Ok((ws, Some((tab, Some(target)))))
     }
 
     /// The tab `show-tab` picks for a client at `at`.
@@ -2855,7 +2833,7 @@ impl Session {
                 (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id)
             }
         };
-        Ok((ws, Some(target), None))
+        Ok((ws, Some((target, None))))
     }
 
     /// The workspace `show-workspace` picks for client `view`.
@@ -2869,7 +2847,7 @@ impl Session {
                 next.ok_or(Error::OnlyOne(Kind::Workspace))?.id
             }
         };
-        Ok((ws, None, None))
+        Ok((ws, None))
     }
 
     // ------------------------------------------------------------------ ls
@@ -2878,21 +2856,16 @@ impl Session {
     /// what is in it, a line each.
     fn ls_text(&self, only: Option<AnyRef>) -> String {
         let mut out = String::new();
-        let listed_ws = |ws: &&Workspace| match only {
-            Some(AnyRef::Workspace(w)) => w == ws.id,
-            None | Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => true,
-        };
-        let listed_tab = |tab: &&Tab| match only {
-            Some(AnyRef::Tab(t)) => t == tab.id,
-            Some(AnyRef::Pane(p)) => self.locate(p).is_some_and(|(_, t)| t == tab.id),
-            None | Some(AnyRef::Workspace(_)) => true,
-        };
         let listed_pane = |pane: PaneId| !matches!(only, Some(AnyRef::Pane(p)) if p != pane);
-        for ws in self.workspaces.iter().filter(listed_ws) {
-            if matches!(only, None | Some(AnyRef::Workspace(_))) {
+        for ws in &self.workspaces {
+            if only.is_none_or(|o| o == AnyRef::Workspace(ws.id)) {
                 out.push_str(&format!("{} {}\n", ws.id, ws.name));
             }
-            for tab in ws.tabs().iter().filter(listed_tab) {
+            for tab in ws
+                .tabs()
+                .iter()
+                .filter(|t| self.takes_in(only, ws.id, t.id))
+            {
                 out.push_str(&format!(
                     "  {} {}{}\n",
                     tab.id,
@@ -2907,7 +2880,7 @@ impl Session {
                     if let Some(p) = self.panes.get(&pane) {
                         let process = match (p.process.child(), p.process.exit_status()) {
                             (Some(child), _) => format!(" pid {}", child.leader.pid()),
-                            (None, Some(ended)) => format!(" {}", crate::process::told(ended)),
+                            (None, Some(ended)) => format!(" {}", process::told(ended)),
                             (None, None) => String::new(),
                         };
                         out.push_str(&format!(
@@ -2988,10 +2961,11 @@ impl Session {
     }
 
     /// `info` and `get`: one pane, tab or workspace, as JSON, or one field
-    /// of its JSON (`get`), a string's text as it is.
+    /// of its JSON (`get`), a string's text as it is. `target` is there
+    /// (`there`, by its caller).
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
-        let mut fields = match self.there(target)? {
+        let mut fields = match target {
             AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
             AnyRef::Tab(id) => self.tab(id).map(|t| self.tab_json(t, now)),
             AnyRef::Workspace(id) => self.workspace(id).map(|w| self.ws_json(w, now)),
@@ -3038,7 +3012,6 @@ impl Session {
                 return Err(fail(Code::NoField, message));
             }
         };
-        drop(names);
         Ok(Reply {
             value: scalar,
             ..text.into()
@@ -3114,27 +3087,22 @@ impl Session {
     /// workspace has it. Through a grant revoked, nothing.
     fn scope(&mut self, origin: &Origin) -> Result<Option<String>, Error> {
         let Origin::Cli(Caller {
-            grant: Some(socket),
+            came: Came::Grant(socket),
             ..
         }) = origin
         else {
             return Ok(None);
         };
-        let Some(at) = self.grants.iter().position(|g| g.socket == *socket) else {
+        let Some(grant) = self.grants.iter().find(|g| g.socket == *socket) else {
             let message = "the grant this socket came through was revoked";
             return Err(fail(Code::NotGranted, message));
         };
-        let pinned = self.grants.get(at).and_then(|g| g.pinned);
-        if let Some(ws) = pinned.and_then(|id| self.workspace(id)) {
+        if let Some(ws) = grant.pinned.and_then(|id| self.workspace(id)) {
             return Ok(Some(ws.name.clone()));
         }
-        let name = self
-            .grants
-            .get(at)
-            .map(|g| g.workspace.clone())
-            .unwrap_or_default();
+        let name = grant.workspace.clone();
         let found = self.resolve_ws(&WsRef::Name(name.clone())).ok();
-        if let Some(grant) = self.grants.get_mut(at) {
+        if let Some(grant) = self.grants.iter_mut().find(|g| g.socket == *socket) {
             grant.pinned = found;
         }
         Ok(Some(name))
@@ -3150,11 +3118,7 @@ impl Session {
         }
         Ok(match workspace {
             WsRef::Name(name) => name.clone(),
-            WsRef::Id(_) => {
-                let id = self.resolve_ws(workspace)?;
-                self.workspace(id)
-                    .map_or_else(String::new, |w| w.name.clone())
-            }
+            WsRef::Id(id) => (self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.name).clone(),
         })
     }
 
@@ -3214,19 +3178,15 @@ enum Start<'a> {
 fn new_pane(
     session: &Session,
     ids: &mut Ids,
-    (start, cwd): (Start<'_>, &Path),
-    size: fux_vt::Size,
+    (start, cwd, starting): (Start<'_>, &Path, &Starting),
+    size: Size,
 ) -> Result<Pane, Error> {
     let config = &session.config;
-    let shell_program = config
-        .shell
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "/bin/sh".into());
+    let shell = config.shell.argv();
     let (argv, cmd, runs, env) = match start {
-        Start::Shell(cmd, env) => (config.shell.as_slice(), cmd, Runs::Shell, env),
+        Start::Shell(cmd, env) => (shell.as_slice(), cmd, Runs::Shell, env),
         Start::Program(argv, env) => {
-            let launch = crate::pane::Launch {
+            let launch = pane::Launch {
                 argv: argv.to_vec(),
                 cwd: cwd.to_path_buf(),
                 env: env.to_vec(),
@@ -3239,7 +3199,7 @@ fn new_pane(
     let typed = match start {
         Start::Shell([], _) | Start::Program(..) => None,
         Start::Shell(cmd, _) => {
-            let fish = basename(&shell_program) == "fish";
+            let fish = basename(config.shell.program()) == "fish";
             let mut line = crate::words::shell_line(cmd, fish)
                 .map_err(|m| fail(Code::Usage, m))?
                 .into_bytes();
@@ -3247,20 +3207,19 @@ fn new_pane(
             let deadline = crate::after(Instant::now(), TYPE_WAIT);
             Some(
                 Typed::new(line, deadline)
-                    .ok_or_else(|| fail(Code::TooLong, "the command line is too long to type"))?,
+                    .ok_or_else(|| fail(Lang::TooLong, "the command line is too long to type"))?,
             )
         }
     };
     let id = ids.pane()?;
-    let name = cmd
-        .first()
-        .map(|c| basename(c))
-        .unwrap_or_else(|| basename(&shell_program));
+    let name = basename(cmd.first().map_or(config.shell.program(), String::as_str));
     let mut pane = Pane::new(id, name, runs, size, config.history_bytes)?;
     pane.record.set_budget(config.journal_bytes);
     // A program brought back by a restore waits for `respawn`.
-    let paused = session.restoring && matches!(start, Start::Program(..));
-    if !paused && let Some((child, nonce)) = session.spawn(id, (argv, env), cwd, size)? {
+    let paused = starting.restoring && matches!(start, Start::Program(..));
+    if !paused
+        && let Some((child, nonce)) = session.spawn(id, (argv, env), (cwd, starting), size)?
+    {
         pane.process = Process::Reading(child);
         pane.mark_with(nonce);
     }
@@ -3275,17 +3234,18 @@ fn new_pane(
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
-        return Err(fail(Code::BadName, "a name cannot be empty or blank"));
+        return Err(fail(Lang::BadName, "a name cannot be empty or blank"));
     }
     // Control characters, and the invisible ones that change how text
-    // around them shows (zero-width, direction overrides).
-    let invisible = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
+    // around them shows (zero-width, direction marks and overrides: UAX #9
+    // 2.6 names U+061C beside U+200E and U+200F).
+    let invisible = |c: char| matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
     if name.chars().any(|c| c.is_control() || invisible(c)) {
         let message = "a name cannot contain control or invisible characters";
-        return Err(fail(Code::BadName, message));
+        return Err(fail(Lang::BadName, message));
     }
     if name.len() > 256 {
-        return Err(fail(Code::BadName, "a name is at most 256 bytes"));
+        return Err(fail(Lang::BadName, "a name is at most 256 bytes"));
     }
     Ok(())
 }
@@ -3327,15 +3287,11 @@ fn no_tab_named<'a>(
     if tabs.is_empty() {
         return Ok(());
     }
-    let panes = tabs
-        .iter()
-        .flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
-    let panes = panes.collect();
-    Err(Error::TabNameTaken(
-        name.to_owned(),
-        tabs.iter().map(|t| t.id).collect(),
-        panes,
-    ))
+    // `run` with such a name: `str NAME tab` would not know which, so the
+    // program is not started. The tabs, then their panes.
+    let panes = (tabs.iter()).flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
+    let tabs = tabs.iter().map(|t| t.id).collect();
+    Err(Error::TabNameTaken(name.to_owned(), tabs, panes.collect()))
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -3377,6 +3333,8 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::{Origin, Reply, Session};
+    use crate::code::Code;
+    use crate::command::{Command, Request};
     use crate::config::Config;
     use crate::id::ClientId;
 
@@ -3384,7 +3342,7 @@ pub(crate) mod testing {
     /// named after it), started.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
         let config = Config {
-            shell: vec!["/bin/sh".into()],
+            shell: crate::config::Shell::parse("/bin/sh").map_err(|e| e.1)?,
             ..config
         };
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);
@@ -3410,15 +3368,15 @@ pub(crate) mod testing {
     impl crate::script::Asks for InProcess<'_> {
         fn ask(
             &mut self,
-            request: &crate::protocol::Request,
+            asked: &crate::protocol::Asked,
             out: &mut dyn std::io::Write,
         ) -> Result<Reply, crate::script::Failed> {
             let session = &mut *self.0;
-            let origin = match request.context.client {
+            let origin = match asked.context.client {
                 Some(client) if session.views.contains_key(&client) => Origin::Client(client),
                 Some(_) | None => Origin::Cli(super::Caller::default()),
             };
-            let outcome = match session.begin(request.command.clone(), &origin) {
+            let outcome = match session.begin(asked.request.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
                 super::Begun::Waiting(mut waiting) => {
                     let later = crate::after(std::time::Instant::now(), waiting.limit);
@@ -3427,6 +3385,9 @@ pub(crate) mod testing {
                 super::Begun::Events(_) => {
                     let _ = writeln!(out, "events stream from a real server only");
                     Reply::default()
+                }
+                super::Begun::Grant(..) => {
+                    Reply::failed(Code::Grant, "a grant is made by a real server only")
                 }
             };
             Ok(outcome)
@@ -3442,16 +3403,65 @@ pub(crate) mod testing {
         client: Option<ClientId>,
         code: &str,
     ) -> Result<String, String> {
-        let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
-        let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+        let (out, ended) = run_as(session, client, false, code);
+        let ended = ended.map_err(|e| e.to_string())?;
+        let mut text = String::from_utf8_lossy(&out).into_owned();
+        for value in &ended {
+            text.push_str(&value.text());
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    /// Runs fuxth `code` as [`output_as`] does, settling as a command line
+    /// does if `settle`: each value it left, its kind's name then its text's
+    /// first line (`pane %1`), or the failure's code and status.
+    pub(crate) fn stack_as(
+        session: &mut Session,
+        client: Option<ClientId>,
+        settle: bool,
+        code: &str,
+    ) -> Vec<String> {
+        match run_as(session, client, settle, code).1 {
+            Ok(stack) => (stack.iter())
+                .map(|value| {
+                    let text = value.text();
+                    format!(
+                        "{} {}",
+                        value.kind_name(),
+                        text.lines().next().unwrap_or("")
+                    )
+                })
+                .collect(),
+            Err(failed) => vec![format!("fails {} {}", failed.code, failed.code.status())],
+        }
+    }
+
+    fn run_as(
+        session: &mut Session,
+        client: Option<ClientId>,
+        settle: bool,
+        code: &str,
+    ) -> (
+        Vec<u8>,
+        Result<Vec<fuxth::Value<crate::script::Fux>>, crate::script::Failed>,
+    ) {
         let mut out = Vec::new();
+        let tokens = match fuxth::token::source("test", code) {
+            Ok(tokens) => tokens,
+            Err(e) => return (out, Err(crate::script::Failed::from(e))),
+        };
+        let mut machine = match crate::script::compile(&tokens) {
+            Ok(machine) => machine,
+            Err(failed) => return (out, Err(failed)),
+        };
         let mut keymap = std::mem::take(&mut session.test_keymap);
         let context = crate::protocol::Context {
             client,
             ..crate::protocol::Context::default()
         };
         let mut host =
-            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, false);
+            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, settle);
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
             asks: &mut process,
@@ -3465,31 +3475,24 @@ pub(crate) mod testing {
             session.open_screen(client, screen);
         }
         deliver(session);
-        let ended = ended.map_err(|e| e.to_string())?;
-        let mut text = String::from_utf8_lossy(&out).into_owned();
-        for value in &ended.stack {
-            text.push_str(&value.text());
-            text.push('\n');
-        }
-        Ok(text)
+        (out, ended)
     }
 
     /// What the server sent clients, taken as their clients take it: a
     /// program to run, keys typed, copy mode ended. The rest is left.
     pub(crate) fn deliver(session: &mut Session) {
+        use crate::protocol::ToAttached;
         let outbox = std::mem::take(&mut session.outbox);
         let mut kept = Vec::new();
         for outgoing in outbox {
             match outgoing {
-                super::Outgoing::Run(client, code) => session.run_as(client, &code),
-                super::Outgoing::Ended(client) => {
-                    if let Some(keys) = session.test_keys.get_mut(&client)
-                        && keys.screen.is_open()
-                    {
-                        keys.screen = crate::screens::Screen::default();
+                super::Outgoing::To(client, ToAttached::Run(code)) => session.run_as(client, &code),
+                super::Outgoing::To(client, ToAttached::Ended(kind)) => {
+                    if let Some(keys) = session.test_keys.get_mut(&client) {
+                        keys.screen.ended(kind);
                     }
                 }
-                super::Outgoing::Keys(client, inputs) => {
+                super::Outgoing::To(client, ToAttached::Keys(inputs)) => {
                     use crate::decode::Input;
                     let typed = inputs.into_iter().flat_map(|input| match input {
                         crate::command::Input::Key(press) => vec![Input::Key(press.into())],
@@ -3501,8 +3504,10 @@ pub(crate) mod testing {
                     });
                     session.inputs(client, typed.collect());
                 }
-                other @ (super::Outgoing::Bytes(..)
-                | super::Outgoing::Exit(..)
+                other @ (super::Outgoing::To(
+                    _,
+                    ToAttached::Paint(_) | ToAttached::Exit(_) | ToAttached::Welcome(..),
+                )
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
                 }
@@ -3535,17 +3540,18 @@ pub(crate) mod testing {
         impl crate::script::Asks for Recorder<'_> {
             fn ask(
                 &mut self,
-                request: &crate::protocol::Request,
+                asked: &crate::protocol::Asked,
                 out: &mut dyn std::io::Write,
             ) -> Result<Reply, crate::script::Failed> {
-                let command = &request.command;
-                if let crate::command::Command::Resolve { .. } = command {
-                    return self.0.ask(request, out);
-                }
-                let recorded = if let crate::command::Command::Client { action, .. } = command {
-                    action.clone().here()
-                } else {
-                    command.clone()
+                let recorded = match &asked.request {
+                    Request::Do(Command::Client { action, .. }) => action.clone().here(),
+                    Request::Do(Command::Resolve { .. })
+                    | Request::Wait(..)
+                    | Request::Capture(..)
+                    | Request::Events(..)
+                    | Request::Grant(..)
+                    | Request::Revoke(_) => return self.0.ask(asked, out),
+                    Request::Do(command) | Request::Then(command, _) => command.clone(),
                 };
                 self.1.push(recorded);
                 Ok(Reply::default())
@@ -3614,9 +3620,9 @@ pub(crate) mod testing {
         /// notice, as its client shows them.
         pub(crate) fn run_as(&mut self, client: ClientId, code: &str) {
             match output_as(self, Some(client), code) {
-                Err(error) => self.error_to(client, error),
+                Err(error) => self.notify_to(client, error, true),
                 Ok(said) if !said.trim().is_empty() => {
-                    self.info_to(client, said.trim().replace('\n', "  "));
+                    self.notify_to(client, said.trim().replace('\n', "  "), false);
                 }
                 Ok(_) => {}
             }
@@ -3640,7 +3646,7 @@ pub(crate) mod testing {
                     return;
                 };
                 let keys = self.test_keys.entry(client).or_default();
-                let open = keys.screen.is_open();
+                let open = keys.screen.kind().is_some();
                 let act = match input {
                     Input::Key(stroke) => {
                         let effects = keys.screen.key(&self.test_keymap, stroke, read_only);
@@ -3679,28 +3685,76 @@ pub(crate) mod testing {
     }
 }
 
-/// What a paste is to the program reading it: an edit, bracketed or one
-/// line; unbracketed with a line end, it submits lines.
-fn paste_unit(text: &str, bracketed: bool) -> crate::log::Unit {
-    match bracketed || !text.contains(['\r', '\n']) {
-        true => crate::log::Unit::Edit,
-        false => crate::log::Unit::Submit,
+/// `inputs` as pane `p`'s program takes them, a piece at a time
+/// (`Unit`): text typed in a row is one piece, keys that
+/// edit the line in a row another, and each other key, a lone Escape
+/// and a paste each their own. So in `keys str msg text str Enter key` the Enter is
+/// read alone, as a submit, not as a newline pasted with the text, and
+/// what follows each piece is told apart (`crate::classify`).
+fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
+    let (mode, bracketed) = (
+        p.screen().key_mode(),
+        p.screen().mode(fux_vt::Mode::BracketedPaste),
+    );
+    let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
+    // Whether the last piece takes more, an edit: text, or keys.
+    let mut last: Option<bool> = None;
+    for input in inputs {
+        let mut bytes = Vec::new();
+        let unit = match input {
+            Input::Key(key) => {
+                crate::encode::key_bytes((*key).into(), mode, &mut bytes);
+                crate::command::unit(*key)
+            }
+            Input::Text(text) => {
+                // A line end in text submits the line, read alone.
+                let mut rest = text.as_str();
+                while let Some(at) = rest.find(['\r', '\n']) {
+                    let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
+                    if !part.is_empty() {
+                        push_piece(&mut units, &mut last, part.as_bytes(), true);
+                    }
+                    let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
+                    units.push((end.as_bytes().to_vec(), Unit::Submit));
+                    last = None;
+                    rest = after;
+                }
+                if !rest.is_empty() {
+                    push_piece(&mut units, &mut last, rest.as_bytes(), true);
+                }
+                continue;
+            }
+            Input::Paste(text) => {
+                crate::encode::paste(text, bracketed, &mut bytes);
+                // An edit, bracketed or one line; unbracketed with a line
+                // end, it submits lines.
+                let unit = match bracketed || !text.contains(['\r', '\n']) {
+                    true => Unit::Edit,
+                    false => Unit::Submit,
+                };
+                units.push((bytes, unit));
+                last = None;
+                continue;
+            }
+        };
+        if unit == Unit::Edit && bytes != b"\x1b" {
+            push_piece(&mut units, &mut last, &bytes, false);
+        } else {
+            units.push((bytes, unit));
+            last = None;
+        }
     }
+    units
 }
 
 /// Adds `bytes`, an edit that is `text` typed or else keys, to the last
 /// piece if that is an edit of the same kind, else as a piece of its own.
-fn push_piece(
-    units: &mut Vec<(Vec<u8>, crate::log::Unit)>,
-    last: &mut Option<bool>,
-    bytes: &[u8],
-    text: bool,
-) {
+fn push_piece(units: &mut Vec<(Vec<u8>, Unit)>, last: &mut Option<bool>, bytes: &[u8], text: bool) {
     match units.last_mut() {
-        Some((piece, crate::log::Unit::Edit)) if *last == Some(text) => {
+        Some((piece, Unit::Edit)) if *last == Some(text) => {
             piece.extend_from_slice(bytes);
         }
-        _ => units.push((bytes.to_vec(), crate::log::Unit::Edit)),
+        _ => units.push((bytes.to_vec(), Unit::Edit)),
     }
     *last = Some(text);
 }
@@ -3709,6 +3763,113 @@ fn push_piece(
 mod tests {
     use super::testing::{attached, output, requests, run, started};
     use super::*;
+
+    /// A run refused (its name is taken, its workspace is not there or
+    /// can't be made) leaves the log file it names as it was, its contents
+    /// and its mode: the file is emptied and made the user's alone only for
+    /// a run that starts.
+    #[test]
+    fn a_refused_run_leaves_its_log_alone() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let mut s = started(Config::default())?;
+        let log = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
+        let line = |opts: &str| {
+            let log = log.display();
+            format!("opts {opts} str '{log}' log-to str /bin/cat program run")
+        };
+        run(&mut s, &line("str a name"))?;
+        // The one that starts makes it the user's alone.
+        assert_eq!(std::fs::metadata(&log)?.permissions().mode() & 0o777, 0o600);
+        std::fs::write(&log, "kept")?;
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o640))?;
+        let refused = [
+            (line("str a name"), "name_taken"),
+            (line("str +9 in"), "no_workspace"),
+            (line("str %9 in"), "bad_name"),
+            (line("str a in"), "name_taken"),
+        ];
+        let kept = refused.map(|(line, code)| {
+            let failed = run(&mut s, &line).is_err_and(|e| e.contains(code));
+            let mode = std::fs::metadata(&log).map(|m| m.permissions().mode() & 0o777);
+            (code, failed, std::fs::read_to_string(&log).ok(), mode.ok())
+        });
+        std::fs::remove_file(&log)?;
+        for (code, failed, text, mode) in kept {
+            assert!(failed, "{code}");
+            assert_eq!(text.as_deref(), Some("kept"), "{code}");
+            assert_eq!(mode, Some(0o640), "{code}");
+        }
+        Ok(())
+    }
+
+    /// A run whose log can't be readied (procfs refuses a file's mode
+    /// change) fails, and leaves no program of its own running.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_run_whose_log_fails_leaves_nothing_running() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let panes = s.panes.len();
+        let ran = run(
+            &mut s,
+            "opts str /proc/self/comm log-to str /bin/cat program run",
+        );
+        assert!(ran.is_err_and(|e| e.contains("log")), "refused");
+        assert_eq!(s.panes.len(), panes);
+        // Refused before it started: its pane's id was never taken.
+        run(&mut s, "opts str /bin/cat program run")?;
+        assert!(
+            s.panes.contains_key(&PaneId::of(2)),
+            "the next run's pane is %2"
+        );
+        Ok(())
+    }
+
+    /// A log whose mode only another user may set (`/dev/null`, root's)
+    /// refuses the run before anything starts: no pane is made for it, so
+    /// the next run's pane is the next id (ids are never given twice).
+    #[test]
+    fn a_log_another_user_owns_refuses_the_run_first() -> Result<(), String> {
+        if fuxix::process::geteuid() == 0 {
+            return Ok(());
+        }
+        let mut s = started(Config::default())?;
+        let ran = run(&mut s, "opts str /dev/null log-to str /bin/cat program run");
+        assert!(ran.is_err_and(|e| e.contains("log")), "refused");
+        run(&mut s, "opts str /bin/cat program run")?;
+        assert!(
+            s.panes.contains_key(&PaneId::of(2)),
+            "the next run's pane is %2"
+        );
+        Ok(())
+    }
+
+    /// A paste into a pane whose program exited is refused, as keys are.
+    #[test]
+    fn a_paste_into_an_exited_pane_is_refused() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
+        s.buffers.push_front("x".into());
+        let pasted = run(&mut s, "%2 0 paste-buffer");
+        assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
+        Ok(())
+    }
+
+    /// Keys sent to a tab's panes go to every one of them or to none: a
+    /// pane that has no room for them refuses them before any is sent.
+    #[test]
+    fn keys_for_several_panes_go_to_all_or_none() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 opts split drop")?;
+        let second = s.panes.get_mut(&PaneId::of(2)).ok_or("no %2")?;
+        // Its program reads nothing: the queue refuses everything now.
+        assert!(second.input.push(vec![0; 1 << 30]).is_err());
+        let sent = run(&mut s, "@1 keys str x text send-keys");
+        assert!(sent.is_err_and(|e| e.contains("not_reading")), "refused");
+        let first = s.panes.get(&PaneId::of(1)).ok_or("no %1")?;
+        assert_eq!(first.input.len(), 0, "the first pane got none");
+        Ok(())
+    }
 
     /// `set history-bytes` changes every pane's history, not only the next
     /// pane's.
@@ -3744,7 +3905,7 @@ mod tests {
         let sent = |s: &Session| {
             s.outbox
                 .iter()
-                .any(|o| matches!(o, Outgoing::Bytes(c, b) if *c == client && b == b"\x1b]52;c;Zm9v\x07"))
+                .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
         };
         assert!(sent(&s));
         s.outbox.clear();
@@ -3965,6 +4126,7 @@ mod tests {
             "str %1 pane opts capture",
             "list-keys",
             "str %1 pane keys str x text send-keys",
+            "str c1 client keys str x text send-keys",
         ] {
             run(&mut s, line)?;
         }
@@ -4159,7 +4321,7 @@ mod tests {
     }
 
     /// A bare id names its pane, tab or workspace, but not as `str`'s text;
-    /// `json` among a capture's options gives JSON; `command` splits a line.
+    /// `json` after a capture gives its JSON; `command` splits a line.
     #[test]
     fn ids_json_and_command_lines_read_as_written() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
@@ -4169,7 +4331,7 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b]2;spool\x07");
         assert_eq!(output(&mut s, "str spool pane")?, "%1\n");
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
-        let json = output(&mut s, "%1 opts json capture")?;
+        let json = output(&mut s, "%1 opts capture json")?;
         assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
         let made = output(&mut s, "opts str 'sh -c \"exit 0\"' command run")?;
         assert!(made.starts_with('%'), "{made}");
@@ -4184,7 +4346,7 @@ mod tests {
     fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
-            let json = output(s, &format!("%1 opts {read} json capture"))?;
+            let json = output(s, &format!("%1 opts {read} capture json"))?;
             let after = json.split("\"cursor\":").nth(1).unwrap_or_default();
             Ok(after
                 .split(",\"lines\"")
@@ -4214,7 +4376,7 @@ mod tests {
         assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
         s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
-        let json = output(&mut s, "%1 opts marks json capture")?;
+        let json = output(&mut s, "%1 opts marks capture json")?;
         assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
         let inverted = output(&mut s, "%1 opts 5 2 rows capture");
         assert!(
@@ -4263,7 +4425,10 @@ mod tests {
         let times = failed(&mut s, "keys str a text str 2 times");
         assert!(times.starts_with("type: "), "{times}");
         let none = failed(&mut s, "keys str a text 0 times");
-        assert!(none.contains("a count from 1 to 1000 (use: "), "{none}");
+        assert!(
+            none.contains("0 is out of range: 1 to 1000 (use: "),
+            "{none}"
+        );
         // The core's words say how they are used too; a library word is
         // told by its own name, not the word inside it that fails.
         for code in ["slice", "str a 1 add"] {
@@ -4284,6 +4449,44 @@ mod tests {
         assert!(split.ends_with(r"two\nlines"), "{split}");
         // A tab in a waited text is a blank, as in the screen's.
         run(&mut s, "%1 opts str 'ready\tnow' wait-text drop drop")?;
+        Ok(())
+    }
+
+    /// A saved session names only the tabs given a name: one fux named by
+    /// its place (`tab-3`, its place now 2) comes back named by its place
+    /// again, not as a name given, which a tab named so later could not
+    /// take.
+    #[test]
+    fn a_dump_names_only_the_tabs_given_a_name() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let tab = "opts str +1 workspace in new-tab drop";
+        run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
+        run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
+        let dump = s.dump_layout(None, true);
+        assert!(!dump.contains("tab-3"), "{dump}");
+        assert!(dump.contains("given"), "{dump}");
+        Ok(())
+    }
+
+    /// A kill from the command line names all it closed: a tab's
+    /// workspace, when it was the last tab, as a pane's.
+    #[test]
+    fn a_kill_names_the_workspace_its_last_tab_took() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = started(Config::default())?;
+        let cli = Origin::Cli(Caller::default());
+        let kill = |s: &mut Session, target| {
+            (s.execute(&Command::Kill { target }, &cli)).map(|reply| reply.text)
+        };
+        run(&mut s, "opts str two name new-workspace drop")?;
+        assert_eq!(
+            kill(&mut s, AnyRef::Tab("@2".parse()?))?,
+            "closed @2 %2 +2\n"
+        );
+        run(&mut s, "opts str three name new-workspace drop")?;
+        assert_eq!(
+            kill(&mut s, AnyRef::Pane(PaneId::of(3)))?,
+            "closed %3 @3 +3\n"
+        );
         Ok(())
     }
 
@@ -4321,7 +4524,7 @@ mod tests {
         ));
         assert!(matches!(
             s.attach(10, 40, Some("+x")),
-            Err(Error::Usage(command::Usage::Not(Kind::Workspace, _)))
+            Err(e) if e.code() == Code::BadValue && e.to_string().contains("+x")
         ));
         Ok(())
     }

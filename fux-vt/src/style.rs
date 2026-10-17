@@ -60,8 +60,14 @@ impl Styles {
         }
         Self::place(style)
             .and_then(|i| self.table.get(i))
-            .copied()
-            .unwrap_or_default()
+            .map_or_else(Attributes::default, |a| a.with_guard(false))
+    }
+
+    /// Whether style `style` is a guarded glyph's (`Attributes::GUARDED`).
+    pub(crate) fn guarded(&self, style: u32) -> bool {
+        Self::place(style)
+            .and_then(|i| self.table.get(i))
+            .is_some_and(|a| a.flags & Attributes::GUARDED != 0)
     }
 
     /// Where style `style` is in the table, if it is a style of the table.

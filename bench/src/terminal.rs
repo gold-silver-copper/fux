@@ -126,10 +126,9 @@ impl Terminal {
         // Read and written as a terminal is, waiting.
         let master = OwnedFd::from(master);
         fuxix::io::set_nonblocking(&master, false).map_err(|e| e.to_string())?;
-        let me = std::env::current_exe().map_err(|e| e.to_string())?;
         let argv = std::iter::once(program).chain(args.iter().copied());
         let (child, _) = slave
-            .spawn(&me, &argv.collect::<Vec<_>>(), |command| {
+            .spawn(&argv.collect::<Vec<_>>(), |command| {
                 command.env("TERM", "xterm-256color");
                 for name in crate::feel::FOREIGN {
                     command.env_remove(name);

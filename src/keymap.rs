@@ -7,7 +7,7 @@
 //! each time its keys are typed, the client itself its `me`.
 use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Move, Panel, Seek};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
-use crate::screens::Effect;
+use crate::screens::{Effect, HIDE};
 
 /// What a key runs: fuxth code, what the column says it does, and the
 /// group the column lists it under.
@@ -156,30 +156,7 @@ pub fn keys_text(keys: &[KeyPress]) -> String {
 /// A key's name, read: `S-` on a letter is its upper case, as a character
 /// carries its own shift.
 pub fn key(word: &str) -> Result<KeyPress, String> {
-    let press: KeyPress = word
-        .parse()
-        .map_err(|_| format!("{word:?} is no key's name"))?;
-    // A character's shift is dropped in parsing it: `S-` is read again.
-    let mut rest = word;
-    let mut shift = false;
-    while let Some((modifier, tail)) = rest.split_at_checked(2) {
-        if tail.is_empty() {
-            break;
-        }
-        match modifier {
-            "S-" | "s-" => shift = true,
-            "C-" | "c-" | "M-" | "m-" => {}
-            _ => break,
-        }
-        rest = tail;
-    }
-    if let Key::Char(c) = press.key
-        && shift
-        && c.is_ascii_lowercase()
-    {
-        return Ok(KeyPress::new(Key::Char(c.to_ascii_uppercase()), press.mods));
-    }
-    Ok(press)
+    (word.parse()).map_err(|_| format!("{word:?} is no key's name"))
 }
 
 /// Keys from their names, separated by spaces: `t n`.
@@ -358,8 +335,8 @@ pub const DEFAULTS: &[(&str, bool, Bindings)] = &[
 ];
 
 impl Default for Keymap {
-    fn default() -> Keymap {
-        let mut keymap = Keymap {
+    fn default() -> Self {
+        let mut keymap = Self {
             prefix: KeyPress::new(Key::Char('b'), Modifiers::CTRL),
             bindings: Layer::default(),
             root: Vec::new(),
@@ -482,7 +459,7 @@ impl Keymap {
                     }
                 };
                 Some(ColumnEntry {
-                    key: key.to_string(),
+                    key: *key,
                     label,
                     group,
                     layer,
@@ -497,7 +474,7 @@ impl Keymap {
                     group => group.to_owned(),
                 };
                 ColumnEntry {
-                    key: key.to_string(),
+                    key: *key,
                     label: binding.label.clone(),
                     group,
                     layer: false,
@@ -630,7 +607,7 @@ impl Held {
                 *self = Held::Column { path, selected };
                 vec![Effect::Send(Act::Show(Panel::Column(column)))]
             }
-            None => vec![Effect::Send(Act::Hide)],
+            None => vec![HIDE],
         }
     }
 
@@ -662,8 +639,7 @@ impl Held {
             None => {
                 let mut keys = path.clone();
                 keys.push(press);
-                let selected = 0;
-                *self = Held::Column { path, selected };
+                *self = Held::Column { path, selected: 0 };
                 let text = format!("{} {} is not bound", keymap.prefix, keys_text(&keys));
                 vec![Effect::Send(Act::Notice { text, error: true })]
             }
@@ -679,7 +655,7 @@ impl Held {
     ) -> Vec<Effect> {
         let press = stroke.press;
         if press.plain_key() == Some(Key::Escape) {
-            return vec![Effect::Send(Act::Hide)];
+            return vec![HIDE];
         }
         if keymap
             .bindings
@@ -690,7 +666,7 @@ impl Held {
         }
         if press == keymap.prefix {
             // The prefix, at any depth, goes to the pane.
-            return vec![Effect::Send(Act::Hide), Effect::Send(Act::Key(stroke))];
+            return vec![HIDE, Effect::Send(Act::Key(stroke))];
         }
         let count = keymap.column(&path, 0).map_or(0, |c| c.entries.len());
         let last = count.saturating_sub(1);
@@ -703,18 +679,16 @@ impl Held {
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
             let chosen = keymap.column(&path, selected).and_then(|c| {
                 let entry = c.entries.into_iter().nth(c.selected)?;
-                Some((key(&entry.key).ok()?, entry.root))
+                Some((entry.key, entry.root))
             });
             return match chosen {
                 // A key bound without the prefix, listed after the rest.
                 Some((press, true)) => {
                     let code = keymap.root_binding(press).map(|b| b.code.clone());
-                    std::iter::once(Effect::Send(Act::Hide))
-                        .chain(code.map(Effect::Run))
-                        .collect()
+                    std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
                 }
                 Some((key, false)) => self.follow(keymap, path, key),
-                None => vec![Effect::Send(Act::Hide)],
+                None => vec![HIDE],
             };
         }
         self.follow(keymap, path, press)
@@ -728,7 +702,7 @@ impl Held {
         let plain = !press.mods.ctrl && !press.mods.alt;
         let leaves = press.key == Key::Escape || (press.key == Key::Enter && bound.is_none());
         if plain && leaves {
-            return vec![Effect::Send(Act::Hide)];
+            return vec![HIDE];
         }
         match bound {
             Some(Node::Run {
@@ -745,14 +719,11 @@ impl Held {
                 binding,
                 repeat: false,
             }) => {
-                vec![Effect::Send(Act::Hide), Effect::Run(binding.code.clone())]
+                vec![HIDE, Effect::Run(binding.code.clone())]
             }
             Some(Node::Layer(_)) | None => {
                 let text = format!("{press} is not one of this mode's keys");
-                vec![
-                    Effect::Send(Act::Hide),
-                    Effect::Send(Act::Notice { text, error: false }),
-                ]
+                vec![HIDE, Effect::Send(Act::Notice { text, error: false })]
             }
         }
     }
@@ -852,38 +823,49 @@ pub fn confirm_act(press: KeyPress) -> Option<bool> {
     }
 }
 
-/// A key in copy mode that moves, selects, copies or leaves. Letters, in
-/// either case, and the brackets; one with Ctrl or Alt is no key's. The
-/// arrows, paging keys, Home, End, Enter and Esc too. `f` and `r`, which
-/// open its search line, are the client's own (`crate::screens`).
-pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
-    let act = match (letter(press), press.key) {
-        (Some('q'), _) | (_, Key::Escape) => CopyAct::Leave,
-        (Some('h'), _) | (_, Key::Arrow(Direction::Left)) => CopyAct::Left,
-        (Some('l'), _) | (_, Key::Arrow(Direction::Right)) => CopyAct::Right,
-        (Some('j'), _) | (_, Key::Arrow(Direction::Down)) => CopyAct::Down,
-        (Some('k'), _) | (_, Key::Arrow(Direction::Up)) => CopyAct::Up,
-        (Some('w'), _) => CopyAct::WordForward,
-        (Some('b'), _) => CopyAct::WordBack,
-        (Some('a'), _) => CopyAct::FirstInk,
-        (Some('e'), _) | (_, Key::End) => CopyAct::LastInk,
-        (_, Key::Home) => CopyAct::LineStart,
-        (Some('t'), _) => CopyAct::Top,
-        (Some('z'), _) => CopyAct::Bottom,
-        (Some('u'), _) => CopyAct::HalfUp,
-        (Some('d'), _) => CopyAct::HalfDown,
-        (_, Key::PageUp) => CopyAct::PageUp,
-        (_, Key::PageDown) => CopyAct::PageDown,
-        (Some('n'), _) => CopyAct::Next,
-        (Some('p'), _) => CopyAct::Previous,
-        (Some('['), _) => CopyAct::Prompt(Seek::Backward),
-        (Some(']'), _) => CopyAct::Prompt(Seek::Forward),
-        (Some('v'), _) => CopyAct::SelectChar,
-        (Some('s'), _) => CopyAct::SelectLine,
-        (Some('x'), _) => CopyAct::SelectBlock,
-        (Some('o'), _) => CopyAct::OtherEnd,
-        (Some('y'), _) | (_, Key::Enter) => CopyAct::Yank,
-        _ => return None,
+/// A key in copy mode that moves, selects, copies or leaves, and whether
+/// it ends copy mode (leaving and copying do). Letters, in either case,
+/// and the brackets; one with Ctrl or Alt is no key's. The arrows, paging
+/// keys, Home, End, Enter and Esc too. `f` and `r`, which open its search
+/// line, are the client's own (`crate::screens`).
+pub fn copy_act(press: KeyPress) -> Option<(CopyAct, bool)> {
+    let act = match press.key {
+        Key::Char(_) => match letter(press)? {
+            'q' => (CopyAct::Leave, true),
+            'h' => (CopyAct::Left, false),
+            'l' => (CopyAct::Right, false),
+            'j' => (CopyAct::Down, false),
+            'k' => (CopyAct::Up, false),
+            'w' => (CopyAct::WordForward, false),
+            'b' => (CopyAct::WordBack, false),
+            'a' => (CopyAct::FirstInk, false),
+            'e' => (CopyAct::LastInk, false),
+            't' => (CopyAct::Top, false),
+            'z' => (CopyAct::Bottom, false),
+            'u' => (CopyAct::HalfUp, false),
+            'd' => (CopyAct::HalfDown, false),
+            'n' => (CopyAct::Next, false),
+            'p' => (CopyAct::Previous, false),
+            '[' => (CopyAct::Prompt(Seek::Backward), false),
+            ']' => (CopyAct::Prompt(Seek::Forward), false),
+            'v' => (CopyAct::SelectChar, false),
+            's' => (CopyAct::SelectLine, false),
+            'x' => (CopyAct::SelectBlock, false),
+            'o' => (CopyAct::OtherEnd, false),
+            'y' => (CopyAct::Yank, true),
+            _ => return None,
+        },
+        Key::Escape => (CopyAct::Leave, true),
+        Key::Arrow(Direction::Left) => (CopyAct::Left, false),
+        Key::Arrow(Direction::Right) => (CopyAct::Right, false),
+        Key::Arrow(Direction::Down) => (CopyAct::Down, false),
+        Key::Arrow(Direction::Up) => (CopyAct::Up, false),
+        Key::End => (CopyAct::LastInk, false),
+        Key::Home => (CopyAct::LineStart, false),
+        Key::PageUp => (CopyAct::PageUp, false),
+        Key::PageDown => (CopyAct::PageDown, false),
+        Key::Enter => (CopyAct::Yank, true),
+        Key::Tab | Key::Backspace | Key::Delete | Key::Insert | Key::F(_) => return None,
     };
     Some(act)
 }
@@ -1005,7 +987,7 @@ mod tests {
             "{entries:?}"
         );
         assert_eq!(
-            entries.first().map(|e| e.key.as_str()),
+            entries.first().map(|e| e.key.to_string()).as_deref(),
             Some("v"),
             "Panes come first"
         );

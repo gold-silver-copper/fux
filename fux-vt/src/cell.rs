@@ -32,7 +32,6 @@ impl From<Rgb> for [u8; 3] {
 
 /// A default, indexed, or true-colour terminal colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Color {
     /// The terminal's default colour, foreground or background as it is used.
     #[default]
@@ -47,7 +46,6 @@ pub enum Color {
 /// How a cell blinks: SGR 5 (slow) and 6 (rapid) replace one another, and
 /// SGR 25 stops either.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Blink {
     /// Not blinking.
     #[default]
@@ -62,7 +60,6 @@ pub enum Blink {
 /// 8.3.117), and kitty's styles `4:0` to `4:5`
 /// (`references/modern/kitty_underlines.html`), numbered as they are there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 #[repr(u16)]
 pub enum UnderlineStyle {
     /// Not underlined (SGR 24, `4:0`).
@@ -98,6 +95,63 @@ impl UnderlineStyle {
     pub const fn number(self) -> u16 {
         self as u16
     }
+}
+
+/// How [`Attributes::write_sgr`] writes the SGR that sets attributes from a
+/// reset: the forms differ where their readers do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SgrForm {
+    /// As xterm reports the pen to DECRQSS (`xtermFormatSGR`): bold, the
+    /// underline and the blink, then inverse, hidden, faint, italic and
+    /// strikeout, then a double underline as 21; the foreground and the
+    /// background, 16 colours in their short forms and the rest as `38:5:n`
+    /// or `38:2::r:g:b`. What xterm does not have follows its forms: rapid
+    /// blink is 6 in blink's place, an underline style `4:n` in the
+    /// underline's, and the underline colour `58:5:n` or `58:2::r:g:b`
+    /// last. So a curly underline alone is `0;4:3`, which is what neovim
+    /// looks for to learn the terminal draws styles.
+    Report,
+    /// To paint on a terminal: the flags, then the underline and the blink,
+    /// the underline colour, then the colours in their semicolon forms.
+    Paint {
+        /// Whether the terminal draws underline styles. An underline style
+        /// (kitty's `4:n`) goes as it is if it does, else as a plain
+        /// underline: a terminal that does not know `4:3` draws no
+        /// underline at all (xterm, avt) or reads the colon as a
+        /// semicolon, underline and italic, and one that does not know 21
+        /// may read it as bold off (alacritty, avt).
+        styles: bool,
+    },
+}
+
+/// Writes `;n` for each number.
+fn write_numbers(out: &mut Vec<u8>, numbers: impl IntoIterator<Item = (u16, &'static str)>) {
+    use std::io::Write;
+    for (number, _) in numbers {
+        let _ = write!(out, ";{number}");
+    }
+}
+
+/// Writes colour `c` for [`Attributes::write_sgr`]: `base` is 30 for the
+/// foreground, 40 for the background, 50 for the underline colour, so no
+/// code comes near 255: every sum is exact. The first two have short
+/// forms for 16 colours, the bright ones 90 to 97 and 100 to 107. A colon
+/// form has the empty colour-space slot of ITU-T T.416.
+fn write_colour(out: &mut Vec<u8>, c: Color, base: u8, colon: bool) {
+    use std::io::Write;
+    let short = base < 50;
+    let long = base.saturating_add(8);
+    let _ = match c {
+        Color::Default => Ok(()),
+        Color::Idx(n) if short && n < 8 => write!(out, ";{}", base.saturating_add(n)),
+        Color::Idx(n) if short && n < 16 => {
+            write!(out, ";{}", base.saturating_add(52).saturating_add(n))
+        }
+        Color::Idx(n) if colon => write!(out, ";{long}:5:{n}"),
+        Color::Idx(n) => write!(out, ";{long};5;{n}"),
+        Color::Rgb(Rgb { r, g, b }) if colon => write!(out, ";{long}:2::{r}:{g}:{b}"),
+        Color::Rgb(Rgb { r, g, b }) => write!(out, ";{long};2;{r};{g};{b}"),
+    };
 }
 
 /// Every ASCII character, in order: the text of a cell holding one.
@@ -186,10 +240,14 @@ macro_rules! flags {
 impl Attributes {
     // The bits of `flags`: one for each style, but the underline, whose
     // style's number (`UnderlineStyle`, 0 for none) takes three bits from
-    // `UNDERLINE_SHIFT`. Bit 3, the underline's while it had no style, is spare.
+    // `UNDERLINE_SHIFT`, and `GUARDED`.
     pub(crate) const BOLD: u16 = 1;
     pub(crate) const DIM: u16 = 2;
     pub(crate) const ITALIC: u16 = 4;
+    /// A glyph in SPA's guarded area (ECMA-48 8.3.140), which ED, EL and
+    /// ECH leave: kept in its style, as a cell's word has no bit to spare,
+    /// and never read out (`Styles::get` drops it). No pen has it.
+    pub(crate) const GUARDED: u16 = 8;
     pub(crate) const INVERSE: u16 = 16;
     pub(crate) const SLOW_BLINK: u16 = 32;
     pub(crate) const RAPID_BLINK: u16 = 64;
@@ -304,6 +362,10 @@ impl Attributes {
             word(self.underline_color) | u64::from(self.flags) << 32,
         )
     }
+    /// These attributes guarded (`GUARDED`) or not.
+    pub(crate) const fn with_guard(self, on: bool) -> Self {
+        self.with_flag(Self::GUARDED, on)
+    }
     /// What an erase, a scroll or an insertion fills cells with while these
     /// attributes are the pen: its colours alone, as xterm fills them (the
     /// `bce` terminfo capability, background colour erase).
@@ -360,6 +422,70 @@ impl Attributes {
             .filter(move |(bit, ..)| self.flags & bit != 0)
             .map(|(_, on, _, name)| (on, name))
     }
+    /// Writes the SGR parameters that set these attributes after a reset
+    /// (`0`, which the caller writes), each after its `;`, as `form`
+    /// writes them: `;1;4:3;58:5:5` (`SgrForm::Report`), `;1;4;58:5:5`
+    /// (`SgrForm::Paint` without styles).
+    pub fn write_sgr(self, out: &mut Vec<u8>, form: SgrForm) {
+        // The flags that are on, bold first if it is (`Attributes::FLAGS`).
+        let mut flags = self.sgr_flags();
+        let colon = match form {
+            SgrForm::Report => {
+                write_numbers(out, flags.by_ref().take(usize::from(self.bold())));
+                self.write_underline_and_blink(out, form);
+                write_numbers(out, flags);
+                if self.underline_style() == UnderlineStyle::Double {
+                    out.extend_from_slice(b";21");
+                }
+                true
+            }
+            SgrForm::Paint { .. } => {
+                write_numbers(out, flags);
+                self.write_underline_and_blink(out, form);
+                // The underline colour in ITU-T T.416's colon form
+                // (§13.1.8) in either form: a terminal that does not know
+                // SGR 58 skips the whole parameter, where in the semicolon
+                // form it would take the colour's numbers for attributes of
+                // their own (`58;2;…` would be dim). Each engine in
+                // `fux-vt/compare` reads `58:5:9` and `58:2::1:2:3` beside 4
+                // and 1 as 4 and 1 alone, xterm, which has no SGR 58,
+                // included (xterm 411 skips an SGR parameter with
+                // subparameters other than 38's and 48's).
+                write_colour(out, self.underline_color(), 50, true);
+                false
+            }
+        };
+        write_colour(out, self.foreground(), 30, colon);
+        write_colour(out, self.background(), 40, colon);
+        match form {
+            SgrForm::Report => write_colour(out, self.underline_color(), 50, true),
+            SgrForm::Paint { .. } => {}
+        }
+    }
+    /// `write_sgr`'s underline and blink.
+    fn write_underline_and_blink(self, out: &mut Vec<u8>, form: SgrForm) {
+        let style = self.underline_style();
+        match style {
+            UnderlineStyle::None => {}
+            UnderlineStyle::Single => out.extend_from_slice(b";4"),
+            // 21, after the other flags.
+            UnderlineStyle::Double if form == SgrForm::Report => {}
+            UnderlineStyle::Double
+            | UnderlineStyle::Curly
+            | UnderlineStyle::Dotted
+            | UnderlineStyle::Dashed => match form {
+                SgrForm::Report | SgrForm::Paint { styles: true } => {
+                    let _ = std::io::Write::write_fmt(out, format_args!(";4:{}", style.number()));
+                }
+                SgrForm::Paint { styles: false } => out.extend_from_slice(b";4"),
+            },
+        }
+        match self.blink() {
+            Blink::Slow => out.extend_from_slice(b";5"),
+            Blink::Rapid => out.extend_from_slice(b";6"),
+            Blink::None => {}
+        }
+    }
     /// These attributes with a single underline (SGR 4), or none of any
     /// style.
     #[must_use]
@@ -403,12 +529,11 @@ impl Attributes {
     }
     /// How the text blinks.
     pub fn blink(self) -> Blink {
-        if self.flags & Self::SLOW_BLINK != 0 {
-            Blink::Slow
-        } else if self.flags & Self::RAPID_BLINK != 0 {
-            Blink::Rapid
-        } else {
-            Blink::None
+        // Both bits, which `with_blink` never sets, read as slow.
+        match self.flags & Self::BLINK {
+            0 => Blink::None,
+            Self::RAPID_BLINK => Blink::Rapid,
+            _ => Blink::Slow,
         }
     }
 }

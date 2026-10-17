@@ -55,61 +55,17 @@ ChangeSpecialColorTests.test_ChangeSpecialColor_CIEuvY  not-implemented: XParseC
 ChangeSpecialColorTests.test_ChangeSpecialColor_CIExyY  xterm-too: xterm 411 answers rgb:f7f7/b3b3/0000 where esctest expects 0e0e (Xlib's colour management); fux-vt reads none of XParseColor's device-independent colour spaces (README, Feature::Palette)
 ChangeSpecialColorTests.test_ChangeSpecialColor_RGBI  not-implemented: XParseColor's device-independent colour spaces and intensities (CIEXYZ, CIEuvY, CIExyY, CIELab, CIELuv, TekHVC, rgbi:): fux-vt reads rgb: and the # forms (README, Feature::Palette); no program in the corpus sends these
 ChangeSpecialColorTests.test_ChangeSpecialColor_TekHVC  not-implemented: XParseColor's device-independent colour spaces and intensities (CIEXYZ, CIEuvY, CIExyY, CIELab, CIELuv, TekHVC, rgbi:): fux-vt reads rgb: and the # forms (README, Feature::Palette); no program in the corpus sends these
-DA2Tests.test_DA2_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
-DA2Tests.test_DA2_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
-DATests.test_DA_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
-DATests.test_DA_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
-DECBITests.test_DECBI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECBITests.test_DECBI_LeftOfMargin  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECBITests.test_DECBI_Scrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECBITests.test_DECBI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECCRATests.test_DECCRA_defaultValuesInDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_defaultValuesInSource  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_destinationPartiallyOffscreen  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_nonOverlappingSourceAndDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_overlappingSourceAndDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECDSRTests.test_DECDSR_DECCKSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DECMSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DA2Tests.test_DA2_0  spec: fux says it is a level 2 (VT220-class) terminal with selective erase, horizontal scrolling, colour text and rectangular editing (DA1 CSI ? 62 ; 6 ; 21 ; 22 ; 28 c, DEC STD 070 DA) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
+DA2Tests.test_DA2_NoParameter  spec: fux says it is a level 2 (VT220-class) terminal with selective erase, horizontal scrolling, colour text and rectangular editing (DA1 CSI ? 62 ; 6 ; 21 ; 22 ; 28 c, DEC STD 070 DA) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
+DATests.test_DA_0  spec: fux says it is a level 2 (VT220-class) terminal with selective erase, horizontal scrolling, colour text and rectangular editing (DA1 CSI ? 62 ; 6 ; 21 ; 22 ; 28 c, DEC STD 070 DA) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
+DATests.test_DA_NoParameter  spec: fux says it is a level 2 (VT220-class) terminal with selective erase, horizontal scrolling, colour text and rectangular editing (DA1 CSI ? 62 ; 6 ; 21 ; 22 ; 28 c, DEC STD 070 DA) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
 DECDSRTests.test_DECDSR_DECXCPR  [fux] not-implemented: DECXCPR (CSI ? 6 n) in fux's panes, which leave extended_replies off; no program in the corpus asks it
-DECDSRTests.test_DECDSR_DSRDECLocatorStatus  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRDataIntegrity  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRKeyboard  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRMultipleSessionStatus  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRPrinterPort  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_DSRUDKLocked  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECDSRTests.test_DECDSR_LocatorType  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
-DECERATests.test_DECERA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECERATests.test_DECERA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECERATests.test_DECERA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECERATests.test_DECERA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECERATests.test_DECERA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFITests.test_DECFI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFITests.test_DECFI_RightOfMargin  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFITests.test_DECFI_Scrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFITests.test_DECFI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFRATests.test_DECFRA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFRATests.test_DECFRA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFRATests.test_DECFRA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFRATests.test_DECFRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFRATests.test_DECFRA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECDSRTests.test_DECDSR_DSRDataIntegrity  departure: the DSR reports of DEC's other devices, as DEC STD 070 gives them (README, ExtendedReplies): its DSR (775) reports the data integrity flag after power-up or RIS as 73, power-up, until it is reported once, then 70; esctest, after its RIS, expects xterm's 70 at once
+DECDSRTests.test_DECDSR_DSRUDKLocked  departure: the DSR reports of DEC's other devices, as DEC STD 070 gives them (README, ExtendedReplies): fux-vt has no UDKs, and the UDK extension's REPORT_UDK_STATUS answers ?23 then, where esctest accepts only 20 (unlocked) or 21 (locked)
 DECIDTests.test_DECID_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-DECRQMTests.test_DECRQM_ANSI_EBM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_FEAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_FETM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_GATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_HEM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_KAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_MATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_PUM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_SATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_SRM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_SRTM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_TSM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_TTM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_VEM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_EBM  spec: ECMA-48's 5th edition removed EBM, 19 "shall not be used" (8.3.106, F.5.1), so DECRQM answers 0, not recognized (README ModeReports); esctest expects the 4th edition's EBM, permanently reset
+DECRQMTests.test_DECRQM_ANSI_KAM  spec: fux-vt never locks the keyboard, so KAM has its reset state only, which DECRQM answers 4, permanently reset (ECMA-48 7.1, README ModeReports); esctest expects xterm's KAM, which can be set
+DECRQMTests.test_DECRQM_ANSI_SRM  spec: fux-vt never images what is typed, so SRM has its set state only, SIMULTANEOUS, which DECRQM answers 3, permanently set (ECMA-48 7.1 and 7.2.15; DEC STD 070's SRM, local echo off, the default; README ModeReports); esctest expects xterm's SRM, which can be reset
 DECRQMTests.test_DECRQM_DEC_DECARM  xterm-too: esctest's known xterm bug (xterm always returns 4 (permanently reset))
 DECRQMTests.test_DECRQM_DEC_DECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECRQMTests.test_DECRQM_DEC_DECHCCM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
@@ -123,26 +79,16 @@ DECRQMTests.test_DECRQM_DEC_DECVCCM  xterm-too: esctest's known xterm bug (Not s
 DECRQMTests.test_DECRQM_DEC_DECXRLM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQSSTests.test_DECRQSS_DECELF  xterm-too: esctest's known xterm bug (Not implemented.)
 DECRQSSTests.test_DECRQSS_DECLFKC  xterm-too: esctest's known xterm bug (Not implemented.)
-DECRQSSTests.test_DECRQSS_DECSACE  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
-DECRQSSTests.test_DECRQSS_DECSCA  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the top and bottom margins (r), what neovim and vim ask (corpus); not for DECSCA (" q), which no program in the corpus asks
+DECRQSSTests.test_DECRQSS_DECSACE  not-implemented: deferred: DECSACE, the extent of DECCARA and DECRARA, which fux-vt does not implement; no program in the corpus sends them
+DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSCL  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
-DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
-DECRQSSTests.test_DECRQSS_DECSLRM  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the top and bottom margins (r), what neovim and vim ask (corpus); not for DECSLRM (s), which no program in the corpus asks
+DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSMKR  xterm-too: esctest's known xterm bug (Not implemented.)
-DECRQSSTests.test_DECRQSS_DECSNLS  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
-DECRQSSTests.test_DECRQSS_DECSSDT  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
+DECRQSSTests.test_DECRQSS_DECSNLS  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports
+DECRQSSTests.test_DECRQSS_DECSSDT  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports
 DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
 DECSCLTests.test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSCLTests.test_DSCSCL_Level3_SupportsDECRQMDoesntSupportDECSLRM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it. fux-vt is a VT420 or more throughout: at level 3 DECSLRM still sets margins (it passed while fux-vt had no left and right margins at all)
-DECSEDTests.test_DECSED_doesNotRespectISOProtect  xterm-too: DECSED and DECSEL leave ISO-protected glyphs (SPA, EPA) alone, as xterm does for compatibility (esctest's known xterm bug); fux-vt follows xterm (README)
-DECSELTests.test_DECSEL_doesNotRespectISOProtect  xterm-too: DECSED and DECSEL leave ISO-protected glyphs (SPA, EPA) alone, as xterm does for compatibility (esctest's known xterm bug); fux-vt follows xterm (README)
-DECSERATests.test_DECSERA_basic  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
-DECSERATests.test_DECSERA_defaultArgs  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
-DECSERATests.test_DECSERA_doesNotRespectISOProtect  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
-DECSERATests.test_DECSERA_ignoresMargins  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
-DECSERATests.test_DECSERA_overlyLargeSourceClippedToScreenSize  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
-DECSERATests.test_DECSERA_respectsOriginMode  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
 DECSETTests.test_DECSET_Allow80To132  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSETTests.test_DECSET_DECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSETTests.test_DECSET_MoreFix  not-implemented: xterm's more(1) fix (mode 41), a curses workaround of xterm's own; no program in the corpus sets it

@@ -1,7 +1,8 @@
 #![allow(dead_code, reason = "each target uses its own part")]
-//! What the fuxth targets share: a host of two words and a run to the end.
+//! What the fuxth targets share: a host of one word and a run to the end.
 //! `ask` (n -- n*10) suspends for its answer, as a server's does; `maybe`
-//! (n -- [n]) gives n back only above 0, a value given only sometimes.
+//! (n -- [n]), defined after the standard library, gives n back only above
+//! 0, a value given only sometimes.
 use fuxth::{
     AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, Place, Value,
     Vocabulary, token,
@@ -25,17 +26,11 @@ impl Host for Toy {
         &mut self,
         word: usize,
         args: Args<'_, Nothing>,
-        out: &mut Vec<Value<Nothing>>,
+        _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<i64>, Failure> {
         let args: Vec<_> = args.collect();
         match (word, args.as_slice()) {
             (0, [Value::Int(n)]) => Ok(Done::Later(*n)),
-            (1, [Value::Int(n)]) => {
-                if *n > 0 {
-                    out.push(Value::Int(*n));
-                }
-                Ok(Done::Now)
-            }
             _ => Err(Failure::new(
                 fuxth::Code::Host("not_a_number"),
                 "takes an integer",
@@ -71,10 +66,11 @@ thread_local! {
 
 fn library() -> Result<Compiler<Nothing>, Error> {
     let mut words = Vocabulary::default();
-    words.add("ask", 1, 1..=1);
-    words.add("maybe", 1, 0..=1);
+    words.add("ask", 1, 1);
     let mut compiler = Compiler::new(words);
     compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
+    let maybe = "define maybe dup 0 gt if else drop then end";
+    compiler.add(&token::source("maybe.fux", maybe)?)?;
     compiler.prepare();
     Ok(compiler)
 }

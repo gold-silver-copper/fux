@@ -44,8 +44,10 @@ use crate::engines::pane;
 use crate::snapshot::{self, Diff, Field, Line, Snapshot};
 use fux::id::{ClientId, PaneId};
 use fux::layout::{Placement, Rect};
+use fux::protocol::ToAttached;
 use fux::render::{self, Grid};
 use fux::session::{Outgoing, Session};
+use fux::view::ClientKind;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -244,7 +246,7 @@ impl Through {
         session.start().map_err(|e| format!("fux: {e}"))?;
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
         let client = session
-            .attach(client_rows, cols, None)
+            .attach_as(ClientKind::Terminal, client_rows, cols, None)
             .map_err(|e| format!("fux: {e}"))?;
         let mut placement = Placement::default();
         let view = session.views.get(&client).ok_or("fux: no view")?;
@@ -344,39 +346,32 @@ impl Through {
         self.session.hold_copies();
         for outgoing in std::mem::take(&mut self.session.outbox) {
             match outgoing {
-                Outgoing::Bytes(client, bytes) if client == self.client => {
+                Outgoing::To(client, ToAttached::Paint(bytes)) if client == self.client => {
                     self.terminal.process(&bytes)?;
                 }
-                Outgoing::Exit(client, reason) if client == self.client => {
+                Outgoing::To(client, ToAttached::Exit(reason)) if client == self.client => {
                     return Err(format!("fux detached the client: {reason}"));
                 }
                 Outgoing::Shutdown { reason, .. } => return Err(format!("fux stopped: {reason}")),
-                Outgoing::Bytes(..)
-                | Outgoing::Exit(..)
-                | Outgoing::Run(..)
-                | Outgoing::Keys(..)
-                | Outgoing::Ended(..) => {}
+                Outgoing::To(
+                    _,
+                    ToAttached::Paint(_)
+                    | ToAttached::Exit(_)
+                    | ToAttached::Welcome(..)
+                    | ToAttached::Run(_)
+                    | ToAttached::Keys(_)
+                    | ToAttached::Ended(_),
+                ) => {}
             }
         }
-        let dirty = self
-            .session
-            .views
-            .get(&self.client)
-            .is_some_and(|v| v.dirty);
-        if !dirty
-            || !render::compose_into(
-                &self.session,
-                self.client,
-                &mut self.spare,
-                &mut self.placement,
-            )
-        {
+        let view = self.session.views.get(&self.client);
+        let Some(view) = view.filter(|v| v.dirty) else {
             return Ok(());
-        }
+        };
+        render::compose_view(&self.session, view, &mut self.spare, &mut self.placement);
         if !(self.painted && self.spare == self.shown) {
             self.buffer.clear();
-            let shown = self.painted.then_some(&self.shown);
-            render::paint_into(shown, &self.spare, &mut self.buffer);
+            render::paint_into(&self.shown, self.painted, &self.spare, &mut self.buffer);
             self.terminal.process(&self.buffer)?;
             self.paints = self.paints.saturating_add(1);
             self.painted_bytes = self.painted_bytes.saturating_add(self.buffer.len());

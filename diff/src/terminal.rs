@@ -2,15 +2,16 @@
 //! in random pieces, with resizes between: after every piece, the same
 //! replies and events, and the same screen -- every cell of the history and
 //! the screen with its row's identity, version and wrap flag, the cursor,
-//! every mode, the scroll region, the rows changed since the last look --
-//! and the same errors.
+//! every mode, the cursor's shape, the scroll region, the rows changed
+//! since the last look -- and the same errors.
 //!
 //! The output is what both mean the same by. Left out are SGR 5, 6, 8, 9,
 //! 25, 28, 29, 58 and 59, CSI f, s and u, and characters that join the
 //! grapheme cluster before them (joiners, variation selectors, emoji
 //! modifiers, regional indicators, spacing marks): fux-vt 0.2.0 added them,
 //! and they are tested against their own models in fux-vt's tests and
-//! beside other terminals in fux-vt/compare.
+//! beside other terminals in fux-vt/compare. DECSCUSR is sent with the Ps
+//! ctlseqs lists alone (0 to 7), as the baseline keeps any other.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same_lines, times};
 
@@ -36,7 +37,10 @@ fn well_formed(r: &mut Rng) -> Vec<u8> {
                 .collect();
             format!("\x1b[?{}{}", params.join(";"), pick(r, &["h", "l"]))
         }
-        3 => format!("\x1b[{} q", number(r)),
+        3 => format!(
+            "\x1b[{} q",
+            pick(r, &["", "0", "1", "2", "3", "4", "5", "6", "7"])
+        ),
         4 => format!(
             "\x1b[{}m",
             (0..r.below(4))
@@ -144,6 +148,16 @@ fn output(r: &mut Rng) -> Vec<u8> {
     out
 }
 
+/// One side of the comparison: `stack!(name, vt_crate, |row| cells,
+/// |a| (foreground, background), |row| (id, version, wrapped), |events,
+/// extended| options, |s| [eight modes], |s| shape, |r, c| [size
+/// arguments], |s, offset| row from the bottom, |s, id| offset of row)`
+/// expands to `mod name`, whose `Terminal` wraps a `vt_crate::Parser`
+/// made with those options and size, and whose `process`, `resize` and
+/// `screen` print what it gave back and shows, each fact read through the
+/// closure given for it, so the two sides' APIs, which differ, print the
+/// same text for the same state. `stack!(cur, fux_vt, |row| row.cells(),
+/// ...)` reads the current fux-vt.
 macro_rules! stack {
     (
         $name:ident,
@@ -153,6 +167,7 @@ macro_rules! stack {
         |$meta:ident| $identity:expr,
         |$events:ident, $extended:ident| $options:expr,
         |$screen:ident| $modes:expr,
+        |$shaped:ident| $shape:expr,
         |$rows:ident, $cols:ident| [$($size:tt)*],
         |$from:ident, $offset:ident| $back:expr,
         |$at:ident, $id:ident| $up:expr
@@ -253,11 +268,14 @@ macro_rules! stack {
                         let $screen = s;
                         $modes
                     };
+                    let shape: u16 = {
+                        let $shaped = s;
+                        $shape
+                    };
                     let _ = writeln!(
                         out,
-                        "{rows}x{cols} cursor {:?} modes {modes:?} shape {} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
+                        "{rows}x{cols} cursor {:?} modes {modes:?} shape {shape} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
                         s.cursor_position(),
-                        s.cursor_shape(),
                         s.scroll_region(),
                         s.mouse_protocol_mode(),
                         s.mouse_protocol_encoding(),
@@ -304,8 +322,10 @@ macro_rules! stack {
 }
 
 // Both read cells through the row, which holds the text of long clusters,
-// and colours through methods, as fux-vt packs them; both keep every
-// opt-in option off, so they answer the same input the same way.
+// and colours through methods, as fux-vt packs them; both have the same
+// opt-in options, off but for events and extended replies, which `run`
+// turns on in both at random. A cursor shape is its Ps, the terminal's
+// own (the baseline's 0 and 7, the current `Initial`) and Ps 0 both 0.
 stack!(
     base,
     baseline_vt,
@@ -325,6 +345,11 @@ stack!(
         s.autowrap(),
         s.origin_mode(),
     ],
+    |s| if s.cursor_shape() == 7 {
+        0
+    } else {
+        s.cursor_shape()
+    },
     |r, c| [r, c],
     |s, offset| s.row_from_bottom(offset),
     |s, id| s.offset_for_row(id)
@@ -348,6 +373,7 @@ stack!(
         s.mode(fux_vt::Mode::Autowrap),
         s.mode(fux_vt::Mode::Origin),
     ],
+    |s| s.cursor_shape().number() % 7,
     |r, c| [crate::size(r, c)],
     |s, offset| s.rows().nth_back(offset),
     |s, id| s

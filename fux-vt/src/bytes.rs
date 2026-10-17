@@ -60,12 +60,18 @@ impl ByteQueue {
     /// Reclaims the space taken, once at least as much has been taken as is
     /// left.
     fn compact(&mut self) {
-        let (taken, end) = (self.taken, self.bytes.len());
-        let left = self.len();
         // What is left moves to the front, into the space taken, which is at
         // least as large. Only what is left is copied.
-        if taken > 0 && taken >= left && copy_within(&mut self.bytes, taken..end, 0).is_some() {
-            self.bytes.truncate(left);
+        if self.taken >= self.len() {
+            self.move_to_front();
+        }
+    }
+    /// Moves what is left to the front of the buffer, over what was taken,
+    /// if any was.
+    fn move_to_front(&mut self) {
+        let (taken, end) = (self.taken, self.bytes.len());
+        if taken > 0 && copy_within(&mut self.bytes, taken..end, 0).is_some() {
+            self.bytes.truncate(end.saturating_sub(taken));
             self.taken = 0;
         }
     }
@@ -76,12 +82,7 @@ impl ByteQueue {
         if self.len() > keep || self.bytes.capacity() <= keep {
             return;
         }
-        let end = self.bytes.len();
-        if self.taken > 0 && copy_within(&mut self.bytes, self.taken..end, 0).is_some() {
-            let left = end.saturating_sub(self.taken);
-            self.bytes.truncate(left);
-            self.taken = 0;
-        }
+        self.move_to_front();
         self.bytes.shrink_to(keep);
     }
     /// Takes `n` bytes from the front, or all there are.

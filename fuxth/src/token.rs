@@ -16,8 +16,8 @@ pub enum Place {
 impl std::fmt::Display for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Place::Line { source, line } => write!(f, "{source}:{line}"),
-            Place::Argument(n) => write!(f, "argument {n}"),
+            Self::Line { source, line } => write!(f, "{source}:{line}"),
+            Self::Argument(n) => write!(f, "argument {n}"),
         }
     }
 }
@@ -71,29 +71,13 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
                 }
             }
             '#' if word.is_none() => while chars.next_if(|c| *c != '\n').is_some() {},
-            '\'' => {
+            quote @ ('\'' | '"') => {
                 let (text, _) = word.get_or_insert_with(|| (String::new(), line));
                 let opened = line;
                 loop {
                     match chars.next() {
-                        Some('\'') => break,
-                        Some(c) => {
-                            if c == '\n' {
-                                line = next_line(line);
-                            }
-                            text.push(c);
-                        }
-                        None => return Err(open_quote(place(opened), '\'')),
-                    }
-                }
-            }
-            '"' => {
-                let (text, _) = word.get_or_insert_with(|| (String::new(), line));
-                let opened = line;
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') if matches!(chars.peek(), Some('"' | '\\')) => {
+                        Some(c) if c == quote => break,
+                        Some('\\') if quote == '"' && matches!(chars.peek(), Some('"' | '\\')) => {
                             text.extend(chars.next());
                         }
                         Some(c) => {
@@ -102,7 +86,7 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
                             }
                             text.push(c);
                         }
-                        None => return Err(open_quote(place(opened), '"')),
+                        None => return Err(open_quote(place(opened), quote)),
                     }
                 }
             }

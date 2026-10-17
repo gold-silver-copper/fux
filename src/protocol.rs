@@ -6,46 +6,24 @@
 //!
 //! Each frame is decoded once, as the type of frame allowed where it
 //! arrives: by a server, a `Hello`, then an `Attach` and `AttachedFrame`s,
-//! or one `Command`; by a client, `ServerFrame`s. Its bytes are lent from
-//! the decoder. Any other kind, or a size of zero, does not decode.
+//! or one `Asked`; by a client, its `Greeting`, then `ToCommand` frames,
+//! or `ToAttached` ones. Its bytes are lent from the decoder. Any other
+//! kind, or a size of zero, does not decode.
 
 use crate::act::Act;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::command::{AnyRef, Command};
+use crate::command::{AnyRef, Request};
 use crate::id::{ClientId, PaneId};
-use crate::wire::{Wire, wire_enum, wire_struct};
-use std::num::NonZeroU8;
+use crate::wire::{Wire, wire};
+use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 10;
+pub const PROTOCOL: u32 = 11;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
-/// Each frame's kind, its byte in the header: named once, for the encoder
-/// and the decoder both.
-mod kind {
-    pub const HELLO: u8 = 1;
-    pub const ATTACH: u8 = 2;
-    pub const ACT: u8 = 3;
-    pub const RESIZE: u8 = 4;
-    pub const DETACH: u8 = 5;
-    pub const COMMAND: u8 = 6;
-    pub const PAINT: u8 = 7;
-    pub const EXIT: u8 = 8;
-    pub const STDOUT: u8 = 9;
-    pub const STDERR: u8 = 10;
-    pub const DONE: u8 = 11;
-    pub const TERMINAL: u8 = 12;
-    pub const REPLY: u8 = 13;
-    pub const ENDED: u8 = 14;
-    pub const RUN: u8 = 15;
-    pub const KEYS: u8 = 16;
-    pub const PART: u8 = 17;
-    pub const PARTS_END: u8 = 18;
-}
-
 /// Why bytes are not a frame, or a frame cannot be sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -87,11 +65,11 @@ pub struct Mismatch {
 impl Mismatch {
     /// Whether a client that said `client` can go on with a server that
     /// said `server`: either may ask, holding both.
-    pub fn between(client: &Hello, server: &Hello) -> Result<(), Mismatch> {
+    pub fn between(client: &Hello, server: &Hello) -> Result<(), Self> {
         if client.role == Role::Kill || client.protocol == server.protocol {
             return Ok(());
         }
-        Err(Mismatch {
+        Err(Self {
             protocol: server.protocol,
             version: server.version.clone(),
         })
@@ -110,21 +88,23 @@ impl std::fmt::Display for Mismatch {
 
 impl std::error::Error for Mismatch {}
 
-/// What a connecting client is for; its tag is its byte in a `Hello`'s
-/// payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    /// An interactive client: `Attach`, then input.
-    Attach,
-    /// One command, then its output.
-    Command,
-    /// Stop the server. Accepted whatever the protocol version, so that
-    /// `fux force-kill-server` can always stop a server from another fux version:
-    /// for that, a `Hello`'s frame and payload never change.
-    Kill,
-    /// A client with no terminal (`COLS ROWS headless`): `Attach`, then
-    /// nothing but its end; the server sizes it (`resize-client`).
-    Headless,
+wire! {
+    /// What a connecting client is for; its tag is its byte in a `Hello`'s
+    /// payload.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Role {
+        /// An interactive client: `Attach`, then input.
+        Attach,
+        /// One command, then its output.
+        Command,
+        /// Stop the server. Accepted whatever the protocol version, so that
+        /// `fux force-kill-server` can always stop a server from another fux version:
+        /// for that, a `Hello`'s frame and payload never change.
+        Kill,
+        /// A client with no terminal (`COLS ROWS headless`): `Attach`, then
+        /// nothing but its end; the server sizes it (`resize-client`).
+        Headless,
+    }
 }
 
 /// The frames one side expects at one point of a connection, decoded from
@@ -178,27 +158,120 @@ fn put<'a>(frame: &impl Frame<'a>, out: &mut Vec<u8>) -> usize {
     payload
 }
 
-/// Both ways, the first frame from each side: a client's says what it is
-/// for, the server's answer the role it took.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Hello {
-    pub protocol: u32,
-    pub version: String,
-    pub role: Role,
+/// What a frame carries: a value as the wire has it, or bytes or text lent
+/// from the frame as they are, so that a paint is not copied.
+trait Payload<'a>: Sized {
+    /// Writes it as the frame's payload.
+    fn put(&self, out: &mut Vec<u8>);
+    /// The value `payload` is, all of it.
+    fn get(payload: &'a [u8]) -> Result<Self, Error>;
 }
 
-wire_enum!(Role, "role" {
-    0 => Attach,
-    1 => Command,
-    2 => Kill,
-    3 => Headless,
-});
+impl<T: Wire> Payload<'_> for T {
+    fn put(&self, out: &mut Vec<u8>) {
+        Wire::put(self, out);
+    }
+    fn get(payload: &[u8]) -> Result<Self, Error> {
+        crate::wire::Reader::new(payload)
+            .whole()
+            .map_err(Error::Wire)
+    }
+}
 
-wire_struct!(Hello {
-    protocol,
-    role,
-    version
-});
+impl<'a> Payload<'a> for Cow<'a, [u8]> {
+    fn put(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(self);
+    }
+    fn get(payload: &'a [u8]) -> Result<Self, Error> {
+        Ok(Cow::Borrowed(payload))
+    }
+}
+
+impl<'a> Payload<'a> for &'a str {
+    fn put(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(self.as_bytes());
+    }
+    fn get(payload: &'a [u8]) -> Result<Self, Error> {
+        std::str::from_utf8(payload).map_err(|_| Error::Wire(crate::wire::Error::NotUtf8))
+    }
+}
+
+/// A frame's one field, as the field is: what `frames!` reads a frame of
+/// one field as, beside `()`, a frame of none, whose payload is empty, and
+/// `(A, B)`, a frame of two wire values, one after the other.
+impl<'a, T: Payload<'a>> Payload<'a> for (T,) {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.0.put(out);
+    }
+    fn get(payload: &'a [u8]) -> Result<Self, Error> {
+        T::get(payload).map(|field| (field,))
+    }
+}
+
+/// `frames! { pub enum Ty<'a> { One(x: X) = 3, Two(y: Y, z: Z) = 4, Bare = BARE } }`
+/// expands to the enum (`One(X)`, `Two(Y, Z)`, `Bare`; docs and attributes
+/// as written) and its `Frame<'a>`: `One` is kind 3, its payload `x`'s
+/// (`Payload`); `Two` kind 4, `y`'s then `z`'s, each a wire value; and
+/// `Bare` kind `BARE`, a const (a kind several enums have is named once),
+/// its payload empty. Each is read back alike, and any other kind is
+/// `Error::UnexpectedKind`. So a frame's kind byte is written once, in its
+/// row or its const, and two rows of one kind do not compile (an
+/// unreachable pattern, denied). `x`, `y` and `z` only name the fields,
+/// as a macro can't make up names. An enum that lends its payload is
+/// declared `<'a>`, the lifetime of the bytes it is decoded from.
+macro_rules! frames {
+    (
+        $(#[$m:meta])*
+        $vis:vis enum $ty:ident $(<$a:lifetime>)? {
+            $(
+                $(#[$vm:meta])*
+                $var:ident $(($($p:ident: $pt:ty),+))? = $kind:tt
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$m])*
+        $vis enum $ty $(<$a>)? {
+            $(
+                $(#[$vm])*
+                $var $(($($pt),+))?,
+            )*
+        }
+
+        impl<'a> Frame<'a> for $ty $(<$a>)? {
+            #[deny(unreachable_patterns)]
+            fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error> {
+                match kind {
+                    $($kind => {
+                        let ($($($p,)+)?): ($($($pt,)+)?) = Payload::get(payload)?;
+                        Ok(Self::$var $(($($p),+))?)
+                    })*
+                    other => Err(Error::UnexpectedKind(other)),
+                }
+            }
+
+            fn write(&self, out: &mut Vec<u8>) -> u8 {
+                match self {
+                    $(Self::$var $(($($p),+))? => {
+                        $($(Payload::put($p, out);)+)?
+                        $kind
+                    })*
+                }
+            }
+        }
+    };
+}
+
+wire! {
+    /// Both ways, the first frame from each side: a client's says what it is
+    /// for, the server's answer the role it took. Its fields go in the order
+    /// declared, which never changes, nor do they (`Role::Kill`).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Hello {
+        pub protocol: u32,
+        pub role: Role,
+        pub version: String,
+    }
+}
 
 impl Hello {
     /// This build's `Hello`, for `role`.
@@ -211,311 +284,241 @@ impl Hello {
     }
 }
 
+/// The kinds of a `Hello` and an `Exit`, which every client and server
+/// reads, of any version.
+const HELLO: u8 = 1;
+const EXIT: u8 = 8;
+
 impl OneKind for Hello {
-    const KIND: u8 = kind::HELLO;
+    const KIND: u8 = HELLO;
 }
 
-/// An attaching client's one frame after its `Hello`: its terminal's size,
-/// the workspace it asks for, whether it only watches, and its
-/// environment, which panes started from its keys take what
-/// `update-environment` names from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Attach {
-    pub size: fux_vt::Size,
-    pub workspace: Option<String>,
-    pub read_only: bool,
-    pub env: Vec<(String, String)>,
+wire! {
+    /// An attaching client's one frame after its `Hello`: its terminal's size,
+    /// the workspace it asks for, whether it only watches, and its
+    /// environment, which panes started from its keys take what
+    /// `update-environment` names from.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Attach {
+        pub size: fux_vt::Size,
+        pub workspace: Option<crate::command::WsRef>,
+        pub read_only: bool,
+        pub env: Vec<(String, std::ffi::OsString)>,
+    }
 }
-
-wire_struct!(Attach {
-    size,
-    workspace,
-    read_only,
-    env
-});
 
 impl OneKind for Attach {
-    const KIND: u8 = kind::ATTACH;
+    const KIND: u8 = 2;
 }
 
-/// An attached client's frames.
-#[derive(Clone, Debug, PartialEq)]
-pub enum AttachedFrame {
-    Act(Box<Act>),
-    Resize(fux_vt::Size),
-    Detach,
-}
-
-impl Frame<'_> for AttachedFrame {
-    fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
-        match kind {
-            kind::ACT => read(payload).map(|act| AttachedFrame::Act(Box::new(act))),
-            kind::RESIZE => read(payload).map(AttachedFrame::Resize),
-            kind::DETACH => read(payload).map(|()| AttachedFrame::Detach),
-            other => Err(Error::UnexpectedKind(other)),
-        }
-    }
-
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
-        match self {
-            AttachedFrame::Act(act) => {
-                act.put(out);
-                kind::ACT
-            }
-            AttachedFrame::Resize(size) => {
-                size.put(out);
-                kind::RESIZE
-            }
-            AttachedFrame::Detach => kind::DETACH,
-        }
+frames! {
+    /// An attached client's frames.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AttachedFrame {
+        Act(act: Box<Act>) = 3,
+        Resize(size: fux_vt::Size) = 4,
+        Detach = 5,
     }
 }
 
-/// Where a request comes from: the caller's directory, its pane
-/// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
-/// environment, which panes it starts take what `update-environment` names
-/// from, the client whose binding or prompt runs it, and whether it brings
-/// back a saved session.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Context {
-    pub cwd: String,
-    pub pane: Option<PaneId>,
-    pub server: Option<String>,
-    pub env: Vec<(String, String)>,
-    pub client: Option<ClientId>,
-    pub restoring: bool,
+wire! {
+    /// Where a request comes from: the caller's directory, its pane
+    /// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
+    /// environment, which panes it starts take what `update-environment` names
+    /// from, the client whose binding or prompt runs it, and whether it brings
+    /// back a saved session.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Context {
+        pub cwd: std::path::PathBuf,
+        pub pane: Option<PaneId>,
+        pub server: Option<String>,
+        pub env: Vec<(String, std::ffi::OsString)>,
+        pub client: Option<ClientId>,
+        pub restoring: bool,
+    }
 }
 
-/// A command client's frames after its `Hello`: requests, each answered
-/// before the next.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Request {
-    pub command: Command,
-    pub context: Context,
+wire! {
+    /// A command client's frames after its `Hello`: requests, each answered
+    /// before the next, and where each comes from.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Asked {
+        pub request: Request,
+        pub context: Context,
+    }
 }
 
-wire_struct!(Context {
-    cwd,
-    pane,
-    server,
-    env,
-    client,
-    restoring
-});
-
-wire_struct!(Request { command, context });
-
-impl OneKind for Request {
-    const KIND: u8 = kind::COMMAND;
+impl OneKind for Asked {
+    const KIND: u8 = 6;
 }
 
-/// A field's value, as its JSON has it, if it is a number, a bool or a
-/// string.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Scalar {
-    Int(i64),
-    Bool(bool),
-    Str(String),
+wire! {
+    /// A field's value, as its JSON has it, if it is a number, a bool or a
+    /// string.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Scalar {
+        Int(n: i64),
+        Bool(b: bool),
+        Str(s: String),
+    }
 }
 
-/// The server's answer to a request: how it ended; what it says as text,
-/// and as JSON where it has a JSON form; the panes, tabs or workspaces it
-/// made or found; a field's value.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Reply {
-    pub end: End,
-    pub text: String,
-    pub json: String,
-    pub ids: Vec<AnyRef>,
-    pub value: Option<Scalar>,
+wire! {
+    /// The server's answer to a request: how it ended; what it says as text,
+    /// and as JSON where it has a JSON form; the panes, tabs or workspaces it
+    /// made or found; a field's value.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Reply {
+        pub end: End,
+        pub text: String,
+        pub json: String,
+        pub ids: Vec<AnyRef>,
+        pub value: Option<Scalar>,
+    }
 }
 
-/// How a request ended: its exit status, and why it failed, if it did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum End {
-    #[default]
-    Done,
-    /// Answered with a status of its own, and the code that names it, no
-    /// failure: a wait met by its program's exit (its status), or a pane
-    /// said as it stands (4 closed, 7 reading short of the text, 124 still
-    /// busy).
-    Answered { status: NonZeroU8, code: Code },
-    /// Failed, with its status, its code and why.
-    Failed {
-        status: NonZeroU8,
-        code: Code,
-        message: String,
-    },
+wire! {
+    /// How a request ended: the code that names its exit status, if not 0,
+    /// and why it failed, if it did.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub enum End {
+        #[default]
+        Done,
+        /// Answered with a status of its own, no failure: a pane said as it
+        /// stands (closed, reading short of the text, still busy).
+        Answered(code: Code),
+        /// Failed, with its code and why.
+        Failed {
+            code: Code,
+            message: String,
+        },
+    }
 }
 
 impl End {
-    /// A failure of kind `code`, with its exit status.
-    pub fn failed(code: Code, message: impl Into<String>) -> End {
-        End::Failed {
-            status: code.status(),
-            code,
-            message: message.into(),
+    /// The code that names its status, if it has one.
+    pub fn code(&self) -> Option<Code> {
+        match self {
+            End::Done => None,
+            End::Answered(code) | End::Failed { code, .. } => Some(*code),
         }
     }
 
     /// The exit status.
     pub fn status(&self) -> u8 {
-        match self {
-            End::Done => 0,
-            End::Answered { status, .. } | End::Failed { status, .. } => status.get(),
-        }
-    }
-
-    /// The code that names its status, if it has one.
-    pub fn code(&self) -> Option<Code> {
-        match self {
-            End::Done => None,
-            End::Answered { code, .. } | End::Failed { code, .. } => Some(*code),
-        }
+        self.code().map_or(0, |code| code.status().get())
     }
 }
 
 /// An answer of `text` alone.
 impl From<String> for Reply {
-    fn from(text: String) -> Reply {
-        Reply {
+    fn from(text: String) -> Self {
+        Self {
             text,
-            ..Reply::default()
+            ..Self::default()
         }
     }
 }
 
 impl Reply {
-    /// A failure of kind `code`, and why.
-    pub fn failed(code: Code, message: impl Into<String>) -> Reply {
-        Reply {
-            end: End::failed(code, message),
-            ..Reply::default()
+    /// A failure of kind `code`, with its exit status, and why.
+    pub fn failed(code: Code, message: impl Into<String>) -> Self {
+        Self {
+            end: End::Failed {
+                code,
+                message: message.into(),
+            },
+            ..Self::default()
         }
     }
 }
 
-wire_enum!(Scalar, "scalar" { 0 => Int(n), 1 => Bool(b), 2 => Str(s) });
-
-wire_enum!(End, "end" {
-    0 => Done,
-    1 => Answered { status, code },
-    2 => Failed { status, code, message },
-});
-
-wire_struct!(Reply {
-    end,
-    text,
-    json,
-    ids,
-    value
-});
-
-/// The server's frames.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServerFrame<'a> {
-    /// Its answer to the client's.
-    Hello(Hello),
-    Paint(&'a [u8]),
-    Exit(&'a str),
-    Stdout(&'a [u8]),
-    Stderr(&'a [u8]),
-    Done {
-        status: u8,
-    },
-    /// First after an `Attach` sent with the client's terminal
-    /// (`fuxix::socket::send_with_fd`): whether the server took it, and
-    /// reads the keys and writes the paints there itself. If it did not,
-    /// the client relays them in frames, as one that sent no terminal does.
-    Terminal {
-        taken: bool,
-    },
-    /// A request's answer.
-    Reply(Box<Reply>),
-    /// To an attached client: the server ended its screen by itself (copy
-    /// mode whose rows dropped from history, whose pane went or is no longer
-    /// focused, or with no pane to copy; a menu, chooser, prompt or
-    /// confirmation whose subject closed), the mode being the client's.
-    Ended,
-    /// To an attached client: fuxth to run as its own, asked of it from
-    /// elsewhere (`str c1 client menu`).
-    Run(&'a str),
-    /// To an attached client: keys to take as typed at its terminal
-    /// (`send-keys` to a client).
-    Keys(Vec<crate::command::Input>),
-    /// A piece of a reply too large for one frame: its encoding, in order,
-    /// whole once `PartsEnd` comes.
-    Part(&'a [u8]),
-    PartsEnd,
-}
-
-impl<'a> ServerFrame<'a> {
-    /// Writes `bytes` into `out` as the frames `frame` makes of pieces of
-    /// them, each as long as fits: a paint of any length, or a command's
-    /// output. No bytes, no frames.
-    pub fn split_into(bytes: &'a [u8], frame: fn(&'a [u8]) -> Self, out: &mut ByteQueue) {
-        let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
-        for piece in whole
-            .iter()
-            .map(|piece| piece.as_slice())
-            .chain((!rest.is_empty()).then_some(rest))
-        {
-            out.push_with(|out| put(&frame(piece), out));
-        }
+frames! {
+    /// The server's first frames to a client: its `Hello`, the answer to
+    /// the client's; or, before or after it, an `Exit` saying why it goes no
+    /// further; and to a `Kill`, `Done` as it stops. A client of any version
+    /// reads these, so their kinds and payloads never change.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Greeting<'a> {
+        Hello(hello: Hello) = HELLO,
+        Exit(reason: &'a str) = EXIT,
+        /// The kill's answer, with its status: 0.
+        Done(status: u8) = 11,
     }
 }
 
-impl<'a> Frame<'a> for ServerFrame<'a> {
-    fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error> {
-        let text = || std::str::from_utf8(payload).map_err(|_| crate::wire::Error::NotUtf8);
-        match kind {
-            kind::HELLO => read(payload).map(ServerFrame::Hello),
-            kind::PAINT => Ok(ServerFrame::Paint(payload)),
-            kind::EXIT => text().map(ServerFrame::Exit).map_err(Error::Wire),
-            kind::STDOUT => Ok(ServerFrame::Stdout(payload)),
-            kind::STDERR => Ok(ServerFrame::Stderr(payload)),
-            kind::DONE => read(payload).map(|status| ServerFrame::Done { status }),
-            kind::TERMINAL => read(payload).map(|taken| ServerFrame::Terminal { taken }),
-            kind::REPLY => read(payload).map(|reply| ServerFrame::Reply(Box::new(reply))),
-            kind::ENDED => read(payload).map(|()| ServerFrame::Ended),
-            kind::RUN => text().map(ServerFrame::Run).map_err(Error::Wire),
-            kind::PART => Ok(ServerFrame::Part(payload)),
-            kind::PARTS_END => read(payload).map(|()| ServerFrame::PartsEnd),
-            kind::KEYS => read(payload).map(ServerFrame::Keys),
-            other => Err(Error::UnexpectedKind(other)),
-        }
-    }
-
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
-        match self {
-            ServerFrame::Hello(hello) => hello.write(out),
-            ServerFrame::Reply(reply) => wired(out, kind::REPLY, &**reply),
-            ServerFrame::Keys(keys) => wired(out, kind::KEYS, keys),
-            ServerFrame::Done { status } => wired(out, kind::DONE, status),
-            ServerFrame::Terminal { taken } => wired(out, kind::TERMINAL, taken),
-            ServerFrame::Ended => kind::ENDED,
-            ServerFrame::PartsEnd => kind::PARTS_END,
-            // Bytes as they are: a paint is not copied twice.
-            ServerFrame::Run(source) => raw(out, kind::RUN, source.as_bytes()),
-            ServerFrame::Part(bytes) => raw(out, kind::PART, bytes),
-            ServerFrame::Paint(bytes) => raw(out, kind::PAINT, bytes),
-            ServerFrame::Exit(reason) => raw(out, kind::EXIT, reason.as_bytes()),
-            ServerFrame::Stdout(bytes) => raw(out, kind::STDOUT, bytes),
-            ServerFrame::Stderr(bytes) => raw(out, kind::STDERR, bytes),
-        }
+frames! {
+    /// The server's frames to a command client: what its request streams
+    /// before its reply (`events`, a wait's lines), then the reply in
+    /// pieces; or an `Exit` saying why it ends.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum ToCommand<'a> {
+        Exit(reason: &'a str) = EXIT,
+        Stdout(bytes: Cow<'a, [u8]>) = 9,
+        /// A piece of a request's reply: its encoding, in order, whole once
+        /// `PartsEnd` comes. A reply goes in pieces as long as fit, so it is
+        /// encoded once, whatever its length.
+        Part(bytes: Cow<'a, [u8]>) = 17,
+        PartsEnd = 18,
     }
 }
 
-/// Writes `value` to `out`: frame `kind`'s payload. The kind.
-fn wired(out: &mut Vec<u8>, kind: u8, value: &impl Wire) -> u8 {
-    value.put(out);
-    kind
+wire! {
+    /// Which of a client's screens the server draws: copy mode, or a panel
+    /// (a menu, chooser, prompt or confirmation). One the server ended is
+    /// closed on the client only if it is still of that kind.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ScreenKind {
+        Copy,
+        Panel,
+    }
 }
 
-/// Writes `bytes` to `out` as they are: frame `kind`'s payload. The kind.
-fn raw(out: &mut Vec<u8>, kind: u8, bytes: &[u8]) -> u8 {
-    out.extend_from_slice(bytes);
-    kind
+frames! {
+    /// The server's frames to an attaching client, and to the client once
+    /// it is attached.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum ToAttached<'a> {
+        /// The answer to its `Attach`, before anything is painted: its id,
+        /// which its bindings' `me` names and a headless client prints; and,
+        /// if it sent its terminal with it (`fuxix::socket::send_with_fd`),
+        /// whether the server took it, to write the paints there itself. If
+        /// it did not, the paints come in frames, as to a client that sent
+        /// none.
+        Welcome(client: ClientId, taken: Option<bool>) = 12,
+        /// Bytes for its terminal: a paint, or what the server sends it
+        /// outside one (a copy, the bell, questions for the terminal).
+        Paint(bytes: Cow<'a, [u8]>) = 7,
+        Exit(reason: &'a str) = EXIT,
+        /// The server ended its screen of that kind by itself (copy mode
+        /// whose rows dropped from history, whose pane went or is no longer
+        /// focused, or with no pane to copy; a menu, chooser, prompt or
+        /// confirmation whose subject closed), the mode being the client's.
+        Ended(kind: ScreenKind) = 14,
+        /// fuxth to run as its own, asked of it from elsewhere (`str c1
+        /// client menu`).
+        Run(code: String) = 15,
+        /// Keys to take as typed at its terminal (`send-keys` to a client).
+        Keys(keys: Vec<crate::command::Input>) = 16,
+    }
+}
+
+/// Writes `bytes` into `out` as the frames `frame` makes of pieces of them,
+/// each as long as fits: a paint of any length, a command's output, a
+/// reply. No bytes, no frames.
+pub fn split_into<'a, F: Frame<'a>>(
+    bytes: &'a [u8],
+    frame: fn(Cow<'a, [u8]>) -> F,
+    out: &mut ByteQueue,
+) {
+    let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
+    for piece in whole
+        .iter()
+        .map(|piece| piece.as_slice())
+        .chain((!rest.is_empty()).then_some(rest))
+    {
+        out.push_with(|out| put(&frame(Cow::Borrowed(piece)), out));
+    }
 }
 
 /// A frame of one kind, its payload its value's wire bytes.
@@ -526,21 +529,15 @@ trait OneKind: Wire {
 impl<T: OneKind> Frame<'_> for T {
     fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
         match kind == T::KIND {
-            true => read(payload),
+            true => Payload::get(payload),
             false => Err(Error::UnexpectedKind(kind)),
         }
     }
 
     fn write(&self, out: &mut Vec<u8>) -> u8 {
-        wired(out, T::KIND, self)
+        self.put(out);
+        T::KIND
     }
-}
-
-/// The value `payload` holds, all of it.
-fn read<T: Wire>(payload: &[u8]) -> Result<T, Error> {
-    crate::wire::Reader::new(payload)
-        .whole()
-        .map_err(Error::Wire)
 }
 
 /// Accumulates bytes from a stream and yields whole frames. A frame header
@@ -649,9 +646,9 @@ mod tests {
             role,
         };
         round_trip!(Hello, 1, hello(Role::Attach));
-        round_trip!(ServerFrame, 1, ServerFrame::Hello(hello(Role::Kill)));
+        round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Kill)));
         let size = crate::session::default_size();
-        let workspace = Some("main".to_owned());
+        let workspace = Some(crate::command::WsRef::Name("main".to_owned()));
         round_trip!(
             Attach,
             2,
@@ -678,8 +675,7 @@ mod tests {
         // Every mouse button, Back and Forward too, arrives as itself.
         for button in [MouseButton::Back, MouseButton::Forward] {
             let act = Act::Mouse(MouseEvent {
-                action: MouseAction::Press,
-                button: Some(button),
+                action: MouseAction::Press(button),
                 mods: Modifiers::default(),
                 row: 1,
                 col: 2,
@@ -689,13 +685,13 @@ mod tests {
         round_trip!(AttachedFrame, 4, AttachedFrame::Resize(size));
         round_trip!(AttachedFrame, 5, AttachedFrame::Detach);
         round_trip!(
-            Request,
+            Asked,
             6,
-            Request {
-                command: Command::Rename {
+            Asked {
+                request: Request::Do(crate::command::Command::Rename {
                     target: AnyRef::Pane(crate::id::PaneId::of(3)),
                     name: "界".into(),
-                },
+                }),
                 context: Context {
                     cwd: "/somewhere".into(),
                     pane: "%3".parse().ok(),
@@ -706,17 +702,22 @@ mod tests {
                 },
             }
         );
-        round_trip!(ServerFrame, 7, ServerFrame::Paint(&[0, 1, 2, 255]));
-        round_trip!(ServerFrame, 8, ServerFrame::Exit("detached"));
-        round_trip!(ServerFrame, 9, ServerFrame::Stdout(b"out"));
-        round_trip!(ServerFrame, 10, ServerFrame::Stderr(&[]));
-        round_trip!(ServerFrame, 11, ServerFrame::Done { status: 2 });
-        round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: true });
-        round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: false });
-        round_trip!(ServerFrame, 13, ServerFrame::Reply(Box::default()));
-        round_trip!(ServerFrame, 14, ServerFrame::Ended);
-        round_trip!(ServerFrame, 15, ServerFrame::Run("me zoom"));
-        round_trip!(ServerFrame, 16, ServerFrame::Keys(Vec::new()));
+        let paint = ToAttached::Paint(Cow::Borrowed(&[0, 1, 2, 255]));
+        round_trip!(ToAttached, 7, paint);
+        round_trip!(Greeting, 8, Greeting::Exit("refused"));
+        round_trip!(ToCommand, 8, ToCommand::Exit("stopped"));
+        round_trip!(ToAttached, 8, ToAttached::Exit("detached"));
+        round_trip!(ToCommand, 9, ToCommand::Stdout(Cow::Borrowed(b"out")));
+        round_trip!(Greeting, 11, Greeting::Done(2));
+        let client = ClientId::of(2);
+        for taken in [Some(true), Some(false), None] {
+            round_trip!(ToAttached, 12, ToAttached::Welcome(client, taken));
+        }
+        round_trip!(ToAttached, 14, ToAttached::Ended(ScreenKind::Copy));
+        round_trip!(ToAttached, 15, ToAttached::Run("me zoom".into()));
+        round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
+        round_trip!(ToCommand, 17, ToCommand::Part(Cow::Borrowed(b"reply")));
+        round_trip!(ToCommand, 18, ToCommand::PartsEnd);
         // A Hello's bytes never change, so that `Kill` reaches a server of
         // any version: the length, the kind, the protocol, the role, then
         // the version's length and bytes.
@@ -727,6 +728,10 @@ mod tests {
         };
         let head = [0, 0, 0, 16, 1, 0, 0, 0, 9, 2, 0, 0, 0, 6];
         assert_eq!(kill.encode(), Ok([&head[..], b"0.13.0"].concat()));
+        // Nor do the kill's answer's, which a client of any version reads
+        // after it: the length, the kind, and its status, 0.
+        let done = Greeting::Done(0);
+        assert_eq!(done.encode(), Ok(vec![0, 0, 0, 2, 11, 0]));
         // Each role's byte is the wire format's too: after the length, the
         // kind and the protocol's four bytes.
         for (role, byte) in [
@@ -744,32 +749,35 @@ mod tests {
     fn oversized_frames_are_refused_on_both_sides() {
         let big = vec![0; MAX_PAYLOAD + 1];
         assert_eq!(
-            ServerFrame::Paint(&big).encode().map_err(|e| e.to_string()),
+            ToAttached::Paint(Cow::Borrowed(&big))
+                .encode()
+                .map_err(|e| e.to_string()),
             Err(format!(
                 "a frame of {} bytes exceeds the {MAX_PAYLOAD}-byte limit",
                 MAX_PAYLOAD + 1
             ))
         );
         let fits = big.get(..MAX_PAYLOAD).unwrap_or_default();
-        assert!(ServerFrame::Paint(fits).encode().is_ok());
+        assert!(ToAttached::Paint(Cow::Borrowed(fits)).encode().is_ok());
         // Refused, it leaves nothing behind.
         let mut out = b"before".to_vec();
-        assert!(ServerFrame::Stdout(&big).encode_into(&mut out).is_err());
+        let stdout = ToCommand::Stdout(Cow::Borrowed(&big));
+        assert!(stdout.encode_into(&mut out).is_err());
         assert_eq!(out, b"before");
         let mut decoder = Decoder::default();
         // Any length past the limit will do.
         let over = u32::try_from(MAX_FRAME + 1).unwrap_or(u32::MAX);
         decoder.push(&over.to_be_bytes());
         assert!(decoder.ready().is_err());
-        assert!(decoder.frame::<ServerFrame>().is_err());
+        assert!(decoder.frame::<ToAttached>().is_err());
         // A longer paint is split into frames that fit.
         let mut queue = ByteQueue::default();
         let paint = vec![7; MAX_PAYLOAD * 2 + 3];
-        ServerFrame::split_into(&paint, ServerFrame::Paint, &mut queue);
+        split_into(&paint, ToAttached::Paint, &mut queue);
         let mut decoder = Decoder::default();
         decoder.push(queue.as_slice());
         let mut frames = 0;
-        while let Ok(Some(ServerFrame::Paint(_))) = decoder.frame() {
+        while let Ok(Some(ToAttached::Paint(_))) = decoder.frame() {
             frames += 1;
         }
         assert_eq!(frames, 3);
@@ -781,11 +789,13 @@ mod tests {
     #[test]
     fn malformed_frames_are_errors_not_panics() {
         type Decode = fn(&mut Decoder) -> Result<(), Error>;
-        let server: Decode = |d| d.frame::<ServerFrame>().map(drop);
+        let server: Decode = |d| d.frame::<ToAttached>().map(drop);
+        let greeting: Decode = |d| d.frame::<Greeting>().map(drop);
+        let commanded: Decode = |d| d.frame::<ToCommand>().map(drop);
         let hello: Decode = |d| d.frame::<Hello>().map(drop);
         let attach: Decode = |d| d.frame::<Attach>().map(drop);
         let attached: Decode = |d| d.frame::<AttachedFrame>().map(drop);
-        let command: Decode = |d| d.frame::<Request>().map(drop);
+        let command: Decode = |d| d.frame::<Asked>().map(drop);
         let utf8 = "a frame's payload: a text that is not UTF-8";
         for (decode, bytes, message) in [
             (server, vec![0, 0, 0, 1, 99], "unexpected frame kind 99"),
@@ -795,27 +805,49 @@ mod tests {
             (hello, vec![0, 0, 0, 1, 5], "unexpected frame kind 5"),
             (attach, vec![0, 0, 0, 1, 3], "unexpected frame kind 3"),
             (attached, vec![0, 0, 0, 1, 2], "unexpected frame kind 2"),
+            // A frame of another role: a paint to a command client, or
+            // before the server's Hello, a reply's piece to an attached
+            // client.
+            (commanded, vec![0, 0, 0, 1, 7], "unexpected frame kind 7"),
+            (greeting, vec![0, 0, 0, 1, 7], "unexpected frame kind 7"),
+            (server, vec![0, 0, 0, 1, 17], "unexpected frame kind 17"),
             (
-                server,
+                greeting,
                 vec![0, 0, 0, 1, 11],
                 "a frame's payload: the bytes end early",
             ),
             (
-                server,
+                greeting,
                 vec![0, 0, 0, 3, 11, 0, 0],
                 "a frame's payload: bytes after the value",
             ),
             (
                 command,
                 vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
-                "a frame's payload: no command has tag 255",
+                "a frame's payload: no Request has tag 255",
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),
+            // A frame's payload is its fields, and no more.
+            (
+                server,
+                vec![0, 0, 0, 3, 14, 0, 0],
+                "a frame's payload: bytes after the value",
+            ),
+            (
+                server,
+                vec![0, 0, 0, 2, 14, 9],
+                "a frame's payload: no ScreenKind has tag 9",
+            ),
+            (
+                attached,
+                vec![0, 0, 0, 2, 5, 0],
+                "a frame's payload: bytes after the value",
+            ),
             (server, vec![0, 0, 0, 2, 8, 0xff], utf8),
             (
                 hello,
                 vec![0, 0, 0, 6, 1, 0, 0, 0, 1, 7],
-                "a frame's payload: no role has tag 7",
+                "a frame's payload: no Role has tag 7",
             ),
             (
                 attach,

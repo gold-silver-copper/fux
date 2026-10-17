@@ -80,7 +80,9 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
 #[test]
 fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     use fux::command::Command;
-    use fux::protocol::{Context, Decoder, Frame, Hello, PROTOCOL, Request, Role, ServerFrame};
+    use fux::protocol::{
+        Asked, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Reply, Role, ToCommand,
+    };
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
@@ -89,13 +91,14 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         version: "0".into(),
         role: Role::Command,
     };
-    let request = Request {
-        command: Command::Ls {
+    let request = Asked {
+        request: Command::Ls {
             target: None,
             get: None,
-        },
+        }
+        .into(),
         context: Context {
-            cwd: String::new(),
+            cwd: std::path::PathBuf::new(),
             pane: None,
             server: None,
             env: Vec::new(),
@@ -111,13 +114,18 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     stream.read_to_end(&mut answer).map_err(e)?;
     let mut decoder = Decoder::default();
     decoder.push(&answer);
-    let mut reply = None;
-    while let Some(frame) = decoder.frame::<ServerFrame>().map_err(e)? {
-        if let ServerFrame::Reply(answer) = frame {
-            reply = Some(answer);
+    // The reply comes in pieces, whole at their end.
+    let (mut parts, mut reply) = (Vec::new(), None);
+    let hello = decoder.frame::<Greeting>().map_err(e)?;
+    assert!(matches!(hello, Some(Greeting::Hello(_))), "{hello:?}");
+    while let Some(frame) = decoder.frame::<ToCommand>().map_err(e)? {
+        match frame {
+            ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
+            ToCommand::PartsEnd => reply = Some(fux::wire::Reader::new(&parts).whole::<Reply>()),
+            ToCommand::Exit(_) | ToCommand::Stdout(_) => {}
         }
     }
-    let reply = reply.ok_or("no reply")?;
+    let reply = reply.ok_or("no reply")?.map_err(e)?;
     assert_eq!(reply.end, fux::protocol::End::Done);
     assert!(reply.text.contains("+1 main"), "{}", reply.text);
     Ok(())

@@ -6,8 +6,9 @@ use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, trimmed};
 use crate::link::{Held, Hyperlink, Links, RowLinks};
+use crate::screen::Saved;
 use crate::style::Styles;
-use crate::{Attributes, CellRef, Error, Row, RowId};
+use crate::{Attributes, CellRef, Error, Row, RowId, reserve};
 
 /// The cursor, and what DECSC saves with it. Only the grid's movements set
 /// its row and column, each keeping them on the grid: a glyph that reaches
@@ -16,10 +17,22 @@ use crate::{Attributes, CellRef, Error, Row, RowId};
 pub(crate) struct Cursor {
     row: u16,
     col: u16,
-    /// DEC STD 070's Last Column Flag (Appendix D.6.1): a glyph went into
-    /// the last column, so the next one, with autowrap on, first moves to
-    /// the start of the next line.
+    /// A glyph went into the last column, and the cursor waits past it:
+    /// with autowrap on, DEC STD 070's Last Column Flag (Appendix D.6.1),
+    /// so the next glyph first moves to the start of the next line; with
+    /// it off, the next glyph overwrites the last column, and the flag
+    /// (`Screen::pending_wrap`) is not set. A mark joins the glyph either
+    /// way. DECAWM's changes, DECSTR and DECSC treat it so.
     pub pending_wrap: bool,
+    /// `pending_wrap` came back with DECRC: the Last Column Flag, which
+    /// setting autowrap keeps (DEC STD 070, Appendix D.6.1), even if it
+    /// was off. A glyph's own flag is never restored. It means something
+    /// only while `pending_wrap` is set: what clears that (CR, a cursor
+    /// move, `wrap`, a mode change) may leave this, and the flag is read
+    /// only through both (`Screen::last_column_flag`). Only `advance_within`
+    /// (which clears this) and DECRC (which sets this to the flag it
+    /// restores) set `pending_wrap`.
+    pub restored: bool,
     /// Origin mode (DECOM).
     pub origin: bool,
 }
@@ -120,7 +133,7 @@ struct Meta {
 }
 
 // `prompt` fits where the struct had padding: a row costs no more for it.
-const _: () = assert!(std::mem::size_of::<Meta>() == 24);
+const _: () = assert!(size_of::<Meta>() == 24);
 
 impl Meta {
     /// What the row brings into history: `cells`, its cells before its
@@ -186,10 +199,6 @@ impl Order {
         let at = self.at(row)?;
         self.slots.get_mut(at)
     }
-    #[inline]
-    fn front(&self) -> Option<&usize> {
-        self.get(0)
-    }
     /// Puts `slot` under the last row.
     fn push_back(&mut self, slot: usize) {
         if self.top != 0 {
@@ -206,14 +215,6 @@ impl Order {
         let top = self.top.wrapping_add(1);
         self.top = if top >= self.slots.len() { 0 } else { top };
     }
-    /// The rows, top to bottom, in two runs.
-    fn as_slices(&self) -> (&[usize], &[usize]) {
-        let top = self.top.min(self.slots.len());
-        match self.slots.split_at_checked(top) {
-            Some((before, from)) => (from, before),
-            None => (&[], &[]),
-        }
-    }
     fn as_mut_slices(&mut self) -> (&mut [usize], &mut [usize]) {
         let top = self.top.min(self.slots.len());
         match self.slots.split_at_mut_checked(top) {
@@ -221,9 +222,9 @@ impl Order {
             None => (&mut [], &mut []),
         }
     }
+    /// The rows' slots, top to bottom.
     fn iter(&self) -> impl Iterator<Item = &usize> {
-        let (front, back) = self.as_slices();
-        front.iter().chain(back)
+        (0..self.len()).filter_map(|row| self.get(row))
     }
 }
 
@@ -309,8 +310,8 @@ pub(crate) struct Grid {
     history: History,
     size: Size,
     pub cursor: Cursor,
-    /// The cursor DECSC saved, which DECRC restores.
-    pub saved: Cursor,
+    /// What DECSC saved, which DECRC restores.
+    pub saved: Saved,
     /// The top and bottom margins (DECSTBM): the scrolling region.
     pub lines: Span,
     /// The left and right margins (DECSLRM, with DECLRMM set), set with
@@ -361,10 +362,9 @@ impl Grid {
 
     /// Whether a screen of `size` is more than a grid holds.
     pub fn check_size(size: Size) -> Result<(), Error> {
-        if size.cells() > MAX_CELLS {
-            return Err(Error::Capacity);
-        }
-        Ok(())
+        (size.cells() <= MAX_CELLS)
+            .then_some(())
+            .ok_or(Error::Capacity)
     }
 
     pub fn new(
@@ -394,7 +394,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
-        crate::reserve(&mut self.cells, size)?;
+        reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
         Ok(())
@@ -434,7 +434,7 @@ impl Grid {
             history: History::new(history_bytes),
             size,
             cursor: Cursor::default(),
-            saved: Cursor::default(),
+            saved: Saved::default(),
             lines: size.lines(),
             columns: size.columns(),
             lr: false,
@@ -460,10 +460,10 @@ impl Grid {
         // Within the limits: `check_size` came first.
         let rows = usize::from(self.size.rows());
         let cells = if self.unmade { 0 } else { self.size.cells() };
-        crate::reserve(&mut self.cells, cells)?;
-        crate::reserve(&mut self.meta, rows)?;
-        crate::reserve(&mut self.texts, rows)?;
-        crate::reserve(&mut self.linked, rows)?;
+        reserve(&mut self.cells, cells)?;
+        reserve(&mut self.meta, rows)?;
+        reserve(&mut self.texts, rows)?;
+        reserve(&mut self.linked, rows)?;
         self.order
             .try_reserve_exact(rows.saturating_sub(self.order.len()))?;
         Ok(())
@@ -1004,12 +1004,13 @@ impl Grid {
             if let Some(cell) = cells.get(first)
                 && !cell.is_wide()
                 && cell.is_wide_continuation()
-                && let Some(other) = first.checked_sub(1).and_then(|i| cells.get_mut(i))
+                && let Some(other) = cells.get_mut(first.wrapping_sub(1))
             {
                 *other = other.blanked();
             }
-            if let Some(at) = reach.checked_sub(1)
-                && cells.get(at).is_some_and(Compact::is_wide)
+            if cells
+                .get(reach.wrapping_sub(1))
+                .is_some_and(Compact::is_wide)
             {
                 if let Some(other) = cells.get_mut(reach) {
                     *other = other.blanked();
@@ -1056,8 +1057,7 @@ impl Grid {
     }
 
     /// ED (`display`) or EL of `part`, from the cursor, ending a pending
-    /// wrap: `erase` erases each row's span, and says whether it found
-    /// something it left; whether any did. A row ED erases whole is no
+    /// wrap: `erase` erases each row's span. A row ED erases whole is no
     /// prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
     /// leave the mark (a shell redrawing its prompt erases from it).
     #[inline]
@@ -1065,11 +1065,10 @@ impl Grid {
         &mut self,
         display: bool,
         part: Erase,
-        mut erase: impl FnMut(&mut Self, u16, u16, u16) -> bool,
-    ) -> bool {
+        mut erase: impl FnMut(&mut Self, u16, u16, u16),
+    ) {
         self.cursor.pending_wrap = false;
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
-        let mut found = false;
         if display {
             for y in 0..self.size.rows() {
                 let whole = match part {
@@ -1078,7 +1077,7 @@ impl Grid {
                     Erase::All => true,
                 };
                 if whole {
-                    found |= erase(self, y, 0, cols);
+                    erase(self, y, 0, cols);
                     self.set_prompt(y, false);
                 }
             }
@@ -1088,41 +1087,28 @@ impl Grid {
             Erase::Above => (0, col.saturating_add(1).min(cols)),
             Erase::All => (0, cols),
         };
-        erase(self, row, start, end) | found
+        erase(self, row, start, end);
     }
 
-    /// `erase`, leaving protected glyphs (DECSCA, SPA) as they are: each
-    /// run of unprotected cells between them is erased, as xterm's
-    /// `ClearInLine2` erases around them. A wide glyph's second half is
-    /// protected if its first half is. Whether there was a protected glyph
-    /// in the span. Out of line, as protection is rare.
+    /// `erase`, leaving the guarded glyphs (SPA's) as they are. Each run of
+    /// other cells between them is erased, as xterm's `ClearInLine2` erases
+    /// around them. A wide glyph's second half is guarded if its first half
+    /// is. Out of line, as protection is rare.
     #[inline(never)]
-    pub fn erase_unprotected(
-        &mut self,
-        row: u16,
-        start: u16,
-        end: u16,
-        style: u32,
-        version: u64,
-    ) -> bool {
+    pub fn erase_unprotected(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) {
         let end = end.min(self.size.cols());
-        let cells = self.live_cells(row);
+        let (cells, styles) = (self.live_cells(row), &self.styles);
+        let kept = |c: &Compact| styles.guarded(c.style());
         let protected = |at: usize| {
             cells.get(at).is_some_and(|c| {
-                c.is_protected()
-                    || c.is_wide_continuation()
-                        && at
-                            .checked_sub(1)
-                            .and_then(|i| cells.get(i))
-                            .is_some_and(Compact::is_protected)
+                kept(c)
+                    || c.is_wide_continuation() && cells.get(at.wrapping_sub(1)).is_some_and(kept)
             })
         };
         let mut runs = Vec::new();
         let mut from = start;
-        let mut found = false;
         for col in start..end {
             if protected(usize::from(col)) {
-                found = true;
                 if from < col {
                     runs.push((from, col));
                 }
@@ -1135,7 +1121,102 @@ impl Grid {
         for (from, to) in runs {
             self.erase(row, from, to, style, version);
         }
-        found
+    }
+
+    /// DECFRA: the columns `start` to `end` of live row `row` filled with
+    /// `c`, a glyph one column wide, in `style`, with no link: erased as
+    /// `erase` erases them, which blanks a wide glyph they cut, then each
+    /// taking `c`.
+    pub fn fill(&mut self, row: u16, (start, end): (u16, u16), c: char, style: u32, version: u64) {
+        self.erase(row, start, end, style, version);
+        let span = usize::from(start)..usize::from(end);
+        let glyph = Compact::glyph(c, 1, style);
+        self.mutate_row(row, version, end, |cells| {
+            cells
+                .get_mut(span.clone())
+                .map(|run| run.fill(glyph))
+                .is_some()
+        });
+        self.set_link(row, span, None, version);
+    }
+
+    /// DECSERA, DECSED and DECSEL: each glyph DECSCA does not protect in
+    /// the columns `start` to `end` of live row `row` made a space, keeping
+    /// its attributes; empty cells stay empty (DEC STD 070, each of them).
+    /// With `all`, DECERA: every glyph, protected or not, a space in that
+    /// style, "clearing all character attributes", links too. A wide
+    /// glyph's second half goes with its first, and one the span cuts is
+    /// blanked whole.
+    pub fn erase_to_spaces(
+        &mut self,
+        row: u16,
+        (start, end): (u16, u16),
+        all: Option<u32>,
+        version: u64,
+    ) {
+        let span = usize::from(start)..usize::from(end);
+        self.mutate_row(row, version, end, |cells| {
+            // Whether the glyph before is protected.
+            let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
+            let before = before.filter(|_| all.is_none());
+            let (mut kept, mut changed) = (before.is_some_and(Compact::is_protected), false);
+            for cell in cells.get_mut(span).into_iter().flatten() {
+                if cell.is_wide_continuation() {
+                    if !kept {
+                        *cell = cell.blanked();
+                        changed = true;
+                    }
+                    continue;
+                }
+                kept = all.is_none() && cell.is_protected();
+                if cell.has_contents() && !kept {
+                    *cell = Compact::ascii(b' ', all.unwrap_or(cell.style()));
+                    changed = true;
+                }
+            }
+            repair_wide(cells);
+            changed
+        });
+        if all.is_some() {
+            self.set_link(row, usize::from(start)..usize::from(end), None, version);
+        }
+    }
+
+    /// DECCRA: the cells `columns` of rows `lines`, text and attributes,
+    /// copied to the rows and columns from `to`, as far as the screen goes
+    /// (DEC STD 070, DECCRA), all read before any is written, so the two
+    /// may overlap. A wide glyph the copy cuts is blanked whole. The cells
+    /// copied to have no link.
+    pub fn copy_rectangle(&mut self, lines: Span, columns: Span, to: (u16, u16), version: u64) {
+        let span = usize::from(columns.first())..usize::from(columns.end());
+        let source: Vec<(Vec<Compact>, Text)> = lines
+            .each()
+            .map(|y| {
+                let text = self.slot(y).and_then(|slot| self.texts.get(slot));
+                let cells = self.live_cells(y).get(span.clone()).unwrap_or_default();
+                let mut cells = cells.to_vec();
+                // The half of a glyph the source's edge cuts.
+                if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
+                    *cut = cut.blanked();
+                }
+                if let Some(cut) = cells.last_mut().filter(|c| c.is_wide()) {
+                    *cut = cut.blanked();
+                }
+                (cells, text.cloned().unwrap_or_default())
+            })
+            .collect();
+        let (row, col) = to;
+        let end = col.saturating_add(columns.len()).min(self.size.cols());
+        for (y, (cells, text)) in (row..self.size.rows()).zip(source) {
+            self.mutate_line(y, version, end, |line| {
+                for (at, cell) in (usize::from(col)..usize::from(end)).zip(&cells) {
+                    line.set(at, *cell, text.of(cell));
+                }
+                repair_wide(line.cells);
+                true
+            });
+            self.set_link(y, usize::from(col)..usize::from(end), None, version);
+        }
     }
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
@@ -1419,15 +1500,13 @@ impl Grid {
 
     /// `scroll` within the margins, or down, or without history.
     ///
-    /// The one place rows move across a region's edges, and so the one
-    /// that keeps soft wraps right there. A wrap belongs to the edge
-    /// between a row and the next, kept on the row above it: the row above
-    /// the region now meets another row, so it loses its wrap; scrolling
-    /// down, so does the region's last row, whose next row left. Scrolling
-    /// up, the last row keeps it, as a line wrapping at the bottom margin
-    /// goes on in the row brought in (`Screen::wrap` marks it before the
-    /// scroll). A row moved inside the region keeps its wrap, as the row
-    /// under it moves with it.
+    /// A soft wrap is the row's own, as xterm keeps it (soft wrap is
+    /// xterm's notion; no standard has one): it moves with the row, the
+    /// rows brought in have none, and the row above the region keeps its
+    /// own (`replay --engines xterm --size 2x1 '\e[999Cab\e[L'`, and
+    /// `--size 6x1 '~!@#\e[3;5r\e[10H\e[2T'` scrolling down). Scrolling
+    /// up, a line wrapping at the bottom margin goes on in the row brought
+    /// in (`Screen::wrap` marks it before the scroll).
     #[inline]
     fn scroll_region(
         &mut self,
@@ -1444,9 +1523,6 @@ impl Grid {
         if count == 0 {
             return;
         }
-        if let Some(above) = top.checked_sub(1) {
-            self.wrap(above, false, version);
-        }
         for _ in 0..count {
             let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
@@ -1456,9 +1532,6 @@ impl Grid {
                     self.colour(slot, blank);
                 }
             }
-        }
-        if !up {
-            self.wrap(bottom, false, version);
         }
         // The rows brought in, in the slots of those that left, have none
         // of their links.
@@ -1478,7 +1551,7 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<(), Error> {
-        let Some(&slot) = self.order.front() else {
+        let Some(&slot) = self.order.get(0) else {
             return Ok(());
         };
         let taken = take_row(
@@ -1521,22 +1594,12 @@ impl Grid {
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
         self.history.push(m.arriving(cells, self.size.cols()))?;
-        self.retire_extras(slot);
-        Ok(())
-    }
-
-    /// The text and links of the row in `slot`, which history has just
-    /// taken, go with it: a copy of the text, and the links themselves.
-    #[cold]
-    #[inline(never)]
-    fn retire_extras(&mut self, slot: usize) {
-        let text = self
-            .texts
-            .get(slot)
-            .filter(|text| !text.is_empty())
-            .map(Text::exact);
+        // The row's text and links, which history has just taken, go with
+        // it: a copy of the text, and the links themselves.
+        let text = self.texts.get(slot).map(Text::exact);
         let links = (self.linked.get_mut(slot).map(std::mem::take)).filter(|l| !l.is_empty());
         self.history.attach(text, links);
+        Ok(())
     }
 
     /// Moves the screen's row at `from` to `to`, the rows between closing
@@ -1639,7 +1702,10 @@ impl Grid {
         };
         let mut replacement = Self {
             cursor: shifted(self.cursor),
-            saved: shifted(self.saved),
+            saved: Saved {
+                cursor: shifted(self.saved.cursor),
+                ..self.saved
+            },
             ..self.successor(size)
         };
         replacement.reserve_screen()?;
@@ -1648,10 +1714,7 @@ impl Grid {
         for source in 0..end {
             let old = self.row_at(source).filter(|_| source < old_retained);
             let is_history = source < live_top;
-            let id = match old {
-                Some(r) => r.id,
-                None => next_id(next),
-            };
+            let id = old.map_or_else(|| next_id(next), |r| r.id);
             let width = match old {
                 // A row is never wider than the u16 grid it was made in.
                 Some(r) if is_history => u16::try_from(r.width).map_err(|_| Error::Capacity)?,
@@ -1734,7 +1797,7 @@ impl Grid {
         self.styles = Arc::default();
         self.recent = [(Attributes::default(), 0); RECENT];
         self.cursor = Cursor::default();
-        self.saved = Cursor::default();
+        self.saved = Saved::default();
         self.keyboard = KeyboardStack::default();
         self.reset_margins();
     }
@@ -1814,7 +1877,7 @@ impl Grid {
     /// most the screen's width, so the cursor stays on it.
     #[inline]
     pub fn advance_within(&mut self, col: u16, end: u16) {
-        self.cursor.pending_wrap = col >= end;
+        (self.cursor.pending_wrap, self.cursor.restored) = (col >= end, false);
         self.cursor.col = col.min(end.saturating_sub(1));
     }
     /// Moves the cursor to row `row`, the last if past it.

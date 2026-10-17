@@ -38,21 +38,23 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | --- | --- | --- | --- |
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
-| `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `/proc/self/fd` (Android: always) | `/dev/fd` | not offered |
+| `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past the descriptors `io::open_end` listed (Android: always) | `fcntl` on each up to past the descriptors `io::open_end` listed | not offered |
+| `io::open_end` | the highest number in `/dev/fd`, before `fork` | the same | not offered |
 | `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group`, `exists` | `kill`, `killpg`, `kill(pid, 0)` | the same | std signals only its own children, and only with SIGKILL |
-| `process::geteuid`, `setsid`, `session` | `geteuid`, `setsid`, `getsid` | the same | not offered |
+| `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
+| `process::lead_session`, `pty::Slave::spawn` | `io::open_end` before `fork`; between `fork` and `exec` (`pre_exec`): `io::cloexec_from(3, listed)`, `setsid`, `TIOCSCTTY` | the same | std's spawn makes no session |
 | `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
-| `process::reap` | `waitpid(WNOHANG)` | the same | for a pid, not a `Child` |
+| `process::reap` | `waitid(WEXITED, WNOHANG)` | the same, ignoring the stops macOS reports | for a pid, not a `Child` |
 | `process::adopt_orphans`, `reap_orphans` | `prctl(PR_SET_CHILD_SUBREAPER)`; `waitpid(WNOHANG)` on each child in `/proc/self/task/*/children` not kept | nothing: macOS has no subreaper, so orphans go to launchd | not offered |
 | `process::tree` | this process's descendants, by `/proc/PID/task/*/children` | every process (`proc_listallpids`), as orphans leave the tree | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `modes` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, the flags and characters (`ECHO` and `ICANON` in `c_lflag`, …) | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
-| `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
+| `terminal::foreground_group` | `tcgetpgrp` | the same | not offered |
 | `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
 | `socket::peer_uid` | `SO_PEERCRED` | `getpeereid` | `peer_cred` is unstable |
 | `file::pin` | `open(O_PATH \| O_NOFOLLOW)` | none | `O_PATH` has no name in std |

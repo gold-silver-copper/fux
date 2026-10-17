@@ -1,6 +1,6 @@
 //! Why a program could not be read or run: a stable code, what went wrong,
 //! and where.
-use crate::compile::Builtin;
+use crate::machine::Builtin;
 use crate::token::{Place, Token};
 use std::rc::Rc;
 
@@ -88,8 +88,8 @@ pub struct Error {
 
 impl Error {
     /// A failure at `at`, the token it names, when there is one.
-    pub fn new(code: Code, message: impl Into<String>, at: Option<&Token>) -> Error {
-        Error {
+    pub fn new(code: Code, message: impl Into<String>, at: Option<&Token>) -> Self {
+        Self {
             code,
             message: message.into(),
             place: at.map(|t| t.place.clone()),
@@ -132,8 +132,6 @@ pub(crate) enum Wants {
     Seq(Builtin),
     /// An integer, for the word.
     Int(Builtin),
-    /// Arithmetic's two values.
-    Ints,
     /// `lt`'s two values.
     Ordered,
     /// What `concat` joins.
@@ -151,18 +149,17 @@ impl Wants {
     /// found.
     pub(crate) fn not(self, got: impl std::fmt::Display) -> String {
         match self {
-            Wants::Flag => format!("takes a boolean (from eq or lt), not {got}"),
-            Wants::Each => format!("each walks a string or a list, not {got}"),
-            Wants::Seq(word) => format!("{} takes a string or a list, not {got}", word.name()),
-            Wants::Int(word) => format!("{} takes an integer, not {got}", word.name()),
-            Wants::Ints => format!("takes two integers, not {got}"),
-            Wants::Ordered => {
+            Self::Flag => format!("takes a boolean (from eq or lt), not {got}"),
+            Self::Each => format!("each walks a string or a list, not {got}"),
+            Self::Seq(word) => format!("{} takes a string or a list, not {got}", word.name()),
+            Self::Int(word) => format!("{} takes an integer, not {got}", word.name()),
+            Self::Ordered => {
                 format!("lt compares two integers, two strings or two lists, not {got}")
             }
-            Wants::Concat => format!("concat takes a list of strings or of lists, not {got}"),
-            Wants::PushText => format!("push onto a string takes a string, not {got}"),
-            Wants::PutText => format!("put into a string takes a string, not {got}"),
-            Wants::Char => format!("code takes a one-character string, not {got}"),
+            Self::Concat => format!("concat takes a list of strings or of lists, not {got}"),
+            Self::PushText => format!("push onto a string takes a string, not {got}"),
+            Self::PutText => format!("put into a string takes a string, not {got}"),
+            Self::Char => format!("code takes a one-character string, not {got}"),
         }
     }
 }
@@ -189,8 +186,8 @@ pub struct Failure {
 }
 
 impl Failure {
-    pub fn new(code: Code, message: impl Into<String>) -> Failure {
-        Failure {
+    pub fn new(code: Code, message: impl Into<String>) -> Self {
+        Self {
             code,
             message: message.into(),
         }

@@ -2,8 +2,8 @@
 //! whether fux-vt and the panel are expected to agree on it. A random run
 //! draws only from families expected to agree, so any difference it finds
 //! is a regression; `--family` and `--all` add the others. A family where
-//! the panel splits and fux-vt follows a recorded choice is checked by
-//! `verdicts`, beside the engines that decide it (xterm, for most).
+//! the panel splits and a standard or xterm decides is checked by
+//! `verdicts`, beside the engines that follow it (xterm, for most).
 use crate::rng::Rng;
 
 /// Whether fux-vt and the panel are expected to agree on a family.
@@ -11,19 +11,133 @@ use crate::rng::Rng;
 pub enum Status {
     Agree,
     /// A recorded verdict: the panel splits, and fux-vt does what the
-    /// references say, or what xterm does where xterm departs from them
-    /// (fux-vt's README lists those departures) or they are silent. Says
-    /// which, and where the engines stand (`why`), and which engines
-    /// decide (`by`): xterm, for what xterm implements; for a feature it
-    /// lacks, the engines that do what the feature's spec says. Left out
-    /// of a random run, and checked beside the deciding engines by
-    /// `verdicts`.
+    /// standard says, or what xterm does where the standards are silent
+    /// or leave it undefined (`authority`). Says where the engines stand
+    /// (`why`), and which engines it is checked beside (`by`): xterm, for
+    /// what xterm implements; for a feature it lacks, the engines that do
+    /// what the feature's spec says. Left out of a random run, and checked
+    /// beside them by `verdicts`, which also runs the standard's test; with
+    /// no check, the standard's test passing or xterm agreeing, it fails.
     Decided {
         why: &'static str,
         by: &'static [&'static str],
+        authority: Authority,
     },
     /// They differ, and why: a fux-vt defect to fix, or a documented choice.
     Differs(&'static str),
+}
+
+/// What settles a decided family, by the source order fux-vt follows
+/// (its README, "Sequence matrix"): a standard's section where it speaks,
+/// else xterm 411.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Authority {
+    /// The section (`section`, as the test cites it) and the fux-vt test
+    /// that checks it (`test`, `file::function` in fux-vt's `tests/`),
+    /// whose doc comment cites the section: `cited` finds it there.
+    Standard {
+        section: &'static str,
+        test: &'static str,
+    },
+    /// xterm 411, where the standards are silent or leave it undefined:
+    /// checked by xterm, in `by`, agreeing.
+    Xterm,
+}
+
+impl Authority {
+    /// Whether this authority's check can be made: the standard's test is
+    /// in fux-vt's tests and cites the section, or xterm is among `by`.
+    /// Why not, if it can't: such a family fails, never passes.
+    pub fn check(self, by: &[&str]) -> Result<(), String> {
+        match self {
+            Self::Standard { section, test } => cited(section, test),
+            Self::Xterm if by.contains(&"xterm") => Ok(()),
+            Self::Xterm => Err("decided by xterm, which is not among its deciders".to_owned()),
+        }
+    }
+
+    /// Runs the standard's test, alone, as `cargo test` builds it: whether
+    /// exactly it ran and passed (a test whose declaration and citation
+    /// stay but whose body fails is caught here, not by `check`). xterm's
+    /// check is its agreeing, which `verdicts` runs.
+    pub fn run(self) -> Result<(), String> {
+        let test = match self {
+            Self::Standard { test, .. } => test,
+            Self::Xterm => return Ok(()),
+        };
+        let (file, function) = test
+            .split_once("::")
+            .ok_or_else(|| format!("{test}: not file::function"))?;
+        let manifest = format!("{}/../Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let out = std::process::Command::new(cargo)
+            .args([
+                "test",
+                "--quiet",
+                "--manifest-path",
+                &manifest,
+                "--test",
+                file,
+            ])
+            .args(["--", "--exact", function, "--test-threads", "1"])
+            .output()
+            .map_err(|e| format!("running {test}: {e}"))?;
+        let report = String::from_utf8_lossy(&out.stdout);
+        if out.status.success() && report.contains("test result: ok. 1 passed;") {
+            Ok(())
+        } else {
+            Err(format!(
+                "{test} did not pass alone:\n{report}{}",
+                String::from_utf8_lossy(&out.stderr)
+            ))
+        }
+    }
+}
+
+impl std::fmt::Display for Authority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Standard { section, test } => write!(f, "{section} (test {test})"),
+            Self::Xterm => f.write_str("xterm"),
+        }
+    }
+}
+
+/// Whether fux-vt's test `test` (`file::function`) exists and its doc
+/// comment, its lines joined, cites `section`.
+fn cited(section: &str, test: &str) -> Result<(), String> {
+    let (file, function) = test
+        .split_once("::")
+        .ok_or_else(|| format!("{test}: not file::function"))?;
+    let path = format!("{}/../tests/{file}.rs", env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let lines: Vec<&str> = source.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with(&format!("fn {function}(")))
+        .ok_or_else(|| format!("{test}: no such test"))?;
+    let doc: Vec<&str> = lines
+        .get(..at)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .skip_while(|l| l.starts_with("#["))
+        .take_while(|l| l.starts_with("///"))
+        .map(|l| l.trim_start_matches('/').trim())
+        .collect();
+    // Words alone, without the backticks that quote a file's name.
+    let words = |s: &str| {
+        s.replace('`', "")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let doc = words(&doc.into_iter().rev().collect::<Vec<_>>().join(" "));
+    if doc.contains(&words(section)) {
+        Ok(())
+    } else {
+        Err(format!("{test} does not cite {section}"))
+    }
 }
 
 /// The deciding engine of the families xterm decides.
@@ -100,17 +214,16 @@ fn clusters(r: &mut Rng) -> Vec<u8> {
             "\u{1100}\u{1161}\u{11a8}",
             "क\u{94d}ष",
             "\u{301}",
+            "\u{600}1",
         ],
     )
     .into_bytes()
 }
 
+/// The C0 controls, but HT, which ends a pending wrap where xterm keeps it
+/// (`pending-wrap`'s `tab-ends-a-pending-wrap`, settled by its test).
 fn controls(r: &mut Rng) -> Vec<u8> {
-    pick(
-        r,
-        &["\r", "\n", "\r\n", "\x08", "\t", "\x0b", "\x0c", "\x07"],
-    )
-    .into_bytes()
+    pick(r, &["\r", "\n", "\r\n", "\x08", "\x0b", "\x0c", "\x07"]).into_bytes()
 }
 
 fn cursor(r: &mut Rng) -> Vec<u8> {
@@ -131,6 +244,18 @@ fn erase(r: &mut Rng) -> Vec<u8> {
             pick(r, &["", "1"]),
             pick(r, &["", "1", "2"])
         ),
+    }
+    .into_bytes()
+}
+
+/// The rectangular area operations, on rectangles of small and absent
+/// numbers: DECFRA, DECERA, DECSERA and DECCRA.
+fn rectangles(r: &mut Rng) -> Vec<u8> {
+    let corners = [number(r), number(r), number(r), number(r)].join(";");
+    match r.below(3) {
+        0 => format!("\x1b[{};{corners}$x", pick(r, &["", "35", "113", "233"])),
+        1 => format!("\x1b[{corners}${}", pick(r, &["z", "{"])),
+        _ => format!("\x1b[{corners};1;{};{};1$v", number(r), number(r)),
     }
     .into_bytes()
 }
@@ -164,8 +289,12 @@ fn origin(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// DECAWM reset and set, each after a CR: with a wrap pending, or a glyph
+/// in the last column with DECAWM off, fux-vt follows DEC STD 070 where
+/// xterm keeps the flag (`pending-wrap`'s autowrap cases, settled by
+/// their test), and a CR ends either first.
 fn autowrap(r: &mut Rng) -> Vec<u8> {
-    pick(r, &["\x1b[?7l", "\x1b[?7h"]).into_bytes()
+    pick(r, &["\r\x1b[?7l", "\r\x1b[?7h"]).into_bytes()
 }
 
 fn pending_wrap(r: &mut Rng) -> Vec<u8> {
@@ -330,7 +459,17 @@ fn sync_modes(r: &mut Rng) -> Vec<u8> {
 
 fn tabs(r: &mut Rng) -> Vec<u8> {
     match r.below(4) {
-        0 => pick(r, &["\x1bH", "\x1b[g", "\x1b[0g", "\x1b[3g"]),
+        0 => pick(
+            r,
+            &[
+                "\x1bH",
+                "\x1b[g",
+                "\x1b[0g",
+                "\x1b[3g",
+                "\x1b[0;3g",
+                "\x1b[5;0g",
+            ],
+        ),
         1 => csi(r, &["I", "Z"]),
         _ => "\t".to_owned(),
     }
@@ -342,6 +481,21 @@ fn charset(r: &mut Rng) -> Vec<u8> {
         r,
         &[
             "\x1b(0", "\x1b(B", "\x1b)0", "\x1b)B", "\x0e", "\x0f", "lqqk", "x  x", "mqqj", "`afgn",
+        ],
+    )
+    .into_bytes()
+}
+
+/// `charset`'s pieces with G2 and G3: designated (ESC * 0, ESC + 0),
+/// shifted into GL (LS2, LS3), or for one character (SS2, SS3).
+fn charset_g2_g3(r: &mut Rng) -> Vec<u8> {
+    if r.chance(50) {
+        return charset(r);
+    }
+    pick(
+        r,
+        &[
+            "\x1b*0", "\x1b*B", "\x1b+0", "\x1b+B", "\x1bn", "\x1bo", "\x1bN", "\x1bO",
         ],
     )
     .into_bytes()
@@ -487,6 +641,7 @@ fn titles(r: &mut Rng) -> Vec<u8> {
             "\x1b]1;icon\x07",
             "\x1b]2;\x07",
             "\x1b]2;tïtle 界\x07",
+            "\x1b]2;a\x01b\x07",
         ],
     )
     .into_bytes()
@@ -578,9 +733,11 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "wide",
         about: "wide (CJK) and halfwidth characters, at and across the right edge",
-        status: Status::Differs(
-            "on a one-column screen fux-vt drops a wide glyph without moving the cursor, a choice its README documents and no reference settles; every other engine differs: xterm, Ghostty, libvterm and avt wrap and leave the cell blank, alacritty and wezterm draw the glyph (`replay --engines all --size 2x1 ' \\u{3046}'`)",
-        ),
+        status: Status::Decided {
+            why: "on a one-column screen fux-vt drops a wide glyph, carrying out a wrap pending before it, as xterm does where no reference settles it (500 cases of this family agree with xterm alone); avt agrees, and Ghostty, alacritty, libvterm, wezterm and tmux each differ (alacritty and wezterm draw the glyph) (`replay --engines all --size 2x1 ' \\u{3046}'`). With DECAWM off a wide glyph that no longer fits on the row is dropped, as in xterm (`replay --engines xterm --size 2x4 '\\e[?7labc\\u{754c}'`)",
+            by: XTERM,
+            authority: Authority::Xterm,
+        },
         ratty_only: false,
         generate: wide,
     },
@@ -588,7 +745,7 @@ pub const FAMILIES: &[Family] = &[
         name: "clusters",
         about: "grapheme clusters: combining marks, emoji modifiers and ZWJ sequences, flags, VS16, jamo, conjuncts",
         status: Status::Differs(
-            "the panel splits on fux-vt's documented choices, no defect among them: a cluster whose width becomes two (an emoji presentation sequence, `\\u{2764}\\u{fe0f}`; UTS #51, and UAX #11's note on variation sequences) is widened as Ghostty (mode 2027), xterm.js and tmux do, where xterm, alacritty, libvterm and avt keep it narrow (`replay --engines all --size 1x4 '\\u{2764}\\u{fe0f}x'`), and in the last column it stays narrow where Ghostty wraps it; a lone regional indicator is one column, as in xterm, alacritty, libvterm, xterm.js and tmux, where Ghostty, avt and wezterm make it two (`replay --engines all --size 1x3 '\\u{1f1fa}\\u{301}'`); and the one-column split of `wide`. The rest (an emoji modifier alone, a zero-width jamo after another script) no program sends",
+            "the panel splits on fux-vt's documented choices, no defect among them: a Prepend character joins what follows it, as UAX #29 (GB9b) has it and mode 2027 requires (its \"Grapheme Cluster\"), where every engine of the panel breaks after it, and the cluster takes its unicode-width string width, as below (`replay --engines all --size 1x6 '\\u{600}1x'`); a cluster whose width becomes two (an emoji presentation sequence, `\\u{2764}\\u{fe0f}`; UTS #51, and UAX #11's note on variation sequences) is widened as Ghostty (mode 2027), xterm.js and tmux do, where xterm, alacritty, libvterm and avt keep it narrow (`replay --engines all --size 1x4 '\\u{2764}\\u{fe0f}x'`), and in the last column it stays narrow where Ghostty wraps it; a lone regional indicator is one column, as in xterm, alacritty, libvterm, xterm.js and tmux, where Ghostty, avt and wezterm make it two (`replay --engines all --size 1x3 '\\u{1f1fa}\\u{301}'`); and the one-column split of `wide`. The rest (an emoji modifier alone, a zero-width jamo after another script) no program sends",
         ),
         ratty_only: false,
         generate: clusters,
@@ -597,8 +754,12 @@ pub const FAMILIES: &[Family] = &[
         name: "controls",
         about: "CR, LF, VT, FF, BS, HT and BEL",
         status: Status::Decided {
-            why: "LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm does; HT keeps it, as xterm and every engine but avt do, though the appendix lists HT (a departure: fux-vt/README.md). The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`)",
+            why: "HT, LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says, as fux-vt does; xterm and every engine but avt keep it through HT (`replay --engines all --size 2x5 'abcde\\tX'`), which the generator leaves out and `pending-wrap` holds. The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`). The rest is checked beside xterm, and the appendix by the test",
             by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, Appendix D.6.1",
+                test: "conformance::a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it",
+            },
         },
         ratty_only: false,
         generate: controls,
@@ -609,6 +770,7 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Decided {
             why: "fux-vt does what xterm does (0 of 1200 cases differ with xterm alone voting), and the panel splits only where a soft-wrapped row is written over again once the cursor moves back into it, as in `save`: xterm, libvterm, avt and xterm.js keep the row soft-wrapped, as fux-vt does; Ghostty, alacritty, wezterm and tmux end the wrap, and outvote fux-vt (`replay --engines all --size 4x5 '\\e[0e long-line-\\e[;99Habcabc~!@#a'`)",
             by: XTERM,
+            authority: Authority::Xterm,
         },
         ratty_only: false,
         generate: cursor,
@@ -617,18 +779,41 @@ pub const FAMILIES: &[Family] = &[
         name: "erase",
         about: "ED, EL and ECH",
         status: Status::Decided {
-            why: "ED, EL and ECH end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm and Ghostty do; alacritty, libvterm, avt, wezterm and tmux keep it, as xterm.js does but on ECH, and outvote fux-vt (`replay --engines all --size 2x4 'abcd\\e[KX'`)",
+            why: "ED, EL and ECH end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm and Ghostty do; alacritty, libvterm, avt, wezterm and tmux keep it, as xterm.js does but on ECH, and outvote fux-vt (`replay --engines all --size 2x4 'abcd\\e[KX'`). ED and EL with several parameters, which carry out each in turn (DEC STD 070, their algorithms; `conformance::ed_and_el_carry_out_each_parameter`), where xterm reads the first alone (`replay --engines xterm --size 1x6 'abcdef\\e[1;3H\\e[1;0K'`), are left out of the generator, xterm being its check; so are DECSED and DECSEL, which make each glyph a space in its own rendition (DEC STD 070, DECSEL and DECSED; `protection::selective_erase_leaves_each_position_its_rendition`), where xterm gives it the pen's colours (`replay --engines xterm --size 2x4 '\\e[41mab\\e[mc\\e[42m\\e[1;2H\\e[?1K'`)",
             by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, Appendix D.6.1",
+                test: "conformance::a_pending_wrap_is_a_flag_on_the_last_column",
+            },
         },
         ratty_only: false,
         generate: erase,
     },
     Family {
+        name: "rectangles",
+        about: "DECFRA, DECERA, DECSERA and DECCRA",
+        status: Status::Decided {
+            why: "DEC STD 070's rectangular area operations (5.12.1, level 4), which xterm implements as fux-vt does, and every other engine of the panel ignores, outvoting fux-vt (`replay --engines all --size 4x6 'abcdef\\r\\nghijkl\\e[88;1;2;2;4$x'`)",
+            by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, 5.12.1",
+                test: "rectangles::decfra_fills_a_rectangle",
+            },
+        },
+        ratty_only: false,
+        generate: rectangles,
+    },
+    Family {
         name: "edit",
         about: "ICH, DCH, IL and DL",
-        status: Status::Differs(
-            "the panel splits: IL and DL leave the cursor in the first column (DEC STD 070, IL and DL, note 2) in xterm, Ghostty and xterm.js, as in fux-vt, where alacritty, libvterm, avt, wezterm and tmux keep its column (`replay --engines all --size 3x5 'ab\\e[LX'`); and ICH, DCH, IL and DL end a pending wrap in xterm, Ghostty and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does, where alacritty, libvterm, avt and tmux keep it (`replay --engines all --size 2x5 'abcde\\e[L'`)",
-        ),
+        status: Status::Decided {
+            why: "IL and DL leave the cursor in the first column, as DEC STD 070 (IL and DL, note 2) says and xterm, Ghostty and xterm.js do, where alacritty, libvterm, avt, wezterm and tmux keep its column and outvote fux-vt (`replay --engines all --size 3x5 'ab\\e[LX'`); and ICH, DCH, IL and DL end a pending wrap in xterm, Ghostty and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does, where alacritty, libvterm, avt and tmux keep it (`replay --engines all --size 2x5 'abcde\\e[L'`). The tests alone check it, `conformance::line_and_column_addressing_obeys_origin_mode` IL and DL's column (note 2), `conformance::a_pending_wrap_is_a_flag_on_the_last_column` the pending wrap ICH, DCH, IL and DL end (Appendix D.6.1): on screens of one or two columns xterm departs from the standard, ICH and DCH leaving a glyph that wrapped there (`replay --engines xterm --size 1x1 'lo\\e[1P'`)",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, IL and DL, note 2",
+                test: "conformance::line_and_column_addressing_obeys_origin_mode",
+            },
+        },
         ratty_only: false,
         generate: edit,
     },
@@ -636,7 +821,7 @@ pub const FAMILIES: &[Family] = &[
         name: "scroll",
         about: "SU, SD, DECSTBM and RI",
         status: Status::Differs(
-            "the panel splits where fux-vt does what DEC STD 070 and xterm do: an invalid DECSTBM (5-25, note 2) is ignored in xterm, Ghostty, wezterm, xterm.js and tmux, while alacritty, libvterm and avt home the cursor and outvote fux-vt (`replay --engines all --size 1x2 'x\\e[4;5r'`); RI ends a pending wrap (Appendix D.6.1) in xterm, wezterm and xterm.js, Ghostty, alacritty, libvterm and avt keep it (`replay --engines all --size 1x7 'abcdefg\\eM'`). Two differences from xterm remain, outside the audit's items: `CSI 0 T` scrolls a line, where xterm (reading it as mouse tracking), Ghostty, alacritty and libvterm do nothing, and fux-vt's parameters do not tell 0 from empty (`replay --engines all --size 2x1 '\\e[2;4r' '-\\e[0T'`); SD in a region clears the soft-wrap flag of the row it moves to the bottom margin, which xterm, alacritty and wezterm keep (`replay --engines all --size 6x1 '~!@#\\e[3;5r\\e[10H\\e[2T'`)",
+            "the panel splits where fux-vt does what DEC STD 070 and xterm do: an invalid DECSTBM (5-25, note 2) is ignored in xterm, Ghostty, wezterm, xterm.js and tmux, while alacritty, libvterm and avt home the cursor and outvote fux-vt (`replay --engines all --size 1x2 'x\\e[4;5r'`); so is one whose bottom is past the screen (note 3), which every engine of the panel takes as the last line (`replay --engines all --size 5x5 '\\e[3;3H\\e[2;99rX'`); RI ends a pending wrap (Appendix D.6.1) in xterm, wezterm and xterm.js, Ghostty, alacritty, libvterm and avt keep it (`replay --engines all --size 1x7 'abcdefg\\eM'`). A soft wrap stays with its row through SD in a region, as in xterm, alacritty and wezterm (`replay --engines all --size 6x1 '~!@#\\e[3;5r\\e[10H\\e[2T'`). One difference from xterm remains, outside the audit's items: `CSI 0 T` scrolls a line, where xterm (reading it as mouse tracking), Ghostty, alacritty and libvterm do nothing, and fux-vt's parameters do not tell 0 from empty (`replay --engines all --size 2x1 '\\e[2;4r' '-\\e[0T'`)",
         ),
         ratty_only: false,
         generate: scroll,
@@ -647,6 +832,10 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Decided {
             why: "the panel splits as it does on LF in `controls`: IND that scrolls while a wrap is pending ends the wrap in xterm, Ghostty, wezterm and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x3 'abc\\eD'`). With xterm alone voting, 0 of 1000 cases differ",
             by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, Appendix D.6.1",
+                test: "conformance::ind_and_nel_feed_a_line",
+            },
         },
         ratty_only: false,
         generate: index,
@@ -664,8 +853,12 @@ pub const FAMILIES: &[Family] = &[
         name: "autowrap",
         about: "DECAWM on and off",
         status: Status::Decided {
-            why: "with DECAWM off a glyph in the last column leaves a wrap pending, which DEC STD 070 (Appendix D.6.1) does not, and resetting DECAWM keeps one, though the appendix lists it among what clears it: fux-vt follows xterm in both (departures: fux-vt/README.md). xterm, Ghostty, alacritty and xterm.js leave the wrap pending with DECAWM off; libvterm, avt, wezterm and tmux do not, and outvote fux-vt in the default panel (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`)",
+            why: "a glyph in the last column sets the Last Column Flag only with DECAWM set, and resetting DECAWM clears it, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; every engine of the panel keeps a wrap pending through a reset of DECAWM (`replay --engines all --size 2x5 'abcde\\e[?7l\\e[?7hX'`), and xterm, Ghostty, alacritty and xterm.js leave one pending with DECAWM off, which libvterm, avt, wezterm and tmux do not (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`). Those two the generator leaves out (a CR before each change) and `pending-wrap` holds; the rest is checked beside xterm, and the appendix by the test",
             by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, Appendix D.6.1",
+                test: "conformance::the_last_column_flag_is_set_with_autowrap_alone",
+            },
         },
         ratty_only: false,
         generate: autowrap,
@@ -673,9 +866,14 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "pending-wrap",
         about: "a glyph in the last column, then a control, movement or edit while the wrap is pending",
-        status: Status::Differs(
-            "the panel splits: EL, ECH, ICH, DCH, IL, DL and a line feed that scrolls end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`). Also the one-column split of `wide`",
-        ),
+        status: Status::Decided {
+            why: "EL, ECH, ICH, DCH, IL, DL and a line feed that scrolls end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm and Ghostty do, as fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`). HT and resetting DECAWM end one too, and a glyph in the last column with DECAWM off leaves none, as the same appendix says, where xterm keeps the flag (`replay --engines xterm --size 2x5 'abcde\\tX' 'abcde\\e[?7l\\e[?7hX'`). Also the one-column split of `wide`, where xterm decides. The test alone checks it: on screens of one or two columns xterm departs from the standard, ICH leaving a glyph that wrapped there (`replay --engines xterm --size 1x1 'he\\e[999Cx\\e[@'`) and a glyph printed over a wide glyph's first column leaving the cell wide (`replay --engines xterm --size 3x2 '\\e[999C\\u{754c}\\eM' '\\e[999Cx\\eM\\e[999C\\u{754c}\\e[6n\\e[999Cab\\e[C'`)",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, Appendix D.6.1",
+                test: "conformance::a_pending_wrap_is_a_flag_on_the_last_column",
+            },
+        },
         ratty_only: false,
         generate: pending_wrap,
     },
@@ -683,8 +881,12 @@ pub const FAMILIES: &[Family] = &[
         name: "sgr",
         about: "SGR in semicolon form: every attribute, its reset, 16, 256 and RGB colours, underline colour",
         status: Status::Decided {
-            why: "SGR 21 is doubly underlined (ECMA-48, 8.3.117): an underline beside bold, as xterm, Ghostty, libvterm, xterm.js and tmux read it, where alacritty and avt take it as bold off. Bold and faint can both be on, as in xterm, though ECMA-48 makes them one attribute (a departure: fux-vt/README.md); avt and wezterm let faint replace bold. Together they outvote fux-vt (`replay --engines all --size 1x3 '\\e[1m\\e[21;2mX'`). xterm has no SGR 58, and abstains from a case that uses it",
+            why: "SGR 21 is doubly underlined (ECMA-48, 8.3.117): an underline beside bold, as xterm, Ghostty, libvterm, xterm.js and tmux read it, where alacritty and avt take it as bold off. Bold and faint can both be on, as in xterm, where ECMA-48 leaves their combination to the implementation (fux-vt/README.md, \"Where the standards leave the choice\"); avt and wezterm let faint replace bold. Together they outvote fux-vt (`replay --engines all --size 1x3 '\\e[1m\\e[21;2mX'`). xterm has no SGR 58, and abstains from a case that uses it",
             by: XTERM,
+            authority: Authority::Standard {
+                section: "ECMA-48 8.3.117",
+                test: "conformance::sgr_21_underlines_doubly_and_bold_and_dim_are_kept_apart",
+            },
         },
         ratty_only: false,
         generate: sgr,
@@ -702,6 +904,7 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Decided {
             why: "an invalid or short colour, which ITU-T T.416 (13.1.8) does not settle, reads as xterm reads it: 38;5;300 and 38;2;256;0;0 are no colour in xterm, alacritty and tmux, but index 44 and black in Ghostty, libvterm, avt and xterm.js; 48;5 and 38;2;1;2, cut short, are index 0 and (1, 2, 0) in xterm and xterm.js, no colour in the rest (`replay --engines all --size 1x3 '\\e[38;5;300;1mX'`); wezterm drops the rest of the SGR",
             by: XTERM,
+            authority: Authority::Xterm,
         },
         ratty_only: false,
         generate: sgr_invalid,
@@ -712,6 +915,7 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Decided {
             why: "a soft-wrapped row written over again once DECRC or SCORC moves the cursor back into it stays soft-wrapped, as in xterm (the references know no soft wrap): xterm, Ghostty, avt, xterm.js and tmux keep it; alacritty, wezterm and libvterm end the wrap, and outvote fux-vt (`replay --engines all --size 4x9 'a' 'abcx0123456789~!@#  \\e[s   ~!@#\\e[uabcabc'`)",
             by: XTERM,
+            authority: Authority::Xterm,
         },
         ratty_only: false,
         generate: save,
@@ -720,7 +924,7 @@ pub const FAMILIES: &[Family] = &[
         name: "alternate",
         about: "modes 47, 1047, 1048 and 1049",
         status: Status::Differs(
-            "fux-vt switches screens as xterm does (its ctlseqs; against xterm alone it differs only where xterm's jump scroll drops a line scrolled in the same write as a switch), and the panel splits: 1049's clear ends a pending wrap in xterm and wezterm, as ED's does (DEC STD 070, Appendix D.6.1) and fux-vt's does, where Ghostty, alacritty, libvterm, avt, xterm.js and tmux keep it (`replay --engines all --size 2x3 'abc' '\\e[?1049hc'`); alacritty does not implement 47 or 1047, nor libvterm 47 (`cases mode-1047-and-1048`; `replay --engines all --size 4x5 '\\e[2;3r\\e[?6h\\e[?47h\\e[1;1HX'`)",
+            "fux-vt switches screens as xterm does (its ctlseqs; each screen keeps what DECSC saved on it, the pen and character sets with the cursor, as xterm's do: `replay --engines xterm --size 2x8 'a\\e[1m\\e[?1049h\\e[0m\\e7b\\e[?1049lX'`; against xterm alone it differs only where xterm's jump scroll drops a line scrolled in the same write as a switch), and the panel splits: 1049's clear ends a pending wrap in xterm and wezterm, as ED's does (DEC STD 070, Appendix D.6.1) and fux-vt's does, where Ghostty, alacritty, libvterm, avt, xterm.js and tmux keep it (`replay --engines all --size 2x3 'abc' '\\e[?1049hc'`); alacritty does not implement 47 or 1047, nor libvterm 47 (`cases mode-1047-and-1048`; `replay --engines all --size 4x5 '\\e[2;3r\\e[?6h\\e[?47h\\e[1;1HX'`)",
         ),
         ratty_only: false,
         generate: alternate,
@@ -742,9 +946,14 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "tabs",
         about: "HT, HTS, TBC, CHT and CBT",
-        status: Status::Differs(
-            "the panel splits on CBT with a wrap pending: ECMA-48 (8.3.7) moves back a tab stop; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor; fux-vt leaves the cursor in the last column, so text lands where xterm puts it (a recorded departure), while Ghostty, alacritty, libvterm, avt and wezterm move back and outvote fux-vt (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`)",
-        ),
+        status: Status::Decided {
+            why: "CBT with a wrap pending moves back a tab stop from the last column, the active position, as ECMA-48 (8.3.7) says, and ends the wrap, as DEC STD 070 (Appendix D.6.1) ends it for a control that may move the cursor, and fux-vt does: Ghostty, alacritty, libvterm, avt and wezterm move back; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`). HT and CHT end a pending wrap too (see `controls`), where xterm keeps it. avt, which agrees most, counts a pending wrap as one column past the last (`replay --engines avt --size 1x9 'abcdefghi\\e[Z'`), so the test alone checks it. TBC with several parameters acts on each in turn, as DEC STD 070's algorithm (TBC, p. 5-66) does, and fux-vt does; xterm and Ghostty read only the first (`replay --engines xterm,ghostty --size 1x20 '\\e[0;3g\\tX'`), and its test (`conformance::tbc_acts_on_each_of_its_parameters`) checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "ECMA-48 8.3.7",
+                test: "conformance::tab_stops_are_set_cleared_and_kept",
+            },
+        },
         ratty_only: false,
         generate: tabs,
     },
@@ -756,11 +965,27 @@ pub const FAMILIES: &[Family] = &[
         generate: charset,
     },
     Family {
+        name: "charset-g2-g3",
+        about: "G2 and G3: designated, locked into GL (LS2, LS3) and single-shifted (SS2, SS3), among G0 and G1",
+        status: Status::Decided {
+            why: "G2 and G3 are designated, locked into GL by LS2 and LS3 and invoked for one character by SS2 and SS3, as ECMA-35 (6.3, 9.3 and 9.4) says and xterm does, as fux-vt does; Ghostty, alacritty, libvterm, avt and wezterm keep none of them, and outvote fux-vt (`replay --engines all --size 1x1 '\\e*0\\enq'`)",
+            by: XTERM,
+            authority: Authority::Standard {
+                section: "ECMA-35, 6.3 and 9",
+                test: "conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character",
+            },
+        },
+        ratty_only: false,
+        generate: charset_g2_g3,
+    },
+    Family {
         name: "repeat",
         about: "REP (CSI b) after a glyph",
-        status: Status::Differs(
-            "the panel splits on a REP right after another: ECMA-48 (8.3.103) leaves REP undefined after a control function, and xterm, xterm.js and tmux repeat nothing then, as fux-vt does, where Ghostty, alacritty, libvterm, avt and wezterm repeat the glyph again and outvote fux-vt (`replay --engines all --size 1x8 '-\\e[2b\\e[2b'`). Also the one-column split of `wide`",
-        ),
+        status: Status::Decided {
+            why: "ECMA-48 (8.3.103) repeats the preceding graphic character and leaves REP undefined after a control function, and knows no grapheme cluster, so xterm decides both: after another REP, xterm, xterm.js and tmux repeat nothing, as fux-vt does, where Ghostty, alacritty, libvterm, avt and wezterm repeat the glyph again and outvote fux-vt (`replay --engines all --size 1x8 '-\\e[2b\\e[2b'`); after a cluster, xterm repeats the character that took the cell, as fux-vt does, and Ghostty agrees (`replay --engines all --size 1x8 'e\\u{301}\\e[2b'`). After a single shift, ECMA-48 decides: the graphic character \"represented by one or more bit combinations\" is the one the shift invoked, where xterm prints the byte again in GL (`replay --engines xterm '\\e*0\\eNq\\e[3b'`); no generator here sends both, and `conformance::rep_repeats_the_preceding_graphic_character` checks it. Also the one-column split of `wide`",
+            by: XTERM,
+            authority: Authority::Xterm,
+        },
         ratty_only: false,
         generate: repeat,
     },
@@ -781,9 +1006,14 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "link-edges",
         about: "hyperlinks (OSC 8) no program sends: non-ASCII and over-long URIs, long and empty ids, parameters without a URI, a wide glyph at a row's end, DECSC, DECRC, DECSTR and SGR 0 over an open link",
-        status: Status::Differs(
-            "the engines that keep links split where the spec (references/modern/osc8_hyperlinks.md) is silent or leaves it undefined. A URI with bytes outside printable ASCII (\"Encodings\": undefined) opens no link in fux-vt and is kept by Ghostty, alacritty, wezterm, xterm.js and tmux, which outvote it (`replay --engines all --size 1x4 '\\e]8;;http://\\u{e4}.example/\\e\\\\ab'`); so is a URI past 2083 bytes or an id past 250 (\"Length limits\": VTE's and iTerm2's), though Ghostty opens none for a URI of 2077 bytes either. An empty id is no id in fux-vt and xterm.js, as the spec says; alacritty makes every `id=` link to one URI one link (`replay --engines all --size 1x4 '\\e]8;id=;u\\e\\\\a\\e]8;id=;u\\e\\\\b'`). OSC 8 with parameters and no URI closes the link in fux-vt, alacritty and tmux, leaves it open in Ghostty and xterm.js, and opens a link to nothing in wezterm. The blank a wide glyph that does not fit leaves at a row's end has no link in fux-vt (a blank has none) or tmux, and the link in Ghostty, alacritty and xterm.js, which outvote it (`replay --engines all --size 2x3 '\\e]8;;u\\e\\\\ab\\u{754c}'`). DECRC restores the link DECSC saved in alacritty, wezterm and tmux, not in fux-vt, Ghostty or xterm.js (`replay --engines all --size 1x4 '\\e]8;;u\\e\\\\a\\e7\\e]8;;\\e\\\\\\e8d'`); DECSTR ends the link in wezterm and xterm.js, and SGR 0 in tmux, not in the rest",
-        ),
+        status: Status::Decided {
+            why: "the spec (references/modern/osc8_hyperlinks.md) decides, as fux-vt reads it, where the engines that keep links split. A link opens at an OSC 8 with a URI and \"all subsequent cells that are painted\" take it (\"The escape sequence\"): DECRC, no OSC 8, reopens no link DECSC saw open, as in Ghostty and xterm.js, where alacritty, wezterm and tmux reopen it (`replay --engines all --size 1x4 '\\e]8;;u\\e\\\\a\\e7\\e]8;;\\e\\\\\\e8d'`); the blank a wide glyph that does not fit leaves at a row's end is painted by no program, and has no link in fux-vt or tmux, where Ghostty, alacritty and xterm.js give it the link and outvote fux-vt (`replay --engines all --size 2x3 '\\e]8;;u\\e\\\\ab\\u{754c}'`). A URI with bytes outside printable ASCII, which the spec forbids (\"Encodings\": undefined), opens no link in fux-vt, where Ghostty, alacritty, wezterm, xterm.js and tmux keep it and outvote fux-vt (`replay --engines all --size 1x4 '\\e]8;;http://\\u{e4}.example/\\e\\\\ab'`); so is a URI past 2083 bytes or an id past 250 (\"Length limits\": VTE's and iTerm2's), though Ghostty opens none for a URI of 2077 bytes either. An empty id is no id in fux-vt and xterm.js, as the spec says; alacritty makes every `id=` link to one URI one link (`replay --engines all --size 1x4 '\\e]8;id=;u\\e\\\\a\\e]8;id=;u\\e\\\\b'`). OSC 8 with parameters and no URI closes the link in fux-vt, alacritty and tmux, leaves it open in Ghostty and xterm.js, and opens a link to nothing in wezterm; DECSTR ends the link in wezterm and xterm.js, and SGR 0 in tmux, not in the rest. The test alone checks it: xterm keeps no link, and departs from DEC STD 070 on what DECRC restores after DECSTR, which sets the cursor save buffer to its defaults (`replay --engines xterm --size 2x2 '\\e]8;;u\\e\\\\\\u{754c}\\e[!p' '\\e8d'`)",
+            by: &[],
+            authority: Authority::Standard {
+                section: "references/modern/osc8_hyperlinks.md, \"The escape sequence\"",
+                test: "hyperlinks::only_osc_8_opens_and_closes_a_link_and_only_painted_cells_take_it",
+            },
+        },
         ratty_only: false,
         generate: link_edges,
     },
@@ -793,6 +1023,10 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Decided {
             why: "A and L do a fresh line first, as the semantic prompts proposal says (references/modern/osc133_semantic_prompts.md, \"Commands\") and Ghostty and wezterm do, as fux-vt does; xterm, alacritty, libvterm, avt, xterm.js and tmux, which do not, print on and outvote fux-vt in the default panel (`replay --engines all --size 3x10 'x\\e]133;A\\x07$ '`). Of the engines, Ghostty and tmux tell where a prompt starts; tmux marks A's row without the fresh line, and unmarks a row EL 2 or ED from its first column erases, where Ghostty and fux-vt keep the mark (`replay --engines all --size 3x10 '\\e]133;A\\e\\\\$ ab\\e[2K'`). N, which the proposal makes the same as A, and P;k=i on a row A did not mark are in the generator: Ghostty and fux-vt take N as A and mark P;k=i's row. Left out of the generator, as no shell sends them where Ghostty and fux-vt split: C in the first column of the prompt's row, which unmarks it in Ghostty, its heuristic for fish (`--size 3x10 '\\e]133;A\\e\\\\\\e]133;C\\e\\\\out'`); DL, after which Ghostty leaves the mark of the row it deleted on the blank row it brings in (`--size 3x4 '\\e]133;A\\e\\\\$ \\r\\e[M'`); IL, which moves a marked row below the cursor, where Ghostty marks the row prompt text wraps into as a continuation, dropping its mark (`--size 2x8 '\\e]133;A\\e\\\\~/src % \\r\\e[Lc  ~!@#ab'`); and ED 2 while the screen's last row with text is a prompt's, which Ghostty turns into scrolling the screen into history first, moving the cursor with it (Ghostty #905; `--size 2x2 '\\r\\n\\e]133;C\\x07out\\e]133;A\\x07' '\\r\\e[2J\\e]133;A\\e\\\\$ '`). Erasing starts with CR or CUB, as wezterm keeps a pending wrap at ED and EL (see `erase`), and SD is left out (see `links`)",
             by: &["ghostty", "wezterm"],
+            authority: Authority::Standard {
+                section: "references/modern/osc133_semantic_prompts.md, \"Commands\"",
+                test: "prompts::a_and_l_start_a_fresh_line",
+            },
         },
         ratty_only: false,
         generate: prompts,
@@ -810,6 +1044,10 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Decided {
             why: "the panel splits: in UTF-8 a string ends at ESC \\ alone (ECMA-48 8.3.143), so 0x9c in a payload's character ends nothing in xterm, libvterm, avt, xterm.js and tmux, as in fux-vt; Ghostty ends DCS, SOS, PM and APC strings at it and prints U+FFFD for the rest of the character, alacritty and wezterm end DCS strings at it, and together they outvote fux-vt on the cursor (`replay --engines all --size 1x4 '\\ePa\\u{271c}b\\e\\\\ll'`)",
             by: XTERM,
+            authority: Authority::Standard {
+                section: "ECMA-48 8.3.143",
+                test: "conformance::a_control_string_ends_at_esc_backslash_alone",
+            },
         },
         ratty_only: false,
         generate: strings_c1,
@@ -818,8 +1056,12 @@ pub const FAMILIES: &[Family] = &[
         name: "reset",
         about: "RIS and DECSTR",
         status: Status::Decided {
-            why: "DECSTR shows the cursor and resets DECCKM, as the VT520 manual (DECSTR, Table 5-6) and DEC STD 070 (p. 4-37) say and xterm does, and turns autowrap on, as xterm does where both say off (a departure: fux-vt/README.md). The panel splits on each: cursor visibility (xterm, libvterm, avt and xterm.js reset it; Ghostty, alacritty, wezterm and tmux keep it), DECCKM (xterm, libvterm, wezterm and xterm.js reset it; Ghostty, alacritty, avt and tmux keep it) and autowrap (xterm, libvterm, wezterm and xterm.js turn it on; Ghostty, alacritty, avt and tmux keep it off), so once `modes` or `autowrap` has set them the default panel outvotes fux-vt (`replay --engines all --size 1x1 '\\e[?25l\\e[!p'`)",
+            why: "DECSTR shows the cursor and resets DECCKM, as the VT520 manual (DECSTR, Table 5-6) and DEC STD 070 (p. 4-37) say and xterm does, and sets autowrap to the terminal's setting, on, as xterm does and DEC STD 070 says (\"NVM if present\", where the VT520 manual says off). The panel splits on each: cursor visibility (xterm, libvterm, avt and xterm.js reset it; Ghostty, alacritty, wezterm and tmux keep it), DECCKM (xterm, libvterm, wezterm and xterm.js reset it; Ghostty, alacritty, avt and tmux keep it) and autowrap (xterm, libvterm, wezterm and xterm.js turn it on; Ghostty, alacritty, avt and tmux keep it off), so once `modes` or `autowrap` has set them the default panel outvotes fux-vt (`replay --engines all --size 1x1 '\\e[?25l\\e[!p'`)",
             by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070's Soft Terminal Reset (p. 4-37)",
+                test: "conformance::a_soft_reset_restores_the_modes_and_keeps_the_screen",
+            },
         },
         ratty_only: false,
         generate: reset,
@@ -853,8 +1095,12 @@ pub const FAMILIES: &[Family] = &[
         name: "invalid-utf8",
         about: "invalid and truncated UTF-8, and U+FFFD itself",
         status: Status::Decided {
-            why: "the panel splits on a continuation byte alone: xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), and so does fux-vt, a recorded departure from the Unicode Standard's U+FFFD; Ghostty, libvterm, avt and tmux print U+FFFD, alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`)",
-            by: XTERM,
+            why: "a continuation byte alone is ill-formed, and prints U+FFFD, as the Unicode Standard (3.9, \"U+FFFD Substitution of Maximal Subparts\"; C10) has it and Ghostty, libvterm, avt and tmux do, as fux-vt does; xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`). Of the engines that print U+FFFD, libvterm and tmux split elsewhere (a sequence broken off by the next write's text), so it is checked beside Ghostty and avt",
+            by: &["ghostty", "avt"],
+            authority: Authority::Standard {
+                section: "the Unicode Standard, 3.9",
+                test: "conformance::invalid_utf8_prints_a_replacement_character",
+            },
         },
         ratty_only: false,
         generate: invalid_utf8,
@@ -881,4 +1127,30 @@ pub const FAMILIES: &[Family] = &[
 
 pub fn find(name: &str) -> Option<usize> {
     FAMILIES.iter().position(|f| f.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Authority, FAMILIES, Status, XTERM};
+
+    /// Every decided family has its check: the test its standard names
+    /// cites the section, or xterm is among the engines beside it. A test
+    /// that does not cite it, or xterm missing, is no check.
+    #[test]
+    fn every_decided_family_is_checked() {
+        for f in FAMILIES {
+            match f.status {
+                Status::Decided { by, authority, .. } => {
+                    assert_eq!(authority.check(by), Ok(()), "{}", f.name);
+                }
+                Status::Agree | Status::Differs(_) => {}
+            }
+        }
+        let uncited = Authority::Standard {
+            section: "ECMA-48 8.3.999",
+            test: "conformance::ind_and_nel_feed_a_line",
+        };
+        assert!(uncited.check(XTERM).is_err());
+        assert!(Authority::Xterm.check(&["ghostty"]).is_err());
+    }
 }

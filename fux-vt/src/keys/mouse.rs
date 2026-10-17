@@ -40,15 +40,10 @@ closed! {
 }
 
 impl MouseButton {
-    /// Whether this is the wheel, whose turns are presses never released.
+    /// Whether this is the wheel, whose turns are presses never released:
+    /// its codes, and buttons 6 and 7's, add 64 (ctlseqs).
     pub fn is_wheel(self) -> bool {
-        matches!(
-            self,
-            MouseButton::WheelUp
-                | MouseButton::WheelDown
-                | MouseButton::WheelLeft
-                | MouseButton::WheelRight
-        )
+        (64..128).contains(&self.code())
     }
 
     /// The button a report's button code names, its modifier and motion
@@ -60,15 +55,16 @@ impl MouseButton {
     }
 }
 
-/// What a mouse event is.
+/// What a mouse event is, with its button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseAction {
     /// A button pressed, or the wheel turned.
-    Press,
-    /// A button released.
-    Release,
-    /// The pointer moved to another cell.
-    Motion,
+    Press(MouseButton),
+    /// A button released; `None` where the terminal did not say which (the
+    /// default and UTF-8 encodings never do).
+    Release(Option<MouseButton>),
+    /// The pointer moved to another cell, with the button held, if any.
+    Motion(Option<MouseButton>),
 }
 
 /// A mouse event over a screen.
@@ -76,10 +72,6 @@ pub enum MouseAction {
 pub struct MouseEvent {
     /// What happened.
     pub action: MouseAction,
-    /// The button pressed or released, or held during motion; `None` for
-    /// motion with no button held, and for a release whose terminal did not
-    /// say which button (the default and UTF-8 encodings never do).
-    pub button: Option<MouseButton>,
     /// The modifiers held.
     pub mods: Modifiers,
     /// The cell's row, from zero at the top of the screen.
@@ -143,34 +135,34 @@ pub fn mouse_bytes(
     encoding: MouseProtocolEncoding,
     out: &mut Vec<u8>,
 ) -> bool {
-    let wheel = event.button.is_some_and(MouseButton::is_wheel);
     let reported = match (mode, event.action) {
         (MouseProtocolMode::None, _) => false,
         // X10 knew three buttons: "Cb is button−1, where button is 1, 2 or 3".
-        (MouseProtocolMode::Press, MouseAction::Press) => matches!(
-            event.button,
-            Some(MouseButton::Left | MouseButton::Middle | MouseButton::Right)
-        ),
-        (_, MouseAction::Press) => event.button.is_some(),
+        (MouseProtocolMode::Press, MouseAction::Press(button)) => button.code() < 3,
+        (_, MouseAction::Press(_)) => true,
         (MouseProtocolMode::Press, _) => false,
-        (_, MouseAction::Release) => !wheel,
-        (MouseProtocolMode::PressRelease, MouseAction::Motion) => false,
-        (MouseProtocolMode::ButtonMotion, MouseAction::Motion) => event.button.is_some() && !wheel,
-        (MouseProtocolMode::AnyMotion, MouseAction::Motion) => !wheel,
+        (_, MouseAction::Release(button)) => !button.is_some_and(MouseButton::is_wheel),
+        (MouseProtocolMode::PressRelease, MouseAction::Motion(_)) => false,
+        (MouseProtocolMode::ButtonMotion, MouseAction::Motion(held)) => {
+            held.is_some_and(|b| !b.is_wheel())
+        }
+        (MouseProtocolMode::AnyMotion, MouseAction::Motion(held)) => {
+            !held.is_some_and(MouseButton::is_wheel)
+        }
     };
     if !reported {
         return false;
     }
+    // The button the report names, its motion bit, and SGR's final byte.
     let names_release = encoding == MouseProtocolEncoding::Sgr;
-    let mut code = match event.button {
-        Some(button) if event.action != MouseAction::Release || names_release => button.code(),
-        _ => NO_BUTTON,
+    let (button, motion, last) = match event.action {
+        MouseAction::Press(button) => (Some(button), 0, 'M'),
+        MouseAction::Release(button) => (button.filter(|_| names_release), 0, 'm'),
+        MouseAction::Motion(held) => (held, MOTION, 'M'),
     };
+    let mut code = button.map_or(NO_BUTTON, MouseButton::code) | motion;
     if mode != MouseProtocolMode::Press {
         code |= u32::from(event.mods.bits()) << MODIFIERS_AT;
-    }
-    if event.action == MouseAction::Motion {
-        code |= MOTION;
     }
     let (x, y) = (
         u32::from(event.col).saturating_add(1),
@@ -178,11 +170,6 @@ pub fn mouse_bytes(
     );
     match encoding {
         MouseProtocolEncoding::Sgr => {
-            let last = if event.action == MouseAction::Release {
-                'm'
-            } else {
-                'M'
-            };
             // Writing to a Vec cannot fail.
             let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
         }
@@ -221,15 +208,14 @@ pub(crate) fn event(code: u32, x: u32, y: u32, sgr_release: bool) -> Option<Mous
         return None;
     }
     let action = if code & MOTION != 0 {
-        MouseAction::Motion
+        MouseAction::Motion(button)
     } else if sgr_release || unnamed {
-        MouseAction::Release
+        MouseAction::Release(button)
     } else {
-        MouseAction::Press
+        MouseAction::Press(button?)
     };
     Some(MouseEvent {
         action,
-        button,
         mods: Modifiers::from_bits(code >> MODIFIERS_AT),
         row,
         col,

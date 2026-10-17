@@ -10,85 +10,15 @@
 //! a compile-time stack. Every other word takes and gives values on the
 //! stack, and nothing else.
 use crate::error::{Code, Error};
+use crate::machine::Builtin;
 use crate::token::Token;
 use crate::value::Value;
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-/// Expands `Variant "name" takes "effect" "about", ...` to the enum
-/// `Builtin` of those variants, `Builtin::ALL` in that order, `name`,
-/// `takes`, `effect` and `about`, each a match giving that variant's column.
-macro_rules! builtins {
-    ($($variant:ident $name:literal $takes:literal $effect:literal $about:literal,)*) => {
-        /// The words fuxth itself gives: its core. Everything else is the
-        /// standard library, written in fuxth.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Builtin {
-            $($variant,)*
-        }
-
-        impl Builtin {
-            pub const ALL: [Builtin; [$($name),*].len()] = [$(Builtin::$variant),*];
-
-            pub fn name(self) -> &'static str {
-                match self {
-                    $(Builtin::$variant => $name,)*
-                }
-            }
-
-            /// How many values it takes: `pick` and `roll` take a count,
-            /// then as many values as it says (the machine checks those).
-            pub fn takes(self) -> usize {
-                match self {
-                    $(Builtin::$variant => $takes,)*
-                }
-            }
-
-            /// What it does to the stack, as help shows it.
-            pub fn effect(self) -> &'static str {
-                match self {
-                    $(Builtin::$variant => $effect,)*
-                }
-            }
-
-            /// What it does, in a line, as help says it.
-            pub fn about(self) -> &'static str {
-                match self {
-                    $(Builtin::$variant => $about,)*
-                }
-            }
-        }
-    };
-}
-
-builtins! {
-    Drop "drop" 1 "x --" "the top value dropped",
-    Pick "pick" 1 "xn … x0 n -- xn … x0 xn" "a copy of the value n under the top (0 pick copies the top)",
-    Roll "roll" 1 "xn … x0 n -- xn-1 … x0 xn" "the value n under the top moved to the top (1 roll swaps)",
-    Add "add" 2 "n m -- n+m" "integer arithmetic, checked",
-    Sub "sub" 2 "n m -- n-m" "integer arithmetic, checked",
-    Mul "mul" 2 "n m -- n*m" "integer arithmetic, checked",
-    Div "div" 2 "n m -- n/m" "integer division, checked; it truncates toward zero",
-    Lt "lt" 2 "a b -- a<b" "whether a comes before b: two integers, two strings or two lists",
-    Eq "eq" 2 "a b -- a=b" "whether two values are the same, of one kind",
-    Len "len" 1 "seq -- n" "how many elements a string or list has",
-    At "at" 2 "seq i -- x" "element i, from 0 (of a string, a one-character string)",
-    Slice "slice" 3 "seq from to -- seq" "the elements from `from` up to before `to`",
-    Concat "concat" 1 "list -- seq" "a list of strings joined into one string, or a list of lists into one list",
-    Push "push" 2 "seq x -- seq" "x added at the end (to a string, x is a string)",
-    Put "put" 3 "seq i x -- seq" "element i replaced by x (in a string, by a string)",
-    Code "code" 1 "c -- n" "the character code of a one-character string",
-    Char "char" 1 "n -- c" "the one-character string with code n",
-    Kind "kind" 1 "x -- name" "integer, boolean, string, list, or the host's kind",
-    String "string" 1 "x -- s" "x as text, as print shows it",
-    Print "print" 1 "x --" "print x now, a line",
-    Fail "fail" 1 "x --" "stop the program, with x as the reason",
-}
-
 /// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
-/// `PARSING`, their names, `Parsing::ALL` in that order, and `name`, a
-/// match giving each one's: `If "if",` gives `Parsing::If`, named "if".
+/// `Parsing::ALL` in that order, and `name`, a match giving each one's:
+/// `If "if",` gives `Parsing::If`, named "if".
 macro_rules! parsing {
     ($($variant:ident $name:literal,)*) => {
         /// The words that read the token after them, or shape the program:
@@ -98,15 +28,12 @@ macro_rules! parsing {
             $($variant,)*
         }
 
-        /// The parsing words' names, in `Parsing::ALL`'s order.
-        pub const PARSING: [&str; [$($name),*].len()] = [$($name),*];
-
         impl Parsing {
-            pub const ALL: [Parsing; PARSING.len()] = [$(Parsing::$variant),*];
+            pub const ALL: [Self; [$($name),*].len()] = [$(Self::$variant),*];
 
             pub fn name(self) -> &'static str {
                 match self {
-                    $(Parsing::$variant => $name,)*
+                    $(Self::$variant => $name,)*
                 }
             }
         }
@@ -129,8 +56,8 @@ parsing! {
 
 impl Builtin {
     /// The built-in `name` is, if one.
-    pub fn named(name: &str) -> Option<Builtin> {
-        Builtin::ALL.into_iter().find(|b| b.name() == name)
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|b| b.name() == name)
     }
 }
 
@@ -172,17 +99,16 @@ impl Parsing {
 }
 
 /// The application's words: each a name, how many values it takes, and
-/// how many it gives (a range, for a word that gives a value only
-/// sometimes).
+/// how many it gives.
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
-    words: Vec<(String, usize, RangeInclusive<usize>)>,
+    words: Vec<(String, usize, usize)>,
 }
 
 impl Vocabulary {
     /// Adds a word taking `takes` values and giving `gives`; its id, which
     /// the host is called with. A name given twice keeps its first word.
-    pub fn add(&mut self, name: &str, takes: usize, gives: RangeInclusive<usize>) -> usize {
+    pub fn add(&mut self, name: &str, takes: usize, gives: usize) -> usize {
         if let Some(id) = self.words.iter().position(|(n, _, _)| n == name) {
             return id;
         }
@@ -192,10 +118,10 @@ impl Vocabulary {
 
     /// How many values the word `id` takes, and how many it gives: none,
     /// for an id no word has.
-    pub(crate) fn effect(&self, id: usize) -> (usize, RangeInclusive<usize>) {
+    pub(crate) fn effect(&self, id: usize) -> (usize, usize) {
         self.words
             .get(id)
-            .map_or((0, 0..=0), |(_, takes, gives)| (*takes, gives.clone()))
+            .map_or((0, 0), |(_, takes, gives)| (*takes, *gives))
     }
 }
 
@@ -217,7 +143,9 @@ pub(crate) enum Op<A> {
     /// A `let` name of the definition's own, by its slot.
     SetLocal(usize),
     GetLocal(usize),
-    /// A `let` name of the top level's, by its slot.
+    /// A `let` name of the top level's, by its slot. Only the top level's
+    /// code holds one (a `let` in a definition is its own): the checker
+    /// keeps the top level's names and a definition's in one map.
     SetGlobal(usize),
     GetGlobal(usize),
     /// `list`: the stack from here is the list's.
@@ -241,8 +169,8 @@ pub(crate) struct Steps<A> {
 }
 
 impl<A> Steps<A> {
-    fn new() -> Steps<A> {
-        Steps {
+    fn new() -> Self {
+        Self {
             ops: Vec::new(),
             tokens: Vec::new(),
             locals: 0,
@@ -352,7 +280,7 @@ pub struct Compiler<A> {
 }
 
 impl<A: Clone> Compiler<A> {
-    pub fn new(vocabulary: Vocabulary) -> Compiler<A> {
+    pub fn new(vocabulary: Vocabulary) -> Self {
         let mut names = HashMap::new();
         for (id, (name, _, _)) in vocabulary.words.iter().enumerate() {
             names.insert(Rc::from(name.as_str()), Entry::App(id));
@@ -362,7 +290,7 @@ impl<A: Clone> Compiler<A> {
         for builtin in Builtin::ALL {
             names.insert(Rc::from(builtin.name()), Entry::Builtin(builtin));
         }
-        Compiler {
+        Self {
             vocabulary,
             names,
             main: Steps::new(),
@@ -389,7 +317,7 @@ impl<A: Clone> Compiler<A> {
         let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
             let text = &*token.text;
-            let literal = std::mem::replace(&mut self.literal, false);
+            let literal = std::mem::take(&mut self.literal);
             match Parsing::named(text) {
                 Some(Parsing::Str) => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;

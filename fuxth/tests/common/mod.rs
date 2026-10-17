@@ -45,10 +45,14 @@ impl Rng {
     }
 }
 
-/// The host words both know: `ask` (n -- n*10), answered later, as a
-/// server's answer is; `maybe` (n -- [n]), which gives n back only if it
-/// is above 0.
+/// The words both know beyond the standard library: `ask` (n -- n*10), the
+/// host's, answered later, as a server's answer is; `maybe` (n -- [n]),
+/// which gives n back only if it is above 0, defined in fuxth (`MAYBE`),
+/// as no host word gives a count known only as it runs.
 pub const HOST_WORDS: [&str; 2] = ["ask", "maybe"];
+
+/// `maybe`, read by both after the standard library.
+const MAYBE: &str = "define maybe dup 0 gt if else drop then end\n";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Nothing;
@@ -59,7 +63,7 @@ impl AppValue for Nothing {
     }
 }
 
-/// The host: two words, and what is printed.
+/// The host: one word, and what is printed.
 #[derive(Default)]
 pub struct Toy {
     pub printed: Vec<String>,
@@ -72,17 +76,11 @@ impl Host for Toy {
         &mut self,
         word: usize,
         args: Args<'_, Nothing>,
-        out: &mut Vec<Value<Nothing>>,
+        _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<i64>, Failure> {
         let args: Vec<_> = args.collect();
         match (word, args.as_slice()) {
             (0, [Value::Int(n)]) => Ok(Done::Later(*n)),
-            (1, [Value::Int(n)]) => {
-                if *n > 0 {
-                    out.push(Value::Int(*n));
-                }
-                Ok(Done::Now)
-            }
             _ => Err(Failure::new(
                 fuxth::Code::Host("not_a_number"),
                 "takes an integer",
@@ -98,8 +96,7 @@ impl Host for Toy {
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    words.add("ask", 1, 1..=1);
-    words.add("maybe", 1, 0..=1);
+    words.add("ask", 1, 1);
     words
 }
 
@@ -170,6 +167,7 @@ thread_local! {
 fn library() -> Result<Compiler<Nothing>, Error> {
     let mut compiler = Compiler::new(vocabulary());
     compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
+    compiler.add(&token::source("maybe.fux", MAYBE)?)?;
     compiler.prepare();
     Ok(compiler)
 }
@@ -225,6 +223,29 @@ pub struct Naive {
     pub printed: Vec<String>,
     /// The program's lines a run reached.
     pub reached: HashSet<u32>,
+    /// The lines whose step was gone through without failing, at least
+    /// once.
+    finished: HashSet<u32>,
+    /// The lines of the calls under way, the outermost first: a failure
+    /// leaves them as they were when it happened.
+    calls: Vec<u32>,
+}
+
+/// Where a naive run went: the lines it reached, and, for one that failed,
+/// the steps it failed in.
+pub struct Trace {
+    pub reached: HashSet<u32>,
+    finished: HashSet<u32>,
+    /// The line it failed at, and the lines of the calls it was inside.
+    failing: Vec<u32>,
+}
+
+impl Trace {
+    /// Whether every time the run reached `line` it failed there: in that
+    /// step, or in a word it calls, never going past it.
+    pub fn fails_at(&self, line: u32) -> bool {
+        self.failing.contains(&line) && !self.finished.contains(&line)
+    }
 }
 
 fn is_number(text: &str) -> bool {
@@ -296,34 +317,54 @@ impl Naive {
             steps: 0,
             printed: Vec::new(),
             reached: HashSet::new(),
+            finished: HashSet::new(),
+            calls: Vec::new(),
         }
     }
 
     /// Runs `text` after the standard library, on a thread with room for
     /// its Rust recursion: a call or block is a Rust call here.
-    pub fn run(text: &str) -> (Ended, HashSet<u32>) {
+    pub fn run(text: &str) -> (Ended, Trace) {
         let text = text.to_owned();
         std::thread::Builder::new()
             .stack_size(512 << 20)
             .spawn(move || Naive::run_here(&text))
             .ok()
             .and_then(|thread| thread.join().ok())
-            .unwrap_or((Ended::Endless, HashSet::new()))
+            .unwrap_or_else(|| {
+                let trace = Trace {
+                    reached: HashSet::new(),
+                    finished: HashSet::new(),
+                    failing: Vec::new(),
+                };
+                (Ended::Endless, trace)
+            })
     }
 
-    fn run_here(text: &str) -> (Ended, HashSet<u32>) {
+    fn run_here(text: &str) -> (Ended, Trace) {
         let mut naive = Naive::new();
         let tokens = |source: &str, text: &str| token::source(source, text).unwrap_or_default();
         let library = tokens("stdlib.fux", STDLIB);
+        let maybe = tokens("maybe.fux", MAYBE);
         let program = tokens("program", text);
-        let ended = match naive.exec(&library).and_then(|()| naive.exec(&program)) {
+        let ran = (naive.exec(&library))
+            .and_then(|()| naive.exec(&maybe))
+            .and_then(|()| naive.exec(&program));
+        let mut failing = std::mem::take(&mut naive.calls);
+        failing.extend(ran.as_ref().err().map(|(_, line)| *line));
+        let ended = match ran {
             Ok(()) => Ended::Left(naive.printed.clone(), naive.stack.clone()),
             Err((code, _)) if code == "steps" => Ended::Endless,
             Err((code, line)) if code == "calls" => Ended::Failed("call_depth".to_owned(), line),
             Err((code, line)) if code == "full" => Ended::Failed("stack_overflow".to_owned(), line),
             Err((code, line)) => Ended::Failed(code, line),
         };
-        (ended, naive.reached)
+        let trace = Trace {
+            reached: naive.reached,
+            finished: naive.finished,
+            failing,
+        };
+        (ended, trace)
     }
 
     fn floor(&self) -> usize {
@@ -454,7 +495,9 @@ impl Naive {
                     loop {
                         self.exec(body)?;
                         self.reached.insert(until_line);
-                        if self.flag(until_line)? {
+                        let done = self.flag(until_line)?;
+                        self.finished.insert(until_line);
+                        if done {
                             break;
                         }
                     }
@@ -495,6 +538,7 @@ impl Naive {
                     i = i.saturating_add(1);
                 }
             }
+            self.finished.insert(at);
         }
         Ok(())
     }
@@ -515,8 +559,13 @@ impl Naive {
                 return Err(err("calls", at));
             }
             self.frames.push(HashMap::new());
+            self.calls.push(at);
             let ran = self.exec(&body);
             self.frames.pop();
+            // A failure keeps the calls it happened inside.
+            if ran.is_ok() {
+                self.calls.pop();
+            }
             return ran;
         }
         self.builtin(text, at)
@@ -721,16 +770,8 @@ impl Naive {
                 self.pop(at)?;
                 Err(err("fail", at))
             }
-            "ask" | "maybe" => match self.pop(at)? {
-                V::Int(n) if text == "ask" => {
-                    self.push(V::Int(n.checked_mul(10).ok_or(err("overflow", 0))?))
-                }
-                V::Int(n) => {
-                    if n > 0 {
-                        self.push(V::Int(n))?;
-                    }
-                    Ok(())
-                }
+            "ask" => match self.pop(at)? {
+                V::Int(n) => self.push(V::Int(n.checked_mul(10).ok_or(err("overflow", 0))?)),
                 V::Bool(_) | V::Str(_) | V::List(_) => Err(err("not_a_number", at)),
             },
             _ => Err(err("unknown_word", at)),

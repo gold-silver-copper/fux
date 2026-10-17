@@ -49,8 +49,8 @@ use crate::keys::colour::Scheme;
 use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{
-    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Key, KeyPress, Keystroke, Kitty, Modifiers,
-    SHIFT_BIT,
+    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Function, KITTY_FLAGS, Key, KeyPress, Keystroke,
+    Kitty, Modifiers, SHIFT_BIT,
 };
 use crate::{ModeStatus, Rgb};
 use std::borrow::Cow;
@@ -162,8 +162,8 @@ pub struct Decoder {
 }
 
 impl Default for Decoder {
-    fn default() -> Decoder {
-        Decoder::with_paste_limit(PASTE_LIMIT)
+    fn default() -> Self {
+        Self::with_paste_limit(PASTE_LIMIT)
     }
 }
 
@@ -212,8 +212,8 @@ impl Pasted {
     /// reported too long.
     fn end(self, limit: usize) -> Option<Input> {
         match self {
-            Pasted::Text(text) => Some(finished(text, limit)),
-            Pasted::TooLong(_) => None,
+            Self::Text(text) => Some(finished(text, limit)),
+            Self::TooLong(_) => None,
         }
     }
 }
@@ -324,30 +324,25 @@ impl Decoder {
     /// A decoder that keeps pastes of up to `limit` bytes, rather than
     /// [`PASTE_LIMIT`]: a host that sends a long paste on in pieces. It
     /// holds that much while a paste arrives.
-    pub fn with_paste_limit(limit: usize) -> Decoder {
-        Decoder {
+    pub fn with_paste_limit(limit: usize) -> Self {
+        Self {
             state: State::Idle,
             paste_limit: limit,
             expecting: None,
         }
     }
 
-    /// Whether decoding is waiting on a timeout: a lone Escape, an
-    /// incomplete sequence, an over-long string being dropped, or a paste
-    /// under way.
-    pub fn waiting(&self) -> bool {
-        !matches!(self.state, State::Idle)
-    }
-
     /// Records `now` as when decoding began waiting, if it is waiting on a
     /// sequence it was not waiting on when last marked, or on a paste that
     /// has had bytes since.
     pub fn mark(&mut self, now: Instant) {
-        if let State::Pending { since, .. }
-        | State::Dropping { since, .. }
-        | State::Paste { since, .. } = &mut self.state
-        {
-            since.get_or_insert(now);
+        match &mut self.state {
+            State::Pending { since, .. }
+            | State::Dropping { since, .. }
+            | State::Paste { since, .. } => {
+                since.get_or_insert(now);
+            }
+            State::Idle => {}
         }
     }
 
@@ -498,7 +493,10 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
 }
 
 /// One control byte or character, without an Escape prefix, and how many
-/// bytes it takes; none while it is incomplete.
+/// bytes it takes; none while it is incomplete. Always inlined into
+/// `decode`, as most keys are one byte: left to the compiler, it was not,
+/// and a key cost up to 9% more (`decode/legacy`).
+#[inline(always)]
 fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
     let first = *bytes.first()?;
     if let Some(control) = Control::of(first.into()) {
@@ -528,10 +526,7 @@ fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
             let take = need.min(bytes.len());
             let text = bytes.get(..take).unwrap_or_default();
             return Some(
-                match std::str::from_utf8(text)
-                    .ok()
-                    .and_then(|s| s.chars().next())
-                {
+                match str::from_utf8(text).ok().and_then(|s| s.chars().next()) {
                     Some(c) => (take, KeyPress::plain(Key::Char(c))),
                     None => (1, KeyPress::plain(Key::Char('\u{fffd}'))),
                 },
@@ -615,12 +610,11 @@ fn final_key(last: u8, mods: Modifiers) -> Option<Input> {
 /// the deadline or past `OSC_LIMIT`, is dropped.
 #[cold]
 fn osc(bytes: &[u8], flush: bool) -> Step {
-    let alt_bracket = || Step::Done(2, press(Key::Char(']'), Modifiers::ALT));
     let body = bytes.get(2..).unwrap_or_default();
     match body.first() {
         None if !flush => return Step::Incomplete,
         Some(first) if first.is_ascii_digit() => {}
-        _ => return alt_bracket(),
+        _ => return Step::Done(2, press(Key::Char(']'), Modifiers::ALT)),
     }
     answer(bytes, flush, true, OSC_LIMIT, colour_reply)
 }
@@ -697,7 +691,7 @@ fn colour_reply(payload: &[u8]) -> Option<Reply> {
         b"10" => Reply::Foreground(Rgb::parse(params.next()?)?),
         b"11" => Reply::Background(Rgb::parse(params.next()?)?),
         b"4" => {
-            let index = std::str::from_utf8(params.next()?).ok()?.parse().ok()?;
+            let index = str::from_utf8(params.next()?).ok()?.parse().ok()?;
             let rgb = Rgb::parse(params.next()?)?;
             Reply::Palette { index, rgb }
         }
@@ -708,7 +702,7 @@ fn colour_reply(payload: &[u8]) -> Option<Reply> {
 
 /// `6 ; height ; width`: the size of a cell, answering `CSI 16 t`.
 fn cell_size(params: &[u8]) -> Option<Reply> {
-    let text = std::str::from_utf8(params).ok()?;
+    let text = str::from_utf8(params).ok()?;
     let mut numbers = text.split(';');
     if numbers.next()? != "6" {
         return None;
@@ -724,14 +718,14 @@ fn cell_size(params: &[u8]) -> Option<Reply> {
 /// A CSI answer from the terminal, `params` from its `?` on, ending with
 /// `last`.
 fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
-    let text = std::str::from_utf8(params.get(1..)?).ok()?;
+    let text = str::from_utf8(params.get(1..)?).ok()?;
     match last {
         b'c' => Some(Reply::Attributes {
             sixel: text.split(';').any(|attribute| attribute == "4"),
         }),
         b'u' => {
-            let flags = text.parse::<u32>().ok()?;
-            Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(u8::MAX)))
+            let flags = text.parse::<u32>().ok()? & u32::from(KITTY_FLAGS);
+            Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(0)))
         }
         // A scheme's report, but for its `CSI` and its `n`.
         b'n' => (Scheme::ALL.into_iter())
@@ -769,7 +763,7 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
         b'm' => true,
         _ => return None,
     };
-    let text = std::str::from_utf8(params.get(1..)?).ok()?;
+    let text = str::from_utf8(params.get(1..)?).ok()?;
     let mut numbers = text.split(';').map(|n| n.parse::<u32>().ok());
     let (code, x, y) = (numbers.next()??, numbers.next()??, numbers.next()??);
     if numbers.next().is_some() {
@@ -870,7 +864,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         return Step::Done(consumed, csi_reply(params, last).map(Input::Reply));
     }
     // Each parameter with its colon-separated parts; an empty part is none.
-    let groups: Vec<Vec<Option<u32>>> = std::str::from_utf8(params)
+    let groups: Vec<Vec<Option<u32>>> = str::from_utf8(params)
         .unwrap_or("")
         .split(';')
         .map(|p| p.split(':').map(|n| n.parse().ok()).collect())
@@ -888,9 +882,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // Every modifier bit, the kitty protocol's beyond xterm's three too.
     let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
     let input = match last {
-        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => {
-            final_key(last, mods)
-        }
+        // `CSI M` is a mouse report: Enter comes only after SS3.
+        b'M' => None,
         b'Z' => press(
             Key::Tab,
             Modifiers {
@@ -906,13 +899,13 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             1 | 7 => press(Key::Home, mods),
             4 | 8 => press(Key::End, mods),
             // F1 to F4 as some terminals number them.
-            11..=14 => press(
-                Key::F(u8::try_from(first).unwrap_or(0).saturating_sub(10)),
-                mods,
-            ),
+            11..=14 => u8::try_from(first.wrapping_sub(10))
+                .ok()
+                .and_then(Function::new)
+                .and_then(|f| press(Key::F(f), mods)),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
             27 => part(2, 0)
-                .and_then(|code| coded(code, mods, |c| c))
+                .and_then(|code| coded(code, mods, |c| (c, mods)))
                 .map(|press| Input::Key(press.into())),
             // The others `encode.rs` sends (its `Form::Numbered`).
             _ => u8::try_from(first)
@@ -928,13 +921,20 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
                 base: part(0, 2),
                 mods: bits,
             };
-            let stroke = coded(first, mods, |c| typed(c, &kitty)).map(|press| Keystroke {
+            // The key's own code, which `typed` shifts.
+            let unshifted = Modifiers {
+                shift: false,
+                ..mods
+            };
+            let typed = |c| (typed(c, &kitty), unshifted);
+            let stroke = coded(first, mods, typed).map(|press| Keystroke {
                 press,
                 kitty: Some(kitty),
             });
             return Step::Done(consumed, stroke.map(Input::Key));
         }
-        _ => None,
+        // The arrows, Home, End and F1 to F4 (`final_key`), or nothing.
+        _ => final_key(last, mods),
     };
     // Modifiers beyond xterm's three (Super, Hyper, Meta, the locks) are
     // kept for a pane in the kitty protocol.
@@ -958,9 +958,13 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
 /// held with `mods`: Enter, Tab, Escape and Backspace by their controls, 8
 /// as Ctrl-Backspace (BS, which Ctrl makes of Backspace); a kitty
 /// functional key by its number in the Private Use Area; else the
-/// character, as `char_of` reads it, unless it is another control, which
-/// names no key.
-fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> char) -> Option<KeyPress> {
+/// character `char_of` reads it as, with its modifiers, unless that is
+/// another control, which names no key.
+fn coded(
+    code: u32,
+    mods: Modifiers,
+    char_of: impl FnOnce(char) -> (char, Modifiers),
+) -> Option<KeyPress> {
     if code == u32::from(CTRL_BACKSPACE) {
         let mods = Modifiers { ctrl: true, ..mods };
         return Some(KeyPress::new(Key::Backspace, mods));
@@ -969,11 +973,10 @@ fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> char) -> Opti
         Some(control) => control.key(),
         None => match code {
             0xe000..=0xf8ff => functional(code)?,
-            _ => Key::Char(
-                char::from_u32(code)
-                    .map(char_of)
-                    .filter(|c| !c.is_control())?,
-            ),
+            _ => {
+                let (c, mods) = char_of(char::from_u32(code)?);
+                return (!c.is_control()).then(|| KeyPress::new(Key::Char(c), mods));
+            }
         },
     };
     Some(KeyPress::new(key, mods))
@@ -1009,10 +1012,11 @@ fn typed(c: char, kitty: &Kitty) -> char {
 
 /// A kitty functional key, numbered in the Private Use Area, as the key
 /// fux knows it by: a keypad key is the key it copies, as legacy terminals
-/// send it. Keys fux has no name for (F13 to F35, the media, lock and
-/// modifier keys) are none, and dropped.
+/// send it. Keys fux has no name for (the media, lock and modifier keys)
+/// are none, and dropped.
 fn functional(code: u32) -> Option<Key> {
     let key = match code {
+        57376..=57398 => Key::F(Function::new(u8::try_from(code.checked_sub(57363)?).ok()?)?),
         57399..=57408 => return char::from_digit(code.checked_sub(57399)?, 10).map(Key::Char),
         57409 => Key::Char('.'),
         57410 => Key::Char('/'),
@@ -1048,6 +1052,13 @@ mod tests {
     use crate::Rgb;
     use crate::keys::colour::Scheme;
 
+    /// Whether `d` waits on a timeout, once marked: a lone Escape, an
+    /// incomplete sequence, an over-long string being dropped, or a paste
+    /// under way.
+    fn waiting(d: &mut Decoder) -> bool {
+        d.mark(Instant::now());
+        d.deadline().is_some()
+    }
     fn all(bytes: &[u8]) -> Vec<Input> {
         let mut d = Decoder::default();
         let mut out = Vec::new();
@@ -1134,6 +1145,7 @@ mod tests {
             (b"\x1b\x02", "C-M-b"),
             (b"\xe7\x95\x8c", "\u{754c}"),
             (b"\x1b[27;5;105~", "C-i"),
+            (b"\x1b[27;2;97~", "S-a"),
         ] {
             assert_eq!(all(bytes), vec![key(name)], "{bytes:?}");
         }
@@ -1236,10 +1248,10 @@ mod tests {
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
         assert!(out.is_empty());
-        assert!(d.waiting());
+        assert!(waiting(&mut d));
         d.timeout(&mut out);
         assert_eq!(out, vec![key("Escape")]);
-        assert!(!d.waiting());
+        assert!(!waiting(&mut d));
         // Escape followed in time by `[A` is an arrow, not Escape.
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
@@ -1299,6 +1311,7 @@ mod tests {
             (b"\x1b[1089::99;3u", "M-c"),
             (b"\x1b[97;69u", "C-a"),
             (b"\x1b[97;67u", "M-A"),
+            (b"\x1b[97;68u", "M-a"),
             (b"\x1b[97;9u", "a"),
             (b"\x1b[32;5u", "C-Space"),
             (b"\x1b[120;7u", "C-M-x"),
@@ -1310,18 +1323,20 @@ mod tests {
             (b"\x1b[57414u", "Enter"),
             (b"\x1b[57399;5u", "C-0"),
             (b"\x1b[57419u", "Up"),
+            // F13 to F35 (the kitty spec's "Functional key definitions").
+            (b"\x1b[57376u", "F13"),
+            (b"\x1b[57398;5u", "C-F35"),
             (b"\x1b[97;5:2u", "C-a"),
         ] {
             assert_eq!(presses(all(bytes)), vec![name_press(name)], "{bytes:?}");
         }
         // A release is not a press, nor a key fux has no name for (a media
-        // key, a modifier alone, F13).
+        // key, a modifier alone).
         for bytes in [
             &b"\x1b[97;5:3u"[..],
             b"\x1b[1;1:3A",
             b"\x1b[57428u",
             b"\x1b[57441;2u",
-            b"\x1b[57376u",
         ] {
             assert_eq!(all(bytes), vec![], "{bytes:?}");
         }
@@ -1355,7 +1370,7 @@ mod tests {
         let mut d = Decoder::default();
         let mut out = Vec::new();
         d.bytes(b"\x1b[27u", &mut out);
-        assert!(!d.waiting());
+        assert!(!waiting(&mut d));
         assert_eq!(presses(out), vec![name_press("Escape")]);
         // Split anywhere, among pastes and focus changes, alike.
         let stream: &[u8] = b"\x1b[98;5ud\x1b[200~p\x1b[201~\x1b[I\x1b[13;2u\x1b[27u";
@@ -1390,13 +1405,19 @@ mod tests {
                     key_bytes(press.into(), mode, &mut bytes);
                     presses(all(&bytes))
                 };
-                if decoded(KeyMode::legacy(false)) != vec![Some(press)] {
+                let legacy = KeyMode::Legacy {
+                    application: false,
+                    other_keys: None,
+                    backarrow: false,
+                };
+                if decoded(legacy) != vec![Some(press)] {
                     // Legacy bytes cannot tell this key (S-Enter is Enter).
                     continue;
                 }
                 let kitty = KeyMode::Kitty {
                     alternate: true,
                     report: Report::Disambiguated,
+                    backarrow: false,
                 };
                 assert_eq!(decoded(kitty), vec![Some(press)], "{prefix}{name}");
                 compared += 1;
@@ -1444,6 +1465,8 @@ mod tests {
         for expecting in [false, true] {
             split_anywhere(stream, expecting, &expected);
         }
+        // Of the flags, only the spec's five are read.
+        assert_eq!(all(b"\x1b[?999u"), [Input::Reply(Reply::KittyFlags(7))]);
         // Colours fux does not ask for or cannot read are dropped; answers
         // it does not use reach the session, which ignores them: no keys.
         assert_eq!(
@@ -1545,11 +1568,20 @@ mod tests {
     }
 
     /// A key report whose code is a control character (`CSI u`, `CSI 1 ;
-    /// 5 u`, xterm's `CSI 27 ; 5 ; 1 ~`) is no key: a key name cannot say
-    /// it, so no binding could match it and nothing could name it back.
+    /// 5 u`, xterm's `CSI 27 ; 5 ; 1 ~`), or whose kitty alternate key
+    /// that it would type is one (a base-layout key 1 with Ctrl, a shifted
+    /// key 1), is no key: a key name cannot say it, so no binding could
+    /// match it and nothing could name it back.
     #[test]
     fn a_key_report_of_a_control_character_is_no_key() {
-        for report in [&b"\x1b[u"[..], b"\x1b[1;5u", b"\x1b[0;5u", b"\x1b[27;5;1~"] {
+        for report in [
+            &b"\x1b[u"[..],
+            b"\x1b[1;5u",
+            b"\x1b[0;5u",
+            b"\x1b[27;5;1~",
+            b"\x1b[1089::1;5u",
+            b"\x1b[97:1;2u",
+        ] {
             assert_eq!(all(report), vec![], "{report:?}");
         }
         let pressed = |input: &Input| {
@@ -1674,7 +1706,7 @@ mod tests {
         let mut out = Vec::new();
         d.bytes(b"\x1bP", &mut out);
         assert_eq!(out, vec![alt_p.clone()], "not waiting");
-        assert!(!d.waiting());
+        assert!(!waiting(&mut d));
         for pending in [&b"\x1bP"[..], b"\x1bP1"] {
             let mut d = Decoder::default();
             d.expect(t0);
@@ -1696,10 +1728,10 @@ mod tests {
     #[test]
     fn mouse_reports_are_events_and_pastes_are_bounded() {
         use crate::keys::mouse::{MouseAction, MouseButton};
+        use MouseButton::Left;
         let left = |action, row, col| {
             Input::Mouse(MouseEvent {
                 action,
-                button: Some(MouseButton::Left),
                 mods: Modifiers::NONE,
                 row,
                 col,
@@ -1707,14 +1739,14 @@ mod tests {
         };
         assert_eq!(
             all(b"\x1b[M !!a"),
-            vec![left(MouseAction::Press, 0, 0), key("a")]
+            vec![left(MouseAction::Press(Left), 0, 0), key("a")]
         );
         assert_eq!(
             all(b"\x1b[<0;10;5Ma\x1b[<0;10;5m"),
             vec![
-                left(MouseAction::Press, 4, 9),
+                left(MouseAction::Press(Left), 4, 9),
                 key("a"),
-                left(MouseAction::Release, 4, 9)
+                left(MouseAction::Release(Some(Left)), 4, 9)
             ]
         );
         // What no report is: dropped, never typed.

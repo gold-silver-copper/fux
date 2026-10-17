@@ -12,9 +12,8 @@ pub const NOCTTY: i32 = libc::O_NOCTTY;
 pub fn make_fifo(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let mode = libc::mode_t::try_from(mode)
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    let mode = libc::mode_t::try_from(mode).map_err(|_| std::io::ErrorKind::InvalidInput)?;
     // SAFETY: `c` is a NUL-terminated path that outlives the call.
     match unsafe { libc::mkfifo(c.as_ptr(), mode) } {
         0 => Ok(()),
@@ -46,7 +45,7 @@ pub fn scratch() -> std::io::Result<std::path::PathBuf> {
 /// without opening it for reading or writing (`O_PATH`). While it is held
 /// the file's inode stays allocated, so its number cannot be given to
 /// another file (bevy-final finding 014).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn pin(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()

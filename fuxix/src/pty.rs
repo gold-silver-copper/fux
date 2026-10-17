@@ -10,10 +10,9 @@ use crate::process::Pid;
 use crate::terminal::{self, Size};
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
@@ -40,9 +39,9 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 /// A PTY's master: close-on-exec, so no program this process starts holds
 /// the PTY open, and nonblocking, so a read or write that would wait fails
 /// with `AGAIN` instead. Read and write it with [`crate::io`], and wait for
-/// it with [`crate::poll`].
+/// it with [`crate::poll`]. It keeps its slave's path.
 #[derive(Debug)]
-pub struct Master(OwnedFd);
+pub struct Master(OwnedFd, PathBuf);
 
 /// A PTY's slave, not yet given to the program that runs on it
 /// ([`Slave::spawn`]). It is close-on-exec, and not this process's
@@ -53,8 +52,8 @@ pub struct Slave(OwnedFd);
 impl Master {
     /// The path of its slave (`/dev/pts/N`), as programs on it see their
     /// terminal.
-    pub fn slave_path(&self) -> Option<PathBuf> {
-        slave_name(&self.0).ok()
+    pub fn slave_path(&self) -> &Path {
+        &self.1
     }
 }
 
@@ -73,123 +72,64 @@ impl AsFd for Slave {
 /// The master as a plain descriptor, for a caller that wants it otherwise:
 /// blocking, say.
 impl From<Master> for OwnedFd {
-    fn from(master: Master) -> OwnedFd {
+    fn from(master: Master) -> Self {
         master.0
     }
 }
 
-/// The hidden argument a program that starts others on PTYs takes to be
-/// their launcher: `PROGRAM __launch ARGV...` calls [`launched`] with ARGV.
-/// It is fixed, as an older server may run a newer binary.
-pub const LAUNCH: &str = "__launch";
-
 impl Slave {
     /// Starts `argv` on this PTY, as the leader of a new session with the
-    /// PTY as its controlling terminal and its stdin, stdout and stderr;
-    /// `setup` sets its directory and environment. Returns once the program
-    /// runs, with its pid, or once it cannot, with why.
-    ///
-    /// Starting a process in a new session needs code between `fork` and
-    /// `exec`, which std allows only through `unsafe`. So `launcher`, a
-    /// binary that calls [`launched`] when run with [`LAUNCH`], runs that
-    /// code as a program of its own, and reports a failure, its `exec`'s
-    /// included, on a pipe that `exec` closes: as std reports its own.
+    /// PTY as its controlling terminal and its stdin, stdout and stderr,
+    /// and no other descriptor ([`crate::process::lead_session`]); `setup`
+    /// sets its directory and environment. Returns once the program runs,
+    /// with its pid, or once it cannot, with why.
     pub fn spawn<S: AsRef<OsStr>>(
         self,
-        launcher: &Path,
         argv: &[S],
         setup: impl FnOnce(&mut Command),
     ) -> std::io::Result<(Child, Pid)> {
-        let (mut failures, report) = std::io::pipe()?;
-        let mut child = {
-            let mut command = Command::new(launcher);
-            command.arg(LAUNCH).args(argv);
-            setup(&mut command);
-            command
-                .stdin(self.0.try_clone()?)
-                .stdout(report)
-                .stderr(self.0);
-            // Dropping `command` closes this side's ends of the pipe and
-            // the PTY.
-            command.spawn()?
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| std::io::Error::other("no program to run"))?;
+        let mut command = Command::new(program);
+        command.args(args);
+        setup(&mut command);
+        command
+            .stdin(self.0.try_clone()?)
+            .stdout(self.0.try_clone()?)
+            .stderr(self.0);
+        crate::process::lead_session(&mut command, true);
+        // Dropping `command` closes this side's copies of the PTY.
+        let child = match command.spawn() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(match missing_interpreter(&command, program.as_ref()) {
+                    Some(interpreter) => std::io::Error::other(format!(
+                        "its interpreter {interpreter} does not exist"
+                    )),
+                    None => error,
+                });
+            }
+            spawned => spawned?,
         };
-        let mut failure = String::new();
-        let read = failures.read_to_string(&mut failure);
-        if let (Ok(_), true, Some(pid)) = (&read, failure.is_empty(), Pid::of(&child)) {
-            return Ok((child, pid));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        Err(read.err().unwrap_or_else(|| std::io::Error::other(failure)))
+        let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
+        Ok((child, pid))
     }
 }
 
-/// The launcher: what a binary run as `BINARY __launch ARGV...` by
-/// [`Slave::spawn`] calls with ARGV, before anything else. It makes ARGV the
-/// leader of a new session on the PTY and becomes it, returning only if it
-/// could not, with the exit status to use.
-pub fn launched<S: AsRef<OsStr>>(argv: &[S]) -> u8 {
-    // Whatever the spawner inherited without close-on-exec, from a shell
-    // that leaks descriptors or a thread that raced its spawn, it passed on
-    // to here: marked, it goes no further, and the program gets stdio and
-    // nothing else.
-    let marked = crate::io::cloexec_from(3);
-    // A close-on-exec copy, so a successful `exec` closes the pipe; the
-    // program's stdout is the PTY.
-    let report = std::io::stdout().as_fd().try_clone_to_owned();
-    let failure = match marked {
-        Ok(()) => become_program(argv),
-        Err(errno) => std::io::Error::other(format!(
-            "marking inherited descriptors close-on-exec: {errno}"
-        )),
-    };
-    if let Ok(report) = report {
-        let _ = std::fs::File::from(report).write_all(failure.to_string().as_bytes());
-    }
-    127
-}
-
-/// Makes this process the leader of a new session with its stdin as the
-/// controlling terminal, then replaces it with `argv`; the error, if any
-/// step fails. The spawn cleared the signal mask, and `exec` restores the
-/// dispositions Rust and signal handlers changed, so the program starts
-/// as it would from a shell.
-fn become_program<S: AsRef<OsStr>>(argv: &[S]) -> std::io::Error {
-    let Some((program, args)) = argv.split_first() else {
-        return std::io::Error::other("no program to run");
-    };
-    if let Err(errno) = crate::process::setsid() {
-        return errno.into();
-    }
-    let terminal = std::io::stdin();
-    let steal: libc::c_int = 0;
-    let controlling = terminal::request(libc::TIOCSCTTY).and_then(|set| {
-        // SAFETY: TIOCSCTTY takes an int and touches no memory.
-        check(unsafe { libc::ioctl(terminal.as_fd().as_raw_fd(), set, steal) })
-    });
-    if let Err(errno) = controlling {
-        return errno.into();
-    }
-    let error = match terminal.as_fd().try_clone_to_owned() {
-        Ok(stdout) => Command::new(program).args(args).stdout(stdout).exec(),
-        Err(error) => error,
-    };
-    if error.kind() == std::io::ErrorKind::NotFound
-        && let Some(interpreter) = missing_interpreter(program.as_ref())
-    {
-        return std::io::Error::other(format!("its interpreter {interpreter} does not exist"));
-    }
-    error
-}
-
-/// The `#!` interpreter `program`'s file names, looked up as `exec` looks
-/// it up, if the file is there and the interpreter is not: what `exec`
-/// found missing.
-fn missing_interpreter(program: &OsStr) -> Option<String> {
+/// The `#!` interpreter `program`'s file names, looked up as `command`'s
+/// `exec` looks it up (in its directory, or on its `PATH`), if the file is
+/// there and the interpreter is not: what `exec` found missing.
+fn missing_interpreter(command: &Command, program: &OsStr) -> Option<String> {
     let file = if program.as_encoded_bytes().contains(&b'/') {
-        PathBuf::from(program)
+        let dir = command.get_current_dir();
+        dir.map_or_else(|| PathBuf::from(program), |dir| dir.join(program))
     } else {
-        std::env::split_paths(&std::env::var_os("PATH")?)
+        let set = command.get_envs().find(|(key, _)| *key == "PATH");
+        let path = set.map_or_else(
+            || std::env::var_os("PATH"),
+            |(_, path)| path.map(OsStr::to_owned),
+        )?;
+        std::env::split_paths(&path)
             .map(|dir| dir.join(program))
             .find(|file| file.is_file())?
     };
@@ -241,11 +181,11 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
         .map_err(at("opening the PTY slave"))?;
     terminal::set_window_size(&master, size).map_err(at("TIOCSWINSZ"))?;
     crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
-    Ok((Master(master), Slave(OwnedFd::from(slave))))
+    Ok((Master(master, name), Slave(OwnedFd::from(slave))))
 }
 
 /// A new PTY master, granted.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn granted_master() -> Result<OwnedFd, Error> {
     let master = open_master().map_err(at("posix_openpt"))?;
     // SAFETY: grantpt takes a descriptor and touches no memory.
@@ -301,7 +241,7 @@ const GRANT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// runs unwatched.
 #[cfg(any(target_os = "macos", test))]
 fn watched<T>(
-    fd: std::os::fd::BorrowedFd<'_>,
+    fd: BorrowedFd<'_>,
     limit: std::time::Duration,
     null: impl FnOnce() -> std::io::Result<std::fs::File>,
     call: impl FnOnce() -> T,
@@ -364,7 +304,7 @@ fn replace_with_null(raw: libc::c_int, null: &std::fs::File) -> bool {
 /// does; older releases may refuse it with `EINVAL`, and then the flag is
 /// set straight after the open).
 fn open_master() -> crate::Result<OwnedFd> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     // SAFETY: posix_openpt takes flags and touches no memory.
     let raw =
         check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) })?;
@@ -451,7 +391,7 @@ fn redrive<T>(
 fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
     let fd = master.as_fd().as_raw_fd();
     let mut buffer: [libc::c_char; 128] = [0; 128];
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     // SAFETY: the buffer is writable for its length, which is passed; the
     // call reports its errors as a number rather than in errno.
     match unsafe { libc::ptsname_r(fd, buffer.as_mut_ptr(), buffer.len()) } {
@@ -459,7 +399,7 @@ fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
         error => return Err(Errno::from_raw(error)),
     }
     #[cfg(target_os = "macos")]
-    let get = terminal::request(libc::TIOCPTYGNAME)?;
+    let get = terminal::request(libc::TIOCPTYGNAME);
     #[cfg(target_os = "macos")]
     // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL included, and the
     // buffer is 128 bytes.
@@ -475,7 +415,7 @@ fn path(buffer: &[libc::c_char]) -> PathBuf {
         .take_while(|c| **c != 0)
         .map(|c| u8::from_ne_bytes(c.to_ne_bytes()))
         .collect();
-    PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
+    PathBuf::from(OsStr::from_bytes(&bytes))
 }
 
 #[cfg(test)]

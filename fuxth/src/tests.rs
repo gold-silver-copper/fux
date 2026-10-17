@@ -2,11 +2,10 @@
 //! end, through every suspension.
 use crate::*;
 
-/// A host with one value of its own, a ticket, and five words: `ticket`
+/// A host with one value of its own, a ticket, and four words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
-/// for the host to answer; `nope`, which fails; `maybe` (n -- [n]), which
-/// gives n back only above 0; and `liar`, which says it gives a value and
-/// gives none.
+/// for the host to answer; `nope`, which fails; and `liar`, which says it
+/// gives a value and gives none.
 #[derive(Clone, Debug, PartialEq)]
 struct Ticket(i64);
 
@@ -33,13 +32,7 @@ impl Host for Toy {
         let args: Vec<_> = args.collect();
         assert_eq!(told, args.len(), "an exact count of the values taken");
         match (word, args.as_slice()) {
-            (3, [Value::Int(n)]) => {
-                if *n > 0 {
-                    out.push(Value::Int(*n));
-                }
-                Ok(Done::Now)
-            }
-            (4, []) => Ok(Done::Now),
+            (3, []) => Ok(Done::Now),
             (0, []) => {
                 out.push(Value::App(Ticket(7)));
                 Ok(Done::Now)
@@ -72,13 +65,16 @@ fn with_stdlib() -> Compiler<Ticket> {
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    words.add("ticket", 0, 1..=1);
-    words.add("ask", 1, 1..=1);
-    words.add("nope", 0, 0..=0);
-    words.add("maybe", 1, 0..=1);
-    words.add("liar", 0, 1..=1);
+    words.add("ticket", 0, 1);
+    words.add("ask", 1, 1);
+    words.add("nope", 0, 0);
+    words.add("liar", 0, 1);
     words
 }
+
+/// `maybe` (n -- [n]): n back only above 0, so what it leaves is known
+/// only as it runs. Written on the line it is used on.
+const MAYBE: &str = "define maybe dup 0 gt if else drop then end ";
 
 /// Runs `text` (a file's), answering each `ask` with ten times its
 /// number, a step at a time to cover every pause; the stack it ends with.
@@ -309,7 +305,7 @@ fn errors_at_run_time_say_what_and_where() {
     let error = run("define f str x add end\n1 f").err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
-        Some("type: t:1: add: takes two integers, and the top one is a string"),
+        Some("type: t:1: add: add takes an integer, not a string on top"),
         "found before it runs"
     );
 }
@@ -368,6 +364,10 @@ fn the_checker_says_what_and_where() {
             .and_then(|()| compiler.finish().map(|_| ()));
         compiled.err().map(|e| e.to_string()).unwrap_or_default()
     };
+    let (maybe_drop, maybe_swap) = (
+        format!("{MAYBE}0 maybe drop drop"),
+        format!("{MAYBE}0 maybe swap"),
+    );
     for (text, said) in [
         (
             "drop",
@@ -379,11 +379,11 @@ fn the_checker_says_what_and_where() {
         ),
         // maybe gives one value or none: then a drop leaves none for sure.
         (
-            "0 maybe drop drop",
+            maybe_drop.as_str(),
             "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 here",
         ),
         (
-            "0 maybe swap",
+            maybe_swap.as_str(),
             "stack_underflow: t:1: swap: takes 2 values, and the stack has at most 1 here",
         ),
         (
@@ -392,7 +392,16 @@ fn the_checker_says_what_and_where() {
         ),
         (
             "str a 0 0 eq add",
-            "type: t:1: add: takes two integers, not a string and a boolean",
+            "type: t:1: add: add takes an integer, not a string under the top",
+        ),
+        // Of several places, the one refused, by how far under the top.
+        (
+            "str a str b 1 slice",
+            "type: t:1: slice: slice takes an integer, not a string under the top",
+        ),
+        (
+            "1 2 3 slice",
+            "type: t:1: slice: slice takes a string or a list, not an integer 2 under the top",
         ),
         (
             "1 0 0 eq lt",
@@ -409,15 +418,15 @@ fn the_checker_says_what_and_where() {
         // The first in the source, at the top level or in a definition.
         (
             "str a 1 add\ndefine f str b 1 sub end",
-            "type: t:1: add: takes two integers, and the one under the top is a string",
+            "type: t:1: add: add takes an integer, not a string under the top",
         ),
         (
             "define f str b 1 sub end\nstr a 1 add",
-            "type: t:1: sub: takes two integers, and the one under the top is a string",
+            "type: t:1: sub: sub takes an integer, not a string under the top",
         ),
         (
             "0 0 eq if str a 1 add then\nstr b 2 mul",
-            "type: t:1: add: takes two integers, and the one under the top is a string",
+            "type: t:1: add: add takes an integer, not a string under the top",
         ),
     ] {
         assert_eq!(refused(text), said, "{text}");
@@ -431,6 +440,70 @@ fn the_checker_says_what_and_where() {
         compiled.err().map(|e| e.to_string()).as_deref(),
         Some("stack_underflow: argument 1: drop: takes 1 value, and the stack has 0 here")
     );
+}
+
+/// A depth written past any stack, before `pick` or `roll`: the checker
+/// keeps no kind for each value it reaches below the top's, so it checks at
+/// once, in a definition, in a call to one, and at the top level after a
+/// loop whose depth it can't bound; and it says the depth as written.
+#[test]
+fn a_depth_past_any_stack_is_checked_at_once() {
+    let started = std::time::Instant::now();
+    let far = "9223372036854775807";
+    let defined = format!("define f {far} pick end define g f end define h {far} roll end");
+    assert_eq!(code(run(&defined)), None);
+    assert_eq!(
+        code(run(&format!("{defined} 1 g"))),
+        Some("stack_underflow")
+    );
+    assert_eq!(
+        code(run(&format!("{defined} 1 h"))),
+        Some("stack_underflow")
+    );
+    let grown = format!("0 begin dup 1 add dup 5 eq until {far} pick");
+    assert_eq!(code(run(&grown)), Some("stack_underflow"));
+    let deep = "define f 100000000 pick end define g 100000000 roll end";
+    assert_eq!(code(run(deep)), None);
+    let said = run(&format!("1 {far} roll")).err().map(|e| e.to_string());
+    assert_eq!(
+        said.as_deref(),
+        Some(
+            "stack_underflow: t:1: roll: takes 9223372036854775808 values, and the stack has 1 here"
+        )
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// `each` finds each character of a string at once, whatever the
+/// characters are: walking a string of non-ASCII ones takes about as long
+/// as walking one as long of ASCII ones.
+#[test]
+fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
+    let walk = |c: &str| -> Result<std::time::Duration, Error> {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", "0 ask 0 swap each drop 1 add end")?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut host = Toy { asked: Vec::new() };
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
+        machine.push(Value::str(
+            std::iter::repeat_n(c, 100_000).collect::<String>(),
+        ))?;
+        let started = std::time::Instant::now();
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Finished);
+        assert_eq!(machine.stack(), ints(&[100_000]).as_slice());
+        Ok(started.elapsed())
+    };
+    let ascii = walk("e")?;
+    let other = walk("é")?;
+    assert!(
+        other < ascii * 5 + std::time::Duration::from_millis(100),
+        "{other:?} against {ascii:?}"
+    );
+    Ok(())
 }
 
 /// What the checker can't know it never refuses: a definition that leaves
@@ -462,18 +535,18 @@ fn the_checker_keeps_what_it_knows() {
     let lines = |text: &str| token::source("t", text).unwrap_or_default();
     assert_eq!(
         refused(lines("define nop end\nstr a 1 nop add")),
-        "type: t:2: add: takes two integers, and the one under the top is a string"
+        "type: t:2: add: add takes an integer, not a string under the top"
     );
     assert_eq!(
         refused(lines("define f str a 1 add end str b 1 sub")),
-        "type: t:1: add: takes two integers, and the one under the top is a string"
+        "type: t:1: add: add takes an integer, not a string under the top"
     );
     let words = [
         "define", "f", "str", "a", "1", "add", "end", "str", "b", "1", "sub",
     ];
     assert_eq!(
         refused(token::arguments(&words)),
-        "type: argument 6: add: takes two integers, and the one under the top is a string"
+        "type: argument 6: add: add takes an integer, not a string under the top"
     );
 }
 
@@ -484,7 +557,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
     assert_eq!(
         said("ticket 1 add"),
-        "type: t:1: add: takes two integers, not a ticket and an integer"
+        "type: t:1: add: add takes an integer, not a ticket"
     );
     assert_eq!(
         said("1 ticket lt"),
@@ -495,13 +568,26 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
         "type: t:1: if: takes a boolean (from eq or lt), not a ticket"
     );
     assert_eq!(
-        said("0 maybe drop 0 maybe drop"),
+        said(&format!("{MAYBE}0 maybe drop 0 maybe drop")),
         "stack_underflow: t:1: drop: takes 1 value, and the stack has 0"
     );
+    // Too few, as the word takes them, not as one of its pops does.
+    for (text, takes, has) in [
+        ("str a 0 maybe at", 2, 1),
+        ("str a 1 0 maybe slice", 3, 2),
+        ("str a 0 maybe push", 2, 1),
+        ("str a 1 0 maybe put", 3, 2),
+    ] {
+        let word = text.rsplit(' ').next().unwrap_or_default();
+        assert_eq!(
+            said(&format!("{MAYBE}{text}")),
+            format!("stack_underflow: t:1: {word}: takes {takes} values, and the stack has {has}")
+        );
+    }
     // A host that gives what its word doesn't say is caught at once.
     assert_eq!(
         said("liar"),
-        "contract: t:1: liar: the application gave 0 values, and its word says 1..=1"
+        "contract: t:1: liar: the application gave 0 values, and its word says 1"
     );
     let mut compiler = with_stdlib();
     compiler.add(&token::source("t", "1\n  2 ask")?)?;
@@ -552,7 +638,7 @@ fn every_builtin_effect_names_what_it_takes() {
         let (before, after) = builtin.effect().split_once("--").unwrap_or_default();
         assert_eq!(
             before.split_whitespace().count(),
-            builtin.takes(),
+            builtin.args().len(),
             "{}",
             builtin.name()
         );
@@ -672,7 +758,7 @@ fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
         let error = compiler.finish().err().map(|e| e.to_string());
         assert_eq!(
             error.as_deref(),
-            Some("type: lib:1: add: takes two integers, and the one under the top is a string")
+            Some("type: lib:1: add: add takes an integer, not a string under the top")
         );
     }
     let mut open = Compiler::<Ticket>::new(vocabulary());

@@ -5,12 +5,12 @@
 //! application word that needs its host to do something first. It never
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
-use crate::compile::{Builtin, Op, Program};
-use crate::error::{Code as ErrorCode, Error, Failure, Wants, underflow};
+use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
+use crate::compile::{Op, Program};
+use crate::error::{Code, Error, Failure, Wants, underflow};
 use crate::token::Token;
-use crate::value::{AppValue, List, Value};
+use crate::value::{AppValue, List, NESTING, TOTAL, Text, Value};
 use std::cmp::Ordering;
-use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 /// What runs the application's words.
@@ -106,8 +106,8 @@ pub struct Limits {
 impl Default for Limits {
     /// As many values on the stack as one list may hold, so `list … end`
     /// can gather any list there may be.
-    fn default() -> Limits {
-        Limits {
+    fn default() -> Self {
+        Self {
             stack: LONGEST,
             calls: 10_000,
         }
@@ -147,16 +147,19 @@ pub struct Machine<A> {
     /// Where each open `list` began on the stack: nothing below may be
     /// taken inside it.
     marks: Vec<usize>,
-    /// Each open `each`: what it walks, and the next element's index.
-    iters: Vec<(Value<A>, usize)>,
+    /// Each open `each`: what it walks, and where its next element is: an
+    /// index in a list, a byte in a string (so each step finds it at once).
+    iters: Vec<(Sequence<A>, usize)>,
     limits: Limits,
     /// What application words give, kept between calls.
     out: Vec<Value<A>>,
     /// A suspended application word: the stack's depth before it gave
     /// anything, and how many values it gives.
-    pending: Option<(usize, RangeInclusive<usize>)>,
+    pending: Option<(usize, usize)>,
     /// Steps the last long step costs beyond its own.
     extra: u64,
+    /// Steps taken in all, through every run, long steps' costs counted.
+    steps: u64,
     /// Elements built so far.
     built: u64,
     /// The step taken last: how many frames there were, its code, and its
@@ -165,10 +168,9 @@ pub struct Machine<A> {
 }
 
 impl<A: AppValue> Machine<A> {
-    pub fn new(program: Program<A>, limits: Limits) -> Machine<A> {
+    pub fn new(program: Program<A>, limits: Limits) -> Self {
         let globals = vec![None; program.globals];
-        let locals = vec![None; program.main.locals];
-        Machine {
+        Self {
             program: Rc::new(program),
             stack: Vec::new(),
             frames: vec![Frame {
@@ -177,7 +179,8 @@ impl<A: AppValue> Machine<A> {
                 via: None,
                 locals: 0,
             }],
-            locals,
+            // The top level keeps no `let` names of its own: its are globals.
+            locals: Vec::new(),
             globals,
             marks: Vec::new(),
             iters: Vec::new(),
@@ -185,6 +188,7 @@ impl<A: AppValue> Machine<A> {
             out: Vec::new(),
             pending: None,
             extra: 0,
+            steps: 0,
             built: 0,
             last: None,
         }
@@ -198,7 +202,7 @@ impl<A: AppValue> Machine<A> {
     /// Pushes a value: a suspended word's result.
     pub fn push(&mut self, value: Value<A>) -> Result<(), Error> {
         if self.stack.len() >= self.limits.stack {
-            return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
+            return Err(self.fail(Code::StackOverflow, "the stack is full"));
         }
         self.stack.push(value);
         Ok(())
@@ -250,12 +254,21 @@ impl<A: AppValue> Machine<A> {
             .or_else(|| self.program.token(frame.code, frame.step).cloned())
     }
 
+    /// The token of the step it takes next: in the frame it is in or, past
+    /// that frame's end, in the one it returns to; none at the program's
+    /// end. A host that stopped it may look at what its program does next
+    /// with what it answers.
+    pub fn next(&self) -> Option<Token> {
+        let token = |frame: &Frame| self.program.token(frame.code, frame.step);
+        self.frames.iter().rev().find_map(token).cloned()
+    }
+
     /// The token of the step before `step` in `code`: none at its first.
     fn before(&self, code: Option<usize>, step: usize) -> Option<Token> {
         self.program.token(code, step.checked_sub(1)?).cloned()
     }
 
-    fn fail(&self, code: ErrorCode, message: impl Into<String>) -> Error {
+    fn fail(&self, code: Code, message: impl Into<String>) -> Error {
         Error::new(code, message, self.at().as_ref())
     }
 
@@ -264,6 +277,12 @@ impl<A: AppValue> Machine<A> {
         if let Some(frame) = self.frames.pop() {
             self.locals.truncate(frame.locals);
         }
+    }
+
+    /// Steps taken so far, in every run, a long step counted as the steps
+    /// it costs.
+    pub fn steps(&self) -> u64 {
+        self.steps
     }
 
     /// Runs up to `budget` steps.
@@ -276,12 +295,12 @@ impl<A: AppValue> Machine<A> {
             self.given(given)?;
         }
         let program = Rc::clone(&self.program);
-        let mut steps = 0u64;
+        let until = self.steps.saturating_add(budget);
         loop {
-            if steps >= budget {
+            if self.steps >= until {
                 return Ok(Outcome::Paused);
             }
-            steps = steps
+            self.steps = (self.steps)
                 .saturating_add(1)
                 .saturating_add(std::mem::take(&mut self.extra));
             let depth = self.frames.len();
@@ -318,7 +337,7 @@ impl<A: AppValue> Machine<A> {
                     let done = done.map_err(|f| self.fail(f.code, f.message))?;
                     let given = (self.stack.len(), gives);
                     if self.stack.len().saturating_add(out.len()) > self.limits.stack {
-                        return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
+                        return Err(self.fail(Code::StackOverflow, "the stack is full"));
                     }
                     self.stack.append(&mut out);
                     self.out = out;
@@ -342,7 +361,7 @@ impl<A: AppValue> Machine<A> {
                     } else if self.frames.len() > self.limits.calls {
                         let message =
                             format!("calls nest past {}: recursion too deep", self.limits.calls);
-                        return Err(self.fail(ErrorCode::CallDepth, message));
+                        return Err(self.fail(Code::CallDepth, message));
                     }
                     let base = self.locals.len();
                     let slots = program.words.get(*id).map_or(0, |w| w.locals);
@@ -394,25 +413,13 @@ impl<A: AppValue> Machine<A> {
                     let list = self.list(items)?;
                     self.push(list)?;
                 }
-                Op::EachStart => {
-                    let seq = self.pop()?;
-                    match seq {
-                        Value::Str(_) | Value::List(_) => self.iters.push((seq, 0)),
-                        other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => {
-                            return Err(self.type_error(Wants::Each.not(other.kind())));
-                        }
-                    }
-                }
+                Op::EachStart => match Seq::of(self.pop()?) {
+                    Ok(seq) => self.iters.push((seq, 0)),
+                    Err(kind) => return Err(self.type_error(Wants::Each.not(kind))),
+                },
                 Op::EachNext(out) => {
                     let out = *out;
-                    let next = match self.iters.last_mut() {
-                        Some((seq, at)) => {
-                            let item = element(seq, *at);
-                            *at = at.saturating_add(1);
-                            item
-                        }
-                        None => None,
-                    };
+                    let next = (self.iters.last_mut()).and_then(|(seq, at)| next(seq, at));
                     match next {
                         Some(item) => self.push(item)?,
                         None => {
@@ -431,25 +438,23 @@ impl<A: AppValue> Machine<A> {
             Some(value) => self.push(value),
             None => {
                 let message = "read before its let ran".to_owned();
-                Err(self.fail(ErrorCode::Unset, message))
+                Err(self.fail(Code::Unset, message))
             }
         }
     }
 
     /// Whether an application word gave as many values as its vocabulary
     /// says: the checker counted on it. `depth` is the stack's before it
-    /// gave any.
-    fn given(&self, (depth, gives): (usize, RangeInclusive<usize>)) -> Result<(), Error> {
+    /// gave any. Kept out of `run`'s loop: inlined there, it made every
+    /// program 2 to 5% slower (fuxth's bench).
+    #[inline(never)]
+    fn given(&self, (depth, gives): (usize, usize)) -> Result<(), Error> {
         let given = self.stack.len().saturating_sub(depth);
-        if gives.contains(&given) {
+        if given == gives {
             return Ok(());
         }
-        let message = format!(
-            "the application gave {given} values, and its word says {}..={}",
-            gives.start(),
-            gives.end()
-        );
-        Err(self.fail(ErrorCode::Contract, message))
+        let message = format!("the application gave {given} values, and its word says {gives}");
+        Err(self.fail(Code::Contract, message))
     }
 
     fn jump(&mut self, to: usize) {
@@ -467,22 +472,12 @@ impl<A: AppValue> Machine<A> {
             return Ok(self.stack.len().saturating_sub(n));
         }
         let message = underflow("takes", n, &has.to_string(), !self.marks.is_empty());
-        Err(self.fail(ErrorCode::StackUnderflow, message))
+        Err(self.fail(Code::StackUnderflow, message))
     }
 
     fn pop(&mut self) -> Result<Value<A>, Error> {
-        self.depth(1)?;
-        self.stack
-            .pop()
-            .ok_or_else(|| self.fail(ErrorCode::StackUnderflow, "takes 1 value"))
-    }
-
-    /// The top two values, the deeper first.
-    fn pop2(&mut self) -> Result<(Value<A>, Value<A>), Error> {
-        self.depth(2)?;
-        let b = self.pop()?;
-        let a = self.pop()?;
-        Ok((a, b))
+        let [value] = self.take()?;
+        Ok(value)
     }
 
     /// Takes a boolean, as `if` and `until` do.
@@ -495,38 +490,47 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    fn ints(&mut self) -> Result<(i64, i64), Error> {
-        match self.pop2()? {
-            (Value::Int(a), Value::Int(b)) => Ok((a, b)),
-            (a, b) => {
-                let got = format!("{} and {}", a.kind(), b.kind());
-                Err(self.type_error(Wants::Ints.not(got)))
-            }
-        }
-    }
-
     fn type_error(&self, message: impl Into<String>) -> Error {
-        self.fail(ErrorCode::Type, message)
+        self.fail(Code::Type, message)
     }
 
     fn range_error(&self, message: impl Into<String>) -> Error {
-        self.fail(ErrorCode::Range, message)
+        self.fail(Code::Range, message)
     }
 
     fn too_long(&self, message: impl Into<String>) -> Error {
-        self.fail(ErrorCode::TooLong, message)
+        self.fail(Code::TooLong, message)
     }
 
-    /// Takes a count: an integer, 0 or more.
-    fn count(&mut self, word: Builtin) -> Result<usize, Error> {
-        match self.pop()? {
-            Value::Int(n) => usize::try_from(n).map_err(|_| {
-                self.range_error(format!("{} takes a count from 0, not {n}", word.name()))
-            }),
-            other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                Err(self.type_error(Wants::Int(word).not(other.kind())))
-            }
-        }
+    /// `n` as `word`'s count: 0 or more.
+    fn count(&self, word: Builtin, n: i64) -> Result<usize, Error> {
+        usize::try_from(n)
+            .map_err(|_| self.range_error(format!("{} takes a count from 0, not {n}", word.name())))
+    }
+
+    /// `n` as an index into something `len` long.
+    fn index(&self, n: i64, len: usize) -> Result<usize, Error> {
+        (usize::try_from(n).ok())
+            .filter(|i| *i < len)
+            .ok_or_else(|| self.range_error(format!("index {n}, and it has {len}")))
+    }
+
+    /// `word` given `got` in a place that takes `arg`'s kinds.
+    #[cold]
+    fn refused(&self, word: Builtin, arg: Arg, got: &str) -> Error {
+        // A place that takes any value refuses none.
+        let wants = arg.wants.map(|wants| wants(word));
+        self.type_error(wants.map_or_else(|| got.to_owned(), |wants| wants.not(got)))
+    }
+
+    /// A built-in's `N` values off the stack, the deepest first. Too few
+    /// are said as the word takes them, before any is taken.
+    fn take<const N: usize>(&mut self) -> Result<[Value<A>; N], Error> {
+        self.depth(N)?;
+        // The stack has them: none is the `false` put for one it lacks.
+        let mut taken = std::array::from_fn(|_| self.stack.pop().unwrap_or(Value::Bool(false)));
+        taken.reverse();
+        Ok(taken)
     }
 
     /// Charges a long step for going through `n` elements.
@@ -538,11 +542,7 @@ impl<A: AppValue> Machine<A> {
     /// Counts `n` elements built: past what a run may build in all, or past
     /// what one value may hold, a `too_long` error.
     fn build(&mut self, n: usize) -> Result<(), Error> {
-        if n > LONGEST {
-            return Err(self.too_long(format!(
-                "{n} elements, and a string or list holds at most {LONGEST}"
-            )));
-        }
+        self.fits(n)?;
         self.cost(n);
         self.built = self
             .built
@@ -565,8 +565,8 @@ impl<A: AppValue> Machine<A> {
     fn nested(&self) -> Error {
         self.too_long(format!(
             "lists nest at most {} deep, and hold at most {} in all, through the lists and strings in them",
-            crate::value::NESTING,
-            crate::value::TOTAL
+            NESTING,
+            TOTAL
         ))
     }
 
@@ -580,18 +580,17 @@ impl<A: AppValue> Machine<A> {
         let from = self.depth(n.saturating_add(1))?;
         match self.stack.get(from).cloned() {
             Some(value) => self.push(value),
-            None => Err(self.fail(ErrorCode::StackUnderflow, "pick reached past the stack")),
+            None => Err(self.fail(Code::StackUnderflow, "pick reached past the stack")),
         }
     }
 
-    /// Two integers taken and `op`'s result on them pushed: past what an
-    /// integer holds fails, and so does a division by zero.
-    fn arithmetic(&mut self, op: fn(i64, i64) -> Option<i64>) -> Result<(), Error> {
-        let (a, b) = self.ints()?;
-        match op(a, b) {
+    /// Arithmetic's result pushed, `None` if there is none: past what an
+    /// integer holds, or a division by zero (`b` 0).
+    fn arithmetic(&mut self, result: Option<i64>, b: i64) -> Result<(), Error> {
+        match result {
             Some(n) => self.push(Value::Int(n)),
-            None if b == 0 => Err(self.fail(ErrorCode::DivByZero, "division by zero")),
-            None => Err(self.fail(ErrorCode::Overflow, "past what an integer holds")),
+            None if b == 0 => Err(self.fail(Code::DivByZero, "division by zero")),
+            None => Err(self.fail(Code::Overflow, "past what an integer holds")),
         }
     }
 
@@ -602,190 +601,6 @@ impl<A: AppValue> Machine<A> {
         }
         self.cost(n);
         Ok(())
-    }
-
-    fn builtin<H: Host<Value = A>>(&mut self, builtin: Builtin, host: &mut H) -> Result<(), Error> {
-        match builtin {
-            Builtin::Drop => self.pop().map(|_| ()),
-            Builtin::Pick => {
-                let n = self.count(builtin)?;
-                self.pick(n)
-            }
-            Builtin::Roll => {
-                let n = self.count(builtin)?;
-                self.roll(n)
-            }
-            Builtin::Add => self.arithmetic(i64::checked_add),
-            Builtin::Sub => self.arithmetic(i64::checked_sub),
-            Builtin::Mul => self.arithmetic(i64::checked_mul),
-            Builtin::Div => self.arithmetic(i64::checked_div),
-            Builtin::Lt => {
-                let (a, b) = self.pop2()?;
-                self.walk(if a.weight() < b.weight() { &a } else { &b });
-                match compare(&a, &b) {
-                    Some(order) => self.push(Value::Bool(order == Ordering::Less)),
-                    None => Err(self.type_error(unordered(&a, &b))),
-                }
-            }
-            Builtin::Eq => {
-                let (a, b) = self.pop2()?;
-                self.walk(if a.weight() < b.weight() { &a } else { &b });
-                self.push(Value::Bool(a == b))
-            }
-            Builtin::Len => {
-                let seq = self.pop()?;
-                let n = self.seq_len(&seq, builtin)?;
-                self.push(Value::Int(i64::try_from(n).unwrap_or(i64::MAX)))
-            }
-            Builtin::At => {
-                let i = self.pop()?;
-                let seq = self.pop()?;
-                let len = self.seq_len(&seq, builtin)?;
-                let i = self.index(&i, len, builtin)?;
-                if let Value::Str(s) = &seq
-                    && !s.is_ascii()
-                {
-                    self.cost(i);
-                }
-                match element(&seq, i) {
-                    Some(item) => self.push(item),
-                    None => Err(self.range_error(format!("index {i}, and it has {len}"))),
-                }
-            }
-            Builtin::Slice => {
-                let to = self.pop()?;
-                let from = self.pop()?;
-                let seq = self.pop()?;
-                let len = self.seq_len(&seq, builtin)?;
-                let (Value::Int(a), Value::Int(b)) = (&from, &to) else {
-                    return Err(self.type_error(format!(
-                        "slice takes two integers after the sequence, not {} and {}",
-                        from.kind(),
-                        to.kind()
-                    )));
-                };
-                let (a, b) = (*a, *b);
-                let bounds = usize::try_from(a).ok().zip(usize::try_from(b).ok());
-                let Some((from, to)) = bounds.filter(|(f, t)| f <= t && *t <= len) else {
-                    return Err(
-                        self.range_error(format!("slice from {a} to {b}, and it has {len}"))
-                    );
-                };
-                let n = to.saturating_sub(from);
-                let part = match &seq {
-                    Value::Str(s) => {
-                        self.build(n)?;
-                        Value::str(s.part(from, to))
-                    }
-                    Value::List(list) => {
-                        let items = list.items().iter().skip(from).take(n).cloned().collect();
-                        self.list(items)?
-                    }
-                    Value::Int(_) | Value::Bool(_) | Value::App(_) => seq.clone(),
-                };
-                self.push(part)
-            }
-            Builtin::Concat => {
-                let list = self.pop()?;
-                let Value::List(list) = list else {
-                    return Err(self.type_error(Wants::Concat.not(list.kind())));
-                };
-                let joined = self.concat(&list)?;
-                self.push(joined)
-            }
-            Builtin::Push => {
-                let x = self.pop()?;
-                let seq = self.pop()?;
-                let pushed = self.pushed(seq, x)?;
-                self.push(pushed)
-            }
-            Builtin::Put => {
-                let x = self.pop()?;
-                let i = self.pop()?;
-                let seq = self.pop()?;
-                let len = self.seq_len(&seq, builtin)?;
-                let i = self.index(&i, len, builtin)?;
-                let put = self.put(seq, i, x)?;
-                self.push(put)
-            }
-            Builtin::Code => {
-                let c = self.pop()?;
-                let one = match &c {
-                    Value::Str(s) => {
-                        let mut chars = s.chars();
-                        chars.next().filter(|_| chars.next().is_none())
-                    }
-                    Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
-                };
-                match one {
-                    Some(ch) => self.push(Value::Int(i64::from(u32::from(ch)))),
-                    None => Err(self.type_error(Wants::Char.not(match &c {
-                        Value::Str(s) if s.is_empty() => "an empty one",
-                        Value::Str(_) => "a longer one",
-                        Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => c.kind(),
-                    }))),
-                }
-            }
-            Builtin::Char => {
-                let n = self.pop()?;
-                let Value::Int(n) = n else {
-                    return Err(self.type_error(Wants::Int(builtin).not(n.kind())));
-                };
-                match u32::try_from(n).ok().and_then(char::from_u32) {
-                    Some(ch) => self.push(Value::str(ch.to_string())),
-                    None => Err(self.range_error(format!("{n} is no character code"))),
-                }
-            }
-            Builtin::Kind => {
-                let x = self.pop()?;
-                self.push(Value::str(x.kind_name()))
-            }
-            Builtin::String => {
-                let x = self.pop()?;
-                self.walk(&x);
-                // Made only as far as a string may be long.
-                let Some(text) = x.text_upto(LONGEST) else {
-                    return Err(self.too_long(format!(
-                        "the text is longer than a string may be ({LONGEST})"
-                    )));
-                };
-                self.build(text.chars_len())?;
-                self.push(Value::Str(Rc::new(text)))
-            }
-            Builtin::Print => {
-                let x = self.pop()?;
-                self.walk(&x);
-                let text = x.text();
-                host.print(&text).map_err(|f| self.fail(f.code, f.message))
-            }
-            Builtin::Fail => {
-                let x = self.pop()?;
-                Err(self.fail(ErrorCode::Fail, x.text()))
-            }
-        }
-    }
-
-    /// How many elements `seq` has, if it is a string or list.
-    fn seq_len(&self, seq: &Value<A>, word: Builtin) -> Result<usize, Error> {
-        match seq {
-            Value::Str(_) | Value::List(_) => Ok(seq.size()),
-            Value::Int(_) | Value::Bool(_) | Value::App(_) => {
-                Err(self.type_error(Wants::Seq(word).not(seq.kind())))
-            }
-        }
-    }
-
-    /// An index into something `len` long.
-    fn index(&self, i: &Value<A>, len: usize, word: Builtin) -> Result<usize, Error> {
-        match i {
-            Value::Int(n) => usize::try_from(*n)
-                .ok()
-                .filter(|i| *i < len)
-                .ok_or_else(|| self.range_error(format!("index {n}, and it has {len}"))),
-            Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => {
-                Err(self.type_error(Wants::Int(word).not(i.kind())))
-            }
-        }
     }
 
     fn concat(&mut self, list: &List<A>) -> Result<Value<A>, Error> {
@@ -814,7 +629,7 @@ impl<A: AppValue> Machine<A> {
             }
         }
         if strings {
-            let text = crate::value::Text::new(text);
+            let text = Text::new(text);
             self.build(text.chars_len())?;
             Ok(Value::Str(Rc::new(text)))
         } else {
@@ -822,12 +637,10 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    fn pushed(&mut self, seq: Value<A>, x: Value<A>) -> Result<Value<A>, Error> {
+    fn pushed(&mut self, seq: Sequence<A>, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
-            (Value::List(mut list), x) => {
-                if list.items().len() >= LONGEST {
-                    return Err(self.too_long(format!("a list holds at most {LONGEST} elements")));
-                }
+            (Sequence::List(mut list), x) => {
+                self.fits(list.items().len().saturating_add(1))?;
                 self.build(copied(&list, list.items().len()).saturating_add(1))?;
                 // In place when nothing else holds the list.
                 match Rc::make_mut(&mut list).push(x) {
@@ -835,30 +648,29 @@ impl<A: AppValue> Machine<A> {
                     None => Err(self.nested()),
                 }
             }
-            (Value::Str(mut s), Value::Str(x)) => {
-                self.text_fits(s.chars_len().saturating_add(x.chars_len()))?;
+            (Sequence::Str(mut s), Value::Str(x)) => {
+                self.fits(s.chars_len().saturating_add(x.chars_len()))?;
                 self.build(copied(&s, s.chars_len()).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
             }
-            (Value::Str(_), x) => Err(self.type_error(Wants::PushText.not(x.kind()))),
-            (seq @ (Value::Int(_) | Value::Bool(_) | Value::App(_)), _) => {
-                Err(self.type_error(Wants::Seq(Builtin::Push).not(seq.kind())))
-            }
+            (Sequence::Str(_), x) => Err(self.type_error(Wants::PushText.not(x.kind()))),
         }
     }
 
-    /// Whether a string `n` characters long may be.
-    fn text_fits(&self, n: usize) -> Result<(), Error> {
+    /// Whether a string or list `n` elements long may be.
+    fn fits(&self, n: usize) -> Result<(), Error> {
         if n > LONGEST {
-            return Err(self.too_long(format!("a string holds at most {LONGEST} characters")));
+            return Err(self.too_long(format!(
+                "{n} elements, and a string or list holds at most {LONGEST}"
+            )));
         }
         Ok(())
     }
 
-    fn put(&mut self, seq: Value<A>, i: usize, x: Value<A>) -> Result<Value<A>, Error> {
+    fn put(&mut self, seq: Sequence<A>, i: usize, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
-            (Value::List(mut list), x) => {
+            (Sequence::List(mut list), x) => {
                 let others = list.items().len().saturating_sub(1);
                 self.build(copied(&list, others).saturating_add(1))?;
                 match Rc::make_mut(&mut list).put(i, x) {
@@ -866,18 +678,15 @@ impl<A: AppValue> Machine<A> {
                     None => Err(self.nested()),
                 }
             }
-            (Value::Str(mut s), Value::Str(x)) => {
+            (Sequence::Str(mut s), Value::Str(x)) => {
                 // One character replaced by x's.
                 let others = s.chars_len().saturating_sub(1);
-                self.text_fits(others.saturating_add(x.chars_len()))?;
+                self.fits(others.saturating_add(x.chars_len()))?;
                 self.build(copied(&s, others).saturating_add(x.chars_len()))?;
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
-            (Value::Str(_), x) => Err(self.type_error(Wants::PutText.not(x.kind()))),
-            (seq @ (Value::Int(_) | Value::Bool(_) | Value::App(_)), _) => {
-                Err(self.type_error(Wants::Seq(Builtin::Put).not(seq.kind())))
-            }
+            (Sequence::Str(_), x) => Err(self.type_error(Wants::PutText.not(x.kind()))),
         }
     }
 }
@@ -889,12 +698,20 @@ fn copied<T>(rc: &Rc<T>, n: usize) -> usize {
     if Rc::strong_count(rc) > 1 { n } else { 0 }
 }
 
-/// Element `i` of a string (a one-character string) or a list.
-fn element<A: Clone>(seq: &Value<A>, i: usize) -> Option<Value<A>> {
+/// The element of `seq` at `at` (a byte in a string, an index in a list),
+/// and `at` moved past it.
+fn next<A: Clone>(seq: &Sequence<A>, at: &mut usize) -> Option<Value<A>> {
     match seq {
-        Value::Str(s) => s.char_at(i).map(|c| Value::str(c.to_string())),
-        Value::List(list) => list.items().get(i).cloned(),
-        Value::Int(_) | Value::Bool(_) | Value::App(_) => None,
+        Sequence::Str(s) => {
+            let c = s.get(*at..).and_then(|rest| rest.chars().next());
+            *at = at.saturating_add(c.map_or(1, char::len_utf8));
+            c.map(|c| Value::str(c.to_string()))
+        }
+        Sequence::List(list) => {
+            let item = list.items().get(*at).cloned();
+            *at = at.saturating_add(1);
+            item
+        }
     }
 }
 
@@ -943,5 +760,333 @@ fn compare<A: PartialEq>(a: &Value<A>, b: &Value<A>) -> Option<Ordering> {
         (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_), _) => {
             None
         }
+    }
+}
+
+/// A string or a list: what the sequence words take, and `each` walks.
+#[derive(Clone, Debug)]
+pub(crate) enum Sequence<A> {
+    Str(Rc<Text>),
+    List(Rc<List<A>>),
+}
+
+impl<A> Sequence<A> {
+    /// How many elements it has.
+    fn len(&self) -> usize {
+        match self {
+            Self::Str(s) => s.chars_len(),
+            Self::List(list) => list.items().len(),
+        }
+    }
+}
+
+/// What a built-in takes in one place, as the checker sees it: the kinds
+/// a value there may be, and what a value of another kind is told (none
+/// for a place that takes any value).
+#[derive(Clone, Copy)]
+pub(crate) struct Arg {
+    pub(crate) kinds: Kinds,
+    pub(crate) wants: Option<fn(Builtin) -> Wants>,
+}
+
+/// The kinds of value a built-in's place takes, each a marker: its `ARG`,
+/// for the checker, and `of`, which turns a value into what the word's
+/// body takes, or says what it is instead, for `ARG.wants` to tell.
+struct Any;
+
+impl Any {
+    const ARG: Arg = Arg {
+        kinds: ANY,
+        wants: None,
+    };
+
+    fn of<A>(value: Value<A>) -> Result<Value<A>, &'static str> {
+        Ok(value)
+    }
+}
+
+/// An integer.
+struct Int;
+
+impl Int {
+    const ARG: Arg = Arg {
+        kinds: INT,
+        wants: Some(Wants::Int),
+    };
+
+    fn of<A: AppValue>(value: Value<A>) -> Result<i64, &'static str> {
+        match value {
+            Value::Int(n) => Ok(n),
+            other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
+                Err(other.kind())
+            }
+        }
+    }
+}
+
+/// A string or a list.
+struct Seq;
+
+impl Seq {
+    const ARG: Arg = Arg {
+        kinds: SEQ,
+        wants: Some(Wants::Seq),
+    };
+
+    fn of<A: AppValue>(value: Value<A>) -> Result<Sequence<A>, &'static str> {
+        match value {
+            Value::Str(s) => Ok(Sequence::Str(s)),
+            Value::List(list) => Ok(Sequence::List(list)),
+            other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => Err(other.kind()),
+        }
+    }
+}
+
+/// A list, of strings or of lists: what `concat` joins.
+struct Joined;
+
+impl Joined {
+    const ARG: Arg = Arg {
+        kinds: LIST,
+        wants: Some(|_| Wants::Concat),
+    };
+
+    fn of<A: AppValue>(value: Value<A>) -> Result<Rc<List<A>>, &'static str> {
+        match value {
+            Value::List(list) => Ok(list),
+            other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+                Err(other.kind())
+            }
+        }
+    }
+}
+
+/// A one-character string, as its character. The checker sees a string.
+struct Char;
+
+impl Char {
+    const ARG: Arg = Arg {
+        kinds: STR,
+        wants: Some(|_| Wants::Char),
+    };
+
+    fn of<A: AppValue>(value: Value<A>) -> Result<char, &'static str> {
+        match &value {
+            Value::Str(s) => {
+                let mut chars = s.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Ok(c),
+                    (None, _) => Err("an empty one"),
+                    (Some(_), Some(_)) => Err("a longer one"),
+                }
+            }
+            Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => Err(value.kind()),
+        }
+    }
+}
+
+/// Expands rows `Variant "name" (arg: Marker, …) "effect" "about" { body }`
+/// to the enum `Builtin` of those variants: `Builtin::ALL` in that order;
+/// `name`, `effect` and `about`, each a match giving that row's column;
+/// `args`, its places' markers' `ARG`s, the deepest first (as many as it
+/// takes); and `Machine::builtin`, which runs one. It takes as many values
+/// as the row names (`take::<N>`; too few fail it), turns each into what its
+/// marker gives (a value of another kind fails the word), and runs the
+/// row's body with them bound to the row's names. In a body, `m` is the
+/// machine and `host` its host, as the macro's first line names them.
+///
+/// `builtins! { m host; Len "len" (s: Seq) "seq -- n" "its length" { m.push(…) } }`
+/// gives `Builtin::Len`, named "len", whose `args` are `[Seq::ARG]`, and
+/// in `builtin` the arm `Builtin::Len => { let [s] = m.take()?; let s =
+/// Seq::of(s).map_err(…)?; { m.push(…) } }`.
+macro_rules! builtins {
+    ($m:ident $host:ident; $(
+        $variant:ident $name:literal ($($arg:ident: $ty:ident),*) $effect:literal
+        $about:literal $body:block
+    )*) => {
+        /// The words fuxth itself gives: its core. Everything else is the
+        /// standard library, written in fuxth.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Builtin {
+            $($variant,)*
+        }
+
+        impl Builtin {
+            pub const ALL: [Builtin; [$($name),*].len()] = [$(Builtin::$variant),*];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $name,)*
+                }
+            }
+
+            /// What it does to the stack, as help shows it.
+            pub fn effect(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $effect,)*
+                }
+            }
+
+            /// What it does, in a line, as help says it.
+            pub fn about(self) -> &'static str {
+                match self {
+                    $(Builtin::$variant => $about,)*
+                }
+            }
+
+            /// What it takes in each place, the deepest first: `pick` and
+            /// `roll` take a count, then as many values as it says (the
+            /// machine checks those).
+            pub(crate) fn args(self) -> &'static [Arg] {
+                match self {
+                    $(Builtin::$variant => &[$($ty::ARG),*],)*
+                }
+            }
+        }
+
+        impl<A: AppValue> Machine<A> {
+            fn builtin<H: Host<Value = A>>(
+                &mut self,
+                word: Builtin,
+                $host: &mut H,
+            ) -> Result<(), Error> {
+                let $m = self;
+                match word {
+                    $(Builtin::$variant => {
+                        let [$($arg),*] = $m.take()?;
+                        $(let $arg = $ty::of($arg)
+                            .map_err(|got| $m.refused(word, $ty::ARG, got))?;)*
+                        $body
+                    })*
+                }
+            }
+        }
+    };
+}
+
+builtins! { m host;
+    Drop "drop" (_x: Any) "x --" "the top value dropped" {
+        Ok(())
+    }
+    Pick "pick" (n: Int) "xn … x0 n -- xn … x0 xn"
+        "a copy of the value n under the top (0 pick copies the top)" {
+        let n = m.count(Builtin::Pick, n)?;
+        m.pick(n)
+    }
+    Roll "roll" (n: Int) "xn … x0 n -- xn-1 … x0 xn"
+        "the value n under the top moved to the top (1 roll swaps)" {
+        let n = m.count(Builtin::Roll, n)?;
+        m.roll(n)
+    }
+    Add "add" (a: Int, b: Int) "n m -- n+m" "integer arithmetic, checked" {
+        m.arithmetic(a.checked_add(b), b)
+    }
+    Sub "sub" (a: Int, b: Int) "n m -- n-m" "integer arithmetic, checked" {
+        m.arithmetic(a.checked_sub(b), b)
+    }
+    Mul "mul" (a: Int, b: Int) "n m -- n*m" "integer arithmetic, checked" {
+        m.arithmetic(a.checked_mul(b), b)
+    }
+    Div "div" (a: Int, b: Int) "n m -- n/m" "integer division, checked; it truncates toward zero" {
+        m.arithmetic(a.checked_div(b), b)
+    }
+    Lt "lt" (a: Any, b: Any) "a b -- a<b"
+        "whether a comes before b: two integers, two strings or two lists" {
+        m.walk(if a.weight() < b.weight() { &a } else { &b });
+        match compare(&a, &b) {
+            Some(order) => m.push(Value::Bool(order == Ordering::Less)),
+            None => Err(m.type_error(unordered(&a, &b))),
+        }
+    }
+    Eq "eq" (a: Any, b: Any) "a b -- a=b" "whether two values are the same, of one kind" {
+        m.walk(if a.weight() < b.weight() { &a } else { &b });
+        m.push(Value::Bool(a == b))
+    }
+    Len "len" (s: Seq) "seq -- n" "how many elements a string or list has" {
+        m.push(Value::Int(i64::try_from(s.len()).unwrap_or(i64::MAX)))
+    }
+    At "at" (s: Seq, i: Int) "seq i -- x"
+        "element i, from 0 (of a string, a one-character string)" {
+        let len = s.len();
+        let i = m.index(i, len)?;
+        let item = match &s {
+            Sequence::Str(s) => {
+                if !s.is_ascii() {
+                    m.cost(i);
+                }
+                Some(Value::str(s.part(i, i.saturating_add(1))))
+            }
+            Sequence::List(list) => list.items().get(i).cloned(),
+        };
+        match item {
+            Some(item) => m.push(item),
+            None => Err(m.range_error(format!("index {i}, and it has {len}"))),
+        }
+    }
+    Slice "slice" (s: Seq, from: Int, to: Int) "seq from to -- seq"
+        "the elements from `from` up to before `to`" {
+        let len = s.len();
+        let bounds = usize::try_from(from).ok().zip(usize::try_from(to).ok());
+        let Some((a, b)) = bounds.filter(|(a, b)| a <= b && *b <= len) else {
+            return Err(m.range_error(format!("slice from {from} to {to}, and it has {len}")));
+        };
+        let n = b.saturating_sub(a);
+        let part = match &s {
+            Sequence::Str(s) => {
+                m.build(n)?;
+                Value::str(s.part(a, b))
+            }
+            Sequence::List(list) => {
+                let items = list.items().iter().skip(a).take(n).cloned().collect();
+                m.list(items)?
+            }
+        };
+        m.push(part)
+    }
+    Concat "concat" (list: Joined) "list -- seq"
+        "a list of strings joined into one string, or a list of lists into one list" {
+        let joined = m.concat(&list)?;
+        m.push(joined)
+    }
+    Push "push" (s: Seq, x: Any) "seq x -- seq" "x added at the end (to a string, x is a string)" {
+        let pushed = m.pushed(s, x)?;
+        m.push(pushed)
+    }
+    Put "put" (s: Seq, i: Int, x: Any) "seq i x -- seq"
+        "element i replaced by x (in a string, by a string)" {
+        let i = m.index(i, s.len())?;
+        let put = m.put(s, i, x)?;
+        m.push(put)
+    }
+    Code "code" (c: Char) "c -- n" "the character code of a one-character string" {
+        m.push(Value::Int(i64::from(u32::from(c))))
+    }
+    Char "char" (n: Int) "n -- c" "the one-character string with code n" {
+        match u32::try_from(n).ok().and_then(char::from_u32) {
+            Some(c) => m.push(Value::str(c.to_string())),
+            None => Err(m.range_error(format!("{n} is no character code"))),
+        }
+    }
+    Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, or the host's kind" {
+        m.push(Value::str(x.kind_name()))
+    }
+    String "string" (x: Any) "x -- s" "x as text, as print shows it" {
+        m.walk(&x);
+        // Made only as far as a string may be long.
+        let Some(text) = x.text_upto(LONGEST) else {
+            return Err(m.too_long(format!(
+                "the text is longer than a string may be ({LONGEST})"
+            )));
+        };
+        m.build(text.chars_len())?;
+        m.push(Value::Str(Rc::new(text)))
+    }
+    Print "print" (x: Any) "x --" "print x now, a line" {
+        m.walk(&x);
+        let text = x.text();
+        host.print(&text).map_err(|f| m.fail(f.code, f.message))
+    }
+    Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
+        Err(m.fail(Code::Fail, x.text()))
     }
 }

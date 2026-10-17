@@ -2,11 +2,17 @@
 //! (`base`), each read into the model through the same public API.
 //!
 //! Both are one macro, `side!`, so they are read the same way. The base is
-//! the newest `main` (or a commit `diff/oracle.sh` is given), so both sides
-//! share one API and the macro takes no per-side code. A branch that changes
-//! fux-vt's public API can be compared with a temporary local shim here for
-//! the base side; never commit one.
+//! the newest `master` on `origin` (or a commit `diff/oracle.sh` is given),
+//! so both sides share one API and the macro takes no per-side code. A
+//! branch that changes fux-vt's public API can be compared with a temporary
+//! local shim here for the base side; never commit one. Its matches over
+//! fux-vt's enums are exhaustive, so a variant fux-vt adds makes the side
+//! that has it fail to build, not compare wrongly.
 
+/// One side: `side!(work, fux_vt, "work")` expands to `pub mod work`,
+/// which reads the crate `fux_vt` into the model (`model::State`, its
+/// cells, rows, events and errors) through fux-vt's public API, with
+/// `NAME` `"work"` naming the side in a report.
 macro_rules! side {
     (
         $module:ident,
@@ -52,7 +58,6 @@ macro_rules! side {
                     vt::Color::Default => Color::Default,
                     vt::Color::Idx(n) => Color::Idx(n),
                     vt::Color::Rgb(vt::Rgb { r, g, b }) => Color::Rgb(r, g, b),
-                    other => Color::Other(format!("{other:?}")),
                 }
             }
 
@@ -64,7 +69,6 @@ macro_rules! side {
                     vt::UnderlineStyle::Curly => Underline::Curly,
                     vt::UnderlineStyle::Dotted => Underline::Dotted,
                     vt::UnderlineStyle::Dashed => Underline::Dashed,
-                    other => Underline::Other(format!("{other:?}")),
                 }
             }
 
@@ -73,7 +77,6 @@ macro_rules! side {
                     vt::Blink::None => Blink::None,
                     vt::Blink::Slow => Blink::Slow,
                     vt::Blink::Rapid => Blink::Rapid,
-                    other => Blink::Other(format!("{other:?}")),
                 }
             }
 
@@ -177,12 +180,12 @@ macro_rules! side {
                         vt::Event::Title(t) => Heard::Title(t.to_vec()),
                         vt::Event::IconName(t) => Heard::IconName(t.to_vec()),
                         vt::Event::Bell => Heard::Bell,
+                        vt::Event::Notification(n) => Heard::Notification(n.to_vec()),
                         vt::Event::Clipboard { selection, data } => Heard::Clipboard {
                             selection: selection.to_vec(),
                             data: data.to_vec(),
                         },
                         vt::Event::ColorQuery { number, bel } => Heard::ColorQuery { number, bel },
-                        other => Heard::OtherEvent(format!("{other:?}")),
                     });
                 }
                 fn unhandled(&mut self, sequence: vt::Unhandled<'_>) {
@@ -203,7 +206,6 @@ macro_rules! side {
                             intermediates: intermediates.to_vec(),
                             action,
                         },
-                        other => Heard::OtherUnhandled(format!("{other:?}")),
                     });
                 }
             }
@@ -254,15 +256,13 @@ macro_rules! side {
                         cursor: s.cursor_position(),
                         pending_wrap: s.pending_wrap(),
                         modes: modes(s),
-                        cursor_shape: s.cursor_shape(),
+                        cursor_shape: s.cursor_shape().number(),
                         scroll_region: s.scroll_region(),
                         mouse: format!("{:?}", s.mouse_protocol_mode()),
                         encoding: format!("{:?}", s.mouse_protocol_encoding()),
                         kitty_keyboard_flags: s.kitty_keyboard_flags(),
-                        modify_other_keys: s.modify_other_keys(),
+                        modify_other_keys: format!("{:?}", s.modify_other_keys()),
                         pen: style(pen),
-                        pen_getters_agree: s.bgcolor() == pen.background()
-                            && s.inverse() == pen.inverse(),
                         hyperlink: s
                             .hyperlink()
                             .map(|(uri, id)| (uri.to_owned(), id.map(str::to_owned))),
@@ -444,7 +444,7 @@ macro_rules! side {
                         g: *g,
                         b: *b,
                     }),
-                    Color::Default | Color::Other(_) => vt::Color::Default,
+                    Color::Default => vt::Color::Default,
                 }
             }
 
@@ -460,13 +460,13 @@ macro_rules! side {
                         Underline::Curly => vt::UnderlineStyle::Curly,
                         Underline::Dotted => vt::UnderlineStyle::Dotted,
                         Underline::Dashed => vt::UnderlineStyle::Dashed,
-                        Underline::None | Underline::Other(_) => vt::UnderlineStyle::None,
+                        Underline::None => vt::UnderlineStyle::None,
                     })
                     .with_inverse(s.inverse)
                     .with_blink(match s.blink {
                         Blink::Slow => vt::Blink::Slow,
                         Blink::Rapid => vt::Blink::Rapid,
-                        Blink::None | Blink::Other(_) => vt::Blink::None,
+                        Blink::None => vt::Blink::None,
                     })
                     .with_hidden(s.hidden)
                     .with_strikeout(s.strikeout)

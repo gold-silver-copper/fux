@@ -18,11 +18,6 @@ pub fn extends(c: char) -> bool {
     format!("a{c}").graphemes(true).count() == 1
 }
 
-/// Whether `c` is Prepend: it joins a letter after it.
-pub fn prepend(c: char) -> bool {
-    format!("{c}a").graphemes(true).count() == 1
-}
-
 /// A character fux-vt prints as a glyph or joins to one: not a control, and
 /// if it takes no columns, one that continues a cluster (others have no
 /// cell to go in, and are attached to whatever is before them). U+17D8, the
@@ -32,23 +27,9 @@ pub fn printable(c: char) -> bool {
     !c.is_control() && c.width().is_some_and(|w| w <= 2) && (c.width() != Some(0) || extends(c))
 }
 
-/// The clusters fux-vt makes of `text`: UAX #29's, broken after a Prepend
-/// character unless what follows extends it.
+/// The clusters fux-vt makes of `text`: UAX #29's.
 pub fn clusters(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for grapheme in text.graphemes(true) {
-        let mut current = String::new();
-        let mut previous = None;
-        for c in grapheme.chars() {
-            if previous.is_some_and(prepend) && !extends(c) {
-                out.push(std::mem::take(&mut current));
-            }
-            current.push(c);
-            previous = Some(c);
-        }
-        out.push(current);
-    }
-    out
+    text.graphemes(true).map(str::to_owned).collect()
 }
 
 /// Adds `c` to `text` if the result fits in `CLUSTER_CAPACITY` bytes.

@@ -11,7 +11,7 @@
 //! - Where the system does not say (a probe that failed), a quiet screen
 //!   is taken as settled after a longer while, and said to be a guess.
 use crate::pane::{Pane, Process};
-use crate::process::Ended;
+use crate::process::{Child, Ended, told};
 use fuxix::process::Activity;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -46,20 +46,15 @@ pub enum State {
 }
 
 impl State {
-    /// Whether an agent should look now: anything but busy.
-    pub fn settled(self) -> bool {
-        !matches!(self, State::Busy)
-    }
-
     /// The word an answer starts with.
     pub fn word(self) -> String {
         match self {
-            State::Reading => "reading".into(),
-            State::Waiting => "waiting".into(),
-            State::Settled => "settled".into(),
-            State::Busy => "busy".into(),
-            State::Absent => "empty".into(),
-            State::Exited(ended) => crate::process::told(ended),
+            Self::Reading => "reading".into(),
+            Self::Waiting => "waiting".into(),
+            Self::Settled => "settled".into(),
+            Self::Busy => "busy".into(),
+            Self::Absent => "empty".into(),
+            Self::Exited(ended) => told(ended),
         }
     }
 }
@@ -81,33 +76,20 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
     let quiet = now.saturating_duration_since(since);
     let tty = child.master.slave_path();
-    let activity = activity(pane, child, tty.as_deref(), now);
+    let activity = activity(pane, child, now);
     // A shell command still runs a program that is not full-screen and
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();
-    let commands = screen.commands();
-    let command = commands.running() && !screen.mode(fux_vt::Mode::AlternateScreen);
-    // A shell back at its prompt, reading, its last command ended: what
-    // else runs in its group is a job it left there (job control off, or
-    // fish's disowned start-up work), not the agent's command.
-    let left = matches!(
-        activity,
-        Activity::Busy | Activity::Polling | Activity::Waiting
-    ) && !commands.running()
-        && commands.finished > 0
-        && tty
-            .as_deref()
-            .is_some_and(|tty| fuxix::process::reads_terminal(child.leader.pid(), tty));
-    let activity = if left { Activity::Reading } else { activity };
+    let command = screen.commands().running() && !screen.mode(fux_vt::Mode::AlternateScreen);
     match activity {
-        Activity::Reading if quiet >= SETTLE && !keys_unread(tty.as_deref()) => State::Reading,
+        Activity::Reading if quiet >= SETTLE && !keys_unread(tty) => State::Reading,
         Activity::Polling | Activity::Waiting if command => State::Busy,
         // Polling for keys with a time limit: it may draw again on its own
         // (a pause, a clock), so never surely waiting for the agent.
         Activity::Polling | Activity::Waiting if quiet >= QUIET => State::Waiting,
         // Every thread waits, on what macOS will not say (a sleep or a
         // read): settled once quiet as long as where nothing is known.
-        Activity::Idle if quiet >= GUESS && !keys_unread(tty.as_deref()) => State::Settled,
+        Activity::Idle if quiet >= GUESS && !keys_unread(tty) => State::Settled,
         Activity::Unknown if quiet >= GUESS => State::Settled,
         Activity::Reading
         | Activity::Polling
@@ -118,18 +100,17 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     }
 }
 
-/// What the foreground group of `child`'s terminal, at `tty`, is blocked
-/// in, as `pane`'s last key and its screen since say by `now`. With no
-/// foreground group (its program dropped its terminal, or is gone, its end
-/// not yet heard), its first process's own group: busy once none is left
-/// in it.
-fn activity(
-    pane: &Pane,
-    child: &crate::process::Child,
-    tty: Option<&Path>,
-    now: Instant,
-) -> Activity {
-    let (since_key, answered) = (pane.since_key(now), pane.answered());
+/// What the foreground group of `child`'s terminal is blocked in, as
+/// `pane`'s last key and its screen since say by `now`. With no foreground
+/// group (its program dropped its terminal, or is gone, its end not yet
+/// heard), its first process's own group: busy once none is left in it. A
+/// shell back at its prompt, reading, reads.
+fn activity(pane: &Pane, child: &Child, now: Instant) -> Activity {
+    // How long ago the last key went to the program: forever, if none has
+    // (a read timed from a key waits with no limit before one); and whether
+    // the screen changed after it: the program answered it.
+    let since_key = (pane.written_at).map_or(Duration::MAX, |at| now.saturating_duration_since(at));
+    let answered = pane.written_at.is_some_and(|at| pane.changed_at > at);
     let leader = child.leader.pid();
     let group = fuxix::terminal::foreground_group(&child.master).unwrap_or(leader);
     // A read timed from a key (`VMIN` and `VTIME`) times the gap after the
@@ -143,40 +124,55 @@ fn activity(
         };
         t.timed_reads(since)
     };
-    match tty.map(|tty| fuxix::process::activity(group, tty, leader)) {
+    let tty = child.master.slave_path();
+    let activity = match fuxix::process::activity(group, tty, leader) {
         // A read with a time limit is a poll: the program goes on alone
         // when it runs out.
-        Some(Activity::Reading)
+        Activity::Reading
             if fuxix::terminal::attributes(&child.master).is_ok_and(|t| timed(&t)) =>
         {
             Activity::Polling
         }
-        Some(activity) => activity,
-        None => Activity::Unknown,
-    }
+        activity @ (Activity::Reading
+        | Activity::Polling
+        | Activity::Waiting
+        | Activity::Busy
+        | Activity::Idle
+        | Activity::Unknown) => activity,
+    };
+    // A shell back at its prompt, reading, its last command ended: what
+    // else runs in its group is a job it left there (job control off, or
+    // fish's disowned start-up work), not the agent's command.
+    let commands = pane.screen().commands();
+    let left = match activity {
+        Activity::Busy | Activity::Polling | Activity::Waiting => {
+            !commands.running()
+                && commands.finished > 0
+                && fuxix::process::reads_terminal(leader, tty)
+        }
+        Activity::Reading | Activity::Idle | Activity::Unknown => false,
+    };
+    if left { Activity::Reading } else { activity }
 }
 
 /// What the program of `child`, `pane`'s, is blocked in by `now`
 /// (`activity`); `None` while keys wait in its terminal unread.
-pub fn taking(pane: &Pane, child: &crate::process::Child, now: Instant) -> Option<Activity> {
-    let tty = child.master.slave_path();
-    let activity = activity(pane, child, tty.as_deref(), now);
-    (!keys_unread(tty.as_deref())).then_some(activity)
+pub fn taking(pane: &Pane, child: &Child, now: Instant) -> Option<Activity> {
+    let activity = activity(pane, child, now);
+    (!keys_unread(child.master.slave_path())).then_some(activity)
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a
 /// read still, it has yet to be woken (a busy machine) to read them. The
 /// terminal is opened only to ask, so that its program's end still closes
 /// it.
-fn keys_unread(tty: Option<&Path>) -> bool {
+fn keys_unread(tty: &Path) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
-    tty.and_then(|tty| {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(fuxix::file::NOCTTY | fuxix::file::NONBLOCK)
-            .open(tty)
-            .ok()
-    })
-    .and_then(|terminal| fuxix::io::unread(&terminal).ok())
-    .is_some_and(|n| n > 0)
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(fuxix::file::NOCTTY | fuxix::file::NONBLOCK)
+        .open(tty)
+        .ok()
+        .and_then(|terminal| fuxix::io::unread(&terminal).ok())
+        .is_some_and(|n| n > 0)
 }
