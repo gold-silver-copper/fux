@@ -298,7 +298,7 @@ pub struct State {
     pub mouse: String,
     pub encoding: String,
     pub kitty_keyboard_flags: u8,
-    pub modify_other_keys: Option<u8>,
+    pub modify_other_keys: String,
     /// The pen, through `Screen::attributes`.
     pub pen: Style,
     /// Whether `Screen::bgcolor` and `Screen::inverse` say what the pen says.

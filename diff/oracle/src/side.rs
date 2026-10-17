@@ -259,7 +259,7 @@ macro_rules! side {
                         mouse: format!("{:?}", s.mouse_protocol_mode()),
                         encoding: format!("{:?}", s.mouse_protocol_encoding()),
                         kitty_keyboard_flags: s.kitty_keyboard_flags(),
-                        modify_other_keys: s.modify_other_keys(),
+                        modify_other_keys: format!("{:?}", s.modify_other_keys()),
                         pen: style(pen),
                         pen_getters_agree: s.bgcolor() == pen.background()
                             && s.inverse() == pen.inverse(),

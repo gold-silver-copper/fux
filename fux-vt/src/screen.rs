@@ -1,5 +1,6 @@
 use crate::compact::{Compact, PROTECTED};
 use crate::keys::KITTY_FLAGS;
+use crate::keys::encode::OtherKeys;
 use crate::link::Held;
 use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
@@ -348,7 +349,7 @@ pub struct Screen {
     cursor_shape: CursorShape,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
-    modify_other_keys: Option<u8>,
+    modify_other_keys: Option<OtherKeys>,
     /// The cell the last glyph was printed in, and the state of its
     /// grapheme cluster, while the cursor has not moved nor the row been
     /// edited since: a character that continues the cluster joins its cell
@@ -636,9 +637,9 @@ impl Screen {
         self.grid().keyboard.top()
     }
     /// The xterm modifyOtherKeys level set by `CSI > 4 ; Pv m`, `None` when
-    /// it is off (`Pv` 0 or absent). Always `None` without
-    /// [`Feature::KittyKeyboard`].
-    pub fn modify_other_keys(&self) -> Option<u8> {
+    /// it is off (`Pv` 0 or absent, or past 3, which ctlseqs gives no keys).
+    /// Always `None` without [`Feature::KittyKeyboard`].
+    pub fn modify_other_keys(&self) -> Option<OtherKeys> {
         self.modify_other_keys
     }
     /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
@@ -2287,8 +2288,11 @@ impl Screen {
             // Only resource 4 is modifyOtherKeys; other resources are unhandled.
             (b">", b'm') if p.groups().next() == Some(&[4][..]) => {
                 self.modify_other_keys = match p.first(1, 0) {
-                    0 => None,
-                    level => Some(u8::try_from(level).unwrap_or(u8::MAX)),
+                    1 => Some(OtherKeys::Usual),
+                    2 => Some(OtherKeys::All),
+                    3 => Some(OtherKeys::Unmodified),
+                    // 0 or none is off; ctlseqs knows no level past 3.
+                    _ => None,
                 };
             }
             // Disables it (ctlseqs, `CSI > Ps n`: "a resource value of -1",

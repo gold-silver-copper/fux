@@ -73,14 +73,7 @@ impl crate::Screen {
             (false, _) => {
                 return KeyMode::Legacy {
                     application: self.mode(crate::Mode::ApplicationCursor),
-                    // ctlseqs knows levels 1 to 3; one past them changes
-                    // no key.
-                    other_keys: self.modify_other_keys().and_then(|level| match level {
-                        1 => Some(OtherKeys::Usual),
-                        2 => Some(OtherKeys::All),
-                        3 => Some(OtherKeys::Unmodified),
-                        _ => None,
-                    }),
+                    other_keys: self.modify_other_keys(),
                 };
             }
         };

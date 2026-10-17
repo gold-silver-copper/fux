@@ -3,6 +3,7 @@
 //! reported as unhandled; and the opt-in kitty keyboard protocol, identity
 //! replies and reflow on resize.
 
+use fux_vt::keys::encode::OtherKeys;
 use fux_vt::{
     Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Feature, Identity, Options, Parser, Sink, Size,
     Unhandled,
@@ -477,13 +478,13 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;2m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(2));
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::All));
     p.process(b"\x1b[>4;0m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     for byte in b"\x1b[>4;1m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(p.screen().modify_other_keys(), Some(1));
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
     p.process(b"\x1b[>4m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     // No parameters reset every resource (ctlseqs, XTMODKEYS: "If no
@@ -501,9 +502,9 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     p.process(b"\x1b[>4;2m\x1b[>4n")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;1m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(1));
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
     let record = run(&mut p, b"\x1b[>n\x1b[>2n")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(1));
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
     assert_eq!(record.unhandled, ["CSI >0n", "CSI >2n"]);
     p.process(b"\x1b[>4n")?;
     // Other resources are not modifyOtherKeys, and not SGR either.
