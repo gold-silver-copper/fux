@@ -1,9 +1,9 @@
-//! How fast fuxth runs: a few programs, each timed over several runs.
+//! How fast fuxth compiles and runs: a few programs, each timed over several runs.
 //! `cargo run --release -p fuxth --example bench`
 use fuxth::{
     AppValue, Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary,
 };
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Nothing;
@@ -65,25 +65,34 @@ const PROGRAMS: [(&str, &str); 8] = [
     ("sum a list of 100k", "list 0 100000 range unpack end sum"),
 ];
 
+/// Each run's own times, a line each (`program<TAB>run<TAB>compile µs<TAB>run µs`),
+/// so a comparison takes its own statistic; `FUXTH_BENCH_RUNS` runs (5).
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runs: u32 = (std::env::var("FUXTH_BENCH_RUNS").ok())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(5);
     for (name, text) in PROGRAMS {
-        let mut best = Duration::MAX;
-        for _ in 0..5 {
+        for run in 0..runs {
+            let compiling = Instant::now();
             let mut words = Vocabulary::default();
             words.add("tick", 0, 1..=1);
             let mut compiler = Compiler::new(words);
             compiler.add(&fuxth::token::source("stdlib.fux", STDLIB)?)?;
             compiler.add(&fuxth::token::source("bench", text)?)?;
             let mut machine = Machine::new(compiler.finish()?, Limits::default());
+            let compiled = compiling.elapsed();
             let started = Instant::now();
             while machine.run(&mut Ticks, u64::MAX)? != Outcome::Finished {}
-            best = best.min(started.elapsed());
+            let ran = started.elapsed();
+            std::io::Write::write_fmt(
+                &mut std::io::stdout(),
+                format_args!(
+                    "{name}\t{run}\t{}\t{}\n",
+                    compiled.as_micros(),
+                    ran.as_micros()
+                ),
+            )?;
         }
-        let ms = best.as_secs_f64() * 1000.0;
-        std::io::Write::write_fmt(
-            &mut std::io::stdout(),
-            format_args!("{name:28} {ms:8.1} ms\n"),
-        )?;
     }
     Ok(())
 }
