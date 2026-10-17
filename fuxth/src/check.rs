@@ -936,12 +936,20 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
             .copied()
             .unwrap_or(ANY)
     };
-    // Each place's kind, as the machine takes it, the deepest first.
+    // Each place's kind, as the machine takes it, the deepest first; of
+    // several, the one refused said by how far under the top it is.
     for (i, arg) in args.iter().enumerate() {
         if !at(i).may_be(arg.kinds)
             && let Some(wants) = arg.wants
         {
-            return Err(Failing::Type(wants(builtin).not(at(i).describe())));
+            let got = at(i).describe();
+            let got = match (args.len(), args.len().saturating_sub(i)) {
+                (1, _) => got,
+                (_, 1) => format!("{got} on top"),
+                (_, 2) => format!("{got} under the top"),
+                (_, up) => format!("{got} {} under the top", up.saturating_sub(1)),
+            };
+            return Err(Failing::Type(wants(builtin).not(got)));
         }
     }
     // What it leaves, and what one value's kind asks of another's.
