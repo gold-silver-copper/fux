@@ -60,17 +60,7 @@ fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
 
 /// Binds `socket` to `path`, which must not exist.
 pub fn bind(socket: impl AsFd, path: &Path) -> Result<()> {
-    let (address, length) = address(path)?;
-    // SAFETY: the pointer is to a whole sockaddr_un, of which `length`
-    // bytes are the address.
-    let bound = unsafe {
-        libc::bind(
-            socket.as_fd().as_raw_fd(),
-            std::ptr::from_ref(&address).cast(),
-            length,
-        )
-    };
-    check(bound).map(drop)
+    addressed(socket, path, libc::bind)
 }
 
 /// Starts listening on `socket`, with room for `backlog` connections
@@ -83,17 +73,20 @@ pub fn listen(socket: impl AsFd, backlog: i32) -> Result<()> {
 /// Connects `socket` to `path`. On a nonblocking socket a connection that
 /// cannot finish at once fails with `AGAIN` or `INPROGRESS`.
 pub fn connect(socket: impl AsFd, path: &Path) -> Result<()> {
+    addressed(socket, path, libc::connect)
+}
+
+/// Calls `call`, `bind` or `connect`, on `socket` with `path`'s address.
+fn addressed(
+    socket: impl AsFd,
+    path: &Path,
+    call: unsafe extern "C" fn(libc::c_int, *const libc::sockaddr, libc::socklen_t) -> libc::c_int,
+) -> Result<()> {
     let (address, length) = address(path)?;
-    // SAFETY: the pointer is to a whole sockaddr_un, of which `length`
-    // bytes are the address.
-    let connected = unsafe {
-        libc::connect(
-            socket.as_fd().as_raw_fd(),
-            std::ptr::from_ref(&address).cast(),
-            length,
-        )
-    };
-    check(connected).map(drop)
+    let address = std::ptr::from_ref(&address).cast();
+    // SAFETY: `call` is bind or connect, which reads `length` bytes at the
+    // pointer: a whole sockaddr_un, of which `length` bytes are the address.
+    check(unsafe { call(socket.as_fd().as_raw_fd(), address, length) }).map(drop)
 }
 
 /// The effective user ID of the process at the other end of the connected
