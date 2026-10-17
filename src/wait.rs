@@ -340,8 +340,18 @@ impl Wait {
             let screen = screen.map(|screen| ("screen", Json::str(screen)));
             (body, field.into_iter().chain(screen).collect())
         };
-        let last = |n| {
-            let lines: String = tail(pane, n).iter().map(|l| format!("{l}\n")).collect();
+        // A pane's last `n` lines with text, as a capture reads them: of its
+        // screen, or once a full-screen program has left and the screen is
+        // blank, of what it last drew.
+        let last = |n: usize| {
+            let text = text(pane, false, false);
+            let lines: Vec<&str> = (text.lines().map(str::trim_end))
+                .filter(|l| !l.is_empty())
+                .collect();
+            let tail = lines.get(lines.len().saturating_sub(n)..);
+            let lines: String = (tail.unwrap_or_default().iter())
+                .map(|l| format!("{l}\n"))
+                .collect();
             let field = Some(("output", Json::str(lines.clone())));
             shown(lines, field)
         };
@@ -523,20 +533,6 @@ impl Wait {
             .collect::<Vec<_>>()
             .join(" or ")
     }
-}
-
-/// A pane's last `n` lines with text, as a capture reads them: of its
-/// screen, or once a full-screen program has left and the screen is blank,
-/// of what it last drew.
-fn tail(pane: &Pane, n: usize) -> Vec<String> {
-    let text = text(pane, false, false);
-    let lines: Vec<&str> = (text.lines().map(str::trim_end))
-        .filter(|l| !l.is_empty())
-        .collect();
-    let last = lines
-        .get(lines.len().saturating_sub(n)..)
-        .unwrap_or_default();
-    last.iter().map(|l| (*l).to_owned()).collect()
 }
 
 impl Until {
@@ -959,7 +955,10 @@ impl Line {
                     return line;
                 }
             }
-            return line.trimmed();
+            // Without the blanks at its end.
+            line.text = line.text.trim_end_matches(' ').to_owned();
+            line.printed.truncate(line.text.len());
+            return line;
         }
         Line::piece(print, None, (0, print.text.chars().count()))
     }
@@ -989,13 +988,6 @@ impl Line {
     fn push(&mut self, text: &str, printed: bool) {
         self.text.push_str(text);
         self.printed.resize(self.text.len(), printed);
-    }
-
-    /// Without the blanks at its end.
-    fn trimmed(mut self) -> Line {
-        self.text = self.text.trim_end_matches(' ').to_owned();
-        self.printed.truncate(self.text.len());
-        self
     }
 
     /// Where the line holds `text` as `found_in` finds it, on bytes that
