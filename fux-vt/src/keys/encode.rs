@@ -6,7 +6,8 @@
 //! [`key_bytes`] and [`paste`] take them given. Mouse reports are
 //! [`crate::keys::mouse`]'s.
 use crate::keys::{
-    CAPS_LOCK_BIT, Direction, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT, SHIFT_BIT,
+    CAPS_LOCK_BIT, Direction, Function, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT,
+    SHIFT_BIT,
 };
 use std::io::Write;
 
@@ -272,7 +273,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
         // F3 is `CSI 13 ~`: the protocol leaves `CSI R` to cursor position reports.
         Form::Numbered(_, 'R') => numbered(out, 13, modifier, '~'),
         Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
-        // F13 to F35 are numbered from 57376; fux names none past F12.
+        // F13 to F35 are numbered from 57376.
         Form::Unnumbered(n) => csi_u(
             out,
             57376_u32.saturating_add(u32::from(n.saturating_sub(13))),
@@ -310,17 +311,19 @@ impl From<Key> for Form {
             Key::Arrow(Direction::Left) => Form::Numbered(1, 'D'),
             Key::Home => Form::Numbered(1, 'H'),
             Key::End => Form::Numbered(1, 'F'),
-            Key::F(1) => Form::Numbered(1, 'P'),
-            Key::F(2) => Form::Numbered(1, 'Q'),
-            Key::F(3) => Form::Numbered(1, 'R'),
-            Key::F(4) => Form::Numbered(1, 'S'),
             Key::Insert => Form::Numbered(2, '~'),
             Key::Delete => Form::Numbered(3, '~'),
             Key::PageUp => Form::Numbered(5, '~'),
             Key::PageDown => Form::Numbered(6, '~'),
-            Key::F(n) => match usize::from(n).checked_sub(5).and_then(|i| F_CODES.get(i)) {
-                Some(&number) => Form::Numbered(number, '~'),
-                None => Form::Unnumbered(n),
+            Key::F(f) => match f.number() {
+                1 => Form::Numbered(1, 'P'),
+                2 => Form::Numbered(1, 'Q'),
+                3 => Form::Numbered(1, 'R'),
+                4 => Form::Numbered(1, 'S'),
+                n => match usize::from(n).checked_sub(5).and_then(|i| F_CODES.get(i)) {
+                    Some(&number) => Form::Numbered(number, '~'),
+                    None => Form::Unnumbered(n),
+                },
             },
         }
     }
@@ -339,7 +342,7 @@ pub(crate) fn numbered_key(number: u8, last: char) -> Option<Key> {
     ];
     (Direction::ALL.map(Key::Arrow).into_iter())
         .chain(keys)
-        .chain((1..=12).map(Key::F))
+        .chain(Function::up_to(12))
         .find(|&key| matches!(Form::from(key), Form::Numbered(n, l) if (n, l) == (number, last)))
 }
 
@@ -975,6 +978,14 @@ mod tests {
         }
     }
 
+    /// F13 to F35 are kitty's 57376 to 57398 (the kitty spec's
+    /// "Functional key definitions").
+    #[test]
+    fn function_keys_past_f12_are_numbered_from_57376() {
+        assert_eq!(named("F13", DISAMBIGUATED), "\x1b[57376u");
+        assert_eq!(named("C-F35", DISAMBIGUATED), "\x1b[57398;5u");
+    }
+
     /// A legacy pane gets Ctrl-Backspace as BS, as xterm, kitty's legacy
     /// encoding, VTE and Alacritty send it, whatever terminal it was typed
     /// in; and nothing for a function key past F12, which xterm has no
@@ -990,8 +1001,10 @@ mod tests {
             assert_eq!(named(name, LEGACY), bytes, "{name}");
         }
         for mods in [Modifiers::NONE, Modifiers::CTRL, Modifiers::ALT] {
-            let f13 = KeyPress::new(Key::F(13), mods);
-            assert_eq!(stroke(f13.into(), LEGACY), "", "{mods:?}");
+            for f in [13, Function::LAST].into_iter().filter_map(Function::new) {
+                let press = KeyPress::new(Key::F(f), mods);
+                assert_eq!(stroke(press.into(), LEGACY), "", "{f:?} {mods:?}");
+            }
         }
     }
 
@@ -1053,7 +1066,9 @@ mod tests {
             Key::PageDown,
         ];
         keys.extend(Direction::ALL.map(Key::Arrow));
-        keys.extend((1..=12).map(Key::F));
+        // F13 and up send nothing in the legacy modes (xterm has no bytes
+        // for them).
+        keys.extend(Function::up_to(12));
         for code in [
             0x20u32, 0x61, 0x5a, 0x30, 0x7e, 0xe9, 0x203c, 0x1f600, 0x300,
         ] {

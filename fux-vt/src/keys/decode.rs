@@ -49,8 +49,8 @@ use crate::keys::colour::Scheme;
 use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{
-    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Key, KeyPress, Keystroke, Kitty, Modifiers,
-    SHIFT_BIT,
+    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Function, Key, KeyPress, Keystroke, Kitty,
+    Modifiers, SHIFT_BIT,
 };
 use crate::{ModeStatus, Rgb};
 use std::borrow::Cow;
@@ -906,10 +906,10 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             1 | 7 => press(Key::Home, mods),
             4 | 8 => press(Key::End, mods),
             // F1 to F4 as some terminals number them.
-            11..=14 => press(
-                Key::F(u8::try_from(first).unwrap_or(0).saturating_sub(10)),
-                mods,
-            ),
+            11..=14 => u8::try_from(first.wrapping_sub(10))
+                .ok()
+                .and_then(Function::new)
+                .and_then(|f| press(Key::F(f), mods)),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
             27 => part(2, 0)
                 .and_then(|code| coded(code, mods, |c| c))
@@ -1009,10 +1009,11 @@ fn typed(c: char, kitty: &Kitty) -> char {
 
 /// A kitty functional key, numbered in the Private Use Area, as the key
 /// fux knows it by: a keypad key is the key it copies, as legacy terminals
-/// send it. Keys fux has no name for (F13 to F35, the media, lock and
-/// modifier keys) are none, and dropped.
+/// send it. Keys fux has no name for (the media, lock and modifier keys)
+/// are none, and dropped.
 fn functional(code: u32) -> Option<Key> {
     let key = match code {
+        57376..=57398 => Key::F(Function::new(u8::try_from(code.checked_sub(57363)?).ok()?)?),
         57399..=57408 => return char::from_digit(code.checked_sub(57399)?, 10).map(Key::Char),
         57409 => Key::Char('.'),
         57410 => Key::Char('/'),
@@ -1310,18 +1311,20 @@ mod tests {
             (b"\x1b[57414u", "Enter"),
             (b"\x1b[57399;5u", "C-0"),
             (b"\x1b[57419u", "Up"),
+            // F13 to F35 (the kitty spec's "Functional key definitions").
+            (b"\x1b[57376u", "F13"),
+            (b"\x1b[57398;5u", "C-F35"),
             (b"\x1b[97;5:2u", "C-a"),
         ] {
             assert_eq!(presses(all(bytes)), vec![name_press(name)], "{bytes:?}");
         }
         // A release is not a press, nor a key fux has no name for (a media
-        // key, a modifier alone, F13).
+        // key, a modifier alone).
         for bytes in [
             &b"\x1b[97;5:3u"[..],
             b"\x1b[1;1:3A",
             b"\x1b[57428u",
             b"\x1b[57441;2u",
-            b"\x1b[57376u",
         ] {
             assert_eq!(all(bytes), vec![], "{bytes:?}");
         }

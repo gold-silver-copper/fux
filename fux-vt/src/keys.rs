@@ -52,8 +52,31 @@ pub enum Key {
     PageUp,
     /// Page Down.
     PageDown,
-    /// `1..=12`.
-    F(u8),
+    /// A function key.
+    F(Function),
+}
+
+/// A function key's number, F1 to F35: the keys kitty's protocol numbers
+/// (its "Functional key definitions", F13 from 57376 to F35 at 57398),
+/// F1 to F12 of them xterm's too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Function(u8);
+
+impl Function {
+    /// The last function key.
+    pub const LAST: u8 = 35;
+    /// F`n`, if there is one (`1..=35`).
+    pub fn new(n: u8) -> Option<Self> {
+        (1..=Self::LAST).contains(&n).then_some(Self(n))
+    }
+    /// Its number, 1 to 35.
+    pub fn number(self) -> u8 {
+        self.0
+    }
+    /// F1 to F`last`, in order.
+    pub(crate) fn up_to(last: u8) -> impl Iterator<Item = Key> {
+        (1..=last).filter_map(Self::new).map(Key::F)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -241,7 +264,7 @@ fn key_name(key: Key) -> String {
     }
     // Every key but a character and a function key is named above.
     if let Key::F(n) = key {
-        return format!("F{n}");
+        return format!("F{}", n.number());
     }
     if let Key::Char(c) = key {
         return c.to_string();
@@ -320,7 +343,7 @@ impl std::str::FromStr for KeyPress {
         } else if let Some(n) = rest
             .strip_prefix(['F', 'f'])
             .and_then(|n| n.parse::<u8>().ok())
-            .filter(|n| (1..=12).contains(n))
+            .and_then(Function::new)
         {
             Key::F(n)
         } else {
@@ -342,7 +365,7 @@ impl std::str::FromStr for KeyPress {
 pub fn all_names() -> Vec<String> {
     let mut names: Vec<String> = NAMED.iter().map(|(n, _)| (*n).to_owned()).collect();
     names.push("BTab".into());
-    names.extend((1..=12).map(|n| format!("F{n}")));
+    names.extend(Function::up_to(Function::LAST).map(key_name));
     names
 }
 
@@ -388,7 +411,11 @@ mod tests {
                 "{name}"
             );
         }
-        for bad in ["", "F13", "F0", "Nope", "C-", "ab"] {
+        // F1 to F35, as kitty's protocol numbers them; no F0 or F36.
+        for name in ["F13", "F35", "C-F20"] {
+            assert_eq!(parse(name).map(|k| k.to_string()), Some(name.into()));
+        }
+        for bad in ["", "F0", "F36", "F255", "Nope", "C-", "ab"] {
             assert!(parse(bad).is_none(), "{bad}");
         }
         assert_eq!(

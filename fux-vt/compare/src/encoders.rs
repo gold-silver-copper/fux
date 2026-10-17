@@ -7,7 +7,7 @@
 //! the bytes are compared. A difference is a failure unless it is one of
 //! the recorded verdicts below, each with who decides it.
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
-use fux_vt::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
+use fux_vt::keys::{Direction, Function, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use fux_vt::{Feature, Options, Parser};
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::{Terminal, TerminalOptions, focus, key as gkey, mouse as gmouse, paste};
@@ -364,7 +364,7 @@ fn keys() -> Vec<(Key, Modifiers)> {
         Key::PageDown,
     ];
     named.extend(Direction::ALL.map(Key::Arrow));
-    named.extend((1..=12).map(Key::F));
+    named.extend((1..=12).filter_map(Function::new).map(Key::F));
     let mut chars: Vec<char> = ('a'..='z').chain('A'..='Z').chain('0'..='9').collect();
     chars.extend("-=[]\\;',./` ".chars());
     chars.extend(SHIFTED.iter().map(|&(c, _)| c));
@@ -437,7 +437,7 @@ fn key_event(
         Key::Arrow(Direction::Down) => K::ArrowDown,
         Key::Arrow(Direction::Left) => K::ArrowLeft,
         Key::Arrow(Direction::Right) => K::ArrowRight,
-        Key::F(n) => match n {
+        Key::F(f) => match f.number() {
             1 => K::F1,
             2 => K::F2,
             3 => K::F3,
@@ -522,7 +522,11 @@ fn key_verdict(
     let other_keys = setup.contains("\x1b[>4;2m");
     let csi = |b: &[u8]| b.starts_with(b"\x1b[");
     let kitty_form = |b: &[u8]| csi(b) && b.ends_with(b"u") || b.starts_with(b"\x1b[27;");
-    if key == Key::F(3) && ours.ends_with(b"R") && theirs.ends_with(b"~") && flags & 9 == 0 {
+    if Function::new(3).map(Key::F) == Some(key)
+        && ours.ends_with(b"R")
+        && theirs.ends_with(b"~")
+        && flags & 9 == 0
+    {
         return Some("f3");
     }
     if key == Key::Backspace && mods.ctrl && flags & 9 == 0 {

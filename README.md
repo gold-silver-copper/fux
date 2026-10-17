@@ -271,7 +271,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `start`, `status`, `servers`, `kill-server`, `force-kill-server`, `version` | the server |
 
 **Key names**, for `key`, `bind` and `prefix`, are tmux's (`C-x`, `M-x`,
-`S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F12`, …) and any
+`S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
 single character, which carries its own shift (`T`, not `S-t`).
 `fux key-names` prints them all.
 
