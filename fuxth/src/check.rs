@@ -13,8 +13,9 @@
 //! was when it was called, which isn't known; each definition is summed up
 //! by how many of its caller's values it surely uses and what it leaves,
 //! and a call applies that summary.
-use crate::compile::{Builtin, Op, Program, Steps};
+use crate::compile::{Op, Program, Steps};
 use crate::error::{Code, Error, Wants, underflow};
+use crate::machine::Builtin;
 use crate::value::Kind;
 use std::collections::BTreeSet;
 
@@ -956,40 +957,36 @@ fn must(wants: Wants, kinds: Kinds, may_be: Kinds) -> Result<(), Failing> {
     }
 }
 
-/// A value that must be a string or a list, for `word`: which it may be.
-fn seq(word: Builtin, kinds: Kinds) -> Result<Kinds, Failing> {
-    must(Wants::Seq(word), kinds, SEQ)?;
-    Ok(kinds.and(SEQ))
-}
-
-/// A value that must be an integer, for `word`.
-fn int(word: Builtin, kinds: Kinds) -> Result<(), Failing> {
-    must(Wants::Int(word), kinds, INT)
-}
-
 fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
-    let takes = builtin.takes();
-    let taken = state.pop(takes)?;
+    let args = builtin.args();
+    let taken = state.pop(args.len())?;
     // The `i`th value taken, the deepest first: those from the rest, any.
-    let below = takes.saturating_sub(taken.len());
+    let below = args.len().saturating_sub(taken.len());
     let at = |i: usize| {
         (i.checked_sub(below))
             .and_then(|i| taken.get(i))
             .copied()
             .unwrap_or(ANY)
     };
+    // Each place's kind, as the machine takes it, the deepest first.
+    for (i, arg) in args.iter().enumerate() {
+        if !at(i).may_be(Kinds(arg.kinds))
+            && let Some(wants) = arg.wants
+        {
+            return Err(Failing::Type(wants(builtin).not(at(i).describe())));
+        }
+    }
+    // What it leaves, and what one value's kind asks of another's.
     match builtin {
         Builtin::Drop | Builtin::Print => {}
         Builtin::Fail => return Ok(Flow::Stop),
         Builtin::Pick => {
-            int(builtin, at(0))?;
             // At least the value it copies; which one isn't known.
             let one = state.pop1()?;
             state.push(one);
             state.push(ANY);
         }
         Builtin::Roll => {
-            int(builtin, at(0))?;
             let one = state.pop1()?;
             state.push(one);
             // Some value from below comes up, from as deep as any: what was
@@ -997,27 +994,12 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
             state.forget(0, 0);
             state.reached = BIG.saturating_neg();
         }
-        Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div => {
-            let (a, b) = (at(0), at(1));
-            let message = match (a.may_be(INT), b.may_be(INT)) {
-                (false, false) => {
-                    Some(Wants::Ints.not(format!("{} and {}", a.describe(), b.describe())))
-                }
-                (false, true) => Some(format!(
-                    "takes two integers, and the one under the top is {}",
-                    a.describe()
-                )),
-                (true, false) => Some(format!(
-                    "takes two integers, and the top one is {}",
-                    b.describe()
-                )),
-                (true, true) => None,
-            };
-            if let Some(message) = message {
-                return Err(Failing::Type(message));
-            }
-            state.push(INT);
-        }
+        Builtin::Add
+        | Builtin::Sub
+        | Builtin::Mul
+        | Builtin::Div
+        | Builtin::Len
+        | Builtin::Code => state.push(INT),
         Builtin::Lt => {
             let (a, b) = (at(0), at(1));
             if !a.and(b).may_be(INT.union(SEQ)) {
@@ -1027,49 +1009,24 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
             state.push(BOOL);
         }
         Builtin::Eq => state.push(BOOL),
-        Builtin::Len => {
-            seq(builtin, at(0))?;
-            state.push(INT);
-        }
-        Builtin::At => {
-            let s = seq(builtin, at(0))?;
-            int(builtin, at(1))?;
-            state.push(if s == STR { STR } else { ANY });
-        }
-        Builtin::Slice => {
-            let s = seq(builtin, at(0))?;
-            int(builtin, at(1))?;
-            int(builtin, at(2))?;
-            state.push(s);
-        }
-        Builtin::Concat => {
-            must(Wants::Concat, at(0), LIST)?;
-            state.push(SEQ);
-        }
+        Builtin::At => state.push(if at(0).and(SEQ) == STR { STR } else { ANY }),
+        Builtin::Slice => state.push(at(0).and(SEQ)),
+        Builtin::Concat => state.push(SEQ),
         Builtin::Push => {
-            let s = seq(builtin, at(0))?;
+            let s = at(0).and(SEQ);
             if s == STR {
                 must(Wants::PushText, at(1), STR)?;
             }
             state.push(s);
         }
         Builtin::Put => {
-            let s = seq(builtin, at(0))?;
-            int(builtin, at(1))?;
+            let s = at(0).and(SEQ);
             if s == STR {
                 must(Wants::PutText, at(2), STR)?;
             }
             state.push(s);
         }
-        Builtin::Code => {
-            must(Wants::Char, at(0), STR)?;
-            state.push(INT);
-        }
-        Builtin::Char => {
-            int(builtin, at(0))?;
-            state.push(STR);
-        }
-        Builtin::Kind | Builtin::String => state.push(STR),
+        Builtin::Char | Builtin::Kind | Builtin::String => state.push(STR),
     }
     Ok(Flow::Go)
 }

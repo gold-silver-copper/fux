@@ -10,81 +10,12 @@
 //! a compile-time stack. Every other word takes and gives values on the
 //! stack, and nothing else.
 use crate::error::{Code, Error};
+use crate::machine::Builtin;
 use crate::token::Token;
 use crate::value::Value;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
-
-/// Expands `Variant "name" takes "effect" "about", ...` to the enum
-/// `Builtin` of those variants, `Builtin::ALL` in that order, `name`,
-/// `takes`, `effect` and `about`, each a match giving that variant's column.
-macro_rules! builtins {
-    ($($variant:ident $name:literal $takes:literal $effect:literal $about:literal,)*) => {
-        /// The words fuxth itself gives: its core. Everything else is the
-        /// standard library, written in fuxth.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Builtin {
-            $($variant,)*
-        }
-
-        impl Builtin {
-            pub const ALL: [Builtin; [$($name),*].len()] = [$(Builtin::$variant),*];
-
-            pub fn name(self) -> &'static str {
-                match self {
-                    $(Builtin::$variant => $name,)*
-                }
-            }
-
-            /// How many values it takes: `pick` and `roll` take a count,
-            /// then as many values as it says (the machine checks those).
-            pub fn takes(self) -> usize {
-                match self {
-                    $(Builtin::$variant => $takes,)*
-                }
-            }
-
-            /// What it does to the stack, as help shows it.
-            pub fn effect(self) -> &'static str {
-                match self {
-                    $(Builtin::$variant => $effect,)*
-                }
-            }
-
-            /// What it does, in a line, as help says it.
-            pub fn about(self) -> &'static str {
-                match self {
-                    $(Builtin::$variant => $about,)*
-                }
-            }
-        }
-    };
-}
-
-builtins! {
-    Drop "drop" 1 "x --" "the top value dropped",
-    Pick "pick" 1 "xn … x0 n -- xn … x0 xn" "a copy of the value n under the top (0 pick copies the top)",
-    Roll "roll" 1 "xn … x0 n -- xn-1 … x0 xn" "the value n under the top moved to the top (1 roll swaps)",
-    Add "add" 2 "n m -- n+m" "integer arithmetic, checked",
-    Sub "sub" 2 "n m -- n-m" "integer arithmetic, checked",
-    Mul "mul" 2 "n m -- n*m" "integer arithmetic, checked",
-    Div "div" 2 "n m -- n/m" "integer division, checked; it truncates toward zero",
-    Lt "lt" 2 "a b -- a<b" "whether a comes before b: two integers, two strings or two lists",
-    Eq "eq" 2 "a b -- a=b" "whether two values are the same, of one kind",
-    Len "len" 1 "seq -- n" "how many elements a string or list has",
-    At "at" 2 "seq i -- x" "element i, from 0 (of a string, a one-character string)",
-    Slice "slice" 3 "seq from to -- seq" "the elements from `from` up to before `to`",
-    Concat "concat" 1 "list -- seq" "a list of strings joined into one string, or a list of lists into one list",
-    Push "push" 2 "seq x -- seq" "x added at the end (to a string, x is a string)",
-    Put "put" 3 "seq i x -- seq" "element i replaced by x (in a string, by a string)",
-    Code "code" 1 "c -- n" "the character code of a one-character string",
-    Char "char" 1 "n -- c" "the one-character string with code n",
-    Kind "kind" 1 "x -- name" "integer, boolean, string, list, or the host's kind",
-    String "string" 1 "x -- s" "x as text, as print shows it",
-    Print "print" 1 "x --" "print x now, a line",
-    Fail "fail" 1 "x --" "stop the program, with x as the reason",
-}
 
 /// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
 /// `PARSING`, their names, `Parsing::ALL` in that order, and `name`, a

@@ -309,7 +309,7 @@ fn errors_at_run_time_say_what_and_where() {
     let error = run("define f str x add end\n1 f").err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
-        Some("type: t:1: add: takes two integers, and the top one is a string"),
+        Some("type: t:1: add: add takes an integer, not a string"),
         "found before it runs"
     );
 }
@@ -392,7 +392,7 @@ fn the_checker_says_what_and_where() {
         ),
         (
             "str a 0 0 eq add",
-            "type: t:1: add: takes two integers, not a string and a boolean",
+            "type: t:1: add: add takes an integer, not a string",
         ),
         (
             "1 0 0 eq lt",
@@ -409,15 +409,15 @@ fn the_checker_says_what_and_where() {
         // The first in the source, at the top level or in a definition.
         (
             "str a 1 add\ndefine f str b 1 sub end",
-            "type: t:1: add: takes two integers, and the one under the top is a string",
+            "type: t:1: add: add takes an integer, not a string",
         ),
         (
             "define f str b 1 sub end\nstr a 1 add",
-            "type: t:1: sub: takes two integers, and the one under the top is a string",
+            "type: t:1: sub: sub takes an integer, not a string",
         ),
         (
             "0 0 eq if str a 1 add then\nstr b 2 mul",
-            "type: t:1: add: takes two integers, and the one under the top is a string",
+            "type: t:1: add: add takes an integer, not a string",
         ),
     ] {
         assert_eq!(refused(text), said, "{text}");
@@ -526,18 +526,18 @@ fn the_checker_keeps_what_it_knows() {
     let lines = |text: &str| token::source("t", text).unwrap_or_default();
     assert_eq!(
         refused(lines("define nop end\nstr a 1 nop add")),
-        "type: t:2: add: takes two integers, and the one under the top is a string"
+        "type: t:2: add: add takes an integer, not a string"
     );
     assert_eq!(
         refused(lines("define f str a 1 add end str b 1 sub")),
-        "type: t:1: add: takes two integers, and the one under the top is a string"
+        "type: t:1: add: add takes an integer, not a string"
     );
     let words = [
         "define", "f", "str", "a", "1", "add", "end", "str", "b", "1", "sub",
     ];
     assert_eq!(
         refused(token::arguments(&words)),
-        "type: argument 6: add: takes two integers, and the one under the top is a string"
+        "type: argument 6: add: add takes an integer, not a string"
     );
 }
 
@@ -548,7 +548,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
     assert_eq!(
         said("ticket 1 add"),
-        "type: t:1: add: takes two integers, not a ticket and an integer"
+        "type: t:1: add: add takes an integer, not a ticket"
     );
     assert_eq!(
         said("1 ticket lt"),
@@ -749,7 +749,7 @@ fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
         let error = compiler.finish().err().map(|e| e.to_string());
         assert_eq!(
             error.as_deref(),
-            Some("type: lib:1: add: takes two integers, and the one under the top is a string")
+            Some("type: lib:1: add: add takes an integer, not a string")
         );
     }
     let mut open = Compiler::<Ticket>::new(vocabulary());

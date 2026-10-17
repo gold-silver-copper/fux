@@ -1,6 +1,6 @@
 //! Why a program could not be read or run: a stable code, what went wrong,
 //! and where.
-use crate::compile::Builtin;
+use crate::machine::Builtin;
 use crate::token::{Place, Token};
 use std::rc::Rc;
 
@@ -132,8 +132,6 @@ pub(crate) enum Wants {
     Seq(Builtin),
     /// An integer, for the word.
     Int(Builtin),
-    /// Arithmetic's two values.
-    Ints,
     /// `lt`'s two values.
     Ordered,
     /// What `concat` joins.
@@ -155,7 +153,6 @@ impl Wants {
             Wants::Each => format!("each walks a string or a list, not {got}"),
             Wants::Seq(word) => format!("{} takes a string or a list, not {got}", word.name()),
             Wants::Int(word) => format!("{} takes an integer, not {got}", word.name()),
-            Wants::Ints => format!("takes two integers, not {got}"),
             Wants::Ordered => {
                 format!("lt compares two integers, two strings or two lists, not {got}")
             }
