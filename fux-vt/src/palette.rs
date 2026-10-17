@@ -179,7 +179,7 @@ fn scaled(digits: &[u8]) -> Option<u16> {
     if digits.is_empty() || digits.len() > 4 {
         return None;
     }
-    let value = u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()?;
+    let value = u32::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
     let bits = u32::try_from(digits.len()).ok()?.checked_mul(4)?;
     let largest = 1u32.checked_shl(bits)?.checked_sub(1)?;
     u16::try_from(value.checked_mul(0xffff)?.checked_div(largest)?).ok()
@@ -199,7 +199,7 @@ impl Rgb {
             let shift = u32::try_from(n).ok()?.checked_mul(4)?;
             let channel = |i: usize| -> Option<u16> {
                 let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
-                let value = u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()?;
+                let value = u16::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
                 value.checked_shl(16u32.checked_sub(shift)?)
             };
             [channel(0)?, channel(1)?, channel(2)?]

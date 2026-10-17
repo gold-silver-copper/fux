@@ -71,7 +71,7 @@ impl Screen {
             }
             b"D" => {
                 let status = option
-                    .and_then(|s| std::str::from_utf8(s).ok())
+                    .and_then(|s| str::from_utf8(s).ok())
                     .and_then(|s| s.parse().ok());
                 // A D with no C before it ends no command: a shell sends one
                 // with every prompt, the first included.

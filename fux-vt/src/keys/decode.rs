@@ -162,8 +162,8 @@ pub struct Decoder {
 }
 
 impl Default for Decoder {
-    fn default() -> Decoder {
-        Decoder::with_paste_limit(PASTE_LIMIT)
+    fn default() -> Self {
+        Self::with_paste_limit(PASTE_LIMIT)
     }
 }
 
@@ -212,8 +212,8 @@ impl Pasted {
     /// reported too long.
     fn end(self, limit: usize) -> Option<Input> {
         match self {
-            Pasted::Text(text) => Some(finished(text, limit)),
-            Pasted::TooLong(_) => None,
+            Self::Text(text) => Some(finished(text, limit)),
+            Self::TooLong(_) => None,
         }
     }
 }
@@ -324,8 +324,8 @@ impl Decoder {
     /// A decoder that keeps pastes of up to `limit` bytes, rather than
     /// [`PASTE_LIMIT`]: a host that sends a long paste on in pieces. It
     /// holds that much while a paste arrives.
-    pub fn with_paste_limit(limit: usize) -> Decoder {
-        Decoder {
+    pub fn with_paste_limit(limit: usize) -> Self {
+        Self {
             state: State::Idle,
             paste_limit: limit,
             expecting: None,
@@ -523,10 +523,7 @@ fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
             let take = need.min(bytes.len());
             let text = bytes.get(..take).unwrap_or_default();
             return Some(
-                match std::str::from_utf8(text)
-                    .ok()
-                    .and_then(|s| s.chars().next())
-                {
+                match str::from_utf8(text).ok().and_then(|s| s.chars().next()) {
                     Some(c) => (take, KeyPress::plain(Key::Char(c))),
                     None => (1, KeyPress::plain(Key::Char('\u{fffd}'))),
                 },
@@ -691,7 +688,7 @@ fn colour_reply(payload: &[u8]) -> Option<Reply> {
         b"10" => Reply::Foreground(Rgb::parse(params.next()?)?),
         b"11" => Reply::Background(Rgb::parse(params.next()?)?),
         b"4" => {
-            let index = std::str::from_utf8(params.next()?).ok()?.parse().ok()?;
+            let index = str::from_utf8(params.next()?).ok()?.parse().ok()?;
             let rgb = Rgb::parse(params.next()?)?;
             Reply::Palette { index, rgb }
         }
@@ -702,7 +699,7 @@ fn colour_reply(payload: &[u8]) -> Option<Reply> {
 
 /// `6 ; height ; width`: the size of a cell, answering `CSI 16 t`.
 fn cell_size(params: &[u8]) -> Option<Reply> {
-    let text = std::str::from_utf8(params).ok()?;
+    let text = str::from_utf8(params).ok()?;
     let mut numbers = text.split(';');
     if numbers.next()? != "6" {
         return None;
@@ -718,7 +715,7 @@ fn cell_size(params: &[u8]) -> Option<Reply> {
 /// A CSI answer from the terminal, `params` from its `?` on, ending with
 /// `last`.
 fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
-    let text = std::str::from_utf8(params.get(1..)?).ok()?;
+    let text = str::from_utf8(params.get(1..)?).ok()?;
     match last {
         b'c' => Some(Reply::Attributes {
             sixel: text.split(';').any(|attribute| attribute == "4"),
@@ -763,7 +760,7 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
         b'm' => true,
         _ => return None,
     };
-    let text = std::str::from_utf8(params.get(1..)?).ok()?;
+    let text = str::from_utf8(params.get(1..)?).ok()?;
     let mut numbers = text.split(';').map(|n| n.parse::<u32>().ok());
     let (code, x, y) = (numbers.next()??, numbers.next()??, numbers.next()??);
     if numbers.next().is_some() {
@@ -864,7 +861,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         return Step::Done(consumed, csi_reply(params, last).map(Input::Reply));
     }
     // Each parameter with its colon-separated parts; an empty part is none.
-    let groups: Vec<Vec<Option<u32>>> = std::str::from_utf8(params)
+    let groups: Vec<Vec<Option<u32>>> = str::from_utf8(params)
         .unwrap_or("")
         .split(';')
         .map(|p| p.split(':').map(|n| n.parse().ok()).collect())

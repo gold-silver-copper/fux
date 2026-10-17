@@ -8,7 +8,7 @@ use crate::history::{Arriving, History, trimmed};
 use crate::link::{Held, Hyperlink, Links, RowLinks};
 use crate::screen::Saved;
 use crate::style::Styles;
-use crate::{Attributes, CellRef, Error, Row, RowId};
+use crate::{Attributes, CellRef, Error, Row, RowId, reserve};
 
 /// The cursor, and what DECSC saves with it. Only the grid's movements set
 /// its row and column, each keeping them on the grid: a glyph that reaches
@@ -124,7 +124,7 @@ struct Meta {
 }
 
 // `prompt` fits where the struct had padding: a row costs no more for it.
-const _: () = assert!(std::mem::size_of::<Meta>() == 24);
+const _: () = assert!(size_of::<Meta>() == 24);
 
 impl Meta {
     /// What the row brings into history: `cells`, its cells before its
@@ -385,7 +385,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
-        crate::reserve(&mut self.cells, size)?;
+        reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
         Ok(())
@@ -451,10 +451,10 @@ impl Grid {
         // Within the limits: `check_size` came first.
         let rows = usize::from(self.size.rows());
         let cells = if self.unmade { 0 } else { self.size.cells() };
-        crate::reserve(&mut self.cells, cells)?;
-        crate::reserve(&mut self.meta, rows)?;
-        crate::reserve(&mut self.texts, rows)?;
-        crate::reserve(&mut self.linked, rows)?;
+        reserve(&mut self.cells, cells)?;
+        reserve(&mut self.meta, rows)?;
+        reserve(&mut self.texts, rows)?;
+        reserve(&mut self.linked, rows)?;
         self.order
             .try_reserve_exact(rows.saturating_sub(self.order.len()))?;
         Ok(())

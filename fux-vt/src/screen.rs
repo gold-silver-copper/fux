@@ -5,13 +5,14 @@ use crate::link::Held;
 use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SEND_RECEIVE, Switch};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, Mark, Options, Reply,
-    Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
+    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, Mark, Options, Prints,
+    Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, Written},
+    palette::Colours,
     parser::Parameters,
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, mem, ops::Range};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The blank style (`Screen::blank_style`) not asked for since the pen
@@ -362,8 +363,8 @@ impl Integrity {
     /// The report's number.
     pub(crate) fn report(self) -> u8 {
         match self {
-            Integrity::PowerUp => 73,
-            Integrity::Reported => 70,
+            Self::PowerUp => 73,
+            Self::Reported => 70,
         }
     }
 }
@@ -457,11 +458,11 @@ pub struct Screen {
     next_link: u64,
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
-    colours: Option<Box<crate::palette::Colours>>,
+    colours: Option<Box<Colours>>,
     /// What was printed since the host last took it, while it records
     /// (`record_prints`): text drawn and drawn over before it reads the
     /// screen is there still.
-    prints: Option<crate::Prints>,
+    prints: Option<Prints>,
     /// The nonce a shell mark must carry to count (`require_mark_nonce`):
     /// one without it is a program's output, not its shell's.
     mark_nonce: Option<Box<[u8]>>,
@@ -796,7 +797,7 @@ impl Screen {
         self.colours.as_ref().is_some_and(|c| c.changed())
     }
     /// The colours the program set, for the parser's OSC handling.
-    pub(crate) fn colours_mut(&mut self) -> &mut Option<Box<crate::palette::Colours>> {
+    pub(crate) fn colours_mut(&mut self) -> &mut Option<Box<Colours>> {
         &mut self.colours
     }
 
@@ -826,7 +827,7 @@ impl Screen {
     /// once a link has been opened (`links_seen`). Out of line, so that
     /// printing, which never needs it until then, carries none of it.
     #[inline(never)]
-    fn link_cells(&mut self, row: u16, span: std::ops::Range<usize>, open: bool) {
+    fn link_cells(&mut self, row: u16, span: Range<usize>, open: bool) {
         let version = self.version;
         let pen = self.link.as_ref().filter(|_| open);
         let grid = if self.alternate_active {
@@ -915,7 +916,7 @@ impl Screen {
         Rows::of(&self.alternate)
     }
     /// Where the retained row `id` is, from the oldest, if it is kept.
-    pub fn row_index(&self, id: crate::RowId) -> Option<usize> {
+    pub fn row_index(&self, id: RowId) -> Option<usize> {
         self.grid().index_of(id)
     }
     /// The screen's rows: the window no rows up into history.
@@ -937,11 +938,11 @@ impl Screen {
     }
     /// Records what is printed from now on, or stops and forgets it.
     pub(crate) fn record_prints(&mut self, on: bool) {
-        self.prints = on.then(crate::Prints::default);
+        self.prints = on.then(Prints::default);
     }
     /// What was printed since the last call, while recording.
-    pub(crate) fn take_prints(&mut self) -> crate::Prints {
-        self.prints.as_mut().map(std::mem::take).unwrap_or_default()
+    pub(crate) fn take_prints(&mut self) -> Prints {
+        self.prints.as_mut().map(mem::take).unwrap_or_default()
     }
     /// The number of the last change to a row of the primary screen's
     /// history that has since been let go past its budget: 0 if none was.
@@ -950,7 +951,7 @@ impl Screen {
     }
     /// Notes that `text` was printed at live row `row`, column `col`, if
     /// recording.
-    fn printed(&mut self, row: u16, cols: std::ops::Range<u16>, text: &str) {
+    fn printed(&mut self, row: u16, cols: Range<u16>, text: &str) {
         let Some(id) = self.grid().live_row(row).map(|r| r.id()) else {
             return;
         };
@@ -1021,10 +1022,10 @@ impl Screen {
         let mut alternate = self.alternate.resized(size, &mut next, version)?;
         // The links' tables go along, as the cells keep their links, and
         // the keyboard stacks.
-        primary.links = std::mem::take(&mut self.primary.links);
-        alternate.links = std::mem::take(&mut self.alternate.links);
-        primary.keyboard = std::mem::take(&mut self.primary.keyboard);
-        alternate.keyboard = std::mem::take(&mut self.alternate.keyboard);
+        primary.links = mem::take(&mut self.primary.links);
+        alternate.links = mem::take(&mut self.alternate.links);
+        primary.keyboard = mem::take(&mut self.primary.keyboard);
+        alternate.keyboard = mem::take(&mut self.alternate.keyboard);
         self.primary = primary;
         self.alternate = alternate;
         self.next_id = next;
@@ -1564,7 +1565,7 @@ impl Screen {
                     Written::All => {
                         if self.prints.is_some() {
                             let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
-                            let text = std::str::from_utf8(run).unwrap_or_default();
+                            let text = str::from_utf8(run).unwrap_or_default();
                             self.printed(row, col..end, text);
                         }
                         break true;
@@ -2045,7 +2046,7 @@ impl Screen {
     fn clear_alternate(&mut self, pen: Attributes) -> Result<(), Error> {
         let g = &mut self.alternate;
         let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
-        let keyboard = std::mem::take(&mut g.keyboard);
+        let keyboard = mem::take(&mut g.keyboard);
         self.alternate.clear(&mut self.next_id, self.version)?;
         let blank = self.alternate.style(pen.erased());
         let g = &mut self.alternate;
@@ -2828,7 +2829,7 @@ impl Screen {
                 // power-up again.
                 75 => {
                     let integrity = &mut self.terminal.integrity;
-                    let status = std::mem::replace(integrity, Integrity::Reported).report();
+                    let status = mem::replace(integrity, Integrity::Reported).report();
                     Some(Reply::of(format_args!("\x1b[?{status}n")))
                 }
                 // Not configured for multiple sessions.

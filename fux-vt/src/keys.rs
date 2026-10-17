@@ -119,25 +119,25 @@ impl Modifiers {
         }
     }
     /// No modifier.
-    pub const NONE: Modifiers = Modifiers {
+    pub const NONE: Self = Self {
         ctrl: false,
         alt: false,
         shift: false,
     };
     /// Control alone.
-    pub const CTRL: Modifiers = Modifiers {
+    pub const CTRL: Self = Self {
         ctrl: true,
-        ..Modifiers::NONE
+        ..Self::NONE
     };
     /// Alt alone.
-    pub const ALT: Modifiers = Modifiers {
+    pub const ALT: Self = Self {
         alt: true,
-        ..Modifiers::NONE
+        ..Self::NONE
     };
     /// Shift alone.
-    pub const SHIFT: Modifiers = Modifiers {
+    pub const SHIFT: Self = Self {
         shift: true,
-        ..Modifiers::NONE
+        ..Self::NONE
     };
     /// Whether no modifier is held.
     pub fn is_empty(self) -> bool {
@@ -230,8 +230,8 @@ pub struct Kitty {
 }
 
 impl From<KeyPress> for Keystroke {
-    fn from(press: KeyPress) -> Keystroke {
-        Keystroke { press, kitty: None }
+    fn from(press: KeyPress) -> Self {
+        Self { press, kitty: None }
     }
 }
 

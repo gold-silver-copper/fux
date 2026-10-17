@@ -93,9 +93,9 @@ impl Decoder {
     /// A decoder for the data of `DCS P1 ; P2 ; P3 q`. P3, the grid size,
     /// gets the device's grid that fits it best (DEC STD 070, 7.3 and its
     /// terminology): a screen has one, its pixel, so P3 changes nothing.
-    pub(crate) fn new(p1: u16, p2: u16) -> Box<Decoder> {
+    pub(crate) fn new(p1: u16, p2: u16) -> Box<Self> {
         let tall = MACRO_ASPECT.get(usize::from(p1)).copied().unwrap_or(200);
-        Box::new(Decoder {
+        Box::new(Self {
             palette: vt340_palette(),
             colour: 0,
             command: Command::None,

@@ -125,8 +125,8 @@ impl Default for Reply {
 
 impl Reply {
     /// The reply `args` write.
-    pub(crate) fn of(args: std::fmt::Arguments<'_>) -> Reply {
-        let mut reply = Reply::default();
+    pub(crate) fn of(args: std::fmt::Arguments<'_>) -> Self {
+        let mut reply = Self::default();
         // Every reply fits, so the write cannot run out of room.
         let _ = std::fmt::Write::write_fmt(&mut reply, args);
         reply
@@ -198,21 +198,21 @@ impl<'a> Row<'a> {
         self.index
     }
     /// The row above it, older; none above the oldest.
-    pub fn above(&self) -> Option<Row<'a>> {
+    pub fn above(&self) -> Option<Self> {
         self.grid.row_at(self.index.checked_sub(1)?)
     }
     /// The row below it, newer; none below the screen's last.
-    pub fn below(&self) -> Option<Row<'a>> {
+    pub fn below(&self) -> Option<Self> {
         self.grid.row_at(self.index.checked_add(1)?)
     }
     /// The row `n` above it, or the oldest.
-    pub fn up(&self, n: usize) -> Row<'a> {
+    pub fn up(&self, n: usize) -> Self {
         self.grid
             .row_at(self.index.saturating_sub(n))
             .unwrap_or(*self)
     }
     /// The row `n` below it, or the screen's last.
-    pub fn down(&self, n: usize) -> Row<'a> {
+    pub fn down(&self, n: usize) -> Self {
         let last = self.grid.retained_len().saturating_sub(1);
         self.grid
             .row_at(self.index.saturating_add(n).min(last))
@@ -401,7 +401,7 @@ impl Prints {
     }
     /// The bytes it takes on the heap: its text and its runs.
     pub fn heap(&self) -> usize {
-        let run = std::mem::size_of::<(RowId, std::ops::Range<u16>, std::ops::Range<usize>)>();
+        let run = size_of::<(RowId, std::ops::Range<u16>, std::ops::Range<usize>)>();
         (self.text.capacity()).saturating_add(self.runs.capacity().saturating_mul(run))
     }
     /// Lets go of the room it grew into and does not use: for one kept.

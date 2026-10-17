@@ -414,8 +414,8 @@ pub(crate) fn parse(payload: &[u8]) -> Option<(&str, Option<&str>)> {
     {
         return None;
     }
-    let uri = std::str::from_utf8(uri).ok()?;
-    let id = id.map(std::str::from_utf8).transpose().ok()?;
+    let uri = str::from_utf8(uri).ok()?;
+    let id = id.map(str::from_utf8).transpose().ok()?;
     Some((uri, id))
 }
 

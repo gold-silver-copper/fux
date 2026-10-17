@@ -344,10 +344,10 @@ impl Control {
     /// Its key.
     pub(crate) fn key(self) -> Key {
         match self {
-            Control::Enter => Key::Enter,
-            Control::Tab => Key::Tab,
-            Control::Escape => Key::Escape,
-            Control::Backspace => Key::Backspace,
+            Self::Enter => Key::Enter,
+            Self::Tab => Key::Tab,
+            Self::Escape => Key::Escape,
+            Self::Backspace => Key::Backspace,
         }
     }
 }

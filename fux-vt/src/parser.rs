@@ -475,26 +475,24 @@ impl Phase {
     /// separators read into `params`.
     fn next(self, byte: u8, params: &mut Parameters) -> Next {
         let read = match self {
-            Phase::Entry => Intermediates::default(),
-            Phase::Param(read) | Phase::Intermediate(read) => read,
+            Self::Entry => Intermediates::default(),
+            Self::Param(read) | Self::Intermediate(read) => read,
         };
         match byte {
             0x00..=0x1f => Next::Control,
             0x20..=0x2f => read
                 .push(byte)
-                .map_or(Next::Ignore, |read| Next::Phase(Phase::Intermediate(read))),
-            0x30..=0x3f if matches!(self, Phase::Intermediate(_)) => Next::Ignore,
+                .map_or(Next::Ignore, |read| Next::Phase(Self::Intermediate(read))),
+            0x30..=0x3f if matches!(self, Self::Intermediate(_)) => Next::Ignore,
             b'0'..=b'9' => {
                 params.digit(byte);
-                Next::Phase(Phase::Param(read))
+                Next::Phase(Self::Param(read))
             }
             b';' | b':' => {
                 params.separator(byte == b':');
-                Next::Phase(Phase::Param(read))
+                Next::Phase(Self::Param(read))
             }
-            0x3c..=0x3f if self == Phase::Entry => {
-                Next::Phase(Phase::Param(Intermediates::of(byte)))
-            }
+            0x3c..=0x3f if self == Self::Entry => Next::Phase(Self::Param(Intermediates::of(byte))),
             0x3c..=0x3f => Next::Ignore,
             0x40..=0x7e => Next::Final(read),
             0x7f..=0xff => Next::Phase(self),
@@ -656,13 +654,13 @@ impl Options {
 
 impl From<Feature> for Options {
     fn from(feature: Feature) -> Self {
-        Options::new().with(feature)
+        Self::new().with(feature)
     }
 }
 
 impl FromIterator<Feature> for Options {
     fn from_iter<I: IntoIterator<Item = Feature>>(features: I) -> Self {
-        features.into_iter().fold(Options::new(), Options::with)
+        features.into_iter().fold(Self::new(), Self::with)
     }
 }
 
@@ -1522,7 +1520,7 @@ impl Parser {
             // number is written `010`) still ask the host for their
             // colours; what they set is kept nowhere.
             _ => {
-                let number = std::str::from_utf8(command).ok();
+                let number = str::from_utf8(command).ok();
                 let number = number.and_then(|n| n.parse::<u8>().ok());
                 if let Some(first) = number.and_then(|n| n.checked_sub(10)).filter(|n| *n < 10) {
                     crate::palette::dynamic(&mut None, first, rest, bel, true, sink);

@@ -73,7 +73,7 @@ pub(crate) struct Kept {
     place: u64,
 }
 
-const _: () = assert!(std::mem::size_of::<Kept>() == 24);
+const _: () = assert!(size_of::<Kept>() == 24);
 const _: () = assert!(BLOCK <= 1 << 12);
 
 /// `Kept`'s flags.
@@ -206,14 +206,14 @@ impl History {
     }
     /// The bytes the rows hold: each one's record, its cells and its text.
     pub(crate) fn bytes(&self) -> usize {
-        (self.rows.len().saturating_mul(std::mem::size_of::<Kept>()))
-            .saturating_add(self.cells.saturating_mul(std::mem::size_of::<Compact>()))
+        (self.rows.len().saturating_mul(size_of::<Kept>()))
+            .saturating_add(self.cells.saturating_mul(size_of::<Compact>()))
             .saturating_add(self.text)
     }
     /// The most rows the budget holds, and one more, as a row comes in
     /// before the oldest goes.
     fn most_rows(&self) -> usize {
-        (self.budget.checked_div(std::mem::size_of::<Kept>()))
+        (self.budget.checked_div(size_of::<Kept>()))
             .unwrap_or(0)
             .min(MAX_ROWS)
             .saturating_add(1)
