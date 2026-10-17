@@ -623,7 +623,7 @@ impl Watch {
         if let Some(why) = self.unseen() {
             return Some(why);
         }
-        let there = texts.iter().any(|t| on_screen(pane.screen(), t));
+        let there = texts.iter().any(|t| on_screen(pane, t));
         there.then_some(
             "the text is on the screen, but on a line that reads as it did when the wait \
              began (nothing printed it since; drawn again the same, it brings nothing new); \
@@ -675,7 +675,6 @@ impl Watch {
             self.bell = pane.record.bell_after(self.looked);
         }
         self.looked = pane.record.last();
-        let screen = pane.screen();
         let mut gone = None;
         let mut exit = None;
         let mut bell = None;
@@ -684,7 +683,7 @@ impl Watch {
             match until {
                 Until::Text(_) => {}
                 Until::Gone(text) => {
-                    let present = on_screen(screen, text);
+                    let present = on_screen(pane, text);
                     if present {
                         self.appeared.entry(text.clone()).or_default();
                     }
@@ -1047,38 +1046,24 @@ fn normal_marked(text: &str, marked: &[bool]) -> (String, Vec<bool>) {
     (out, marks)
 }
 
-/// Rows as lines: soft-wrapped rows joined into the lines they wrap, as
-/// capture joins them.
-fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let (mut wraps, mut padded) = (false, false);
-    for row in rows {
-        let text = row.cells_text();
-        // A wrapped row's trailing blanks are part of its line.
-        let text = match row.wrapped() {
-            true => text,
-            false => text.trim_end_matches(' ').to_owned(),
-        };
-        let wide = || row.cells().nth(1).is_some_and(|c| c.is_wide_continuation());
-        match out.last_mut() {
-            Some(last) if wraps => {
-                if padded && wide() {
-                    last.pop();
-                }
-                last.push_str(&text);
-            }
-            _ => out.push(text),
-        }
-        wraps = row.wrapped();
-        padded = crate::capture::ends_padded(&row);
-    }
-    out
+/// The pane's lines from row `from` on, of the rows it keeps (history
+/// first), joined and trimmed as `capture` prints them: empty if none has
+/// text.
+fn lines_from(pane: &Pane, from: usize) -> String {
+    let kept = pane.screen().history_len();
+    let view = CaptureView {
+        join: true,
+        rows: (u16::try_from(from.saturating_sub(kept)).ok()).map(|top| (top, u16::MAX)),
+        ..CaptureView::default()
+    };
+    let (text, _) = crate::capture::pane(pane, Some(kept.saturating_sub(from)), view, false, false);
+    if text == "\n" { String::new() } else { text }
 }
 
 /// Whether the screen's lines show `text`, as `found_in` finds it.
-fn on_screen(screen: &fux_vt::Screen, text: &str) -> bool {
-    let shown = lines(screen.rows().skip(screen_top(screen)));
-    shown.iter().any(|l| found_in(l, text) > 0)
+fn on_screen(pane: &Pane, text: &str) -> bool {
+    let shown = lines_from(pane, screen_top(pane.screen()));
+    shown.lines().any(|l| found_in(l, text) > 0)
 }
 
 /// Where the screen's lines start among the rows kept: at its top row, or
@@ -1251,16 +1236,8 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
         };
     };
     let from = (screen.row_index(crate::pane::line_top(first).id())).unwrap_or(0);
-    let found = lines(screen.rows().skip(from));
-    let texts: Vec<&str> = found.iter().map(|l| l.trim_end()).collect();
-    let end = (texts.iter())
-        .rposition(|t| !t.is_empty())
-        .map_or(0, |i| i.saturating_add(1));
     let lead = watch.cut(pane).unwrap_or_default();
-    let body: String = (texts.get(..end).unwrap_or_default().iter())
-        .map(|t| format!("{t}\n"))
-        .collect();
-    format!("{lead}{body}")
+    format!("{lead}{}", lines_from(pane, from))
 }
 
 #[cfg(test)]
@@ -1274,9 +1251,10 @@ mod tests {
     #[test]
     fn a_wide_glyph_wrapped_on_joins_its_line_as_capture_shows_it()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut parser = fux_vt::Parser::new(fux_vt::Size::new(3, 4)?, 0)?;
-        parser.process("aaa界".as_bytes())?;
-        assert!(super::on_screen(parser.screen(), "aaa界"));
+        let (id, size) = (crate::id::PaneId::of(1), fux_vt::Size::new(3, 4)?);
+        let mut pane = super::Pane::new(id, "sh".into(), crate::pane::Runs::Shell, size, 0)?;
+        pane.output("aaa界".as_bytes());
+        assert!(super::on_screen(&pane, "aaa界"));
         Ok(())
     }
 
