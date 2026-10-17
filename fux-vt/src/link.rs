@@ -70,15 +70,10 @@ impl Hyperlink {
     }
     /// What the link costs its grid.
     fn cost(&self) -> usize {
-        cost(&self.uri, self.id.as_deref())
+        (self.uri.len())
+            .saturating_add(self.id.as_deref().map_or(0, str::len))
+            .saturating_add(LINK_COST)
     }
-}
-
-/// What a link of `uri` and `id` costs its grid.
-fn cost(uri: &str, id: Option<&str>) -> usize {
-    uri.len()
-        .saturating_add(id.map_or(0, str::len))
-        .saturating_add(LINK_COST)
 }
 
 /// A row's links: runs of cells with one link each, left to right and
