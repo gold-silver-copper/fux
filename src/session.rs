@@ -1429,14 +1429,6 @@ impl Session {
         }
     }
 
-    /// Sets a client's mode, if it is still attached, for its next paint.
-    pub fn set_mode(&mut self, client: ClientId, mode: Mode) {
-        if let Some(view) = self.views.get_mut(&client) {
-            view.mode = mode;
-            view.dirty = true;
-        }
-    }
-
     // -------------------------------------------------------------- layout
 
     /// The area panes share on a client's screen: all but the bar.

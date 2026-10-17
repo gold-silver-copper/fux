@@ -67,20 +67,22 @@ impl Session {
             // A notice from before the screen opened or closed is old news;
             // one the screen's keys bring comes after.
             Act::Show(panel) => {
-                let fresh = !matches!(
-                    (self.views.get(&client).map(|v| &v.mode), &panel),
-                    (Some(Mode::Panel(was)), now) if std::mem::discriminant(was) == std::mem::discriminant(now)
-                );
-                if fresh && let Some(view) = self.views.get_mut(&client) {
-                    view.notice = None;
+                if let Some(view) = self.views.get_mut(&client) {
+                    let fresh = !matches!(
+                        &view.mode,
+                        Mode::Panel(was) if std::mem::discriminant(was) == std::mem::discriminant(&panel)
+                    );
+                    if fresh {
+                        view.notice = None;
+                    }
+                    view.mode = Mode::Panel(panel);
                 }
-                self.set_mode(client, Mode::Panel(panel));
             }
             Act::Hide => {
                 if let Some(view) = self.views.get_mut(&client) {
                     view.notice = None;
+                    view.mode = Mode::Normal;
                 }
-                self.set_mode(client, Mode::Normal);
             }
             Act::Notice { text, error } => {
                 if let Some(view) = self.views.get_mut(&client) {
