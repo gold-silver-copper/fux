@@ -131,6 +131,25 @@ fn osc_payloads_are_bounded_and_cancellable() -> Result {
     Ok(())
 }
 
+/// ECMA-48 8.3.89 and 5.6: an OSC's command string holds 00/08 to 00/13
+/// (BS to CR) and 02/00 to 07/14. The other controls, 00/00 to 00/06,
+/// 00/14 to 01/15 but CAN, SUB and ESC, and DEL, are left out of the
+/// payload, as Williams's DEC parser model leaves them (`osc_string`
+/// ignores C0); BEL ends the string. Read at once and a byte at a time.
+#[test]
+fn controls_a_command_string_cannot_hold_are_left_out_of_an_osc() -> Result {
+    let input = b"\x1b]2;a\x00b\x01c\x06d\x0e\x1f\x7fe\x08\t\n\x0b\x0c\rf\x07";
+    let mut split = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
+    let mut record = Record::default();
+    for byte in input {
+        split.process_with(&[*byte], &mut record)?;
+    }
+    for events in [run(EVENTS, input)?.events, record.events] {
+        assert_eq!(events, ["title:abcde\x08\t\n\x0b\x0c\rf"]);
+    }
+    Ok(())
+}
+
 #[test]
 fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
     let record = run(

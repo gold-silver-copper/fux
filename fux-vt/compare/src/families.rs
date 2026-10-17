@@ -487,6 +487,7 @@ fn titles(r: &mut Rng) -> Vec<u8> {
             "\x1b]1;icon\x07",
             "\x1b]2;\x07",
             "\x1b]2;tïtle 界\x07",
+            "\x1b]2;a\x01b\x07",
         ],
     )
     .into_bytes()

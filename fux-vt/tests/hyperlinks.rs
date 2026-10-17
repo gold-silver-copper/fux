@@ -253,7 +253,7 @@ fn links_past_their_limits_are_not_opened() -> Result {
         (&format!("id={id}"), "x", true),
         (&format!("id={id}i"), "x", false),
         ("", "http://é", false),
-        ("id=\x01", "x", false),
+        ("id=\t", "x", false),
     ] {
         let p = parser(1, 4, 0, open(params, uri).as_bytes())?;
         assert_eq!(p.screen().link(0, 0).map(|l| l.uri()), Some("x"));

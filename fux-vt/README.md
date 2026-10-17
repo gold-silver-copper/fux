@@ -77,7 +77,7 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 | ESC # 8 | DECALN: the screen filled with `E` in default attributes; all four margins reset (DECLRMM stays), origin mode off, cursor home, no wrap pending; the pen keeps its colours and loses its attributes. Each row's soft wrap and prompt mark end; a row already all plain `E` keeps its version. Other `ESC #` are unhandled. | `modes::decaln_*` |
 | ESC Z | DECID: answered as DA. | `modes::decid_*` |
 | CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y | DECRQCRA, with `Feature::RectangleChecksums`; otherwise unhandled. | `opt_in::rectangle_checksums_*` |
-| OSC, DCS, APC, PM, SOS | Consumed. OSC ends at BEL or ST (ESC `\`), the others at ST; 0x9c is a byte of a UTF-8 character, not ST. CAN and SUB cancel. Payloads are kept only for an option: OSC with `Events`, `Hyperlinks` or `Palette`; an OSC's first 16 bytes with `PromptMarks` alone; a DECRQSS request's first 4 bytes with `SettingReports`. | `conformance::a_control_string_*` |
+| OSC, DCS, APC, PM, SOS | Consumed. OSC ends at BEL or ST (ESC `\`), the others at ST; 0x9c is a byte of a UTF-8 character, not ST. CAN and SUB cancel. An OSC's payload leaves out the controls a command string cannot hold (ECMA-48 8.3.89 and 5.6 allow BS to CR) and DEL, as Williams's DEC parser model does (xterm 411 shows each as `?`: `1x4 '\e]2;a\x01b\x07'`). Payloads are kept only for an option: OSC with `Events`, `Hyperlinks` or `Palette`; an OSC's first 16 bytes with `PromptMarks` alone; a DECRQSS request's first 4 bytes with `SettingReports`. | `conformance::a_control_string_*` |
 | OSC 133 | With `Feature::PromptMarks` only. `A`, `N`: a fresh line (CR and IND unless in the first column), then the row is marked as a prompt's start (`Row::starts_prompt`). `P` with `k=i` or no `k`: the row marked, no fresh line. `L`: the fresh line alone. The rest change nothing. The mark moves with its row through scrolling, history and IL/DL, and through a reflow onto the row its first cell goes to; ED erasing the row whole, DECALN and RIS remove it; EL keeps it. Marks change no version. | `prompts::*` |
 | Anything else | Ignored; C0 controls inside a CSI still execute. A complete CSI or escape sequence fux-vt does not implement goes to `Sink::unhandled`. Unknown DEC private modes, and sequences cut short by the parser's bounds, are dropped unreported. | `semantics::ignored_sequences_*`, `extended::sequences_*` |
 
@@ -188,7 +188,7 @@ doing exactly what it would:
 - valid non-ASCII UTF-8 is decoded a run at a time;
 - an escape sequence, or a CSI of parameters alone, is read in a loop of
   its own;
-- an OSC payload is taken up to its terminator as one slice.
+- an OSC payload is taken up to its terminator in one pass.
 
 `parser::tests::fast_paths_equal_the_general_path*` and
 `ascii_run_path_equals_scalar_dispatch_*` check them against the general

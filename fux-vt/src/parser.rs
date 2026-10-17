@@ -169,6 +169,14 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     Some((char::from_u32(code)?, length))
 }
 
+/// Whether an OSC's payload keeps `byte`, one that does not end it: a
+/// command string holds 00/08 to 00/13 and 02/00 to 07/14 (ECMA-48 8.3.89,
+/// 5.6), and here the bytes of UTF-8 too; the other controls are left out,
+/// as Williams's DEC parser model ignores them in an OSC string.
+const fn in_command_string(byte: u8) -> bool {
+    !matches!(byte, 0x00..=0x07 | 0x0e..=0x1f | 0x7f)
+}
+
 /// What a UTF-8 lead byte begins: the sequence's length, and the range its
 /// second byte is in, which rules out overlong forms, surrogates and code
 /// points past U+10FFFF (Unicode 17, table 3-7); `None` for a byte that
@@ -983,12 +991,17 @@ impl Parser {
             .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
             .unwrap_or(bytes.len());
         self.osc.clear();
-        let kept = bytes.get(..length.min(self.osc_limit)).unwrap_or_default();
-        self.osc.extend_from_slice(kept);
+        let string = bytes.get(..length).unwrap_or_default();
+        let kept = string
+            .iter()
+            .copied()
+            .filter(|&byte| in_command_string(byte));
         // The byte past the limit marks the string overflowed.
+        self.osc.extend(kept.take(self.osc_limit.saturating_add(1)));
         self.state = State::Osc {
-            whole: length <= self.osc_limit,
+            whole: self.osc.len() <= self.osc_limit,
         };
+        self.osc.truncate(self.osc_limit);
         length
     }
 
@@ -1102,7 +1115,7 @@ impl Parser {
                     self.dispatch_osc(whole, true, sink)?;
                     self.state = State::Ground;
                 }
-                _ if !whole => {}
+                _ if !whole || !in_command_string(byte) => {}
                 _ if self.osc.len() < self.osc_limit => self.osc.push(byte),
                 // What came first stays: a prompt mark, and an OSC 8 too
                 // long to keep, which closes the link, are told by it.
