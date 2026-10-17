@@ -49,8 +49,10 @@ pub struct Modes {
 }
 
 impl Modes {
-    /// Appends what turns the terminal's modes from `old`, if known, into these.
-    fn diff(&self, old: Option<&Modes>, out: &mut Vec<u8>) {
+    /// Appends what turns the terminal's modes from `old`, if known, into
+    /// these; its cursor's shape is `shape` either way, as a resize, which
+    /// forgets what it shows, leaves the shape.
+    fn diff(&self, old: Option<&Modes>, shape: CursorShape, out: &mut Vec<u8>) {
         if old.map(|o| o.mouse) != Some(self.mouse) {
             // Off first, as a terminal not known may have any on.
             out.extend_from_slice(MOUSE_OFF.as_bytes());
@@ -58,19 +60,23 @@ impl Modes {
                 let _ = write!(out, "\x1b[?{}h\x1b[?1006h", self.mouse);
             }
         }
-        // A terminal not known keeps its own shape until a pane sets one.
-        let shape = self.cursor_shape;
-        if old.map_or(shape != CursorShape::Initial, |o| o.cursor_shape != shape) {
-            // The terminal's own again: 0, which most terminals take for
-            // theirs (xterm takes it for a blinking block, and 7 for its
-            // own, which others lack).
-            let ps = if shape == CursorShape::Initial {
-                0
-            } else {
-                shape.number()
-            };
-            let _ = write!(out, "\x1b[{ps} q");
-        }
+        cursor_shape(shape, self.cursor_shape, out);
+    }
+}
+
+/// Appends what turns the cursor of a client's terminal from `was` into
+/// `shape` (DECSCUSR), nothing if they are the same: its Ps; for
+/// `Initial`, the terminal's own, 0, which most terminals take for theirs,
+/// then 7, xterm's initial resources (ctlseqs), as xterm takes 0 for a
+/// blinking block and the others ignore 7.
+pub fn cursor_shape(was: CursorShape, shape: CursorShape, out: &mut Vec<u8>) {
+    if was == shape {
+        return;
+    }
+    if shape == CursorShape::Initial {
+        out.extend_from_slice(b"\x1b[0 q\x1b[7 q");
+    } else {
+        let _ = write!(out, "\x1b[{} q", shape.number());
     }
 }
 
@@ -1415,19 +1421,20 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
 #[cfg(test)]
 pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
-    paint_into(old, new, &mut out);
+    let shape = old.map_or(CursorShape::Initial, |o| o.modes.cursor_shape);
+    paint_into(old, shape, new, &mut out);
     out
 }
 
 /// Appends the bytes that turn `old` (what the client shows, or nothing)
-/// into `new` to `out`.
-pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
+/// into `new` to `out`, the terminal's cursor `shape` known either way.
+pub fn paint_into(old: Option<&Grid>, shape: CursorShape, new: &Grid, out: &mut Vec<u8>) {
     if let Some(old) = old
         && echo(old, new, out)
     {
         return;
     }
-    paint_whole(old, new, out);
+    paint_whole(old, shape, new, out);
 }
 
 /// Whether row `y` of two grids of a size shows the same: its cells, and,
@@ -1552,7 +1559,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     true
 }
 /// [`paint_into`] without the echo's short way.
-fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
+fn paint_whole(old: Option<&Grid>, shape: CursorShape, new: &Grid, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     // Learning that the terminal draws underline styles repaints it whole,
     // so that what it shows takes them.
@@ -1641,7 +1648,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
         hyperlink(out, None);
     }
     out.extend_from_slice(b"\x1b[0m");
-    new.modes.diff(old.map(|o| &o.modes), out);
+    new.modes.diff(old.map(|o| &o.modes), shape, out);
     if let Some((y, x)) = new.cursor {
         goto(out, y, x);
         out.extend_from_slice(b"\x1b[?25h");
@@ -1661,30 +1668,39 @@ mod tests {
     use super::*;
 
     /// A client's terminal keeps its own cursor shape until a pane sets
-    /// one (DECSCUSR, ctlseqs: 0 would be a blinking block in xterm): the
-    /// first paint writes none, a shape a pane set is written as its Ps,
-    /// and the terminal's own comes back as 0.
+    /// one: the first paint writes none, a shape a pane set is written as
+    /// its Ps, a program's 0 as 0, and the terminal's own comes back as 0,
+    /// which most terminals take for theirs, then 7, which xterm takes for
+    /// its initial resources (ctlseqs, DECSCUSR), where 0 is a blinking
+    /// block. A full repaint, after a resize, starts from the shape the
+    /// terminal has, which the resize kept.
     #[test]
     fn a_cursor_shape_is_written_once_a_pane_sets_one() {
-        let diff = |old: Option<CursorShape>, new: CursorShape| {
-            let modes = |cursor_shape| Modes {
-                cursor_shape,
-                ..Modes::default()
-            };
+        // The DECSCUSRs a paint writes, from a terminal whose shape is
+        // `was`, its screen known or not.
+        let paint = |was: CursorShape, known: bool, shape: CursorShape| {
+            let mut old = Grid::new(2, 3);
+            old.modes.cursor_shape = was;
+            let mut new = Grid::new(2, 3);
+            new.modes.cursor_shape = shape;
             let mut out = Vec::new();
-            modes(new).diff(old.map(modes).as_ref(), &mut out);
-            String::from_utf8_lossy(&out).replace(MOUSE_OFF, "")
+            paint_into(known.then_some(&old), was, &new, &mut out);
+            let out = String::from_utf8_lossy(&out).into_owned();
+            let shapes = ["\x1b[0 q\x1b[7 q", "\x1b[0 q", "\x1b[5 q", "\x1b[6 q"];
+            shapes
+                .into_iter()
+                .find(|s| out.contains(s))
+                .unwrap_or_default()
         };
-        assert_eq!(diff(None, CursorShape::Initial), "");
-        assert_eq!(diff(None, CursorShape::BlinkingBar), "\x1b[5 q");
-        assert_eq!(
-            diff(Some(CursorShape::SteadyBar), CursorShape::SteadyBar),
-            ""
-        );
-        assert_eq!(
-            diff(Some(CursorShape::SteadyBar), CursorShape::Initial),
-            "\x1b[0 q"
-        );
+        use CursorShape::{BlinkingBar, Initial, SteadyBar, Zero};
+        assert_eq!(paint(Initial, false, Initial), "");
+        assert_eq!(paint(Initial, false, BlinkingBar), "\x1b[5 q");
+        assert_eq!(paint(BlinkingBar, true, Zero), "\x1b[0 q");
+        assert_eq!(paint(SteadyBar, true, SteadyBar), "");
+        assert_eq!(paint(SteadyBar, true, Initial), "\x1b[0 q\x1b[7 q");
+        // After a resize the screen is not known, but the shape is.
+        assert_eq!(paint(SteadyBar, false, Initial), "\x1b[0 q\x1b[7 q");
+        assert_eq!(paint(SteadyBar, false, SteadyBar), "");
     }
 
     /// A terminal of `rows` by `cols`, as a client's, without history.
@@ -1783,7 +1799,8 @@ mod tests {
                 plain_old.forget_memo();
                 plain_new.forget_memo();
                 let mut slow = Vec::new();
-                paint_whole(painted.then_some(&plain_old), &plain_new, &mut slow);
+                let shape = plain_old.modes.cursor_shape;
+                paint_whole(painted.then_some(&plain_old), shape, &plain_new, &mut slow);
                 if !bytes.starts_with(b"\x1b[?2026h") {
                     short += 1;
                 }

@@ -432,10 +432,12 @@ impl Conn {
         if let Stage::Attached(mut attached) = mem::replace(&mut self.stage, next) {
             session.detach(attached.client);
             // A cursor shape a pane set is given back as the terminal's own
-            // (DECSCUSR 0, as `render::Modes` writes it); one never set is
-            // left as the terminal had it.
-            if attached.shown.modes.cursor_shape != fux_vt::CursorShape::Initial {
-                attached.paint(&mut self.out, b"\x1b[0 q");
+            // (`render::cursor_shape`); one never set is left as it was.
+            let mut shape = Vec::new();
+            let initial = fux_vt::CursorShape::Initial;
+            render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut shape);
+            if !shape.is_empty() {
+                attached.paint(&mut self.out, &shape);
             }
             if let Some(tty) = attached.tty {
                 tty.give_back(&mut self.out);
@@ -1241,7 +1243,8 @@ impl Server {
         // cursor.
         if shown.is_none_or(|shown| !attached.spare.same_as(shown)) {
             self.paint_buffer.clear();
-            render::paint_into(shown, &attached.spare, &mut self.paint_buffer);
+            let shape = attached.shown.modes.cursor_shape;
+            render::paint_into(shown, shape, &attached.spare, &mut self.paint_buffer);
             attached.paint(&mut conn.out, &self.paint_buffer);
             mem::swap(&mut attached.shown, &mut attached.spare);
             attached.known = true;
@@ -1979,15 +1982,15 @@ mod tests {
     }
 
     /// A client let go gives its terminal the cursor's shape back as the
-    /// terminal's own (DECSCUSR 0) only if a pane set one: by ctlseqs, 0
-    /// is a blinking block, which a terminal fux never told otherwise was
-    /// not asked to be.
+    /// terminal's own (DECSCUSR 0, then xterm's 7) only if a pane set one:
+    /// by ctlseqs, 0 is a blinking block, which a terminal fux never told
+    /// otherwise was not asked to be.
     #[test]
     fn a_cursor_shape_is_given_back_only_once_one_was_set() -> Result<(), String> {
         use std::io::Read;
         for (shape, given) in [
             (fux_vt::CursorShape::Initial, ""),
-            (fux_vt::CursorShape::SteadyBar, "\x1b[0 q"),
+            (fux_vt::CursorShape::SteadyBar, "\x1b[0 q\x1b[7 q"),
         ] {
             let (mut session, mut conn, _peer, mut far) = with_terminal()?;
             if let Some(attached) = conn.attached() {
