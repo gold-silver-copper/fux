@@ -32,14 +32,16 @@ pub const ENTER: &str =
     "\x1b[22;0t\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
 /// And turns them off again, the title saved restored
 /// (`outer::TITLE_POP`), with what the server may have turned on in
-/// its paints: the pane's modes (`render::Modes`), colour-scheme
+/// its paints: the pane's modes (`render::Modes`; the cursor's shape the
+/// server gives back itself, as DECSCUSR has no "the terminal's own" to
+/// set blindly), colour-scheme
 /// reports (mode 2031, `outer`), and the kitty
 /// keyboard flags it pushed, popped on the alternate screen they were
 /// pushed on, as the kitty spec says to leave. The client sends this
 /// however the attachment ends, the server gone or not; a terminal that
 /// never had them ignores both, and a pop of a stack the server pushed
 /// nothing on, the alternate screen's own, empties it.
-const LEAVE: &str = "\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
+const LEAVE: &str = "\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
 #[derive(Debug)]
@@ -1098,6 +1100,13 @@ mod tests {
         assert!(may_open("me command-prompt"));
         assert!(!may_open("me focused opts horizontal split drop"));
         assert!(!may_open("str menu rename"));
+    }
+
+    /// Leaving sets no cursor shape: DECSCUSR 0 is a blinking block (ctlseqs),
+    /// not the terminal's own, and the server gives back one a pane set.
+    #[test]
+    fn leaving_leaves_the_cursor_shape_alone() {
+        assert!(!LEAVE.contains(" q"), "{LEAVE:?}");
     }
 
     /// What the client makes of the server's answer to Hello, as read from

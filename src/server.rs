@@ -414,14 +414,20 @@ impl Conn {
     }
 
     /// Moves the connection on to `next`. One that was attached has its
-    /// client detached and its terminal given back; one that is dead stays
-    /// so.
+    /// client detached and its terminal given back, with its own cursor
+    /// shape; one that is dead stays so.
     fn enter(&mut self, session: &mut Session, next: Stage) {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
-        if let Stage::Attached(attached) = std::mem::replace(&mut self.stage, next) {
+        if let Stage::Attached(mut attached) = std::mem::replace(&mut self.stage, next) {
             session.detach(attached.client);
+            // A cursor shape a pane set is given back as the terminal's own
+            // (DECSCUSR 0, as `render::Modes` writes it); one never set is
+            // left as the terminal had it.
+            if attached.shown.modes.cursor_shape != fux_vt::CursorShape::Initial {
+                attached.paint(&mut self.out, b"\x1b[0 q");
+            }
             if let Some(tty) = attached.tty {
                 tty.give_back(&mut self.out);
             }
@@ -1934,6 +1940,30 @@ mod tests {
         assert!(painted.ends_with(b"end"), "the last of what waited");
         assert_eq!(exit.as_deref(), Some("detached"));
         assert!(session.views.is_empty(), "the client is detached");
+        Ok(())
+    }
+
+    /// A client let go gives its terminal the cursor's shape back as the
+    /// terminal's own (DECSCUSR 0) only if a pane set one: by ctlseqs, 0
+    /// is a blinking block, which a terminal fux never told otherwise was
+    /// not asked to be.
+    #[test]
+    fn a_cursor_shape_is_given_back_only_once_one_was_set() -> Result<(), String> {
+        use std::io::Read;
+        for (shape, given) in [
+            (fux_vt::CursorShape::Initial, ""),
+            (fux_vt::CursorShape::SteadyBar, "\x1b[0 q"),
+        ] {
+            let (mut session, mut conn, _peer, mut far) = with_terminal()?;
+            if let Some(attached) = conn.attached() {
+                attached.shown.modes.cursor_shape = shape;
+            }
+            conn.end(&mut session, &ToAttached::Exit("detached"));
+            far.set_nonblocking(true).map_err(|e| e.to_string())?;
+            let mut written = Vec::new();
+            let _ = far.read_to_end(&mut written);
+            assert_eq!(String::from_utf8_lossy(&written), given, "{shape:?}");
+        }
         Ok(())
     }
 
