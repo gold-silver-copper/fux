@@ -36,7 +36,7 @@ impl Grid {
         // A mark no line held goes to the start of the last row.
         let last = Mark::Blank(layout.rows.saturating_sub(1), 0);
         let [cursor, saved] = layout.marks.map(|mark| mark.unwrap_or(last));
-        let cursor_row = cursor.row();
+        let (Mark::Text(cursor_row, _) | Mark::Blank(cursor_row, _)) = cursor;
         // Only as many as the screen's own lines are past the new height:
         // rows in history stay there, and a resize never brings one back
         // above the cursor to fill the place of dropped blank lines.
@@ -435,14 +435,6 @@ enum Mark {
     /// before: in the last column at most, never waiting to wrap, as
     /// resizing without reflow keeps it.
     Blank(usize, usize),
-}
-
-impl Mark {
-    fn row(self) -> usize {
-        match self {
-            Mark::Text(row, _) | Mark::Blank(row, _) => row,
-        }
-    }
 }
 
 /// The shape of a reflow: how many rows, where the cursor and the saved
