@@ -62,7 +62,8 @@ impl Screen {
             b"C" => {
                 let late = option == Some(&b"late"[..]);
                 self.commands.prompt = false;
-                let submitted = self.submitted.take().and_then(|s| self.after_line(s.row));
+                let submitted = (self.submitted.take())
+                    .and_then(|s| self.line_after(self.grid().index_of(s.row)?));
                 self.commands.output_start = Some(match late {
                     true => submitted.or_else(|| self.after_prompt()).unwrap_or(here),
                     false => here,
@@ -114,26 +115,19 @@ impl Screen {
     /// the cursor: where what a line typed at it brought begins.
     fn after_prompt(&self) -> Option<Mark> {
         let grid = self.grid();
-        let cursor = grid.cursor_index()?;
-        let prompt = (0..=cursor)
+        let prompt = (0..=grid.cursor_index()?)
             .rev()
             .find(|i| grid.row_at(*i).is_some_and(|r| r.starts_prompt()))?;
-        self.line_after(prompt, cursor)
-    }
-
-    /// The start of the row after the line row `row` is on, if that is
-    /// not below the cursor: where what followed a line submitted there
-    /// begins.
-    fn after_line(&self, row: RowId) -> Option<Mark> {
-        let grid = self.grid();
-        let cursor = grid.cursor_index()?;
-        self.line_after(grid.index_of(row)?, cursor)
+        self.line_after(prompt)
     }
 
     /// The start of the row after the line that row `at` is on, its
-    /// soft-wrapped rows with it, if that is not below row `cursor`.
-    fn line_after(&self, at: usize, cursor: usize) -> Option<Mark> {
+    /// soft-wrapped rows with it, if that is not below the cursor: where
+    /// what followed a line submitted there, or typed at a prompt there,
+    /// begins.
+    fn line_after(&self, at: usize) -> Option<Mark> {
         let grid = self.grid();
+        let cursor = grid.cursor_index()?;
         let next = (at..=cursor)
             .find(|i| grid.row_at(*i).is_some_and(|r| !r.wrapped()))?
             .checked_add(1)?;
