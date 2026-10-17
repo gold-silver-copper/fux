@@ -714,14 +714,6 @@ impl Screen {
     pub fn attributes(&self) -> Attributes {
         self.attributes
     }
-    /// The pen's background colour.
-    pub fn bgcolor(&self) -> Color {
-        self.attributes.background()
-    }
-    /// Whether the pen is inverse.
-    pub fn inverse(&self) -> bool {
-        self.attributes.inverse()
-    }
     /// The cell at `row`, `col` of the screen.
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         self.grid().cell(row, col)

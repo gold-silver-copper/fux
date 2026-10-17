@@ -257,8 +257,6 @@ macro_rules! side {
                         kitty_keyboard_flags: s.kitty_keyboard_flags(),
                         modify_other_keys: format!("{:?}", s.modify_other_keys()),
                         pen: style(pen),
-                        pen_getters_agree: s.bgcolor() == pen.background()
-                            && s.inverse() == pen.inverse(),
                         hyperlink: s
                             .hyperlink()
                             .map(|(uri, id)| (uri.to_owned(), id.map(str::to_owned))),

@@ -297,8 +297,6 @@ pub struct State {
     pub modify_other_keys: String,
     /// The pen, through `Screen::attributes`.
     pub pen: Style,
-    /// Whether `Screen::bgcolor` and `Screen::inverse` say what the pen says.
-    pub pen_getters_agree: bool,
     /// The link the program has open: its URI and id.
     pub hyperlink: Option<(String, Option<String>)>,
     pub history_len: usize,
