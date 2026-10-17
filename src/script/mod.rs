@@ -994,20 +994,16 @@ impl Asks for Settings<'_> {
 /// A program that may not do what the client does itself: a config's, a
 /// key's, a saved session's.
 pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
-    let word = match what {
-        Local::Attach { size: None, .. } => "attach",
-        Local::Attach { size: Some(_), .. } => "headless",
-        Local::Server(_) => "server",
-        Local::Start => "start",
-        Local::Status => "status",
-        Local::Servers => "servers",
-        Local::ForceKill => "force-kill-server",
-        Local::Open(_) => "a client's screen",
+    let why = match what {
+        Local::Open(_) => "a client's screen opens from its own keys or prompt",
+        Local::Attach { .. }
+        | Local::Server(_)
+        | Local::Start
+        | Local::Status
+        | Local::Servers
+        | Local::ForceKill => "runs from the command line only",
     };
-    Err(Failed::new(
-        Code::NotHere,
-        format!("{word} runs from the command line only"),
-    ))
+    Err(Failed::new(Code::NotHere, why))
 }
 
 /// Brings back a saved session: its program run against the server on

@@ -246,28 +246,25 @@ pub fn usage(word: &str) -> Option<String> {
     Some(format!("use: {takes} {word}{leaves}{example}"))
 }
 
-fn wrong(word: &str, wanted: &str, got: &Value<Fux>) -> Failure {
-    fail(
-        Lang::Type,
-        format!("{word} takes {wanted}, not {}", got.kind()),
-    )
+fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
+    fail(Lang::Type, format!("takes {wanted}, not {}", got.kind()))
 }
 
-fn string(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
+fn string(value: &Value<Fux>) -> Result<String, Failure> {
     let Value::Str(s) = value else {
-        return Err(wrong(word, "a string", value));
+        return Err(wrong("a string", value));
     };
     Ok(s.to_string())
 }
 
 /// A value as words that take text read it: a string, or a number.
-fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
+fn text(value: &Value<Fux>) -> Result<String, Failure> {
     match value {
         Value::Str(s) => Ok(s.to_string()),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
         other @ (Value::List(_) | Value::App(_)) => {
-            Err(wrong(word, "a string, a number or a boolean", other))
+            Err(wrong("a string, a number or a boolean", other))
         }
     }
 }
@@ -301,9 +298,9 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
     }
 }
 
-fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
+fn int(value: &Value<Fux>) -> Result<i64, Failure> {
     let Value::Int(n) = value else {
-        return Err(wrong(word, "an integer", value));
+        return Err(wrong("an integer", value));
     };
     Ok(*n)
 }
@@ -313,12 +310,8 @@ const CELL: RangeInclusive<i64> = 0..=u16::MAX as i64;
 const COUNT: RangeInclusive<i64> = 0..=i64::MAX;
 
 /// An integer within `range`, as the type it goes in.
-fn within<T: TryFrom<i64>>(
-    word: &str,
-    value: &Value<Fux>,
-    range: RangeInclusive<i64>,
-) -> Result<T, Failure> {
-    let n = int(word, value)?;
+fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Result<T, Failure> {
+    let n = int(value)?;
     let fits = T::try_from(n).ok().filter(|_| range.contains(&n));
     fits.ok_or_else(|| {
         let said = match (range.start(), range.end()) {
@@ -330,8 +323,8 @@ fn within<T: TryFrom<i64>>(
 }
 
 /// One of a closed set, by its name; refused, naming each, if none.
-fn one_of<T: Copy>(word: &str, value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> {
-    let given = string(word, value)?;
+fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> {
+    let given = string(value)?;
     let found = all.iter().find(|(name, _)| *name == given);
     found.map(|(_, t)| *t).ok_or_else(|| {
         let names: Vec<&str> = all.iter().map(|(name, _)| *name).collect();
@@ -342,17 +335,9 @@ fn one_of<T: Copy>(word: &str, value: &Value<Fux>, all: &[(&str, T)]) -> Result<
 
 /// A size: columns and rows each 1 to `most` (a tab's laid out on, 500;
 /// a client's, as many as a cell holds).
-fn laid_out(
-    word: &str,
-    cols: &Value<Fux>,
-    rows: &Value<Fux>,
-    most: u16,
-) -> Result<fux_vt::Size, Failure> {
+fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::Size, Failure> {
     let cells = 1..=i64::from(most);
-    let (cols, rows) = (
-        within(word, cols, cells.clone())?,
-        within(word, rows, cells)?,
-    );
+    let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
     fux_vt::Size::new(rows, cols).map_err(|e| fail(Lang::Range, e.to_string()))
 }
 
@@ -367,19 +352,19 @@ fn as_pane(value: &Value<Fux>) -> Option<crate::id::PaneId> {
     Some(*p)
 }
 
-fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
-    as_pane(value).ok_or_else(|| wrong(word, "a pane (from pane, run or split)", value))
+fn pane(value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
+    as_pane(value).ok_or_else(|| wrong("a pane (from pane, run or split)", value))
 }
 
-fn client(word: &str, value: &Value<Fux>) -> Result<crate::id::ClientId, Failure> {
+fn client(value: &Value<Fux>) -> Result<crate::id::ClientId, Failure> {
     let Value::App(Fux::Client(c)) = value else {
-        return Err(wrong(word, "a client (from me or client)", value));
+        return Err(wrong("a client (from me or client)", value));
     };
     Ok(*c)
 }
 
 /// A pane, tab or workspace.
-fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef, Failure> {
+fn target(value: &Value<Fux>) -> Result<AnyRef, Failure> {
     if let Some(p) = as_pane(value) {
         Ok(AnyRef::Pane(p))
     } else if let Value::App(Fux::Tab(t)) = value {
@@ -387,21 +372,21 @@ fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef, Failure> {
     } else if let Value::App(Fux::Workspace(w)) = value {
         Ok(AnyRef::Workspace(*w))
     } else {
-        Err(wrong(word, "a pane, tab or workspace", value))
+        Err(wrong("a pane, tab or workspace", value))
     }
 }
 
 /// A workspace, or its name: `+N` read as its id, as `parse_workspace` reads it.
-fn workspace(word: &str, value: &Value<Fux>) -> Result<WsRef, Failure> {
+fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
     if let Value::App(Fux::Workspace(w)) = value {
         return Ok(WsRef::Id(*w));
     }
-    crate::command::parse_workspace(&string(word, value)?)
+    crate::command::parse_workspace(&string(value)?)
         .map_err(|e| fail(Code::BadValue, e.to_string()))
 }
 
-fn direction(word: &str, value: &Value<Fux>) -> Result<Direction, Failure> {
-    one_of(word, value, &Direction::ALL.map(|way| (way.name(), way)))
+fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
+    one_of(value, &Direction::ALL.map(|way| (way.name(), way)))
 }
 
 /// Options a word would leave unused, refused rather than ignored: it
@@ -426,15 +411,12 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
             format!("{option} goes on {}", on.join(", "))
         }
     };
-    Err(fail(
-        Code::Unused,
-        format!("{word} takes no {option}: {instead}"),
-    ))
+    Err(fail(Code::Unused, format!("takes no {option}: {instead}")))
 }
 
 /// The options `value` holds, `word` among those given.
 fn option<'a>(word: &'static str, value: &'a mut Value<Fux>) -> Result<&'a mut Opts, Failure> {
-    let built = opts(word, value)?;
+    let built = opts(value)?;
     built.given.push(word);
     Ok(built)
 }
@@ -455,29 +437,29 @@ fn with(
     } else if let Value::App(Fux::Mouse(mouse)) = &mut value {
         change(&mut mouse.waits);
     } else {
-        return Err(wrong(word, "options, keys or a mouse event", &value));
+        return Err(wrong("options, keys or a mouse event", &value));
     }
     out.push(value);
     Ok(Done::Now)
 }
 
-fn opts<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Opts, Failure> {
+fn opts(value: &mut Value<Fux>) -> Result<&mut Opts, Failure> {
     let Value::App(Fux::Opts(opts)) = value else {
-        return Err(wrong(word, "options (from opts)", value));
+        return Err(wrong("options (from opts)", value));
     };
     Ok(opts)
 }
 
 /// The options `value` holds, all made: refused if `word` leaves one unused.
 fn finished(word: &str, mut value: Value<Fux>) -> Result<Opts, Failure> {
-    let built = std::mem::take(opts(word, &mut value)?);
+    let built = std::mem::take(opts(&mut value)?);
     unused(word, &built)?;
     Ok(built)
 }
 
-fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failure> {
+fn keys(value: &mut Value<Fux>) -> Result<&mut Keys, Failure> {
     let Value::App(Fux::Keys(keys)) = value else {
-        return Err(wrong(word, "keys (from keys)", value));
+        return Err(wrong("keys (from keys)", value));
     };
     Ok(keys)
 }
@@ -612,7 +594,7 @@ impl fuxth::Host for Host<'_> {
         let mut args = args.into_iter();
         let mut next = || {
             args.next()
-                .ok_or_else(|| fail(Lang::StackUnderflow, format!("{name} takes {}", spec.takes)))
+                .ok_or_else(|| fail(Lang::StackUnderflow, format!("takes {}", spec.takes)))
         };
         let now = |out: &mut Vec<Value<Fux>>, value: Value<Fux>| {
             out.push(value);
@@ -625,11 +607,11 @@ impl fuxth::Host for Host<'_> {
         // A client's own screens, which it opens itself: from its keys or
         // prompt, here; asked from elsewhere, relayed for it to run.
         if let Some((_, opens)) = SCREENS.iter().find(|(word, _)| *word == name) {
-            let c = client(name, &next()?)?;
+            let c = client(&next()?)?;
             let open = match opens {
                 Opens::Alone(open) => open.clone(),
-                Opens::Pane(open) => open(pane(name, &next()?)?),
-                Opens::Target(open) => open(target(name, &next()?)?),
+                Opens::Pane(open) => open(pane(&next()?)?),
+                Opens::Target(open) => open(target(&next()?)?),
             };
             return match self.context.client == Some(c) {
                 true => local(Local::Open(open)),
@@ -669,13 +651,13 @@ impl fuxth::Host for Host<'_> {
                         }
                     }
                     other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
-                        Err(wrong(name, "a name, or a pane, tab or workspace", &other))
+                        Err(wrong("a name, or a pane, tab or workspace", &other))
                     }
                 }
             }
             "here" => resolve(String::new(), Kind::Pane),
             "client" => {
-                let text = string(name, &next()?)?;
+                let text = string(&next()?)?;
                 let id = text.parse().map_err(|_| {
                     fail(
                         Code::BadValue,
@@ -688,11 +670,11 @@ impl fuxth::Host for Host<'_> {
                 Some(c) => now(out, Value::App(Fux::Client(c))),
                 None => Err(fail(
                     Code::NotAClient,
-                    "me is the client whose key or prompt runs this: this runs from the command line",
+                    "the client whose key or prompt runs this: this runs from the command line",
                 )),
             },
             "focused" => {
-                let c = client(name, &next()?)?;
+                let c = client(&next()?)?;
                 later(ask_as(
                     c,
                     Command::Resolve {
@@ -707,7 +689,7 @@ impl fuxth::Host for Host<'_> {
             "keys" => now(out, Value::App(Fux::Keys(Box::default()))),
             "command" => {
                 let mut o = next()?;
-                let line = string(name, &next()?)?;
+                let line = string(&next()?)?;
                 let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
                 if argv.first().is_none_or(|p| p.is_empty()) {
                     return Err(fail(Code::NoProgram, "an empty command line"));
@@ -720,22 +702,22 @@ impl fuxth::Host for Host<'_> {
                 let v = next()?;
                 let built = option(name, &mut o)?;
                 match name {
-                    "name" => built.name = Some(string(name, &v)?),
-                    "cwd" => built.cwd = Some(string(name, &v)?),
+                    "name" => built.name = Some(string(&v)?),
+                    "cwd" => built.cwd = Some(string(&v)?),
                     "program" => match built.argv.first_mut() {
-                        Some(first) => *first = string(name, &v)?,
-                        None => built.argv.push(string(name, &v)?),
+                        Some(first) => *first = string(&v)?,
+                        None => built.argv.push(string(&v)?),
                     },
                     "arg" => {
                         if built.argv.is_empty() {
-                            return Err(fail(Code::NoProgram, "arg comes after program"));
+                            return Err(fail(Code::NoProgram, "comes after program"));
                         }
-                        built.argv.push(text(name, &v)?);
+                        built.argv.push(text(&v)?);
                     }
-                    "typed" => built.typed = Some(string(name, &v)?),
-                    "in" => built.place = Some(workspace(name, &v)?),
+                    "typed" => built.typed = Some(string(&v)?),
+                    "in" => built.place = Some(workspace(&v)?),
                     "id" => {
-                        let text = string(name, &v)?;
+                        let text = string(&v)?;
                         let bad = format!("{text:?} is not %N, @N or +N");
                         let ids = &mut built.ids;
                         let given = match text.parse().map_err(|()| fail(Code::BadValue, bad))? {
@@ -748,20 +730,20 @@ impl fuxth::Host for Host<'_> {
                             return Err(fail(Code::Id, why));
                         }
                     }
-                    "log-to" => built.log = Some(string(name, &v)?),
-                    _ => built.history = Some(within(name, &v, COUNT)?),
+                    "log-to" => built.log = Some(string(&v)?),
+                    _ => built.history = Some(within(&v, COUNT)?),
                 }
                 now(out, o)
             }
             "size" => {
                 let mut o = next()?;
-                let size = laid_out(name, &next()?, &next()?, 500)?;
+                let size = laid_out(&next()?, &next()?, 500)?;
                 option(name, &mut o)?.size = Some(size);
                 now(out, o)
             }
             "env" => {
                 let mut o = next()?;
-                let (key, value) = (string(name, &next()?)?, text(name, &next()?)?);
+                let (key, value) = (string(&next()?)?, text(&next()?)?);
                 let env = &mut option(name, &mut o)?.env;
                 env.push(key, value)
                     .map_err(|why| fail(Code::BadValue, why))?;
@@ -780,7 +762,7 @@ impl fuxth::Host for Host<'_> {
                 let mut o = next()?;
                 let view = &mut option(name, &mut o)?.view;
                 if view.source != Source::Shown {
-                    let why = format!("{name}: a capture reads one screen, and one is given");
+                    let why = "a capture reads one screen, and one is given".to_owned();
                     return Err(fail(Code::Unused, why));
                 }
                 view.source = match name {
@@ -807,7 +789,7 @@ impl fuxth::Host for Host<'_> {
             }
             "rows" | "cols" => {
                 let mut o = next()?;
-                let (from, to) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
+                let (from, to) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
                 if from > to {
                     return Err(fail(
                         Lang::Range,
@@ -829,7 +811,7 @@ impl fuxth::Host for Host<'_> {
                         if built.argv.is_empty() {
                             return Err(fail(
                                 Code::NoProgram,
-                                "run needs a program: opts str ./app program run",
+                                "needs a program: opts str ./app program run",
                             ));
                         }
                         let run = Command::Run {
@@ -866,7 +848,7 @@ impl fuxth::Host for Host<'_> {
                 later(ask(command, Then::Handle(Kind::Pane)))
             }
             "split" => {
-                let p = pane(name, &next()?)?;
+                let p = pane(&next()?)?;
                 let built = finished(name, next()?)?;
                 let crate::id::Wanted {
                     pane: id,
@@ -874,13 +856,13 @@ impl fuxth::Host for Host<'_> {
                     workspace: None,
                 } = built.ids
                 else {
-                    return Err(fail(Code::Id, "split makes a pane alone: its id is %N"));
+                    return Err(fail(Code::Id, "makes a pane alone: its id is %N"));
                 };
                 let (run, cmd) = match (built.argv.is_empty(), built.typed) {
                     (true, typed) => (false, typed.into_iter().collect()),
                     (false, None) => (true, built.argv),
                     (false, Some(_)) => {
-                        let why = "split takes no typed with a program: a line is typed into the shell the program replaces";
+                        let why = "takes no typed with a program: a line is typed into the shell the program replaces";
                         return Err(fail(Code::Unused, why));
                     }
                 };
@@ -897,7 +879,7 @@ impl fuxth::Host for Host<'_> {
                 later(ask(split, Then::Handle(Kind::Pane)))
             }
             "respawn" => {
-                let p = pane(name, &next()?)?;
+                let p = pane(&next()?)?;
                 let built = finished(name, next()?)?;
                 let respawn = Command::Respawn {
                     target: p,
@@ -911,7 +893,7 @@ impl fuxth::Host for Host<'_> {
             // ----------------------------------------------------- waiting
             "wait-text" | "wait-gone" => {
                 let x = next()?;
-                let t = string(name, &next()?)?;
+                let t = string(&next()?)?;
                 let bare = t.trim_start_matches('^').trim_end_matches('$').trim();
                 // A tab is a blank, as a wait compares: blanks as one.
                 if bare.is_empty() || t.contains(['\n', '\r']) {
@@ -928,7 +910,7 @@ impl fuxth::Host for Host<'_> {
             }
             "timeout" => {
                 let x = next()?;
-                let n = within(name, &next()?, COUNT)?;
+                let n = within(&next()?, COUNT)?;
                 with(name, x, out, |w| w.timeout = Some(Duration::from_secs(n)))
             }
             "wait-exit" | "wait-bell" => {
@@ -939,7 +921,7 @@ impl fuxth::Host for Host<'_> {
                 with(name, next()?, out, |w| w.until.push(until))
             }
             "wait" => {
-                let p = target(name, &next()?)?;
+                let p = target(&next()?)?;
                 let built = finished(name, next()?)?;
                 // With a wait's time either way: on a tab or workspace, for
                 // each of its panes.
@@ -950,11 +932,11 @@ impl fuxth::Host for Host<'_> {
             "text" | "key" | "paste" | "paste-file" | "times" => {
                 let mut k = next()?;
                 let v = next()?;
-                let built = keys(name, &mut k)?;
+                let built = keys(&mut k)?;
                 match name {
-                    "text" => built.inputs.push(Input::Text(text(name, &v)?)),
+                    "text" => built.inputs.push(Input::Text(text(&v)?)),
                     "key" => {
-                        let word = string(name, &v)?;
+                        let word = string(&v)?;
                         let press = word.parse().map_err(|_| {
                             fail(
                                 Code::NotAKey,
@@ -963,9 +945,9 @@ impl fuxth::Host for Host<'_> {
                         })?;
                         built.inputs.push(Input::Key(press));
                     }
-                    "paste" => built.inputs.push(Input::Paste(string(name, &v)?)),
+                    "paste" => built.inputs.push(Input::Paste(string(&v)?)),
                     "paste-file" => {
-                        let path = string(name, &v)?;
+                        let path = string(&v)?;
                         let most = (INPUT_MAX, "900 KiB, the most one paste takes");
                         let text = super::read_file(path.as_ref(), most)
                             .map_err(|f| fail(Code::Paste, f.message))?;
@@ -973,11 +955,11 @@ impl fuxth::Host for Host<'_> {
                     }
                     // The input just before it, n times in all.
                     _ => {
-                        let n: usize = within(name, &v, 1..=1000)?;
+                        let n: usize = within(&v, 1..=1000)?;
                         let Some(last) = built.inputs.last().cloned() else {
                             return Err(fail(
                                 Code::NoKeys,
-                                "times repeats the input before it: str Down key 3 times",
+                                "repeats the input before it: str Down key 3 times",
                             ));
                         };
                         built
@@ -990,12 +972,9 @@ impl fuxth::Host for Host<'_> {
             "send-keys" => {
                 let to = next()?;
                 let mut k = next()?;
-                let built = keys(name, &mut k)?.clone();
+                let built = keys(&mut k)?.clone();
                 if built.inputs.is_empty() {
-                    return Err(fail(
-                        Code::NoKeys,
-                        "send-keys needs keys: keys str hello text",
-                    ));
+                    return Err(fail(Code::NoKeys, "needs keys: keys str hello text"));
                 }
                 // As the request carries them, which must fit in one frame:
                 // text and pastes their bytes, keys their names' (`C-M-F12`
@@ -1011,7 +990,7 @@ impl fuxth::Host for Host<'_> {
                     return Err(fail(
                         Lang::TooLong,
                         format!(
-                            "send-keys: {typed} bytes, more than 900 KiB, the most it sends at once \
+                            "{typed} bytes, more than 900 KiB, the most it sends at once \
                              (text and pastes count their bytes, keys their names', each input \
                              after the first 5 more)"
                         ),
@@ -1023,7 +1002,7 @@ impl fuxth::Host for Host<'_> {
                     if built.waits != Waits::default() {
                         return Err(fail(
                             Code::Unused,
-                            "send-keys to a client takes no wait: wait on the pane after (PANE opts … wait)",
+                            "to a client takes no wait: wait on the pane after (PANE opts … wait)",
                         ));
                     }
                     let keys = ClientAction::Keys(built.inputs);
@@ -1038,8 +1017,8 @@ impl fuxth::Host for Host<'_> {
                     return later(ask(typed, answer));
                 }
                 let (then, answer) = acted(&built.waits, self.settle);
-                let target = target(name, &to)
-                    .map_err(|_| wrong(name, "a pane, tab, workspace or client", &to))?;
+                let target =
+                    target(&to).map_err(|_| wrong("a pane, tab, workspace or client", &to))?;
                 let keys = Command::SendKeys {
                     target,
                     inputs: built.inputs,
@@ -1048,9 +1027,8 @@ impl fuxth::Host for Host<'_> {
             }
             "mouse" => {
                 let action = next()?;
-                let (row, col) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
+                let (row, col) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
                 let mouse = one_of(
-                    name,
                     &action,
                     &[
                         ("click", Mouse::Click(Button::Left)),
@@ -1074,10 +1052,10 @@ impl fuxth::Host for Host<'_> {
                 )
             }
             "send-mouse" => {
-                let p = pane(name, &next()?)?;
+                let p = pane(&next()?)?;
                 let m = next()?;
                 let Value::App(Fux::Mouse(m)) = &m else {
-                    return Err(wrong(name, "a mouse event (from mouse)", &m));
+                    return Err(wrong("a mouse event (from mouse)", &m));
                 };
                 let (then, answer) = acted(&m.waits, self.settle);
                 let mouse = Command::SendMouse {
@@ -1089,9 +1067,9 @@ impl fuxth::Host for Host<'_> {
                 later(ask(followed(mouse, then), answer))
             }
             "signal" => {
-                let p = pane(name, &next()?)?;
+                let p = pane(&next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
-                let signal = one_of(name, &next()?, &signals)?;
+                let signal = one_of(&next()?, &signals)?;
                 // From a command line: answers once the program exited or settled.
                 let (then, answer) = acted(&Waits::default(), self.settle);
                 later(ask(
@@ -1101,7 +1079,7 @@ impl fuxth::Host for Host<'_> {
             }
             // ----------------------------------------------------- reading
             "capture" => {
-                let p = pane(name, &next()?)?;
+                let p = pane(&next()?)?;
                 let built = finished(name, next()?)?;
                 let then = if built.json {
                     Then::Json(Said::Capture)
@@ -1124,10 +1102,10 @@ impl fuxth::Host for Host<'_> {
             "ls" | "info" | "get" => {
                 let target = match name {
                     "ls" => None,
-                    _ => Some(target(name, &next()?)?),
+                    _ => Some(target(&next()?)?),
                 };
                 let (get, then) = match name {
-                    "get" => (Some(string(name, &next()?)?), Then::Value),
+                    "get" => (Some(string(&next()?)?), Then::Value),
                     _ => (None, Then::Answer(Said::Listing)),
                 };
                 later(ask(Command::Ls { target, get }, then))
@@ -1152,7 +1130,7 @@ impl fuxth::Host for Host<'_> {
             },
             "events" | "events-json" | "events-of" | "events-of-json" => {
                 let target = match name.starts_with("events-of") {
-                    true => Some(target(name, &next()?)?),
+                    true => Some(target(&next()?)?),
                     false => None,
                 };
                 let json = name.ends_with("json");
@@ -1161,17 +1139,17 @@ impl fuxth::Host for Host<'_> {
             "dump" | "dump-of" => {
                 let target = match name {
                     "dump" => None,
-                    _ => Some(target(name, &next()?)?),
+                    _ => Some(target(&next()?)?),
                 };
                 later(ask(Command::DumpLayout { target }, Then::Text))
             }
             // ---------------------------------------------------- changing
             "kill" => tell(Command::Kill {
-                target: target(name, &next()?)?,
+                target: target(&next()?)?,
             }),
             "rename" | "notify" => {
-                let t = target(name, &next()?)?;
-                let given = text(name, &next()?)?;
+                let t = target(&next()?)?;
+                let given = text(&next()?)?;
                 tell(match name {
                     "rename" => Command::Rename {
                         target: t,
@@ -1185,28 +1163,28 @@ impl fuxth::Host for Host<'_> {
             }
             "notify-all" => tell(Command::Notify {
                 target: None,
-                text: text(name, &next()?)?,
+                text: text(&next()?)?,
             }),
             "resize" | "resize-auto" => {
-                let target = target(name, &next()?)?;
+                let target = target(&next()?)?;
                 let size = match name {
-                    "resize" => Some(laid_out(name, &next()?, &next()?, 500)?),
+                    "resize" => Some(laid_out(&next()?, &next()?, 500)?),
                     _ => None,
                 };
                 tell(Command::Resize(Resized::Tabs(target, size)))
             }
             "resize-client" => {
-                let c = client(name, &next()?)?;
-                let size = laid_out(name, &next()?, &next()?, u16::MAX)?;
+                let c = client(&next()?)?;
+                let size = laid_out(&next()?, &next()?, u16::MAX)?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
-                let p = pane(name, &next()?)?;
+                let p = pane(&next()?)?;
                 let extent = match next()? {
                     Value::App(Fux::Extent(e)) => e,
-                    v @ Value::Int(_) => Extent::Cells(within(name, &v, CELL)?),
+                    v @ Value::Int(_) => Extent::Cells(within(&v, CELL)?),
                     other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                        return Err(wrong(name, "cells or a percent", &other));
+                        return Err(wrong("cells or a percent", &other));
                     }
                 };
                 let axis = match name {
@@ -1217,26 +1195,23 @@ impl fuxth::Host for Host<'_> {
                 tell(Command::ResizePane { target: p, by })
             }
             "percent" => {
-                let n = int(name, &next()?)?;
+                let n = int(&next()?)?;
                 let Some(share) = u8::try_from(n).ok().and_then(Percent::new) else {
-                    return Err(fail(
-                        Lang::Range,
-                        format!("percent takes 1 to 100, not {n}"),
-                    ));
+                    return Err(fail(Lang::Range, format!("takes 1 to 100, not {n}")));
                 };
                 now(out, Value::App(Fux::Extent(Extent::Percent(share))))
             }
             "move-border" => {
-                let p = pane(name, &next()?)?;
-                let way = direction(name, &next()?)?;
-                let cells = within(name, &next()?, CELL)?;
+                let p = pane(&next()?)?;
+                let way = direction(&next()?)?;
+                let cells = within(&next()?, CELL)?;
                 tell(Command::ResizePane {
                     target: p,
                     by: PaneResize::Border(way, cells),
                 })
             }
             "move-to" => {
-                let p = pane(name, &next()?)?;
+                let p = pane(&next()?)?;
                 let to = match next()? {
                     Value::App(Fux::Tab(t)) => MoveTo::Tab(t),
                     Value::App(Fux::Workspace(w)) => MoveTo::Workspace(WsRef::Id(w)),
@@ -1248,7 +1223,6 @@ impl fuxth::Host for Host<'_> {
                     | Value::List(_)
                     | Value::App(_)) => {
                         return Err(wrong(
-                            name,
                             "a tab, a workspace, new-tab or new-workspace",
                             &other,
                         ));
@@ -1257,61 +1231,61 @@ impl fuxth::Host for Host<'_> {
                 tell(Command::MovePane { target: p, to })
             }
             "move-beside" => {
-                let p = pane(name, &next()?)?;
-                let way = direction(name, &next()?)?;
+                let p = pane(&next()?)?;
+                let way = direction(&next()?)?;
                 tell(Command::MovePane {
                     target: p,
                     to: MoveTo::Beside(way),
                 })
             }
             "swap-panes" => {
-                let (a, b) = (pane(name, &next()?)?, pane(name, &next()?)?);
+                let (a, b) = (pane(&next()?)?, pane(&next()?)?);
                 tell(Command::SwapPane {
                     target: a,
                     with: SwapWith::Pane(b),
                 })
             }
             "swap-toward" => {
-                let p = pane(name, &next()?)?;
-                let way = direction(name, &next()?)?;
+                let p = pane(&next()?)?;
+                let way = direction(&next()?)?;
                 tell(Command::SwapPane {
                     target: p,
                     with: SwapWith::Toward(way),
                 })
             }
             "reorder" => {
-                let t = target(name, &next()?)?;
+                let t = target(&next()?)?;
                 let siblings = [("next", Sibling::Next), ("previous", Sibling::Previous)];
-                let toward = one_of(name, &next()?, &siblings)?;
+                let toward = one_of(&next()?, &siblings)?;
                 tell(Command::Reorder { target: t, toward })
             }
             "start-log" | "stop-log" => {
-                let target = pane(name, &next()?)?;
+                let target = pane(&next()?)?;
                 let file = match name {
-                    "start-log" => Some(string(name, &next()?)?),
+                    "start-log" => Some(string(&next()?)?),
                     _ => None,
                 };
                 tell(Command::Log { target, file })
             }
             "clear-history" => tell(Command::ClearHistory {
-                target: pane(name, &next()?)?,
+                target: pane(&next()?)?,
             }),
             "buffers" => later(ask(Command::ListBuffers, Then::Text)),
             "buffer" => later(ask(
                 Command::ShowBuffer {
-                    index: within(name, &next()?, COUNT)?,
+                    index: within(&next()?, COUNT)?,
                 },
                 Then::Text,
             )),
             "paste-buffer" => {
-                let p = pane(name, &next()?)?;
-                let index = within(name, &next()?, COUNT)?;
+                let p = pane(&next()?)?;
+                let index = within(&next()?, COUNT)?;
                 tell(Command::PasteBuffer { index, target: p })
             }
             // ----------------------------------------------------- clients
             "attach" | "watch" | "attach-to" => {
                 let workspace = match name {
-                    "attach-to" => Some(match workspace(name, &next()?)? {
+                    "attach-to" => Some(match workspace(&next()?)? {
                         WsRef::Id(w) => w.to_string(),
                         WsRef::Name(n) => n,
                     }),
@@ -1325,7 +1299,7 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "headless" => {
-                let size = laid_out(name, &next()?, &next()?, u16::MAX)?;
+                let size = laid_out(&next()?, &next()?, u16::MAX)?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
@@ -1333,37 +1307,37 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "focus" => {
-                let c = client(name, &next()?)?;
+                let c = client(&next()?)?;
                 let ways = Direction::ALL.map(|way| (way.name(), PanePick::Toward(way)));
                 let steps = [
                     ("next", PanePick::Step(Sibling::Next)),
                     ("previous", PanePick::Step(Sibling::Previous)),
                     ("last", PanePick::Last),
                 ];
-                let pick = one_of(name, &next()?, &[ways.as_slice(), &steps].concat())?;
+                let pick = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
                 later(act(c, ClientAction::SelectPane(pick)))
             }
             "focus-pane" => {
-                let c = client(name, &next()?)?;
-                let p = pane(name, &next()?)?;
+                let c = client(&next()?)?;
+                let p = pane(&next()?)?;
                 later(act(c, ClientAction::SelectPane(PanePick::Id(p))))
             }
             "show-tab" => {
-                let c = client(name, &next()?)?;
+                let c = client(&next()?)?;
                 let t = next()?;
                 let Value::App(Fux::Tab(tab)) = &t else {
-                    return Err(wrong(name, "a tab", &t));
+                    return Err(wrong("a tab", &t));
                 };
                 later(act(c, ClientAction::SelectTab(Pick::Id(*tab))))
             }
             "show-workspace" => {
-                let c = client(name, &next()?)?;
-                let w = workspace(name, &next()?)?;
+                let c = client(&next()?)?;
+                let w = workspace(&next()?)?;
                 later(act(c, ClientAction::SelectWorkspace(Pick::Id(w))))
             }
             "next-tab" | "previous-tab" | "next-workspace" | "previous-workspace" | "zoom"
             | "detach" => {
-                let c = client(name, &next()?)?;
+                let c = client(&next()?)?;
                 let step = match name.starts_with("next") {
                     true => Sibling::Next,
                     false => Sibling::Previous,
@@ -1377,7 +1351,7 @@ impl fuxth::Host for Host<'_> {
                 later(act(c, action))
             }
             "capture-client" => {
-                let c = client(name, &next()?)?;
+                let c = client(&next()?)?;
                 later(ask_as(
                     c,
                     Command::Client {
@@ -1388,30 +1362,28 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             // ------------------------------------------------------ server
-            "server" => local(Local::Server(crate::socket::Choice::Name(string(
-                name,
-                &next()?,
-            )?))),
-            "socket" => local(Local::Server(crate::socket::Choice::Path(string(
-                name,
-                &next()?,
-            )?))),
+            "server" => local(Local::Server(crate::socket::Choice::Name(
+                string(&next()?)?,
+            ))),
+            "socket" => local(Local::Server(crate::socket::Choice::Path(
+                string(&next()?)?,
+            ))),
             "start" => local(Local::Start),
             "status" => local(Local::Status),
             "servers" => local(Local::Servers),
             "kill-server" => tell(Command::KillServer { force: false }),
             "force-kill-server" => local(Local::ForceKill),
             "set" => {
-                let option = string(name, &next()?)?;
-                let value = text(name, &next()?)?;
+                let option = string(&next()?)?;
+                let value = text(&next()?)?;
                 tell(Command::Set { option, value })
             }
             "grant" => {
-                let workspace = workspace(name, &next()?)?;
-                let socket = string(name, &next()?)?;
+                let workspace = workspace(&next()?)?;
+                let socket = string(&next()?)?;
                 later(ask(Request::Grant(workspace, socket), Then::Text))
             }
-            "revoke" => tell(Request::Revoke(string(name, &next()?)?)),
+            "revoke" => tell(Request::Revoke(string(&next()?)?)),
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
             // ------------------------------------------------------ config
             "prefix" | "bind" | "bind-root" | "unbind" | "unbind-root" | "unbind-all" | "label"
@@ -1439,13 +1411,13 @@ impl fuxth::Host for Host<'_> {
             "help-agents" => self.show(crate::help::AGENTS),
             "help-json" => self.show(crate::help::JSON),
             "explain" => {
-                let word = string(name, &next()?)?;
+                let word = string(&next()?)?;
                 let text = crate::help::explain(&word)
                     .ok_or_else(|| fail(Lang::UnknownWord, format!("no word {word:?}")))?;
                 self.show(&text)
             }
             "check" => {
-                let path = string(name, &next()?)?;
+                let path = string(&next()?)?;
                 // Read as running it reads it, and refused alike.
                 let text = super::read_file(path.as_ref(), super::SOURCE_MAX)
                     .map_err(|f| fail(Code::Read, f.message))?;
@@ -1484,18 +1456,18 @@ impl Host<'_> {
         let Some(keymap) = self.keymap.as_deref_mut() else {
             return Err(fail(
                 Code::NotConfig,
-                format!("{name} changes a client's keys: in its config, or typed at its prompt"),
+                "changes a client's keys: in its config, or typed at its prompt",
             ));
         };
         let refused = |why: String| fail(Code::BadBinding, why);
         match name {
             "prefix" => {
-                let key = crate::keymap::key(&string(name, &next()?)?).map_err(refused)?;
+                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 keymap.set_prefix(key).map_err(refused)?;
             }
             "bind" | "bind-root" => {
-                let keys_text = string(name, &next()?)?;
-                let code = string(name, &next()?)?;
+                let keys_text = string(&next()?)?;
+                let code = string(&next()?)?;
                 // Checked now, rather than each time its keys are typed.
                 let tokens =
                     fuxth::token::source("binding", &code).map_err(|e| refused(e.to_string()))?;
@@ -1511,7 +1483,7 @@ impl Host<'_> {
                         keymap.bind_root(*key, binding).map_err(refused)?;
                         self.last_bound = Some(Bound::Root(*key));
                     }
-                    ("bind-root", _) => return Err(refused("bind-root takes one key".to_owned())),
+                    ("bind-root", _) => return Err(refused("takes one key".to_owned())),
                     _ => {
                         keymap
                             .bind(
@@ -1528,24 +1500,24 @@ impl Host<'_> {
                 }
             }
             "unbind" => {
-                let keys = crate::keymap::keys(&string(name, &next()?)?).map_err(refused)?;
+                let keys = crate::keymap::keys(&string(&next()?)?).map_err(refused)?;
                 keymap.unbind(&keys).map_err(refused)?;
             }
             "unbind-root" => {
-                let key = crate::keymap::key(&string(name, &next()?)?).map_err(refused)?;
+                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 keymap.unbind_root(key).map_err(refused)?;
             }
             "unbind-all" => keymap.unbind_all(),
             _ => {
                 // label, group, repeat: the binding just made.
                 let Some(bound) = self.last_bound.clone() else {
-                    return Err(refused(format!(
-                        "{name} changes the binding just made: bind first"
-                    )));
+                    return Err(refused(
+                        "changes the binding just made: bind first".to_owned(),
+                    ));
                 };
                 let given = match name {
                     "repeat" => None,
-                    _ => Some(string(name, &next()?)?),
+                    _ => Some(string(&next()?)?),
                 };
                 let binding = match &bound {
                     Bound::Root(key) => (keymap.root.iter_mut())
