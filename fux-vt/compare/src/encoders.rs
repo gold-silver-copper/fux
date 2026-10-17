@@ -480,7 +480,8 @@ fn compare_keys(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Strin
             continue;
         };
         let mut ours = Vec::new();
-        pair.fux.screen().encode_key(stroke, &mut ours);
+        let screen = pair.fux.screen();
+        fux_vt::keys::encode::key_bytes(stroke, screen.key_mode(), &mut ours);
         let mut theirs = Vec::new();
         encoder
             .encode_to_vec(&event, &mut theirs)
@@ -716,8 +717,7 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
 fn compare_focus(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), String> {
     let reporting = pair.ghostty.mode(Mode::FOCUS_EVENT).map_err(err("mode"))?;
     for (focused, event) in [(true, focus::Event::Gained), (false, focus::Event::Lost)] {
-        let mut ours = Vec::new();
-        pair.fux.screen().encode_focus(focused, &mut ours);
+        let ours = pair.fux.screen().focus_report(focused).unwrap_or_default();
         let mut buf = [0u8; 16];
         let theirs = if reporting {
             let n = event.encode(&mut buf).map_err(err("focus encode"))?;
@@ -816,7 +816,8 @@ fn compare_pastes(
         .collect();
     for text in texts {
         let mut ours = Vec::new();
-        pair.fux.screen().encode_paste(&text, &mut ours);
+        let asked = pair.fux.screen().mode(fux_vt::Mode::BracketedPaste);
+        fux_vt::keys::encode::paste(&text, asked, &mut ours);
         let mut data = text.clone().into_bytes();
         let mut buf = vec![0u8; data.len().saturating_add(16)];
         let n = paste::encode(&mut data, bracketed, &mut buf).map_err(err("paste encode"))?;

@@ -123,7 +123,7 @@ modes! {
         MouseButtonMotion (true, 1002) => Kind::Mouse(MouseProtocolMode::ButtonMotion),
         /// Mouse mode 1003: also motion with no button down.
         MouseAnyMotion (true, 1003) => Kind::Mouse(MouseProtocolMode::AnyMotion),
-        /// Focus reporting (`CSI ? 1004 h`), as `Screen::encode_focus` makes it.
+        /// Focus reporting (`CSI ? 1004 h`), as `Screen::focus_report` makes it.
         FocusReporting (true, 1004) => Kind::Flag,
         /// Mouse encoding 1005: coordinates in UTF-8.
         MouseUtf8 (true, 1005) => Kind::Encoding(MouseProtocolEncoding::Utf8),

@@ -584,8 +584,9 @@ libghostty-vt's. Both terminals are put in the same modes by the same bytes:
 every mouse tracking mode in every encoding, focus reporting and bracketed
 paste on and off, normal and application cursor keys with modifyOtherKeys 2
 and each kitty flag set 1 to 31. Then each encoder reads the modes from its
-own terminal (`Screen::encode_key`, `encode_mouse`, `encode_focus`,
-`encode_paste`; ghostty's `set_options_from_terminal`) and the bytes are
+own terminal (`Screen::key_mode` for `key_bytes`, `encode_mouse`,
+`focus_report`, the bracketed paste mode for `paste`; ghostty's
+`set_options_from_terminal`) and the bytes are
 compared:
 
 - keys: Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, the page

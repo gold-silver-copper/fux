@@ -1,10 +1,10 @@
 //! Byte encodings for keys, pastes and focus changes delivered to a
 //! program, in the modes it asked for (application cursor keys, the kitty
 //! keyboard protocol, modifyOtherKeys, bracketed paste, focus reporting):
-//! [`crate::Screen::encode_key`], [`crate::Screen::encode_paste`] and
-//! [`crate::Screen::encode_focus`] read them from the program's screen,
-//! [`key_bytes`] and [`paste`] take them given. Mouse reports are
-//! [`crate::keys::mouse`]'s.
+//! [`key_bytes`] and [`paste`] take them given, as
+//! [`crate::Screen::key_mode`] and [`crate::Screen::mode`] read them from
+//! the program's screen, and [`crate::Screen::focus_report`] reads its
+//! own. Mouse reports are [`crate::keys::mouse`]'s.
 use crate::keys::{
     CAPS_LOCK_BIT, Direction, Function, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT,
     SHIFT_BIT,
@@ -87,10 +87,11 @@ impl crate::Screen {
         }
     }
 
-    /// Appends `stroke`'s bytes to `out` as the program on this screen asked for its keys
-    /// ([`key_bytes`] in [`Screen::key_mode`](crate::Screen::key_mode)).
-    pub fn encode_key(&self, stroke: Keystroke, out: &mut Vec<u8>) {
-        key_bytes(stroke, self.key_mode(), out);
+    /// A focus change as the program on this screen asked for them
+    /// (`CSI ? 1004 h`): `CSI I` gained, `CSI O` lost; else nothing.
+    pub fn focus_report(&self, focused: bool) -> Option<&'static [u8]> {
+        let report: &[u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
+        self.mode(crate::Mode::FocusReporting).then_some(report)
     }
 }
 
@@ -144,26 +145,6 @@ pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
 
 /// `CSI 201 ~` with the C1 CSI, U+009B, in UTF-8.
 const C1_PASTE_END: &[u8] = b"\xc2\x9b201~";
-
-impl crate::Screen {
-    /// Appends a paste to `out` as the program on this screen asked for it:
-    /// framed by `CSI 200 ~` and `CSI 201 ~` if it set bracketed paste
-    /// (`CSI ? 2004 h`), never ended early from inside ([`paste`]).
-    pub fn encode_paste(&self, text: &str, out: &mut Vec<u8>) {
-        paste(text, self.mode(crate::Mode::BracketedPaste), out);
-    }
-
-    /// Appends a focus change to `out`, `CSI I` for gained and `CSI O` for
-    /// lost, if the program on this screen asked for them (`CSI ? 1004 h`),
-    /// and returns whether it did.
-    pub fn encode_focus(&self, focused: bool, out: &mut Vec<u8>) -> bool {
-        if !self.mode(crate::Mode::FocusReporting) {
-            return false;
-        }
-        out.extend_from_slice(if focused { b"\x1b[I" } else { b"\x1b[O" });
-        true
-    }
-}
 
 /// Appends a key's bytes, as the pane asked for them in `mode`, to `out`:
 /// the kitty keyboard protocol's; or xterm's modifyOtherKeys, if it is set
@@ -1273,21 +1254,17 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_encodes_pastes_and_focus_as_its_program_asked() -> Result<(), crate::Error> {
+    fn a_screen_reports_focus_as_its_program_asked() -> Result<(), crate::Error> {
         let mut parser = crate::Parser::new(crate::Size::of(4, 10), 0)?;
-        let (mut out, screen) = (Vec::new(), parser.screen());
-        screen.encode_paste("a\x1b[201~b", &mut out);
-        assert_eq!(out, b"a\x1b[201~b");
-        out.clear();
-        assert!(!screen.encode_focus(true, &mut out) && !screen.encode_focus(false, &mut out));
-        assert_eq!(out, b"");
-        parser.process(b"\x1b[?2004h\x1b[?1004h")?;
         let screen = parser.screen();
-        screen.encode_paste("a\x1b[201~b", &mut out);
-        assert_eq!(out, b"\x1b[200~ab\x1b[201~");
-        out.clear();
-        assert!(screen.encode_focus(true, &mut out) && screen.encode_focus(false, &mut out));
-        assert_eq!(out, b"\x1b[I\x1b[O");
+        assert_eq!(
+            (screen.focus_report(true), screen.focus_report(false)),
+            (None, None)
+        );
+        parser.process(b"\x1b[?1004h")?;
+        let screen = parser.screen();
+        assert_eq!(screen.focus_report(true), Some(&b"\x1b[I"[..]));
+        assert_eq!(screen.focus_report(false), Some(&b"\x1b[O"[..]));
         Ok(())
     }
 }
