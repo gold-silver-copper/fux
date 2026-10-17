@@ -9,7 +9,7 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Asked, Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
+    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
     ToAttached, ToCommand, split_into,
 };
 use crate::render::{self, Grid};
@@ -19,7 +19,9 @@ use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::SIGCHLD;
+use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
+use std::mem;
 use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -425,7 +427,7 @@ impl Conn {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
-        if let Stage::Attached(mut attached) = std::mem::replace(&mut self.stage, next) {
+        if let Stage::Attached(mut attached) = mem::replace(&mut self.stage, next) {
             session.detach(attached.client);
             // A cursor shape a pane set is given back as the terminal's own
             // (DECSCUSR 0, as `render::Modes` writes it); one never set is
@@ -544,7 +546,7 @@ pub struct Server {
     /// A descriptor held in reserve, so that a connection that arrives when
     /// all others are taken can still be accepted and told why it is
     /// refused (bevy-final findings 006 and 012).
-    spare: Option<std::fs::File>,
+    spare: Option<File>,
     shortage: Option<Shortage>,
     /// When an `accept` failure other than a shortage was last logged.
     accept_logged: Option<Instant>,
@@ -627,7 +629,7 @@ impl Saved {
     /// thread of its own, as the server serves it; that thread, if there is
     /// one: it is not saved over while it comes back.
     fn restore(&self, socket: &SocketPath) -> Option<std::thread::JoinHandle<()>> {
-        let text = match std::fs::read_to_string(&self.path) {
+        let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == ErrorKind::NotFound => return None,
             Err(e) => {
@@ -644,7 +646,7 @@ impl Saved {
                     Err(error) => {
                         // Kept aside, not saved over, for a person to look at.
                         let aside = path.with_extension("layout.failed");
-                        let _ = std::fs::rename(&path, &aside);
+                        let _ = fs::rename(&path, &aside);
                         log!(
                             "could not bring back {}: {error}; the file kept as {}",
                             path.display(),
@@ -695,13 +697,13 @@ impl Saved {
     /// that in place: a crash leaves the old layout or the new, never half.
     fn write(&self, text: &str) -> std::io::Result<()> {
         if let Some(dir) = self.path.parent() {
-            std::fs::DirBuilder::new()
+            fs::DirBuilder::new()
                 .recursive(true)
                 .mode(0o700)
                 .create(dir)?;
         }
         let temporary = self.path.with_extension("layout.new");
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
@@ -709,7 +711,7 @@ impl Saved {
             .open(&temporary)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
-        std::fs::rename(&temporary, &self.path)
+        fs::rename(&temporary, &self.path)
     }
 
     /// Whether a restore is under way: its thread has not ended, however
@@ -798,7 +800,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let mut saved = Saved::of(socket);
     let restoring = match &mut saved {
         Some(saved) if fresh => {
-            let _ = std::fs::remove_file(&saved.path);
+            let _ = fs::remove_file(&saved.path);
             false
         }
         Some(saved) => {
@@ -825,7 +827,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         paint_buffer: Vec::new(),
         slots: Vec::new(),
         ready: Vec::new(),
-        spare: std::fs::File::open("/dev/null").ok(),
+        spare: File::open("/dev/null").ok(),
         shortage: None,
         accept_logged: None,
     };
@@ -889,7 +891,7 @@ impl Server {
             }
             let timeout = (self.wakes().map(|(at, _)| at).min())
                 .map(|at| at.saturating_duration_since(Instant::now()));
-            let mut ready = std::mem::take(&mut self.ready);
+            let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
                 match slot {
@@ -992,7 +994,7 @@ impl Server {
                 continue;
             };
             if let Stage::Held(_) = conn.stage
-                && let Stage::Held(held) = std::mem::replace(&mut conn.stage, Stage::Command)
+                && let Stage::Held(held) = mem::replace(&mut conn.stage, Stage::Command)
             {
                 self.request(index, held.request, held.context);
             }
@@ -1150,7 +1152,7 @@ impl Server {
             match keep {
                 true => saved.save(&self.session),
                 false => {
-                    let _ = std::fs::remove_file(&saved.path);
+                    let _ = fs::remove_file(&saved.path);
                 }
             }
         }
@@ -1183,7 +1185,7 @@ impl Server {
     }
 
     fn flush_outbox(&mut self) {
-        for outgoing in std::mem::take(&mut self.session.outbox) {
+        for outgoing in mem::take(&mut self.session.outbox) {
             let (client, frame) = match outgoing {
                 Outgoing::Shutdown { reason, keep } => {
                     self.stop(reason, keep);
@@ -1239,7 +1241,7 @@ impl Server {
             self.paint_buffer.clear();
             render::paint_into(shown, &attached.spare, &mut self.paint_buffer);
             attached.paint(&mut conn.out, &self.paint_buffer);
-            std::mem::swap(&mut attached.shown, &mut attached.spare);
+            mem::swap(&mut attached.shown, &mut attached.spare);
             attached.known = true;
             attached.clock.painted(now);
             // Written now rather than when the next poll says it can be: a
@@ -1291,7 +1293,7 @@ impl Server {
                 return;
             };
             let accepted = listener.accept();
-            let room = match std::fs::File::open("/dev/null") {
+            let room = match File::open("/dev/null") {
                 Ok(spare) => {
                     self.spare = Some(spare);
                     true
@@ -1307,7 +1309,7 @@ impl Server {
                 Ok((stream, _)) if !room => {
                     self.refuse(stream);
                     // Closing it freed a descriptor for the spare.
-                    self.spare = std::fs::File::open("/dev/null").ok();
+                    self.spare = File::open("/dev/null").ok();
                 }
                 Ok((stream, _)) => {
                     if let Some(shortage) = self.shortage.take() {
@@ -1463,7 +1465,7 @@ impl Server {
             return;
         };
         // Held apart while the frames it lends are handled.
-        let mut decoder = std::mem::take(&mut conn.decoder);
+        let mut decoder = mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
             // A frame it sent may have ended it: it is read no more.
@@ -1638,12 +1640,7 @@ impl Server {
 
     /// A request from connection `index`: answered now, or once its wait
     /// has its answer, or streamed.
-    fn request(
-        &mut self,
-        index: usize,
-        request: crate::command::Request,
-        context: crate::protocol::Context,
-    ) {
+    fn request(&mut self, index: usize, request: crate::command::Request, context: Context) {
         let restore_runs = self.saved.as_ref().is_some_and(Saved::restoring);
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
@@ -1665,7 +1662,7 @@ impl Server {
             conn.stage = Stage::Held(Box::new(Asked { request, context }));
             return;
         }
-        let crate::protocol::Context {
+        let Context {
             cwd,
             pane,
             server,
@@ -1811,7 +1808,7 @@ impl Server {
     }
 
     fn reap_killed(&mut self) {
-        let killed = std::mem::take(&mut self.killed);
+        let killed = mem::take(&mut self.killed);
         self.killed = killed
             .into_iter()
             .filter_map(|l| l.finish().err())
@@ -1822,7 +1819,7 @@ impl Server {
     /// second: a process stuck in the kernel is left to init rather than
     /// hold the server's exit.
     fn finish(&mut self) {
-        let dying = std::mem::take(&mut self.session.dying);
+        let dying = mem::take(&mut self.session.dying);
         self.killed
             .extend(dying.into_values().filter_map(Dying::kill));
         for _ in 0..500 {

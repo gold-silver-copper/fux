@@ -13,10 +13,12 @@ use crate::protocol::{
     Reply, Role, ToAttached, ToCommand,
 };
 use crate::screens::{Effect, Screen};
+use crate::script;
 use crate::socket::{self, SocketPath};
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::SIGWINCH;
+use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -463,8 +465,8 @@ fn may_open(code: &str) -> bool {
     };
     let mut quoted = false;
     tokens.iter().any(|token| {
-        let opens = !quoted && crate::script::opens(&token.text);
-        quoted = !quoted && crate::script::reads_token(&token.text);
+        let opens = !quoted && script::opens(&token.text);
+        quoted = !quoted && script::reads_token(&token.text);
         opens
     })
 }
@@ -502,11 +504,11 @@ pub struct Keyboard {
     wake: io::PipeReader,
     /// Programs sent to the worker and not yet done, in order, each with
     /// whether it may open a screen.
-    running: std::collections::VecDeque<bool>,
+    running: VecDeque<bool>,
     /// What stops the program the worker runs (the prefix, then Esc).
-    stop: crate::script::Stop,
+    stop: script::Stop,
     /// What was typed while a program ran, in order.
-    waiting: std::collections::VecDeque<Input>,
+    waiting: VecDeque<Input>,
 }
 
 impl Keyboard {
@@ -523,13 +525,13 @@ impl Keyboard {
         let (wake, mut poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
         let path = socket.path().to_string_lossy().into_owned();
-        let stop = crate::script::Stop::default();
+        let stop = script::Stop::default();
         let stops = stop.clone();
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
                 let chosen = socket::Choice::Path(path);
-                let mut server = crate::script::Server::stoppable(chosen, stops.clone());
+                let mut server = script::Server::stoppable(chosen, stops.clone());
                 for job in todo {
                     stops.reset();
                     let ran = run_job(&mut server, me, job, &stops);
@@ -551,9 +553,9 @@ impl Keyboard {
             jobs,
             told,
             wake,
-            running: std::collections::VecDeque::new(),
+            running: VecDeque::new(),
             stop,
-            waiting: std::collections::VecDeque::new(),
+            waiting: VecDeque::new(),
         })
     }
 
@@ -769,30 +771,30 @@ impl Keyboard {
 
 /// Runs a key's or a screen's program as client `me`.
 fn run_job(
-    server: &mut crate::script::Server,
+    server: &mut script::Server,
     me: crate::id::ClientId,
     job: Job,
-    stop: &crate::script::Stop,
+    stop: &script::Stop,
 ) -> Ran {
     let Job { code, keymap } = job;
     let mut changed = keymap.clone();
     let mut out = Vec::new();
     let mut context = context();
     context.client = Some(me);
-    let mut asks = crate::script::AsClient {
+    let mut asks = script::AsClient {
         asks: server,
         context: context.clone(),
         opened: None,
     };
     let result = (|| {
         let tokens = fuxth::token::source("key", &code)?;
-        let mut machine = crate::script::compile(&tokens)?;
-        let mut host = crate::script::Host::new(context, Some(&mut changed), &mut out, false);
-        crate::script::run_capped(
+        let mut machine = script::compile(&tokens)?;
+        let mut host = script::Host::new(context, Some(&mut changed), &mut out, false);
+        script::run_capped(
             &mut machine,
             &mut host,
             &mut asks,
-            Some(crate::script::PROGRAM_STEPS),
+            Some(script::PROGRAM_STEPS),
             Some(stop),
         )
     })();

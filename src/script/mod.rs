@@ -12,6 +12,7 @@ mod failures;
 mod stacks;
 mod words;
 
+use crate::client;
 use crate::code::Code;
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Until, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
@@ -450,7 +451,7 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
 #[derive(Default)]
 pub struct Server {
     chosen: Choice,
-    requests: Option<crate::client::Requests>,
+    requests: Option<client::Requests>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
 }
@@ -513,7 +514,7 @@ impl Server {
     }
 }
 
-fn client_failed(error: crate::client::Error) -> Failed {
+fn client_failed(error: client::Error) -> Failed {
     Failed::new(error.code(), error.to_string())
 }
 
@@ -537,7 +538,7 @@ impl Asks for Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let mut opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
+                let mut opened = client::Requests::open(&socket).map_err(client_failed)?;
                 // A connection a stop can end.
                 if let Some(stop) = &self.stop
                     && let Ok(mut held) = stop.stream.lock()
@@ -834,17 +835,17 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             }
             // Before a server is started for it, which would be left behind.
             if size.is_none() && !io::IsTerminal::is_terminal(&io::stdin()) {
-                return Err(client_failed(crate::client::Error::NotATerminal));
+                return Err(client_failed(client::Error::NotATerminal));
             }
             let (socket, _) = started(server)?;
             let (keymap, problem) = configured(server);
-            let attach = crate::client::Attaching {
+            let attach = client::Attaching {
                 workspace: workspace.clone(),
                 read_only: *read_only,
                 keymap,
                 problem,
             };
-            crate::client::attach(&socket, attach, *size).map_err(client_failed)?;
+            client::attach(&socket, attach, *size).map_err(client_failed)?;
         }
         Local::Start => {
             if started(server)?.1
@@ -855,12 +856,12 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
         }
         Local::ForceKill => {
             let socket = server.socket()?;
-            crate::client::kill_server(&socket).map_err(client_failed)?;
+            client::kill_server(&socket).map_err(client_failed)?;
         }
         Local::Open(_) => return refuse_local(what),
         Local::Status => {
             let socket = server.socket()?;
-            let probe = crate::client::probe(&socket).map_err(client_failed)?;
+            let probe = client::probe(&socket).map_err(client_failed)?;
             let (text, json) = crate::status(&socket, &probe);
             return Ok(vec![answer(&text, &json, Said::Status)]);
         }
@@ -884,9 +885,9 @@ fn answer(text: &str, json: &str, said: Said) -> Value<Fux> {
 /// once.
 fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
     let socket = server.socket()?;
-    let start = !crate::client::answers(&socket);
+    let start = !client::answers(&socket);
     if start {
-        crate::client::start_server(&socket).map_err(client_failed)?;
+        client::start_server(&socket).map_err(client_failed)?;
     }
     Ok((socket, start))
 }
@@ -917,7 +918,7 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
 pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let text = read_file(path, SOURCE_MAX)?;
-    let context = crate::client::context();
+    let context = client::context();
     let mut keymap = Keymap::default();
     run_quiet(
         &shown,
@@ -991,7 +992,7 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
 /// Brings back a saved session: its program run against the server on
 /// `socket`, ids asked for as saved, programs left for `respawn`.
 pub fn restore(socket: &SocketPath, path: &std::path::Path, text: &str) -> Result<(), Failed> {
-    let mut context = crate::client::context();
+    let mut context = client::context();
     context.restoring = true;
     // Its panes are its own, not a pane's it runs in.
     (context.pane, context.server) = (None, None);
@@ -1061,7 +1062,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     };
     let mut machine = compile(&tokens)?;
     let mut out = Checked { out, failed: None };
-    let mut host = Host::new(crate::client::context(), None, &mut out, true);
+    let mut host = Host::new(client::context(), None, &mut out, true);
     let ran = run(&mut machine, &mut host, &mut Cli::default());
     // What the words before a failure left is printed too: their answers.
     let stack = match &ran {

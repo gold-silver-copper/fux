@@ -8,6 +8,8 @@ use crate::command::{
     PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Until, Usage, Wait,
     Wheel, WsRef,
 };
+use crate::help;
+use crate::id::{ClientId, PaneId, Wanted};
 use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
@@ -215,7 +217,7 @@ fn fail(code: impl Into<Lang>, message: impl Into<String>) -> Failure {
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
     let library = || {
-        let mut library = crate::help::library().into_iter();
+        let mut library = help::library().into_iter();
         library
             .find(|(name, ..)| *name == word)
             .map(|(_, effect, ..)| effect)
@@ -239,7 +241,7 @@ pub fn usage(word: &str) -> Option<String> {
         "" => String::new(),
         leaves => format!(", which leaves {leaves}"),
     };
-    let example = crate::help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
+    let example = help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
     Some(format!("use: {takes} {word}{leaves}{example}"))
 }
 
@@ -339,7 +341,7 @@ fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::S
 }
 
 /// The pane a value is: a pane, or an action's answer of one.
-fn as_pane(value: &Value<Fux>) -> Option<crate::id::PaneId> {
+fn as_pane(value: &Value<Fux>) -> Option<PaneId> {
     if let Value::App(Fux::Answer(answer)) = value {
         return answer.said.pane();
     }
@@ -349,11 +351,11 @@ fn as_pane(value: &Value<Fux>) -> Option<crate::id::PaneId> {
     Some(*p)
 }
 
-fn pane(value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
+fn pane(value: &Value<Fux>) -> Result<PaneId, Failure> {
     as_pane(value).ok_or_else(|| wrong("a pane (from pane, run or split)", value))
 }
 
-fn client(value: &Value<Fux>) -> Result<crate::id::ClientId, Failure> {
+fn client(value: &Value<Fux>) -> Result<ClientId, Failure> {
     let Value::App(Fux::Client(c)) = value else {
         return Err(wrong("a client (from me or client)", value));
     };
@@ -389,23 +391,19 @@ fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
 /// Options a word would leave unused, refused rather than ignored: it
 /// takes those `help` lists for it.
 fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
-    let takes = |o: &str| crate::help::options(word).is_some_and(|mut t| t.any(|t| t == o));
+    let takes = |o: &str| help::options(word).is_some_and(|mut t| t.any(|t| t == o));
     let Some(option) = built.given.iter().find(|o| !takes(o)) else {
         return Ok(());
     };
     let instead = match *option {
-        option
-            if word == "capture"
-                && crate::help::WAITING.split_whitespace().any(|w| w == option) =>
-        {
+        option if word == "capture" && help::WAITING.split_whitespace().any(|w| w == option) => {
             "it reads once the pane settles (within timeout, wait-seconds if not said); \
              to wait for something first: PANE opts … wait, then PANE opts capture"
                 .to_owned()
         }
         _ => {
-            let takes =
-                |w: &&str| crate::help::options(w).is_some_and(|mut t| t.any(|t| t == *option));
-            let on: Vec<&str> = (crate::help::OPTIONS.iter())
+            let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == *option));
+            let on: Vec<&str> = (help::OPTIONS.iter())
                 .map(|(word, ..)| *word)
                 .filter(takes)
                 .collect();
@@ -518,7 +516,7 @@ fn local(local: Local) -> Result<Done<Ask>, Failure> {
     Ok(Done::Later(Ask::Local(local)))
 }
 
-fn ask_as(client: crate::id::ClientId, command: Command, then: Then) -> Ask {
+fn ask_as(client: ClientId, command: Command, then: Then) -> Ask {
     Ask::Server {
         request: command.into(),
         client: Some(client),
@@ -526,7 +524,7 @@ fn ask_as(client: crate::id::ClientId, command: Command, then: Then) -> Ask {
     }
 }
 
-fn act(client: crate::id::ClientId, action: ClientAction) -> Ask {
+fn act(client: ClientId, action: ClientAction) -> Ask {
     ask_as(
         client,
         Command::Client {
@@ -540,7 +538,7 @@ fn act(client: crate::id::ClientId, action: ClientAction) -> Ask {
 /// How a screen's word makes its screen from what follows the client.
 enum Opens {
     Alone(Open),
-    Pane(fn(crate::id::PaneId) -> Open),
+    Pane(fn(PaneId) -> Open),
     Target(fn(AnyRef) -> Open),
 }
 
@@ -827,7 +825,7 @@ impl fuxth::Host for Host<'_> {
             "split" => {
                 let p = pane(&next()?)?;
                 let built = finished(name, next()?)?;
-                let crate::id::Wanted {
+                let Wanted {
                     pane: id,
                     tab: None,
                     workspace: None,
@@ -1365,12 +1363,12 @@ impl fuxth::Host for Host<'_> {
             }
             "key-names" => self.show(&format!("{}\n", crate::keys::all_names().join(" "))),
             // -------------------------------------------------------- help
-            "help" => self.show(&crate::help::overview()),
-            "help-agents" => self.show(crate::help::AGENTS),
-            "help-json" => self.show(crate::help::JSON),
+            "help" => self.show(&help::overview()),
+            "help-agents" => self.show(help::AGENTS),
+            "help-json" => self.show(help::JSON),
             "explain" => {
                 let word = string(&next()?)?;
-                let text = crate::help::explain(&word)
+                let text = help::explain(&word)
                     .ok_or_else(|| fail(Lang::UnknownWord, format!("no word {word:?}")))?;
                 self.show(&text)
             }
