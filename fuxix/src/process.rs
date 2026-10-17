@@ -616,6 +616,28 @@ enum Watched {
     Epoll(u64),
 }
 
+/// What one thread of a process does, as the probe weighs it.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[derive(Clone, Copy)]
+enum Thread {
+    /// Running, or about to.
+    Runs,
+    /// Waiting for the terminal with no time limit.
+    Reads,
+    /// Waiting for the terminal with a time limit.
+    Polls,
+    /// Blocked on something else.
+    Waits,
+    /// Asleep on a timer.
+    Sleeps,
+    /// Blocked in what cannot be read.
+    Unread,
+    /// Parked on a futex: what the others do decides.
+    Parked,
+    /// Waiting for a child, or ended: doing nothing of its own.
+    Out,
+}
+
 /// What a system call waits for, by its number (`libc::SYS_*`, this
 /// machine's) and its arguments.
 #[cfg(all(
@@ -775,32 +797,31 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> Option
 /// waiting.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
-    let on_terminal = |blocked: Blocked| match blocked {
-        Blocked::Read(fd) if is_terminal(pid, fd, tty) => Some(Activity::Reading),
-        Blocked::Poll(forever, watched) => match watches_terminal(pid, watched, tty) {
-            Some(true) if forever => Some(Activity::Reading),
-            Some(true) => Some(Activity::Polling),
-            Some(false) => Some(Activity::Waiting),
-            None => Some(Activity::Unknown),
+    let thread = |tid: &str| match thread_blocked(pid, tid) {
+        None => Thread::Runs,
+        Some(Blocked::Read(fd)) if is_terminal(pid, fd, tty) => Thread::Reads,
+        Some(Blocked::Poll(forever, watched)) => match watches_terminal(pid, watched, tty) {
+            Some(true) if forever => Thread::Reads,
+            Some(true) => Thread::Polls,
+            Some(false) => Thread::Waits,
+            None => Thread::Unread,
         },
-        Blocked::Read(_) | Blocked::Other => Some(Activity::Waiting),
-        Blocked::Sleep => Some(Activity::Busy),
-        Blocked::Unread => Some(Activity::Unknown),
-        Blocked::Child | Blocked::Futex | Blocked::Ended => None,
+        Some(Blocked::Read(_) | Blocked::Other) => Thread::Waits,
+        Some(Blocked::Sleep) => Thread::Sleeps,
+        Some(Blocked::Unread) => Thread::Unread,
+        Some(Blocked::Futex) => Thread::Parked,
+        Some(Blocked::Child | Blocked::Ended) => Thread::Out,
     };
     let main = pid.to_string();
-    let Some(blocked) = thread_blocked(pid, &main) else {
-        return Some(Activity::Busy);
-    };
-    if matches!(blocked, Blocked::Child | Blocked::Ended) {
-        return None;
+    let first = thread(&main);
+    let (mut reading, mut polling, mut asleep) = (false, false, false);
+    match first {
+        Thread::Runs => return Some(Activity::Busy),
+        Thread::Out => return None,
+        // A main thread asleep is weighed with the others: another may read.
+        Thread::Sleeps => asleep = true,
+        Thread::Reads | Thread::Polls | Thread::Waits | Thread::Unread | Thread::Parked => {}
     }
-    // A main thread asleep is weighed with the others: another may read.
-    let (first, mut asleep) = match on_terminal(blocked) {
-        Some(Activity::Busy) if matches!(blocked, Blocked::Sleep) => (None, true),
-        first => (first, false),
-    };
-    let (mut reading, mut polling) = (false, false);
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
     for task in tasks.filter_map(|t| t.ok()) {
         let Some(tid) = task.file_name().to_str().map(str::to_owned) else {
@@ -809,26 +830,27 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
         if tid == main {
             continue;
         }
-        match thread_blocked(pid, &tid).map(on_terminal) {
-            Some(Some(Activity::Reading)) => reading = true,
-            Some(Some(Activity::Polling)) => polling = true,
-            Some(Some(Activity::Busy)) => asleep = true,
-            Some(Some(Activity::Waiting | Activity::Unknown | Activity::Idle) | None) => {}
-            None => return Some(Activity::Busy),
+        match thread(&tid) {
+            Thread::Runs => return Some(Activity::Busy),
+            Thread::Reads => reading = true,
+            Thread::Polls => polling = true,
+            Thread::Sleeps => asleep = true,
+            Thread::Waits | Thread::Unread | Thread::Parked | Thread::Out => {}
         }
     }
     Some(match first {
-        Some(Activity::Busy) => Activity::Busy,
-        Some(Activity::Waiting | Activity::Idle) => Activity::Waiting,
-        Some(Activity::Unknown) => Activity::Unknown,
-        Some(Activity::Polling) => Activity::Polling,
-        Some(Activity::Reading) if polling || asleep => Activity::Polling,
-        Some(Activity::Reading) => Activity::Reading,
-        None if reading && (polling || asleep) => Activity::Polling,
-        None if reading => Activity::Reading,
-        None if asleep => Activity::Busy,
-        None if polling => Activity::Polling,
-        None => Activity::Waiting,
+        Thread::Runs => Activity::Busy,
+        Thread::Out => return None,
+        Thread::Waits => Activity::Waiting,
+        Thread::Unread => Activity::Unknown,
+        Thread::Polls => Activity::Polling,
+        Thread::Reads if polling || asleep => Activity::Polling,
+        Thread::Reads => Activity::Reading,
+        Thread::Sleeps | Thread::Parked if reading && (polling || asleep) => Activity::Polling,
+        Thread::Sleeps | Thread::Parked if reading => Activity::Reading,
+        Thread::Sleeps | Thread::Parked if asleep => Activity::Busy,
+        Thread::Sleeps | Thread::Parked if polling => Activity::Polling,
+        Thread::Sleeps | Thread::Parked => Activity::Waiting,
     })
 }
 
