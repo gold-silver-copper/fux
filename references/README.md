@@ -13,18 +13,23 @@ It needs `curl`, `wget` (for the vt100.net copies) and `git` (for
 esctest2), and exits 1 listing anything it could not fetch.
 `fux-vt-compare esctest` runs `xterm/esctest2` from here.
 
-**Which source decides.** When the standards, xterm and the engines in
-`fux-vt/compare` disagree:
+**Which source decides.** For each function, fux-vt follows:
 
-1. **ECMA-48** decides the standard control functions.
-2. **DEC STD 070** decides DEC behaviour, with the VT520 manual as its
-   readable companion.
-3. **ctlseqs** and xterm itself decide xterm's extensions; the harness
-   runs real xterm (`fux-vt-compare replay --engines all`).
+1. **The standard,** where it specifies the behaviour: **ECMA-48** for its
+   control functions; **DEC STD 070** for DEC's, over a DEC product manual
+   (the VT520 manual is its readable companion), and where both define a
+   function, DEC STD 070 decides the DEC private parameters and modes and
+   ECMA-48 the rest; **ECMA-35** for character sets; **Unicode** for text;
+   the kitty keyboard spec, OSC 8 and OSC 133 for their protocols; and
+   **ctlseqs** for xterm's own functions, over xterm where the two differ.
+2. **xterm 411,** where the standard is silent or leaves the behaviour
+   undefined; the harness runs real xterm (`fux-vt-compare replay
+   --engines all`).
+3. Never a majority of engines, or what the corpus happens to send.
 
-Where fux-vt follows xterm against the references, fux-vt's README lists
-it under "Departures from the references". A fux-vt test cites the section
-that sets its expected value.
+fux-vt's README lists what the standards leave to xterm, and any
+departure from a standard, under "Where the standards leave the choice".
+A fux-vt test cites the section that sets its expected value.
 
 ## Contents
 
