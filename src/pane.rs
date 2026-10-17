@@ -6,6 +6,7 @@ use crate::process::{Child, Ended, Pid};
 use fux_vt::{Feature, Print, Row, RowId, Screen, Size};
 use fuxix::process::Activity;
 use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// The largest single piece of input: a whole paste and its envelope.
@@ -481,8 +482,9 @@ pub struct Pane {
     /// The screen's rows as they read then, by row: a line printed again
     /// to read as it did brings nothing new; and where each was and what
     /// it showed ([`shows`]): a row drawn again to show as it did is no
-    /// change.
-    pub before: HashMap<RowId, (Cells, (u16, u64))>,
+    /// change. Shared with each wait that counts from then, which keeps
+    /// them though another input comes.
+    pub before: Before,
     /// The rows printed on since then, as they read after the last piece
     /// that printed on them: what the next piece finds there.
     seen: HashMap<RowId, Cells>,
@@ -649,7 +651,7 @@ impl Pane {
             written_at: None,
             record: log::Log::new(log::JOURNAL_BYTES),
             since: Start::default(),
-            before: HashMap::new(),
+            before: Rc::default(),
             seen: HashMap::new(),
             shown_rows: HashMap::new(),
             classes: crate::classify::Classes::default(),
@@ -957,9 +959,11 @@ impl Pane {
     pub fn note_input(&mut self) {
         self.since = Start::at(log::Seq(self.parser.tick()), self.parser.screen());
         self.redraws = 0;
-        self.before = (live(self.screen()))
-            .map(|(y, row)| (row.id(), (row_cells(&row), (y, shows(&row)))))
-            .collect();
+        self.before = Rc::new(
+            (live(self.screen()))
+                .map(|(y, row)| (row.id(), (row_cells(&row), (y, shows(&row)))))
+                .collect(),
+        );
         self.shown_rows = (self.before.iter())
             .map(|(id, (_, shows))| (*id, *shows))
             .collect();
@@ -1266,6 +1270,10 @@ fn osc_before(before: &[u8]) -> Option<usize> {
         end = at;
     }
 }
+
+/// The screen's rows as they read as an input began, by row, and where
+/// each was and what it showed (`Pane::before`).
+pub type Before = Rc<HashMap<RowId, (Cells, (u16, u64))>>;
 
 /// A row's cells as they read: its text, a blank or placeholder a space,
 /// and where in it each column starts (a wide character's second cell

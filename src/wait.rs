@@ -19,7 +19,7 @@ use crate::command::{AnyRef, CaptureView, Source, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
 use crate::log::Seq;
-use crate::pane::{Pane, Start};
+use crate::pane::{Before, Pane, Start};
 use crate::process::Ended;
 use crate::protocol::{End, Reply};
 use crate::ready::{self, State};
@@ -102,6 +102,8 @@ impl Follows {
 struct Watch {
     /// What came after this is new to it.
     start: Start,
+    /// The rows as they read at `start` (`Pane::before`).
+    before: Before,
     /// Pieces of output it had not read yet were let go.
     missed: bool,
     /// The first text found: which, its line, and when it came.
@@ -542,6 +544,7 @@ impl Watch {
         let start = pane.since;
         Watch {
             start,
+            before: pane.before.clone(),
 
             missed: false,
             found: None,
@@ -715,7 +718,7 @@ impl Watch {
         for (seq, whole, echo, fresh) in runs {
             // Only what it changed is news: what it printed as its row held
             // it as the action began (`Pane::before`) is drawn again.
-            let fresh = match pane.before.get(&whole.row).filter(|_| action) {
+            let fresh = match self.before.get(&whole.row).filter(|_| action) {
                 Some((row, _)) => {
                     let echo = *echo != Echo::Not;
                     let (a, b) = crate::pane::changed(row, &whole, echo);
@@ -1192,7 +1195,7 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
     // A row drawn again to show as it did at the input brings nothing.
     let new = |r: &Row<'_>| {
         (r.version() > start.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
-            && (pane.before.get(&r.id())).is_none_or(|(_, was)| {
+            && (watch.before.get(&r.id())).is_none_or(|(_, was)| {
                 window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)
             })
     };
@@ -1287,6 +1290,34 @@ mod tests {
         pane.output(b"$\r\n");
         let answer = waiting.answer(&session, now).ok_or("not met")?;
         assert!(answer.text.contains("met \"cost$$\""), "{}", answer.text);
+        Ok(())
+    }
+
+    /// A wait that follows an action reads what came against the rows as
+    /// that action began, though another action reaches the pane before it
+    /// looks (its input snapshots rows that already hold the text).
+    #[test]
+    fn a_wait_after_an_action_keeps_the_rows_that_action_began_on() -> Result<(), String> {
+        use crate::command::{Until, Wait};
+        use std::time::{Duration, Instant};
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let id = crate::id::PaneId::of(1);
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.note_input();
+        let wait = Wait {
+            until: vec![Until::Text("READY".into())],
+            timeout: None,
+            print: false,
+            marks: false,
+        };
+        let (now, limit) = (Instant::now(), Duration::from_secs(60));
+        let pane = session.panes.get(&id).ok_or("no %1")?;
+        let mut waiting = super::Waiting::new(&[pane], wait, super::Follows::Action, now, limit);
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"READY\r\n");
+        pane.note_input();
+        let answer = waiting.answer(&session, now).ok_or("not met")?;
+        assert!(answer.text.contains("met \"READY\""), "{}", answer.text);
         Ok(())
     }
 
