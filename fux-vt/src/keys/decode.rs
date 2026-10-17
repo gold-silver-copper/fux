@@ -615,12 +615,11 @@ fn final_key(last: u8, mods: Modifiers) -> Option<Input> {
 /// the deadline or past `OSC_LIMIT`, is dropped.
 #[cold]
 fn osc(bytes: &[u8], flush: bool) -> Step {
-    let alt_bracket = || Step::Done(2, press(Key::Char(']'), Modifiers::ALT));
     let body = bytes.get(2..).unwrap_or_default();
     match body.first() {
         None if !flush => return Step::Incomplete,
         Some(first) if first.is_ascii_digit() => {}
-        _ => return alt_bracket(),
+        _ => return Step::Done(2, press(Key::Char(']'), Modifiers::ALT)),
     }
     answer(bytes, flush, true, OSC_LIMIT, colour_reply)
 }
@@ -888,9 +887,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // Every modifier bit, the kitty protocol's beyond xterm's three too.
     let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
     let input = match last {
-        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => {
-            final_key(last, mods)
-        }
+        // `CSI M` is a mouse report: Enter comes only after SS3.
+        b'M' => None,
         b'Z' => press(
             Key::Tab,
             Modifiers {
@@ -934,7 +932,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             });
             return Step::Done(consumed, stroke.map(Input::Key));
         }
-        _ => None,
+        // The arrows, Home, End and F1 to F4 (`final_key`), or nothing.
+        _ => final_key(last, mods),
     };
     // Modifiers beyond xterm's three (Super, Hyper, Meta, the locks) are
     // kept for a pane in the kitty protocol.
