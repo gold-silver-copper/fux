@@ -19,6 +19,7 @@ use crate::keymap::Keymap;
 use crate::layout::Axis;
 use crate::protocol::{Asked, Context, End, Reply, Scalar};
 use crate::socket::Choice;
+use fuxth::Code as Lang;
 use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
 use std::io::Write;
 use std::time::Duration;
@@ -314,7 +315,8 @@ pub struct Failed {
 
 impl Failed {
     /// A failure of kind `code`, with its status, and why.
-    pub fn new(code: Code, message: impl Into<String>) -> Failed {
+    pub fn new(code: impl Into<Code>, message: impl Into<String>) -> Failed {
+        let code = code.into();
         Failed {
             status: code.status(),
             code,
@@ -345,8 +347,7 @@ impl From<fuxth::Error> for Failed {
     fn from(error: fuxth::Error) -> Failed {
         // A word given too few values, the wrong kind, or one out of its
         // range, says how it is used.
-        use fuxth::Code::{Range, StackUnderflow, Type};
-        let usage = matches!(error.code, StackUnderflow | Type | Range);
+        let usage = matches!(error.code, Lang::StackUnderflow | Lang::Type | Lang::Range);
         told(error, usage)
     }
 }
@@ -365,7 +366,7 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
         error.message.push_str(&format!(" ({usage})"));
     }
-    if error.code == fuxth::Code::UnknownWord {
+    if error.code == Lang::UnknownWord {
         error.message.push_str(" (`fux help` lists every word)");
     }
     Failed::new(Code::from(error.code), error.located())
@@ -415,7 +416,7 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
         match (after, id) {
             (Some("let"), None) if kinds.iter().any(|k| k.name() == &*token.text) => {
                 return Err(Failed::new(
-                    Code::BadName,
+                    Lang::BadName,
                     format!(
                         "{}: {}: cannot be let: a {} id is `str ID {}`",
                         token.place, token.text, token.text, token.text
@@ -424,7 +425,7 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
             }
             (Some("define" | "let"), Some(id)) => {
                 return Err(Failed::new(
-                    Code::BadName,
+                    Lang::BadName,
                     format!(
                         "{}: {}: cannot be defined: it names a {}",
                         token.place,
@@ -1082,7 +1083,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
             }
             word => {
                 return Err(Failed::new(
-                    Code::UnknownWord,
+                    Lang::UnknownWord,
                     format!("argument 2: help: no word {word:?} (`fux help` lists every word)"),
                 ));
             }

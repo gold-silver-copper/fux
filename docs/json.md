@@ -176,7 +176,7 @@ the file, line and word it came from. Its exit status is 1, a usage error's
   `lost`, `stopped` (7);
 - a program of words: `steps`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,
-  `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`, `failed`;
+  `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,

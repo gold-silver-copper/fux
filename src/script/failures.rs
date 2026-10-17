@@ -132,7 +132,6 @@ const ELSEWHERE: &[(&str, &str)] = &[
     ("too_long", "a typed line past the PTY's line limit: needs a process"),
     ("steps", "a key's program past its step budget: the client runs it with one, this harness without"),
     ("contract", "a word of fux's leaving a count its effect doesn't allow: no input can cause it"),
-    ("failed", "the fallback for an unknown fuxth code: no input can cause it"),
 ];
 
 fn failed(row: &Fails) -> Result<String, String> {
@@ -174,7 +173,7 @@ fn each_failure_has_its_code_and_status() -> Result<(), String> {
 
 #[test]
 fn every_code_has_a_row_or_a_reason() -> Result<(), String> {
-    for code in Code::ALL {
+    for code in Code::all() {
         let name = code.name();
         let rowed = ROWS.iter().any(|r| r.code == name);
         let apart = ELSEWHERE.iter().any(|(c, _)| *c == name);

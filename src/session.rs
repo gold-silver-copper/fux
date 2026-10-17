@@ -18,6 +18,7 @@ use crate::protocol::{End, Reply, ToAttached};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Follows, Waiting};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
+use fuxth::Code as Lang;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 mod layouts;
@@ -231,9 +232,9 @@ pub enum Error {
 }
 
 /// A failure of kind `code` (see [`Error::Failed`]).
-pub(crate) fn fail(code: Code, message: impl Into<String>) -> Error {
+pub(crate) fn fail(code: impl Into<Code>, message: impl Into<String>) -> Error {
     Error::Failed {
-        code,
+        code: code.into(),
         message: message.into(),
     }
 }
@@ -252,7 +253,7 @@ impl Error {
             Error::NoBuffer(_) => Code::NoBuffer,
             Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => Code::NothingThere,
             Error::NoRows | Error::SelectionTooLarge => Code::Selection,
-            Error::NameReadAsTarget(_) => Code::BadName,
+            Error::NameReadAsTarget(_) => Code::Lang(Lang::BadName),
             Error::NameTaken(_) | Error::TabNameTaken(..) => Code::NameTaken,
             Error::Failed { code, .. } => *code,
         }
@@ -3212,7 +3213,7 @@ fn new_pane(
             let deadline = crate::after(Instant::now(), TYPE_WAIT);
             Some(
                 Typed::new(line, deadline)
-                    .ok_or_else(|| fail(Code::TooLong, "the command line is too long to type"))?,
+                    .ok_or_else(|| fail(Lang::TooLong, "the command line is too long to type"))?,
             )
         }
     };
@@ -3242,7 +3243,7 @@ fn new_pane(
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
-        return Err(fail(Code::BadName, "a name cannot be empty or blank"));
+        return Err(fail(Lang::BadName, "a name cannot be empty or blank"));
     }
     // Control characters, and the invisible ones that change how text
     // around them shows (zero-width, direction marks and overrides: UAX #9
@@ -3250,10 +3251,10 @@ fn check_name(name: &str) -> Result<(), Error> {
     let invisible = |c: char| matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
     if name.chars().any(|c| c.is_control() || invisible(c)) {
         let message = "a name cannot contain control or invisible characters";
-        return Err(fail(Code::BadName, message));
+        return Err(fail(Lang::BadName, message));
     }
     if name.len() > 256 {
-        return Err(fail(Code::BadName, "a name is at most 256 bytes"));
+        return Err(fail(Lang::BadName, "a name is at most 256 bytes"));
     }
     Ok(())
 }

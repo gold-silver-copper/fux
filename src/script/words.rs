@@ -10,6 +10,7 @@ use crate::command::{
 };
 use crate::keys::Direction;
 use crate::layout::Axis;
+use fuxth::Code as Lang;
 use fuxth::{Done, Failure, Value};
 use std::time::Duration;
 
@@ -207,7 +208,7 @@ pub const WORDS: &[Word] = &[
 ];
 
 /// A failure of a word's own: its code and why.
-fn fail(code: Code, message: impl Into<String>) -> Failure {
+fn fail(code: impl Into<Lang>, message: impl Into<String>) -> Failure {
     Failure::new(code.into(), message)
 }
 
@@ -245,7 +246,7 @@ pub fn usage(word: &str) -> Option<String> {
 
 fn wrong(word: &str, wanted: &str, got: &Value<Fux>) -> Failure {
     fail(
-        Code::Type,
+        Lang::Type,
         format!("{word} takes {wanted}, not {}", got.kind()),
     )
 }
@@ -326,8 +327,8 @@ impl Count for usize {
 fn count<T: Count>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
     let n = int(word, value)?;
     T::try_from(n).map_err(|_| match T::MOST {
-        i64::MAX => fail(Code::Range, format!("{n} is out of range: from 0")),
-        most => fail(Code::Range, format!("{n} is out of range: 0 to {most}")),
+        i64::MAX => fail(Lang::Range, format!("{n} is out of range: from 0")),
+        most => fail(Lang::Range, format!("{n} is out of range: 0 to {most}")),
     })
 }
 
@@ -340,7 +341,7 @@ fn laid_out(word: &str, cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::
         .and_then(|(cols, rows)| fux_vt::Size::new(rows, cols).ok())
         .ok_or_else(|| {
             fail(
-                Code::Range,
+                Lang::Range,
                 format!("size {cols} {rows}: columns and rows each 1 to 500"),
             )
         })
@@ -606,13 +607,13 @@ impl fuxth::Host for Host<'_> {
         out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
         let Some(spec) = WORDS.get(word) else {
-            return Err(fail(Code::UnknownWord, "no such word"));
+            return Err(fail(Lang::UnknownWord, "no such word"));
         };
         let name = spec.name;
         let mut args = args.into_iter();
         let mut next = || {
             args.next()
-                .ok_or_else(|| fail(Code::StackUnderflow, format!("{name} takes {}", spec.takes)))
+                .ok_or_else(|| fail(Lang::StackUnderflow, format!("{name} takes {}", spec.takes)))
         };
         let now = |out: &mut Vec<Value<Fux>>, value: Value<Fux>| {
             out.push(value);
@@ -694,7 +695,7 @@ impl fuxth::Host for Host<'_> {
             "command" => {
                 let mut o = next()?;
                 let line = string(name, &next()?)?;
-                let argv = crate::words::split(&line).map_err(|e| fail(Code::OpenQuote, e))?;
+                let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
                 if argv.first().is_none_or(|p| p.is_empty()) {
                     return Err(fail(Code::NoProgram, "an empty command line"));
                 }
@@ -796,7 +797,7 @@ impl fuxth::Host for Host<'_> {
                 let (from, to) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 if from > to {
                     return Err(fail(
-                        Code::Range,
+                        Lang::Range,
                         format!("{from} {to}: the first {name} before the last"),
                     ));
                 }
@@ -964,7 +965,7 @@ impl fuxth::Host for Host<'_> {
                             .ok()
                             .filter(|n| (1..=1000).contains(n))
                             .ok_or_else(|| {
-                                fail(Code::Range, format!("{n}: a count from 1 to 1000"))
+                                fail(Lang::Range, format!("{n}: a count from 1 to 1000"))
                             })?;
                         let Some(last) = built.inputs.last().cloned() else {
                             return Err(fail(
@@ -1001,7 +1002,7 @@ impl fuxth::Host for Host<'_> {
                     .saturating_add(built.inputs.len().saturating_sub(1).saturating_mul(5));
                 if typed > INPUT_MAX {
                     return Err(fail(
-                        Code::TooLong,
+                        Lang::TooLong,
                         format!(
                             "send-keys: {typed} bytes, more than 900 KiB, the most it sends at once \
                              (text and pastes count their bytes, keys their names', each input \
@@ -1203,7 +1204,7 @@ impl fuxth::Host for Host<'_> {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
-                    .ok_or_else(|| fail(Code::Range, "columns and rows each from 1"))?;
+                    .ok_or_else(|| fail(Lang::Range, "columns and rows each from 1"))?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
@@ -1226,7 +1227,7 @@ impl fuxth::Host for Host<'_> {
                 let n = int(name, &next()?)?;
                 let Some(share) = u8::try_from(n).ok().and_then(Percent::new) else {
                     return Err(fail(
-                        Code::Range,
+                        Lang::Range,
                         format!("percent takes 1 to 100, not {n}"),
                     ));
                 };
@@ -1332,7 +1333,7 @@ impl fuxth::Host for Host<'_> {
             "headless" => {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let size = fux_vt::Size::new(rows, cols)
-                    .map_err(|_| fail(Code::Range, "a size of at least 1 by 1"))?;
+                    .map_err(|_| fail(Lang::Range, "a size of at least 1 by 1"))?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
@@ -1478,7 +1479,7 @@ impl fuxth::Host for Host<'_> {
             "explain" => {
                 let word = string(name, &next()?)?;
                 let text = crate::help::explain(&word)
-                    .ok_or_else(|| fail(Code::UnknownWord, format!("no word {word:?}")))?;
+                    .ok_or_else(|| fail(Lang::UnknownWord, format!("no word {word:?}")))?;
                 self.show(&text)
             }
             "check" => {
@@ -1500,7 +1501,7 @@ impl fuxth::Host for Host<'_> {
                 }
                 self.show(&format!("{path}: ok\n"))
             }
-            other => Err(fail(Code::UnknownWord, format!("{other}: no such word"))),
+            other => Err(fail(Lang::UnknownWord, format!("{other}: no such word"))),
         }
     }
 }

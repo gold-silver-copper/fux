@@ -5,20 +5,27 @@
 use std::num::NonZeroU8;
 
 /// `codes! { /// doc  Variant "name", … }` expands to the enum `Code` of
-/// those variants, `Code::ALL` in order, and `Code::name`, each one's name.
+/// those variants and `Lang`, the language's own codes; `Code::ALL`, fux's
+/// own in order; and `fuxth::Code::from`, each one as the language takes it
+/// (one of fux's as `Host`, by its name).
 macro_rules! codes {
     ($($(#[$doc:meta])* $variant:ident $name:literal,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Code {
             $($(#[$doc])* $variant,)*
+            /// One of the language's own (fuxth's), as fuxth names it.
+            Lang(fuxth::Code),
         }
 
         impl Code {
             pub const ALL: &[Code] = &[$(Code::$variant),*];
+        }
 
-            pub fn name(self) -> &'static str {
-                match self {
-                    $(Code::$variant => $name,)*
+        impl From<Code> for fuxth::Code {
+            fn from(code: Code) -> fuxth::Code {
+                match code {
+                    $(Code::$variant => fuxth::Code::Host($name),)*
+                    Code::Lang(code) => code,
                 }
             }
         }
@@ -143,45 +150,6 @@ codes! {
     NotAClient "not_a_client",
     /// A paste that could not be read.
     Paste "paste",
-    /// A failure of no other kind.
-    Failed "failed",
-    // The language's own (fuxth).
-    /// A quote is never closed.
-    OpenQuote "open_quote",
-    /// A word no definition, builtin or application gives.
-    UnknownWord "unknown_word",
-    /// A parsing word at the end, with nothing to read.
-    MissingToken "missing_token",
-    /// A name that is taken, a number, a parsing word, or reads as an id.
-    BadName "bad_name",
-    /// `define` inside a definition or a block.
-    NotTopLevel "not_top_level",
-    /// `end`, `else`, `then` or `until` with nothing open for it.
-    Unmatched "unmatched",
-    /// A definition or block still open at the end.
-    Unclosed "unclosed",
-    /// A word given fewer values than it takes.
-    StackUnderflow "stack_underflow",
-    /// The stack grew past its limit.
-    StackOverflow "stack_overflow",
-    /// Calls nested past their limit.
-    CallDepth "call_depth",
-    /// A value of the wrong type for a word.
-    Type "type",
-    /// Division or remainder by zero.
-    DivByZero "div_by_zero",
-    /// Arithmetic past what an integer holds.
-    Overflow "overflow",
-    /// A `let` name read before its `let` ran.
-    Unset "unset",
-    /// An index or number out of a word's range.
-    Range "range",
-    /// `fail`: the program stopped itself, saying why.
-    Fail "fail",
-    /// A text or list past its length, or a run that built too much.
-    TooLong "too_long",
-    /// An application word that broke its contract with the language.
-    Contract "contract",
 }
 
 impl Code {
@@ -190,6 +158,16 @@ impl Code {
     pub fn status(self) -> NonZeroU8 {
         let usage = u8::from(self == Code::Usage);
         NonZeroU8::MIN.saturating_add(usage)
+    }
+
+    /// Every code: fux's own, then the language's.
+    pub fn all() -> impl Iterator<Item = Code> {
+        let lang = fuxth::Code::ALL.iter().map(|code| Code::Lang(*code));
+        Code::ALL.iter().copied().chain(lang)
+    }
+
+    pub fn name(self) -> &'static str {
+        fuxth::Code::from(self).name()
     }
 }
 
@@ -202,31 +180,16 @@ impl std::fmt::Display for Code {
 impl std::str::FromStr for Code {
     type Err = ();
     fn from_str(name: &str) -> Result<Code, ()> {
-        Code::ALL
-            .iter()
-            .copied()
-            .find(|c| c.name() == name)
-            .ok_or(())
+        Code::all().find(|c| c.name() == name).ok_or(())
     }
 }
 
-/// The language's code as fux names it: by its name, which every one of
-/// fuxth's codes, and every one fux's words give the language, has here.
+/// The language's code as fux names it: a host's by its name (every host
+/// code is one of fux's own, given by `fuxth::Code::from`), the language's
+/// own as it is.
 impl From<fuxth::Code> for Code {
     fn from(code: fuxth::Code) -> Code {
-        code.name().parse().unwrap_or(Code::Failed)
-    }
-}
-
-/// A code as the language takes it from a word of fux's: the language's
-/// own when it is one of them (a word's `type`), else fux's, by its name.
-impl From<Code> for fuxth::Code {
-    fn from(code: Code) -> fuxth::Code {
-        let own = fuxth::Code::ALL
-            .iter()
-            .copied()
-            .find(|c| c.name() == code.name());
-        own.unwrap_or(fuxth::Code::Host(code.name()))
+        code.name().parse().unwrap_or(Code::Lang(code))
     }
 }
 
@@ -239,12 +202,10 @@ mod tests {
         let docs = crate::help::JSON;
         let errors = docs.split("## Errors").nth(1).unwrap_or_default();
         let errors = errors.split("\n## ").next().unwrap_or_default();
-        for (i, code) in Code::ALL.iter().enumerate() {
-            assert_eq!(code.name().parse(), Ok(*code), "{code:?}");
-            let named = Code::ALL
-                .iter()
-                .skip(i + 1)
-                .any(|c| c.name() == code.name());
+        for (i, code) in Code::all().enumerate() {
+            assert_eq!(code.name().parse(), Ok(code), "{code:?}");
+            assert_eq!(Code::from(fuxth::Code::from(code)), code);
+            let named = Code::all().skip(i + 1).any(|c| c.name() == code.name());
             assert!(!named, "{code:?} shares its name");
             let listed = errors.contains(&format!("`{}`", code.name()));
             assert!(
@@ -252,14 +213,6 @@ mod tests {
                 "docs/json.md's Errors does not list {}",
                 code.name()
             );
-        }
-    }
-
-    #[test]
-    fn every_code_of_the_language_is_one_of_fuxs() {
-        for code in fuxth::Code::ALL {
-            assert_ne!(Code::from(*code), Code::Failed, "{code:?}");
-            assert_eq!(fuxth::Code::from(Code::from(*code)), *code);
         }
     }
 }
