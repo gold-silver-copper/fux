@@ -13,6 +13,7 @@
 //! though drawn over since. A match counts only if it holds text the
 //! program printed since, never only the echo of what was typed
 //! (`crate::classify`).
+use crate::classify::Echo;
 use crate::code::Code;
 use crate::command::{AnyRef, CaptureView, Source, Until, Wait};
 use crate::id::PaneId;
@@ -21,8 +22,10 @@ use crate::log::Seq;
 use crate::pane::{Pane, Start};
 use crate::process::Ended;
 use crate::protocol::{End, Reply};
-use crate::ready::State;
+use crate::ready::{self, State};
 use crate::session::Session;
+use fux_vt::{Print, Row, RowId};
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
@@ -117,10 +120,10 @@ struct Watch {
     /// The text printed on each row, runs that go on from each other
     /// joined, though printed in several pieces and between others: where
     /// it starts and ends, and the text.
-    stream: std::collections::HashMap<fux_vt::RowId, (u16, u16, String)>,
+    stream: HashMap<RowId, (u16, u16, String)>,
     /// The `wait-gone` texts seen since the wait began, for a fresh
     /// program, and the last piece that printed each, if one did.
-    appeared: std::collections::HashMap<String, Option<Seq>>,
+    appeared: HashMap<String, Option<Seq>>,
     /// How far it read the journal, for texts, texts gone and bells: each
     /// look reads only what is new.
     looked: Seq,
@@ -327,7 +330,7 @@ impl Wait {
     /// `action`.
     fn told(&self, pane: &Pane, told: Told, limit: Duration, watch: &Watch, action: bool) -> Reply {
         let (id, now) = (pane.id, Instant::now());
-        let state = || crate::ready::state(pane, now);
+        let state = || ready::state(pane, now);
         let came = || since_text(pane, watch, self.marks);
         let output = |body: String| {
             let field = ("output", Json::str(body.clone()));
@@ -577,8 +580,8 @@ impl Watch {
 
             missed: false,
             found: None,
-            stream: std::collections::HashMap::new(),
-            appeared: std::collections::HashMap::new(),
+            stream: HashMap::new(),
+            appeared: HashMap::new(),
             looked: start.from,
 
             bell: None,
@@ -723,12 +726,12 @@ impl Watch {
         if !shown || wait.until.contains(&Until::Settled) {
             return None;
         }
-        if crate::ready::state(pane, now) != State::Reading {
+        if ready::state(pane, now) != State::Reading {
             self.reading_since = None;
             return None;
         }
         let since = *self.reading_since.get_or_insert(now);
-        let moment = crate::ready::SETTLE.saturating_mul(2);
+        let moment = ready::SETTLE.saturating_mul(2);
         let held = now >= crate::after(began, moment) && now >= crate::after(since, moment);
         held.then_some(Found::Stopped)
     }
@@ -749,7 +752,7 @@ impl Watch {
             // it as the action began (`Pane::before`) is drawn again.
             let fresh = match pane.before.get(&whole.row).filter(|_| action) {
                 Some((row, _)) => {
-                    let echo = *echo != crate::classify::Echo::Not;
+                    let echo = *echo != Echo::Not;
                     let (a, b) = crate::pane::changed(row, &whole, echo);
                     (fresh.0.max(a), fresh.1.min(b))
                 }
@@ -760,7 +763,7 @@ impl Watch {
             };
             // The runs printed one after another on the row, joined, whole:
             // a text may go on over what a run printed as it was.
-            let output = *echo == crate::classify::Echo::Not;
+            let output = *echo == Echo::Not;
             let stream = match self.stream.remove(&whole.row) {
                 Some((start, end, mut text)) if output && end == whole.cols.0 => {
                     text.push_str(whole.text);
@@ -786,7 +789,7 @@ impl Watch {
             // A row a line wraps onto goes on from the row above's end.
             let above = (screen.row_by_id(whole.row))
                 .and_then(|row| row.above())
-                .filter(fux_vt::Row::wrapped)
+                .filter(Row::wrapped)
                 .and_then(|up| up.copied(0, usize::MAX).last())
                 .and_then(|(_, text)| text.chars().last());
             let line = match intact {
@@ -800,7 +803,7 @@ impl Watch {
                 .count()
                 .saturating_sub(whole.text.chars().count());
             let joined = Line::piece(
-                &fux_vt::Print {
+                &Print {
                     cols: (stream.0, stream.1),
                     text: &stream.2,
                     ..whole
@@ -815,11 +818,11 @@ impl Watch {
             // A text an echo may show is no news here: one made of what was
             // typed, as its keys may have edited it into any order.
             let echoed = |t: &String| match echo {
-                crate::classify::Echo::Not => false,
-                crate::classify::Echo::Is => true,
+                Echo::Not => false,
+                Echo::Is => true,
                 // The line as typed since, if no key submitted it: later
                 // keys edit what this piece showed.
-                crate::classify::Echo::Of(typed) => {
+                Echo::Of(typed) => {
                     let now = pane.typed();
                     let typed = if now.starts_with(&**typed) {
                         now
@@ -862,7 +865,7 @@ impl Watch {
         (began, now): (Instant, Instant),
         more: bool,
     ) -> Option<Found> {
-        let state = crate::ready::state(pane, now);
+        let state = ready::state(pane, now);
         // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
         // with nothing known) waits for something new, what it waits on or
         // a change, for `MORE` at most.
@@ -917,14 +920,14 @@ impl Line {
     /// characters of the piece: a text that holds any of it lies there.
     /// An end of the window that is no end of the line is marked so that
     /// `^` and `$` find no line's start or end there.
-    fn of(pane: &Pane, print: &fux_vt::Print<'_>, reach: usize) -> Line {
+    fn of(pane: &Pane, print: &Print<'_>, reach: usize) -> Line {
         let screen = pane.screen();
         if let Some(at) = screen.row_by_id(print.row) {
             let width = usize::from(screen.size().cols()).max(1);
             let rows = reach.div_ceil(width).saturating_add(1);
             let mut first = at;
             for _ in 0..rows {
-                match first.above().filter(fux_vt::Row::wrapped) {
+                match first.above().filter(Row::wrapped) {
                     Some(up) => first = up,
                     None => break,
                 }
@@ -966,7 +969,7 @@ impl Line {
     /// row starts a line, and never its end, which the row may go on past.
     /// A row a line wraps onto goes on from `above`, the last character of
     /// the row above.
-    fn piece(print: &fux_vt::Print<'_>, above: Option<char>, (from, to): (usize, usize)) -> Line {
+    fn piece(print: &Print<'_>, above: Option<char>, (from, to): (usize, usize)) -> Line {
         let mut line = Line::default();
         match above.filter(|_| print.cols.0 == 0) {
             Some(last) => {
@@ -1091,7 +1094,7 @@ pub(crate) fn fold(c: char) -> impl Iterator<Item = char> {
 }
 
 /// The characters `from..to` of `print`, where they went; none if empty.
-fn part<'a>(print: &fux_vt::Print<'a>, (from, to): (usize, usize)) -> Option<fux_vt::Print<'a>> {
+fn part<'a>(print: &Print<'a>, (from, to): (usize, usize)) -> Option<Print<'a>> {
     let at = |n: usize| {
         print
             .text
@@ -1106,7 +1109,7 @@ fn part<'a>(print: &fux_vt::Print<'a>, (from, to): (usize, usize)) -> Option<fux
             .0
             .saturating_add(u16::try_from(n).unwrap_or(u16::MAX))
     };
-    Some(fux_vt::Print {
+    Some(Print {
         cols: (col(from), col(to)),
         text,
         ..*print
@@ -1211,18 +1214,18 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
     if screen.mode(fux_vt::Mode::AlternateScreen) {
         return text(pane, marks, false);
     }
-    // A row changed since, or moved (`fux_vt::Print`).
-    let moved: std::collections::HashSet<fux_vt::RowId> = (pane.record.printed_after(start.from))
+    // A row changed since, or moved (`Print`).
+    let moved: HashSet<RowId> = (pane.record.printed_after(start.from))
         .flat_map(|(_, p)| p.prints.iter().map(|r| r.row))
         .collect();
     // A resize gives every row it keeps a new number, and brings nothing.
-    let resized: std::collections::HashSet<u64> = (pane.record.after(start.from))
+    let resized: HashSet<u64> = (pane.record.after(start.from))
         .filter(|e| matches!(e.event, crate::log::Event::Resize(_)))
         .map(|e| e.seq.0)
         .collect();
     let window = screen.window();
     // A row drawn again to show as it did at the input brings nothing.
-    let new = |r: &fux_vt::Row<'_>| {
+    let new = |r: &Row<'_>| {
         (r.version() > start.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
             && (pane.before.get(&r.id())).is_none_or(|(_, was)| {
                 window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)

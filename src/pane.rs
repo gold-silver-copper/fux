@@ -1,6 +1,7 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::bytes::ByteQueue;
 use crate::id::PaneId;
+use crate::log;
 use crate::process::{Child, Ended, Pid};
 use fux_vt::{Feature, Print, Row, RowId, Screen, Size};
 use fuxix::process::Activity;
@@ -255,7 +256,7 @@ struct Sink<'a> {
     /// The replies to one read, queued together after it: at most 4 KiB.
     replies: Vec<u8>,
     /// Its bells, notifications and titles, in order, for the journal.
-    happened: &'a mut Vec<crate::log::Event>,
+    happened: &'a mut Vec<log::Event>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -271,7 +272,7 @@ impl Sink<'_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.as_str().to_owned();
-        self.happened.push(crate::log::Event::Title(title));
+        self.happened.push(log::Event::Title(title));
     }
 }
 
@@ -295,7 +296,7 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             fux_vt::Event::Bell => {
-                self.happened.push(crate::log::Event::Bell);
+                self.happened.push(log::Event::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
@@ -303,8 +304,7 @@ impl fux_vt::Sink for Sink<'_> {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
-                self.happened
-                    .push(crate::log::Event::Notification(text.clone()));
+                self.happened.push(log::Event::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
             fux_vt::Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
@@ -474,7 +474,7 @@ pub struct Pane {
     pub written_at: Option<Instant>,
     /// What happened in it, in order, and what each piece of output
     /// printed: its journal (`crate::log`), which waits read.
-    pub record: crate::log::Log,
+    pub record: log::Log,
     /// Where the last action's input began (or the program started):
     /// what came since is what it brought.
     pub since: Start,
@@ -529,14 +529,14 @@ const FLOOR: Duration = Duration::from_millis(2);
 /// many shell commands had ended and whether the full screen was in use.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Start {
-    pub from: crate::log::Seq,
+    pub from: log::Seq,
     pub finished: u64,
     pub on_full: bool,
 }
 
 impl Start {
     /// Counting from `from`, `screen` as it is now.
-    pub fn at(from: crate::log::Seq, screen: &Screen) -> Start {
+    pub fn at(from: log::Seq, screen: &Screen) -> Start {
         Start {
             from,
             finished: screen.commands().finished,
@@ -545,14 +545,14 @@ impl Start {
     }
 }
 
-/// Input written a piece at a time (`crate::log::Unit`), each once the
+/// Input written a piece at a time (`log::Unit`), each once the
 /// program took the one before (it reads its terminal again, every key
 /// read and its output read by fux), or once its time is up: so each
 /// piece of output follows the input it answers (`crate::classify`).
 #[derive(Default)]
 pub struct Pace {
     /// Pieces waiting to be written.
-    waiting: VecDeque<(Vec<u8>, crate::log::Unit)>,
+    waiting: VecDeque<(Vec<u8>, log::Unit)>,
     /// When the last piece was written, until when it is given, and
     /// whether it was a lone Escape, which a program must surely have
     /// taken alone before the next piece.
@@ -647,7 +647,7 @@ impl Pane {
             shown: (mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
-            record: crate::log::Log::new(crate::log::JOURNAL_BYTES),
+            record: log::Log::new(log::JOURNAL_BYTES),
             since: Start::default(),
             before: HashMap::new(),
             seen: HashMap::new(),
@@ -761,12 +761,7 @@ impl Pane {
     /// Gives `run`, which came from `origin`, to the screen, as `feed`
     /// does, and records it: its number, what it printed, the rows it let
     /// go, a bell it rang.
-    fn record(
-        &mut self,
-        run: &[u8],
-        origin: crate::log::Origin,
-        until_frame: bool,
-    ) -> Option<usize> {
+    fn record(&mut self, run: &[u8], origin: log::Origin, until_frame: bool) -> Option<usize> {
         if run.is_empty() {
             return None;
         }
@@ -783,7 +778,7 @@ impl Pane {
         let finished = self.screen().commands().finished;
         let mut happened = Vec::new();
         let begun = self.parse(run, until_frame, &mut happened);
-        let seq = crate::log::Seq(self.screen().version());
+        let seq = log::Seq(self.screen().version());
         let prints = self.parser.take_prints();
         let printed = (!prints.is_empty()).then(|| {
             let screen = self.parser.screen();
@@ -838,7 +833,7 @@ impl Pane {
             }
             let mut prints = prints;
             prints.shrink_to_fit();
-            Box::new(crate::log::Printed {
+            Box::new(log::Printed {
                 prints,
                 echo,
                 fresh,
@@ -846,15 +841,15 @@ impl Pane {
         });
         // A piece that printed nothing has no reader in the journal.
         if let Some(printed) = printed {
-            self.record.push(seq, crate::log::Event::Output(printed));
+            self.record.push(seq, log::Event::Output(printed));
         }
         // What else the piece did, after it, in the order it came; a shell
         // command's end, by the shell's marks, with the last one's status.
         let commands = self.screen().commands();
         let ended = commands.finished.saturating_sub(finished);
-        happened.extend((0..ended.min(16)).map(|_| crate::log::Event::Done(commands.last_status)));
+        happened.extend((0..ended.min(16)).map(|_| log::Event::Done(commands.last_status)));
         for event in happened {
-            let seq = crate::log::Seq(self.parser.tick());
+            let seq = log::Seq(self.parser.tick());
             self.record.push(seq, event);
         }
         begun
@@ -868,7 +863,7 @@ impl Pane {
         &mut self,
         bytes: &[u8],
         until_frame: bool,
-        happened: &mut Vec<crate::log::Event>,
+        happened: &mut Vec<log::Event>,
     ) -> Option<usize> {
         let mut sink = Sink {
             replies: Vec::new(),
@@ -928,8 +923,8 @@ impl Pane {
         self.release_frame();
         if self.parser.resize(size).is_ok() {
             // The number the resize gave every row it kept.
-            let seq = crate::log::Seq(self.screen().version());
-            self.record.push(seq, crate::log::Event::Resize(size));
+            let seq = log::Seq(self.screen().version());
+            self.record.push(seq, log::Event::Resize(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -960,7 +955,7 @@ impl Pane {
 
     /// An action's input begins: what comes after is what it brought.
     pub fn note_input(&mut self) {
-        self.since = Start::at(crate::log::Seq(self.parser.tick()), self.parser.screen());
+        self.since = Start::at(log::Seq(self.parser.tick()), self.parser.screen());
         self.redraws = 0;
         self.before = (live(self.screen()))
             .map(|(y, row)| (row.id(), (row_cells(&row), (y, shows(&row)))))
@@ -975,11 +970,7 @@ impl Pane {
     /// the one before (`Pace`): the first at once if none is waiting, the
     /// rest as the program takes them ([`Pane::pace_due`]). Refused whole,
     /// as `InputQueue::push` refuses, if they would not fit.
-    pub fn send(
-        &mut self,
-        units: Vec<(Vec<u8>, crate::log::Unit)>,
-        now: Instant,
-    ) -> Result<(), Error> {
+    pub fn send(&mut self, units: Vec<(Vec<u8>, log::Unit)>, now: Instant) -> Result<(), Error> {
         self.room_for(&units)?;
         self.pace.waiting.extend(units);
         self.release_paced(now);
@@ -988,7 +979,7 @@ impl Pane {
 
     /// Whether it takes `units` now, as `send` would: refused whole if
     /// they and what waits to be paced are more than its queue's room.
-    pub fn room_for(&self, units: &[(Vec<u8>, crate::log::Unit)]) -> Result<(), Error> {
+    pub fn room_for(&self, units: &[(Vec<u8>, log::Unit)]) -> Result<(), Error> {
         let held: usize = self.pace.waiting.iter().map(|(b, _)| b.len()).sum();
         let total = units
             .iter()
@@ -1093,7 +1084,7 @@ impl Pane {
     /// Writes a piece of input, `unit` its kind, and records it: its
     /// number, the terminal's modes then, the line the cursor is on.
     /// Whether what follows it is told exactly, needing no pace.
-    fn write_unit(&mut self, bytes: Vec<u8>, unit: crate::log::Unit, now: Instant) -> bool {
+    fn write_unit(&mut self, bytes: Vec<u8>, unit: log::Unit, now: Instant) -> bool {
         let escape = bytes == b"\x1b";
         let child = self.process.child();
         let taking = child.and_then(|child| crate::ready::taking(self, child, now));
@@ -1114,7 +1105,7 @@ impl Pane {
         let ahead = match self.nonce {
             Some(_) => !self.at_prompt(),
             None => {
-                unit == crate::log::Unit::Edit
+                unit == log::Unit::Edit
                     && match taking {
                         Some(Activity::Reading | Activity::Polling | Activity::Idle) => false,
                         Some(Activity::Busy | Activity::Waiting | Activity::Unknown) | None => true,
@@ -1124,7 +1115,7 @@ impl Pane {
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
             .map(|t| t.modes());
-        if unit == crate::log::Unit::Submit {
+        if unit == log::Unit::Submit {
             self.parser.note_submit();
         }
         let line = cursor_line(self.screen());
