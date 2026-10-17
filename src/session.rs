@@ -1221,7 +1221,7 @@ impl Session {
     fn start_dir(
         &self,
         here: Here,
-        dir: Option<&str>,
+        dir: Option<&Path>,
         near: Option<PaneId>,
     ) -> Result<PathBuf, Error> {
         let cwd = match dir {

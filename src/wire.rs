@@ -449,7 +449,7 @@ impl Wire for Percent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{CaptureView, Extent, Source};
+    use crate::command::{CaptureView, Command, Extent, Source};
 
     /// Each variant of an enum `closed_wire!` writes reads back as itself,
     /// and its tag is its place in `ALL`.
@@ -515,6 +515,24 @@ mod tests {
 
     /// A share of a tab is 1 to 100 percent, from the wire too: 250 would
     /// give a pane two and a half times the tab.
+    /// A command's directory is the path's bytes, UTF-8 or not: one that
+    /// is not still reaches the session as it was named.
+    #[test]
+    fn a_directory_goes_as_its_bytes() {
+        let dir = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
+        let split = Command::Split {
+            axis: crate::layout::Axis::Vertical,
+            target: crate::id::PaneId::of(1),
+            cmd: Vec::new(),
+            cwd: Some(dir.clone()),
+            env: Env::default(),
+            run: false,
+            id: None,
+        };
+        let read = Command::get(&mut Reader::new(&encode(&split))).ok();
+        assert!(matches!(read, Some(Command::Split { cwd: Some(cwd), .. }) if cwd == dir));
+    }
+
     #[test]
     fn a_percent_past_100_is_refused() {
         let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();

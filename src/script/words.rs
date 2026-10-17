@@ -691,7 +691,7 @@ impl fuxth::Host for Host<'_> {
                 let built = option(name, &mut o)?;
                 match name {
                     "name" => built.name = Some(string(&v)?),
-                    "cwd" => built.cwd = Some(string(&v)?),
+                    "cwd" => built.cwd = Some(string(&v)?.into()),
                     "program" => match built.argv.first_mut() {
                         Some(first) => *first = string(&v)?,
                         None => built.argv.push(string(&v)?),

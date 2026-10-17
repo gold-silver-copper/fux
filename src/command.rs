@@ -359,7 +359,7 @@ wire! {
             cmd: Vec<String>,
             size: Size,
             /// Where its shell starts (default: the caller's directory).
-            cwd: Option<String>,
+            cwd: Option<std::path::PathBuf>,
             env: Env,
             /// The ids it makes, if asked for (`id`, as saved sessions have).
             ids: Wanted,
@@ -369,7 +369,7 @@ wire! {
             name: Option<String>,
             cmd: Vec<String>,
             size: Size,
-            cwd: Option<String>,
+            cwd: Option<std::path::PathBuf>,
             env: Env,
             ids: Wanted,
         },
@@ -378,7 +378,7 @@ wire! {
             target: PaneId,
             cmd: Vec<String>,
             /// Where its shell starts (default: where the split pane's is).
-            cwd: Option<String>,
+            cwd: Option<std::path::PathBuf>,
             env: Env,
             /// `cmd` is the program, started in place of a shell, as `run`
             /// starts one.
@@ -392,7 +392,7 @@ wire! {
             workspace: Option<WsRef>,
             name: Option<String>,
             size: Size,
-            cwd: Option<String>,
+            cwd: Option<std::path::PathBuf>,
             env: Env,
             argv: Vec<String>,
             /// A file everything the program writes goes to too.
