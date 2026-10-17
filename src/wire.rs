@@ -270,9 +270,12 @@ wire_enum!(Sibling, "sibling" {
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
 /// a fieldless enum whose `ALL` lists every variant: a variant's one-byte
 /// tag is its place there, written and read alike. No variant can be missed, nor two
-/// share a tag; reordering `ALL` (fux-vt's, fuxix's) changes the wire.
+/// share a tag; reordering `ALL` (fux-vt's, fuxix's) changes the wire. Each
+/// also gets a `const` assertion that `ALL` has at most 256 places, so
+/// every place is a byte: a longer one doesn't compile.
 macro_rules! closed_wire {
     ($($ty:ty, $what:literal);* $(;)?) => {$(
+        const _: () = assert!(<$ty>::ALL.len() <= 256);
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
                 let place = Self::ALL.iter().position(|v| v == self);
