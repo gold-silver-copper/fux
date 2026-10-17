@@ -1061,15 +1061,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         [help, topic] if help == "help" => match topic.as_str() {
             "agents" => fuxth::token::arguments(&["help-agents"]),
             "json" => fuxth::token::arguments(&["help-json"]),
-            word if crate::help::explain(word).is_some() => {
-                fuxth::token::arguments(&["str", word, "explain"])
-            }
-            word => {
-                return Err(Failed::new(
-                    Lang::UnknownWord,
-                    format!("argument 2: help: no word {word:?} (`fux help` lists every word)"),
-                ));
-            }
+            word => fuxth::token::arguments(&["str", word, "explain"]),
         },
         // What other programs take for help and their version.
         [flag] if matches!(flag.as_str(), "--help" | "-h") => fuxth::token::arguments(&["help"]),
