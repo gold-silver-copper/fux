@@ -25,7 +25,7 @@ use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Writes to the server's log, its stderr: `log!("…", args)` expands to
@@ -551,11 +551,18 @@ impl Saved {
                 let home = std::env::var_os("HOME").map(PathBuf::from)?;
                 Some(home.join(".local").join("state"))
             })?;
-        // `/` read as `%`, and `%` itself as `%25`: no two sockets share one.
-        let name = (socket.path().to_string_lossy())
-            .replace('%', "%25")
-            .replace('/', "%");
-        let name = format!("{}.layout", name.trim_start_matches('%'));
+        // Each part of the path, `%` in it written `%25`, the parts joined
+        // by `%`: no two sockets share one, and one path spelt two ways
+        // (`/run//x.sock`, `/run/./x.sock`) has one.
+        let parts: Vec<String> = (socket.path().components())
+            .filter_map(|part| match part {
+                Component::Normal(_) | Component::ParentDir => {
+                    Some(part.as_os_str().to_string_lossy().replace('%', "%25"))
+                }
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+            })
+            .collect();
+        let name = format!("{}.layout", parts.join("%"));
         Some(Saved {
             path: base.join("fux").join(name),
             written: String::new(),
@@ -1829,6 +1836,22 @@ fn out_of_descriptors(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved layout's file is one per socket: an escape in a path never
+    /// makes it another's, and one path spelt two ways has one.
+    #[test]
+    fn a_layout_file_is_one_per_socket() -> Result<(), String> {
+        let file = |path: &str| {
+            let socket = crate::socket::checked(path, "test").map_err(|e| e.to_string())?;
+            Saved::of(&socket)
+                .map(|s| s.path)
+                .ok_or_else(|| "no state directory".to_owned())
+        };
+        assert_ne!(file("/%41/x.sock")?, file("/2541/x.sock")?);
+        assert_eq!(file("/run//x.sock")?, file("/run/x.sock")?);
+        assert_eq!(file("/run/./x.sock")?, file("/run/x.sock")?);
+        Ok(())
+    }
 
     /// A session with a client attached on a connection whose terminal the
     /// server took, the other end of a socket pair standing in for it: the
