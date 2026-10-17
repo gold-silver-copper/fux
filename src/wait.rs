@@ -106,18 +106,6 @@ impl Follows {
     }
 }
 
-/// What a wait's answer tells of a pane against how it was as the wait
-/// began: where it counts from, the commands that had ended, the screen's
-/// revision.
-#[derive(Clone, Copy)]
-struct Since {
-    start: Start,
-    revision: u64,
-    /// What came since was more than the pane keeps, and which notice
-    /// says so: some was let go before the wait read it.
-    cut: Option<&'static str>,
-}
-
 /// One pane a wait watches, and what it found as it began.
 struct Watch {
     /// What came after this is new to it.
@@ -260,10 +248,10 @@ impl Waiting {
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane), mode.2));
+                *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
             } else if late {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *look = Look::Told(wait.told(pane, told, limit, watch.since(pane), mode.2));
+                *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
             }
         }
         let answers: Vec<&Reply> = (self.watches.iter())
@@ -337,10 +325,10 @@ impl Wait {
 
     /// The outcome of a wait that ended so in `pane`, after an action if
     /// `action`.
-    fn told(&self, pane: &Pane, told: Told, limit: Duration, since: Since, action: bool) -> Reply {
+    fn told(&self, pane: &Pane, told: Told, limit: Duration, watch: &Watch, action: bool) -> Reply {
         let (id, now) = (pane.id, Instant::now());
         let state = || crate::ready::state(pane, now);
-        let came = || since_text(pane, since, self.marks);
+        let came = || since_text(pane, watch, self.marks);
         let output = |body: String| {
             let field = ("output", Json::str(body.clone()));
             (body, vec![field])
@@ -370,7 +358,7 @@ impl Wait {
         let (state, met, body, end) = match told {
             // A text that cannot come: the screen, to act on what is there.
             Told::Found(Found::Stopped) => {
-                let cut = since.cut.unwrap_or_default();
+                let cut = watch.cut(pane).unwrap_or_default();
                 let screen = format!("{cut}{}", text(pane, self.marks, false));
                 let end = End::Answered {
                     status: STOPPED,
@@ -463,7 +451,7 @@ impl Wait {
                 (state(), None, last(1), end)
             }
         };
-        let mut notes = self.notes(pane, state, since, action);
+        let mut notes = self.notes(pane, state, watch, action);
         // What met it, or with nothing met, what waits on while it is busy.
         match met {
             Some(met) => notes.push(met),
@@ -507,15 +495,15 @@ fn said(id: PaneId, state: String, notes: Vec<Note>, body: Note, end: End) -> Re
 impl Wait {
     /// What a state line says after the state: a shell command that ended,
     /// an action's keys read that drew nothing, keys not read yet.
-    fn notes(&self, pane: &Pane, state: State, since: Since, action: bool) -> Vec<Note> {
+    fn notes(&self, pane: &Pane, state: State, watch: &Watch, action: bool) -> Vec<Note> {
         let mut notes = Vec::new();
         let commands = pane.screen().commands();
-        if commands.finished > since.start.finished {
+        if commands.finished > watch.start.finished {
             let status = commands.last_status;
             let said = status.map_or_else(|| "done".to_owned(), |s| format!("done {s}"));
             notes.push((said, vec![("done", status.map_or(Json::Null, Json::int))]));
         }
-        if action && pane.revision == since.revision && state == State::Reading {
+        if action && pane.revision == watch.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
         }
         let queued = pane.input_queued();
@@ -904,15 +892,13 @@ impl Watch {
         (now >= crate::after(since.0, HOLD)).then_some(Found::Settled(state))
     }
 
-    fn since(&self, pane: &Pane) -> Since {
-        Since {
-            start: self.start,
-            revision: self.revision,
-            cut: match (self.missed, pane.cut()) {
-                (true, _) => Some(MORE_THAN_KEPT),
-                (false, true) => Some(CUT),
-                (false, false) => None,
-            },
+    /// Whether what came since it began was more than the pane keeps, and
+    /// the notice that says so: some was let go before the wait read it.
+    fn cut(&self, pane: &Pane) -> Option<&'static str> {
+        match (self.missed, pane.cut()) {
+            (true, _) => Some(MORE_THAN_KEPT),
+            (false, true) => Some(CUT),
+            (false, false) => None,
         }
     }
 }
@@ -1244,8 +1230,8 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
 /// A full-screen program's whole screen; keys that went in on a full screen
 /// the program has since left, what it printed after, else that last full
 /// screen if it drew it since, else the screen as it is.
-fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
-    let (screen, start) = (pane.screen(), since.start);
+fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
+    let (screen, start) = (pane.screen(), watch.start);
     if screen.mode(fux_vt::Mode::AlternateScreen) {
         return text(pane, marks, false);
     }
@@ -1279,7 +1265,7 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
     let end = (texts.iter())
         .rposition(|t| !t.is_empty())
         .map_or(0, |i| i.saturating_add(1));
-    let lead = since.cut.unwrap_or_default();
+    let lead = watch.cut(pane).unwrap_or_default();
     let body: String = (texts.get(..end).unwrap_or_default().iter())
         .map(|t| format!("{t}\n"))
         .collect();
