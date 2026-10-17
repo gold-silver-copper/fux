@@ -129,12 +129,32 @@ struct Summary {
     /// How many of its caller's values every way through it uses, whether
     /// that way returns or not: fewer, and every call fails.
     need: i64,
-    /// The stack where it returns, counted from where it was called;
-    /// `None` if it never returns.
-    exit: Option<State>,
-    /// Whether every way through it stops at `fail`: a call to it is as
-    /// `fail` is.
-    stops: bool,
+    end: End,
+}
+
+/// How the ways through a definition end, as its callers see them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum End {
+    /// Some way returns: the stack where they do, counted from where it
+    /// was called.
+    Returns(State),
+    /// None returns, and some goes on without failing (a call that never
+    /// returns, a loop gone round).
+    Diverges,
+    /// Every way stops at `fail`: a call to it is as `fail` is.
+    Stops,
+}
+
+impl End {
+    /// The stack where it returns; or, if it never does, how a run goes on
+    /// past a call to it.
+    fn exit(&self) -> Result<&State, Flow> {
+        match self {
+            End::Returns(exit) => Ok(exit),
+            End::Diverges => Err(Flow::Diverge),
+            End::Stops => Err(Flow::Stop),
+        }
+    }
 }
 
 /// How many of a definition's inputs a call's known kinds are given to it
@@ -144,8 +164,8 @@ const GIVEN: usize = 8;
 /// A definition checked again with the kinds a call gives it.
 #[derive(Clone, Debug)]
 enum Special {
-    /// What it does given them.
-    Does(Summary),
+    /// How it ends given them.
+    Does(End),
     /// Every way through it fails given them: why.
     Fails(String),
     /// Nothing more is known than its summary says.
@@ -162,8 +182,7 @@ impl Summary {
         exit.used = 0;
         Summary {
             need: 0,
-            exit: Some(exit),
-            stops: false,
+            end: End::Returns(exit),
         }
     }
 }
@@ -412,12 +431,18 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
                 (Some(_), Some(_)) if round >= RECURSION_ROUNDS => Some(Summary::anything()),
                 (Some(old), Some(new)) => Some(Summary {
                     need: old.need.min(new.need),
-                    exit: match (&old.exit, new.exit) {
-                        (Some(old), Some(new)) => Some(old.widen(old.join(&new))),
-                        (Some(old), None) => Some(old.clone()),
-                        (None, new) => new,
+                    end: match (&old.end, new.end) {
+                        (End::Returns(old), End::Returns(new)) => {
+                            End::Returns(old.widen(old.join(&new)))
+                        }
+                        (End::Returns(old), End::Diverges | End::Stops) => {
+                            End::Returns(old.clone())
+                        }
+                        (End::Diverges | End::Stops, End::Returns(new)) => End::Returns(new),
+                        (End::Stops, End::Stops) => End::Stops,
+                        (End::Diverges, End::Diverges | End::Stops)
+                        | (End::Stops, End::Diverges) => End::Diverges,
                     },
-                    stops: old.stops && new.stops,
                 }),
             };
             if next == current {
@@ -560,7 +585,6 @@ impl<'a, A> Unit<'a, A> {
         };
         let exit = states.remove(&end).map(|(state, _)| state);
         let all = ends.need(exit.as_ref())?;
-        let stops = exit.is_none() && ends.diverged.is_none();
         // Every run goes once through, before any loop goes round again: what
         // that much uses, every way uses. Joining a loop's rounds can hide it.
         let once = match self.ends(true) {
@@ -570,10 +594,14 @@ impl<'a, A> Unit<'a, A> {
             }
             None => all,
         };
+        let end = match (exit, ends.diverged) {
+            (Some(exit), _) => End::Returns(exit),
+            (None, Some(_)) => End::Diverges,
+            (None, None) => End::Stops,
+        };
         Some(Summary {
             need: all.max(once),
-            exit,
-            stops,
+            end,
         })
     }
 
@@ -613,11 +641,8 @@ impl<'a, A> Unit<'a, A> {
                         }),
                         None => Special::Unknown,
                     },
-                    (exit, _) => Special::Does(Summary {
-                        need: 0,
-                        exit,
-                        stops: false,
-                    }),
+                    (Some(exit), _) => Special::Does(End::Returns(exit)),
+                    (None, Some(_)) => Special::Does(End::Diverges),
                 }
             }
         };
@@ -775,10 +800,7 @@ impl<'a, A> Unit<'a, A> {
                 // any are known (not for a call to itself).
                 // As deep as any way through it reaches, not only as deep as
                 // every way does.
-                let deepest = summary
-                    .exit
-                    .as_ref()
-                    .map_or(0, |exit| exit.reached.saturating_neg());
+                let deepest = (summary.end.exit()).map_or(0, |exit| exit.reached.saturating_neg());
                 let reach = deepest.max(summary.need);
                 let slots = usize::try_from(reach).unwrap_or(0).min(GIVEN);
                 let skip = state.top.len().saturating_sub(slots);
@@ -812,9 +834,14 @@ impl<'a, A> Unit<'a, A> {
                 // this call gives tell more, as this call has them (a way
                 // may leave what was given below where the stack surely
                 // reaches, which this call may not have).
-                let refined = special.as_ref().map(|does| {
-                    let mut exit = summary.exit.clone();
-                    if let (Some(exit), Some(known)) = (exit.as_mut(), does.exit.as_ref()) {
+                let exit = match summary.end.exit() {
+                    Ok(exit) => exit,
+                    Err(flow) => return Ok(flow),
+                };
+                let refined = match special.as_ref().map(End::exit) {
+                    None => None,
+                    Some(Ok(known)) => {
+                        let mut exit = exit.clone();
                         for (kinds, better) in exit.top.iter_mut().rev().zip(known.top.iter().rev())
                         {
                             let both = kinds.and(*better);
@@ -822,30 +849,19 @@ impl<'a, A> Unit<'a, A> {
                                 *kinds = both;
                             }
                         }
+                        Some(exit)
                     }
-                    does.exit.as_ref().and(exit)
-                });
-                let exit = match &refined {
-                    Some(exit) => exit.as_ref(),
-                    None => summary.exit.as_ref(),
+                    Some(Err(flow)) => return Ok(flow),
                 };
+                let exit = refined.as_ref().unwrap_or(exit);
                 // A way that went deeper than every way surely does may
                 // have replaced the caller's values down to there: what was
                 // known of their kinds is not, and the caller has reached
                 // as deep, for its own callers.
-                if let Some(exit) = exit
-                    && exit.reached.saturating_add(summary.need) < 0
-                {
+                if exit.reached.saturating_add(summary.need) < 0 {
                     state.forget(0, 0);
                     state.reached = state.reached.min(before.saturating_add(exit.reached));
                 }
-                let Some(exit) = exit else {
-                    return Ok(if summary.stops {
-                        Flow::Stop
-                    } else {
-                        Flow::Diverge
-                    });
-                };
                 let lo = exit.lo.saturating_add(summary.need);
                 let hi = exit.hi.saturating_add(summary.need);
                 if lo != 0 || hi != 0 {
