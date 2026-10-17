@@ -50,6 +50,15 @@ macro_rules! closed {
     };
 }
 
+/// The [`Reply`] `Reply::of` writes, in its own buffer, from arguments as
+/// `format!` takes them: `reply!("\x1b[{row};{col}R")` expands to
+/// `$crate::Reply::of(format_args!("\x1b[{row};{col}R"))`.
+macro_rules! reply {
+    ($($arg:tt)*) => {
+        $crate::Reply::of(format_args!($($arg)*))
+    };
+}
+
 pub mod bytes;
 mod cell;
 mod compact;
@@ -67,6 +76,8 @@ mod style;
 #[cfg(test)]
 mod test_rng;
 mod unicode;
+
+use std::{fmt, ops::Range};
 
 pub use cell::{
     Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle,
@@ -125,10 +136,10 @@ impl Default for Reply {
 
 impl Reply {
     /// The reply `args` write.
-    pub(crate) fn of(args: std::fmt::Arguments<'_>) -> Self {
+    pub(crate) fn of(args: fmt::Arguments<'_>) -> Self {
         let mut reply = Self::default();
         // Every reply fits, so the write cannot run out of room.
-        let _ = std::fmt::Write::write_fmt(&mut reply, args);
+        let _ = fmt::Write::write_fmt(&mut reply, args);
         reply
     }
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -143,9 +154,9 @@ impl Reply {
     }
 }
 
-impl std::fmt::Write for Reply {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        self.push(text.as_bytes()).ok_or(std::fmt::Error)
+impl fmt::Write for Reply {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.push(text.as_bytes()).ok_or(fmt::Error)
     }
 }
 
@@ -180,8 +191,8 @@ pub struct Row<'a> {
     pub(crate) links: Option<&'a link::RowLinks>,
 }
 
-impl std::fmt::Debug for Row<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Row<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Row")
             .field("index", &self.index)
             .field("id", &self.id)
@@ -374,7 +385,7 @@ impl<'a> Row<'a> {
 /// is a run with no text and no columns: the topmost of those moved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Prints {
-    runs: Vec<(RowId, std::ops::Range<u16>, std::ops::Range<usize>)>,
+    runs: Vec<(RowId, Range<u16>, Range<usize>)>,
     text: String,
 }
 
@@ -401,7 +412,7 @@ impl Prints {
     }
     /// The bytes it takes on the heap: its text and its runs.
     pub fn heap(&self) -> usize {
-        let run = size_of::<(RowId, std::ops::Range<u16>, std::ops::Range<usize>)>();
+        let run = size_of::<(RowId, Range<u16>, Range<usize>)>();
         (self.text.capacity()).saturating_add(self.runs.capacity().saturating_mul(run))
     }
     /// Lets go of the room it grew into and does not use: for one kept.
@@ -415,7 +426,7 @@ impl Prints {
     }
     /// Adds `text` printed at `cols` of `row`: to the last run if it goes
     /// on where that left off, on its row.
-    pub(crate) fn push(&mut self, row: RowId, cols: std::ops::Range<u16>, text: &str) {
+    pub(crate) fn push(&mut self, row: RowId, cols: Range<u16>, text: &str) {
         let start = self.text.len();
         self.text.push_str(text);
         let end = self.text.len();
@@ -439,8 +450,8 @@ pub enum Error {
     /// A copy endpoint outside the window.
     InvalidRange,
 }
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Capacity => "terminal allocation limit exceeded",
             Self::CopyLimit => "copy cell or byte limit exceeded",
@@ -455,7 +466,7 @@ impl std::error::Error for Error {}
 #[derive(Clone)]
 pub struct Rows<'a> {
     pub(crate) grid: &'a grid::Grid,
-    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) range: Range<usize>,
 }
 impl<'a> Rows<'a> {
     /// Every row `grid` retains, its history's oldest first.

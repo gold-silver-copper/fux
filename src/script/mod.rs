@@ -22,6 +22,8 @@ use crate::protocol::{Asked, Context, End, Reply, Scalar};
 use crate::socket::{Choice, SocketPath};
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use words::{WORDS, Word, opens, usage};
@@ -475,14 +477,14 @@ pub struct Server {
 /// connection's reads under a request that waits.
 #[derive(Clone, Default)]
 pub struct Stop {
-    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    stream: std::sync::Arc<std::sync::Mutex<Option<io::PipeWriter>>>,
+    flag: Arc<AtomicBool>,
+    stream: Arc<Mutex<Option<io::PipeWriter>>>,
 }
 
 impl Stop {
     /// Stops the run under way.
     pub fn stop(&self) {
-        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.flag.store(true, Ordering::SeqCst);
         if let Ok(mut stream) = self.stream.lock() {
             *stream = None;
         }
@@ -490,12 +492,12 @@ impl Stop {
 
     /// Ready for the next run.
     pub fn reset(&self) {
-        self.flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.flag.store(false, Ordering::SeqCst);
     }
 
     /// Whether the run is to stop.
     pub fn stopped(&self) -> bool {
-        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+        self.flag.load(Ordering::SeqCst)
     }
 }
 
