@@ -381,19 +381,17 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     }
     // Colours as they are if there are few enough, else to the cube.
     let at = |px: u32, py: u32| picture.pixel(x.saturating_add(px), y.saturating_add(py));
-    let mut seen: Vec<[u8; 3]> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     let mut exact = true;
     'scan: for py in 0..height {
         for px in 0..width {
             if let Some([r, g, b, a]) = at(px, py)
                 && a >= 128
-                && !seen.contains(&[r, g, b])
+                && seen.insert([r, g, b])
+                && seen.len() > 256
             {
-                if seen.len() == 256 {
-                    exact = false;
-                    break 'scan;
-                }
-                seen.push([r, g, b]);
+                exact = false;
+                break 'scan;
             }
         }
     }
@@ -412,8 +410,9 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
             .unwrap_or(0);
         u8::try_from(n).unwrap_or(u8::MAX)
     };
+    // In order, for `index` to find a colour by halves.
     let palette: Vec<[u8; 3]> = if exact {
-        seen
+        seen.into_iter().collect()
     } else {
         // In `cube`'s order: blue fastest, then green, then red.
         let mut levels = Vec::new();
@@ -428,7 +427,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     };
     let index = |rgb: [u8; 3]| -> usize {
         if exact {
-            palette.iter().position(|c| *c == rgb).unwrap_or(0)
+            palette.binary_search(&rgb).unwrap_or(0)
         } else {
             cube(rgb)
         }
@@ -440,31 +439,29 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
         let share = |c: u8| u32::from(c).saturating_mul(100) / 255;
         let _ = write!(out, "#{i};2;{};{};{}", share(*r), share(*g), share(*b));
     }
-    let colours = palette.len();
-    let mut band = vec![0u8; usize::try_from(width).unwrap_or(0)];
+    // Each colour's sixels of a band, set in one walk over its pixels.
+    let columns = usize::try_from(width).unwrap_or(0);
+    let mut bands = vec![vec![0u8; columns]; palette.len()];
     let mut top = 0;
     while top < height {
-        // Each colour of the band in turn, from its left, `$` between.
-        let mut first = true;
-        for colour in 0..colours {
-            let mut any = false;
-            for (px, sixel) in (0..width).zip(band.iter_mut()) {
-                *sixel = 0;
-                for bit in 0..6u32 {
-                    let py = top.saturating_add(bit);
-                    if py >= height {
-                        break;
-                    }
-                    if let Some([r, g, b, a]) = at(px, py)
-                        && a >= 128
-                        && index([r, g, b]) == colour
-                    {
-                        *sixel |= 1 << bit;
-                        any = true;
-                    }
+        bands.iter_mut().for_each(|band| band.fill(0));
+        for (px, column) in (0..width).zip(0..) {
+            for bit in 0..6u32 {
+                let py = top.saturating_add(bit);
+                if py < height
+                    && let Some([r, g, b, a]) = at(px, py)
+                    && a >= 128
+                    && let Some(band) = bands.get_mut(index([r, g, b]))
+                    && let Some(sixel) = band.get_mut(column)
+                {
+                    *sixel |= 1 << bit;
                 }
             }
-            if !any {
+        }
+        // Each colour of the band in turn, from its left, `$` between.
+        let mut first = true;
+        for (colour, band) in bands.iter().enumerate() {
+            if band.iter().all(|sixel| *sixel == 0) {
                 continue;
             }
             if !first {
