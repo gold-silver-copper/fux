@@ -332,8 +332,11 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
     })
 }
 
-/// A size: columns and rows each 1 to `most` (a tab's laid out on, 500;
-/// a client's, as many as a cell holds).
+/// The most columns, and rows, a tab is laid out on.
+const TAB_MOST: u16 = 500;
+
+/// A size: columns and rows each 1 to `most` (a tab's laid out on,
+/// `TAB_MOST`; a client's, as many as a cell holds).
 fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::Size, Failure> {
     let cells = 1..=i64::from(most);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
@@ -718,7 +721,7 @@ impl fuxth::Host for Host<'_> {
             }
             "size" => {
                 let mut o = next()?;
-                let size = laid_out(&next()?, &next()?, 500)?;
+                let size = laid_out(&next()?, &next()?, TAB_MOST)?;
                 option(name, &mut o)?.size = Some(size);
                 now(out, o)
             }
@@ -1147,7 +1150,7 @@ impl fuxth::Host for Host<'_> {
             "resize" | "resize-auto" => {
                 let target = target(&next()?)?;
                 let size = match name {
-                    "resize" => Some(laid_out(&next()?, &next()?, 500)?),
+                    "resize" => Some(laid_out(&next()?, &next()?, TAB_MOST)?),
                     _ => None,
                 };
                 tell(Command::Resize(Resized::Tabs(target, size)))
