@@ -161,7 +161,8 @@ fn put<'a>(frame: &impl Frame<'a>, out: &mut Vec<u8>) -> usize {
 
 /// What a frame carries: a value as the wire has it, or bytes or text lent
 /// from the frame as they are, so that a paint is not copied.
-pub trait Payload<'a>: Sized {
+trait Payload<'a>: Sized {
+    /// Writes it as the frame's payload.
     fn put(&self, out: &mut Vec<u8>);
     /// The value `payload` is, all of it.
     fn get(payload: &'a [u8]) -> Result<Self, Error>;
