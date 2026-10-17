@@ -47,6 +47,7 @@ use fux::layout::{Placement, Rect};
 use fux::protocol::ToAttached;
 use fux::render::{self, Grid};
 use fux::session::{Outgoing, Session};
+use fux::view::ClientKind;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -245,7 +246,7 @@ impl Through {
         session.start().map_err(|e| format!("fux: {e}"))?;
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
         let client = session
-            .attach(client_rows, cols, None)
+            .attach_as(ClientKind::Terminal, client_rows, cols, None)
             .map_err(|e| format!("fux: {e}"))?;
         let mut placement = Placement::default();
         let view = session.views.get(&client).ok_or("fux: no view")?;
