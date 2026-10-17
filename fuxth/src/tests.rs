@@ -629,7 +629,7 @@ fn every_builtin_effect_names_what_it_takes() {
         let (before, after) = builtin.effect().split_once("--").unwrap_or_default();
         assert_eq!(
             before.split_whitespace().count(),
-            builtin.takes(),
+            builtin.args().len(),
             "{}",
             builtin.name()
         );

@@ -916,12 +916,6 @@ macro_rules! builtins {
                 }
             }
 
-            /// How many values it takes: `pick` and `roll` take a count,
-            /// then as many values as it says (the machine checks those).
-            pub fn takes(self) -> usize {
-                self.args().len()
-            }
-
             /// What it does to the stack, as help shows it.
             pub fn effect(self) -> &'static str {
                 match self {
@@ -936,7 +930,9 @@ macro_rules! builtins {
                 }
             }
 
-            /// What it takes in each place, the deepest first.
+            /// What it takes in each place, the deepest first: `pick` and
+            /// `roll` take a count, then as many values as it says (the
+            /// machine checks those).
             pub(crate) fn args(self) -> &'static [Arg] {
                 match self {
                     $(Builtin::$variant => &[$($ty::ARG),*],)*
