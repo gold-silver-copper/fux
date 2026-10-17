@@ -352,13 +352,4 @@ impl<A> Value<A> {
             Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => 0,
         }
     }
-
-    /// How many elements a string or list has; 0 for anything else.
-    pub fn size(&self) -> usize {
-        match self {
-            Value::Str(s) => s.chars_len(),
-            Value::List(list) => list.items.len(),
-            Value::Int(_) | Value::Bool(_) | Value::App(_) => 0,
-        }
-    }
 }
