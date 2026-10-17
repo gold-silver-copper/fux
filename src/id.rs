@@ -5,6 +5,7 @@
 use crate::code::Code;
 use crate::command::{AnyRef, Kind, Usage};
 use crate::session::Error;
+use crate::wire::wire;
 use std::fmt;
 use std::str::FromStr;
 
@@ -90,13 +91,15 @@ pub(crate) struct Ids {
     wanted: Wanted,
 }
 
-/// The ids a command asks to make its workspace, tab and pane with
-/// (`id`, as saved sessions give them): at most one of each kind.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Wanted {
-    pub pane: Option<PaneId>,
-    pub tab: Option<TabId>,
-    pub workspace: Option<WsId>,
+wire! {
+    /// The ids a command asks to make its workspace, tab and pane with
+    /// (`id`, as saved sessions give them): at most one of each kind.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Wanted {
+        pub pane: Option<PaneId>,
+        pub tab: Option<TabId>,
+        pub workspace: Option<WsId>,
+    }
 }
 
 impl Wanted {

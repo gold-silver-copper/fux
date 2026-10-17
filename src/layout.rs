@@ -2,16 +2,19 @@
 //! rectangles it gives each pane at a given size.
 use crate::id::PaneId;
 use crate::keys::Direction;
+use crate::wire::wire;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::Range;
 
-/// How a split arranges its children.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Axis {
-    /// Side by side, divided by vertical separators (`horizontal split`).
-    Horizontal,
-    /// Stacked, divided by horizontal separators (`vertical split`).
-    Vertical,
+wire! {
+    /// How a split arranges its children.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Axis {
+        /// Side by side, divided by vertical separators (`horizontal split`).
+        Horizontal,
+        /// Stacked, divided by horizontal separators (`vertical split`).
+        Vertical,
+    }
 }
 
 impl Axis {

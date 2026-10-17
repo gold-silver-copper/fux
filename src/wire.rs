@@ -2,14 +2,10 @@
 //! as the same value, so that the server receives what a client's words
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
-use crate::command::{
-    AnyRef, Button, CaptureView, Choices, ClientAction, Command, Env, Extent, Input, Kind, Mouse,
-    MoveTo, PanePick, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, Wheel, WsRef,
-};
-use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
+use crate::command::{Env, Percent};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
-use crate::layout::Axis;
 use fuxix::process::Signal;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::time::Duration;
@@ -279,17 +275,6 @@ text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 
-wire_enum!(Axis {
-    Horizontal,
-    Vertical,
-});
-wire_enum!(Kind {
-    Pane,
-    Tab,
-    Workspace,
-});
-wire_enum!(Sibling { Next, Previous });
-
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
 /// a fieldless enum whose `ALL` lists every variant: a variant's one-byte
 /// tag is its place there, written and read alike. No variant can be missed, nor two
@@ -328,15 +313,17 @@ impl Wire for fux_vt::Size {
 }
 
 /// `wire_enum!(Ty { Unit, Tuple(a, b), Named { x, y } })` expands to
-/// `impl Wire for Ty`: `put` writes a variant's tag, its place in the list
-/// (`Unit` 0, `Tuple` 1, `Named` 2), then its fields in the order listed;
-/// `get` reads the tag, then each field back in that order (an unknown tag
-/// is `Error::Tag("Ty", tag)`). The places are those of a hidden
-/// `#[repr(u8)] enum Tag { Unit, Tuple, Named }` beside the impl, so no
-/// two variants share one, and a list longer than 256 does not compile.
-/// `Ty<T>` takes a parameter that is itself `Wire`. For a type declared
-/// elsewhere (fux-vt's); one declared here says its fields once, in
-/// `wire!`.
+/// `impl Wire for Ty`: `put` writes a variant's tag, one byte that is its
+/// place in the list from 0 (`Unit` 0, `Tuple` 1, `Named` 2), then its
+/// fields in the order listed; `get` reads the tag, then each field back
+/// in that order (an unknown tag is `Error::Tag("Ty", tag)`). The places
+/// are those of a hidden `#[repr(u8)] enum Tag { Unit, Tuple, Named }`
+/// beside the impl, so no two variants share one, and a list longer than
+/// 256 does not compile. Reordering the list changes the wire, as any
+/// change to it does (`protocol::PROTOCOL`). `Ty<T>`, of one parameter,
+/// is `Wire` where `T` is. This is for a type declared in another crate
+/// (fux-vt's): a type of fux's own is declared in `wire!`, which writes
+/// this list from the declaration.
 macro_rules! wire_enum {
     ($ty:ident $(<$g:ident>)? {
         $($var:ident $(( $($p:ident),+ ))? $({ $($f:ident),* })?),* $(,)?
@@ -392,8 +379,7 @@ macro_rules! wire_struct {
 }
 pub(crate) use wire_struct;
 
-/// A type declared and put on the wire at once, its fields written once.
-/// An enum,
+/// A type declared and put on the wire at once, its fields written once:
 ///
 /// ```ignore
 /// wire! {
@@ -406,12 +392,13 @@ pub(crate) use wire_struct;
 /// }
 /// ```
 ///
-/// expands to the enum as written, its tuple variants' fields bare
-/// (`Tuple(A, B)`), and `wire_enum!(Ty { Unit, Tuple(a, b), Named { x } })`:
-/// `a` and `b` only name the fields for its `Wire` impl, as a macro can't
-/// make up those names. A struct, `wire! { pub struct Ty { pub x: X, y: Y } }`,
-/// expands to itself and `wire_struct!(Ty { x, y })`. A field's place on the
-/// wire is its place in the declaration, and a variant's tag its place.
+/// expands to the enum as written (its docs and attributes too), its tuple
+/// variants' fields bare (`Tuple(A, B)`), and then `wire_enum!(Ty { Unit,
+/// Tuple(a, b), Named { x } })`: `a` and `b` only name the fields for its
+/// `Wire` impl, as a macro can't make up those names. A struct, `wire! {
+/// pub struct Ty { pub x: X, y: Y } }`, expands to itself and
+/// `wire_struct!(Ty { x, y })`. So a variant's tag is its place in the
+/// declaration, from 0, and a field's place on the wire its place there.
 macro_rules! wire {
     (
         $(#[$m:meta])*
@@ -450,26 +437,6 @@ macro_rules! wire {
 }
 pub(crate) use wire;
 
-wire_enum!(WsRef { Id(id), Name(name) });
-wire_enum!(AnyRef { Pane(p), Tab(t), Workspace(w) });
-wire_enum!(Pick<T> { Step(s), Id(id) });
-wire_enum!(PanePick { Step(s), Id(id), Last, Toward(d) });
-wire_enum!(MoveTo {
-    Tab(t),
-    Workspace(w),
-    NewTab,
-    NewWorkspace,
-    Beside(d),
-});
-wire_enum!(SwapWith { Pane(p), Toward(d) });
-wire_enum!(Source {
-    Shown,
-    Main,
-    Alternate,
-    LastOutput,
-});
-wire_enum!(Extent { Cells(n), Percent(n) });
-
 impl Wire for Percent {
     fn put(&self, out: &mut Vec<u8>) {
         self.get().put(out);
@@ -478,101 +445,11 @@ impl Wire for Percent {
         Percent::new(u8::get(r)?).ok_or(Error::Bad("percent"))
     }
 }
-wire_enum!(Resized { Tabs(t, size), Client(c, size) });
-wire_enum!(Input { Key(k), Text(t), Paste(t) });
-wire_struct!(Wanted {
-    pane,
-    tab,
-    workspace,
-});
-wire_struct!(CaptureView {
-    full,
-    join,
-    styles,
-    source,
-    marks,
-    rows,
-    cols
-});
-wire_enum!(Until { Text(t), Gone(t), Exit, Bell, Settled });
-wire_struct!(Wait {
-    until,
-    timeout,
-    print,
-    after,
-    marks
-});
-wire_enum!(Button {
-    Left,
-    Middle,
-    Right,
-    Back,
-    Forward,
-});
-wire_enum!(Wheel {
-    Up,
-    Down,
-    Left,
-    Right,
-});
-wire_enum!(Mouse {
-    Click(b),
-    Press(b),
-    Release(b),
-    Wheel(b),
-    Move,
-});
-wire_enum!(Choices { Tabs, Workspaces, Panes(pane) });
-wire_enum!(ClientAction {
-    Detach,
-    Capture,
-    Choices(choices),
-    Run(code),
-    Keys(inputs),
-    Zoom,
-    SelectPane(p),
-    SelectTab(p),
-    SelectWorkspace(p),
-});
-
-wire_enum!(Command {
-    Ls { target, get },
-    KillServer { force },
-    NewWorkspace { name, cmd, size, cwd, env, ids },
-    NewTab { target, name, cmd, size, cwd, env, ids },
-    Split { axis, target, cmd, cwd, env, run, id, then },
-    Run { workspace, name, size, cwd, env, argv, log, ids, then },
-    Respawn { target, kill, env, argv, then },
-    Notify { target, text },
-    Resize(what),
-    Wait { target, wait },
-    SendMouse { target, mouse, row, col, then },
-    Kill { target },
-    Signal { target, signal, then },
-    Rename { target, name },
-    MovePane { target, to },
-    SwapPane { target, with },
-    ResizePane { target, by },
-    SendKeys { target, inputs, then },
-    Events { target, json },
-    DumpLayout { target },
-    Grant { workspace, socket },
-    Revoke { socket },
-    Log { target, file },
-    ClearHistory { target },
-    CapturePane { target, history, view, settle },
-    Reorder { target, toward },
-    Set { option, value },
-    Resolve { text, kind },
-    ListBuffers,
-    ShowBuffer { index },
-    PasteBuffer { index, target },
-    Client { client, action },
-});
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::{CaptureView, Extent, Source};
 
     /// Each variant of an enum `closed_wire!` writes reads back as itself,
     /// and its tag is its place in `ALL`.

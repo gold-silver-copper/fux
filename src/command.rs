@@ -8,27 +8,33 @@ use crate::layout::Axis;
 use crate::wire::wire;
 use std::time::Duration;
 
-/// A workspace named on the command line: `+N` or its name.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WsRef {
-    Id(WsId),
-    Name(String),
+wire! {
+    /// A workspace named on the command line: `+N` or its name.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum WsRef {
+        Id(id: WsId),
+        Name(name: String),
+    }
 }
 
-/// Any target: a pane, a tab or a workspace (`%N`, `@N`, `+N`), as a
-/// client's words found it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AnyRef {
-    Pane(PaneId),
-    Tab(TabId),
-    Workspace(WsId),
+wire! {
+    /// Any target: a pane, a tab or a workspace (`%N`, `@N`, `+N`), as a
+    /// client's words found it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum AnyRef {
+        Pane(id: PaneId),
+        Tab(id: TabId),
+        Workspace(id: WsId),
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Pane,
-    Tab,
-    Workspace,
+wire! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Kind {
+        Pane,
+        Tab,
+        Workspace,
+    }
 }
 
 impl AnyRef {
@@ -73,57 +79,69 @@ impl Kind {
     }
 }
 
-/// Which way `reorder` moves a pane, tab or workspace among its siblings,
-/// or `focus`, `next-tab` and `next-workspace` (or `previous-…`) step from
-/// the current one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Sibling {
-    Next,
-    Previous,
+wire! {
+    /// Which way `reorder` moves a pane, tab or workspace among its siblings,
+    /// or `focus`, `next-tab` and `next-workspace` (or `previous-…`) step from
+    /// the current one.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Sibling {
+        Next,
+        Previous,
+    }
 }
 
-/// Which tab or workspace `show-tab` or `show-workspace` picks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pick<T> {
-    Step(Sibling),
-    Id(T),
+wire! {
+    /// Which tab or workspace `show-tab` or `show-workspace` picks.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Pick<T> {
+        Step(step: Sibling),
+        Id(id: T),
+    }
 }
 
-/// Which pane `focus` picks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanePick {
-    Step(Sibling),
-    Id(PaneId),
-    /// The previously focused pane.
-    Last,
-    Toward(Direction),
+wire! {
+    /// Which pane `focus` picks.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PanePick {
+        Step(step: Sibling),
+        Id(id: PaneId),
+        /// The previously focused pane.
+        Last,
+        Toward(direction: Direction),
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MoveTo {
-    Tab(TabId),
-    Workspace(WsRef),
-    NewTab,
-    NewWorkspace,
-    Beside(Direction),
+wire! {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum MoveTo {
+        Tab(id: TabId),
+        Workspace(workspace: WsRef),
+        NewTab,
+        NewWorkspace,
+        Beside(direction: Direction),
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SwapWith {
-    Pane(PaneId),
-    Toward(Direction),
+wire! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum SwapWith {
+        Pane(id: PaneId),
+        Toward(direction: Direction),
+    }
 }
 
 /// How a tab no client shows is laid out (`size`, `resize`): `None`,
 /// on a client's screen.
 pub type Size = Option<fux_vt::Size>;
 
-/// A pane's new width or height (`resize-x`, `resize-y`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Extent {
-    Cells(u16),
-    /// Of the tab's width or height.
-    Percent(Percent),
+wire! {
+    /// A pane's new width or height (`resize-x`, `resize-y`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Extent {
+        Cells(cells: u16),
+        /// Of the tab's width or height.
+        Percent(percent: Percent),
+    }
 }
 
 /// A share, 1 to 100 percent: there is no other.
@@ -156,127 +174,145 @@ wire! {
     }
 }
 
-/// What `resize` sizes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Resized {
-    /// A tab, or every tab of a workspace: what they are laid out on while
-    /// no client shows them, or as the clients showing them are.
-    Tabs(AnyRef, Size),
-    /// A headless client's screen.
-    Client(ClientId, fux_vt::Size),
+wire! {
+    /// What `resize` sizes.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Resized {
+        /// A tab, or every tab of a workspace: what they are laid out on while
+        /// no client shows them, or as the clients showing them are.
+        Tabs(target: AnyRef, size: Size),
+        /// A headless client's screen.
+        Client(client: ClientId, size: fux_vt::Size),
+    }
 }
 
-/// One thing `send-keys` sends.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Input {
-    /// A key, encoded as the pane's program asked for keys.
-    Key(KeyPress),
-    /// Text, as typed.
-    Text(String),
-    /// Text as a paste: bracketed if the program asked for bracketed paste.
-    Paste(String),
+wire! {
+    /// One thing `send-keys` sends.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Input {
+        /// A key, encoded as the pane's program asked for keys.
+        Key(key: KeyPress),
+        /// Text, as typed.
+        Text(text: String),
+        /// Text as a paste: bracketed if the program asked for bracketed paste.
+        Paste(text: String),
+    }
 }
 
-/// Which screen a capture reads.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Source {
-    /// The screen the pane shows, and its history.
-    #[default]
-    Shown,
-    /// The main screen and its history, though a program holds the
-    /// alternate one: what was printed before it took the screen.
-    Main,
-    /// The alternate screen as a full-screen program last drew it, though
-    /// it has left it, or exited.
-    Alternate,
-    /// The last shell command's output alone, between its OSC 133 marks.
-    LastOutput,
+wire! {
+    /// Which screen a capture reads.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum Source {
+        /// The screen the pane shows, and its history.
+        #[default]
+        Shown,
+        /// The main screen and its history, though a program holds the
+        /// alternate one: what was printed before it took the screen.
+        Main,
+        /// The alternate screen as a full-screen program last drew it, though
+        /// it has left it, or exited.
+        Alternate,
+        /// The last shell command's output alone, between its OSC 133 marks.
+        LastOutput,
+    }
 }
 
-/// Which part of a pane's screen `capture` prints, and how.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CaptureView {
-    /// Every row as it is, blank rows at the end and all, rather than
-    /// trimmed.
-    pub full: bool,
-    /// Soft-wrapped rows joined into the lines they wrap.
-    pub join: bool,
-    /// Rows `start..=end`, from 0 at the top of what is captured.
-    pub rows: Option<(u16, u16)>,
-    /// Columns `start..=end`, from 0.
-    pub cols: Option<(u16, u16)>,
-    /// Colours and attributes, as SGR escapes, or with `json` as runs.
-    pub styles: bool,
-    /// Which screen it reads.
-    pub source: Source,
-    /// Reverse video, how a selection is drawn, between `⟦` and `⟧`.
-    pub marks: bool,
+wire! {
+    /// Which part of a pane's screen `capture` prints, and how.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct CaptureView {
+        /// Every row as it is, blank rows at the end and all, rather than
+        /// trimmed.
+        pub full: bool,
+        /// Soft-wrapped rows joined into the lines they wrap.
+        pub join: bool,
+        /// Colours and attributes, as SGR escapes, or with `json` as runs.
+        pub styles: bool,
+        /// Which screen it reads.
+        pub source: Source,
+        /// Reverse video, how a selection is drawn, between `⟦` and `⟧`.
+        pub marks: bool,
+        /// Rows `start..=end`, from 0 at the top of what is captured.
+        pub rows: Option<(u16, u16)>,
+        /// Columns `start..=end`, from 0.
+        pub cols: Option<(u16, u16)>,
+    }
 }
 
-/// What `wait` waits for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Until {
-    /// The text appears: on the screen, or in a line written since the wait
-    /// began that has scrolled into history.
-    Text(String),
-    /// The text is no longer on the screen.
-    Gone(String),
-    /// The program exits.
-    Exit,
-    /// The program rings the bell or sends a desktop notification.
-    Bell,
-    /// The pane settles: its program reads its terminal, waits quiet on
-    /// something else, or exits (`crate::ready`). What an action waits for
-    /// when it names nothing.
-    Settled,
+wire! {
+    /// What `wait` waits for.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Until {
+        /// The text appears: on the screen, or in a line written since the wait
+        /// began that has scrolled into history.
+        Text(text: String),
+        /// The text is no longer on the screen.
+        Gone(text: String),
+        /// The program exits.
+        Exit,
+        /// The program rings the bell or sends a desktop notification.
+        Bell,
+        /// The pane settles: its program reads its terminal, waits quiet on
+        /// something else, or exits (`crate::ready`). What an action waits for
+        /// when it names nothing.
+        Settled,
+    }
 }
 
-/// A wait: for any of its conditions, in each of its panes, how long at
-/// most, and how it is told.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Wait {
-    pub until: Vec<Until>,
-    /// How long at most; if unsaid, the server's `wait-seconds`.
-    pub timeout: Option<Duration>,
-    /// What came since it began, or the screen, as the wait ends.
-    pub print: bool,
-    /// Only what comes after it began counts: text that appears anew, a
-    /// screen that changed (send-keys' waits, armed before the keys).
-    pub after: bool,
-    /// What it prints with reverse video marked, as `capture`'s `marks`.
-    pub marks: bool,
+wire! {
+    /// A wait: for any of its conditions, in each of its panes, how long at
+    /// most, and how it is told.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Wait {
+        pub until: Vec<Until>,
+        /// How long at most; if unsaid, the server's `wait-seconds`.
+        pub timeout: Option<Duration>,
+        /// What came since it began, or the screen, as the wait ends.
+        pub print: bool,
+        /// Only what comes after it began counts: text that appears anew, a
+        /// screen that changed (send-keys' waits, armed before the keys).
+        pub after: bool,
+        /// What it prints with reverse video marked, as `capture`'s `marks`.
+        pub marks: bool,
+    }
 }
 
-/// What `send-mouse` does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mouse {
-    /// A press and its release.
-    Click(Button),
-    Press(Button),
-    Release(Button),
-    /// The wheel turned: one notch.
-    Wheel(Wheel),
-    /// The pointer moves, no button held.
-    Move,
+wire! {
+    /// What `send-mouse` does.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mouse {
+        /// A press and its release.
+        Click(button: Button),
+        Press(button: Button),
+        Release(button: Button),
+        /// The wheel turned: one notch.
+        Wheel(way: Wheel),
+        /// The pointer moves, no button held.
+        Move,
+    }
 }
 
-/// A button `send-mouse` presses and releases: never the wheel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Button {
-    Left,
-    Middle,
-    Right,
-    Back,
-    Forward,
+wire! {
+    /// A button `send-mouse` presses and releases: never the wheel.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Button {
+        Left,
+        Middle,
+        Right,
+        Back,
+        Forward,
+    }
 }
 
-/// A way the wheel turns, which is pressed and never released.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Wheel {
-    Up,
-    Down,
-    Left,
-    Right,
+wire! {
+    /// A way the wheel turns, which is pressed and never released.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Wheel {
+        Up,
+        Down,
+        Left,
+        Right,
+    }
 }
 
 impl Button {
@@ -304,237 +340,243 @@ impl Wheel {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
-    Ls {
-        /// One pane, tab or workspace only.
-        target: Option<AnyRef>,
-        /// One field of its JSON.
-        get: Option<String>,
-    },
-    /// Stops the server; from the CLI, refused from one of its own panes
-    /// or with people attached unless forced.
-    KillServer {
-        force: bool,
-    },
-    NewWorkspace {
-        name: Option<String>,
-        cmd: Vec<String>,
-        size: Size,
-        /// Where its shell starts (default: the caller's directory).
-        cwd: Option<String>,
-        env: Env,
-        /// The ids it makes, if asked for (`id`, as saved sessions have).
-        ids: Wanted,
-    },
-    NewTab {
-        target: Option<WsRef>,
-        name: Option<String>,
-        cmd: Vec<String>,
-        size: Size,
-        cwd: Option<String>,
-        env: Env,
-        ids: Wanted,
-    },
-    Split {
-        axis: Axis,
-        target: PaneId,
-        cmd: Vec<String>,
-        /// Where its shell starts (default: where the split pane's is).
-        cwd: Option<String>,
-        env: Env,
-        /// `cmd` is the program, started in place of a shell, as `run`
-        /// starts one.
-        run: bool,
-        /// The id it makes the pane with, if asked for.
-        id: Option<PaneId>,
-        /// Then waits on the new pane, armed before its program writes.
-        then: Option<Box<Wait>>,
-    },
-    /// A program, started in place of a shell in a tab of its own, in a
-    /// workspace no client is moved to.
-    Run {
-        workspace: Option<WsRef>,
-        name: Option<String>,
-        size: Size,
-        cwd: Option<String>,
-        env: Env,
-        argv: Vec<String>,
-        /// A file everything the program writes goes to too.
-        log: Option<String>,
-        ids: Wanted,
-        /// Then waits, armed before the program writes anything.
-        then: Option<Box<Wait>>,
-    },
-    /// The program `run` started, started again in its pane.
-    Respawn {
-        target: PaneId,
-        /// Ends it first if it still runs.
-        kill: bool,
-        env: Env,
-        /// Another program instead: the one it ran without.
-        argv: Vec<String>,
-        /// Then waits, as run's does.
-        then: Option<Box<Wait>>,
-    },
-    /// A notice on the clients showing the target: every client without.
-    Notify {
-        target: Option<AnyRef>,
-        text: String,
-    },
-    Resize(Resized),
-    Wait {
-        /// The pane, or a tab's or workspace's every pane, each of which
-        /// answers.
-        target: AnyRef,
-        wait: Wait,
-    },
-    SendMouse {
-        target: PaneId,
-        mouse: Mouse,
-        row: u16,
-        col: u16,
-        /// Then waits, armed before the event goes in, as send-keys' does.
-        then: Option<Box<Wait>>,
-    },
-    /// Closes a pane, a tab or a workspace.
-    Kill {
-        target: AnyRef,
-    },
-    /// A signal to what runs in the pane's foreground, what its terminal's
-    /// keys reach (a job its shell runs, or the program `run` started), never
-    /// a shell itself: for a program that ignores Ctrl-C and hangups.
-    Signal {
-        target: PaneId,
-        signal: fuxix::process::Signal,
-        then: Option<Box<Wait>>,
-    },
-    Rename {
-        target: AnyRef,
-        name: String,
-    },
-    MovePane {
-        target: PaneId,
-        to: MoveTo,
-    },
-    SwapPane {
-        target: PaneId,
-        with: SwapWith,
-    },
-    ResizePane {
-        target: PaneId,
-        by: PaneResize,
-    },
-    SendKeys {
-        /// The pane, or a tab's or workspace's every pane.
-        target: AnyRef,
-        inputs: Vec<Input>,
-        /// A wait for the program to go quiet once they are sent.
-        then: Option<Box<Wait>>,
-    },
-    /// What happens, a line each as it happens, until the client goes:
-    /// where the target is, or anywhere without one.
-    Events {
-        target: Option<AnyRef>,
-        json: bool,
-    },
-    /// What is there, as a layout file: everything, or one tab or
-    /// workspace.
-    DumpLayout {
-        target: Option<AnyRef>,
-    },
-    /// A socket whose commands reach workspace `workspace` alone.
-    Grant {
-        workspace: WsRef,
-        socket: String,
-    },
-    /// The socket a grant made, closed.
-    Revoke {
-        socket: String,
-    },
-    /// What the pane's program writes, kept in a file from now on; `None`
-    /// stops it.
-    Log {
-        target: PaneId,
-        file: Option<String>,
-    },
-    /// The pane's history, dropped.
-    ClearHistory {
-        target: PaneId,
-    },
-    /// What the pane shows, with up to `history` lines before it, as text
-    /// and as JSON.
-    CapturePane {
-        target: PaneId,
-        history: Option<usize>,
-        view: CaptureView,
-        /// Read once the pane settles, waiting this long at most (if unsaid,
-        /// the server's `wait-seconds`), and said with its state; at once,
-        /// as it is, without.
-        settle: Option<Option<Duration>>,
-    },
-    Reorder {
-        target: AnyRef,
-        toward: Sibling,
-    },
-    /// A server setting (`history-bytes`, `clipboard`, …), as its value's
-    /// text.
-    Set {
-        option: String,
-        value: String,
-    },
-    /// What a name or an id in text is: the pane, tab or workspace of
-    /// `kind` it names (a tab's name, `%3`, …), answered with its id.
-    Resolve {
-        text: String,
-        kind: Kind,
-    },
-    ListBuffers,
-    ShowBuffer {
-        index: usize,
-    },
-    PasteBuffer {
-        index: usize,
-        target: PaneId,
-    },
-    /// A command on one client's screen: the client named (`str c1 client`), or the one
-    /// whose key, menu or prompt ran it.
-    Client {
-        client: Option<ClientId>,
-        action: ClientAction,
-    },
+wire! {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Command {
+        Ls {
+            /// One pane, tab or workspace only.
+            target: Option<AnyRef>,
+            /// One field of its JSON.
+            get: Option<String>,
+        },
+        /// Stops the server; from the CLI, refused from one of its own panes
+        /// or with people attached unless forced.
+        KillServer {
+            force: bool,
+        },
+        NewWorkspace {
+            name: Option<String>,
+            cmd: Vec<String>,
+            size: Size,
+            /// Where its shell starts (default: the caller's directory).
+            cwd: Option<String>,
+            env: Env,
+            /// The ids it makes, if asked for (`id`, as saved sessions have).
+            ids: Wanted,
+        },
+        NewTab {
+            target: Option<WsRef>,
+            name: Option<String>,
+            cmd: Vec<String>,
+            size: Size,
+            cwd: Option<String>,
+            env: Env,
+            ids: Wanted,
+        },
+        Split {
+            axis: Axis,
+            target: PaneId,
+            cmd: Vec<String>,
+            /// Where its shell starts (default: where the split pane's is).
+            cwd: Option<String>,
+            env: Env,
+            /// `cmd` is the program, started in place of a shell, as `run`
+            /// starts one.
+            run: bool,
+            /// The id it makes the pane with, if asked for.
+            id: Option<PaneId>,
+            /// Then waits on the new pane, armed before its program writes.
+            then: Option<Box<Wait>>,
+        },
+        /// A program, started in place of a shell in a tab of its own, in a
+        /// workspace no client is moved to.
+        Run {
+            workspace: Option<WsRef>,
+            name: Option<String>,
+            size: Size,
+            cwd: Option<String>,
+            env: Env,
+            argv: Vec<String>,
+            /// A file everything the program writes goes to too.
+            log: Option<String>,
+            ids: Wanted,
+            /// Then waits, armed before the program writes anything.
+            then: Option<Box<Wait>>,
+        },
+        /// The program `run` started, started again in its pane.
+        Respawn {
+            target: PaneId,
+            /// Ends it first if it still runs.
+            kill: bool,
+            env: Env,
+            /// Another program instead: the one it ran without.
+            argv: Vec<String>,
+            /// Then waits, as run's does.
+            then: Option<Box<Wait>>,
+        },
+        /// A notice on the clients showing the target: every client without.
+        Notify {
+            target: Option<AnyRef>,
+            text: String,
+        },
+        Resize(what: Resized),
+        Wait {
+            /// The pane, or a tab's or workspace's every pane, each of which
+            /// answers.
+            target: AnyRef,
+            wait: Wait,
+        },
+        SendMouse {
+            target: PaneId,
+            mouse: Mouse,
+            row: u16,
+            col: u16,
+            /// Then waits, armed before the event goes in, as send-keys' does.
+            then: Option<Box<Wait>>,
+        },
+        /// Closes a pane, a tab or a workspace.
+        Kill {
+            target: AnyRef,
+        },
+        /// A signal to what runs in the pane's foreground, what its terminal's
+        /// keys reach (a job its shell runs, or the program `run` started), never
+        /// a shell itself: for a program that ignores Ctrl-C and hangups.
+        Signal {
+            target: PaneId,
+            signal: fuxix::process::Signal,
+            then: Option<Box<Wait>>,
+        },
+        Rename {
+            target: AnyRef,
+            name: String,
+        },
+        MovePane {
+            target: PaneId,
+            to: MoveTo,
+        },
+        SwapPane {
+            target: PaneId,
+            with: SwapWith,
+        },
+        ResizePane {
+            target: PaneId,
+            by: PaneResize,
+        },
+        SendKeys {
+            /// The pane, or a tab's or workspace's every pane.
+            target: AnyRef,
+            inputs: Vec<Input>,
+            /// A wait for the program to go quiet once they are sent.
+            then: Option<Box<Wait>>,
+        },
+        /// What happens, a line each as it happens, until the client goes:
+        /// where the target is, or anywhere without one.
+        Events {
+            target: Option<AnyRef>,
+            json: bool,
+        },
+        /// What is there, as a layout file: everything, or one tab or
+        /// workspace.
+        DumpLayout {
+            target: Option<AnyRef>,
+        },
+        /// A socket whose commands reach workspace `workspace` alone.
+        Grant {
+            workspace: WsRef,
+            socket: String,
+        },
+        /// The socket a grant made, closed.
+        Revoke {
+            socket: String,
+        },
+        /// What the pane's program writes, kept in a file from now on; `None`
+        /// stops it.
+        Log {
+            target: PaneId,
+            file: Option<String>,
+        },
+        /// The pane's history, dropped.
+        ClearHistory {
+            target: PaneId,
+        },
+        /// What the pane shows, with up to `history` lines before it, as text
+        /// and as JSON.
+        CapturePane {
+            target: PaneId,
+            history: Option<usize>,
+            view: CaptureView,
+            /// Read once the pane settles, waiting this long at most (if unsaid,
+            /// the server's `wait-seconds`), and said with its state; at once,
+            /// as it is, without.
+            settle: Option<Option<Duration>>,
+        },
+        Reorder {
+            target: AnyRef,
+            toward: Sibling,
+        },
+        /// A server setting (`history-bytes`, `clipboard`, …), as its value's
+        /// text.
+        Set {
+            option: String,
+            value: String,
+        },
+        /// What a name or an id in text is: the pane, tab or workspace of
+        /// `kind` it names (a tab's name, `%3`, …), answered with its id.
+        Resolve {
+            text: String,
+            kind: Kind,
+        },
+        ListBuffers,
+        ShowBuffer {
+            index: usize,
+        },
+        PasteBuffer {
+            index: usize,
+            target: PaneId,
+        },
+        /// A command on one client's screen: the client named (`str c1 client`), or the one
+        /// whose key, menu or prompt ran it.
+        Client {
+            client: Option<ClientId>,
+            action: ClientAction,
+        },
+    }
 }
 
-/// What a command does on a client's screen.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ClientAction {
-    Detach,
-    /// What the client's terminal shows: the screen the server composes for
-    /// it, bar and overlays included.
-    Capture,
-    /// The rows of a chooser the client shows: what each is, its label,
-    /// and which is the client's current one.
-    Choices(Choices),
-    /// fuxth for the client to run as its own: what opens one of its
-    /// screens (a menu, the prompt, copy mode), asked from elsewhere.
-    Run(String),
-    /// Keys as typed at its terminal: its bindings, overlays and prompts
-    /// take them as a person's keys.
-    Keys(Vec<Input>),
-    Zoom,
-    SelectPane(PanePick),
-    SelectTab(Pick<TabId>),
-    SelectWorkspace(Pick<WsRef>),
+wire! {
+    /// What a command does on a client's screen.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum ClientAction {
+        Detach,
+        /// What the client's terminal shows: the screen the server composes for
+        /// it, bar and overlays included.
+        Capture,
+        /// The rows of a chooser the client shows: what each is, its label,
+        /// and which is the client's current one.
+        Choices(choices: Choices),
+        /// fuxth for the client to run as its own: what opens one of its
+        /// screens (a menu, the prompt, copy mode), asked from elsewhere.
+        Run(code: String),
+        /// Keys as typed at its terminal: its bindings, overlays and prompts
+        /// take them as a person's keys.
+        Keys(inputs: Vec<Input>),
+        Zoom,
+        SelectPane(pick: PanePick),
+        SelectTab(pick: Pick<TabId>),
+        SelectWorkspace(pick: Pick<WsRef>),
+    }
 }
 
-/// What a chooser lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Choices {
-    /// The tabs of the client's workspace.
-    Tabs,
-    Workspaces,
-    /// The other panes of this one's tab.
-    Panes(PaneId),
+wire! {
+    /// What a chooser lists.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Choices {
+        /// The tabs of the client's workspace.
+        Tabs,
+        Workspaces,
+        /// The other panes of this one's tab.
+        Panes(pane: PaneId),
+    }
 }
 
 impl ClientAction {
