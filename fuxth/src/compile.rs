@@ -143,7 +143,9 @@ pub(crate) enum Op<A> {
     /// A `let` name of the definition's own, by its slot.
     SetLocal(usize),
     GetLocal(usize),
-    /// A `let` name of the top level's, by its slot.
+    /// A `let` name of the top level's, by its slot. Only the top level's
+    /// code holds one (a `let` in a definition is its own): the checker
+    /// keeps the top level's names and a definition's in one map.
     SetGlobal(usize),
     GetGlobal(usize),
     /// `list`: the stack from here is the list's.
