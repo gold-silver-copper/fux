@@ -372,17 +372,6 @@ fn probe(path: &Path) -> io::Result<()> {
 pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener>), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
-    let euid = geteuid();
-    let foreign = |meta: &fs::Metadata| !meta.file_type().is_socket() || meta.uid() != euid;
-    let refused = || {
-        Error::Refused(format!(
-            "{} exists and is not a socket owned by you; fux will not replace it",
-            path.display()
-        ))
-    };
-    if fs::symlink_metadata(path).is_ok_and(|meta| foreign(&meta)) {
-        return Err(refused());
-    }
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(".lock");
     let lock_path = PathBuf::from(lock_path);
@@ -408,7 +397,12 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io(path)(error)),
-        Ok(meta) if foreign(&meta) => return Err(refused()),
+        Ok(meta) if !meta.file_type().is_socket() || meta.uid() != geteuid() => {
+            return Err(Error::Refused(format!(
+                "{} exists and is not a socket owned by you; fux will not replace it",
+                path.display()
+            )));
+        }
         Ok(_) if probe(path).is_ok() => {
             return Err(Error::Refused(format!(
                 "another fux server is already listening on {}",
