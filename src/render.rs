@@ -11,7 +11,7 @@ use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, View};
-use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Rgb, Row, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Rgb, Row};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -1300,76 +1300,12 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
 
 // ------------------------------------------------------------------ paint
 
-/// The SGR that sets `a` from nothing: an underline style (kitty's `4:n`)
-/// as it is if the client's terminal draws them (`styles`, `outer::styles!`),
-/// else a plain underline, as a terminal that does not know `4:3` draws no
-/// underline at all (xterm, avt) or reads the colon as a semicolon,
-/// underline and italic, and one that does not know 21 may read it as bold
-/// off (alacritty, avt). The underline colour goes either way: see below.
+/// The SGR that sets `a` from nothing, as painted (`SgrForm::Paint`), with
+/// underline styles if the client's terminal draws them (`styles`,
+/// `outer::styles!`).
 pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
     out.extend_from_slice(b"\x1b[0");
-    for (on, _) in a.sgr_flags() {
-        let _ = write!(out, ";{on}");
-    }
-    match a.underline_style() {
-        UnderlineStyle::None => {}
-        style @ (UnderlineStyle::Double
-        | UnderlineStyle::Curly
-        | UnderlineStyle::Dotted
-        | UnderlineStyle::Dashed)
-            if styles =>
-        {
-            let _ = write!(out, ";4:{}", style.number());
-        }
-        // Single, or a style the terminal does not draw: a plain
-        // underline.
-        UnderlineStyle::Single
-        | UnderlineStyle::Double
-        | UnderlineStyle::Curly
-        | UnderlineStyle::Dotted
-        | UnderlineStyle::Dashed => out.extend_from_slice(b";4"),
-    }
-    match a.blink() {
-        fux_vt::Blink::Slow => out.extend_from_slice(b";5"),
-        fux_vt::Blink::Rapid => out.extend_from_slice(b";6"),
-        fux_vt::Blink::None => {}
-    }
-    // The underline colour in ITU-T T.416's colon form (§13.1.8), with its
-    // empty colour-space slot: a terminal that does not know SGR 58 skips
-    // the whole parameter, where in the semicolon form it would take the
-    // colour's numbers for attributes of their own (`58;2;…` would be dim).
-    // So it goes to every terminal, styles or not: each engine in
-    // `fux-vt/compare` reads `58:5:9` and `58:2::1:2:3` beside 4 and 1 as
-    // 4 and 1 alone, xterm, which has no SGR 58, included (xterm 411
-    // skips an SGR parameter with subparameters other than 38's and 48's).
-    match a.underline_color() {
-        Color::Idx(n) => {
-            let _ = write!(out, ";58:5:{n}");
-        }
-        Color::Rgb(Rgb { r, g, b }) => {
-            let _ = write!(out, ";58:2::{r}:{g}:{b}");
-        }
-        Color::Default => {}
-    }
-    // `base` is 30 or 40, so no code comes near 255: every sum is exact.
-    let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
-        Color::Idx(n) if n < 8 => {
-            let _ = write!(out, ";{}", base.saturating_add(n));
-        }
-        // The bright colours 8–15 are 90–97 and 100–107.
-        Color::Idx(n) if n < 16 => {
-            let _ = write!(out, ";{}", base.saturating_add(52).saturating_add(n));
-        }
-        Color::Idx(n) => {
-            let _ = write!(out, ";{};5;{n}", base.saturating_add(8));
-        }
-        Color::Rgb(Rgb { r, g, b }) => {
-            let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
-        }
-        Color::Default => {}
-    };
-    color(out, a.foreground(), 30);
-    color(out, a.background(), 40);
+    a.write_sgr(out, fux_vt::SgrForm::Paint { styles });
     out.push(b'm');
 }
 
@@ -2328,6 +2264,30 @@ mod tests {
             assert_eq!(cell.attributes(), *a, "cell {x}");
         }
         Ok(())
+    }
+
+    /// Paint's SGR: the flags, then the underline (a style only where the
+    /// terminal draws styles) and the blink, then the underline colour in
+    /// its colon form, then the colours in their semicolon forms.
+    #[test]
+    fn paint_writes_the_sgr_every_terminal_reads() {
+        let a = Attributes::new(Color::Idx(9), Color::Rgb([1, 2, 3].into()))
+            .with_bold(true)
+            .with_italic(true)
+            .with_underline_style(fux_vt::UnderlineStyle::Curly)
+            .with_blink(fux_vt::Blink::Slow)
+            .with_underline_color(Color::Idx(5));
+        let double = Attributes::new(Color::Idx(208), Color::Idx(15))
+            .with_underline_style(fux_vt::UnderlineStyle::Double);
+        let painted = |a: Attributes, styles: bool| {
+            let mut out = Vec::new();
+            sgr(&mut out, a, styles);
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        assert_eq!(painted(a, true), "\x1b[0;1;3;4:3;5;58:5:5;91;48;2;1;2;3m");
+        assert_eq!(painted(a, false), "\x1b[0;1;3;4;5;58:5:5;91;48;2;1;2;3m");
+        assert_eq!(painted(double, true), "\x1b[0;4:2;38;5;208;107m");
+        assert_eq!(painted(double, false), "\x1b[0;4;38;5;208;107m");
     }
 
     /// A character of no width of its own (a combining mark, ZWJ, VS16)

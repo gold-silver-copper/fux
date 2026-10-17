@@ -6,7 +6,7 @@ use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, Switch};
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, Mark, Options, Reply,
-    Rgb, Row, RowId, Rows, UnderlineStyle, Window,
+    Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, Written},
     parser::Parameters,
@@ -2270,7 +2270,9 @@ impl Screen {
         use std::fmt::Write;
         match request {
             b"m" => {
-                self.sgr_report(out);
+                let mut sgr = b"0".to_vec();
+                self.attributes.write_sgr(&mut sgr, SgrForm::Report);
+                out.push_str(&String::from_utf8_lossy(&sgr));
                 out.push('m');
             }
             b" q" => {
@@ -2300,66 +2302,6 @@ impl Screen {
             _ => return Setting::Unknown,
         }
         Setting::Written
-    }
-
-    /// The pen as xterm reports it to DECRQSS (`xtermFormatSGR`): 0, then
-    /// bold, underline, blink, inverse, hidden, faint, italic, strikeout and
-    /// double underline, in that order, then the foreground and background,
-    /// 16 colours in their short forms and the rest as `38:5:n` or
-    /// `38:2::r:g:b`. What xterm does not have follows its forms: rapid
-    /// blink is 6 in blink's place, an underline style `4:n` in the
-    /// underline's, and the underline colour `58:5:n` or `58:2::r:g:b`
-    /// last. So a curly underline alone is `0;4:3`, which is what neovim
-    /// looks for to learn the terminal draws styles.
-    fn sgr_report(&self, out: &mut String) {
-        use std::fmt::Write;
-        let a = self.attributes;
-        let flag = |out: &mut String, (bit, on, ..): (u16, u16, u16, &str)| {
-            if a.flags & bit != 0 {
-                let _ = write!(out, ";{on}");
-            }
-        };
-        // xterm reports bold, the underline and the blink, then the other
-        // flags, then the double underline.
-        let [bold, rest @ ..] = Attributes::FLAGS;
-        out.push('0');
-        flag(out, bold);
-        match a.underline_style() {
-            UnderlineStyle::None | UnderlineStyle::Double => {}
-            UnderlineStyle::Single => out.push_str(";4"),
-            style @ (UnderlineStyle::Curly | UnderlineStyle::Dotted | UnderlineStyle::Dashed) => {
-                let _ = write!(out, ";4:{}", style.number());
-            }
-        }
-        match a.blink() {
-            Blink::Slow => out.push_str(";5"),
-            Blink::Rapid => out.push_str(";6"),
-            Blink::None => {}
-        }
-        for f in rest {
-            flag(out, f);
-        }
-        if a.underline_style() == UnderlineStyle::Double {
-            out.push_str(";21");
-        }
-        let colour = |out: &mut String, colour: Color, short: Option<(u8, u8)>, long: u8| {
-            let _ = match (colour, short) {
-                // 30 to 37 and 90 to 97, 40 to 47 and 100 to 107: no sum
-                // comes near 255.
-                (Color::Idx(n @ 0..=7), Some((base, _))) => {
-                    write!(out, ";{}", base.saturating_add(n))
-                }
-                (Color::Idx(n @ 8..=15), Some((_, bright))) => {
-                    write!(out, ";{}", bright.saturating_add(n.saturating_sub(8)))
-                }
-                (Color::Idx(n), _) => write!(out, ";{long}:5:{n}"),
-                (Color::Rgb(Rgb { r, g, b }), _) => write!(out, ";{long}:2::{r}:{g}:{b}"),
-                (Color::Default, _) => Ok(()),
-            };
-        };
-        colour(out, a.foreground(), Some((30, 90)), 38);
-        colour(out, a.background(), Some((40, 100)), 48);
-        colour(out, a.underline_color(), None, 58);
     }
 
     /// The kitty keyboard protocol and modifyOtherKeys sequences, with
