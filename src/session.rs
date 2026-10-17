@@ -151,26 +151,19 @@ pub(crate) type Spot = (TabId, Option<PaneId>);
 enum Here<'a> {
     /// An attached client, where it is.
     Client(ClientId, Place),
-    /// The CLI: its caller's pane (if it gave one) and the workspace and
-    /// tab that pane is in, if it is still there; and its working
-    /// directory.
-    Cli(Option<(PaneId, Option<(WsId, TabId)>)>, Option<&'a Path>),
+    /// The CLI: its caller's pane (if it gave one) and the workspace that
+    /// pane is in, if it is still there; and its working directory.
+    Cli(Option<(PaneId, Option<WsId>)>, Option<&'a Path>),
 }
 
 impl Here<'_> {
     /// The CLI with no caller: a command run for no one.
     const NOWHERE: Here<'static> = Here::Cli(None, None);
 
-    fn place(self) -> Option<Place> {
+    fn ws(self) -> Option<WsId> {
         match self {
-            Here::Client(_, place) => Some(place),
-            Here::Cli(pane, _) => pane.and_then(|(pane, at)| {
-                at.map(|(ws, tab)| Place {
-                    ws,
-                    tab,
-                    pane: Some(pane),
-                })
-            }),
+            Here::Client(_, place) => Some(place.ws),
+            Here::Cli(pane, _) => pane.and_then(|(_, ws)| ws),
         }
     }
     fn pane(self) -> Option<PaneId> {
@@ -724,7 +717,7 @@ impl Session {
                 Ok(Here::Client(client, place))
             }
             Origin::Cli(ref caller) => {
-                let pane = caller.pane().map(|p| (p, self.locate(p)));
+                let pane = caller.pane().map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
                 Ok(Here::Cli(pane, caller.cwd.as_deref()))
             }
         }
@@ -1199,7 +1192,7 @@ impl Session {
     fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsId, Error> {
         match explicit {
             Some(r) => self.resolve_ws(r),
-            None => here.place().map(|p| p.ws).ok_or(Error::NoWorkspaceGiven),
+            None => here.ws().ok_or(Error::NoWorkspaceGiven),
         }
     }
 
