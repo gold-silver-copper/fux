@@ -2587,11 +2587,10 @@ impl Screen {
             // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
             // column.
             b'Z' => self.tab(n, false),
-            // TBC (ECMA-48 8.3.154): 0 clears the stop at the cursor, 3
-            // every stop, the two DEC STD 070 (TBC) defines; the others,
-            // for stops kept line by line, do nothing.
-            // TBC: each parameter in turn (DEC STD 070, TBC, p. 5-66), 0
-            // clearing the stop at the cursor and 3 every stop.
+            // TBC (ECMA-48 8.3.154; DEC STD 070, TBC, p. 5-66): each
+            // parameter in turn, 0 clearing the stop at the cursor and 3
+            // every stop, the two DEC STD 070 defines; the others, for
+            // stops kept line by line, do nothing.
             b'g' => {
                 for group in p.groups() {
                     match group.first() {
