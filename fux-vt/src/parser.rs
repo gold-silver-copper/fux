@@ -1139,18 +1139,31 @@ impl Parser {
     /// took. Out of line: inlined into `sequence`, it cost each OSC more.
     #[inline(never)]
     fn osc_string(&mut self, bytes: &[u8]) -> usize {
-        let length = bytes
-            .iter()
-            .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
-            .unwrap_or(bytes.len());
         self.osc.clear();
-        let string = bytes.get(..length).unwrap_or_default();
-        let kept = string
-            .iter()
-            .copied()
-            .filter(|&byte| in_command_string(byte));
         // The byte past the limit marks the string overflowed.
-        self.osc.extend(kept.take(self.osc_limit.saturating_add(1)));
+        let room = self.osc_limit.saturating_add(1);
+        let mut length = 0;
+        // Each run up to a control is copied whole, with the control if
+        // the string holds it; a payload with none is one copy.
+        loop {
+            let rest = bytes.get(length..).unwrap_or_default();
+            let run = rest
+                .iter()
+                .position(|&byte| byte < 0x20 || byte == 0x7f)
+                .unwrap_or(rest.len());
+            let control = rest.get(run).copied();
+            let ends = matches!(control, Some(0x07 | 0x18 | 0x1a | 0x1b) | None);
+            let held = control.is_some_and(in_command_string);
+            let kept = run.saturating_add(usize::from(held));
+            let kept = kept.min(room.saturating_sub(self.osc.len()));
+            self.osc
+                .extend_from_slice(rest.get(..kept).unwrap_or_default());
+            length = length.saturating_add(run);
+            if ends {
+                break;
+            }
+            length = length.saturating_add(1);
+        }
         self.state = State::Osc {
             whole: self.osc.len() <= self.osc_limit,
         };
