@@ -622,12 +622,10 @@ enum Watched {
     any(target_os = "linux", target_os = "android"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
+fn blocked_in(nr: libc::c_long, args: &[u64]) -> Blocked {
     let arg = |i: usize| args.get(i).copied().unwrap_or(0);
-    let forever = |t: u64| t == u64::MAX || t == u64::from(u32::MAX);
-    let Ok(nr) = libc::c_long::try_from(nr) else {
-        return Blocked::Other;
-    };
+    // An `int` timeout, its low 32 bits, is no limit if it is negative.
+    let forever = |t: u64| t & 0x8000_0000 != 0;
     let (fds, set, epoll) = (
         Watched::Fds {
             at: arg(0),
@@ -673,7 +671,7 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
     any(target_os = "linux", target_os = "android"),
     not(any(target_arch = "x86_64", target_arch = "aarch64"))
 ))]
-fn blocked_in(_nr: u64, _args: &[u64]) -> Blocked {
+fn blocked_in(_nr: libc::c_long, _args: &[u64]) -> Blocked {
     Blocked::Other
 }
 
@@ -689,8 +687,10 @@ fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
     let Ok(call) = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")) else {
         return Some(Blocked::Unread);
     };
+    // `running`, or the call's number: -1 (`-1 SP PC`) while it is blocked
+    // outside one.
     let mut words = call.split_whitespace();
-    let nr: u64 = words.next()?.parse().ok()?;
+    let nr: libc::c_long = words.next()?.parse().ok()?;
     let args: Vec<u64> = words
         .take(6)
         .filter_map(|w| u64::from_str_radix(w.trim_start_matches("0x"), 16).ok())
@@ -710,23 +710,24 @@ fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
 /// `pollfd` asking `POLLIN` of it, its bit in the set select reads, or a
 /// descriptor of the epoll set asking `EPOLLIN` (its `fdinfo`). Read from
 /// the program's memory, which a process that may read its system calls
-/// may read too.
+/// may read too; `None` if what says cannot be read.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
+fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> Option<bool> {
     use std::os::unix::fs::FileExt;
     // `len` bytes of its memory at `at`; none at a null address.
-    let memory = |at: u64, len: u64| -> Vec<u8> {
-        let mut bytes = vec![0; usize::try_from(len).unwrap_or(0)];
-        let read = std::fs::File::open(format!("/proc/{pid}/mem"))
-            .and_then(|mem| mem.read_exact_at(&mut bytes, at));
-        if at == 0 || read.is_err() {
-            bytes.clear();
+    let memory = |at: u64, len: u64| -> Option<Vec<u8>> {
+        if at == 0 {
+            return Some(Vec::new());
         }
-        bytes
+        let mut bytes = vec![0; usize::try_from(len).unwrap_or(0)];
+        std::fs::File::open(format!("/proc/{pid}/mem"))
+            .and_then(|mem| mem.read_exact_at(&mut bytes, at))
+            .ok()?;
+        Some(bytes)
     };
     let fds: Vec<u64> = match watched {
         Watched::Fds { at, len: n } => {
-            let array = memory(at, n.min(1024).saturating_mul(8));
+            let array = memory(at, n.min(1024).saturating_mul(8))?;
             let (pollfds, _) = array.as_chunks::<8>();
             (pollfds.iter())
                 .filter_map(|&[a, b, c, d, events, more, _, _]| {
@@ -737,7 +738,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
         }
         Watched::Set { len: n, at } => {
             let n = n.min(1024);
-            let set = memory(at, n.div_ceil(64).saturating_mul(8));
+            let set = memory(at, n.div_ceil(64).saturating_mul(8))?;
             let (words, _) = set.as_chunks::<8>();
             let words: Vec<u64> = words.iter().map(|w| u64::from_ne_bytes(*w)).collect();
             (0..n)
@@ -749,7 +750,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
                 .collect()
         }
         Watched::Epoll(fd) => std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))
-            .unwrap_or_default()
+            .ok()?
             .lines()
             .filter_map(|line| {
                 // `tfd:        5 events:       19 data: …`
@@ -761,7 +762,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
             })
             .collect(),
     };
-    fds.into_iter().any(|fd| is_terminal(pid, fd, tty))
+    Some(fds.into_iter().any(|fd| is_terminal(pid, fd, tty)))
 }
 
 /// What one process of the group does, by its main thread and its others,
@@ -776,14 +777,13 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
 fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
     let on_terminal = |blocked: Blocked| match blocked {
         Blocked::Read(fd) if is_terminal(pid, fd, tty) => Some(Activity::Reading),
-        Blocked::Poll(forever, watched) if watches_terminal(pid, watched, tty) => {
-            Some(if forever {
-                Activity::Reading
-            } else {
-                Activity::Polling
-            })
-        }
-        Blocked::Read(_) | Blocked::Poll(..) | Blocked::Other => Some(Activity::Waiting),
+        Blocked::Poll(forever, watched) => match watches_terminal(pid, watched, tty) {
+            Some(true) if forever => Some(Activity::Reading),
+            Some(true) => Some(Activity::Polling),
+            Some(false) => Some(Activity::Waiting),
+            None => Some(Activity::Unknown),
+        },
+        Blocked::Read(_) | Blocked::Other => Some(Activity::Waiting),
         Blocked::Sleep => Some(Activity::Busy),
         Blocked::Unread => Some(Activity::Unknown),
         Blocked::Child | Blocked::Futex | Blocked::Ended => None,
@@ -1004,16 +1004,15 @@ mod probe {
     #[test]
     fn system_calls_are_told_by_what_they_wait_for() {
         use libc::*;
-        let nr = |call: c_long| u64::try_from(call).unwrap_or(u64::MAX);
         for read in [SYS_read, SYS_pread64, SYS_readv, SYS_preadv, SYS_splice] {
-            assert_eq!(blocked_in(nr(read), &[5]), Blocked::Read(5), "{read}");
+            assert_eq!(blocked_in(read, &[5]), Blocked::Read(5), "{read}");
         }
         let fds = Watched::Fds { at: 9, len: 2 };
         let set = Watched::Set { len: 4, at: 9 };
         let epoll = Watched::Epoll(3);
         #[cfg(target_arch = "x86_64")]
         {
-            let poll = nr(SYS_poll);
+            let poll = SYS_poll;
             assert_eq!(blocked_in(poll, &[9, 2, NEVER]), Blocked::Poll(true, fds));
             let int_never = u64::from(u32::MAX);
             assert_eq!(
@@ -1021,7 +1020,7 @@ mod probe {
                 Blocked::Poll(true, fds)
             );
             assert_eq!(blocked_in(poll, &[9, 2, 100]), Blocked::Poll(false, fds));
-            let select = nr(SYS_select);
+            let select = SYS_select;
             assert_eq!(
                 blocked_in(select, &[4, 9, 0, 0, 0]),
                 Blocked::Poll(true, set)
@@ -1030,7 +1029,7 @@ mod probe {
                 blocked_in(select, &[4, 9, 0, 0, 7]),
                 Blocked::Poll(false, set)
             );
-            let epoll_wait = nr(SYS_epoll_wait);
+            let epoll_wait = SYS_epoll_wait;
             assert_eq!(
                 blocked_in(epoll_wait, &[3, 9, 1, NEVER]),
                 Blocked::Poll(true, epoll)
@@ -1040,7 +1039,7 @@ mod probe {
                 Blocked::Poll(false, epoll)
             );
         }
-        let pselect = nr(SYS_pselect6);
+        let pselect = SYS_pselect6;
         assert_eq!(
             blocked_in(pselect, &[4, 9, 0, 0, 0]),
             Blocked::Poll(true, set)
@@ -1049,10 +1048,10 @@ mod probe {
             blocked_in(pselect, &[4, 9, 0, 0, 7]),
             Blocked::Poll(false, set)
         );
-        let ppoll = nr(SYS_ppoll);
+        let ppoll = SYS_ppoll;
         assert_eq!(blocked_in(ppoll, &[9, 2, 0]), Blocked::Poll(true, fds));
         assert_eq!(blocked_in(ppoll, &[9, 2, 7]), Blocked::Poll(false, fds));
-        let pwait = nr(SYS_epoll_pwait);
+        let pwait = SYS_epoll_pwait;
         assert_eq!(
             blocked_in(pwait, &[3, 9, 1, NEVER]),
             Blocked::Poll(true, epoll)
@@ -1061,7 +1060,15 @@ mod probe {
             blocked_in(pwait, &[3, 9, 1, 100]),
             Blocked::Poll(false, epoll)
         );
-        let pwait2 = nr(SYS_epoll_pwait2);
+        // Any negative int is no limit, as poll(2) and epoll_wait(2) read it.
+        let int_minus_two = u64::from((-2i32).cast_unsigned());
+        for minus_two in [(-2i64).cast_unsigned(), int_minus_two] {
+            assert_eq!(
+                blocked_in(pwait, &[3, 9, 1, minus_two]),
+                Blocked::Poll(true, epoll)
+            );
+        }
+        let pwait2 = SYS_epoll_pwait2;
         assert_eq!(
             blocked_in(pwait2, &[3, 9, 1, 0]),
             Blocked::Poll(true, epoll)
@@ -1077,11 +1084,13 @@ mod probe {
             (SYS_waitid, Blocked::Child),
             (SYS_futex, Blocked::Futex),
             (SYS_write, Blocked::Other),
+            // Blocked outside a system call.
+            (-1, Blocked::Other),
         ] {
-            assert_eq!(blocked_in(nr(call), &[]), kind, "{call}");
+            assert_eq!(blocked_in(call, &[]), kind, "{call}");
         }
         assert_eq!(
-            blocked_in(nr(SYS_futex), &[9, 0, 0, 7]),
+            blocked_in(SYS_futex, &[9, 0, 0, 7]),
             Blocked::Sleep,
             "a futex with a limit"
         );
@@ -1115,33 +1124,59 @@ mod probe {
             [&fd[..], &events.to_ne_bytes()[..], &[0, 0][..]].concat()
         };
         let asks = pollfd(libc::POLLIN);
-        assert!(watches_terminal(
-            pid,
-            Watched::Fds {
-                at: address(&asks),
-                len: 1
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Fds {
+                    at: address(&asks),
+                    len: 1
+                },
+                tty
+            ),
+            Some(true)
+        );
         let other = pollfd(libc::POLLPRI);
-        assert!(!watches_terminal(
-            pid,
-            Watched::Fds {
-                at: address(&other),
-                len: 1
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Fds {
+                    at: address(&other),
+                    len: 1
+                },
+                tty
+            ),
+            Some(false)
+        );
         let elsewhere = std::path::Path::new("/nowhere");
-        assert!(!watches_terminal(
-            pid,
-            Watched::Fds {
-                at: address(&asks),
-                len: 1
-            },
-            elsewhere
-        ));
-        assert!(!watches_terminal(pid, Watched::Fds { at: 0, len: 1 }, tty));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Fds {
+                    at: address(&asks),
+                    len: 1
+                },
+                elsewhere
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            watches_terminal(pid, Watched::Fds { at: 0, len: 1 }, tty),
+            Some(false)
+        );
+        Ok(())
+    }
+
+    /// An epoll set whose `fdinfo` cannot be read is not known to watch
+    /// nothing: here, a process that is gone.
+    #[test]
+    fn an_unreadable_epoll_set_is_not_known() -> std::result::Result<(), String> {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&child).ok_or("a pid")?;
+        child.wait().map_err(|e| e.to_string())?;
+        let tty = std::path::Path::new("/dev/tty");
+        assert_eq!(watches_terminal(pid, Watched::Epoll(3), tty), None);
         Ok(())
     }
 
@@ -1164,41 +1199,53 @@ mod probe {
             words.iter().flat_map(|w| w.to_ne_bytes()).collect()
         };
         let watched = set(&[fd]);
-        assert!(watches_terminal(
-            pid,
-            Watched::Set {
-                len: n,
-                at: address(&watched)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: n,
+                    at: address(&watched)
+                },
+                tty
+            ),
+            Some(true)
+        );
         let others = set(&[0]);
-        assert!(!watches_terminal(
-            pid,
-            Watched::Set {
-                len: n,
-                at: address(&others)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: n,
+                    at: address(&others)
+                },
+                tty
+            ),
+            Some(false)
+        );
         let none = set(&[]);
-        assert!(!watches_terminal(
-            pid,
-            Watched::Set {
-                len: n,
-                at: address(&none)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: n,
+                    at: address(&none)
+                },
+                tty
+            ),
+            Some(false)
+        );
         // Below its count only.
-        assert!(!watches_terminal(
-            pid,
-            Watched::Set {
-                len: fd,
-                at: address(&watched)
-            },
-            tty
-        ));
+        assert_eq!(
+            watches_terminal(
+                pid,
+                Watched::Set {
+                    len: fd,
+                    at: address(&watched)
+                },
+                tty
+            ),
+            Some(false)
+        );
         Ok(())
     }
 }
