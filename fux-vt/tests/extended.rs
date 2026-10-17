@@ -580,19 +580,28 @@ fn reflow_keeps_a_cursor_past_the_text_on_its_row() -> Result {
     Ok(())
 }
 
-/// DL and IL move rows across the region's top: the row above it, which
-/// went on into the row that moved, no longer does, so reflow joins it to
-/// nothing that follows.
+/// DL and IL move rows across the region's top, and the row above it
+/// keeps its soft wrap, as xterm keeps it (`fux-vt-compare replay
+/// --engines xterm --size 2x1 '\e[999Cab\e[L'`; soft wrap is xterm's own
+/// notion): reflow then joins it to the row that moved up, as Ghostty,
+/// alacritty and wezterm join them (`replay --engines all --size 4x6
+/// 'abcdefgh\r\nxyz\e[2;1H\e[M' resize:4x12`).
 #[test]
-fn deleting_or_inserting_lines_ends_the_wrap_above() -> Result {
+fn deleting_or_inserting_lines_keeps_the_wrap_above() -> Result {
     let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
     p.process(b"abcdefgh\r\nxyz\x1b[2;1H\x1b[M")?;
-    assert!(!p.screen().row_wrapped(0));
+    assert!(p.screen().row_wrapped(0));
     p.resize(Size::new(4, 12)?)?;
-    assert_eq!(lines(&p), ["abcdef", "xyz", "", ""]);
+    assert_eq!(lines(&p), ["abcdefxyz", "", "", ""]);
     let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
     p.process(b"abcdefgh\x1b[2;1H\x1b[L")?;
-    assert!(!p.screen().row_wrapped(0));
+    assert!(p.screen().row_wrapped(0));
+    // Scrolling down, the row moved to the bottom margin keeps its own,
+    // as xterm keeps it (`--size 6x1 '~!@#\e[3;5r\e[10H\e[2T'`).
+    let mut p = Parser::new(Size::new(6, 1)?, 0)?;
+    p.process(b"~!@#\x1b[3;5r\x1b[10H\x1b[2T")?;
+    let wrapped: Vec<bool> = (0..6).map(|y| p.screen().row_wrapped(y)).collect();
+    assert_eq!(wrapped, [true, true, false, false, true, false]);
     Ok(())
 }
 

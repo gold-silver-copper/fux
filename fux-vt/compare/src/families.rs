@@ -581,7 +581,7 @@ pub const FAMILIES: &[Family] = &[
         name: "wide",
         about: "wide (CJK) and halfwidth characters, at and across the right edge",
         status: Status::Differs(
-            "on a one-column screen fux-vt drops a wide glyph without moving the cursor, a choice its README documents and no reference settles; every other engine differs: xterm, Ghostty, libvterm and avt wrap and leave the cell blank, alacritty and wezterm draw the glyph (`replay --engines all --size 2x1 ' \\u{3046}'`)",
+            "on a one-column screen fux-vt drops a wide glyph, carrying out a wrap pending before it, as xterm does where no reference settles it (500 cases of this family agree with xterm alone); avt agrees, and Ghostty, alacritty, libvterm, wezterm and tmux each differ (alacritty and wezterm draw the glyph) (`replay --engines all --size 2x1 ' \\u{3046}'`). With DECAWM off a wide glyph that no longer fits on the row is dropped, as in xterm (`replay --engines xterm --size 2x4 '\\e[?7labc\\u{754c}'`)",
         ),
         ratty_only: false,
         generate: wide,
@@ -638,7 +638,7 @@ pub const FAMILIES: &[Family] = &[
         name: "scroll",
         about: "SU, SD, DECSTBM and RI",
         status: Status::Differs(
-            "the panel splits where fux-vt does what DEC STD 070 and xterm do: an invalid DECSTBM (5-25, note 2) is ignored in xterm, Ghostty, wezterm, xterm.js and tmux, while alacritty, libvterm and avt home the cursor and outvote fux-vt (`replay --engines all --size 1x2 'x\\e[4;5r'`); RI ends a pending wrap (Appendix D.6.1) in xterm, wezterm and xterm.js, Ghostty, alacritty, libvterm and avt keep it (`replay --engines all --size 1x7 'abcdefg\\eM'`). Two differences from xterm remain, outside the audit's items: `CSI 0 T` scrolls a line, where xterm (reading it as mouse tracking), Ghostty, alacritty and libvterm do nothing, and fux-vt's parameters do not tell 0 from empty (`replay --engines all --size 2x1 '\\e[2;4r' '-\\e[0T'`); SD in a region clears the soft-wrap flag of the row it moves to the bottom margin, which xterm, alacritty and wezterm keep (`replay --engines all --size 6x1 '~!@#\\e[3;5r\\e[10H\\e[2T'`)",
+            "the panel splits where fux-vt does what DEC STD 070 and xterm do: an invalid DECSTBM (5-25, note 2) is ignored in xterm, Ghostty, wezterm, xterm.js and tmux, while alacritty, libvterm and avt home the cursor and outvote fux-vt (`replay --engines all --size 1x2 'x\\e[4;5r'`); RI ends a pending wrap (Appendix D.6.1) in xterm, wezterm and xterm.js, Ghostty, alacritty, libvterm and avt keep it (`replay --engines all --size 1x7 'abcdefg\\eM'`). A soft wrap stays with its row through SD in a region, as in xterm, alacritty and wezterm (`replay --engines all --size 6x1 '~!@#\\e[3;5r\\e[10H\\e[2T'`). One difference from xterm remains, outside the audit's items: `CSI 0 T` scrolls a line, where xterm (reading it as mouse tracking), Ghostty, alacritty and libvterm do nothing, and fux-vt's parameters do not tell 0 from empty (`replay --engines all --size 2x1 '\\e[2;4r' '-\\e[0T'`)",
         ),
         ratty_only: false,
         generate: scroll,

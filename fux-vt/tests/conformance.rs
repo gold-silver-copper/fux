@@ -871,3 +871,25 @@ fn a_prepend_character_joins_what_follows_it() -> Result {
     assert!(!fux_vt::continues_cluster("a", 'c'));
     Ok(())
 }
+
+/// A wide glyph with no room for it, where no standard says what to do
+/// (DEC STD 070 and ECMA-48 know no glyph two columns wide), does as
+/// xterm 411 does: with autowrap off, one that no longer fits on the row
+/// is not printed, and the glyph before it stays (`replay --engines xterm
+/// --size 2x4 '\e[?7labc\u{754c}'`, and `'\e[?7labcd\u{754c}'`); on a
+/// screen one column wide it fits nowhere, but a wrap pending before it is
+/// carried out (`--size 3x1 'a\u{754c}'`).
+#[test]
+fn a_wide_glyph_with_no_room_is_not_printed() -> Result {
+    for (text, row) in [("abc\u{754c}", "abc"), ("abcd\u{754c}", "abcd")] {
+        let p = run(2, 4, format!("\x1b[?7l{text}").as_bytes())?;
+        assert_eq!(lines(&p), [row, ""], "{text:?}");
+        assert_eq!(p.screen().cursor_position(), (0, 3), "{text:?}");
+    }
+    let p = run(3, 1, "a\u{754c}".as_bytes())?;
+    assert_eq!(lines(&p), ["a", "", ""]);
+    assert_eq!(p.screen().cursor_position(), (1, 0));
+    assert!(!p.screen().pending_wrap());
+    assert!(p.screen().row_wrapped(0));
+    Ok(())
+}

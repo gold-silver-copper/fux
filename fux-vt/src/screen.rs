@@ -1070,37 +1070,43 @@ impl Screen {
     /// where it goes, with no wrap pending: a pending wrap, or a glyph too
     /// wide for what is left of the row, moves it to the start of the next
     /// line with autowrap on (DEC STD 070, Appendix D.6.1), and back to the
-    /// last column it fits in with autowrap off.
+    /// last column it fits in with autowrap off, but for a wide glyph,
+    /// which is not printed then, as xterm drops it.
     ///
-    /// The end of the cursor's line after it (`Grid::line_end`). Whether
-    /// the glyph fits is asked inline, on every glyph's way; the wrap is
-    /// out of line.
+    /// The end of the cursor's line after it (`Grid::line_end`), or none
+    /// for a glyph not printed. Whether the glyph fits is asked inline, on
+    /// every glyph's way; the wrap is out of line.
     #[inline]
-    fn wrap_for(&mut self, width: u16) -> Result<u16, Error> {
+    fn wrap_for(&mut self, width: u16) -> Result<Option<u16>, Error> {
         let g = self.grid();
         let end = g.line_end();
         // The last column a glyph this wide can start in, before the right
         // margin while the cursor is not past it; a wider glyph is never
         // printed.
         let Some(room) = end.checked_sub(width) else {
-            return Ok(end);
+            return Ok(Some(end));
         };
         // A pending wrap is carried out wherever it waits: at the line's
         // end, or where the right margin was before DECLRMM was reset (DEC
         // STD 070's Last Column Flag is no column; xterm and Ghostty wrap
         // there too).
         if !g.cursor.pending_wrap && g.cursor.col() <= room {
-            return Ok(end);
+            return Ok(Some(end));
         }
-        self.wrap(end, room)
+        self.wrap(end, room, width)
     }
-    /// `wrap_for` where the glyph does not fit: the cursor goes to the
-    /// next line, or back to `room`, the last column the glyph fits in,
-    /// on a line ending at `end`.
+    /// `wrap_for` where the glyph, `width` wide, does not fit: the cursor
+    /// goes to the next line, or back to `room`, the last column the glyph
+    /// fits in, on a line ending at `end`.
     #[inline(never)]
-    fn wrap(&mut self, end: u16, room: u16) -> Result<u16, Error> {
+    fn wrap(&mut self, end: u16, room: u16, width: u16) -> Result<Option<u16>, Error> {
         let g = self.grid();
         let wrap = self.mode(Mode::Autowrap);
+        // xterm writes a wide glyph over none before it (`replay --engines
+        // xterm --size 2x4 '\e[?7labc\u{754c}'` keeps `abc`).
+        if !wrap && width > 1 {
+            return Ok(None);
+        }
         if !wrap {
             // Back to the last column the glyph fits in; a wrap left
             // pending where a right margin was overwrites there, as xterm
@@ -1108,7 +1114,7 @@ impl Screen {
             let g = self.grid_mut();
             g.set_col(g.cursor.col().min(room));
             g.cursor.pending_wrap = false;
-            return Ok(end);
+            return Ok(Some(end));
         }
         let row = g.cursor.row();
         // The glyph goes on to the next line, so this row is soft-wrapped,
@@ -1130,7 +1136,7 @@ impl Screen {
         // margin (xterm's `WrapLine`).
         self.new_line()?;
         let g = self.grid();
-        Ok(if g.lr() { g.line_end() } else { end })
+        Ok(Some(if g.lr() { g.line_end() } else { end }))
     }
 
     pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
@@ -1150,7 +1156,13 @@ impl Screen {
         let Ok(width) = u16::try_from(width.unwrap_or(1)) else {
             return Ok(());
         };
+        // Nor where it fits nowhere, but for a pending wrap, which xterm
+        // still carries out (`replay --engines xterm --size 3x1 'a\u{754c}'`).
         if width > self.grid().size().cols() {
+            if self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap) {
+                let end = self.grid().line_end();
+                self.wrap(end, 0, width)?;
+            }
             return Ok(());
         }
         if self.extend_cluster(c) {
@@ -1194,7 +1206,9 @@ impl Screen {
         }
         // What REP repeats: the last glyph printed, not a mark.
         self.repeat = Some(raw);
-        let end = self.wrap_for(width)?;
+        let Some(end) = self.wrap_for(width)? else {
+            return Ok(());
+        };
         if self.mode(Mode::Insert) {
             // Room for the glyph, what was there moving right (ICH).
             let blank = self.blank_style();
@@ -1455,7 +1469,9 @@ impl Screen {
             bytes = tail;
         }
         while let Some((&first, tail)) = bytes.split_first() {
-            let line = self.wrap_for(1)?;
+            let Some(line) = self.wrap_for(1)? else {
+                return Ok(());
+            };
             let (row, col) = self.grid().cursor.at();
             // `wrap_for` left room for at least one cell, before the right
             // margin or the screen's edge; without it, the run could not
