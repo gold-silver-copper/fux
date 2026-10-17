@@ -3224,13 +3224,9 @@ fn new_pane(
     size: fux_vt::Size,
 ) -> Result<Pane, Error> {
     let config = &session.config;
-    let shell_program = config
-        .shell
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "/bin/sh".into());
+    let shell = config.shell.argv();
     let (argv, cmd, runs, env) = match start {
-        Start::Shell(cmd, env) => (config.shell.as_slice(), cmd, Runs::Shell, env),
+        Start::Shell(cmd, env) => (shell.as_slice(), cmd, Runs::Shell, env),
         Start::Program(argv, env) => {
             let launch = crate::pane::Launch {
                 argv: argv.to_vec(),
@@ -3245,7 +3241,7 @@ fn new_pane(
     let typed = match start {
         Start::Shell([], _) | Start::Program(..) => None,
         Start::Shell(cmd, _) => {
-            let fish = basename(&shell_program) == "fish";
+            let fish = basename(config.shell.program()) == "fish";
             let mut line = crate::words::shell_line(cmd, fish)
                 .map_err(|m| fail(Code::Usage, m))?
                 .into_bytes();
@@ -3261,7 +3257,7 @@ fn new_pane(
     let name = cmd
         .first()
         .map(|c| basename(c))
-        .unwrap_or_else(|| basename(&shell_program));
+        .unwrap_or_else(|| basename(config.shell.program()));
     let mut pane = Pane::new(id, name, runs, size, config.history_bytes)?;
     pane.record.set_budget(config.journal_bytes);
     // A program brought back by a restore waits for `respawn`.
@@ -3392,7 +3388,7 @@ pub(crate) mod testing {
     /// named after it), started.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
         let config = Config {
-            shell: vec!["/bin/sh".into()],
+            shell: crate::config::Shell::parse("/bin/sh")?,
             ..config
         };
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);

@@ -129,7 +129,10 @@ impl Session {
             let Some(p) = self.panes.get(&pane) else {
                 continue;
             };
-            let default = pane::named(self.program(pane).map_or(&self.config.shell, |l| &l.argv));
+            let shell = || pane::basename(self.config.shell.program());
+            let default = self
+                .program(pane)
+                .map_or_else(shell, |l| pane::named(&l.argv));
             if default != p.name {
                 push(out, &[&pane_name(pane), "str", &p.name, "rename"]);
             }

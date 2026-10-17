@@ -48,7 +48,7 @@ macro_rules! settings {
 }
 
 settings! {
-    shell "shell": Vec<String> = vec![default_shell()], shell;
+    shell "shell": Shell = Shell::new(default_shell()), Shell::parse;
     /// The bytes of history each pane keeps, for copy mode and `capture`.
     history_bytes "history-bytes": usize = 8 << 20, number(0, 1 << 30);
     /// How long an action or a wait waits at most, unless it says.
@@ -146,12 +146,41 @@ fn on(value: &str) -> Result<bool, String> {
     }
 }
 
-/// A command line, split as a shell splits it: a program first.
-fn shell(value: &str) -> Result<Vec<String>, String> {
-    let argv = words::split(value)?;
-    match argv.first().is_none_or(|p| p.is_empty()) {
-        true => Err("a program is needed".into()),
-        false => Ok(argv),
+/// The shell fux starts in a pane: a program, never empty, then its
+/// arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shell {
+    program: String,
+    args: Vec<String>,
+}
+
+impl Shell {
+    fn new(program: String) -> Shell {
+        Shell {
+            program,
+            args: Vec::new(),
+        }
+    }
+
+    /// A command line, split as a shell splits it: a program first.
+    pub fn parse(value: &str) -> Result<Shell, String> {
+        match words::split(value)?.split_first() {
+            Some((program, args)) if !program.is_empty() => Ok(Shell {
+                program: program.clone(),
+                args: args.to_vec(),
+            }),
+            Some(_) | None => Err("a program is needed".into()),
+        }
+    }
+
+    pub fn program(&self) -> &str {
+        &self.program
+    }
+
+    /// Its command line, the program first.
+    pub fn argv(&self) -> Vec<String> {
+        let all = std::iter::once(&self.program).chain(&self.args);
+        all.cloned().collect()
     }
 }
 
@@ -189,7 +218,7 @@ mod tests {
         assert_eq!(config.set("bell", "false"), Ok(()));
         assert!(!config.bell);
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
-        assert_eq!(config.shell, ["/bin/zsh", "-l"]);
+        assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
         assert!(config.set("history-bytes", "lots").is_err());
         let below = config.set("history-bytes", "-1").map_err(|e| e.to_string());
         assert!(below.is_err_and(|e| e.contains("out of range")));
