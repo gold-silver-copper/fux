@@ -1713,10 +1713,11 @@ impl Screen {
         if !intermediates.is_empty() {
             return Ok(true);
         }
-        if matches!(byte, b'7' | b'8' | b'D' | b'E' | b'M' | b'c') {
+        if matches!(byte, b'6' | b'7' | b'8' | b'9' | b'D' | b'E' | b'M' | b'c') {
             self.break_cluster();
         }
         match byte {
+            b'6' | b'9' => self.index_column(byte == b'9'),
             b'7' => self.save(),
             b'8' => self.restore(),
             b'=' => self.modes.set(Mode::ApplicationKeypad, true),
@@ -1810,6 +1811,37 @@ impl Screen {
         self.with_grid(|g, _, version| {
             for y in lines.first()..=lines.last() {
                 g.edit_row(y, col, count, insert, blank, version);
+            }
+        });
+    }
+
+    /// DECBI (`ESC 6`) and DECFI (`forward`, `ESC 9`; DEC STD 070, Back
+    /// Index and Forward Index): the cursor a column back or forward,
+    /// ending a pending wrap. From the left margin back, or the right
+    /// margin forward, the columns between the margins of every line of
+    /// the scrolling region shift the other way instead, a blank one coming
+    /// in at that margin, and the cursor stays. Elsewhere the cursor moves,
+    /// never past the page's edge. Out of line, as `escape` is on every
+    /// sequence's way.
+    #[inline(never)]
+    fn index_column(&mut self, forward: bool) {
+        let blank = self.blank_style();
+        self.with_grid(|g, _, version| {
+            g.cursor.pending_wrap = false;
+            let (col, columns, lines) = (g.cursor.col(), g.columns(), g.lines);
+            let margin = if forward {
+                columns.last()
+            } else {
+                columns.first()
+            };
+            if col == margin {
+                for y in lines.first()..=lines.last() {
+                    g.edit_row(y, columns.first(), 1, !forward, blank, version);
+                }
+            } else if forward {
+                g.set_col(col.saturating_add(1));
+            } else {
+                g.set_col(col.saturating_sub(1));
             }
         });
     }

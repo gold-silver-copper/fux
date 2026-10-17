@@ -59,10 +59,6 @@ DA2Tests.test_DA2_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ;
 DA2Tests.test_DA2_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
 DATests.test_DA_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
 DATests.test_DA_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
-DECBITests.test_DECBI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECBITests.test_DECBI_LeftOfMargin  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECBITests.test_DECBI_Scrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECBITests.test_DECBI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
 DECCRATests.test_DECCRA_defaultValuesInDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_defaultValuesInSource  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_destinationPartiallyOffscreen  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
@@ -86,10 +82,6 @@ DECERATests.test_DECERA_defaultArgs  not-implemented: rectangle operations (DECF
 DECERATests.test_DECERA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECERATests.test_DECERA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECERATests.test_DECERA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFITests.test_DECFI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFITests.test_DECFI_RightOfMargin  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFITests.test_DECFI_Scrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFITests.test_DECFI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
 DECFRATests.test_DECFRA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECFRATests.test_DECFRA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECFRATests.test_DECFRA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them

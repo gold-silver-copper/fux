@@ -261,6 +261,63 @@ fn edits_stop_at_the_right_margin() -> Result {
     Ok(())
 }
 
+/// DECBI and DECFI (`ESC 6`, `ESC 9`; DEC STD 070, Back Index and Forward
+/// Index): the cursor a column back or forward; from the left margin
+/// back, or the right margin forward, the columns between the margins of
+/// every line of the scrolling region shift one the other way instead, a
+/// blank column coming in at that margin, and the cursor stays. Outside
+/// the margins the cursor moves, and at the page's edge it is ignored.
+/// Either ends a pending wrap. Expected values are from the standard's
+/// algorithms (`decbi`, `decfi`).
+#[test]
+fn decbi_and_decfi_move_or_shift_the_columns() -> Result {
+    let p = framed("\x1b[3;8H\x1b9")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MNPQRST UVWX",
+            "abdefgh ijkl",
+            "mnpqrst uvwx",
+            "0134567 8901",
+            "",
+        ]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 7));
+    let p = framed("\x1b[3;3H\x1b6")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MN OPQRSUVWX",
+            "ab cdefgijkl",
+            "mn opqrsuvwx",
+            "01 234568901",
+            "",
+        ]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 2));
+    for (moves, cursor) in [
+        ("\x1b[3;5H\x1b9", (2, 5)),
+        ("\x1b[3;5H\x1b6", (2, 3)),
+        ("\x1b[1;10H\x1b9", (0, 10)),
+        ("\x1b[1;10H\x1b6", (0, 8)),
+        ("\x1b[1;12H\x1b9", (0, 11)),
+        ("\x1b[1;1H\x1b6", (0, 0)),
+    ] {
+        let p = framed(moves)?;
+        assert_eq!(p.screen().cursor_position(), cursor, "{moves:?}");
+        assert_eq!(lines(&p).get(1).map(String::as_str), Some("MNOPQRSTUVWX"));
+    }
+    // Without margins they are the screen's edges.
+    let p = run(1, 5, b"abcde\x1b9")?;
+    assert_eq!(lines(&p), ["bcde"]);
+    assert_eq!(p.screen().cursor_position(), (0, 4));
+    assert!(!p.screen().pending_wrap());
+    assert_eq!(lines(&run(1, 5, b"abcde\r\x1b6")?), [" abcd"]);
+    Ok(())
+}
+
 /// DECIC and DECDC (`CSI Pn ' }`, `CSI Pn ' ~`; DEC STD 070, 5.4.3; the
 /// VT510 manual): Pn columns inserted or deleted at the cursor's, in every
 /// line of the scrolling region, between the left and right margins, the
