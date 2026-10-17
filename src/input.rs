@@ -148,7 +148,7 @@ impl Session {
             return;
         };
         // Pastes go to the pane only.
-        if !matches!(view.mode, Mode::Normal) {
+        if !view.mode.is_normal() {
             return;
         }
         view.notice = None;
@@ -181,10 +181,7 @@ impl Session {
         let Some(view) = self.views.get(&client) else {
             return;
         };
-        let Some(pane) = self
-            .focused(client)
-            .filter(|_| matches!(view.mode, Mode::Normal))
-        else {
+        let Some(pane) = self.focused(client).filter(|_| view.mode.is_normal()) else {
             return;
         };
         let mut placement = Placement::default();
