@@ -187,11 +187,11 @@ pub struct Hello {
     pub role: Role,
 }
 
-wire_enum!(Role, "role" {
-    0 => Attach,
-    1 => Command,
-    2 => Kill,
-    3 => Headless,
+wire_enum!(Role {
+    Attach,
+    Command,
+    Kill,
+    Headless,
 });
 
 wire_struct!(Hello {
@@ -395,12 +395,12 @@ impl Reply {
     }
 }
 
-wire_enum!(Scalar, "scalar" { 0 => Int(n), 1 => Bool(b), 2 => Str(s) });
+wire_enum!(Scalar { Int(n), Bool(b), Str(s) });
 
-wire_enum!(End, "end" {
-    0 => Done,
-    1 => Answered { status, code },
-    2 => Failed { status, code, message },
+wire_enum!(End {
+    Done,
+    Answered { status, code },
+    Failed { status, code, message },
 });
 
 wire_struct!(Reply {
@@ -812,14 +812,14 @@ mod tests {
             (
                 command,
                 vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
-                "a frame's payload: no command has tag 255",
+                "a frame's payload: no Command has tag 255",
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),
             (server, vec![0, 0, 0, 2, 8, 0xff], utf8),
             (
                 hello,
                 vec![0, 0, 0, 6, 1, 0, 0, 0, 1, 7],
-                "a frame's payload: no role has tag 7",
+                "a frame's payload: no Role has tag 7",
             ),
             (
                 attach,

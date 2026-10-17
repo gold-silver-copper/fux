@@ -4,8 +4,7 @@
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
     AnyRef, Button, CaptureView, Choices, ClientAction, Command, Env, Extent, Input, Kind, Mouse,
-    MoveTo, PanePick, PaneResize, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait,
-    Wheel, WsRef,
+    MoveTo, PanePick, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, Wheel, WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
@@ -286,19 +285,16 @@ text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 
-wire_enum!(Axis, "axis" {
-    0 => Horizontal,
-    1 => Vertical,
+wire_enum!(Axis {
+    Horizontal,
+    Vertical,
 });
-wire_enum!(Kind, "kind" {
-    0 => Pane,
-    1 => Tab,
-    2 => Workspace,
+wire_enum!(Kind {
+    Pane,
+    Tab,
+    Workspace,
 });
-wire_enum!(Sibling, "sibling" {
-    0 => Next,
-    1 => Previous,
-});
+wire_enum!(Sibling { Next, Previous });
 
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
 /// a fieldless enum whose `ALL` lists every variant: a variant's one-byte
@@ -337,46 +333,55 @@ impl Wire for fux_vt::Size {
     }
 }
 
-/// `wire_enum!(Ty, "what" { 0 => Unit, 1 => Tuple(a, b), 2 => Named { x, y } })`
-/// expands to `impl Wire for Ty`: `put` writes a variant's tag, then its
-/// fields in the order listed; `get` reads the tag, then each field back in
-/// that order (an unknown tag is `Error::Tag("what", tag)`). One list says
-/// both, so the two cannot drift apart. `Ty<T>` takes a parameter that is
-/// itself `Wire`.
+/// `wire_enum!(Ty { Unit, Tuple(a, b), Named { x, y } })` expands to
+/// `impl Wire for Ty`: `put` writes a variant's tag, its place in the list
+/// (`Unit` 0, `Tuple` 1, `Named` 2), then its fields in the order listed;
+/// `get` reads the tag, then each field back in that order (an unknown tag
+/// is `Error::Tag("Ty", tag)`). The places are those of a hidden
+/// `#[repr(u8)] enum Tag { Unit, Tuple, Named }` beside the impl, so no
+/// two variants share one, and a list longer than 256 does not compile.
+/// `Ty<T>` takes a parameter that is itself `Wire`. For a type declared
+/// elsewhere (fux-vt's); one declared here says its fields once, in
+/// `wire!`.
 macro_rules! wire_enum {
-    ($ty:ident $(<$g:ident>)?, $what:literal {
-        $($tag:literal => $var:ident $(( $($p:ident),* ))? $({ $($f:ident),* })?),* $(,)?
+    ($ty:ident $(<$g:ident>)? {
+        $($var:ident $(( $($p:ident),+ ))? $({ $($f:ident),* })?),* $(,)?
     }) => {
-        impl$(<$g: $crate::wire::Wire>)? $crate::wire::Wire for $ty$(<$g>)? {
-            fn put(&self, out: &mut Vec<u8>) {
-                match self {$(
-                    Self::$var $(( $($p),* ))? $({ $($f),* })? => {
-                        out.push($tag);
-                        $($($crate::wire::Wire::put($p, out);)*)?
-                        $($($crate::wire::Wire::put($f, out);)*)?
-                    }
-                )*}
+        const _: () = {
+            #[repr(u8)]
+            enum Tag {
+                $($var),*
             }
-            fn get(
-                r: &mut $crate::wire::Reader<'_>,
-            ) -> Result<Self, $crate::wire::Error> {
-                Ok(match <u8 as $crate::wire::Wire>::get(r)? {
-                    $($tag => {
-                        $($(let $p = $crate::wire::Wire::get(r)?;)*)?
+            impl$(<$g: $crate::wire::Wire>)? $crate::wire::Wire for $ty$(<$g>)? {
+                fn put(&self, out: &mut Vec<u8>) {
+                    match self {$(
+                        Self::$var $(( $($p),+ ))? $({ $($f),* })? => {
+                            out.push(Tag::$var as u8);
+                            $($($crate::wire::Wire::put($p, out);)+)?
+                            $($($crate::wire::Wire::put($f, out);)*)?
+                        }
+                    )*}
+                }
+                fn get(
+                    r: &mut $crate::wire::Reader<'_>,
+                ) -> Result<Self, $crate::wire::Error> {
+                    let tag = <u8 as $crate::wire::Wire>::get(r)?;
+                    $(if tag == Tag::$var as u8 {
+                        $($(let $p = $crate::wire::Wire::get(r)?;)+)?
                         $($(let $f = $crate::wire::Wire::get(r)?;)*)?
-                        Self::$var $(( $($p),* ))? $({ $($f),* })?
+                        return Ok(Self::$var $(( $($p),+ ))? $({ $($f),* })?);
                     })*
-                    other => return Err($crate::wire::Error::Tag($what, other)),
-                })
+                    Err($crate::wire::Error::Tag(stringify!($ty), tag))
+                }
             }
-        }
+        };
     };
 }
 pub(crate) use wire_enum;
 
 /// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields
-/// one after another, in the order listed (which is the wire's, not
-/// always the declaration's).
+/// one after another, in the order listed. For a type declared elsewhere;
+/// one declared here says its fields once, in `wire!`.
 macro_rules! wire_struct {
     ($ty:path { $($f:ident),* $(,)? }) => {
         impl $crate::wire::Wire for $ty {
@@ -393,25 +398,83 @@ macro_rules! wire_struct {
 }
 pub(crate) use wire_struct;
 
-wire_enum!(WsRef, "workspace" { 0 => Id(id), 1 => Name(name) });
-wire_enum!(AnyRef, "target" { 0 => Pane(p), 1 => Tab(t), 2 => Workspace(w) });
-wire_enum!(Pick<T>, "pick" { 0 => Step(s), 1 => Id(id) });
-wire_enum!(PanePick, "pane pick" { 0 => Step(s), 1 => Id(id), 2 => Last, 3 => Toward(d) });
-wire_enum!(MoveTo, "move" {
-    0 => Tab(t),
-    1 => Workspace(w),
-    2 => NewTab,
-    3 => NewWorkspace,
-    4 => Beside(d),
+/// A type declared and put on the wire at once, its fields written once.
+/// An enum,
+///
+/// ```ignore
+/// wire! {
+///     #[derive(Debug)]
+///     pub enum Ty {
+///         Unit,
+///         Tuple(a: A, b: B),
+///         Named { x: X },
+///     }
+/// }
+/// ```
+///
+/// expands to the enum as written, its tuple variants' fields bare
+/// (`Tuple(A, B)`), and `wire_enum!(Ty { Unit, Tuple(a, b), Named { x } })`:
+/// `a` and `b` only name the fields for its `Wire` impl, as a macro can't
+/// make up those names. A struct, `wire! { pub struct Ty { pub x: X, y: Y } }`,
+/// expands to itself and `wire_struct!(Ty { x, y })`. A field's place on the
+/// wire is its place in the declaration, and a variant's tag its place.
+macro_rules! wire {
+    (
+        $(#[$m:meta])*
+        $vis:vis enum $ty:ident $(<$g:ident>)? {
+            $(
+                $(#[$vm:meta])*
+                $var:ident
+                $(( $($p:ident: $pt:ty),+ $(,)? ))?
+                $({ $($(#[$fm:meta])* $f:ident: $ft:ty),* $(,)? })?
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$m])*
+        $vis enum $ty $(<$g>)? {
+            $(
+                $(#[$vm])*
+                $var $(( $($pt),+ ))? $({ $($(#[$fm])* $f: $ft),* })?,
+            )*
+        }
+        $crate::wire::wire_enum!($ty $(<$g>)? {
+            $($var $(( $($p),+ ))? $({ $($f),* })?),*
+        });
+    };
+    (
+        $(#[$m:meta])*
+        $vis:vis struct $ty:ident {
+            $($(#[$fm:meta])* $fvis:vis $f:ident: $ft:ty),* $(,)?
+        }
+    ) => {
+        $(#[$m])*
+        $vis struct $ty {
+            $($(#[$fm])* $fvis $f: $ft),*
+        }
+        $crate::wire::wire_struct!($ty { $($f),* });
+    };
+}
+pub(crate) use wire;
+
+wire_enum!(WsRef { Id(id), Name(name) });
+wire_enum!(AnyRef { Pane(p), Tab(t), Workspace(w) });
+wire_enum!(Pick<T> { Step(s), Id(id) });
+wire_enum!(PanePick { Step(s), Id(id), Last, Toward(d) });
+wire_enum!(MoveTo {
+    Tab(t),
+    Workspace(w),
+    NewTab,
+    NewWorkspace,
+    Beside(d),
 });
-wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
-wire_enum!(Source, "source" {
-    0 => Shown,
-    1 => Main,
-    2 => Alternate,
-    3 => LastOutput,
+wire_enum!(SwapWith { Pane(p), Toward(d) });
+wire_enum!(Source {
+    Shown,
+    Main,
+    Alternate,
+    LastOutput,
 });
-wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
+wire_enum!(Extent { Cells(n), Percent(n) });
 
 impl Wire for Percent {
     fn put(&self, out: &mut Vec<u8>) {
@@ -421,9 +484,8 @@ impl Wire for Percent {
         Percent::new(u8::get(r)?).ok_or(Error::Bad("percent"))
     }
 }
-wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To(axis, extent) });
-wire_enum!(Resized, "resized" { 0 => Tabs(t, size), 1 => Client(c, size) });
-wire_enum!(Input, "input" { 0 => Key(k), 1 => Text(t), 2 => Paste(t) });
+wire_enum!(Resized { Tabs(t, size), Client(c, size) });
+wire_enum!(Input { Key(k), Text(t), Paste(t) });
 wire_struct!(Wanted {
     pane,
     tab,
@@ -438,7 +500,7 @@ wire_struct!(CaptureView {
     rows,
     cols
 });
-wire_enum!(Until, "condition" { 0 => Text(t), 1 => Gone(t), 4 => Exit, 6 => Bell, 7 => Settled });
+wire_enum!(Until { Text(t), Gone(t), Exit, Bell, Settled });
 wire_struct!(Wait {
     until,
     timeout,
@@ -446,72 +508,72 @@ wire_struct!(Wait {
     after,
     marks
 });
-wire_enum!(Button, "button" {
-    0 => Left,
-    1 => Middle,
-    2 => Right,
-    3 => Back,
-    4 => Forward,
+wire_enum!(Button {
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
 });
-wire_enum!(Wheel, "wheel" {
-    0 => Up,
-    1 => Down,
-    2 => Left,
-    3 => Right,
+wire_enum!(Wheel {
+    Up,
+    Down,
+    Left,
+    Right,
 });
-wire_enum!(Mouse, "mouse" {
-    0 => Click(b),
-    1 => Press(b),
-    2 => Release(b),
-    3 => Wheel(b),
-    4 => Move,
+wire_enum!(Mouse {
+    Click(b),
+    Press(b),
+    Release(b),
+    Wheel(b),
+    Move,
 });
-wire_enum!(Choices, "choices" { 0 => Tabs, 1 => Workspaces, 2 => Panes(pane) });
-wire_enum!(ClientAction, "client action" {
-    0 => Detach,
-    1 => Capture,
-    2 => Choices(choices),
-    3 => Run(code),
-    4 => Keys(inputs),
-    10 => Zoom,
-    11 => SelectPane(p),
-    12 => SelectTab(p),
-    13 => SelectWorkspace(p),
+wire_enum!(Choices { Tabs, Workspaces, Panes(pane) });
+wire_enum!(ClientAction {
+    Detach,
+    Capture,
+    Choices(choices),
+    Run(code),
+    Keys(inputs),
+    Zoom,
+    SelectPane(p),
+    SelectTab(p),
+    SelectWorkspace(p),
 });
 
-wire_enum!(Command, "command" {
-    0 => Ls { target, get },
-    1 => KillServer { force },
-    2 => NewWorkspace { name, cmd, size, cwd, env, ids },
-    3 => NewTab { target, name, cmd, size, cwd, env, ids },
-    4 => Split { axis, target, cmd, cwd, env, run, id, then },
-    5 => Run { workspace, name, size, cwd, env, argv, log, ids, then },
-    6 => Respawn { target, kill, env, argv, then },
-    7 => Notify { target, text },
-    8 => Resize(what),
-    9 => Wait { target, wait },
-    10 => SendMouse { target, mouse, row, col, then },
-    11 => Kill { target },
-    12 => Signal { target, signal, then },
-    15 => Rename { target, name },
-    16 => MovePane { target, to },
-    17 => SwapPane { target, with },
-    18 => ResizePane { target, by },
-    19 => SendKeys { target, inputs, then },
-    20 => Events { target, json },
-    21 => DumpLayout { target },
-    22 => Grant { workspace, socket },
-    33 => Revoke { socket },
-    23 => Log { target, file },
-    24 => ClearHistory { target },
-    25 => CapturePane { target, history, view, settle },
-    26 => Reorder { target, toward },
-    27 => Set { option, value },
-    28 => Resolve { text, kind },
-    29 => ListBuffers,
-    30 => ShowBuffer { index },
-    31 => PasteBuffer { index, target },
-    32 => Client { client, action },
+wire_enum!(Command {
+    Ls { target, get },
+    KillServer { force },
+    NewWorkspace { name, cmd, size, cwd, env, ids },
+    NewTab { target, name, cmd, size, cwd, env, ids },
+    Split { axis, target, cmd, cwd, env, run, id, then },
+    Run { workspace, name, size, cwd, env, argv, log, ids, then },
+    Respawn { target, kill, env, argv, then },
+    Notify { target, text },
+    Resize(what),
+    Wait { target, wait },
+    SendMouse { target, mouse, row, col, then },
+    Kill { target },
+    Signal { target, signal, then },
+    Rename { target, name },
+    MovePane { target, to },
+    SwapPane { target, with },
+    ResizePane { target, by },
+    SendKeys { target, inputs, then },
+    Events { target, json },
+    DumpLayout { target },
+    Grant { workspace, socket },
+    Revoke { socket },
+    Log { target, file },
+    ClearHistory { target },
+    CapturePane { target, history, view, settle },
+    Reorder { target, toward },
+    Set { option, value },
+    Resolve { text, kind },
+    ListBuffers,
+    ShowBuffer { index },
+    PasteBuffer { index, target },
+    Client { client, action },
 });
 
 #[cfg(test)]

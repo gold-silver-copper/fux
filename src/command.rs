@@ -5,6 +5,7 @@ use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
+use crate::wire::wire;
 use std::time::Duration;
 
 /// A workspace named on the command line: `+N` or its name.
@@ -144,13 +145,15 @@ impl Percent {
     }
 }
 
-/// How `resize-x`, `resize-y` and `move-border` resize a pane.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaneResize {
-    /// Moves the border toward `direction` by this many cells.
-    Border(Direction, u16),
-    /// To a width (horizontal) or a height (vertical).
-    To(Axis, Extent),
+wire! {
+    /// How `resize-x`, `resize-y` and `move-border` resize a pane.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PaneResize {
+        /// Moves the border toward `direction` by this many cells.
+        Border(direction: Direction, cells: u16),
+        /// To a width (horizontal) or a height (vertical).
+        To(axis: Axis, extent: Extent),
+    }
 }
 
 /// What `resize` sizes.

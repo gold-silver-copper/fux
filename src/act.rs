@@ -216,10 +216,10 @@ pub enum Edit {
     End,
 }
 
-wire_enum!(MouseAction, "mouse action" {
-    0 => Press,
-    1 => Release,
-    2 => Motion,
+wire_enum!(MouseAction {
+    Press,
+    Release,
+    Motion,
 });
 closed_wire!(ModeStatus, "mode status"; Scheme, "scheme");
 wire_struct!(Modifiers { ctrl, alt, shift });
@@ -238,16 +238,16 @@ wire_struct!(MouseEvent {
     col
 });
 wire_struct!(fux_vt::Rgb { r, g, b });
-wire_enum!(Reply, "reply" {
-    0 => Foreground(rgb),
-    1 => Background(rgb),
-    2 => Palette { index, rgb },
-    3 => Scheme(scheme),
-    4 => Mode { mode, status },
-    5 => KittyFlags(flags),
-    6 => Attributes { sixel },
-    7 => CellSize { width, height },
-    8 => UnderlineStyles,
+wire_enum!(Reply {
+    Foreground(rgb),
+    Background(rgb),
+    Palette { index, rgb },
+    Scheme(scheme),
+    Mode { mode, status },
+    KittyFlags(flags),
+    Attributes { sixel },
+    CellSize { width, height },
+    UnderlineStyles,
 });
 wire_struct!(ColumnEntry {
     key,
@@ -270,51 +270,51 @@ wire_struct!(List {
     chooser,
     about
 });
-wire_enum!(Panel, "panel" {
-    0 => Column(column),
-    1 => Repeat(bar),
-    2 => List(list),
-    3 => Prompt { title, before, after, about },
-    4 => Confirm { question, about },
+wire_enum!(Panel {
+    Column(column),
+    Repeat(bar),
+    List(list),
+    Prompt { title, before, after, about },
+    Confirm { question, about },
 });
-wire_enum!(CopyAct, "copy action" {
-    0 => Enter,
-    1 => Leave,
-    2 => Left,
-    3 => Right,
-    4 => Up,
-    5 => Down,
-    6 => WordForward,
-    7 => WordBack,
-    8 => FirstInk,
-    9 => LastInk,
-    10 => LineStart,
-    11 => Top,
-    12 => Bottom,
-    13 => HalfUp,
-    14 => HalfDown,
-    15 => PageUp,
-    16 => PageDown,
-    17 => Next,
-    18 => Previous,
-    19 => Prompt(seek),
-    21 => SelectChar,
-    22 => SelectLine,
-    23 => SelectBlock,
-    24 => OtherEnd,
-    25 => Yank,
-    254 => Typing(line),
-    255 => Find { query, seek },
+wire_enum!(CopyAct {
+    Enter,
+    Leave,
+    Left,
+    Right,
+    Up,
+    Down,
+    WordForward,
+    WordBack,
+    FirstInk,
+    LastInk,
+    LineStart,
+    Top,
+    Bottom,
+    HalfUp,
+    HalfDown,
+    PageUp,
+    PageDown,
+    Next,
+    Previous,
+    Prompt(seek),
+    SelectChar,
+    SelectLine,
+    SelectBlock,
+    OtherEnd,
+    Yank,
+    Typing(line),
+    Find { query, seek },
 });
-wire_enum!(Seek, "search direction" { 0 => Forward, 1 => Backward });
-wire_enum!(Act, "action" {
-    0 => Key(k),
-    1 => Paste(text),
-    2 => Mouse(m),
-    3 => Focus(gained),
-    4 => Reply(reply),
-    5 => Show(panel),
-    6 => Hide,
-    7 => Notice { text, error },
-    8 => Copy(a),
+wire_enum!(Seek { Forward, Backward });
+wire_enum!(Act {
+    Key(k),
+    Paste(text),
+    Mouse(m),
+    Focus(gained),
+    Reply(reply),
+    Show(panel),
+    Hide,
+    Notice { text, error },
+    Copy(a),
 });
