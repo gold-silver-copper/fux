@@ -757,7 +757,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
                 let fd = (words.next() == Some("tfd:")).then(|| words.next())??;
                 let events = (words.next() == Some("events:")).then(|| words.next())??;
                 let events = u32::from_str_radix(events, 16).ok()?;
-                (events & 1 != 0).then(|| fd.parse().ok())?
+                (events & libc::EPOLLIN.cast_unsigned() != 0).then(|| fd.parse().ok())?
             })
             .collect(),
     };

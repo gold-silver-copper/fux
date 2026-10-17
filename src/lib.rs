@@ -42,6 +42,7 @@ pub mod words;
 pub mod workspace;
 
 use json::Json;
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use std::io::PipeReader;
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -52,6 +53,9 @@ use std::time::{Duration, Instant};
 pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
     from.checked_add(wait).unwrap_or(from)
 }
+
+/// The signals that stop a server and detach a client.
+pub(crate) const STOPS: [std::ffi::c_int; 3] = [SIGTERM, SIGINT, SIGHUP];
 
 /// A pipe that becomes readable when any of `signals` arrives: each writes
 /// a byte to the other end, of which it holds a copy. A pipe, not a socket

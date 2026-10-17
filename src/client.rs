@@ -16,7 +16,7 @@ use crate::screens::{Effect, Screen};
 use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
+use signal_hook::consts::SIGWINCH;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -907,7 +907,7 @@ impl Signals {
     fn new() -> Result<Signals, Error> {
         Ok(Signals {
             winch: crate::signal_pipe(&[SIGWINCH])?,
-            stops: crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT])?,
+            stops: crate::signal_pipe(&crate::STOPS)?,
         })
     }
 }

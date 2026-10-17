@@ -18,7 +18,7 @@ use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fuxix::poll::{Events as PollFlags, PollFd};
-use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
+use signal_hook::consts::SIGCHLD;
 use std::io::{ErrorKind, Write};
 use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
@@ -793,7 +793,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     if let Err(errno) = fuxix::process::adopt_orphans() {
         log!("adopting orphans: {errno}");
     }
-    let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
+    let stops = crate::signal_pipe(&crate::STOPS).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
     let mut session = Session::new(
         crate::config::Config::default(),
