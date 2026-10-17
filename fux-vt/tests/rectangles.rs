@@ -169,6 +169,10 @@ fn deccra_blanks_a_wide_glyph_it_cuts() -> Result {
     let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
     parser.process("ab\u{754c}\r\n\u{4e2d}\x1b[2;1;2;1;1;1;3;1$v".as_bytes())?;
     assert_eq!(lines(&parser), ["ab", "\u{4e2d}"]);
+    // `界`'s first half over `語`'s, whose second half stays.
+    let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
+    parser.process("\u{754c}\r\n\u{8a9e}\x1b[1;1;1;1;1;2;1;1$v".as_bytes())?;
+    assert_eq!(lines(&parser), ["\u{754c}", ""]);
     Ok(())
 }
 
