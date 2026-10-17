@@ -11,7 +11,11 @@ use std::time::Duration;
 /// to the struct `Config` of those fields, its `Default`, `NAMES` (every
 /// setting's name, in order) and `Config::set`, which reads a setting's
 /// text with its `parse` (a `&str` to `Result<Type, E>`, `E` a `String`,
-/// refused as `config`, or a `Refused` with its own code).
+/// refused as `config`, or a `Refused` with its own code). The row
+/// `clipboard "clipboard": bool = true, on;` gives the field `pub clipboard:
+/// bool`, `true` in `Default`, `"clipboard"` in `NAMES`, and in `set` the
+/// arm `"clipboard" => self.clipboard = on(value).map_err(|e|
+/// named(e.into()))?`.
 macro_rules! settings {
     ($($(#[$doc:meta])* $field:ident $name:literal: $ty:ty = $default:expr, $parse:expr;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
