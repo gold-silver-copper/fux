@@ -1988,7 +1988,7 @@ mod tests {
             .map(|y| {
                 window
                     .row(y)
-                    .map(crate::capture::row_text)
+                    .map(|row| row.cells_text().trim_end_matches(' ').to_owned())
                     .unwrap_or_default()
             })
             .collect()
