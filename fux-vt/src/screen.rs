@@ -438,19 +438,10 @@ pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;
 
-/// The palette colour an SGR parameter names, and the selector of the
-/// layer it colours (38 the foreground, 48 the background): 30–37 and
-/// 40–47 are colours 0–7, and 90–97 and 100–107 their bright forms 8–15.
-fn palette(n: u16) -> Option<(u16, Color)> {
-    let (selector, base, bright) = match n {
-        30..=37 => (38, 30, 0),
-        40..=47 => (48, 40, 0),
-        90..=97 => (38, 90, 8),
-        100..=107 => (48, 100, 8),
-        _ => return None,
-    };
-    let index = u8::try_from(n.checked_sub(base)?).ok()?;
-    Some((selector, Color::Idx(index.checked_add(bright)?)))
+/// Palette colour `n - from`, for an SGR parameter `n` of a range that
+/// starts at colour `from`'s.
+fn indexed(n: u16, from: u16) -> Color {
+    Color::Idx(u8::try_from(n.saturating_sub(from)).unwrap_or(0))
 }
 
 /// The colour of 38, 48 or 58, `rest` being what follows the selector:
@@ -2862,11 +2853,13 @@ impl Screen {
                 [39] => self.attributes = self.attributes.with_foreground(Color::Default),
                 [49] => self.attributes = self.attributes.with_background(Color::Default),
                 [59] => self.attributes = self.attributes.with_underline_color(Color::Default),
-                [n @ (30..=37 | 40..=47 | 90..=97 | 100..=107)] => {
-                    if let Some((selector, colour)) = palette(*n) {
-                        self.set_colour(selector, colour);
-                    }
-                }
+                // 30–37 and 40–47 are colours 0–7 of the foreground (38)
+                // and the background (48), and 90–97 and 100–107 their
+                // bright forms 8–15.
+                [n @ 30..=37] => self.set_colour(38, indexed(*n, 30)),
+                [n @ 40..=47] => self.set_colour(48, indexed(*n, 40)),
+                [n @ 90..=97] => self.set_colour(38, indexed(*n, 90 - 8)),
+                [n @ 100..=107] => self.set_colour(48, indexed(*n, 100 - 8)),
                 // Underline styles (`references/modern/kitty_underlines.html`):
                 // `4:0` ends the underline, and 1 to 5 are single, double,
                 // curly, dotted and dashed. Another number changes nothing.

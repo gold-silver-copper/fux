@@ -1,17 +1,29 @@
 use super::*;
 
 #[test]
-fn sgr_colour_parameters_name_the_sixteen_palette_colours() {
+fn sgr_colour_parameters_name_the_sixteen_palette_colours() -> Result<(), Error> {
+    let mut p = crate::Parser::with_options(Size::of(2, 10), 0, crate::Options::new())?;
+    let layers = |p: &crate::Parser| {
+        let a = p.screen().attributes;
+        (a.foreground(), a.background())
+    };
     for (first, index, selector) in [(30, 0, 38), (40, 0, 48), (90, 8, 38), (100, 8, 48)] {
         for offset in 0..8u8 {
             let n = first + u16::from(offset);
+            p.process(format!("\x1b[0;{n}m").as_bytes())?;
             let colour = Color::Idx(index + offset);
-            assert_eq!(palette(n), Some((selector, colour)), "{n}");
+            let want = match selector {
+                38 => (colour, Color::Default),
+                _ => (Color::Default, colour),
+            };
+            assert_eq!(layers(&p), want, "{n}");
         }
     }
     for n in [0, 29, 38, 39, 48, 49, 89, 98, 99, 108, u16::MAX] {
-        assert_eq!(palette(n), None, "{n}");
+        p.process(format!("\x1b[0;{n}m").as_bytes())?;
+        assert_eq!(layers(&p), (Color::Default, Color::Default), "{n}");
     }
+    Ok(())
 }
 
 /// SGR's flag arms are what `Attributes::FLAGS` says: each row's number
