@@ -1589,7 +1589,10 @@ fn every_pane_and_every_start_is_waited_for() -> Outcome {
             "wait-text",
             "wait",
         ];
-        assert_eq!(server.ok(&wait)?, "SPLIT\n");
+        let met = server.ok(&wait)?;
+        let (state, rest) = met.split_once('\n').unwrap_or_default();
+        assert!(state.starts_with(&format!("{pane} ")), "{met}");
+        assert!(state.ends_with(" · met \"SPLIT\"") && rest == "SPLIT\n", "{met}");
     }
     Ok(())
 }
@@ -2071,12 +2074,7 @@ fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
     ))?;
     assert_eq!(stopped.status, CANNOT_COME, "{}", stopped.stderr);
     let pane = id(&stopped.stdout);
-    let said = if PROBED {
-        format!("{pane} reading")
-    } else {
-        pane.clone()
-    };
-    assert_eq!(head(&stopped.stdout), said);
+    assert_eq!(head(&stopped.stdout), format!("{pane} {READING}"));
     let reader = id(&server.ok(&run(&[], &["sh", "-c", "echo R; read x"]))?);
     let busy = id(&server.ok(&[
         "str",
@@ -3036,11 +3034,7 @@ fn a_new_programs_text_goes_once_shown() -> Outcome {
     if PROBED {
         assert_eq!(out.stdout, format!("{pane} {READING}\nready\n"));
     } else {
-        assert!(
-            out.stderr.contains(&format!("; {pane} {READING}, ")),
-            "{}",
-            out.stderr
-        );
+        assert_eq!(head(&out.stdout), format!("{pane} {READING}"), "{}", out.stderr);
     }
     let shown = server.fux(&[
         "str",
