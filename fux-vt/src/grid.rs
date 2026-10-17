@@ -1181,7 +1181,9 @@ impl Grid {
     /// of live row `row` changed by `change`, each cell keeping its text,
     /// its protection and SPA's guard. An empty cell is left as it is, or,
     /// with `fill`, first takes a space (DEC STD 070, DECSACE: a stream
-    /// leaves unoccupied positions, a rectangle fills them in).
+    /// leaves unoccupied positions, a rectangle fills them in). A wide
+    /// glyph the edge cuts has its half inside changed alone, as the
+    /// operation counts positions; its first half's attributes draw it.
     pub fn restyle(
         &mut self,
         row: u16,

@@ -373,8 +373,10 @@ impl Integrity {
     }
 }
 
-/// The screen's state that RIS starts again as it was made, one owner of
-/// both, so a field cannot be left out of either.
+/// The cold state, which RIS starts again as it was made: one owner of
+/// both, so a field of it cannot be left out of either. The screen's
+/// other fields (`protected`, `modes`, `alternate_active`, `pictures`)
+/// are set in both by hand.
 #[derive(Clone, Debug, Default)]
 struct Terminal {
     /// Left by 1047 with this pen: the alternate screen is cleared in its
@@ -1828,6 +1830,8 @@ impl Screen {
                 self.terminal.tabs.set(col, true);
             }
             b'M' => self.reverse_index()?,
+            // RIS: it resets synchronized output too, which
+            // `parser::FrameScan::ends` restates.
             b'c' => {
                 let size = self.size();
                 let mut next = self.next_id;
@@ -2028,12 +2032,13 @@ impl Screen {
     /// shown, DECOM, DECCKM and DECKPAM off, the scroll region the whole
     /// screen, the pen normal, the character sets ASCII with G0 in GL,
     /// and the saved cursor home with them (`Modes::SOFT_RESET` has the
-    /// modes); the saved cursor is the shown screen's, as xterm resets it. DECAWM goes back to its
-    /// default, which both leave to the terminal's setting (xterm's: on).
-    /// The screen, the
-    /// cursor, a pending wrap, the alternate screen, bracketed paste, focus
+    /// modes); the saved cursor is the shown screen's, as xterm resets it.
+    /// DECAWM goes back to its default, which both leave to the terminal's
+    /// setting (xterm's: on). The screen, the cursor, a pending wrap (the
+    /// Last Column Flag), the alternate screen, bracketed paste, focus
     /// reporting, mouse modes and kitty keyboard flags stay as they are,
-    /// as in xterm.
+    /// as in xterm. It resets synchronized output (2026), which
+    /// `parser::FrameScan::ends` restates: the two change together.
     fn soft_reset(&mut self) {
         // DECAWM comes back on with no wrap pending if it was off, but
         // the Last Column Flag DECRC restored.
@@ -2339,6 +2344,8 @@ impl Screen {
                     }
                 }
             }
+            // Which sequences reset it, `parser::FrameScan::ends` restates:
+            // it changes with this arm, DECSTR, RIS and XTRESTORE.
             Kind::Frame => {
                 self.modes.set(mode, on);
                 if on {
@@ -2778,11 +2785,12 @@ impl Screen {
     }
 
     /// The CSI sequences `csi` leaves unhandled, the parser asks here then
-    /// (`Parser::csi_dispatch`): DECSCA, DECIC, DECDC, SL and SR, carried
-    /// out, and the queries' replies, some enabled by
-    /// [`Feature::ExtendedReplies`] and [`Options::identity`]; `None` for
-    /// the rest, unhandled. Carried out in `csi`, even out of line, they cost every
-    /// CSI a percent or two of its instructions.
+    /// (`Parser::csi_dispatch`): DECSCA, DECIC, DECDC, SL and SR, the
+    /// rectangular area operations and DECSACE, carried out, and the
+    /// queries' replies, some enabled by [`Feature::ExtendedReplies`] and
+    /// [`Options::identity`]; `None` for the rest, unhandled. Carried out
+    /// in `csi`, even out of line, they cost every CSI a percent or two of
+    /// its instructions.
     #[inline(never)]
     pub(crate) fn other_csi(
         &mut self,

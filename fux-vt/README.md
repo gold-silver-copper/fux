@@ -145,8 +145,8 @@ decoded, and what a program asked for, encoded. It needs no option.
 | `Screen::focus_report(focused)` | `CSI I` or `CSI O` with focus reporting (1004) set, else nothing (`None`) |
 | `Screen::encode_mouse(event, out)` | a `keys::mouse::MouseEvent` as xterm reports it in the program's mode and encoding: X10 (9) presses of buttons 1 to 3 without modifiers; 1000 presses and releases (the wheel's turns as presses, never released); 1002 also motion with a button held; 1003 also motion with none; in the default encoding (nothing past position 223), UTF-8 (1005, Cb too, nothing past 2015) or SGR (1006, any position, a release naming its button). `keys::mouse::mouse_bytes` takes them given |
 
-Each but the paste returns whether it sent anything. Motion within one
-cell is the host's to drop.
+`encode_mouse` returns whether it sent anything, and `focus_report` the
+report or `None`. Motion within one cell is the host's to drop.
 
 - **Colours:** `keys::colour` holds `Rgb` (read from and answered as
   `rgb:RRRR/GGGG/BBBB`), `Scheme` (dark or light, as mode 2031 reports
@@ -170,9 +170,12 @@ every encoder beside libghostty-vt's, with its recorded verdicts.
   no OSC payload is kept. OSC 52 is only ever an event, which fux drops.
 - Keypad, mouse and focus modes are state only. Keys, pastes, focus
   changes and mouse events are encoded only when the host asks
-  (`Screen::encode_*`, see [Keys](#keys)); nothing a program writes makes
+  (`keys::encode`, `Screen::focus_report`, `Screen::encode_mouse`, see
+  [Keys](#keys)); nothing a program writes makes
   fux-vt send input.
-- Sixel is the one graphics protocol (see its row): pictures are kept as pixels for the host to draw (`Screen::pictures`), and none reaches the host's terminal unless the host sends it.
+- Sixel is the one graphics protocol (see its row): pictures are kept as
+  pixels for the host to draw (`Screen::pictures`), and none reaches the
+  host's terminal unless the host sends it.
 - Only the primary screen has history, up to its limit. CSI 3 J (ED 3,
   erase saved lines) and `Parser::clear_history` drop it, from either
   screen.
@@ -189,8 +192,8 @@ string is a byte of a character, not ST. Parameters saturate at
 sequence runs with the 32, as DEC STD 070 (3.5.3.1) lets parameters
 "beyond the maximum number supported" be (xterm 411 differs: `1x4
 '\e[0;…;0;1;4;7mX'` with 30 zeros is plain there). More than two
-intermediates make the sequence ignored. CAN and SUB cancel any sequence; ESC starts a
-new one.
+intermediates make the sequence ignored. CAN and SUB cancel any
+sequence; ESC starts a new one.
 
 The common input skips the byte-at-a-time state machine, each fast path
 doing exactly what it would:
