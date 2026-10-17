@@ -269,56 +269,40 @@ fn read_more(stream: &mut Link, decoder: &mut Decoder) -> Result<bool, Error> {
 pub struct Requests {
     stream: Link,
     decoder: Decoder,
-    /// The pieces of a reply too large for one frame, so far.
-    parts: Vec<u8>,
 }
 
 impl Requests {
     pub fn open(socket: &SocketPath) -> Result<Requests, Error> {
         let (stream, decoder, _) = connect(socket, Role::Command)?;
-        Ok(Requests {
-            stream,
-            decoder,
-            parts: Vec::new(),
-        })
+        Ok(Requests { stream, decoder })
     }
 
-    /// Sends `asked`, and waits for its reply: what the server streams
-    /// before it (`events`) goes to `out` as it comes.
+    /// Sends `asked`, and waits for its reply, which may come in pieces:
+    /// what the server streams before it (`events`) goes to `out` as it
+    /// comes.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         self.stream.set_read_timeout(None);
         send(&mut self.stream, asked)?;
+        let mut parts = Vec::new();
         loop {
-            if let Some(reply) = self.take(out)? {
-                return Ok(reply);
+            while let Some(frame) = self.decoder.frame()? {
+                match frame {
+                    ToCommand::Stdout(bytes) => {
+                        let _ = out.write_all(&bytes).and_then(|()| out.flush());
+                    }
+                    ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
+                    ToCommand::PartsEnd => {
+                        let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
+                        return Ok(reply.map_err(crate::protocol::Error::Wire)?);
+                    }
+                    ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
+                }
             }
             if !read_more(&mut self.stream, &mut self.decoder)? {
                 let closed = "the server closed the connection";
                 return Err(Error::Failed(closed.to_owned()));
             }
         }
-    }
-
-    /// The reply read already, if it is whole: what comes before it goes to
-    /// `out`.
-    pub fn take(&mut self, out: &mut dyn Write) -> Result<Option<Reply>, Error> {
-        while let Some(frame) = self.decoder.frame()? {
-            match frame {
-                ToCommand::Stdout(bytes) => {
-                    let _ = out.write_all(&bytes).and_then(|()| out.flush());
-                }
-                ToCommand::Part(bytes) => self.parts.extend_from_slice(&bytes),
-                ToCommand::PartsEnd => {
-                    let parts = std::mem::take(&mut self.parts);
-                    let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
-                    return reply
-                        .map(Some)
-                        .map_err(|e| Error::Protocol(crate::protocol::Error::Wire(e)));
-                }
-                ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
-            }
-        }
-        Ok(None)
     }
 
     /// What stops it from another thread: dropped, the request under way
