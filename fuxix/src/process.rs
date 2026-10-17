@@ -322,17 +322,29 @@ pub fn tree() -> Vec<Pid> {
     // SAFETY: a null buffer asks only for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     // Room for processes started between the two calls.
-    let Some(room) = usize::try_from(count).ok().and_then(|c| c.checked_add(64)) else {
-        return Vec::new();
-    };
-    let mut pids: Vec<libc::pid_t> = vec![0; room];
-    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
-        return Vec::new();
-    };
-    // SAFETY: the buffer is `bytes` long and writable.
-    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-    pids.truncate(usize::try_from(listed).unwrap_or(0));
-    pids.into_iter().filter_map(Pid::from_raw).collect()
+    let room = usize::try_from(count).unwrap_or(0).saturating_add(64);
+    let pids = listed(room, |buffer, bytes| {
+        // SAFETY: the buffer is `bytes` long and writable.
+        unsafe { libc::proc_listallpids(buffer, bytes) }
+    });
+    (pids.into_iter().flatten())
+        .filter_map(Pid::from_raw)
+        .collect()
+}
+
+/// What a call fills a buffer of `room` `T`s with, given the buffer and
+/// its length in bytes, and answering how many it wrote: `None` if it
+/// failed.
+#[cfg(target_os = "macos")]
+fn listed<T: Default + Clone>(
+    room: usize,
+    call: impl FnOnce(*mut libc::c_void, libc::c_int) -> libc::c_int,
+) -> Option<Vec<T>> {
+    let mut list = vec![T::default(); room];
+    let bytes = libc::c_int::try_from(std::mem::size_of_val(list.as_slice())).ok()?;
+    let written = usize::try_from(call(list.as_mut_ptr().cast(), bytes)).ok()?;
+    list.truncate(written);
+    Some(list)
 }
 
 /// `pid`'s command line, when the system says.
@@ -938,18 +950,14 @@ pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
 /// disk, uninterruptible), idle once every one waits.
 #[cfg(target_os = "macos")]
 pub fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
-    let mut pids: Vec<libc::pid_t> = vec![0; 1024];
-    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())) else {
+    let pids = listed(1024, |buffer, bytes| {
+        // SAFETY: the buffer is `bytes` long and writable; the call says
+        // how many IDs it wrote.
+        unsafe { libc::proc_listpgrppids(group.as_raw(), buffer, bytes) }
+    });
+    let Some(pids) = pids else {
         return Activity::Unknown;
     };
-    // SAFETY: the buffer is `bytes` long and writable; the call says
-    // how many IDs it wrote.
-    let listed =
-        unsafe { libc::proc_listpgrppids(group.as_raw(), pids.as_mut_ptr().cast(), bytes) };
-    let Ok(listed) = usize::try_from(listed) else {
-        return Activity::Unknown;
-    };
-    pids.truncate(listed);
     let seen: Vec<Option<bool>> = (pids.into_iter())
         .filter_map(Pid::from_raw)
         .filter_map(running)
@@ -985,26 +993,17 @@ const IN_USE: i32 = 100;
 fn running(pid: Pid) -> Option<Option<bool>> {
     // `sys/proc_info.h`: the IDs of a process's threads, which `libc` lacks.
     const PROC_PIDLISTTHREADS: libc::c_int = 6;
-    let mut threads: Vec<u64> = vec![0; 256];
-    let Ok(bytes) = libc::c_int::try_from(std::mem::size_of_val(threads.as_slice())) else {
-        return Some(None);
-    };
-    // SAFETY: the buffer is `bytes` long and writable; the call says how
-    // many bytes it wrote.
-    let written = unsafe {
-        libc::proc_pidinfo(
-            pid.as_raw(),
-            PROC_PIDLISTTHREADS,
-            0,
-            threads.as_mut_ptr().cast(),
-            bytes,
-        )
-    };
-    let written = usize::try_from(written).unwrap_or(0);
-    if written == 0 {
+    let threads: Vec<u64> = listed(256, |buffer, bytes| {
+        // SAFETY: the buffer is `bytes` long and writable; the call says how
+        // many bytes it wrote, a thread's ID 8 of them.
+        let written =
+            unsafe { libc::proc_pidinfo(pid.as_raw(), PROC_PIDLISTTHREADS, 0, buffer, bytes) };
+        written.div_euclid(8)
+    })
+    .unwrap_or_default();
+    if threads.is_empty() {
         return exists(pid).then_some(None);
     }
-    threads.truncate(written.div_euclid(std::mem::size_of::<u64>()));
     let Ok(size) = libc::c_int::try_from(std::mem::size_of::<libc::proc_threadinfo>()) else {
         return Some(None);
     };
