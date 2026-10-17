@@ -194,7 +194,7 @@ const ROWS: &[Row] = &[
     row(Key, "confirm-close", "workspace", false, "str c1 client +1 confirm-close", &["string SENTINEL"]),
     row(Cli, "send-keys", "client", false, "str c1 client keys str x text send-keys", &["string SENTINEL", "answer "]),
     row(Key, "send-keys", "client", false, "str c1 client keys str x text send-keys", &["string SENTINEL"]),
-    row(Cli, "send-keys", "client", true, "str c1 client keys str x text str x wait-text send-keys", &["string SENTINEL", "answer "]),
+    row(Cli, "send-keys", "client", true, "str c1 client keys str x text str x wait-text send-keys", &["fails unused 1"]),
     row(Key, "send-keys", "client", true, "str c1 client keys str x text str x wait-text send-keys", &["fails unused 1"]),
     row(Cli, "send-mouse", "client", false, "str c1 client str click 0 0 mouse send-mouse", &["fails type 1"]),
     row(Key, "send-mouse", "client", false, "str c1 client str click 0 0 mouse send-mouse", &["fails type 1"]),

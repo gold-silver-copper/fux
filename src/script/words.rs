@@ -986,11 +986,10 @@ impl fuxth::Host for Host<'_> {
                         ),
                     ));
                 }
-                let (then, answer) = acted(&built.waits, self.settle);
                 if let Value::App(Fux::Client(c)) = &to {
                     // Typed at its terminal: whatever pane they reach is the
                     // client's to choose, so there is none to wait on here.
-                    if then.is_some() && !self.settle {
+                    if built.waits != Waits::default() {
                         return Err(fail(
                             Code::Unused,
                             "send-keys to a client takes no wait: wait on the pane after (PANE opts … wait)",
@@ -1001,8 +1000,13 @@ impl fuxth::Host for Host<'_> {
                         client: Some(*c),
                         action: keys,
                     };
+                    // Its answer, empty, as send-keys to a pane leaves one.
+                    let answer = Then::Outcome {
+                        waited: self.settle,
+                    };
                     return later(ask(typed, answer));
                 }
+                let (then, answer) = acted(&built.waits, self.settle);
                 let target = target(name, &to)
                     .map_err(|_| wrong(name, "a pane, tab, workspace or client", &to))?;
                 later(ask(
