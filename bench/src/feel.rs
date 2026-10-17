@@ -461,10 +461,9 @@ fn start(
                 std::thread::sleep(Duration::from_millis(10));
             }
             // Its settings at once, as the test harness applies them.
-            let path = socket.to_string_lossy();
-            let chosen = fux::socket::socket_path(&fux::socket::Choice::Path(path.to_string()))
-                .map_err(|e| e.to_string())?;
-            fux::script::configure(&config, &chosen).map_err(|e| e.to_string())?;
+            let chosen = fux::socket::Choice::Path(socket.to_string_lossy().into_owned());
+            let mut to = fux::script::Server::new(chosen);
+            fux::script::run_file(&config, Some(&mut to)).map_err(|e| e.to_string())?;
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));
             env.push(("FUX_BIN".into(), place.fux.clone()));

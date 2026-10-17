@@ -905,16 +905,6 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
     }
 }
 
-/// Runs the config file at `path` against the server on `socket`, as a
-/// client does as it attaches: the keymap it makes, or its failure.
-pub fn configure(
-    path: &std::path::Path,
-    socket: &crate::socket::SocketPath,
-) -> Result<Keymap, Failed> {
-    let mut server = Server::new(Choice::Path(socket.path().to_string_lossy().into_owned()));
-    run_file(path, Some(&mut server))
-}
-
 /// The keymap a config file makes, its words run on the defaults, its
 /// settings sent to `server`, or with none checked and sent nowhere (a dry
 /// run); or why it fails. A config attaches nothing, and chooses no other

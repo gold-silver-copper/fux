@@ -209,8 +209,9 @@ impl Server {
         }
         // The config, as a client runs it: its settings to the server, its
         // bindings to the keymap the scripted clients type through.
-        let socket = server.socket_path()?;
-        server.keymap = fux::script::configure(&config_path, &socket).map_err(e)?;
+        let socket = fux::socket::Choice::Path(server.socket.to_string_lossy().into_owned());
+        let mut to = fux::script::Server::new(socket);
+        server.keymap = fux::script::run_file(&config_path, Some(&mut to)).map_err(e)?;
         Ok((server, held))
     }
 
