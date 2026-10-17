@@ -144,7 +144,11 @@ pub struct Place {
 }
 
 /// Where a select command takes a client: a workspace, and a tab and pane.
-type Picked = (WsId, Option<TabId>, Option<PaneId>);
+type Picked = (WsId, Option<Spot>);
+
+/// Where in a workspace a client is shown: a tab, and a pane in it if
+/// given.
+pub(crate) type Spot = (TabId, Option<PaneId>);
 
 /// What a command that names nothing acts on, found once from its origin.
 #[derive(Clone, Copy)]
@@ -1386,7 +1390,7 @@ impl Session {
         view.kind = kind;
         self.views.insert(id, view);
         self.workspaces.iter_mut().for_each(|w| w.attach(id));
-        self.show(id, ws, None, None);
+        self.show(id, ws, None);
         self.ask(id, crate::outer::QUERIES);
         self.settle();
         Ok(id)
@@ -1398,27 +1402,27 @@ impl Session {
         self.settle();
     }
 
-    /// Shows `client` workspace `ws`, one there is, and there tab `tab` and
-    /// in it pane `pane`, each if given and there.
-    fn show(&mut self, client: ClientId, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
+    /// Shows `client` workspace `ws`, one there is, and there the tab and
+    /// pane `at` says, each if given and there.
+    fn show(&mut self, client: ClientId, ws: WsId, at: Option<Spot>) {
         for w in &mut self.workspaces {
             if w.id != ws {
                 w.hide(client);
             } else {
                 w.viewers.insert(client);
-                w.show(client, tab, pane);
+                w.show(client, at);
             }
         }
     }
 
     /// The command's client, if it has one, follows what it made or moved:
     /// it is shown it, unzoomed.
-    fn follow(&mut self, here: Here, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
+    fn follow(&mut self, here: Here, ws: WsId, at: Option<Spot>) {
         if let Here::Client(client, _) = here
             && let Some(view) = self.views.get_mut(&client)
         {
             view.zoom = false;
-            self.show(client, ws, tab, pane);
+            self.show(client, ws, at);
         }
     }
 
@@ -2157,7 +2161,7 @@ impl Session {
                 let start = (Start::Shell(cmd, env), cwd.as_path(), &starting);
                 let place = (fit, self.start_size(fit, here));
                 let made = self.create_workspace((name.clone(), None), start, place)?;
-                self.follow(here, made.0, None, None);
+                self.follow(here, made.0, None);
                 Ok(Self::made_ids(made, Kind::Workspace))
             }
             Command::NewTab {
@@ -2184,7 +2188,7 @@ impl Session {
                 if let Some(name) = name {
                     self.give_tab_name(tab, name.clone())?;
                 }
-                self.follow(here, ws, Some(tab), None);
+                self.follow(here, ws, Some((tab, None)));
                 Ok(Self::made_ids((ws, tab, pane), Kind::Tab))
             }
             Command::Run {
@@ -2678,9 +2682,7 @@ impl Session {
                 };
                 // A select shows the client where it picked, unzoomed.
                 match picked {
-                    Some((ws, tab, pane)) => {
-                        self.follow(Here::Client(client, place), ws, tab, pane)
-                    }
+                    Some((ws, at)) => self.follow(Here::Client(client, place), ws, at),
                     None => (self.views.get_mut(&client))
                         .into_iter()
                         .for_each(|v| v.zoom = !v.zoom),
@@ -2789,7 +2791,7 @@ impl Session {
         }
         self.relocate(pane, tab);
         // The moving client follows its pane.
-        self.follow(here, ws, Some(tab), Some(pane));
+        self.follow(here, ws, Some((tab, Some(pane))));
         Ok(format!("{tab}\n"))
     }
 
@@ -2845,7 +2847,7 @@ impl Session {
             }
         };
         let (ws, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        Ok((ws, Some(tab), Some(target)))
+        Ok((ws, Some((tab, Some(target)))))
     }
 
     /// The tab `show-tab` picks for a client at `at`.
@@ -2859,7 +2861,7 @@ impl Session {
                 (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id)
             }
         };
-        Ok((ws, Some(target), None))
+        Ok((ws, Some((target, None))))
     }
 
     /// The workspace `show-workspace` picks for client `view`.
@@ -2873,7 +2875,7 @@ impl Session {
                 next.ok_or(Error::OnlyOne(Kind::Workspace))?.id
             }
         };
-        Ok((ws, None, None))
+        Ok((ws, None))
     }
 
     // ------------------------------------------------------------------ ls

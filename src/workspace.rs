@@ -142,10 +142,10 @@ impl Workspace {
         self.tabs.push(tab);
     }
 
-    /// Shows `client` tab `tab` here, if given and one of this workspace's,
-    /// and in it focuses `pane`, if given and there.
-    pub(crate) fn show(&mut self, client: ClientId, tab: Option<TabId>, pane: Option<PaneId>) {
-        let Some(tab) = tab.filter(|id| self.tabs.iter().any(|t| t.id == *id)) else {
+    /// Shows `client` the tab `at` says here, if given and one of this
+    /// workspace's, and in it focuses the pane it says, if given and there.
+    pub(crate) fn show(&mut self, client: ClientId, at: Option<crate::session::Spot>) {
+        let Some((tab, pane)) = at.filter(|(id, _)| self.tabs.iter().any(|t| t.id == *id)) else {
             return;
         };
         let Some(shown) = self.shown.get_mut(&client) else {
