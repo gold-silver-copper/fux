@@ -76,8 +76,8 @@ pub use parser::{
     Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled,
 };
 pub use screen::{
-    CommandMark, Commands, Graphics, MouseProtocolEncoding, MouseProtocolMode, PLACEHOLDER, Screen,
-    Shown,
+    CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,
+    PLACEHOLDER, Screen, Shown,
 };
 pub use unicode::{UNICODE_VERSION, continues_cluster};
 

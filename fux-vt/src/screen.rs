@@ -36,6 +36,33 @@ pub enum MouseProtocolMode {
     /// Mode 1003: also motion with no button down.
     AnyMotion,
 }
+closed! {
+    /// The cursor's style, as DECSCUSR sets it (`CSI Ps SP q`; ctlseqs,
+    /// "Set cursor style", VT520): Ps 0 and 1 are both a blinking block, 7
+    /// xterm's initial resources. A Ps it lists no style for is ignored.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub enum CursorShape {
+        /// Its Ps.
+        pub fn number(self) -> u16;
+        /// The terminal's own, which fux-vt does not know: before any
+        /// DECSCUSR, after RIS, and as DECSCUSR 7 restores it.
+        #[default]
+        Initial => 7,
+        /// A blinking block (Ps 0 or 1).
+        BlinkingBlock => 1,
+        /// A steady block.
+        SteadyBlock => 2,
+        /// A blinking underline.
+        BlinkingUnderline => 3,
+        /// A steady underline.
+        SteadyUnderline => 4,
+        /// A blinking bar.
+        BlinkingBar => 5,
+        /// A steady bar.
+        SteadyBar => 6,
+    }
+}
+
 /// How mouse reports are to be encoded (`CSI ? 1005 / 1006 h`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -238,8 +265,8 @@ pub(crate) enum Setting {
     Written,
     /// A request fux-vt does not know, which xterm answers as invalid.
     Unknown,
-    /// No answer: a cursor shape left to the terminal (DECSCUSR 0 or never
-    /// set), which fux-vt does not know. xterm and Ghostty always know
+    /// No answer: the terminal's own cursor shape (`CursorShape::Initial`),
+    /// which fux-vt does not know. xterm and Ghostty always know
     /// theirs, and vim, the program that asks, takes an invalid answer for
     /// keys.
     Unanswered,
@@ -319,7 +346,7 @@ pub struct Screen {
     /// How many times synchronized output has been set, for
     /// `Parser::process_until_frame`.
     frames_begun: u64,
-    cursor_shape: u16,
+    cursor_shape: CursorShape,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
     modify_other_keys: Option<u8>,
@@ -439,7 +466,7 @@ impl Screen {
             protection: Protection::Off,
             tabs: TabStops::default(),
             frames_begun: 0,
-            cursor_shape: 0,
+            cursor_shape: CursorShape::Initial,
             mouse: MouseProtocolMode::None,
             encoding: MouseProtocolEncoding::Default,
             modify_other_keys: None,
@@ -575,9 +602,9 @@ impl Screen {
     pub(crate) fn frames_begun(&self) -> u64 {
         self.frames_begun
     }
-    /// The cursor shape last set with DECSCUSR (`CSI Ps SP q`); 0, the
-    /// default, is the terminal's own. State only: fux-vt draws no cursor.
-    pub fn cursor_shape(&self) -> u16 {
+    /// The cursor shape last set with DECSCUSR (`CSI Ps SP q`). State
+    /// only: fux-vt draws no cursor.
+    pub fn cursor_shape(&self) -> CursorShape {
         self.cursor_shape
     }
     /// The top and bottom margins (DECSTBM), zero-based and inclusive.
@@ -1702,7 +1729,7 @@ impl Screen {
                 self.soft_reset();
                 self.modes = Modes::DEFAULT;
                 self.tabs = TabStops::default();
-                self.cursor_shape = 0;
+                self.cursor_shape = CursorShape::Initial;
                 self.mouse = MouseProtocolMode::None;
                 self.encoding = MouseProtocolEncoding::Default;
                 self.modify_other_keys = None;
@@ -2110,10 +2137,10 @@ impl Screen {
             }
             b" q" => {
                 let shape = self.cursor_shape;
-                if !(1..=6).contains(&shape) {
+                if shape == CursorShape::Initial {
                     return Setting::Unanswered;
                 }
-                let _ = write!(out, "{shape} q");
+                let _ = write!(out, "{} q", shape.number());
             }
             b"r" => {
                 // Exact: the margins are rows of a screen a u16 counts.
@@ -2230,7 +2257,11 @@ impl Screen {
         let private = intermediates == b"?";
         // DECSCUSR: its intermediate is a space.
         if intermediates == b" " && byte == b'q' {
-            self.cursor_shape = p.first(0, 0);
+            // 0, the default, is a blinking block, as 1 is.
+            let ps = p.first(0, 1);
+            if let Some(&shape) = CursorShape::ALL.iter().find(|s| s.number() == ps) {
+                self.cursor_shape = shape;
+            }
             return Ok(Dispatch::Done);
         }
         if options.has(Feature::KittyKeyboard)

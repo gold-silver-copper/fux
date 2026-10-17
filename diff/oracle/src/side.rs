@@ -254,7 +254,7 @@ macro_rules! side {
                         cursor: s.cursor_position(),
                         pending_wrap: s.pending_wrap(),
                         modes: modes(s),
-                        cursor_shape: s.cursor_shape(),
+                        cursor_shape: s.cursor_shape().number(),
                         scroll_region: s.scroll_region(),
                         mouse: format!("{:?}", s.mouse_protocol_mode()),
                         encoding: format!("{:?}", s.mouse_protocol_encoding()),

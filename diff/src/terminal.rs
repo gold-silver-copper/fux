@@ -255,9 +255,8 @@ macro_rules! stack {
                     };
                     let _ = writeln!(
                         out,
-                        "{rows}x{cols} cursor {:?} modes {modes:?} shape {} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
+                        "{rows}x{cols} cursor {:?} modes {modes:?} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
                         s.cursor_position(),
-                        s.cursor_shape(),
                         s.scroll_region(),
                         s.mouse_protocol_mode(),
                         s.mouse_protocol_encoding(),

@@ -275,6 +275,7 @@ fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
 /// only their own forms set them, and a full reset clears both.
 #[test]
 fn focus_and_cursor_shape() -> Result {
+    use fux_vt::CursorShape::{BlinkingBar, BlinkingBlock, Initial, SteadyBar};
     let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
     for split in 0..stream.len() {
         let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
@@ -282,21 +283,21 @@ fn focus_and_cursor_shape() -> Result {
         p.process(a)?;
         p.process(b)?;
         assert!(p.screen().mode(Mode::FocusReporting), "split {split}");
-        assert_eq!(p.screen().cursor_shape(), 5, "split {split}");
+        assert_eq!(p.screen().cursor_shape(), BlinkingBar, "split {split}");
     }
     let mut p = Parser::new(Size::new(3, 8)?, 0)?;
     p.process(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q")?;
     assert!(!p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 0);
+    assert_eq!(p.screen().cursor_shape(), BlinkingBlock);
     p.process(b"\x1b[1004h\x1b[3!q\x1b[?4 q")?;
     assert!(!p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 0);
+    assert_eq!(p.screen().cursor_shape(), BlinkingBlock);
     p.process(b"\x1b[?1004h\x1b[6 q")?;
     assert!(p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 6);
+    assert_eq!(p.screen().cursor_shape(), SteadyBar);
     p.process(b"\x1bc")?;
     assert!(!p.screen().mode(Mode::FocusReporting));
-    assert_eq!(p.screen().cursor_shape(), 0);
+    assert_eq!(p.screen().cursor_shape(), Initial);
     Ok(())
 }
 

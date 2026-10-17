@@ -1481,12 +1481,19 @@ mod tests {
             pane.output(a);
             pane.output(b);
             assert!(pane.screen().mode(Mode::FocusReporting), "split {split}");
-            assert_eq!(pane.screen().cursor_shape(), 5, "split {split}");
+            assert_eq!(
+                pane.screen().cursor_shape(),
+                fux_vt::CursorShape::BlinkingBar,
+                "split {split}"
+            );
         }
         let mut pane = pane(5, 20)?;
         pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
         assert!(!pane.screen().mode(Mode::FocusReporting));
-        assert_eq!(pane.screen().cursor_shape(), 0);
+        assert_eq!(
+            pane.screen().cursor_shape(),
+            fux_vt::CursorShape::BlinkingBlock
+        );
         pane.output(b"\x1b[?1004h\x1bc");
         assert!(!pane.screen().mode(Mode::FocusReporting));
         Ok(())

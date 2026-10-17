@@ -11,7 +11,7 @@ use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, View};
-use fux_vt::{Attributes, CellRef, Cells, Color, Rgb, Row, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Rgb, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -40,8 +40,8 @@ pub struct Grid {
 /// each a field here and a line in `Modes::diff`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modes {
-    /// DECSCUSR shape for the cursor; 0 is the terminal's default.
-    pub cursor_shape: u16,
+    /// The cursor's shape (DECSCUSR); `Initial` is the terminal's own.
+    pub cursor_shape: CursorShape,
     /// The mouse tracking asked for (1000, 1002 or 1003, always
     /// SGR-encoded), 0 for none: the focused pane's program's, while it
     /// has the keys ([`mouse_level`]).
@@ -58,8 +58,18 @@ impl Modes {
                 let _ = write!(out, "\x1b[?{}h\x1b[?1006h", self.mouse);
             }
         }
-        if old.map(|o| o.cursor_shape) != Some(self.cursor_shape) {
-            let _ = write!(out, "\x1b[{} q", self.cursor_shape);
+        // A terminal not known keeps its own shape until a pane sets one.
+        let shape = self.cursor_shape;
+        if old.map_or(shape != CursorShape::Initial, |o| o.cursor_shape != shape) {
+            // The terminal's own again: 0, which most terminals take for
+            // theirs (xterm takes it for a blinking block, and 7 for its
+            // own, which others lack).
+            let ps = if shape == CursorShape::Initial {
+                0
+            } else {
+                shape.number()
+            };
+            let _ = write!(out, "\x1b[{ps} q");
         }
     }
 }
@@ -771,7 +781,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                 {
                     grid.cursor = Some(at);
                     // The copy cursor is a block.
-                    grid.modes.cursor_shape = 2;
+                    grid.modes.cursor_shape = CursorShape::SteadyBlock;
                 }
             }
             None => {
@@ -1693,6 +1703,33 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    /// A client's terminal keeps its own cursor shape until a pane sets
+    /// one (DECSCUSR, ctlseqs: 0 would be a blinking block in xterm): the
+    /// first paint writes none, a shape a pane set is written as its Ps,
+    /// and the terminal's own comes back as 0.
+    #[test]
+    fn a_cursor_shape_is_written_once_a_pane_sets_one() {
+        let diff = |old: Option<CursorShape>, new: CursorShape| {
+            let modes = |cursor_shape| Modes {
+                cursor_shape,
+                ..Modes::default()
+            };
+            let mut out = Vec::new();
+            modes(new).diff(old.map(modes).as_ref(), &mut out);
+            String::from_utf8_lossy(&out).replace(MOUSE_OFF, "")
+        };
+        assert_eq!(diff(None, CursorShape::Initial), "");
+        assert_eq!(diff(None, CursorShape::BlinkingBar), "\x1b[5 q");
+        assert_eq!(
+            diff(Some(CursorShape::SteadyBar), CursorShape::SteadyBar),
+            ""
+        );
+        assert_eq!(
+            diff(Some(CursorShape::SteadyBar), CursorShape::Initial),
+            "\x1b[0 q"
+        );
+    }
+
     /// A terminal of `rows` by `cols`, as a client's, without history.
     fn terminal(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
         let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
@@ -2043,7 +2080,7 @@ mod tests {
                 );
             }
             other.cursor = Some((1, 1));
-            other.modes.cursor_shape = 3;
+            other.modes.cursor_shape = CursorShape::BlinkingUnderline;
             assert!(compose_into(&s, c, &mut other, &mut Placement::default()));
             assert_eq!(other, fresh, "{rows}x{cols}");
         }
