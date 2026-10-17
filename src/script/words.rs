@@ -614,11 +614,8 @@ impl fuxth::Host for Host<'_> {
         match name {
             // ----------------------------------------------------- finding
             "pane" | "tab" | "workspace" => {
-                let kind = match name {
-                    "pane" => Kind::Pane,
-                    "tab" => Kind::Tab,
-                    _ => Kind::Workspace,
-                };
+                let kind = Kind::ALL.into_iter().find(|k| k.name() == name);
+                let kind = kind.unwrap_or(Kind::Workspace);
                 // A handle (an action's answer is its pane) of the kind is
                 // itself; another kind's is looked for by its id.
                 let found = next()?;

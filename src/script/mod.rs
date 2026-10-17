@@ -409,9 +409,8 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     let mut after: Option<&str> = None;
     for token in tokens {
         let id = token.text.parse::<AnyRef>().ok();
-        let kinds = [Kind::Pane, Kind::Tab, Kind::Workspace];
         match (after, id) {
-            (Some("let"), None) if kinds.iter().any(|k| k.name() == &*token.text) => {
+            (Some("let"), None) if Kind::ALL.iter().any(|k| k.name() == &*token.text) => {
                 return Err(Failed::new(
                     Lang::BadName,
                     format!(
