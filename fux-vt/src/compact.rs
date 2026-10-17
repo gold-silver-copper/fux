@@ -550,13 +550,9 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             let Some(range) = cell.spilled(long) else {
                 continue;
             };
+            // The range's length is the cell's locator byte.
+            let [.., len] = cell.text;
             let (Some(text), Ok(start)) = (old.get(range), u32::try_from(store.len())) else {
-                *cell = cell.blanked();
-                continue;
-            };
-            // Never: the range's length was a `u8`. Blanked as above, so
-            // that no cell points into the text just taken.
-            let Ok(len) = u8::try_from(text.len()) else {
                 *cell = cell.blanked();
                 continue;
             };
