@@ -80,20 +80,7 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     // A shell command still runs a program that is not full-screen and
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();
-    let commands = screen.commands();
-    let command = commands.running() && !screen.mode(fux_vt::Mode::AlternateScreen);
-    // A shell back at its prompt, reading, its last command ended: what
-    // else runs in its group is a job it left there (job control off, or
-    // fish's disowned start-up work), not the agent's command.
-    let left = match activity {
-        Activity::Busy | Activity::Polling | Activity::Waiting => {
-            !commands.running()
-                && commands.finished > 0
-                && fuxix::process::reads_terminal(child.leader.pid(), tty)
-        }
-        Activity::Reading | Activity::Idle | Activity::Unknown => false,
-    };
-    let activity = if left { Activity::Reading } else { activity };
+    let command = screen.commands().running() && !screen.mode(fux_vt::Mode::AlternateScreen);
     match activity {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty) => State::Reading,
         Activity::Polling | Activity::Waiting if command => State::Busy,
@@ -116,7 +103,7 @@ pub fn state(pane: &Pane, now: Instant) -> State {
 /// What the foreground group of `child`'s terminal is blocked in, as `pane`'s last key and its screen since say by `now`. With no
 /// foreground group (its program dropped its terminal, or is gone, its end
 /// not yet heard), its first process's own group: busy once none is left
-/// in it.
+/// in it. A shell back at its prompt, reading, reads.
 fn activity(pane: &Pane, child: &crate::process::Child, now: Instant) -> Activity {
     let (since_key, answered) = (pane.since_key(now), pane.answered());
     let leader = child.leader.pid();
@@ -132,7 +119,8 @@ fn activity(pane: &Pane, child: &crate::process::Child, now: Instant) -> Activit
         };
         t.timed_reads(since)
     };
-    match fuxix::process::activity(group, child.master.slave_path(), leader) {
+    let tty = child.master.slave_path();
+    let activity = match fuxix::process::activity(group, tty, leader) {
         // A read with a time limit is a poll: the program goes on alone
         // when it runs out.
         Activity::Reading
@@ -146,7 +134,20 @@ fn activity(pane: &Pane, child: &crate::process::Child, now: Instant) -> Activit
         | Activity::Busy
         | Activity::Idle
         | Activity::Unknown) => activity,
-    }
+    };
+    // A shell back at its prompt, reading, its last command ended: what
+    // else runs in its group is a job it left there (job control off, or
+    // fish's disowned start-up work), not the agent's command.
+    let commands = pane.screen().commands();
+    let left = match activity {
+        Activity::Busy | Activity::Polling | Activity::Waiting => {
+            !commands.running()
+                && commands.finished > 0
+                && fuxix::process::reads_terminal(leader, tty)
+        }
+        Activity::Reading | Activity::Idle | Activity::Unknown => false,
+    };
+    if left { Activity::Reading } else { activity }
 }
 
 /// What the program of `child`, `pane`'s, is blocked in by `now`
