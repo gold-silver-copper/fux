@@ -687,7 +687,14 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     let now = std::time::Instant::now();
     let mut waiting = {
         let shown: Vec<&fux::pane::Pane> = panes.iter().filter_map(|p| s.panes.get(p)).collect();
-        fux::wait::Waiting::new(&shown, wait, now, std::time::Duration::from_secs(3600))
+        let follows = fux::wait::Follows::Action;
+        fux::wait::Waiting::new(
+            &shown,
+            wait,
+            follows,
+            now,
+            std::time::Duration::from_secs(3600),
+        )
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);

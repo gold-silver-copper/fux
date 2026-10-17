@@ -66,21 +66,38 @@ pub struct Waiting {
     deadline: Instant,
     /// How long it waits at most: its own timeout, else the server's.
     pub(crate) limit: Duration,
-    /// Printed before what the wait says: the pane `run` started.
-    pub lead: String,
-    /// The program has just started (`run`, `respawn`): its screen is
-    /// blank, so a text is gone only once it has appeared.
-    pub fresh: bool,
-    /// A bare `wait`: on a pane that may go on alone (`waiting`, or quiet
-    /// with nothing known) it waits for something new.
-    pub more: bool,
-    /// What the command it follows made, for its reply.
-    pub made: Vec<AnyRef>,
+    follows: Follows,
     /// What each pane said, once it has.
     answers: Vec<Option<Reply>>,
+}
+
+/// What a wait follows, which decides how it reads its panes and what its
+/// answer holds besides theirs.
+pub enum Follows {
+    /// Nothing: a bare `wait`, which on a pane that may go on alone
+    /// (`waiting`, or quiet with nothing known) waits for something new.
+    Wait,
+    /// The action it was armed before (send-keys, send-mouse, signal).
+    Action,
+    /// The program a command has just started (run, split, respawn): its
+    /// screen is blank, so a text is gone only once it has appeared. What
+    /// the command printed (its pane) comes first.
+    Started(String),
     /// A capture to give once the pane settles (`capture` from a command
     /// line): its history and view; the client picks text or JSON.
-    pub capture: Option<(Option<usize>, CaptureView)>,
+    Capture(Option<usize>, CaptureView),
+}
+
+impl Follows {
+    /// Whether its program has just started, and whether it waits for
+    /// something new (a bare `wait`).
+    fn mode(&self) -> (bool, bool) {
+        match self {
+            Follows::Started(_) => (true, false),
+            Follows::Wait => (false, true),
+            Follows::Action | Follows::Capture(..) => (false, false),
+        }
+    }
 }
 
 /// What a wait's answer tells of a pane against how it was as the wait
@@ -147,8 +164,15 @@ enum Found {
 }
 
 impl Waiting {
-    /// A wait in `panes` from `now`, for `limit` at most unless it says.
-    pub fn new(panes: &[&Pane], wait: Wait, now: Instant, limit: Duration) -> Waiting {
+    /// A wait in `panes` from `now`, for `limit` at most unless it says,
+    /// after what it `follows`.
+    pub fn new(
+        panes: &[&Pane],
+        wait: Wait,
+        follows: Follows,
+        now: Instant,
+        limit: Duration,
+    ) -> Waiting {
         let limit = wait.timeout.unwrap_or(limit);
         let texts = (wait.until.iter())
             .filter_map(|u| match u {
@@ -164,11 +188,7 @@ impl Waiting {
             limit,
             wait,
             began: now,
-            lead: String::new(),
-            made: Vec::new(),
-            fresh: false,
-            more: false,
-            capture: None,
+            follows,
         }
     }
 
@@ -196,31 +216,35 @@ impl Waiting {
     /// up.
     pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let mut outcome = self.look(session, now)?;
-        // A capture asked to settle first: its state line, then the capture.
-        if let (Some((history, view)), Some(watch)) = (self.capture, self.watches.first())
-            && let Some(pane) = session.panes.get(&watch.pane)
-        {
-            let copying = session.copying(pane.id);
-            let (read, form) = crate::capture::pane(pane, history, view, true, copying);
-            // Its JSON, read at the same moment, for `json` to give.
-            outcome.json = form.unwrap_or_default();
-            let line = outcome.text.lines().next().unwrap_or_default();
-            outcome.text = format!("{line}\n{read}");
-        }
+        let lead = match &self.follows {
+            // A capture asked to settle first: its state line, then the
+            // capture.
+            &Follows::Capture(history, view) => {
+                let watched = self.watches.first();
+                if let Some(pane) = watched.and_then(|w| session.panes.get(&w.pane)) {
+                    let copying = session.copying(pane.id);
+                    let (read, form) = crate::capture::pane(pane, history, view, true, copying);
+                    // Its JSON, read at the same moment, for `json` to give.
+                    outcome.json = form.unwrap_or_default();
+                    let line = outcome.text.lines().next().unwrap_or_default();
+                    outcome.text = format!("{line}\n{read}");
+                }
+                ""
+            }
+            Follows::Started(lead) => lead.as_str(),
+            Follows::Wait | Follows::Action => "",
+        };
         // An answer that starts with the pane's state names the pane itself.
-        let named = self.lead.trim_end();
+        let named = lead.trim_end();
         let lead = if !named.is_empty() && outcome.text.starts_with(&format!("{named} ")) {
             ""
         } else {
-            self.lead.as_str()
+            lead
         };
-        // What it made, then the pane it answers of: an answer of one pane
-        // is that pane.
-        let mut ids = self.made.clone();
-        ids.extend(outcome.ids.iter().filter(|id| !self.made.contains(id)));
+        // The pane it answers of: an answer of one pane is that pane, the
+        // one a command it follows made.
         Some(Reply {
             text: format!("{lead}{}", outcome.text),
-            ids,
             ..outcome
         })
     }
@@ -232,7 +256,7 @@ impl Waiting {
     fn look(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let several = self.watches.len() > 1;
         let (wait, texts, limit) = (&self.wait, self.texts.as_slice(), self.limit);
-        let (window, mode) = ((self.began, now), (self.fresh, self.more));
+        let (window, mode) = ((self.began, now), self.follows.mode());
         let late = now >= self.deadline;
         for (watch, answer) in self.watches.iter_mut().zip(&mut self.answers) {
             if answer.is_some() {

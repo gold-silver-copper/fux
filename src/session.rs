@@ -16,6 +16,7 @@ use crate::pane::{InputQueue, Pane, Process, Runs, Typed, basename};
 use crate::process::Child;
 use crate::protocol::{End, Reply, ToAttached};
 use crate::view::{ClientKind, Mode, View};
+use crate::wait::{Follows, Waiting};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -328,7 +329,7 @@ fn ended(pane: PaneId, status: crate::process::Ended) -> Error {
 /// for one (`wait`, or an action that settles).
 pub enum Begun {
     Done(Reply),
-    Waiting(Box<crate::wait::Waiting>),
+    Waiting(Box<Waiting>),
     /// `fux events`: a stream, until the client goes.
     Events(Box<crate::events::Subscription>),
     /// A grant of a socket to the workspace (`grant`), or with none, its
@@ -1890,7 +1891,7 @@ impl Session {
             None => request,
         };
         let now = Instant::now();
-        let (target, wait, follows) = match request {
+        let (target, wait, action) = match request {
             Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
             Request::Then(command, wait) => match command.armed() {
                 Some(Armed::Before(target)) => (target, *wait, Some(command)),
@@ -1909,8 +1910,8 @@ impl Session {
                     marks: false,
                 };
                 let pane = self.pane(target)?;
-                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
-                waiting.capture = Some((history, view));
+                let follows = Follows::Capture(history, view);
+                let waiting = Waiting::new(&[pane], wait, follows, now, self.config.wait);
                 return Ok(self.wait_on(waiting, now));
             }
             Request::Events(target, json) => {
@@ -1928,21 +1929,19 @@ impl Session {
             .map(|id| self.pane(id))
             .collect::<Result<Vec<_>, _>>()?;
         // Armed before any keys go in: what the keys bring is what it sees.
-        let mut waiting = crate::wait::Waiting::new(&panes, wait, now, self.config.wait);
-        match follows {
-            Some(command) => {
-                let outcome = self.run_command(&command, origin);
-                if matches!(outcome.end, End::Failed { .. }) {
-                    return Ok(Begun::Done(outcome));
-                }
+        let follows = action.as_ref().map_or(Follows::Wait, |_| Follows::Action);
+        let waiting = Waiting::new(&panes, wait, follows, now, self.config.wait);
+        if let Some(command) = action {
+            let outcome = self.run_command(&command, origin);
+            if matches!(outcome.end, End::Failed { .. }) {
+                return Ok(Begun::Done(outcome));
             }
-            None => waiting.more = true,
         }
         Ok(self.wait_on(waiting, now))
     }
 
     /// A wait's answer, if it has one already; else the wait.
-    fn wait_on(&self, mut waiting: crate::wait::Waiting, now: Instant) -> Begun {
+    fn wait_on(&self, mut waiting: Waiting, now: Instant) -> Begun {
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
@@ -2012,10 +2011,8 @@ impl Session {
             return Begun::Done(outcome);
         };
         let now = Instant::now();
-        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
-        waiting.lead = outcome.text;
-        waiting.made = outcome.ids;
-        waiting.fresh = true;
+        let follows = Follows::Started(outcome.text);
+        let waiting = Waiting::new(&[pane], wait, follows, now, self.config.wait);
         self.wait_on(waiting, now)
     }
 
