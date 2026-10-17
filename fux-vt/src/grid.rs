@@ -1210,7 +1210,15 @@ impl Grid {
             .map(|y| {
                 let text = self.slot(y).and_then(|slot| self.texts.get(slot));
                 let cells = self.live_cells(y).get(span.clone()).unwrap_or_default();
-                (cells.to_vec(), text.cloned().unwrap_or_default())
+                let mut cells = cells.to_vec();
+                // The half of a glyph the source's edge cuts.
+                if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
+                    *cut = cut.blanked();
+                }
+                if let Some(cut) = cells.last_mut().filter(|c| c.is_wide()) {
+                    *cut = cut.blanked();
+                }
+                (cells, text.cloned().unwrap_or_default())
             })
             .collect();
         let (row, col) = to;

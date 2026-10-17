@@ -157,6 +157,21 @@ fn deccra_copies_a_rectangle() -> Result {
     Ok(())
 }
 
+/// DECCRA blanks a wide glyph the rectangle cuts, at the source's edges
+/// as at the destination's: half a glyph copied is no glyph, so it never
+/// joins a half that was there (row 1's `世`) nor spills past the
+/// rectangle into one (row 1's `界`).
+#[test]
+fn deccra_blanks_a_wide_glyph_it_cuts() -> Result {
+    let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
+    parser.process("\u{4e16}\r\nx\u{4e2d}\x1b[2;3;2;3;1;1;2;1$v".as_bytes())?;
+    assert_eq!(lines(&parser), ["", "x\u{4e2d}"]);
+    let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
+    parser.process("ab\u{754c}\r\n\u{4e2d}\x1b[2;1;2;1;1;1;3;1$v".as_bytes())?;
+    assert_eq!(lines(&parser), ["ab", "\u{4e2d}"]);
+    Ok(())
+}
+
 /// DEC STD 070, 5.12.1, DECCARA sets the renditions SGR's 1, 4, 5 and 7
 /// name over the area, and 22, 24, 25, 27 or 0 (the default) end them;
 /// DECRARA reverses those 1, 4, 5 and 7 name, or all four for 0. The
