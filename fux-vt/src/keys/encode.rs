@@ -33,14 +33,17 @@ pub enum KeyMode {
     },
 }
 
-/// xterm's modifyOtherKeys levels (`CSI > 4 ; level m`).
+/// xterm's modifyOtherKeys levels (`CSI > 4 ; level m`; ctlseqs, "Alt and
+/// Meta Keys").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OtherKeys {
     /// Level 1: "the usual shift- and control-modifiers work as expected".
     Usual,
-    /// Level 2, and 3, which xterm extends to unmodified keys: "all of the
-    /// modifiers apply".
+    /// Level 2: "all of the modifiers apply".
     All,
+    /// Level 3: as 2, and "unmodified keys also are sent as escape
+    /// sequences".
+    Unmodified,
 }
 
 /// Which keys the kitty protocol escapes, as its flags ask.
@@ -70,9 +73,13 @@ impl crate::Screen {
             (false, _) => {
                 return KeyMode::Legacy {
                     application: self.mode(crate::Mode::ApplicationCursor),
-                    other_keys: self.modify_other_keys().map(|level| match level {
-                        1 => OtherKeys::Usual,
-                        _ => OtherKeys::All,
+                    // ctlseqs knows levels 1 to 3; one past them changes
+                    // no key.
+                    other_keys: self.modify_other_keys().and_then(|level| match level {
+                        1 => Some(OtherKeys::Usual),
+                        2 => Some(OtherKeys::All),
+                        3 => Some(OtherKeys::Unmodified),
+                        _ => None,
                     }),
                 };
             }
@@ -425,8 +432,9 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 /// alone on a character other than Space, which types its text. xterm sends
 /// Shift-1 as `!` too, but Shift-a as `CSI 27 ; 2 ; 65 ~`: fux's one
 /// departure, as it cannot tell Shift from Caps Lock on a letter, which the
-/// client's terminal sends as text either way. Level 3, which xterm extends
-/// to unmodified keys, is taken as 2.
+/// client's terminal sends as text either way. Level 3 is 2, and an
+/// unmodified ordinary key is `CSI 27 ; 1 ; code ~` too (ctlseqs: "space
+/// sends CSI 2 7 ; 1 ; 3 2 ~").
 ///
 /// The code is the key's character, Shift applied (Ctrl-Shift-a is 65), as
 /// xterm sends the keysym; Backspace's is 127, or 8 with Ctrl, which the
@@ -450,9 +458,10 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     }
     let sent = match level {
         OtherKeys::Usual => allowed(sym, state),
-        OtherKeys::All => state,
+        OtherKeys::All | OtherKeys::Unmodified => state,
     };
-    if sent.is_empty() {
+    // Level 1 may leave the key no modifier to send: it is legacy then.
+    if sent.is_empty() && !state.is_empty() {
         return false;
     }
     let mods = u16::from(sent.bits()).saturating_add(1);
@@ -501,18 +510,25 @@ impl Sym {
 /// Whether xterm sends `sym` with `state` as a modifyOtherKeys sequence at
 /// `level`: `input.c`'s `ModifyOtherKeys`, and its `Input`'s Shift-Tab,
 /// which at level 1 becomes `ISO_Left_Tab`, a function key, `CSI Z`. At
-/// level 2, Shift alone on a character other than Space types its text.
+/// level 2, Shift alone on a character other than Space types its text;
+/// level 3 sends an unmodified key too.
 fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
     if state.is_empty() {
-        return false;
-    }
-    let OtherKeys::Usual = level else {
-        return match sym {
-            Sym::BackSpace => state != Modifiers::CTRL,
-            Sym::Control(_) => true,
-            Sym::Char(c) => state != Modifiers::SHIFT || c == ' ',
+        return match level {
+            OtherKeys::Usual | OtherKeys::All => false,
+            OtherKeys::Unmodified => true,
         };
-    };
+    }
+    match level {
+        OtherKeys::All | OtherKeys::Unmodified => {
+            return match sym {
+                Sym::BackSpace => state != Modifiers::CTRL,
+                Sym::Control(_) => true,
+                Sym::Char(c) => state != Modifiers::SHIFT || c == ' ',
+            };
+        }
+        OtherKeys::Usual => {}
+    }
     if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT {
         return false;
     }
@@ -790,6 +806,7 @@ mod tests {
     }
     const USUAL: KeyMode = other_keys_level(OtherKeys::Usual);
     const ALL_MODIFIERS: KeyMode = other_keys_level(OtherKeys::All);
+    const UNMODIFIED: KeyMode = other_keys_level(OtherKeys::Unmodified);
 
     /// modifyOtherKeys level 1, as xterm's input.c (patch 412) sends it with
     /// the Alt key as its Meta modifier. Alone, Alt leaves a key its legacy
@@ -913,16 +930,42 @@ mod tests {
         assert_eq!(stroke(shift_space, USUAL), " ");
     }
 
+    /// modifyOtherKeys level 3 (ctlseqs, "Alt and Meta Keys": "unmodified
+    /// keys also are sent as escape sequences. For example, space sends
+    /// CSI 2 7 ; 1 ; 3 2 ~"): an ordinary key with no modifier is `CSI 27 ;
+    /// 1 ; code ~`, a modified one as at level 2; the other keys keep their
+    /// legacy bytes.
+    #[test]
+    fn modify_other_keys_level_3_sends_unmodified_keys_too() {
+        for (name, bytes) in [
+            ("Space", "\x1b[27;1;32~"),
+            ("a", "\x1b[27;1;97~"),
+            ("!", "\x1b[27;1;33~"),
+            ("Enter", "\x1b[27;1;13~"),
+            ("Tab", "\x1b[27;1;9~"),
+            ("Escape", "\x1b[27;1;27~"),
+            ("BSpace", "\x1b[27;1;127~"),
+            ("C-a", "\x1b[27;5;97~"),
+            ("M-x", "\x1b[27;3;120~"),
+            ("A", "A"),
+            ("Up", "\x1b[A"),
+            ("F5", "\x1b[15~"),
+        ] {
+            assert_eq!(named(name, UNMODIFIED), bytes, "{name}");
+        }
+    }
+
     /// A screen's kitty flags pick the protocol: disambiguate or all keys
     /// make it kitty's, whatever the cursor mode and modifyOtherKeys; the
-    /// other flags alone leave legacy keys. Level 3 is taken as 2.
+    /// other flags alone leave legacy keys. A level past 3 changes no key.
     #[test]
     fn a_screen_s_flags_pick_its_key_protocol() -> Result<(), crate::Error> {
         for (setup, mode) in [
             ("", LEGACY),
             ("\x1b[?1h\x1b[>2u", KeyMode::legacy(true)),
             ("\x1b[>4;1m\x1b[>16u", USUAL),
-            ("\x1b[>4;3m", ALL_MODIFIERS),
+            ("\x1b[>4;3m", UNMODIFIED),
+            ("\x1b[>4;4m", LEGACY),
             ("\x1b[?1h\x1b[>4;2m\x1b[>5u", ALTERNATE),
             ("\x1b[>8u", kitty_mode(false, Report::AllKeys)),
             ("\x1b[>25u", kitty_mode(false, Report::AllKeysWithText)),
