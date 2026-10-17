@@ -167,7 +167,6 @@ pub struct Machine<A> {
 impl<A: AppValue> Machine<A> {
     pub fn new(program: Program<A>, limits: Limits) -> Machine<A> {
         let globals = vec![None; program.globals];
-        let locals = vec![None; program.main.locals];
         Machine {
             program: Rc::new(program),
             stack: Vec::new(),
@@ -177,7 +176,8 @@ impl<A: AppValue> Machine<A> {
                 via: None,
                 locals: 0,
             }],
-            locals,
+            // The top level keeps no `let` names of its own: its are globals.
+            locals: Vec::new(),
             globals,
             marks: Vec::new(),
             iters: Vec::new(),
@@ -466,9 +466,8 @@ impl<A: AppValue> Machine<A> {
 
     fn pop(&mut self) -> Result<Value<A>, Error> {
         self.depth(1)?;
-        self.stack
-            .pop()
-            .ok_or_else(|| self.fail(ErrorCode::StackUnderflow, "takes 1 value"))
+        // The stack has it: none is the `false` put for one it lacks.
+        Ok(self.stack.pop().unwrap_or(Value::Bool(false)))
     }
 
     /// Takes a boolean, as `if` and `until` do.
