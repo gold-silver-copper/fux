@@ -763,8 +763,10 @@ impl Screen {
     /// OSC 133, semantic prompts (`references/modern/osc133_*`): `A`
     /// marks the row a prompt starts on, after a fresh line, and `L` is the
     /// fresh line alone: a new line unless the cursor is in the first
-    /// column, as the semantic prompt proposal and Ghostty have it. The
-    /// other commands (`B`, `C`, `D`, `P` and the rest) change nothing.
+    /// column, as the semantic prompt proposal and Ghostty have it. `N` is
+    /// `A` that first ends the command running, as a `D` with no status.
+    /// `C` and `D` mark a command (`command_mark`), `P` a prompt where it
+    /// is; the rest (`B` and others) change nothing.
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
         // Printed by a program, not its shell: no mark.
@@ -791,10 +793,13 @@ impl Screen {
             }
             return Ok(());
         }
-        // N is A that may first end the previous command, which fux-vt
-        // keeps no record of.
         if !matches!(command, b"A" | b"N" | b"L") {
             return Ok(());
+        }
+        // N "may first implicitly terminate a previous command": the one
+        // running, the only one fux-vt keeps (it keeps no `aid`).
+        if command == b"N" {
+            self.command_mark(b"D", None);
         }
         // CR, then IND, as Ghostty does it.
         if self.grid().cursor.col() != 0 {

@@ -169,6 +169,26 @@ fn n_is_a_and_a_primary_p_marks_its_row() -> Result {
     Ok(())
 }
 
+/// `N` "may first implicitly terminate a previous command"
+/// (`references/modern/osc133_semantic_prompts.md`, "Commands"): with a
+/// command running (`C`), it ends it as a `D` with no status would, then
+/// starts a prompt as `A` does; with none running it ends nothing.
+#[test]
+fn n_ends_the_command_running() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 10)?, 0, MARKS)?;
+    p.process(b"\x1b]133;N\x07")?;
+    assert_eq!(p.screen().commands().finished, 0);
+    p.process(b"$ ls\r\n\x1b]133;C\x07out\x1b]133;N\x07$ ")?;
+    let commands = p.screen().commands();
+    assert!(!commands.running());
+    assert_eq!(commands.finished, 1);
+    assert_eq!(commands.last_status, None);
+    assert!(commands.last_output.is_some());
+    assert!(commands.prompt);
+    assert_eq!(marks(&p), [0, 2]);
+    Ok(())
+}
+
 /// With a nonce required, a mark counts only if it carries it: one a
 /// program prints (`cat` of a file with marks in it) is no mark.
 #[test]
