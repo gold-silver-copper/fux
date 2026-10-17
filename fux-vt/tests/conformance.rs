@@ -915,3 +915,22 @@ fn a_tab_from_right_of_the_margin_or_outside_the_region_goes_on() -> Result {
     }
     Ok(())
 }
+
+/// ED 3 (`CSI 3 J`; ctlseqs, "Erase Saved Lines") and
+/// `Parser::clear_history` drop the saved lines, which are the main
+/// screen's: on the alternate screen too, which has none of its own.
+#[test]
+fn erasing_saved_lines_on_the_alternate_screen_drops_the_main_screens() -> Result {
+    for clear in [&b"\x1b[3J"[..], b""] {
+        let mut p = Parser::new(Size::new(2, 5)?, 1 << 16)?;
+        p.process(b"a\r\nb\r\nc\r\nd\x1b[?1049h")?;
+        p.process(clear)?;
+        if clear.is_empty() {
+            p.clear_history();
+        }
+        p.process(b"\x1b[?1049l")?;
+        assert_eq!(p.screen().history_len(), 0, "{clear:?}");
+        assert_eq!(lines(&p), ["c", "d"], "{clear:?}");
+    }
+    Ok(())
+}

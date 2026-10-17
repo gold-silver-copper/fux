@@ -499,9 +499,11 @@ impl Screen {
             &self.primary
         }
     }
-    /// The scrollback, dropped; the screen stays.
+    /// The scrollback, dropped; the screen stays. It is the main screen's,
+    /// on the alternate screen too, which keeps none (ctlseqs: ED 3 "Erase
+    /// Saved Lines").
     pub(crate) fn clear_history(&mut self) {
-        self.grid_mut().clear_history();
+        self.primary.clear_history();
         self.structural = self.version;
     }
 

@@ -162,8 +162,9 @@ every encoder beside libghostty-vt's, with its recorded verdicts.
   (`Screen::encode_*`, see [Keys](#keys)); nothing a program writes makes
   fux-vt send input.
 - No graphics protocols: a host that draws images parses them itself.
-- Only the primary screen has history, up to its limit. CSI 3 J (erase
-  saved lines) is unhandled.
+- Only the primary screen has history, up to its limit. CSI 3 J (ED 3,
+  erase saved lines) and `Parser::clear_history` drop it, from either
+  screen.
 - Each compatibility choice is documented here and tested on its own,
   never hidden in a broad allowlist.
 
