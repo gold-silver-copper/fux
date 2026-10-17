@@ -179,7 +179,7 @@ impl Shell {
     /// A command line, split as a shell splits it: a program first.
     pub fn parse(value: &str) -> Result<Shell, Refused> {
         let words =
-            words::split(value).map_err(|why| Refused(Code::Lang(fuxth::Code::OpenQuote), why))?;
+            words::split(value).map_err(|why| Refused(Code::from(fuxth::Code::OpenQuote), why))?;
         match words.split_first() {
             Some((program, args)) if !program.is_empty() => Ok(Shell {
                 program: program.clone(),

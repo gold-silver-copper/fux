@@ -241,7 +241,7 @@ impl Error {
             Self::NoBuffer(_) => Code::NoBuffer,
             Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
             Self::NoRows | Self::SelectionTooLarge => Code::Selection,
-            Self::NameReadAsTarget(_) => Code::Lang(Lang::BadName),
+            Self::NameReadAsTarget(_) => Code::from(Lang::BadName),
             Self::NameTaken(_) => Code::NameTaken,
             Self::Failed { code, .. } => *code,
         }

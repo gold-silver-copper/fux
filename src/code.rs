@@ -37,7 +37,7 @@ macro_rules! codes {
         pub enum Code {
             $($(#[$doc])* $variant,)*
             /// One of the language's own (fuxth's), as fuxth names it.
-            Lang(fuxth::Code),
+            Lang(LangCode),
         }
 
         impl Code {
@@ -57,7 +57,7 @@ macro_rules! codes {
             fn from(code: Code) -> fuxth::Code {
                 match code {
                     $(Code::$variant => fuxth::Code::Host($name),)*
-                    Code::Lang(code) => code,
+                    Code::Lang(LangCode(code)) => code,
                 }
             }
         }
@@ -191,7 +191,7 @@ codes! {
 impl Code {
     /// Every code: fux's own, then the language's.
     pub fn all() -> impl Iterator<Item = Code> {
-        let lang = fuxth::Code::ALL.iter().map(|code| Code::Lang(*code));
+        let lang = fuxth::Code::ALL.iter().map(|c| Code::Lang(LangCode(*c)));
         Code::ALL.iter().copied().chain(lang)
     }
 
@@ -213,18 +213,32 @@ impl std::str::FromStr for Code {
     }
 }
 
-/// The language's code as fux names it: a host's by its name (every host
-/// code is one of fux's own, given by `fuxth::Code::from`), the language's
-/// own as it is.
+/// A code of the language's own, never a host's (a host's is one of fux's
+/// own): so a code's name has one meaning, and one status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LangCode(fuxth::Code);
+
+/// The language's code as fux names it, found by its name among them all:
+/// a host's (every host code is one of fux's own, given by
+/// `fuxth::Code::from`; one it does not know is the program's failure,
+/// `fail`), the language's own as it is.
 impl From<fuxth::Code> for Code {
     fn from(code: fuxth::Code) -> Code {
-        code.name().parse().unwrap_or(Code::Lang(code))
+        (code.name().parse()).unwrap_or(Code::Lang(LangCode(fuxth::Code::Fail)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Code;
+
+    /// A host's code fux does not know is no code of the language's: it is
+    /// the program's failure.
+    #[test]
+    fn an_unknown_host_code_is_the_programs_failure() {
+        assert_eq!(Code::from(fuxth::Code::Host("nosuch")).name(), "fail");
+        assert_eq!(Code::from(fuxth::Code::Host("closed")), Code::Closed);
+    }
 
     #[test]
     fn every_code_has_its_own_name_and_the_docs_list_it() {
