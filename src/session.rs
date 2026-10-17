@@ -413,20 +413,27 @@ pub const RUN_WORKSPACE: &str = "agent";
 /// A link is not followed. A file there already is made the user's alone
 /// too, and emptied, by `emptied`, once nothing refuses the log.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let failed = |e| fail(Code::Log, format!("the log {}: {e}", path.display()));
     if path.is_symlink() {
         let link = std::io::Error::other("a symbolic link, which a log does not follow");
         return Err(failed(link));
     }
-    std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .custom_flags(fuxix::file::NOFOLLOW)
         .open(path)
-        .map_err(failed)
+        .map_err(failed)?;
+    // Its mode is set once the run starts: one only its owner may set
+    // refuses the run now, before anything runs.
+    let euid = fuxix::process::geteuid();
+    if euid != 0 && file.metadata().map_err(failed)?.uid() != euid {
+        return Err(failed(std::io::ErrorKind::PermissionDenied.into()));
+    }
+    Ok(file)
 }
 
 /// `file`, a log, made the user's alone and emptied: a FIFO or a terminal
@@ -2208,13 +2215,14 @@ impl Session {
                     .map(|p| open_log(&self.cwd_for(here, None).join(p)))
                     .transpose()?;
                 let made = self.create_tab(ws, name, start, place)?;
+                // Before any of its output is read: it all goes there. One
+                // that can't be emptied stops what was started, before a
+                // name it gives another tab is moved.
+                let log = log.map(emptied).transpose();
+                let log = log.inspect_err(|_| self.close_pane(made.2, None))?;
                 if let Some(given) = given {
                     self.give_tab_name(made.1, given)?;
                 }
-                // Before any of its output is read: it all goes there. One
-                // that can't be emptied stops what was started.
-                let log = log.map(emptied).transpose();
-                let log = log.inspect_err(|_| self.close_pane(made.2, None))?;
                 if let Some(pane) = self.panes.get_mut(&made.2) {
                     pane.log = log;
                 }
@@ -3809,6 +3817,25 @@ mod tests {
         );
         assert!(ran.is_err_and(|e| e.contains("log")), "refused");
         assert_eq!(s.panes.len(), panes);
+        Ok(())
+    }
+
+    /// A log whose mode only another user may set (`/dev/null`, root's)
+    /// refuses the run before anything starts: no pane is made for it, so
+    /// the next run's pane is the next id.
+    #[test]
+    fn a_log_another_user_owns_refuses_the_run_first() -> Result<(), String> {
+        if fuxix::process::geteuid() == 0 {
+            return Ok(());
+        }
+        let mut s = started(Config::default())?;
+        let ran = run(&mut s, "opts str /dev/null log-to str /bin/cat program run");
+        assert!(ran.is_err_and(|e| e.contains("log")), "refused");
+        run(&mut s, "opts str /bin/cat program run")?;
+        assert!(
+            s.panes.contains_key(&PaneId::of(2)),
+            "the next run's pane is %2"
+        );
         Ok(())
     }
 

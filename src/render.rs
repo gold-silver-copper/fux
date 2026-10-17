@@ -606,8 +606,9 @@ impl Grid {
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         let mut x = x;
         // The cell last written, where its cluster starts in `text`, and
-        // whether it is wide: a char of no width joins that cluster (UAX
-        // #29, GB9 and GB9a), on a wide glyph's first half.
+        // whether it is wide: a char of no width joins that cell's cluster,
+        // as fux-vt's `Screen::print` appends one to the cell before the
+        // cursor, on a wide glyph's first half.
         let mut last: Option<(u16, usize, bool)> = None;
         for (at, c) in text.char_indices() {
             if c.is_control() {
