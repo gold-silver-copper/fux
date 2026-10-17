@@ -5,16 +5,22 @@
 use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 
 /// Expands `/// doc pub enum Mode { /// doc Variant (private, n) if Feature
-/// => kind, ... }` (`if Feature` optional) to that enum, `Mode::of(n,
-/// private, options)` (the mode SM and RM, or with
+/// [default soft] => kind, ... }` (`if Feature` and the marks optional) to
+/// that enum, `Mode::of(n, private, options)` (the mode SM and RM, or with
 /// `private` DECSET and DECRST, name by `n`; with `if Feature` only while
-/// `options` have that feature) and `Mode::kind` (each one's kind), and
-/// checks at compile time that every mode is a bit of a `Modes` (a `u32`).
+/// `options` have that feature), `Mode::kind` (each one's kind),
+/// `Modes::DEFAULT` (the modes marked `default`) and `Modes::SOFT_RESET`
+/// (those marked `soft`), and checks at compile time that every mode is a
+/// bit of a `Modes` (a `u32`). A row `Autowrap (true, 7) [default soft] =>
+/// Kind::Flag,` makes the variant `Autowrap`, the arm `(true, 7) =>
+/// Some(Self::Autowrap)` of `of`, the arm `Self::Autowrap => Kind::Flag`
+/// of `kind`, and `| Mode::Autowrap.bit()` in both constants' bits.
 macro_rules! modes {
     ($(#[$doc:meta])* pub enum Mode {
         $(
             $(#[$vdoc:meta])*
-            $variant:ident ($private:literal, $n:literal) $(if $feature:ident)? => $kind:expr,
+            $variant:ident ($private:literal, $n:literal) $(if $feature:ident)?
+                $([$($mark:ident)*])? => $kind:expr,
         )*
     }) => {
         $(#[$doc])*
@@ -45,9 +51,23 @@ macro_rules! modes {
             }
         }
 
+        impl Modes {
+            /// The modes set on a new screen, and after RIS.
+            pub(crate) const DEFAULT: Self =
+                Self(0 $($($(| modes!(@default $mark Mode::$variant))*)?)*);
+
+            /// The modes DECSTR puts back as they are by default.
+            pub(crate) const SOFT_RESET: Self =
+                Self(0 $($($(| modes!(@soft $mark Mode::$variant))*)?)*);
+        }
+
         // Each mode is a bit of a `Modes`: at most a `u32`'s 32.
         const _: () = assert!([$(Mode::$variant),*].len() <= 32);
     };
+    (@default default $mode:path) => { $mode.bit() };
+    (@default soft $mode:path) => { 0 };
+    (@soft soft $mode:path) => { $mode.bit() };
+    (@soft default $mode:path) => { 0 };
 }
 
 modes! {
@@ -55,14 +75,22 @@ modes! {
     /// `CSI Ps h` / `l`) or a DEC private mode (DECSET and DECRST, `CSI ? Ps h`
     /// / `l`). [`Screen::mode`](crate::Screen::mode) says whether it is set, as
     /// DECRQM reports it.
+    ///
+    /// A mode marked `default` is set on a new screen and after RIS. One
+    /// marked `soft` DECSTR puts back as it is by default: those of the
+    /// VT520 manual's table (p. 5-150) and DEC STD 070's Soft Terminal
+    /// Reset (p. 4-37); reverse wraparound, as xterm 411's DECSTR ends
+    /// both; and synchronized output, in neither table, so that `tput
+    /// init` and `tput reset`, which send DECSTR, never leave a frame
+    /// waiting.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum Mode {
         /// IRM (`CSI 4 h`): a glyph printed moves what is there right.
-        Insert (false, 4) => Kind::Flag,
+        Insert (false, 4) [soft] => Kind::Flag,
         /// LNM (`CSI 20 h`): LF, VT and FF return the carriage too.
         NewLine (false, 20) => Kind::Flag,
         /// DECCKM (`CSI ? 1 h`): cursor keys send their application sequences.
-        ApplicationCursor (true, 1) => Kind::Flag,
+        ApplicationCursor (true, 1) [soft] => Kind::Flag,
         /// DECSCLM, smooth scroll (`CSI ? 4 h`). State only.
         SmoothScroll (true, 4) => Kind::Flag,
         /// DECSCNM, reverse video (`CSI ? 5 h`). State only: the host draws
@@ -71,24 +99,24 @@ modes! {
         /// DECOM (`CSI ? 6 h`): lines are addressed from the top margin.
         Origin (true, 6) => Kind::Origin,
         /// DECAWM (`CSI ? 7 h`): a glyph past the last column wraps. Default.
-        Autowrap (true, 7) => Kind::Flag,
+        Autowrap (true, 7) [default soft] => Kind::Flag,
         /// DECARM (`CSI ? 8 h`): permanently reset, as in xterm 411.
         AutoRepeat (true, 8) => Kind::Permanent(false),
         /// Mouse mode 9, X10: button presses.
         MousePress (true, 9) => Kind::Mouse(MouseProtocolMode::Press),
         /// DECTCEM (`CSI ? 25 h`): the cursor is shown. Default.
-        ShowCursor (true, 25) => Kind::Flag,
+        ShowCursor (true, 25) [default soft] => Kind::Flag,
         /// Reverse wraparound (`CSI ? 45 h`): BS and CUB go back over soft wraps.
-        ReverseWrap (true, 45) => Kind::Flag,
+        ReverseWrap (true, 45) [soft] => Kind::Flag,
         /// The alternate screen (`CSI ? 47 h`).
         AlternateScreen (true, 47) => Kind::Screen(Switch::Plain),
         /// DECNKM (`CSI ? 66 h`), the keypad mode `ESC =` and `ESC >` set too.
-        ApplicationKeypad (true, 66) => Kind::Flag,
+        ApplicationKeypad (true, 66) [soft] => Kind::Flag,
         /// DECBKM (`CSI ? 67 h`), the backarrow key sending BS, which
         /// `Screen::key_mode` reads.
         BackarrowSendsBackspace (true, 67) => Kind::Flag,
         /// DECLRMM (`CSI ? 69 h`): DECSLRM sets left and right margins.
-        LeftRightMargins (true, 69) => Kind::Margins,
+        LeftRightMargins (true, 69) [soft] => Kind::Margins,
         /// Mouse mode 1000: presses and releases.
         MousePressRelease (true, 1000) => Kind::Mouse(MouseProtocolMode::PressRelease),
         /// Mouse mode 1002: also motion while a button is down.
@@ -102,7 +130,7 @@ modes! {
         /// Mouse encoding 1006, SGR.
         MouseSgr (true, 1006) => Kind::Encoding(MouseProtocolEncoding::Sgr),
         /// Extended reverse wraparound (`CSI ? 1045 h`): back over any line.
-        ExtendedReverseWrap (true, 1045) => Kind::Flag,
+        ExtendedReverseWrap (true, 1045) [soft] => Kind::Flag,
         /// The alternate screen (`CSI ? 1047 h`), cleared on leaving it.
         AlternateScreenCleared (true, 1047) => Kind::Screen(Switch::ClearedOnLeaving),
         /// `CSI ? 1048 h` / `l`: DECSC and DECRC, never set.
@@ -112,7 +140,7 @@ modes! {
         /// Bracketed paste (`CSI ? 2004 h`).
         BracketedPaste (true, 2004) => Kind::Flag,
         /// Synchronized output (`CSI ? 2026 h`): a frame the host is to hold.
-        SynchronizedOutput (true, 2026) => Kind::Frame,
+        SynchronizedOutput (true, 2026) [soft] => Kind::Frame,
         /// Colour-scheme change reports (`CSI ? 2031 h`), which the host sends.
         ColorSchemeUpdates (true, 2031) if ColorSchemeUpdates => Kind::Flag,
         /// In-band resize (`CSI ? 2048 h`): a size report at each resize.
@@ -204,27 +232,6 @@ pub(crate) enum Switch {
 pub(crate) struct Modes(u32);
 
 impl Modes {
-    /// The modes set on a new screen, and after RIS.
-    pub(crate) const DEFAULT: Self = Self(Mode::Autowrap.bit() | Mode::ShowCursor.bit());
-
-    /// The modes DECSTR puts back as they are by default: those of the
-    /// VT520 manual's table (p. 5-150) and DEC STD 070's Soft Terminal
-    /// Reset (p. 4-37); reverse wraparound, as xterm 411's DECSTR ends
-    /// both; and synchronized output, in neither table, so that `tput
-    /// init` and `tput reset`, which send DECSTR, never leave a frame
-    /// waiting.
-    pub(crate) const SOFT_RESET: Self = Self(
-        Mode::ShowCursor.bit()
-            | Mode::SynchronizedOutput.bit()
-            | Mode::Autowrap.bit()
-            | Mode::ReverseWrap.bit()
-            | Mode::ExtendedReverseWrap.bit()
-            | Mode::Insert.bit()
-            | Mode::ApplicationCursor.bit()
-            | Mode::ApplicationKeypad.bit()
-            | Mode::LeftRightMargins.bit(),
-    );
-
     pub(crate) fn contains(self, mode: Mode) -> bool {
         self.0 & mode.bit() != 0
     }
