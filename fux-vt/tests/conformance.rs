@@ -838,3 +838,36 @@ fn decscusr_sets_the_styles_ctlseqs_lists() -> Result {
     }
     Ok(())
 }
+
+/// UAX #29, GB9b (`Prepend ×`): a Prepend character joins what follows it
+/// but a control (GB4, GB5), as mode 2027 reports clustering on. Printed
+/// at once, ASCII after it goes the fast path; a byte at a time, the
+/// general one: both join. A cluster two columns wide by unicode-width,
+/// as U+0600 and a letter are, takes two cells (the README's "Grapheme
+/// clusters"). `continues_cluster` says so too.
+#[test]
+fn a_prepend_character_joins_what_follows_it() -> Result {
+    let text = "ab\u{600}c\u{600}\u{915}d";
+    let at_once = run(1, 12, text.as_bytes())?;
+    let mut split = Parser::new(Size::new(1, 12)?, 0)?;
+    for byte in text.bytes() {
+        split.process(&[byte])?;
+    }
+    for p in [at_once, split] {
+        let cells: Vec<String> = (0..12)
+            .filter_map(|x| p.screen().cell(0, x))
+            .filter(|c| !c.is_wide_continuation() && c.has_contents())
+            .map(|c| c.contents().to_owned())
+            .collect();
+        assert_eq!(cells, ["a", "b", "\u{600}c", "\u{600}\u{915}", "d"]);
+        let wide = |x| p.screen().cell(0, x).is_some_and(|c| c.is_wide());
+        assert_eq!((wide(2), wide(4)), (true, true));
+        assert_eq!(p.screen().cursor_position(), (0, 7));
+    }
+    assert!(fux_vt::continues_cluster("\u{600}", 'c'));
+    assert!(fux_vt::continues_cluster("\u{600}", '\u{600}'));
+    assert!(fux_vt::continues_cluster("\u{600}", '\u{915}'));
+    assert!(!fux_vt::continues_cluster("\u{600}", '\r'));
+    assert!(!fux_vt::continues_cluster("a", 'c'));
+    Ok(())
+}

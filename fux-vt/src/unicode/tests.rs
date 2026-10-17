@@ -2,20 +2,16 @@ use super::*;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Where `text` breaks, as byte offsets inside it, by the state machine.
-fn breaks(text: &str, prepend_joins: bool) -> impl Iterator<Item = usize> {
+fn breaks(text: &str) -> impl Iterator<Item = usize> {
     let mut chars = text.char_indices();
     let mut cluster = chars.next().map(|(_, c)| Cluster::start(c));
     chars
-        .filter(move |&(_, c)| {
-            cluster
-                .as_mut()
-                .is_some_and(|k| !k.push_with(c, prepend_joins))
-        })
+        .filter(move |&(_, c)| cluster.as_mut().is_some_and(|k| !k.push(c)))
         .map(|(at, _)| at)
 }
 
-fn boundaries(text: &str, prepend_joins: bool) -> Vec<usize> {
-    breaks(text, prepend_joins).collect()
+fn boundaries(text: &str) -> Vec<usize> {
+    breaks(text).collect()
 }
 
 /// Where `text` breaks by unicode-segmentation, which implements UAX #29 as
@@ -37,11 +33,11 @@ fn the_tables_are_the_version_unicode_segmentation_implements() {
 }
 
 /// Every case of the Unicode conformance test, GraphemeBreakTest.txt, as
-/// UAX #29 has it; and with fux-vt's one departure, a break after Prepend.
+/// UAX #29 has it.
 #[test]
 fn every_conformance_case_breaks_where_uax_29_says() {
     let cases = include_str!("../../tests/data/GraphemeBreakTest.txt");
-    let (mut checked, mut departures) = (0u32, 0u32);
+    let mut checked = 0u32;
     for case in cases.lines().filter(|line| !line.starts_with('#')) {
         let mut text = String::new();
         let mut expected = Vec::new();
@@ -53,22 +49,10 @@ fn every_conformance_case_breaks_where_uax_29_says() {
                 hex => text.extend(u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)),
             }
         }
-        assert_eq!(boundaries(&text, true), expected, "{case}");
-        let ours = boundaries(&text, false);
-        if ours != expected {
-            // Only ever a break more, each right after a Prepend.
-            for at in ours.iter().filter(|at| !expected.contains(at)) {
-                let before = text.get(..*at).and_then(|t| t.chars().next_back());
-                let before = before.map(|c| Properties::of(c).kind);
-                assert_eq!(before, Some(Break::Prepend), "{case}");
-            }
-            assert!(expected.iter().all(|at| ours.contains(at)), "{case}");
-            departures = departures.saturating_add(1);
-        }
+        assert_eq!(boundaries(&text), expected, "{case}");
         checked = checked.saturating_add(1);
     }
     assert_eq!(checked, 766);
-    assert!(departures > 0 && departures < 100, "{departures}");
 }
 
 /// Every assigned scalar value's properties, against unicode-segmentation:
@@ -110,9 +94,9 @@ fn every_code_point_is_classed_as_unicode_segmentation_classes_it() {
             text.push_str(before);
             text.push(c);
             text.push_str(after);
-            if !breaks(&text, true).eq(oracle(&text)) {
+            if !breaks(&text).eq(oracle(&text)) {
                 assert_eq!(
-                    boundaries(&text, true),
+                    boundaries(&text),
                     oracle(&text).collect::<Vec<_>>(),
                     "{text:?}"
                 );
@@ -132,7 +116,8 @@ fn a_cluster_rebuilt_from_its_text_continues_as_it_would_have() {
         ("\u{1F1EF}\u{1F1F5}", '\u{1F1E6}', false),
         ("\u{915}\u{94D}", '\u{937}', true),
         ("\u{915}", '\u{937}', false),
-        ("\u{600}", 'a', false),
+        ("\u{600}", 'a', true),
+        ("\u{600}", '\r', false),
         ("", '\u{301}', true),
     ] {
         assert_eq!(Cluster::of(text).push(next), joins, "{text:?} {next:?}");

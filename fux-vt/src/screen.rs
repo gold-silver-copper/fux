@@ -1446,6 +1446,14 @@ impl Screen {
             }
             return Ok(());
         }
+        // The first joins a Prepend character printed last (UAX #29, GB9b),
+        // as the general path joins it.
+        if self.last_print.is_some_and(|p| p.cluster.prepended())
+            && let Some((&first, tail)) = bytes.split_first()
+        {
+            self.print(char::from(first))?;
+            bytes = tail;
+        }
         while let Some((&first, tail)) = bytes.split_first() {
             let line = self.wrap_for(1)?;
             let (row, col) = self.grid().cursor.at();

@@ -100,6 +100,7 @@ fn clusters(r: &mut Rng) -> Vec<u8> {
             "\u{1100}\u{1161}\u{11a8}",
             "क\u{94d}ष",
             "\u{301}",
+            "\u{600}1",
         ],
     )
     .into_bytes()
@@ -589,7 +590,7 @@ pub const FAMILIES: &[Family] = &[
         name: "clusters",
         about: "grapheme clusters: combining marks, emoji modifiers and ZWJ sequences, flags, VS16, jamo, conjuncts",
         status: Status::Differs(
-            "the panel splits on fux-vt's documented choices, no defect among them: a cluster whose width becomes two (an emoji presentation sequence, `\\u{2764}\\u{fe0f}`; UTS #51, and UAX #11's note on variation sequences) is widened as Ghostty (mode 2027), xterm.js and tmux do, where xterm, alacritty, libvterm and avt keep it narrow (`replay --engines all --size 1x4 '\\u{2764}\\u{fe0f}x'`), and in the last column it stays narrow where Ghostty wraps it; a lone regional indicator is one column, as in xterm, alacritty, libvterm, xterm.js and tmux, where Ghostty, avt and wezterm make it two (`replay --engines all --size 1x3 '\\u{1f1fa}\\u{301}'`); and the one-column split of `wide`. The rest (an emoji modifier alone, a zero-width jamo after another script) no program sends",
+            "the panel splits on fux-vt's documented choices, no defect among them: a Prepend character joins what follows it, as UAX #29 (GB9b) has it and mode 2027 requires (its \"Grapheme Cluster\"), where every engine of the panel breaks after it, and the cluster takes its unicode-width string width, as below (`replay --engines all --size 1x6 '\\u{600}1x'`); a cluster whose width becomes two (an emoji presentation sequence, `\\u{2764}\\u{fe0f}`; UTS #51, and UAX #11's note on variation sequences) is widened as Ghostty (mode 2027), xterm.js and tmux do, where xterm, alacritty, libvterm and avt keep it narrow (`replay --engines all --size 1x4 '\\u{2764}\\u{fe0f}x'`), and in the last column it stays narrow where Ghostty wraps it; a lone regional indicator is one column, as in xterm, alacritty, libvterm, xterm.js and tmux, where Ghostty, avt and wezterm make it two (`replay --engines all --size 1x3 '\\u{1f1fa}\\u{301}'`); and the one-column split of `wide`. The rest (an emoji modifier alone, a zero-width jamo after another script) no program sends",
         ),
         ratty_only: false,
         generate: clusters,

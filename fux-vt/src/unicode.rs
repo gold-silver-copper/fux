@@ -15,26 +15,34 @@ pub use tables::UNICODE_VERSION;
 
 /// Whether `c`, printed right after the grapheme cluster `cluster`, would
 /// continue it rather than start the next one, as fux-vt joins what is
-/// printed (UAX #29, but nothing joins a Prepend character): an emoji
-/// modifier after an emoji, a combining mark after anything. A host that
-/// paints cells side by side to a terminal (fux) uses it to tell where the
-/// terminal may join a cell to the one before it.
+/// printed (UAX #29): an emoji modifier after an emoji, a combining mark
+/// after anything, anything but a control after a Prepend character. A
+/// host that paints cells side by side to a terminal (fux) uses it to tell
+/// where the terminal may join a cell to the one before it.
 pub fn continues_cluster(cluster: &str, c: char) -> bool {
-    // No printable ASCII character continues a cluster: they are all Other.
-    if (' '..='~').contains(&c) {
-        return false;
-    }
-    // Nor does any character that no rule joins whatever comes before it
-    // (most of what is not ASCII: box drawing, CJK, letters), which needs
-    // no look at the cluster.
-    let next = Properties::of(c);
-    if matches!(
-        next.kind,
-        Break::Other | Break::Prepend | Break::Control | Break::Cr
-    ) && !next.pictographic
-        && next.conjunct != Conjunct::Consonant
-    {
-        return false;
+    // After a Prepend character (none is ASCII) the cluster decides.
+    let prepended = cluster
+        .chars()
+        .next_back()
+        .is_some_and(|last| !last.is_ascii() && Properties::of(last).kind == Break::Prepend);
+    if !prepended {
+        // Else no printable ASCII character continues a cluster: they are
+        // all Other.
+        if (' '..='~').contains(&c) {
+            return false;
+        }
+        // Nor does any character that no rule joins whatever comes before
+        // it but a Prepend (most of what is not ASCII: box drawing, CJK,
+        // letters), which needs no look at the cluster.
+        let next = Properties::of(c);
+        if matches!(
+            next.kind,
+            Break::Other | Break::Prepend | Break::Control | Break::Cr
+        ) && !next.pictographic
+            && next.conjunct != Conjunct::Consonant
+        {
+            return false;
+        }
     }
     Cluster::of(cluster).push(c)
 }
@@ -169,22 +177,21 @@ impl Cluster {
     }
 
     /// Whether `c` continues the cluster, rather than starting the next one.
-    /// Either way the state moves on to include `c`. Unlike UAX #29 (GB9b),
-    /// nothing joins a Prepend character: terminals keep them apart, so a
-    /// letter or a space is never swallowed into its cell.
+    /// Either way the state moves on to include `c`.
     pub(crate) fn push(&mut self, c: char) -> bool {
-        self.push_with(c, false)
-    }
-
-    /// `push`, with GB9b (`Prepend ×`) followed if `prepend_joins`.
-    fn push_with(&mut self, c: char, prepend_joins: bool) -> bool {
         let next = Properties::of(c);
-        let joins = self.joins(next, prepend_joins);
+        let joins = self.joins(next);
         *self = self.after(next, joins);
         joins
     }
 
-    fn joins(&self, next: Properties, prepend_joins: bool) -> bool {
+    /// Whether the cluster ends with a Prepend character, which joins
+    /// what follows it but a control (GB9b): printable ASCII too.
+    pub(crate) fn prepended(self) -> bool {
+        self.last == Break::Prepend
+    }
+
+    fn joins(&self, next: Properties) -> bool {
         use Break::{
             Control, Cr, Extend, L, Lf, Lv, Lvt, Prepend, RegionalIndicator, SpacingMark, T, V, Zwj,
         };
@@ -196,8 +203,8 @@ impl Cluster {
             (L, L | V | Lv | Lvt) | (Lv | V, V | T) | (Lvt | T, T) => true,
             // GB9, GB9a.
             (_, Extend | Zwj | SpacingMark) => true,
-            // GB9b, not followed by `push`.
-            (Prepend, _) => prepend_joins,
+            // GB9b.
+            (Prepend, _) => true,
             // GB9c.
             _ if self.indic == Indic::Linked && next.conjunct == Conjunct::Consonant => true,
             // GB11.

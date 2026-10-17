@@ -214,11 +214,12 @@ fn a_cluster_joins_across_process_calls_but_not_across_cursor_moves() -> Result 
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process("\u{1f1ef}\x1b[1m\u{1f1f5}".as_bytes())?;
     assert_eq!(cell(&p, 0, 0)?.contents(), "\u{1f1ef}\u{1f1f5}");
-    // Unrelated characters never join, nor anything after a Prepend.
+    // Unrelated characters never join; a Prepend joins what follows it
+    // (UAX #29, GB9b).
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process("ab\u{600}c".as_bytes())?;
     assert_eq!(cell(&p, 0, 1)?.contents(), "b");
-    assert_eq!(cell(&p, 0, 3)?.contents(), "c");
+    assert_eq!(cell(&p, 0, 2)?.contents(), "\u{600}c");
     Ok(())
 }
 
