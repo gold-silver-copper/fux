@@ -213,6 +213,18 @@ fn erase(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// The rectangular area operations, on rectangles of small and absent
+/// numbers: DECFRA, DECERA, DECSERA and DECCRA.
+fn rectangles(r: &mut Rng) -> Vec<u8> {
+    let corners = [number(r), number(r), number(r), number(r)].join(";");
+    match r.below(3) {
+        0 => format!("\x1b[{};{corners}$x", pick(r, &["", "35", "113", "233"])),
+        1 => format!("\x1b[{corners}${}", pick(r, &["z", "{"])),
+        _ => format!("\x1b[{corners};1;{};{};1$v", number(r), number(r)),
+    }
+    .into_bytes()
+}
+
 fn edit(r: &mut Rng) -> Vec<u8> {
     csi(r, &["@", "P", "L", "M"]).into_bytes()
 }
@@ -735,6 +747,20 @@ pub const FAMILIES: &[Family] = &[
         },
         ratty_only: false,
         generate: erase,
+    },
+    Family {
+        name: "rectangles",
+        about: "DECFRA, DECERA, DECSERA and DECCRA",
+        status: Status::Decided {
+            why: "DEC STD 070's rectangular area operations (5.12.1, level 4), which xterm implements as fux-vt does, and every other engine of the panel ignores, outvoting fux-vt (`replay --engines all --size 4x6 'abcdef\\r\\nghijkl\\e[88;1;2;2;4$x'`)",
+            by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, 5.12.1",
+                test: "rectangles::decfra_fills_a_rectangle",
+            },
+        },
+        ratty_only: false,
+        generate: rectangles,
     },
     Family {
         name: "edit",

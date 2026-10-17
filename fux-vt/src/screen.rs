@@ -2069,25 +2069,98 @@ impl Screen {
     /// its whole extent; one whose top is below its bottom, or left past
     /// its right, sums nothing.
     pub(crate) fn rectangle_checksum(&self, p: &Parameters) -> Reply {
-        let (lines, columns) = self.grid().addressed();
-        let at = |span: Span, index: usize, default: u16| match p.first(index, 0) {
-            0 => default,
-            n => span.nth(n.saturating_sub(1)),
-        };
-        let (top, left) = (at(lines, 2, lines.first()), at(columns, 3, columns.first()));
-        let (bottom, right) = (at(lines, 4, lines.last()), at(columns, 5, columns.last()));
         let g = self.grid();
         let mut sum = 0u16;
-        for y in top..=bottom {
-            for x in left..=right {
-                if let Some(cell) = g.cell(y, x) {
-                    sum = sum.wrapping_add(checksum_of(&cell));
+        if let Some((lines, columns)) = self.rectangle(p, 2) {
+            for y in lines.each() {
+                for x in columns.each() {
+                    if let Some(cell) = g.cell(y, x) {
+                        sum = sum.wrapping_add(checksum_of(&cell));
+                    }
                 }
             }
         }
         let id = p.first(0, 0);
         let checksum = sum.wrapping_neg();
         Reply::of(format_args!("\x1bP{id}!~{checksum:04X}\x1b\\"))
+    }
+
+    /// The rectangle `Pt ; Pl ; Pb ; Pr` of the parameters from `at` on, as
+    /// the rectangular area operations and DECRQCRA take it (DEC STD 070,
+    /// 5.12.1, 5.12.2): one-based, from the margins in origin mode and
+    /// clamped to them, as the cursor is, else to the screen; absent or 0
+    /// its whole extent. `None` if its top is below its bottom or its left
+    /// past its right, which has the function ignored.
+    fn rectangle(&self, p: &Parameters, at: usize) -> Option<(Span, Span)> {
+        let (lines, columns) = self.grid().addressed();
+        let edge = |span: Span, i: usize, default: u16| {
+            span.nth(p.first(at.saturating_add(i), default).saturating_sub(1))
+        };
+        let (top, bottom) = (edge(lines, 0, 1), edge(lines, 2, u16::MAX));
+        let (left, right) = (edge(columns, 1, 1), edge(columns, 3, u16::MAX));
+        Some((lines.part(top, bottom)?, columns.part(left, right)?))
+    }
+
+    /// DEC STD 070's rectangular area operations (5.12.1), by final byte:
+    /// DECFRA (`x`), DECERA (`z`), DECSERA (`{`) and DECCRA (`v`), on the
+    /// rectangle their parameters name (`rectangle`), which none of the
+    /// margins bounds otherwise, the cursor staying where it is. A page
+    /// parameter is ignored: there is one. Out of line, as they are rare.
+    #[inline(never)]
+    fn rectangle_area(&mut self, p: &Parameters, byte: u8) {
+        // DECFRA's rectangle follows its character.
+        let Some((lines, columns)) = self.rectangle(p, usize::from(byte == b'x')) else {
+            return;
+        };
+        self.break_cluster();
+        let span = (columns.first(), columns.end());
+        match byte {
+            // DECFRA: Pch from 32 to 126 is that character in GL's set,
+            // 160 to 255 in GR's, Latin-1; another is ignored. The cells
+            // take the pen, as printing gives it.
+            b'x' => {
+                let c = match u8::try_from(p.first(0, 32)) {
+                    Ok(byte @ 32..=126) => {
+                        let mut gl = self.charsets;
+                        gl.single = None;
+                        gl.map(char::from(byte))
+                    }
+                    Ok(byte @ 160..=255) => char::from(byte),
+                    _ => return,
+                };
+                let style = self.pen_style() | self.protect;
+                self.each_row(lines, |g, y, v| g.fill(y, span, c, style, v));
+            }
+            // DECERA: every glyph erased, the blanks in the pen's colours,
+            // as ED's.
+            b'z' => {
+                let blank = self.blank_style();
+                self.each_row(lines, |g, y, v| g.erase(y, span.0, span.1, blank, v));
+            }
+            // DECSERA: the glyphs DECSCA does not protect, SPA's guard being
+            // no DECSCA, made spaces in their own attributes.
+            b'{' => self.each_row(lines, |g, y, v| g.blank_unprotected(y, span, v)),
+            // DECCRA: to `Ptd ; Pld`, addressed as the rectangle is.
+            _ => {
+                let (to_lines, to_columns) = self.grid().addressed();
+                let row = to_lines.nth(p.first(5, 1).saturating_sub(1));
+                let col = to_columns.nth(p.first(6, 1).saturating_sub(1));
+                self.with_grid(|g, _, v| g.copy_rectangle(lines, columns, (row, col), v));
+            }
+        }
+    }
+
+    /// `f` with the grid shown, each of the rows `lines` and the version,
+    /// each row keeping its soft wrap: a rectangular area operation changes
+    /// no line's (DEC STD 070, 5.12.1), as xterm keeps them.
+    fn each_row(&mut self, lines: Span, mut f: impl FnMut(&mut Grid, u16, u64)) {
+        self.with_grid(|g, _, v| {
+            for y in lines.each() {
+                let wrapped = g.live_wrapped(y);
+                f(g, y, v);
+                g.wrap(y, wrapped, v);
+            }
+        });
     }
 
     /// The primary device attributes (DA1, `CSI c`; and DECID, `ESC Z`):
@@ -2098,8 +2171,9 @@ impl Screen {
         let sixel = if self.graphics.sixel { ";4" } else { "" };
         if options.identity().is_some() {
             // Level 2 (DEC STD 070, DA): fux-vt lacks level 3's terminal
-            // state reports and level 4's rectangular area operations. Its
-            // extensions (Table 1): selectively erasable characters (6:
+            // state reports and level 4's text macros. Its extensions
+            // (Table 1), which do not yet name rectangular editing (28,
+            // DECFRA and the rest): selectively erasable characters (6:
             // DECSCA, DECSED, DECSEL), horizontal scrolling (21: DECSLRM,
             // DECIC, DECDC, DECBI, DECFI) and colour text (22).
             Reply::of(format_args!("\x1b[?62{sixel};6;21;22c"))
@@ -2746,6 +2820,10 @@ impl Screen {
                 }
                 _ => None,
             },
+            (b"$", b'x' | b'z' | b'{' | b'v') => {
+                self.rectangle_area(p, byte);
+                return Some(Dispatch::Done);
+            }
             (b"*", b'y') if options.has(Feature::RectangleChecksums) => {
                 Some(self.rectangle_checksum(p))
             }

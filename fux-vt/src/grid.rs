@@ -1126,6 +1126,81 @@ impl Grid {
         }
     }
 
+    /// DECFRA: the columns `start` to `end` of live row `row` filled with
+    /// `c`, a glyph one column wide, in `style`, with no link: erased as
+    /// `erase` erases them, which blanks a wide glyph they cut, then each
+    /// taking `c`.
+    pub fn fill(&mut self, row: u16, (start, end): (u16, u16), c: char, style: u32, version: u64) {
+        self.erase(row, start, end, style, version);
+        let span = usize::from(start)..usize::from(end);
+        let glyph = Compact::glyph(c, 1, style);
+        self.mutate_row(row, version, end, |cells| {
+            cells
+                .get_mut(span.clone())
+                .map(|run| run.fill(glyph))
+                .is_some()
+        });
+        self.set_link(row, span, None, version);
+    }
+
+    /// DECSERA: each glyph DECSCA does not protect in the columns `start`
+    /// to `end` of live row `row` made a space, keeping its attributes;
+    /// empty cells stay empty (DEC STD 070, DECSERA). A wide glyph's second
+    /// half goes with its first, and one the span cuts is blanked whole.
+    pub fn blank_unprotected(&mut self, row: u16, (start, end): (u16, u16), version: u64) {
+        let span = usize::from(start)..usize::from(end);
+        self.mutate_row(row, version, end, |cells| {
+            // Whether the glyph before is protected.
+            let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
+            let (mut kept, mut changed) = (before.is_some_and(Compact::is_protected), false);
+            for cell in cells.get_mut(span).into_iter().flatten() {
+                if cell.is_wide_continuation() {
+                    if !kept {
+                        *cell = cell.blanked();
+                        changed = true;
+                    }
+                    continue;
+                }
+                kept = cell.is_protected();
+                if cell.has_contents() && !kept {
+                    *cell = Compact::ascii(b' ', cell.style());
+                    changed = true;
+                }
+            }
+            repair_wide(cells);
+            changed
+        });
+    }
+
+    /// DECCRA: the cells `columns` of rows `lines`, text and attributes,
+    /// copied to the rows and columns from `to`, as far as the screen goes
+    /// (DEC STD 070, DECCRA), all read before any is written, so the two
+    /// may overlap. A wide glyph the copy cuts is blanked whole. The cells
+    /// copied to have no link.
+    pub fn copy_rectangle(&mut self, lines: Span, columns: Span, to: (u16, u16), version: u64) {
+        let span = usize::from(columns.first())..usize::from(columns.end());
+        let source: Vec<(Vec<Compact>, Text)> = lines
+            .each()
+            .map(|y| {
+                let text = self.slot(y).and_then(|slot| self.texts.get(slot));
+                let cells = self.live_cells(y).get(span.clone()).unwrap_or_default();
+                (cells.to_vec(), text.cloned().unwrap_or_default())
+            })
+            .collect();
+        let (row, col) = to;
+        let end = col.saturating_add(columns.len()).min(self.size.cols());
+        for (y, (cells, text)) in (row..self.size.rows()).zip(source) {
+            self.mutate_line(y, version, end, |line| {
+                for (at, cell) in (usize::from(col)..usize::from(end)).zip(&cells) {
+                    line.set(at, *cell, text.of(cell));
+                }
+                repair_wide(line.cells);
+                true
+            });
+            self.set_link(y, usize::from(col)..usize::from(end), None, version);
+        }
+    }
+
     /// ICH and DCH, at the cursor, which they leave where it is; they end
     /// a pending wrap (DEC STD 070, Appendix D.6.1). The cells they bring
     /// in are blank in `blank`. DCH ends the row's soft wrap; ICH, and the

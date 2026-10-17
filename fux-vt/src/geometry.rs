@@ -73,6 +73,16 @@ impl Span {
     pub fn margins(self, first: u16, last: u16) -> Option<Self> {
         (first < last && last <= self.last).then_some(Self { first, last })
     }
+    /// The part `first` to `last` of this span, `None` if `first` is past
+    /// `last` or `last` past this span: a side of a rectangle (DEC STD 070,
+    /// 5.12.1).
+    pub fn part(self, first: u16, last: u16) -> Option<Self> {
+        (first <= last && last <= self.last).then_some(Self { first, last })
+    }
+    /// Its rows or columns, in order.
+    pub fn each(self) -> std::ops::RangeInclusive<u16> {
+        self.first..=self.last
+    }
     /// The span from `first` on, if it is in this one.
     pub fn starting_at(self, first: u16) -> Option<Self> {
         self.contains(first).then_some(Self { first, ..self })
