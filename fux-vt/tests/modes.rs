@@ -32,21 +32,24 @@ fn cursor_after(input: &[u8]) -> Result<(u16, u16)> {
 /// no use for that esctest asks after, GATM (1), SRTM (5), VEM (7), HEM
 /// (10), PUM (11), FEAM (13), FETM (14), MATM (15), TTM (16), SATM (17),
 /// TSM (18) and EBM (19, of ECMA-48's 4th edition), have the reset state
-/// only: DECRQM answers them permanently reset (4), set or not. The same
-/// numbers as DEC private modes are others; KAM (2) and SRM (12), which
-/// can be set, are not recognized (0).
+/// only, and so do three that fux-vt performs in their reset state alone
+/// (7.2: "the first state is caused by RM"): KAM (2) ENABLED, the keyboard
+/// never locked; CRM (3) CONTROL, controls performed; ERM (6) PROTECT, ED,
+/// EL and ECH sparing a guarded area. DECRQM answers them permanently
+/// reset (4), set or not. The same numbers as DEC private modes are
+/// others; SRM (12) is not recognized (0).
 #[test]
 fn decrqm_reports_the_deprecated_ansi_modes_permanently_reset() -> Result {
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
-    for n in [1, 5, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19] {
+    for n in [1, 2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19] {
         let ask = format!("\x1b[{n}$p");
         assert_eq!(replies(&mut p, ask.as_bytes())?, format!("^[[{n};4$y"));
         p.process(format!("\x1b[{n}h").as_bytes())?;
         assert_eq!(replies(&mut p, ask.as_bytes())?, format!("^[[{n};4$y"));
     }
     assert_eq!(
-        replies(&mut p, b"\x1b[2$p\x1b[12$p\x1b[?5$p")?,
-        "^[[2;0$y^[[12;0$y^[[?5;2$y"
+        replies(&mut p, b"\x1b[12$p\x1b[?5$p")?,
+        "^[[12;0$y^[[?5;2$y"
     );
     Ok(())
 }

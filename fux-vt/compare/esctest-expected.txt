@@ -81,7 +81,7 @@ DECFRATests.test_DECFRA_ignoresMargins  not-implemented: rectangle operations (D
 DECFRATests.test_DECFRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECFRATests.test_DECFRA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECIDTests.test_DECID_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-DECRQMTests.test_DECRQM_ANSI_KAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_KAM  spec: fux-vt never locks the keyboard, so KAM has its reset state only, which DECRQM answers 4, permanently reset (ECMA-48 7.1, README ModeReports); esctest expects xterm's KAM, which can be set
 DECRQMTests.test_DECRQM_ANSI_SRM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECARM  xterm-too: esctest's known xterm bug (xterm always returns 4 (permanently reset))
 DECRQMTests.test_DECRQM_DEC_DECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
