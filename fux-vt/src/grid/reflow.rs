@@ -129,14 +129,25 @@ impl Grid {
         let mut start = 0;
         while start < retained {
             // A line runs through its wrapped rows to the row that ends it.
-            let mut end = start;
-            while end.checked_add(1).is_some_and(|next| next < retained) && self.wrapped_at(end) {
+            // Its length leaves out its blank tail, which can run back over
+            // several rows: the rows' widths up to the last with text, and
+            // that row's text.
+            let (mut end, mut before, mut length) = (start, 0usize, 0);
+            loop {
+                let (wrapped, width, text) = self.facts_at(end);
+                if text > 0 {
+                    length = before.saturating_add(text);
+                }
+                before = before.saturating_add(width);
+                if !wrapped || end.checked_add(1).is_none_or(|next| next >= retained) {
+                    break;
+                }
                 end = end.saturating_add(1);
             }
             if (start..=end).contains(&self.history_len()) {
                 pass.out.screen_line = pass.out.rows;
             }
-            self.lay_out_runs(start, end, &mut pass)?;
+            self.lay_out_runs((start, end), length, &mut pass)?;
             start = end.saturating_add(1);
         }
         Ok(pass.out)
@@ -149,14 +160,13 @@ impl Grid {
     /// as one column cannot show them. So a line costs its rows and the rows it is laid
     /// out in, not its cells; one whose rows stay as they are (every line
     /// but a few, when only the rows change) costs a run a row. The line's
-    /// length comes from its rows' widths and `used` marks.
+    /// text is `length` cells long.
     fn lay_out_runs(
         &self,
-        start: usize,
-        end: usize,
+        (start, end): (usize, usize),
+        length: usize,
         pass: &mut Pass<'_, impl Reflow>,
     ) -> Result<(), Error> {
-        let length = self.text_length(start, end);
         let mut line = Run {
             used: 0,
             next: start,
@@ -287,21 +297,6 @@ impl Grid {
         Ok(())
     }
 
-    /// The length of the line from row `start` through `end` without its
-    /// blank tail, which can run back over several rows: found from the
-    /// rows' widths and their cells back from their `used` marks.
-    fn text_length(&self, start: usize, end: usize) -> usize {
-        let mut length = (start..=end).fold(0usize, |sum, i| sum.saturating_add(self.width_at(i)));
-        for i in (start..=end).rev() {
-            length = length.saturating_sub(self.width_at(i));
-            let text = self.text_end(i);
-            if text > 0 {
-                return length.saturating_add(text);
-            }
-        }
-        0
-    }
-
     /// The identity of retained row `index`, if it is at most `end`: the
     /// line's row whose place a row laid out takes.
     fn id_at(&self, index: usize, end: usize) -> Option<RowId> {
@@ -311,47 +306,32 @@ impl Grid {
         self.row_at(index).map(|row| row.id)
     }
 
-    /// Whether retained row `index` is soft-wrapped.
-    fn wrapped_at(&self, index: usize) -> bool {
-        match index.checked_sub(self.history.len()) {
-            None => self.history.kept(index).is_some_and(|kept| kept.wrapped()),
-            Some(row) => self
-                .order
-                .get(row)
-                .and_then(|slot| self.meta.get(*slot))
-                .is_some_and(|m| m.wrapped),
-        }
-    }
-
-    /// Retained row `index`'s width: how many cells it has.
-    fn width_at(&self, index: usize) -> usize {
-        match index.checked_sub(self.history.len()) {
-            None => self
-                .history
-                .kept(index)
-                .map_or(0, |kept| usize::from(kept.width())),
-            Some(_) => usize::from(self.size.cols()),
-        }
-    }
-
-    /// How many of retained row `index`'s cells come before its blank
-    /// tail: looked for back from its `used` mark, past which every cell
-    /// is blank. A history row keeps none of its blank tail.
-    fn text_end(&self, index: usize) -> usize {
+    /// Retained row `index`'s facts a line's layout reads: whether it is
+    /// soft-wrapped, its width, and how many of its cells come before its
+    /// blank tail. A history row keeps none of its blank tail; a screen
+    /// row's is looked for back from its `used` mark, past which every
+    /// cell is blank.
+    fn facts_at(&self, index: usize) -> (bool, usize, usize) {
         let Some(row) = index.checked_sub(self.history.len()) else {
-            return self.history.kept(index).map_or(0, |kept| kept.len());
+            let kept = self.history.kept(index);
+            return kept.map_or((false, 0, 0), |k| {
+                (k.wrapped(), usize::from(k.width()), k.len())
+            });
         };
-        let Some(&slot) = self.order.get(row) else {
-            return 0;
+        let width = usize::from(self.size.cols());
+        let Some((slot, m)) =
+            (self.order.get(row)).and_then(|&slot| Some((slot, self.meta.get(slot)?)))
+        else {
+            return (false, width, 0);
         };
-        let used = self.meta.get(slot).map_or(0, |m| usize::from(m.used));
         let cells = self.slice(slot);
-        cells
-            .get(..used.min(cells.len()))
+        let text = cells
+            .get(..usize::from(m.used).min(cells.len()))
             .unwrap_or_default()
             .iter()
             .rposition(|c| !c.is_blank(0))
-            .map_or(0, |last| last.saturating_add(1))
+            .map_or(0, |last| last.saturating_add(1));
+        (m.wrapped, width, text)
     }
 }
 
