@@ -24,6 +24,10 @@ pub(crate) struct Parameters {
     /// STD 070 (3.5.3.1) lets parameters "beyond the maximum number
     /// supported" be.
     full: bool,
+    /// After a private marker, whether a digit or a separator was read,
+    /// which tells `CSI > m`, with no parameter, from `CSI > 0 m`; kept
+    /// only there, as only XTMODKEYS reads it.
+    pub(crate) given: bool,
 }
 impl Default for Parameters {
     fn default() -> Self {
@@ -32,6 +36,7 @@ impl Default for Parameters {
             sub: 0,
             len: 1,
             full: false,
+            given: false,
         }
     }
 }
@@ -486,13 +491,18 @@ impl Phase {
             0x30..=0x3f if matches!(self, Self::Intermediate(_)) => Next::Ignore,
             b'0'..=b'9' => {
                 params.digit(byte);
+                params.given |= !read.as_slice().is_empty();
                 Next::Phase(Self::Param(read))
             }
             b';' | b':' => {
                 params.separator(byte == b':');
+                params.given |= !read.as_slice().is_empty();
                 Next::Phase(Self::Param(read))
             }
-            0x3c..=0x3f if self == Self::Entry => Next::Phase(Self::Param(Intermediates::of(byte))),
+            0x3c..=0x3f if self == Self::Entry => {
+                params.given = false;
+                Next::Phase(Self::Param(Intermediates::of(byte)))
+            }
             0x3c..=0x3f => Next::Ignore,
             0x40..=0x7e => Next::Final(read),
             0x7f..=0xff => Next::Phase(self),
@@ -1111,7 +1121,11 @@ impl Parser {
                         }
                     }
                 }
-                0x3c..=0x3f if at == 2 => marker = Intermediates::of(byte),
+                0x3c..=0x3f if at == 2 => {
+                    marker = Intermediates::of(byte);
+                    // A parameter follows, or `digit` will say so.
+                    self.params.given = matches!(bytes.get(next), Some(b'0'..=b';'));
+                }
                 0x40..=0x7e => {
                     self.params
                         .end(len, u16::try_from(value).unwrap_or(u16::MAX));

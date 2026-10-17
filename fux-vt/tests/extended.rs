@@ -490,13 +490,22 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     assert_eq!(p.screen().modify_other_keys(), None);
     // No parameters reset every resource (ctlseqs, XTMODKEYS: "If no
     // parameters are given, all resources are reset to their initial
-    // values"), modifyOtherKeys among them; 0 alone reads the same.
-    for reset in [&b"\x1b[>m"[..], b"\x1b[>0m"] {
-        p.process(b"\x1b[>4;2m")?;
-        let record = run(&mut p, reset)?;
-        assert_eq!(p.screen().modify_other_keys(), None, "{reset:?}");
-        assert!(record.unhandled.is_empty(), "{reset:?}");
+    // values"), modifyOtherKeys among them; 0 alone is modifyKeyboard
+    // ("If Pp is given but Pv is omitted, that resource is reset"), which
+    // leaves modifyOtherKeys, byte by byte too.
+    p.process(b"\x1b[>4;2m")?;
+    let record = run(&mut p, b"\x1b[>m")?;
+    assert_eq!(p.screen().modify_other_keys(), None);
+    assert!(record.unhandled.is_empty());
+    p.process(b"\x1b[>4;2m\x1b[>0m")?;
+    for byte in b"\x1b[>0m" {
+        p.process(&[*byte])?;
     }
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::All));
+    for byte in b"\x1b[>m" {
+        p.process(&[*byte])?;
+    }
+    assert_eq!(p.screen().modify_other_keys(), None);
     // `CSI > 4 n` disables it (ctlseqs: "Disable key modifier options",
     // the resource value -1), until set again; other resources are not
     // modifyOtherKeys, and `CSI > n` disables modifyFunctionKeys.
