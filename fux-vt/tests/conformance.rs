@@ -20,7 +20,13 @@ fn run(rows: u16, cols: u16, bytes: &[u8]) -> Result<Parser> {
 /// cursor there with the Last Column Flag set, and the next glyph wraps
 /// first. Each control the appendix lists clears the flag, so the cursor
 /// acts from the last column itself. Expected values are xterm's (XTerm
-/// 411, `fux-vt-compare cases '*-while-wrap-pending'`).
+/// 411, `fux-vt-compare cases '*-while-wrap-pending'`), but for HT and
+/// RESET_MODE (AUTO_WRAP_MODE), which the appendix lists and xterm 411
+/// keeps the flag through, and a glyph in the last column with DECAWM off,
+/// which sets no flag ("when Auto Wrap Mode is set"): there the next glyph
+/// overwrites the last column (`compare`'s `tab-ends-a-pending-wrap`,
+/// `resetting-autowrap-ends-a-pending-wrap` and
+/// `no-wrap-is-left-pending-with-autowrap-off`).
 #[test]
 fn a_pending_wrap_is_a_flag_on_the_last_column() -> Result {
     let p = run(1, 5, b"abcde")?;
@@ -49,6 +55,10 @@ fn a_pending_wrap_is_a_flag_on_the_last_column() -> Result {
     // A glyph printed in the last column after a tab waits there, so BS
     // puts the next one before it.
     assert_eq!(lines(&run(1, 5, b"\tZ\x08Y")?), ["   YZ"]);
+    // HT and resetting DECAWM clear the flag; DECAWM off sets none.
+    assert_eq!(lines(&run(2, 5, b"abcde\tX")?), ["abcdX", ""]);
+    assert_eq!(lines(&run(2, 5, b"abcde\x1b[?7l\x1b[?7hX")?), ["abcdX", ""]);
+    assert_eq!(lines(&run(2, 2, b"\x1b[?7lca\x1b[?7hX")?), ["cX", ""]);
     Ok(())
 }
 
