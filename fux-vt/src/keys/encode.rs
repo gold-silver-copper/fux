@@ -427,7 +427,11 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 /// departure, as it cannot tell Shift from Caps Lock on a letter, which the
 /// client's terminal sends as text either way. Level 3 is 2, and an
 /// unmodified ordinary key is `CSI 27 ; 1 ; code ~` too (ctlseqs: "space
-/// sends CSI 2 7 ; 1 ; 3 2 ~").
+/// sends CSI 2 7 ; 1 ; 3 2 ~"). There a capital letter shows its Shift,
+/// but a symbol does not (`!` is Shift-1 on one layout, a key of its own
+/// on another): unless the terminal reported Shift (kitty), it is sent
+/// as unmodified, `CSI 27 ; 1 ; 33 ~`, where xterm, which knows the
+/// keyboard, sends Shift with it.
 ///
 /// The code is the key's character, Shift applied (Ctrl-Shift-a is 65), as
 /// xterm sends the keysym; Backspace's is 127, or 8 with Ctrl, which the
@@ -948,6 +952,7 @@ mod tests {
         for (name, bytes) in [
             ("Space", "\x1b[27;1;32~"),
             ("a", "\x1b[27;1;97~"),
+            // No Shift is known with a symbol (`other_keys`).
             ("!", "\x1b[27;1;33~"),
             ("Enter", "\x1b[27;1;13~"),
             ("Tab", "\x1b[27;1;9~"),
