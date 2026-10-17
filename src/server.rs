@@ -760,7 +760,7 @@ fn grant(
         Ok(name) => name,
         Err(error) => return failed(error.to_string()),
     };
-    let checked = crate::socket::checked(&path.to_string_lossy(), "grant");
+    let checked = crate::socket::checked(&path, "grant");
     let opened = match checked
         .map_err(Error::Socket)
         .and_then(|s| Listening::open(&s))
@@ -1902,12 +1902,38 @@ mod tests {
         }
         let path = dir.join("fux").join("s.sock");
         std::fs::write(crate::door::path(&path), "").map_err(|x| e(&x))?;
-        let socket = crate::socket::checked(&path.to_string_lossy(), "test").map_err(|x| e(&x))?;
+        let socket = crate::socket::checked(&path, "test").map_err(|x| e(&x))?;
         let listening = Listening::open(&socket).map_err(|x| e(&x))?;
         assert!(listening.listener.is_some(), "the socket serves");
         assert!(listening.door.is_none(), "with no door");
         drop(listening);
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// A grant from a directory whose name is not UTF-8 is bound at the
+    /// path it names and records, not at a lossy spelling of it.
+    #[test]
+    fn a_grant_from_a_directory_not_utf8_binds_its_own_path() -> Result<(), String> {
+        use std::os::unix::ffi::OsStrExt;
+        let e = |e: &dyn std::fmt::Display| e.to_string();
+        let dir = (fuxix::file::scratch().map_err(|x| e(&x))?)
+            .join(format!("fux-grant-{}", std::process::id()))
+            .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        let _ = dir.parent().map(std::fs::remove_dir_all);
+        let _ = dir.parent().map(std::fs::create_dir_all);
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let main = crate::command::WsRef::Name("main".into());
+        let mut listening = Vec::new();
+        let asked = ("g.sock".to_owned(), Some(main));
+        let (reply, _) = grant(&mut listening, &mut session, asked, Some(dir.clone()));
+        assert_eq!(reply.end, crate::protocol::End::Done, "{reply:?}");
+        let bound = std::fs::symlink_metadata(dir.join("g.sock")).map_err(|x| e(&x))?;
+        assert!(std::os::unix::fs::FileTypeExt::is_socket(
+            &bound.file_type()
+        ));
+        drop(listening);
+        let _ = dir.parent().map(std::fs::remove_dir_all);
         Ok(())
     }
 

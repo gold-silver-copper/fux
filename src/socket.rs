@@ -15,6 +15,7 @@
 use fuxix::process::geteuid;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -180,7 +181,7 @@ fn not_utf8(variable: &str) -> Error {
 /// The socket `name` in fux's directory.
 fn in_directory(name: &str) -> Result<SocketPath, Error> {
     let path = directory()?.join(name);
-    checked(&path.to_string_lossy(), "the socket's directory")
+    checked(path, "the socket's directory")
 }
 
 fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
@@ -197,19 +198,19 @@ fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     Ok(Path::new(value).join("fux"))
 }
 
-pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
+pub(crate) fn checked(value: impl AsRef<Path>, from: &'static str) -> Result<SocketPath, Error> {
     let refused = |why: String| Err(Error::Refused(why));
-    if value.is_empty() {
+    let path = value.as_ref().to_owned();
+    if path.as_os_str().is_empty() {
         return refused(format!(
             "{from} is empty; it must be an absolute socket path"
         ));
     }
-    if value.contains('\0') {
+    if path.as_os_str().as_bytes().contains(&0) {
         return refused(format!("{from} contains a NUL byte"));
     }
-    let path = PathBuf::from(value);
     if !path.is_absolute() {
-        return refused(format!("{from} is {value:?}; it must be an absolute path"));
+        return refused(format!("{from} is {path:?}; it must be an absolute path"));
     }
     let directory = (path.file_name())
         .and(path.parent())
@@ -217,15 +218,16 @@ pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Err
         .map(Path::to_owned);
     let Some(directory) = directory else {
         return refused(format!(
-            "{from} is {value:?}; it must name a socket file in a directory below /"
+            "{from} is {path:?}; it must name a socket file in a directory below /"
         ));
     };
     let limit = fuxix::socket::max_path_len();
     if path.as_os_str().len() > limit {
         return refused(format!(
             "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
-             domain socket on this platform (from {from}): {value}",
-            value.len()
+             domain socket on this platform (from {from}): {}",
+            path.as_os_str().len(),
+            path.display()
         ));
     }
     Ok(SocketPath { path, directory })
@@ -456,7 +458,7 @@ mod tests {
     }
 
     fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
-        match bind_socket(&checked(&path.to_string_lossy(), "test")?)? {
+        match bind_socket(&checked(path, "test")?)? {
             (endpoint, Some(listener)) => Ok((endpoint, listener)),
             (_, None) => Err(io(path)(io::ErrorKind::PermissionDenied.into())),
         }
@@ -501,11 +503,11 @@ mod tests {
                 "X is \"/s\"; it must name a socket file in a directory below /",
             ),
             (
-                base_directory("TMPDIR", "").and_then(|d| checked(&d.to_string_lossy(), "X")),
+                base_directory("TMPDIR", "").and_then(|d| checked(&d, "X")),
                 "TMPDIR is set but empty; set it to a directory or set FUX_SOCKET",
             ),
             (
-                base_directory("TMPDIR", "rel").and_then(|d| checked(&d.to_string_lossy(), "X")),
+                base_directory("TMPDIR", "rel").and_then(|d| checked(&d, "X")),
                 "TMPDIR is \"rel\", not an absolute path; fix it or set FUX_SOCKET",
             ),
         ] {
@@ -679,7 +681,7 @@ mod tests {
         // not connect to a socket.
         let socket = root.join("fux").join("s.sock");
         fuxix::file::make_fifo(&crate::door::path(&socket), 0o600)?;
-        let socket = checked(&socket.display().to_string(), "socket")?;
+        let socket = checked(&socket, "socket")?;
         let error = check_client_socket(&socket).err().map(|e| e.to_string());
         let error = error.unwrap_or_default();
         assert!(error.contains("mode 0755"), "{error}");
