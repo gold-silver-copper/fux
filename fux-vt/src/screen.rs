@@ -1182,8 +1182,9 @@ impl Screen {
         let g = self.grid();
         let wrap = self.mode(Mode::Autowrap);
         // xterm writes a wide glyph over none before it (`replay --engines
-        // xterm --size 2x4 '\e[?7labc\u{754c}'` keeps `abc`).
-        if !wrap && width > 1 {
+        // xterm --size 2x4 '\e[?7labc\u{754c}'` keeps `abc`), unless it
+        // fits: the flag a glyph left at an old right margin is no wrap.
+        if !wrap && width > 1 && g.cursor.col() > room {
             return Ok(None);
         }
         if !wrap {

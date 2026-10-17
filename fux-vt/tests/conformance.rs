@@ -116,6 +116,14 @@ fn the_last_column_flag_is_set_with_autowrap_alone() -> Result {
     }
     let p = run(1, 5, "\x1b[?7labcde\u{301}".as_bytes())?;
     assert_eq!(lines(&p), ["abcde\u{301}"]);
+    // A wide glyph that fits is printed: once DECLRMM is reset, the line
+    // runs past the old right margin, where the glyph in it set no flag.
+    let p = run(
+        1,
+        10,
+        "\x1b[?69h\x1b[1;5s\x1b[?7l\x1b[1;5Ha\x1b[?69l\u{754c}".as_bytes(),
+    )?;
+    assert_eq!(lines(&p), ["    \u{754c}"]);
     Ok(())
 }
 
