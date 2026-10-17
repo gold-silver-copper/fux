@@ -201,11 +201,9 @@ impl Shell {
 
 /// Variables' names, separated by blanks.
 fn names(value: &str) -> Result<Vec<String>, String> {
-    let names: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
-    names
-        .iter()
-        .try_for_each(|name| crate::command::var_name(name))?;
-    Ok(names)
+    (value.split_whitespace())
+        .map(|name| crate::command::var_name(name).map(|()| name.to_owned()))
+        .collect()
 }
 
 /// The config file, a fuxth program each client runs as it attaches (and
