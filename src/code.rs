@@ -120,7 +120,9 @@ codes! {
     // A program of words.
     /// A run of more steps than allowed.
     Steps "steps",
-    /// A word that may only be given as a key's or the prompt's.
+    /// A word the client runs itself (attach, server, start, status), which
+    /// runs from the command line only: not a key's, a config's or a saved
+    /// session's.
     NotHere "not_here",
     /// A word a saved session may not hold.
     NotLayout "not_layout",
