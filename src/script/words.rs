@@ -491,7 +491,7 @@ fn waited(waits: &Waits, after: bool) -> Wait {
             waits.until.clone()
         },
         timeout: waits.timeout,
-        print: waits.print || settles,
+        print: settles,
         after,
         marks: waits.marks,
     }
@@ -740,13 +740,7 @@ impl fuxth::Host for Host<'_> {
             }
             // On a capture's options, and on what a wait prints,
             // whether among options, keys or a mouse event.
-            "marks" => {
-                let mut x = next()?;
-                if let Value::App(Fux::Opts(opts)) = &mut x {
-                    opts.view.marks = true;
-                }
-                with(name, x, out, |w| w.marks = true)
-            }
+            "marks" => with(name, next()?, out, |w| w.marks = true),
             "main-screen" | "alt-screen" | "last-output" => {
                 let mut o = next()?;
                 let view = &mut option(name, &mut o)?.view;
@@ -1072,7 +1066,11 @@ impl fuxth::Host for Host<'_> {
                 };
                 // From a command line, or given a timeout, read once the pane
                 // settles.
-                let (history, view, timeout) = (built.history, built.view, built.waits.timeout);
+                let (history, timeout) = (built.history, built.waits.timeout);
+                let view = crate::command::CaptureView {
+                    marks: built.waits.marks,
+                    ..built.view
+                };
                 let capture = match self.settle || timeout.is_some() {
                     true => Request::Capture(p, history, view, timeout),
                     false => Request::Do(Command::CapturePane {

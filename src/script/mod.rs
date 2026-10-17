@@ -97,7 +97,6 @@ impl AppValue for Fux {
 pub struct Waits {
     pub until: Vec<Until>,
     pub timeout: Option<Duration>,
-    pub print: bool,
     pub marks: bool,
 }
 
