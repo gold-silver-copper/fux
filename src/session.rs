@@ -696,6 +696,16 @@ impl Session {
         }
         .map(|w| w.id)
     }
+    /// Whether `only` (with nothing, everything) takes in tab `tab` of
+    /// workspace `ws`: its workspace, the tab, or a pane in it.
+    fn takes_in(&self, only: Option<AnyRef>, ws: WsId, tab: TabId) -> bool {
+        match only {
+            None => true,
+            Some(AnyRef::Workspace(w)) => w == ws,
+            Some(AnyRef::Tab(t)) => t == tab,
+            Some(AnyRef::Pane(p)) => self.locate(p).is_some_and(|(_, t)| t == tab),
+        }
+    }
     /// `target`, if it is there; else why not.
     pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
         let there = match target {
@@ -2838,21 +2848,16 @@ impl Session {
     /// what is in it, a line each.
     fn ls_text(&self, only: Option<AnyRef>) -> String {
         let mut out = String::new();
-        let listed_ws = |ws: &&Workspace| match only {
-            Some(AnyRef::Workspace(w)) => w == ws.id,
-            None | Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => true,
-        };
-        let listed_tab = |tab: &&Tab| match only {
-            Some(AnyRef::Tab(t)) => t == tab.id,
-            Some(AnyRef::Pane(p)) => self.locate(p).is_some_and(|(_, t)| t == tab.id),
-            None | Some(AnyRef::Workspace(_)) => true,
-        };
         let listed_pane = |pane: PaneId| !matches!(only, Some(AnyRef::Pane(p)) if p != pane);
-        for ws in self.workspaces.iter().filter(listed_ws) {
-            if matches!(only, None | Some(AnyRef::Workspace(_))) {
+        for ws in &self.workspaces {
+            if only.is_none_or(|o| o == AnyRef::Workspace(ws.id)) {
                 out.push_str(&format!("{} {}\n", ws.id, ws.name));
             }
-            for tab in ws.tabs().iter().filter(listed_tab) {
+            for tab in ws
+                .tabs()
+                .iter()
+                .filter(|t| self.takes_in(only, ws.id, t.id))
+            {
                 out.push_str(&format!(
                     "  {} {}{}\n",
                     tab.id,

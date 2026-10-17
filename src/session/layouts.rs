@@ -15,21 +15,18 @@ impl Session {
     /// as a fuxth program; with `ids`, the ids to ask for, as a saved
     /// session keeps them.
     pub(crate) fn dump_layout(&self, only: Option<AnyRef>, ids: bool) -> String {
-        let only = match only {
-            Some(AnyRef::Pane(pane)) => self.locate(pane).map(|(_, tab)| AnyRef::Tab(tab)),
-            other => other,
-        };
         let mut out = String::from("# fux: running this makes it again\n");
-        let whole = !matches!(only, Some(AnyRef::Tab(_)));
+        // A tab's or a pane's is its tab alone, not its workspace's part.
+        let whole = match only {
+            None | Some(AnyRef::Workspace(_)) => true,
+            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => false,
+        };
         for ws in &self.workspaces {
-            if matches!(only, Some(AnyRef::Workspace(w)) if w != ws.id) {
-                continue;
-            }
             // The first tab written opens its workspace: one before it may
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
             for tab in ws.tabs() {
-                if matches!(only, Some(AnyRef::Tab(t)) if t != tab.id) {
+                if !self.takes_in(only, ws.id, tab.id) {
                     continue;
                 }
                 let Some(root) = tab.root() else {
