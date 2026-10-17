@@ -4470,7 +4470,7 @@ mod tests {
         ));
         assert!(matches!(
             s.attach(10, 40, Some("+x")),
-            Err(e) if e.code() == Code::BadValue
+            Err(e) if e.code() == Code::BadValue && e.to_string().contains("+x")
         ));
         Ok(())
     }
