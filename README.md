@@ -63,8 +63,8 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
   7 the program reads its terminal and the waited text has not come, 124
   still busy at the time limit (`SECS timeout`; the `wait-seconds` setting,
   30, by default; `0 timeout` answers at once). A wait met by its program's exit
-  (`wait-exit`) is no failure: the run exits with the program's own status,
-  as `timeout(1)` does.
+  (`wait-exit`) exits 0: the program's own status is in the answer
+  (`%3 exited 2`, `str exited get`), not in fux's.
 - `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
   what stdin says; a single word with spaces is a whole program
   (`fux 'ls json'`). `#` starts a comment. A paste is at most 900 KiB.

@@ -67,12 +67,23 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         format!("{pane} exited 3\n10 40\nstarted\n"),
         "run answers once it settles: here, once it exits"
     );
-    // As timeout(1), a wait for the exit exits with the program's status.
+    // A met wait for the exit is 0: the program's status is its state's.
     let ended = server.fux(&["str", &pane, "pane", "opts", "wait-exit", "wait"])?;
     assert_eq!(
         (ended.status, ended.stdout.as_str()),
-        (3, format!("{pane} exited 3\n10 40\nstarted\n").as_str()),
+        (0, format!("{pane} exited 3\n10 40\nstarted\n").as_str()),
         "its state, and what came since it started"
+    );
+    let json = server.ok(&["str", &pane, "pane", "opts", "wait-exit", "wait", "json"])?;
+    assert!(
+        json.starts_with(&format!(
+            r#"{{"pane":"{pane}","state":"exited 3","status":0,"#
+        )),
+        "{json}"
+    );
+    assert_eq!(
+        server.ok(&["str", &pane, "pane", "str", "exited", "get"])?,
+        "3\n"
     );
     let screen = server.ok(&["str", &pane, "pane", "opts", "capture"])?;
     assert_eq!(
@@ -513,7 +524,7 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     assert_eq!(ended.status, 3, "{}", ended.stderr);
     assert!(ended.stderr.contains("exited 2"), "{}", ended.stderr);
     let ended = server.fux(&["str", &pane, "pane", "opts", "wait-exit", "wait"])?;
-    assert_eq!(ended.status, 2);
+    assert_eq!(ended.status, 0);
     assert!(
         ended.stdout.starts_with(&format!("{pane} exited 2\n")),
         "{}",
@@ -984,7 +995,7 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     let kill = server.fux(&["str", "stub", "pane", "opts", "wait-exit", "wait"])?;
     assert_eq!(
         (kill.status, kill.stdout.lines().next()),
-        (137, Some("%4 killed by SIGKILL"))
+        (0, Some("%4 killed by SIGKILL"))
     );
     // A program that exits first: its last words come with its answer.
     let crash = server.fux(&run(
@@ -1078,7 +1089,11 @@ fn waits_hold_up_under_stress() -> Outcome {
         &["str", "a", "name", "wait-exit"],
         &["sh", "-c", "echo FAIL-A; exit 1"],
     ))?;
-    assert_eq!(failed.status, 1, "the program's status");
+    assert_eq!(
+        (failed.status, failed.stdout.lines().next()),
+        (0, Some("%2 exited 1")),
+        "met: the program's status is its state's"
+    );
     server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
     line(&server, "sh", "clear; echo READY")?;
     // Cleared and printed again, other text: new, on the same row.
@@ -2726,7 +2741,7 @@ fn a_failed_runs_pane_is_printed() -> Outcome {
 #[test]
 fn a_failed_wait_answers_its_json() -> Outcome {
     let server = Server::start("")?;
-    // Its program's own status, 2, is the met exit's.
+    // Its program's own status, 2, is in its state, the met exit 0.
     let started = server.fux(&run(&["wait-exit"], &["sh", "-c", "echo LAST; exit 2"]))?;
     let pane = id(&started.stdout);
     let p = ["str", pane.as_str(), "pane", "opts"];

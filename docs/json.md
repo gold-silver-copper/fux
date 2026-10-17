@@ -87,11 +87,11 @@ a bare `wait` …): one object, or a line each for several panes (a tab or
 workspace waited on, or sent keys). A
 pane that settled, still busy at the limit (124), blocked reading its
 terminal before the waited text came or went (7), or whose exit was waited for (`wait-exit`,
-its own status):
+0, its own status in `state`):
 
 ```json
 {"pane":"%3","state":"reading","status":0,"output":"$ make test\n12 tests PASS\n"}
-{"pane":"%4","state":"exited 5","status":5,"output":"bye\n"}
+{"pane":"%4","state":"exited 5","status":0,"output":"bye\n"}
 ```
 
 `state` is the pane's (above), or `closed`: a settling action or bare

@@ -90,8 +90,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   screen (it starts `… earlier lines not kept (past history-bytes)` if lines
   written since were let go, or `… more came than the pane's journal keeps
   (journal-bytes): text may have passed unseen`, 32 MiB by default). Status 3: the program exited first.
-  `wait-exit` answers `%2 exited 0` and what came, with the program's
-  status.
+  A met `wait-exit` answers status 0, `%2 exited 3` and what came: the
+  program's own status is in its state (`str exited get`).
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output; while one runs, its output so far:
@@ -154,9 +154,9 @@ one line (a line end in it shown as `\n`), with how the word is used when
 one of fux's own words was given too few values or the wrong kind; 3 the program exited before the wait;
 4 the pane closed; 7 the program is blocked reading its terminal and the
 text has not come (or gone); 124 still busy at the time limit (with `0 timeout`, a wait for a text
-or the exit not met at once). A wait for the exit (`wait-exit`)
-answers with the program's own status instead, which may be any of these:
-its state line (`exited 3`) tells them apart. Words before a failing one
+or the exit not met at once). A met wait for the exit (`wait-exit`) is 0:
+the program's own status is in its state line (`%2 exited 3`) and in
+`str exited get`, never fux's (nor `fux FILE`'s). Words before a failing one
 have already acted. `fux ls` (`ls json`, with titles and states) lists everything.
 
 ## A program

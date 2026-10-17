@@ -475,7 +475,7 @@ class Fux(Driver):
         return self.wait(pane, timeout=timeout)
 
     def wait_exit(self, pane, timeout=10):
-        """The program's status: the wait says it, and the run exits with it."""
+        """The program's status: the wait says it in its state (`%2 exited 3`), and exits 0."""
         out = self.fux(*self.pane(pane), "opts", "wait-exit", str(timeout), "timeout", "wait",
                        check=False, timeout=timeout + 10)
         words = out.stdout.split()[1:]

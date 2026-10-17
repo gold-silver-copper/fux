@@ -379,14 +379,9 @@ impl Wait {
                 };
                 (State::Reading, None, output(screen), end)
             }
-            // As timeout(1): the program's own status.
+            // Met: the program's own status is its state's (`exited 3`).
             Told::Found(Found::Exit(ended)) => {
-                let status = u8::try_from(crate::process::shell_status(ended)).unwrap_or(u8::MAX);
-                let end = NonZeroU8::new(status).map_or(End::Done, |status| End::Answered {
-                    status,
-                    code: Code::Exited,
-                });
-                (State::Exited(ended), None, output(came()), end)
+                (State::Exited(ended), None, output(came()), End::Done)
             }
             // A text gone leaves the pane as it is.
             Told::Found(Found::Gone) => (state(), None, output(came()), End::Done),

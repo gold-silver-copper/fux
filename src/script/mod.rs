@@ -623,7 +623,7 @@ pub fn run_capped(
     steps: Option<u64>,
     stop: Option<&Stop>,
 ) -> Result<Ended, Failed> {
-    // A wait met by its program's exit: the run ends with that status.
+    // An answer with a status of its own (4, 7, 124): the run ends with it.
     let mut status = 0;
     loop {
         if stop.is_some_and(Stop::stopped) {

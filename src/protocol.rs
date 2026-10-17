@@ -378,9 +378,8 @@ wire! {
         #[default]
         Done,
         /// Answered with a status of its own, and the code that names it, no
-        /// failure: a wait met by its program's exit (its status), or a pane
-        /// said as it stands (4 closed, 7 reading short of the text, 124 still
-        /// busy).
+        /// failure: a pane said as it stands (4 closed, 7 reading short of
+        /// the text, 124 still busy).
         Answered { status: NonZeroU8, code: Code },
         /// Failed, with its status, its code and why.
         Failed {
