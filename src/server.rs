@@ -1521,7 +1521,7 @@ impl Server {
                         conn.end(session, &ServerFrame::Exit(&mismatch.to_string()));
                     }
                     (Ok(()), Role::Kill) => {
-                        conn.end(session, &ServerFrame::Done { status: 0 });
+                        conn.end(session, &ServerFrame::Done(0));
                         self.stop("stopped by fux force-kill-server".into(), false);
                     }
                     (Ok(()), Role::Attach) => {
@@ -1561,7 +1561,7 @@ impl Server {
                             Stage::Attached(Box::new(Attached::new(client, tty))),
                         );
                         if let Some(taken) = taken {
-                            conn.send(session, &ServerFrame::Terminal { taken });
+                            conn.send(session, &ServerFrame::Terminal(taken));
                         }
                         // Told its id: its bindings' `me`, a headless
                         // client's to print.

@@ -74,8 +74,8 @@ fn server(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
         ServerFrame::Part(p) => ServerFrame::split_into(p, ServerFrame::Part, &mut queue),
         ServerFrame::Hello(_)
         | ServerFrame::Exit(_)
-        | ServerFrame::Done { .. }
-        | ServerFrame::Terminal { .. }
+        | ServerFrame::Done(_)
+        | ServerFrame::Terminal(_)
         | ServerFrame::Ended
         | ServerFrame::Run(_)
         | ServerFrame::Keys(_)

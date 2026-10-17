@@ -1000,7 +1000,7 @@ fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
     let first = frames.iter().find(|f| !f.starts_with("Hello"));
     assert_eq!(
         first.map(String::as_str),
-        Some("Terminal { taken: true }"),
+        Some("Terminal(true)"),
         "{frames:?}"
     );
     drop(slave);
@@ -1067,7 +1067,7 @@ fn a_descriptor_that_is_no_terminal_is_not_taken() -> Outcome {
     let first = frames.iter().find(|f| !f.starts_with("Hello"));
     assert_eq!(
         first.map(String::as_str),
-        Some("Terminal { taken: false }"),
+        Some("Terminal(false)"),
         "{frames:?}"
     );
     Ok(())

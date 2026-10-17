@@ -316,8 +316,8 @@ impl Requests {
                 ServerFrame::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
                 ServerFrame::Hello(_)
                 | ServerFrame::Paint(_)
-                | ServerFrame::Done { .. }
-                | ServerFrame::Terminal { .. }
+                | ServerFrame::Done(_)
+                | ServerFrame::Terminal(_)
                 | ServerFrame::Ended
                 | ServerFrame::Run(_)
                 | ServerFrame::Keys(_) => {}
@@ -360,7 +360,7 @@ pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
     loop {
         match read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER)) {
-            Ok(Some(ServerFrame::Done { .. })) | Ok(None) => return Ok(()),
+            Ok(Some(ServerFrame::Done(_))) | Ok(None) => return Ok(()),
             Ok(Some(_)) => {}
             Err(error) => return Err(error),
         }
@@ -672,8 +672,8 @@ impl Keyboard {
             | ServerFrame::Paint(_)
             | ServerFrame::Exit(_)
             | ServerFrame::Stdout(_)
-            | ServerFrame::Done { .. }
-            | ServerFrame::Terminal { .. }
+            | ServerFrame::Done(_)
+            | ServerFrame::Terminal(_)
             | ServerFrame::Part(_)
             | ServerFrame::PartsEnd => {}
         }

@@ -123,8 +123,8 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
             | ServerFrame::Paint(_)
             | ServerFrame::Exit(_)
             | ServerFrame::Stdout(_)
-            | ServerFrame::Done { .. }
-            | ServerFrame::Terminal { .. }
+            | ServerFrame::Done(_)
+            | ServerFrame::Terminal(_)
             | ServerFrame::Ended
             | ServerFrame::Run(_)
             | ServerFrame::Keys(_) => {}
