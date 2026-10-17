@@ -1291,10 +1291,10 @@ impl Session {
         Ok(made)
     }
 
-    /// Adds a tab named `name` to workspace `ws`, laid out on `fit`,
-    /// holding one pane that starts what `start` says, `size` to begin with.
-    /// A workspace not there that `wanted` names by its name is made, the
-    /// tab its first.
+    /// Adds a tab named `name` (checked: `run` and `new-tab` check it) to
+    /// workspace `ws`, laid out on `fit`, holding one pane that starts what
+    /// `start` says, `size` to begin with. A workspace not there that
+    /// `wanted` names by its name is made, the tab its first.
     fn create_tab(
         &mut self,
         (ws, wanted): (Result<WsId, Error>, Option<&WsRef>),
@@ -1309,9 +1309,6 @@ impl Session {
             }
             (Err(error), _) => return Err(error),
         };
-        if let Some(name) = &name {
-            check_name(name)?;
-        }
         // Found before its pane's program starts, which nothing can then
         // leave running. As for a workspace: the ID first, committed after
         // the pane.
