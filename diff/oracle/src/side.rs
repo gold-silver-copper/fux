@@ -52,7 +52,6 @@ macro_rules! side {
                     vt::Color::Default => Color::Default,
                     vt::Color::Idx(n) => Color::Idx(n),
                     vt::Color::Rgb(vt::Rgb { r, g, b }) => Color::Rgb(r, g, b),
-                    other => Color::Other(format!("{other:?}")),
                 }
             }
 
@@ -64,7 +63,6 @@ macro_rules! side {
                     vt::UnderlineStyle::Curly => Underline::Curly,
                     vt::UnderlineStyle::Dotted => Underline::Dotted,
                     vt::UnderlineStyle::Dashed => Underline::Dashed,
-                    other => Underline::Other(format!("{other:?}")),
                 }
             }
 
@@ -73,7 +71,6 @@ macro_rules! side {
                     vt::Blink::None => Blink::None,
                     vt::Blink::Slow => Blink::Slow,
                     vt::Blink::Rapid => Blink::Rapid,
-                    other => Blink::Other(format!("{other:?}")),
                 }
             }
 
@@ -182,7 +179,6 @@ macro_rules! side {
                             data: data.to_vec(),
                         },
                         vt::Event::ColorQuery { number, bel } => Heard::ColorQuery { number, bel },
-                        other => Heard::OtherEvent(format!("{other:?}")),
                     });
                 }
                 fn unhandled(&mut self, sequence: vt::Unhandled<'_>) {
@@ -203,7 +199,6 @@ macro_rules! side {
                             intermediates: intermediates.to_vec(),
                             action,
                         },
-                        other => Heard::OtherUnhandled(format!("{other:?}")),
                     });
                 }
             }

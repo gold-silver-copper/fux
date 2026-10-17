@@ -14,7 +14,6 @@ pub enum Color {
     Default,
     Idx(u8),
     Rgb(u8, u8, u8),
-    Other(String),
 }
 
 /// An underline's style.
@@ -26,7 +25,6 @@ pub enum Underline {
     Curly,
     Dotted,
     Dashed,
-    Other(String),
 }
 
 /// How a cell blinks.
@@ -35,7 +33,6 @@ pub enum Blink {
     None,
     Slow,
     Rapid,
-    Other(String),
 }
 
 /// Colours and rendition: every attribute fux-vt keeps.
@@ -179,7 +176,6 @@ pub enum Heard {
         number: u8,
         bel: bool,
     },
-    OtherEvent(String),
     Csi {
         params: Vec<Vec<u16>>,
         intermediates: Vec<u8>,
@@ -189,7 +185,6 @@ pub enum Heard {
         intermediates: Vec<u8>,
         action: u8,
     },
-    OtherUnhandled(String),
 }
 
 /// The options a parser is made with, as fux-vt names them.
