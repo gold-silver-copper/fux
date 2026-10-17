@@ -1592,7 +1592,10 @@ fn every_pane_and_every_start_is_waited_for() -> Outcome {
         let met = server.ok(&wait)?;
         let (state, rest) = met.split_once('\n').unwrap_or_default();
         assert!(state.starts_with(&format!("{pane} ")), "{met}");
-        assert!(state.ends_with(" · met \"SPLIT\"") && rest == "SPLIT\n", "{met}");
+        assert!(
+            state.ends_with(" · met \"SPLIT\"") && rest == "SPLIT\n",
+            "{met}"
+        );
     }
     Ok(())
 }
@@ -3034,7 +3037,12 @@ fn a_new_programs_text_goes_once_shown() -> Outcome {
     if PROBED {
         assert_eq!(out.stdout, format!("{pane} {READING}\nready\n"));
     } else {
-        assert_eq!(head(&out.stdout), format!("{pane} {READING}"), "{}", out.stderr);
+        assert_eq!(
+            head(&out.stdout),
+            format!("{pane} {READING}"),
+            "{}",
+            out.stderr
+        );
     }
     let shown = server.fux(&[
         "str",
