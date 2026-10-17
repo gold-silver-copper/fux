@@ -176,11 +176,9 @@ type Specials = std::cell::RefCell<std::collections::HashMap<(usize, Vec<Kinds>)
 impl Summary {
     /// What a definition might do, for one the checker can't follow.
     fn anything() -> Summary {
-        let mut exit = State::unknown();
-        exit.used = 0;
         Summary {
             need: 0,
-            end: End::Returns(exit),
+            end: End::Returns(State::unknown()),
         }
     }
 }
@@ -223,10 +221,7 @@ impl Ends {
     /// where the ways that return end: a way stopping at `fail` counts
     /// only if no way goes on, as a way that fails.
     fn need(&self, exit: Option<&State>) -> Option<i64> {
-        let going = match (exit.map(|e| e.used), self.diverged) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let going = exit.map(|e| e.used).into_iter().chain(self.diverged).min();
         going.or(self.stopped)
     }
 }
