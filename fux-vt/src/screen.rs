@@ -323,9 +323,10 @@ pub(crate) enum Dispatch {
 /// `u32`: a byte among the screen's flags made the printing paths count
 /// up to 0.3% more instructions (bench-commit), by the loads of its
 /// neighbours the compiler joins.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u32)]
 pub(crate) enum Integrity {
+    #[default]
     PowerUp,
     Reported,
 }
@@ -338,6 +339,23 @@ impl Integrity {
             Integrity::Reported => 70,
         }
     }
+}
+
+/// The screen's state that RIS starts again as it was made, one owner of
+/// both, so a field cannot be left out of either.
+#[derive(Clone, Debug, Default)]
+struct Terminal {
+    /// Left by 1047 with this pen: the alternate screen is cleared in its
+    /// colours when shown again, and keeps what the program drew till then
+    /// (`alternate_rows`).
+    clear_on_show: Option<Attributes>,
+    tabs: TabStops,
+    cursor_shape: CursorShape,
+    mouse: MouseProtocolMode,
+    encoding: MouseProtocolEncoding,
+    modify_other_keys: Option<OtherKeys>,
+    /// What DSR 75 reports of the data integrity flag.
+    integrity: Integrity,
 }
 
 /// Terminal state. Reading a window never changes where subsequent output lands.
@@ -356,10 +374,6 @@ pub struct Screen {
     version: u64,
     structural: u64,
     alternate_active: bool,
-    /// Left by 1047 with this pen: the alternate screen is cleared in its
-    /// colours when shown again, and keeps what the program drew till then
-    /// (`alternate_rows`).
-    clear_on_show: Option<Attributes>,
     attributes: Attributes,
     /// The pen's style, and the style of its colours alone (what erasing
     /// fills with), if each is a style that is its own number (`style.rs`),
@@ -390,16 +404,11 @@ pub struct Screen {
     /// Whether a glyph either protects may be on a grid: erases look for
     /// them only then. Set at DECSCA 1 and SPA; RIS clears it.
     protected: bool,
-    tabs: TabStops,
     /// How many times synchronized output has been set, for
     /// `Parser::process_until_frame`.
     frames_begun: u64,
-    cursor_shape: CursorShape,
-    mouse: MouseProtocolMode,
-    encoding: MouseProtocolEncoding,
-    modify_other_keys: Option<OtherKeys>,
-    /// What DSR 75 reports of the data integrity flag.
-    pub(crate) integrity: Integrity,
+    /// What RIS starts again.
+    terminal: Terminal,
     /// The cell the last glyph was printed in, and the state of its
     /// grapheme cluster, while the cursor has not moved nor the row been
     /// edited since: a character that continues the cluster joins its cell
@@ -496,7 +505,6 @@ impl Screen {
             version: 1,
             structural: 1,
             alternate_active: false,
-            clear_on_show: None,
             attributes: Attributes::default(),
             pen_style: 0,
             blank_style: 0,
@@ -506,13 +514,8 @@ impl Screen {
             protect: 0,
             guard: 0,
             protected: false,
-            tabs: TabStops::default(),
             frames_begun: 0,
-            cursor_shape: CursorShape::Initial,
-            mouse: MouseProtocolMode::None,
-            encoding: MouseProtocolEncoding::Default,
-            modify_other_keys: None,
-            integrity: Integrity::PowerUp,
+            terminal: Terminal::default(),
             last_print: None,
             repeat: None,
             link: None,
@@ -636,8 +639,8 @@ impl Screen {
             Kind::Screen(_) => self.alternate_active,
             Kind::SaveCursor => false,
             Kind::Permanent(set) => set,
-            Kind::Mouse(mouse) => self.mouse == mouse,
-            Kind::Encoding(encoding) => self.encoding == encoding,
+            Kind::Mouse(mouse) => self.terminal.mouse == mouse,
+            Kind::Encoding(encoding) => self.terminal.encoding == encoding,
         }
     }
     /// The in-band resize report of the current size, pixels unknown.
@@ -655,7 +658,7 @@ impl Screen {
     /// The cursor shape last set with DECSCUSR (`CSI Ps SP q`). State
     /// only: fux-vt draws no cursor.
     pub fn cursor_shape(&self) -> CursorShape {
-        self.cursor_shape
+        self.terminal.cursor_shape
     }
     /// The top and bottom margins (DECSTBM), zero-based and inclusive.
     pub fn scroll_region(&self) -> (u16, u16) {
@@ -671,11 +674,11 @@ impl Screen {
     }
     /// The mouse reporting the program asked for.
     pub fn mouse_protocol_mode(&self) -> MouseProtocolMode {
-        self.mouse
+        self.terminal.mouse
     }
     /// How the program asked for mouse reports to be encoded.
     pub fn mouse_protocol_encoding(&self) -> MouseProtocolEncoding {
-        self.encoding
+        self.terminal.encoding
     }
     /// The kitty keyboard protocol flags in force: the top of the current
     /// screen's stack, 0 (legacy key reporting) when it is empty. Always 0
@@ -687,7 +690,7 @@ impl Screen {
     /// it is off (`Pv` 0 or absent, or past 3, which ctlseqs gives no keys).
     /// Always `None` without [`Feature::KittyKeyboard`].
     pub fn modify_other_keys(&self) -> Option<OtherKeys> {
-        self.modify_other_keys
+        self.terminal.modify_other_keys
     }
     /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
     /// is counted as CUP addresses it: from the top margin with DECOM set
@@ -1628,9 +1631,9 @@ impl Screen {
         let first = g.addressed().1.first();
         for _ in 0..count {
             let to = if forward {
-                self.tabs.next(col, last)
+                self.terminal.tabs.next(col, last)
             } else {
-                self.tabs.previous(col, first)
+                self.terminal.tabs.previous(col, first)
             };
             if to == col {
                 break;
@@ -1779,7 +1782,7 @@ impl Screen {
             // HTS (ECMA-48 8.3.62): a tab stop at the cursor's column.
             b'H' => {
                 let col = self.grid().cursor.col();
-                self.tabs.set(col, true);
+                self.terminal.tabs.set(col, true);
             }
             b'M' => self.reverse_index()?,
             b'c' => {
@@ -1810,18 +1813,12 @@ impl Screen {
                 // Nor a picture.
                 self.pictures.clear();
                 self.alternate_active = false;
-                self.clear_on_show = None;
                 // The pen, the character sets, protection and the palette,
                 // as DECSTR resets them; the grids' cursors, saved cursors
                 // and margins are new already.
                 self.soft_reset();
                 self.modes = Modes::DEFAULT;
-                self.tabs = TabStops::default();
-                self.cursor_shape = CursorShape::Initial;
-                self.mouse = MouseProtocolMode::None;
-                self.encoding = MouseProtocolEncoding::Default;
-                self.modify_other_keys = None;
-                self.integrity = Integrity::PowerUp;
+                self.terminal = Terminal::default();
                 self.protected = false;
                 self.structural = self.version;
             }
@@ -2220,7 +2217,7 @@ impl Screen {
                     // now.
                     Switch::ClearedOnLeaving => {
                         if !on && self.alternate_active {
-                            self.clear_on_show = Some(self.attributes);
+                            self.terminal.clear_on_show = Some(self.attributes);
                             self.alternate.cursor.pending_wrap = false;
                         }
                         self.switch_screen(on);
@@ -2228,7 +2225,7 @@ impl Screen {
                     Switch::SavingCursor if on => {
                         self.save();
                         self.switch_screen(true);
-                        self.clear_on_show = None;
+                        self.terminal.clear_on_show = None;
                         self.clear_alternate(self.attributes)?;
                     }
                     Switch::SavingCursor => {
@@ -2236,15 +2233,15 @@ impl Screen {
                         self.restore();
                     }
                 }
-                if let Some(pen) = self.clear_on_show.take_if(|_| on) {
+                if let Some(pen) = self.terminal.clear_on_show.take_if(|_| on) {
                     self.clear_alternate(pen)?;
                 }
             }
             Kind::SaveCursor if on => self.save(),
             Kind::SaveCursor => self.restore(),
             Kind::Permanent(_) => {}
-            Kind::Mouse(mouse) => latest(&mut self.mouse, mouse, on),
-            Kind::Encoding(encoding) => latest(&mut self.encoding, encoding, on),
+            Kind::Mouse(mouse) => latest(&mut self.terminal.mouse, mouse, on),
+            Kind::Encoding(encoding) => latest(&mut self.terminal.encoding, encoding, on),
         }
         Ok(false)
     }
@@ -2262,7 +2259,7 @@ impl Screen {
                 out.push('m');
             }
             b" q" => {
-                let shape = self.cursor_shape;
+                let shape = self.terminal.cursor_shape;
                 if shape == CursorShape::Initial {
                     return Setting::Unanswered;
                 }
@@ -2313,10 +2310,10 @@ impl Screen {
             }
             // XTMODKEYS with no parameters resets every resource,
             // modifyOtherKeys too (ctlseqs); 0 alone reads the same.
-            (b">", b'm') if p.is_empty() => self.modify_other_keys = None,
+            (b">", b'm') if p.is_empty() => self.terminal.modify_other_keys = None,
             // Only resource 4 is modifyOtherKeys; other resources are unhandled.
             (b">", b'm') if p.groups().next() == Some(&[4][..]) => {
-                self.modify_other_keys = match p.first(1, 0) {
+                self.terminal.modify_other_keys = match p.first(1, 0) {
                     1 => Some(OtherKeys::Usual),
                     2 => Some(OtherKeys::All),
                     3 => Some(OtherKeys::Unmodified),
@@ -2327,7 +2324,7 @@ impl Screen {
             // Disables it (ctlseqs, `CSI > Ps n`: "a resource value of -1",
             // which keys read as off).
             (b">", b'n') if p.groups().next() == Some(&[4][..]) => {
-                self.modify_other_keys = None;
+                self.terminal.modify_other_keys = None;
             }
             _ => return None,
         }
@@ -2347,7 +2344,7 @@ impl Screen {
             // 0, the default, is a blinking block, as 1 is.
             let ps = p.first(0, 1);
             if let Some(&shape) = CursorShape::ALL.iter().find(|s| s.number() == ps) {
-                self.cursor_shape = shape;
+                self.terminal.cursor_shape = shape;
             }
             return Ok(Dispatch::Done);
         }
@@ -2596,9 +2593,9 @@ impl Screen {
                     match group.first() {
                         Some(0) => {
                             let col = self.grid().cursor.col();
-                            self.tabs.set(col, false);
+                            self.terminal.tabs.set(col, false);
                         }
-                        Some(3) => self.tabs.clear(),
+                        Some(3) => self.terminal.tabs.clear(),
                         _ => {}
                     }
                 }
@@ -2700,7 +2697,7 @@ impl Screen {
                 // then no errors since the last report (70); RIS is a
                 // power-up again.
                 75 => {
-                    let integrity = &mut self.integrity;
+                    let integrity = &mut self.terminal.integrity;
                     let status = std::mem::replace(integrity, Integrity::Reported).report();
                     Some(Reply::of(format_args!("\x1b[?{status}n")))
                 }
