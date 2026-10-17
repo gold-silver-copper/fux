@@ -394,10 +394,10 @@ pub(crate) const MAIN: &str = "main";
 /// The workspace `fux run` starts programs in unless told another.
 pub const RUN_WORKSPACE: &str = "agent";
 
-/// A log file, made anew: what a program writes may be secret, so it is
-/// the user's alone.
-/// A link is not followed, and a file there already is emptied and made
-/// the user's alone too.
+/// A log file, made if it is not there: what a program writes may be
+/// secret, so it is the user's alone.
+/// A link is not followed, and a file there already is made the user's
+/// alone too. It is emptied by `emptied`, once nothing refuses the log.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let failed = |e| fail(Code::Log, format!("the log {}: {e}", path.display()));
@@ -408,13 +408,22 @@ fn open_log(path: &Path) -> Result<std::fs::File, Error> {
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .mode(0o600)
         .custom_flags(fuxix::file::NOFOLLOW)
         .open(path)
         .map_err(failed)?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
         .map_err(failed)?;
+    Ok(file)
+}
+
+/// `file`, a log, emptied: a FIFO or a terminal has nothing to empty.
+fn emptied(file: std::fs::File) -> Result<std::fs::File, Error> {
+    let failed = |e| fail(Code::Log, format!("emptying the log: {e}"));
+    if file.metadata().map_err(failed)?.is_file() {
+        file.set_len(0).map_err(failed)?;
+    }
     Ok(file)
 }
 
@@ -2177,7 +2186,8 @@ impl Session {
                     .clone()
                     .unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
                 let ws = (self.resolve_ws(&workspace), Some(&workspace));
-                // Opened, and so emptied, once nothing else refuses the run.
+                // Opened before the program starts, and emptied after: a run
+                // refused leaves the file as it was.
                 let log = log
                     .as_ref()
                     .map(|p| open_log(&self.cwd_for(here, None).join(p)))
@@ -2188,7 +2198,7 @@ impl Session {
                 }
                 // Before any of its output is read: it all goes there.
                 if let Some(pane) = self.panes.get_mut(&made.2) {
-                    pane.log = log;
+                    pane.log = log.map(emptied).transpose()?;
                 }
                 Ok(Self::made_ids(made, Kind::Pane))
             }
@@ -2499,7 +2509,7 @@ impl Session {
             Command::Log { target, file } => {
                 self.pane(*target)?;
                 let log = match file {
-                    Some(file) => Some(open_log(&self.cwd_for(here, None).join(file))?),
+                    Some(file) => Some(emptied(open_log(&self.cwd_for(here, None).join(file))?)?),
                     None => None,
                 };
                 self.pane_mut(*target)?.log = log;
@@ -3748,23 +3758,34 @@ mod tests {
     use super::testing::{attached, output, requests, run, started};
     use super::*;
 
-    /// A run refused (its name is taken) leaves the log file it names as it
-    /// was: the file is emptied only for a run that starts.
+    /// A run refused (its name is taken, its workspace is not there or
+    /// can't be made) leaves the log file it names as it was: the
+    /// file is emptied only for a run that starts.
     #[test]
     fn a_refused_run_leaves_its_log_alone() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started(Config::default())?;
-        let dir = std::env::temp_dir().join(format!("fux-log-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        let log = dir.join("out.log");
-        let line = format!(
-            "opts str a name str '{}' log-to str /bin/cat program run",
-            log.display()
-        );
-        run(&mut s, &line)?;
+        let log = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
+        let line = |opts: &str| {
+            let log = log.display();
+            format!("opts {opts} str '{log}' log-to str /bin/cat program run")
+        };
+        run(&mut s, &line("str a name"))?;
         std::fs::write(&log, "kept")?;
-        assert!(run(&mut s, &line).is_err_and(|e| e.contains("name_taken")));
-        assert_eq!(std::fs::read_to_string(&log)?, "kept");
-        std::fs::remove_dir_all(&dir)?;
+        let refused = [
+            (line("str a name"), "name_taken"),
+            (line("str +9 in"), "no_workspace"),
+            (line("str %9 in"), "bad_name"),
+            (line("str a in"), "name_taken"),
+        ];
+        let kept = refused.map(|(line, code)| {
+            let failed = run(&mut s, &line).is_err_and(|e| e.contains(code));
+            (code, failed, std::fs::read_to_string(&log).ok())
+        });
+        std::fs::remove_file(&log)?;
+        for (code, failed, text) in kept {
+            assert!(failed, "{code}");
+            assert_eq!(text.as_deref(), Some("kept"), "{code}");
+        }
         Ok(())
     }
 
