@@ -304,7 +304,9 @@ their first half, soft wraps join, a picture's cells read as blanks
 (`CellRef::shown`), padding at hard line ends and past a history row's
 width is not copied, and cell and byte limits are checked before anything
 grows. `Row::copied` gives one row's glyphs as a copy takes them, each with
-its column, for a copy of another shape.
+its column, for a copy of another shape, and `Row::ends_in_spacer` whether
+a soft-wrapped row ends in the blank a wide glyph did not fit in, which a
+copy leaves out (a blank erased in a colour is a cell, and stays).
 
 Marks are not consumed, so readers share them. `changed_since` says
 whether the screen may have changed (any processing counts);

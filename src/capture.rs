@@ -47,9 +47,9 @@ pub fn pane(
         .flatten();
     // Where it is among the lines captured, found as they are made.
     let mut cursor = None;
-    // Whether the row before ended in a blank no glyph was written to: the
-    // cell a wide glyph left, not fitting at the row's end.
-    let mut padded = false;
+    // Whether the row before ended in the spacer a wide glyph left, not
+    // fitting at the row's end (`fux_vt::Row::ends_in_spacer`).
+    let mut spacer = false;
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // line each row is part of, and the lines the range touches.
     let line_of: Vec<usize> = read
@@ -126,9 +126,8 @@ pub fn pane(
         let count = lines.len();
         match lines.last_mut() {
             Some(last) if wraps => {
-                // The blank a wide glyph left at the row's end, not fitting
-                // there, is no part of the line.
-                if padded && cells.get(1).is_some_and(|(text, _)| text.is_empty()) {
+                // The spacer is no part of the line.
+                if spacer {
                     last.pop();
                 }
                 if let Some(col) = at {
@@ -144,7 +143,7 @@ pub fn pane(
             }
         }
         wraps = view.join && row.wrapped();
-        padded = ends_padded(&row);
+        spacer = row.ends_in_spacer();
     }
     let (rows, cols) = screen.size().into();
     let cursor =
@@ -157,13 +156,6 @@ pub fn pane(
         (lines, view, screen_background(screen)),
         state,
     )
-}
-
-/// Whether `row` ends in a blank no glyph was written to: the cell a wide
-/// glyph left, not fitting at the row's end. Of a line wrapped on with that
-/// glyph, it is no part.
-pub(crate) fn ends_padded(row: &fux_vt::Row<'_>) -> bool {
-    (row.cells().last()).is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation())
 }
 
 /// The screen's own background, against which a highlight shows: the
@@ -538,4 +530,40 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
             .map(|name| (name, Json::Bool(true))),
     );
     fields
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::command::CaptureView;
+    use crate::id::PaneId;
+    use crate::pane::{Pane, Runs};
+
+    /// A soft-wrapped row's last cell is the spacer a wide glyph left, no
+    /// part of the line, only while nothing was painted there: a blank EL
+    /// erased in a colour is a cell the program painted, and shows, so a
+    /// joined capture keeps it, as a copy does (`fux_vt::Row::copied`).
+    #[test]
+    fn a_painted_blank_before_a_wide_glyph_wrapped_on_is_part_of_the_line()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let join = CaptureView {
+            join: true,
+            ..CaptureView::default()
+        };
+        let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
+            let size = fux_vt::Size::new(3, 5)?;
+            let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+            pane.output(output.as_bytes());
+            Ok(super::pane(&pane, None, join, false, false).0)
+        };
+        // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
+        let first = |output| {
+            Ok::<_, Box<dyn std::error::Error>>(captured(output)?.lines().next().map(str::to_owned))
+        };
+        assert_eq!(first("abc\x1b[K\x1b[5G世")?.as_deref(), Some("abc 世"));
+        assert_eq!(
+            first("abc\x1b[41m\x1b[K\x1b[m\x1b[5G世")?.as_deref(),
+            Some("abc  世")
+        );
+        Ok(())
+    }
 }

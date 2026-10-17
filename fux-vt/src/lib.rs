@@ -256,8 +256,9 @@ impl<'a> Row<'a> {
     }
     /// Whether the row, soft-wrapped, ends in a spacer: the blank in its
     /// own last column that a wide glyph starting the next row did not fit
-    /// in, no part of the text (reflow and copies skip it).
-    pub(crate) fn ends_in_spacer(&self) -> bool {
+    /// in, no part of the text (reflow and copies skip it). A blank erased
+    /// in a colour is a cell painted, and no spacer.
+    pub fn ends_in_spacer(&self) -> bool {
         self.wrapped
             && (self.width.checked_sub(1))
                 .and_then(|col| self.stored(col))
