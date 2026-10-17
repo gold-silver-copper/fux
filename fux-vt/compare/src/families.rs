@@ -219,6 +219,9 @@ fn erase(r: &mut Rng) -> Vec<u8> {
 /// as drawn once DECCRA, DECSERA or a rectangle's attribute change has
 /// written it, where DEC STD 070 (DECSACE) leaves an unoccupied position
 /// alone (`replay --engines xterm --size 1x1 '\e[1;1;1;1${\e[*x\e[1;1;1;1;1$r'`).
+/// So is a DECCARA with no rendition it knows, which DEC STD 070 gives its
+/// default, 0, and xterm ignores (`replay --engines xterm --size 1x1
+/// '\e[1mA\e[2*x\e[1;1;1;1;31$r'`): a colour comes with a rendition.
 fn rectangles(r: &mut Rng) -> Vec<u8> {
     let corners = [number(r), number(r), number(r), number(r)].join(";");
     match r.below(4) {
@@ -226,7 +229,7 @@ fn rectangles(r: &mut Rng) -> Vec<u8> {
         1 => format!("\x1b[{corners}${}", pick(r, &["z", "{"])),
         2 => format!(
             "\x1b[2*x\x1b[{corners};{}${}",
-            pick(r, &["0", "1", "4;7", "22", "31"]),
+            pick(r, &["0", "1", "4;7", "22", "31;1"]),
             pick(r, &["r", "t"])
         ),
         _ => format!("\x1b[{corners};1;{};{};1$v", number(r), number(r)),

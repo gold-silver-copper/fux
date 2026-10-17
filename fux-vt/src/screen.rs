@@ -2183,14 +2183,18 @@ impl Screen {
             // no DECSCA, made spaces in their own attributes.
             b'{' => self.each_row(lines, |g, y, v| g.blank_unprotected(y, span, v)),
             // DECCARA and DECRARA: SGR's numbers from the fifth parameter
-            // on (DECCARA's default 0), over the rectangle, or with
-            // DECSACE's stream from its first position to its last, every
-            // row between them whole.
+            // on (DECCARA's default 0 "if no valid subsequent parameter is
+            // received", p. 5-174), over the rectangle, or with DECSACE's
+            // stream from its first position to its last, every row
+            // between them whole.
             b'r' | b't' => {
                 let reverse = byte == b't';
-                let none = !reverse && p.groups().nth(4).is_none();
-                let given = p.groups().skip(4);
-                let groups: Vec<&[u16]> = given.chain(none.then_some(&[0][..])).collect();
+                let valid =
+                    |g: &&[u16]| matches!(g.first(), Some(0 | 1 | 4 | 5 | 7 | 22 | 24 | 25 | 27));
+                let mut groups: Vec<&[u16]> = p.groups().skip(4).filter(valid).collect();
+                if groups.is_empty() && !reverse {
+                    groups.push(&[0]);
+                }
                 let change = |a| rendition(a, &groups, reverse);
                 let (rectangle, cols) = (self.terminal.rectangle, self.size().cols());
                 // The rectangle's edge, or a stream's, but at its ends.

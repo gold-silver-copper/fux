@@ -212,6 +212,9 @@ fn deccara_and_decrara_change_renditions() -> Result {
     // DECCARA 0, its default, ends what 1 set; DECRARA reverses.
     let ended = after("\x1b[2*x\x1b[1;1;2;6;1$r\x1b[1;2;1;3$r")?;
     assert_eq!(bold(&ended), ["B..BBB", "BBBBBB", "......", "......"]);
+    // As it is "if no valid subsequent parameter is received" (p. 5-174).
+    let invalid = after("\x1b[2*x\x1b[1;1;2;6;1$r\x1b[1;2;1;3;31;99$r")?;
+    assert_eq!(bold(&invalid), bold(&ended));
     let reversed = after("\x1b[2*x\x1b[1;1;1;3;1$r\x1b[1;2;1;4;1$t")?;
     assert_eq!(bold(&reversed), ["B..B..", "......", "......", "......"]);
     let parser = after("\x1b[2*x\x1b[1;1;1;1;4;7$r\x1b[1;1;1;2;0$t")?;
