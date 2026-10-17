@@ -19,6 +19,11 @@ pub(crate) struct Parameters {
     /// group: none until a `:` is read, and each value a group of its own.
     sub: u32,
     len: usize,
+    /// Whether a separator came after the last slot: the parameters past
+    /// it are ignored, and the sequence runs with the first 32, as DEC
+    /// STD 070 (3.5.3.1) lets parameters "beyond the maximum number
+    /// supported" be.
+    full: bool,
 }
 impl Default for Parameters {
     fn default() -> Self {
@@ -26,21 +31,24 @@ impl Default for Parameters {
             values: [0; 32],
             sub: 0,
             len: 1,
+            full: false,
         }
     }
 }
 impl Parameters {
     fn digit(&mut self, byte: u8) {
         // A value too large for a u16 stays at its largest.
-        if let Some(n) = self.len.checked_sub(1).and_then(|i| self.values.get_mut(i))
+        if !self.full
+            && let Some(n) = self.len.checked_sub(1).and_then(|i| self.values.get_mut(i))
             && let Some(digit) = byte.checked_sub(b'0')
         {
             *n = n.saturating_mul(10).saturating_add(u16::from(digit));
         }
     }
-    fn separator(&mut self, colon: bool) -> bool {
+    fn separator(&mut self, colon: bool) {
         let Some(len) = self.len.checked_add(1).filter(|n| *n <= self.values.len()) else {
-            return false;
+            self.full = true;
+            return;
         };
         // The new parameter starts empty: `clear` left what a sequence
         // before put there.
@@ -49,7 +57,6 @@ impl Parameters {
         }
         self.continue_group(self.len, colon);
         self.len = len;
-        true
     }
     /// Marks value `index` as continuing the previous group if `colon`.
     #[inline]
@@ -69,7 +76,7 @@ impl Parameters {
     /// how many there are itself (`Parser::sequence`): the parameter
     /// `len` ends with `value`, and the next begins, continuing its group
     /// if `colon`. The new count, or `None`, with nothing changed, where
-    /// `separator` refuses one past the last slot.
+    /// there is no slot for another (`separator` is then `full`).
     #[inline]
     fn next(&mut self, len: usize, value: u16, colon: bool) -> Option<usize> {
         let more = len.checked_add(1).filter(|n| *n <= self.values.len())?;
@@ -88,10 +95,11 @@ impl Parameters {
     }
     /// Back to one empty parameter, touching only what `separator` and
     /// `digit` read: a CSI or DCS is begun often, so this is kept to
-    /// three stores rather than rewriting all the parameters.
+    /// four stores rather than rewriting all the parameters.
     fn clear(&mut self) {
         self.len = 1;
         self.sub = 0;
+        self.full = false;
         if let Some(value) = self.values.first_mut() {
             *value = 0;
         }
@@ -327,11 +335,8 @@ impl Phase {
                 Next::Phase(Phase::Param(read))
             }
             b';' | b':' => {
-                if params.separator(byte == b':') {
-                    Next::Phase(Phase::Param(read))
-                } else {
-                    Next::Ignore
-                }
+                params.separator(byte == b':');
+                Next::Phase(Phase::Param(read))
             }
             0x3c..=0x3f if self == Phase::Entry => {
                 Next::Phase(Phase::Param(Intermediates::of(byte)))
@@ -935,9 +940,12 @@ impl Parser {
                     let ended = u16::try_from(value).unwrap_or(u16::MAX);
                     match self.params.next(len, ended, byte == b':') {
                         Some(more) => (len, value) = (more, 0),
+                        // The rest goes byte by byte, ignored up to
+                        // the final byte.
                         None => {
                             self.params.end(len, ended);
-                            self.state = State::CsiIgnore;
+                            self.params.full = true;
+                            self.state = State::Csi(Phase::Param(marker));
                             return Ok((next, false));
                         }
                     }

@@ -173,8 +173,11 @@ A direct implementation of Paul Williams's DEC ANSI state machine
 (<https://vt100.net/emu/dec_ansi_parser>), without a parser crate. UTF-8
 replaces the 8-bit controls: raw C1 bytes are invalid UTF-8, and 0x9c in a
 string is a byte of a character, not ST. Parameters saturate at
-`u16::MAX`; at most 32 fields and two intermediates are kept, and more
-make the sequence ignored. CAN and SUB cancel any sequence; ESC starts a
+`u16::MAX`. At most 32 fields are kept: the rest are ignored and the
+sequence runs with the 32, as DEC STD 070 (3.5.3.1) lets parameters
+"beyond the maximum number supported" be (xterm 411 differs: `1x4
+'\e[0;…;0;1;4;7mX'` with 30 zeros is plain there). More than two
+intermediates make the sequence ignored. CAN and SUB cancel any sequence; ESC starts a
 new one.
 
 The common input skips the byte-at-a-time state machine, each fast path

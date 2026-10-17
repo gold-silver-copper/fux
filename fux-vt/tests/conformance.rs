@@ -783,3 +783,30 @@ fn a_control_string_ends_at_esc_backslash_alone() -> Result {
     }
     Ok(())
 }
+
+/// DEC STD 070, 3.5.3.1: "Parameters beyond the maximum number supported
+/// may be ignored"; the sequence still runs, with the ones kept. fux-vt
+/// keeps 32: an SGR of 33 parameters sets bold and underline (the 31st
+/// and the 32nd) and not inverse (the 33rd), and digits and colons past
+/// the 32nd change nothing; the same read at once and a byte at a time.
+#[test]
+fn parameters_past_the_32nd_are_ignored_and_the_sequence_runs() -> Result {
+    let zeros: String = std::iter::repeat_n("0;", 30).collect();
+    for sgr in [
+        format!("\x1b[{zeros}1;4;7mX"),
+        format!("\x1b[{zeros}1;4;7;5:3;8mX"),
+    ] {
+        let at_once = run(1, 4, sgr.as_bytes())?;
+        let mut split = Parser::new(Size::new(1, 4)?, 0)?;
+        for byte in sgr.bytes() {
+            split.process(&[byte])?;
+        }
+        for p in [at_once, split] {
+            let c = p.screen().cell(0, 0).ok_or("no cell")?;
+            assert_eq!(c.contents(), "X", "{sgr:?}");
+            assert!(c.bold() && c.underline() && !c.inverse(), "{sgr:?}");
+            assert!(!c.dim() && !c.hidden(), "{sgr:?}");
+        }
+    }
+    Ok(())
+}
