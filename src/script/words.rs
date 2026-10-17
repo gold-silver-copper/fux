@@ -496,9 +496,10 @@ fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failu
 const INPUT_MAX: usize = 900 * 1024;
 
 /// The wait an action makes, armed before it when `after`: what it names;
-/// or, from a command line (`settle`), for each pane to settle.
+/// or, from a command line (`settle`) or given any wait word (`timeout`
+/// alone), for each pane to settle.
 fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
-    let named = !waits.until.is_empty();
+    let named = *waits != Waits::default();
     (named || settle).then(|| Box::new(waited(waits, after)))
 }
 
@@ -1126,8 +1127,10 @@ impl fuxth::Host for Host<'_> {
                 } else {
                     Then::Answer(Said::Capture)
                 };
-                // From a command line, read once the pane settles.
-                let settle = self.settle.then_some(built.waits.timeout);
+                // From a command line, or given a timeout, read once the pane
+                // settles.
+                let timed = built.waits.timeout.is_some();
+                let settle = (self.settle || timed).then_some(built.waits.timeout);
                 later(ask(
                     Command::CapturePane {
                         target: p,

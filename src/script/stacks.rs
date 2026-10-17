@@ -70,6 +70,7 @@ const ROWS: &[Row] = &[
     row(Key, "send-keys", "pane", false, "%1 keys str x text send-keys", &["string SENTINEL"]),
     row(Cli, "send-keys", "pane", true, "%1 keys str x text str x wait-text send-keys", &["fails timeout 124"]),
     row(Key, "send-keys", "pane", true, "%1 keys str x text str x wait-text send-keys", &["fails timeout 124"]),
+    row(Key, "send-keys", "pane", true, "%1 keys str x text 1 timeout send-keys", &["string SENTINEL", "answer %1 empty · 1 bytes unread"]),
     row(Cli, "send-mouse", "pane", false, "%1 str click 0 0 mouse send-mouse", &["string SENTINEL", "answer %1 empty · 12 bytes unread"]),
     row(Key, "send-mouse", "pane", false, "%1 str click 0 0 mouse send-mouse", &["string SENTINEL"]),
     row(Cli, "send-mouse", "pane", true, "%1 str click 0 0 mouse str x wait-text send-mouse", &["fails timeout 124"]),
