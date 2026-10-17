@@ -187,7 +187,7 @@ differ from xterm's.
 | vt100 | vt100 `=0.16.2` | no | fux-vt's ancestor; a speed baseline |
 | xterm.js | `@xterm/headless` 6.0.0 with addon-unicode-graphemes 0.4.0, one Node process (`node/engine.mjs`) | on request | links read from its core, not the public API |
 | tmux | the installed tmux: a private server, one session per terminal, read with `capture-pane` | on request | every step synced by DA1, which no family sends |
-| xterm | the installed xterm under one Xvfb per run, read by printing every page through `printerCommand` | on request | decides most disputed families (`verdicts`) and the corpus; abstains from a case with SGR 58, which it lacks |
+| xterm | the installed xterm (patch 397 or later, for `printRawChars`; CI builds 411) under one Xvfb per run, read by printing every page through `printerCommand` | on request | decides most disputed families (`verdicts`) and the corpus; abstains from a case with SGR 58, which it lacks |
 
 tmux and xterm share the pane program, syncing and SGR decoding in
 `src/engines/pane.rs`.

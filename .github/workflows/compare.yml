@@ -23,11 +23,28 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: tmux, xterm and Xvfb
+      - name: tmux, Xvfb and what xterm builds with
         run: |
           set -euo pipefail
           sudo apt-get update -q
-          sudo apt-get install -y -q tmux xterm xvfb
+          sudo apt-get install -y -q tmux xvfb libxaw7-dev libxft-dev libncurses-dev pkg-config
+
+      # xterm 411, the patch the README names as the authority, checked by
+      # the SHA-256 of the tarball Thomas E. Dickey signed. Ubuntu's (390)
+      # predates printRawChars (patch 397): its print hides a wide
+      # character's second half, and the harness refuses it.
+      - name: xterm 411
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o xterm.tgz https://invisible-island.net/archives/xterm/xterm-411.tgz
+          echo "969be283670deadd66934865c4de6c5ab045e3a3facc2b228decf91a20d8c36c  xterm.tgz" | sha256sum -c -
+          tar -xzf xterm.tgz
+          cd xterm-411
+          ./configure -q --disable-setuid --without-utempter --with-app-defaults=/usr/share/X11/app-defaults
+          make -s -j4
+          sudo make -s install
+          [[ $(xterm -version) == "XTerm(411)" ]]
 
       - name: The named cases, beside every engine
         run: fux-vt/compare/run.sh cases
