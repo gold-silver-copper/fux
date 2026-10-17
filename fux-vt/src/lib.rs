@@ -75,7 +75,8 @@ pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};
 pub use parser::{
-    Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled,
+    Event, Feature, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink,
+    Unhandled,
 };
 pub use screen::{
     CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,

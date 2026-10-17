@@ -2,7 +2,7 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::mode::Mode;
+use crate::mode::{Mode, Modes};
 use crate::{
     Error, Rgb, Screen, Size,
     screen::{Dispatch, Setting},
@@ -231,6 +231,27 @@ fn printable(bytes: &[u8]) -> usize {
     )
 }
 
+/// Where the first ESC in `bytes` is: eight bytes at a time, as a word, as
+/// `printable` reads them, then one at a time. XOR with ESC makes an ESC
+/// a zero byte, and a zero byte alone borrows when 1 is taken from it with
+/// its top bit clear; a borrow runs only into the bytes after it, so the
+/// first byte flagged is the first ESC.
+fn esc_in(bytes: &[u8]) -> Option<usize> {
+    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
+    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+    let (words, tail) = bytes.as_chunks::<8>();
+    for (i, word) in words.iter().enumerate() {
+        let x = u64::from_le_bytes(*word) ^ ONES.wrapping_mul(0x1b);
+        let zero = x.wrapping_sub(ONES) & !x & TOPS;
+        if zero != 0 {
+            let first = usize::try_from(zero.trailing_zeros() / 8).ok()?;
+            return i.checked_mul(8)?.checked_add(first);
+        }
+    }
+    let at = tail.iter().position(|&b| b == 0x1b)?;
+    words.len().checked_mul(8)?.checked_add(at)
+}
+
 /// Where the parser is in what it reads, and what it keeps of that: each
 /// state holds exactly what is read in it, and nothing outlives it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -309,6 +330,131 @@ enum Phase {
     Param(Intermediates),
     /// Reading intermediates.
     Intermediate(Intermediates),
+}
+
+/// Where a frame drawn in synchronized output ends, read from the bytes
+/// a host holds after its BSU ([`Parser::process_until_frame`]) as the
+/// parser will read them, nothing carried out. ESC begins a sequence
+/// anywhere, in a string too, so only what follows each ESC is read: as
+/// `Parser::byte` reads an escape sequence or a CSI (`Phase::next`, the
+/// parameters, controls within, CAN and SUB cancelling). Made by
+/// [`Parser::frame_scan`]; it goes on from where it stopped, so each
+/// sequence is read once however the frame comes split.
+#[derive(Clone, Debug)]
+pub struct FrameScan {
+    /// Where in the held bytes it goes on: past what it has read, or at a
+    /// sequence they end in the middle of.
+    from: usize,
+    params: Parameters,
+    options: Options,
+    /// Whether XTSAVE holds synchronized output set, for XTRESTORE.
+    saved: bool,
+}
+
+impl FrameScan {
+    /// Whether synchronized output is reset by default, as RIS, and DECSTR
+    /// for the modes it names, leave it.
+    const RESET: bool = !Modes::DEFAULT.contains(Mode::SynchronizedOutput);
+    /// Reads `held`, the frame's bytes so far, from where it stopped: how
+    /// many of them go up to and through the sequence that ends
+    /// synchronized output, as the parser carries it out (DECRST naming
+    /// it, XTRESTORE of it saved reset, DECSTR, RIS); `None` if none does.
+    pub fn end(&mut self, held: &[u8]) -> Option<usize> {
+        loop {
+            let Some(esc) = held.get(self.from..).and_then(esc_in) else {
+                self.from = held.len();
+                return None;
+            };
+            let at = self.from.checked_add(esc)?;
+            // A sequence the bytes end in the middle of is read again.
+            let (len, ended) = self.sequence(held.get(at..)?).or_else(|| {
+                self.from = at;
+                None
+            })?;
+            self.from = at.checked_add(len)?;
+            if ended {
+                return Some(self.from);
+            }
+        }
+    }
+
+    /// Reads the sequence `bytes` begins with, at its ESC, as `Parser::byte`
+    /// does: how many bytes it takes (up to an ESC or past CAN or SUB that
+    /// cut it short), and whether it ends the frame; `None` if it goes on
+    /// past them.
+    fn sequence(&mut self, bytes: &[u8]) -> Option<(usize, bool)> {
+        let mut plain = true;
+        for (i, &byte) in bytes.iter().enumerate().skip(1) {
+            match byte {
+                0x18 | 0x1a | 0x1b => return Some((i, false)),
+                0x20..=0x2f => plain = false,
+                b'[' if plain => return self.csi(bytes, i.checked_add(1)?),
+                b'c' if plain => return Some((i.checked_add(1)?, Self::RESET)),
+                // A control string's introducer among them.
+                0x30..=0x7e => return Some((i.checked_add(1)?, false)),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Reads the CSI whose parameters begin at `start` of `bytes`, as
+    /// `sequence` does. Its parameters and intermediates are 0x20 to 0x3f;
+    /// only DECRST's, XTRESTORE's, XTSAVE's and DECSTR's need reading: the
+    /// others are passed at their final byte at once.
+    fn csi(&mut self, bytes: &[u8], start: usize) -> Option<(usize, bool)> {
+        let csi = bytes.get(start..)?;
+        let end = csi.iter().position(|b| !(0x20..0x40).contains(b))?;
+        // Every final byte but `l`, `p`, `r` and `s`.
+        if matches!(
+            csi.get(end),
+            Some(0x40..=0x6b | 0x6d..=0x6f | 0x71 | 0x74..=0x7e)
+        ) {
+            return Some((start.checked_add(end)?.checked_add(1)?, false));
+        }
+        let (mut phase, mut ignored) = (Phase::Entry, false);
+        self.params.clear();
+        for (i, &byte) in bytes.iter().enumerate().skip(start) {
+            let next = match byte {
+                0x18 | 0x1a | 0x1b => return Some((i, false)),
+                0x40..=0x7e if ignored => return Some((i.checked_add(1)?, false)),
+                _ if ignored => continue,
+                _ => phase.next(byte, &mut self.params),
+            };
+            match next {
+                Next::Phase(next) => phase = next,
+                Next::Ignore => ignored = true,
+                Next::Control => {}
+                Next::Final(read) => {
+                    let ended = self.ends(read.as_slice(), byte);
+                    return Some((i.checked_add(1)?, ended));
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether the CSI just read, `intermediates` and `byte` its own,
+    /// ends synchronized output, as `Screen::csi` carries it out: DECRST
+    /// (`CSI ? Pm l`) with it among its parameters, each a group of one as
+    /// `set_modes` reads them; XTRESTORE (`CSI ? Pm r`) of it while XTSAVE
+    /// (`CSI ? Pm s`) holds it reset; DECSTR (`CSI ! p`), which resets it
+    /// with the modes `Modes::SOFT_RESET` names.
+    fn ends(&mut self, intermediates: &[u8], byte: u8) -> bool {
+        let ours = |n: &u16| Mode::of(*n, true, &self.options) == Some(Mode::SynchronizedOutput);
+        let named = || self.params.groups().any(|g| matches!(g, [n] if ours(n)));
+        match (intermediates, byte) {
+            (b"?", b'l') => named(),
+            (b"?", b'r') => !self.saved && named(),
+            // The mode is set while the frame lasts.
+            (b"?", b's') => {
+                self.saved = self.saved || named();
+                false
+            }
+            (b"!", b'p') => Self::RESET && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput),
+            _ => false,
+        }
+    }
 }
 
 /// What a byte makes of a CSI or DCS in a [`Phase`].
@@ -815,6 +961,16 @@ impl Parser {
         sink: &mut impl Sink,
     ) -> Result<Option<usize>, Error> {
         self.run::<true>(bytes, sink)
+    }
+    /// A [`FrameScan`] for the frame [`Parser::process_until_frame`] just
+    /// stopped at the start of.
+    pub fn frame_scan(&self) -> FrameScan {
+        FrameScan {
+            from: 0,
+            params: Parameters::default(),
+            options: self.options,
+            saved: self.screen.saved_mode(Mode::SynchronizedOutput),
+        }
     }
     /// Processes `bytes`, stopping after a BSU if `UNTIL_FRAME`; how many
     /// bytes it took if it stopped. A constant, so that `process_with`,

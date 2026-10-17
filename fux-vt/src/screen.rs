@@ -645,6 +645,10 @@ impl Screen {
         let (rows, cols) = self.size().into();
         Reply::of(format_args!("\x1b[48;{rows};{cols};0;0t"))
     }
+    /// Whether XTSAVE holds `mode` set.
+    pub(crate) fn saved_mode(&self, mode: Mode) -> bool {
+        self.saved_modes.contains(mode)
+    }
     pub(crate) fn frames_begun(&self) -> u64 {
         self.frames_begun
     }

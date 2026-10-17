@@ -21,8 +21,6 @@ pub const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
 /// The most bytes a held frame keeps before it is shown anyway:
 /// alacritty's bound.
 pub const FRAME_LIMIT: usize = 2 << 20;
-/// End synchronized update (ESU). Its beginning, BSU, the parser finds.
-const ESU: &[u8] = b"\x1b[?2026l";
 
 /// Why input is not queued, or a pane cannot be made.
 #[derive(Debug)]
@@ -174,20 +172,6 @@ impl From<Typed> for InputQueue {
             held: Some(typed),
             ..InputQueue::default()
         }
-    }
-}
-
-/// Where `needle` first ends in `hay`, looking from `from`.
-fn end_of(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
-    let mut i = from;
-    loop {
-        let start = i.checked_add(hay.get(i..)?.iter().position(|&b| b == 0x1b)?)?;
-        let end = start.checked_add(needle.len())?;
-        // Past the end of `hay`: no later match fits either.
-        if hay.get(start..end)? == needle {
-            return Some(end);
-        }
-        i = start.checked_add(1)?;
     }
 }
 
@@ -468,8 +452,9 @@ pub struct Pane {
     pub input: InputQueue,
     pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
-    /// from BSU on, and since when; see [`Pane::output`].
-    frame: Option<(Vec<u8>, Instant)>,
+    /// from BSU on, since when, and where the parser will end it; see
+    /// [`Pane::output`].
+    frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan)>,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: crate::outer::Colours,
@@ -683,9 +668,10 @@ impl Pane {
     /// Reads program output into the screen, its replies queued as input.
     ///
     /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
-    /// BSU, to `CSI ? 2026 l`, ESU) is held, unread, until it ends, then read
-    /// whole, as alacritty does: the screen is always at the end of a
-    /// frame, so a client is never painted half of one. A frame is read
+    /// BSU, to `CSI ? 2026 l`, ESU, or whatever else resets the mode, found
+    /// as the parser reads it: `fux_vt::FrameScan`) is held, unread, until
+    /// it ends, then read whole, as alacritty does: the screen is always at
+    /// the end of a frame, so a client is never painted half of one. A frame is read
     /// anyway once [`FRAME_TIMEOUT`] passes ([`Pane::release_frame`]) or it
     /// grows past [`FRAME_LIMIT`]; after that the program's output is read as
     /// it comes until its next BSU.
@@ -701,14 +687,12 @@ impl Pane {
                 self.log = None;
             }
         }
-        let mut after: Vec<u8>;
         let mut rest = bytes;
         loop {
-            if let Some((held, _)) = &mut self.frame {
-                // An ESU may have begun at the end of what is held.
-                let from = held.len().saturating_sub(ESU.len().saturating_sub(1));
+            if let Some((held, _, scan)) = &mut self.frame {
+                let read = held.len();
                 held.extend_from_slice(rest);
-                let Some(end) = end_of(held, from, ESU) else {
+                let Some(end) = scan.end(held) else {
                     if held.len() > FRAME_LIMIT {
                         self.release_frame();
                     }
@@ -716,15 +700,15 @@ impl Pane {
                 };
                 let mut frame = std::mem::take(held);
                 self.frame = None;
-                after = frame.get(end..).unwrap_or_default().to_vec();
                 frame.truncate(end);
                 self.feed(&frame, false);
-                rest = &after;
+                // The frame ends in what came now: the rest is after it.
+                rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
             } else {
                 let Some(end) = self.feed(rest, true) else {
                     return;
                 };
-                self.frame = Some((Vec::new(), now));
+                self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
                 rest = rest.get(end..).unwrap_or_default();
             }
         }
@@ -734,12 +718,12 @@ impl Pane {
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.frame
             .as_ref()
-            .map(|(_, since)| crate::after(*since, FRAME_TIMEOUT))
+            .map(|(_, since, _)| crate::after(*since, FRAME_TIMEOUT))
     }
 
     /// Reads the held frame now, ended or not.
     pub fn release_frame(&mut self) {
-        if let Some((held, _)) = self.frame.take() {
+        if let Some((held, ..)) = self.frame.take() {
             self.feed(&held, false);
         }
     }
@@ -1622,6 +1606,36 @@ mod tests {
         Ok(())
     }
 
+    /// A frame ends at whatever resets synchronized output, as the parser
+    /// reads it: RM with several parameters (ECMA-48 8.3.106, DECRST's
+    /// `Pm`), one with a C0 control inside it, RIS, DECSTR, XTRESTORE, and
+    /// an ESU that ends an OSC; but not at an ESU whose CSI CAN cancels,
+    /// nor at a parameter with a subparameter, which `set_modes` skips.
+    #[test]
+    fn a_frame_ends_at_any_reset_of_synchronized_output() -> Result<(), Error> {
+        for end in [
+            &b"\x1b[?25;2026l"[..],
+            b"\x1b[?20\r26l",
+            b"\x1bc",
+            b"\x1b[!p",
+            b"\x1b[?2026r",
+            // ESC ends the string (ST begins so) and starts the ESU.
+            b"\x1b]2;\x1b[?2026l",
+        ] {
+            let mut pane = pane(3, 30)?;
+            pane.output(&[&b"\x1b[?2026hx"[..], end].concat());
+            assert_eq!(pane.frame_deadline(), None, "{end:?}");
+            assert!(!pane.screen().mode(Mode::SynchronizedOutput), "{end:?}");
+        }
+        for held in [&b"\x1b[?20\x1826l"[..], b"\x1b[?2026:1l"] {
+            let mut pane = pane(3, 30)?;
+            pane.output(&[&b"\x1b[?2026hx"[..], held].concat());
+            assert!(pane.frame_deadline().is_some(), "{held:?}");
+            assert_eq!(first_row(&pane), "", "{held:?}");
+        }
+        Ok(())
+    }
+
     /// A frame that does not end is read once its timeout passes, or once
     /// it outgrows the limit; until the next BSU, output is then read as it
     /// comes. A resize reads it first.
@@ -1742,14 +1756,5 @@ mod tests {
         assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", true), 17);
         assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", false), 19);
         assert_eq!(super::cut(b"plain", true), 5);
-    }
-
-    #[test]
-    fn end_of_finds_a_sequence_from_where_it_is_told() {
-        assert_eq!(end_of(b"ab\x1b[?2026lc", 0, ESU), Some(10));
-        assert_eq!(end_of(b"\x1b\x1b[?2026l", 0, ESU), Some(9));
-        assert_eq!(end_of(b"\x1b[?2026l", 1, ESU), None);
-        assert_eq!(end_of(b"\x1b[?2026", 0, ESU), None);
-        assert_eq!(end_of(b"", 0, ESU), None);
     }
 }

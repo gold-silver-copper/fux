@@ -532,3 +532,70 @@ fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
         assert_eq!(printable(&bytes), printable_slowly(&bytes), "{bytes:?}");
     }
 }
+
+/// A frame ends, as `FrameScan` finds it, at the byte after which the
+/// parser carrying the bytes out has synchronized output reset: random
+/// bytes after a BSU, most escape sequences, with RM of several modes,
+/// RIS and DECSTR among them, and XTSAVE holding the mode either way,
+/// held a random piece more at a time and carried out a byte at a time.
+#[test]
+fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
+    for case in 0..3000 {
+        let mut r = Rng(case);
+        let mut parser = Parser::with_options(Size::of(4, 10), 8, options(&mut r))?;
+        if r.chance(50) {
+            parser.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
+        }
+        assert_eq!(
+            parser.process_until_frame(b"\x1b[?2026h", &mut Log::default()),
+            Ok(Some(8))
+        );
+        let fragments = r.below(40).saturating_add(1);
+        let mut input = sequences(&mut r, fragments, false);
+        for _ in 0..r.below(3) {
+            let at = r.below(input.len().saturating_add(1));
+            let end = r.pick(&[&b"\x1b[?25;2026l"[..], b"\x1bc", b"\x1b[!p", b"\x1b[?2026r"]);
+            let (head, tail) = input.split_at_checked(at).unwrap_or((&input, &[]));
+            input = [head, end.unwrap_or_default(), tail].concat();
+        }
+        let mut scan = parser.frame_scan();
+        let (mut held, mut found) = (0usize, None);
+        while found.is_none() && held < input.len() {
+            held = held
+                .saturating_add(r.below(8))
+                .saturating_add(1)
+                .min(input.len());
+            found = scan.end(input.get(..held).unwrap_or_default());
+        }
+        let mut ended = None;
+        for (i, byte) in input.iter().enumerate() {
+            parser.process(std::slice::from_ref(byte))?;
+            if !parser.screen().mode(Mode::SynchronizedOutput) {
+                ended = Some(i.saturating_add(1));
+                break;
+            }
+        }
+        assert_eq!(found, ended, "case {case}: {}", input.escape_ascii());
+    }
+    Ok(())
+}
+
+/// `esc_in` finds the first ESC at every place in and past a word, and
+/// none where there is none.
+#[test]
+fn esc_in_finds_the_first_esc() {
+    for len in 0..20 {
+        for at in 0..len {
+            let mut bytes = vec![b'x'; len];
+            for (i, b) in bytes.iter_mut().enumerate() {
+                if i == at || i == at.saturating_add(3) {
+                    *b = 0x1b;
+                } else if i % 3 == 0 {
+                    *b = 0x9b;
+                }
+            }
+            assert_eq!(esc_in(&bytes), Some(at), "{len} {at}");
+        }
+        assert_eq!(esc_in(&vec![0x1a; len]), None);
+    }
+}

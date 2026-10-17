@@ -232,7 +232,7 @@ pub(crate) enum Switch {
 pub(crate) struct Modes(u32);
 
 impl Modes {
-    pub(crate) fn contains(self, mode: Mode) -> bool {
+    pub(crate) const fn contains(self, mode: Mode) -> bool {
         self.0 & mode.bit() != 0
     }
 
