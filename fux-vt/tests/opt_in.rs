@@ -443,8 +443,30 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
     assert_eq!(ask("\x1b[0 q\x1bP$q q\x1b\\")?, ["\x1bP1$r1 q\x1b\\"]);
     assert!(ask("\x1bP$q q\x1b\\")?.is_empty());
     assert!(ask("\x1b[5 q\x1b[7 q\x1bP$q q\x1b\\")?.is_empty());
+    // The left and right margins, one-based, the screen's edges without
+    // DECLRMM (DEC STD 070, DECRQSS: DECSLRM's `s`).
+    assert_eq!(ask("\x1bP$qs\x1b\\")?, ["\x1bP1$r1;80s\x1b\\"]);
+    assert_eq!(
+        ask("\x1b[?69h\x1b[3;4s\x1bP$qs\x1b\\")?,
+        ["\x1bP1$r3;4s\x1b\\"]
+    );
+    // DECSCA's selective erase attribute: 1 while DECSCA 1 protects, 0
+    // otherwise, SPA's ISO protection being no DECSCA.
+    for (setup, ps) in [
+        ("", 0),
+        ("\x1b[1\"q", 1),
+        ("\x1b[1\"q\x1b[0\"q", 0),
+        ("\x1bV", 0),
+    ] {
+        let reply = format!("\x1bP1$r{ps}\"q\x1b\\");
+        assert_eq!(
+            ask(&format!("{setup}\x1bP$q\"q\x1b\\"))?,
+            [reply],
+            "{setup:?}"
+        );
+    }
     // Requests fux-vt does not know, a long one among them, are invalid.
-    for request in ["s", "\"q", "t", "$|", "mm", "a long request"] {
+    for request in ["t", "$|", "mm", "a long request"] {
         assert_eq!(
             ask(&format!("\x1bP$q{request}\x1b\\"))?,
             ["\x1bP0$r\x1b\\"],

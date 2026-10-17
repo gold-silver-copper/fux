@@ -2305,6 +2305,17 @@ impl Screen {
                 let (top, bottom) = (top.saturating_add(1), bottom.saturating_add(1));
                 let _ = write!(out, "{top};{bottom}r");
             }
+            // DECSLRM's margins, the screen's edges without DECLRMM.
+            b"s" => {
+                let (left, right) = self.left_right_margins();
+                let (left, right) = (left.saturating_add(1), right.saturating_add(1));
+                let _ = write!(out, "{left};{right}s");
+            }
+            // DECSCA's selective erase attribute, which SPA is not.
+            b"\"q" => {
+                let on = self.protect != 0 && self.protection == Protection::Dec;
+                let _ = write!(out, "{}\"q", u8::from(on));
+            }
             _ => return Setting::Unknown,
         }
         Setting::Written
