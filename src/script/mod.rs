@@ -6,6 +6,8 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
+#[cfg(test)]
+mod stacks;
 mod words;
 
 use crate::code::Code;

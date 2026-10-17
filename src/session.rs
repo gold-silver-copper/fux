@@ -3442,16 +3442,62 @@ pub(crate) mod testing {
         client: Option<ClientId>,
         code: &str,
     ) -> Result<String, String> {
-        let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
-        let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+        let (out, ended) = run_as(session, client, false, code);
+        let ended = ended.map_err(|e| e.to_string())?;
+        let mut text = String::from_utf8_lossy(&out).into_owned();
+        for value in &ended.stack {
+            text.push_str(&value.text());
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    /// Runs fuxth `code` as [`output_as`] does, settling as a command line
+    /// does if `settle`: each value it left, its kind's name then its text's
+    /// first line (`pane %1`), or the failure's code.
+    pub(crate) fn stack_as(
+        session: &mut Session,
+        client: Option<ClientId>,
+        settle: bool,
+        code: &str,
+    ) -> Vec<String> {
+        match run_as(session, client, settle, code).1 {
+            Ok(ended) => (ended.stack.iter())
+                .map(|value| {
+                    let text = value.text();
+                    format!(
+                        "{} {}",
+                        value.kind_name(),
+                        text.lines().next().unwrap_or("")
+                    )
+                })
+                .collect(),
+            Err(failed) => vec![format!("fails {}", failed.code)],
+        }
+    }
+
+    fn run_as(
+        session: &mut Session,
+        client: Option<ClientId>,
+        settle: bool,
+        code: &str,
+    ) -> (Vec<u8>, Result<crate::script::Ended, crate::script::Failed>) {
         let mut out = Vec::new();
+        let tokens = match fuxth::token::source("test", code) {
+            Ok(tokens) => tokens,
+            Err(e) => return (out, Err(crate::script::Failed::from(e))),
+        };
+        let mut machine = match crate::script::compile(&tokens) {
+            Ok(machine) => machine,
+            Err(failed) => return (out, Err(failed)),
+        };
         let mut keymap = std::mem::take(&mut session.test_keymap);
         let context = crate::protocol::Context {
             client,
             ..crate::protocol::Context::default()
         };
         let mut host =
-            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, false);
+            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, settle);
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
             asks: &mut process,
@@ -3465,13 +3511,7 @@ pub(crate) mod testing {
             session.open_screen(client, screen);
         }
         deliver(session);
-        let ended = ended.map_err(|e| e.to_string())?;
-        let mut text = String::from_utf8_lossy(&out).into_owned();
-        for value in &ended.stack {
-            text.push_str(&value.text());
-            text.push('\n');
-        }
-        Ok(text)
+        (out, ended)
     }
 
     /// What the server sent clients, taken as their clients take it: a
