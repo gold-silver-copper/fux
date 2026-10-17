@@ -8,7 +8,8 @@ use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 /// => kind, ... }` (`if Feature` optional) to that enum, `Mode::of(n,
 /// private, options)` (the mode SM and RM, or with
 /// `private` DECSET and DECRST, name by `n`; with `if Feature` only while
-/// `options` have that feature) and `Mode::kind` (each one's kind).
+/// `options` have that feature) and `Mode::kind` (each one's kind), and
+/// checks at compile time that every mode is a bit of a `Modes` (a `u32`).
 macro_rules! modes {
     ($(#[$doc:meta])* pub enum Mode {
         $(
@@ -43,6 +44,9 @@ macro_rules! modes {
                 }
             }
         }
+
+        // Each mode is a bit of a `Modes`: at most a `u32`'s 32.
+        const _: () = assert!([$(Mode::$variant),*].len() <= 32);
     };
 }
 
@@ -117,9 +121,6 @@ modes! {
         GraphemeClustering (true, 2027) => Kind::Permanent(true),
     }
 }
-
-// Each mode is a bit of a `Modes`.
-const _: () = assert!((Mode::GraphemeClustering as u32) < u32::BITS);
 
 impl Mode {
     /// Whether XTSAVE saves it and XTRESTORE restores it: not 1048, an
