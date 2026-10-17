@@ -59,7 +59,7 @@ impl AppValue for Fux {
             Fux::Keys(_) => "keys (from keys)",
             Fux::Mouse(_) => "a mouse event (from mouse)",
             Fux::Extent(_) => "a size (from percent)",
-            Fux::Answer(answer) => answer.kind,
+            Fux::Answer(answer) => answer.said.kind(),
         }
     }
 
@@ -146,26 +146,56 @@ pub struct MouseEvent {
 pub struct Answer {
     pub text: String,
     pub json: Option<String>,
-    /// What it is, said where it is refused: `a capture`, `a listing`.
-    pub kind: &'static str,
-    /// The pane an action's answer is of: a word that wants a pane takes it.
-    pub pane: Option<crate::id::PaneId>,
+    pub said: Said,
+}
+
+/// What an answer is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Said {
+    Capture,
+    Listing,
+    /// An action's answer of one pane: a word that wants a pane takes it.
+    Action(PaneId),
+    /// An action's answer of several panes, or of none.
+    Several,
+    /// JSON that is no one value of fuxth's.
+    Json,
+    Status,
+    Servers,
+}
+
+impl Said {
+    /// What it is, said where it is refused.
+    fn kind(self) -> &'static str {
+        match self {
+            Said::Capture => "a capture",
+            Said::Listing => "a listing",
+            Said::Action(_) => "an action's answer",
+            Said::Several => "an answer of several panes",
+            Said::Json => "a JSON value",
+            Said::Status => "a status",
+            Said::Servers => "a listing of servers",
+        }
+    }
+
+    /// The pane it is of.
+    pub fn pane(self) -> Option<PaneId> {
+        match self {
+            Said::Action(pane) => Some(pane),
+            Said::Capture
+            | Said::Listing
+            | Said::Several
+            | Said::Json
+            | Said::Status
+            | Said::Servers => None,
+        }
+    }
 }
 
 impl Answer {
     /// An answer, as a value on the stack.
-    fn value(
-        text: String,
-        json: Option<String>,
-        kind: &'static str,
-        pane: Option<PaneId>,
-    ) -> Value<Fux> {
-        Value::App(Fux::Answer(Box::new(Answer {
-            text,
-            json,
-            kind,
-            pane,
-        })))
+    fn value(text: String, json: Option<String>, said: Said) -> Value<Fux> {
+        Value::App(Fux::Answer(Box::new(Answer { text, json, said })))
     }
 }
 
@@ -190,12 +220,11 @@ pub enum Then {
     Nothing,
     /// The pane, tab or workspace it made or found, of `Kind`.
     Handle(Kind),
-    /// Its text, as an answer `json` can show as JSON: what it is, as
-    /// [`Answer::kind`].
-    Answer(&'static str),
+    /// Its text, as an answer `json` can show as JSON.
+    Answer(Said),
     /// Its text, which is JSON: an answer as [`Then::Answer`] makes, that
     /// prints it and that `json` gives as it is.
-    Json(&'static str),
+    Json(Said),
     /// Its text, as a string.
     Text,
     /// A field's value.
@@ -728,11 +757,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
         (Some(_), Some(_)) | (None, _) => None,
     };
     let action = |text: String, json: Option<String>| {
-        let kind = match pane {
-            Some(_) => "an action's answer",
-            None => "an answer of several panes",
-        };
-        Answer::value(text, json, kind, pane)
+        Answer::value(text, json, pane.map_or(Said::Several, Said::Action))
     };
     Ok(match then {
         Then::Nothing => Vec::new(),
@@ -749,11 +774,11 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
                 ));
             }
         },
-        Then::Answer(kind) => vec![Answer::value(text, json, kind, None)],
+        Then::Answer(said) => vec![Answer::value(text, json, said)],
         // Its JSON alone, as its text too.
-        Then::Json(kind) => {
+        Then::Json(said) => {
             let json = json.unwrap_or(text);
-            vec![Answer::value(json.clone(), Some(json), kind, None)]
+            vec![Answer::value(json.clone(), Some(json), said)]
         }
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
@@ -762,7 +787,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             Some(Scalar::Str(s)) => Value::str(s),
             // JSON that is no one value of fuxth's: `null`, a list, an
             // object, as text that `json` gives as it is.
-            None => Answer::value(text.clone(), Some(text), "a JSON value", None),
+            None => Answer::value(text.clone(), Some(text), Said::Json),
         }],
         Then::Outcome { waited: false } => Vec::new(),
         Then::Outcome { waited: true } => vec![action(text, json)],
@@ -827,21 +852,21 @@ fn local(
             let socket = server.socket()?;
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
             let (text, json) = crate::status(&socket, &probe);
-            return Ok(vec![answer(&text, &json, "a status")]);
+            return Ok(vec![answer(&text, &json, Said::Status)]);
         }
         Local::Servers => {
             let fail = |e: crate::socket::Error| client_failed(e.into());
             let (text, json) = crate::servers().map_err(fail)?;
-            return Ok(vec![answer(&text, &json, "a listing of servers")]);
+            return Ok(vec![answer(&text, &json, Said::Servers)]);
         }
     }
     Ok(Vec::new())
 }
 
 /// An answer the client made itself, as text and JSON.
-fn answer(text: &str, json: &str, kind: &'static str) -> Value<Fux> {
+fn answer(text: &str, json: &str, said: Said) -> Value<Fux> {
     let (text, json) = (text.trim_end().to_owned(), json.trim_end().to_owned());
-    Answer::value(text, Some(json), kind, None)
+    Answer::value(text, Some(json), said)
 }
 
 /// The server, started in the background if none answers: its socket, and

@@ -1,7 +1,7 @@
 //! fux's words: each a name, how many values it takes, what it does to the
 //! stack, and a line of help; and what each does, run by the program's
 //! [`Host`].
-use super::{Ask, Fux, Host, Keys, Local, MouseEvent, Opts, Then, Waits};
+use super::{Ask, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits};
 use crate::code::Code;
 use crate::command::{
     AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
@@ -349,7 +349,7 @@ fn laid_out(word: &str, cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::
 /// The pane a value is: a pane, or an action's answer of one.
 fn as_pane(value: &Value<Fux>) -> Option<crate::id::PaneId> {
     if let Value::App(Fux::Answer(answer)) = value {
-        return answer.pane;
+        return answer.said.pane();
     }
     let Value::App(Fux::Pane(p)) = value else {
         return None;
@@ -624,7 +624,7 @@ impl fuxth::Host for Host<'_> {
                 // An action's answer is its pane.
                 let mut found = next()?;
                 if let Value::App(Fux::Answer(answer)) = &found
-                    && let Some(p) = answer.pane
+                    && let Some(p) = answer.said.pane()
                 {
                     found = Value::App(Fux::Pane(p));
                 }
@@ -1120,9 +1120,9 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let built = finished(name, next()?)?;
                 let then = if built.json {
-                    Then::Json("a capture")
+                    Then::Json(Said::Capture)
                 } else {
-                    Then::Answer("a capture")
+                    Then::Answer(Said::Capture)
                 };
                 // From a command line, read once the pane settles.
                 let settle = self.settle.then_some(built.waits.timeout);
@@ -1143,7 +1143,7 @@ impl fuxth::Host for Host<'_> {
                 };
                 let (get, then) = match name {
                     "get" => (Some(string(name, &next()?)?), Then::Value),
-                    _ => (None, Then::Answer("a listing")),
+                    _ => (None, Then::Answer(Said::Listing)),
                 };
                 later(ask(Command::Ls { target, get }, then))
             }
@@ -1433,7 +1433,7 @@ impl fuxth::Host for Host<'_> {
                         client: Some(c),
                         action: ClientAction::Capture,
                     },
-                    Then::Answer("a capture"),
+                    Then::Answer(Said::Capture),
                 ))
             }
             // ------------------------------------------------------ server
@@ -1722,8 +1722,7 @@ mod tests {
             json_of(&Value::App(Fux::Answer(Box::new(super::super::Answer {
                 text: String::new(),
                 json: Some(json.to_owned()),
-                kind: "an answer of several panes",
-                pane: None,
+                said: super::super::Said::Several,
             }))))
             .render()
         };
