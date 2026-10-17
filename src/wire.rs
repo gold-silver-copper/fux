@@ -125,6 +125,13 @@ impl Wire for bool {
     }
 }
 
+/// Values, after their count: a list's, variables', a system string's
+/// bytes.
+fn put_list<T: Wire>(items: &[T], out: &mut Vec<u8>) {
+    u32::try_from(items.len()).unwrap_or(u32::MAX).put(out);
+    items.iter().for_each(|item| item.put(out));
+}
+
 impl Wire for String {
     fn put(&self, out: &mut Vec<u8>) {
         u32::try_from(self.len()).unwrap_or(u32::MAX).put(out);
@@ -141,20 +148,17 @@ impl Wire for String {
 /// is any bytes, never made text.
 impl Wire for std::ffi::OsString {
     fn put(&self, out: &mut Vec<u8>) {
-        let bytes = self.as_bytes();
-        u32::try_from(bytes.len()).unwrap_or(u32::MAX).put(out);
-        out.extend_from_slice(bytes);
+        put_list(self.as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let len = u32::get(r)? as usize;
-        Ok(std::ffi::OsString::from_vec(r.bytes(len)?.to_vec()))
+        Vec::get(r).map(Self::from_vec)
     }
 }
 
 /// A path, as its bytes.
 impl Wire for std::path::PathBuf {
     fn put(&self, out: &mut Vec<u8>) {
-        self.as_os_str().to_owned().put(out);
+        put_list(self.as_os_str().as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         std::ffi::OsString::get(r).map(Self::from)
@@ -165,9 +169,7 @@ impl Wire for std::path::PathBuf {
 /// refused.
 impl Wire for Env {
     fn put(&self, out: &mut Vec<u8>) {
-        let vars = self.as_slice();
-        u32::try_from(vars.len()).unwrap_or(u32::MAX).put(out);
-        vars.iter().for_each(|var| var.put(out));
+        put_list(self.as_slice(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let mut env = Env::default();
@@ -200,10 +202,7 @@ impl<T: Wire> Wire for Option<T> {
 
 impl<T: Wire> Wire for Vec<T> {
     fn put(&self, out: &mut Vec<u8>) {
-        u32::try_from(self.len()).unwrap_or(u32::MAX).put(out);
-        for item in self {
-            item.put(out);
-        }
+        put_list(self, out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let count = u32::get(r)? as usize;
