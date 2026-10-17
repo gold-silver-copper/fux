@@ -332,13 +332,6 @@ impl Decoder {
         }
     }
 
-    /// Whether decoding is waiting on a timeout: a lone Escape, an
-    /// incomplete sequence, an over-long string being dropped, or a paste
-    /// under way.
-    pub fn waiting(&self) -> bool {
-        !matches!(self.state, State::Idle)
-    }
-
     /// Records `now` as when decoding began waiting, if it is waiting on a
     /// sequence it was not waiting on when last marked, or on a paste that
     /// has had bytes since.
@@ -1048,6 +1041,13 @@ mod tests {
     use crate::Rgb;
     use crate::keys::colour::Scheme;
 
+    /// Whether `d` waits on a timeout, once marked: a lone Escape, an
+    /// incomplete sequence, an over-long string being dropped, or a paste
+    /// under way.
+    fn waiting(d: &mut Decoder) -> bool {
+        d.mark(Instant::now());
+        d.deadline().is_some()
+    }
     fn all(bytes: &[u8]) -> Vec<Input> {
         let mut d = Decoder::default();
         let mut out = Vec::new();
@@ -1236,10 +1236,10 @@ mod tests {
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
         assert!(out.is_empty());
-        assert!(d.waiting());
+        assert!(waiting(&mut d));
         d.timeout(&mut out);
         assert_eq!(out, vec![key("Escape")]);
-        assert!(!d.waiting());
+        assert!(!waiting(&mut d));
         // Escape followed in time by `[A` is an arrow, not Escape.
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
@@ -1357,7 +1357,7 @@ mod tests {
         let mut d = Decoder::default();
         let mut out = Vec::new();
         d.bytes(b"\x1b[27u", &mut out);
-        assert!(!d.waiting());
+        assert!(!waiting(&mut d));
         assert_eq!(presses(out), vec![name_press("Escape")]);
         // Split anywhere, among pastes and focus changes, alike.
         let stream: &[u8] = b"\x1b[98;5ud\x1b[200~p\x1b[201~\x1b[I\x1b[13;2u\x1b[27u";
@@ -1683,7 +1683,7 @@ mod tests {
         let mut out = Vec::new();
         d.bytes(b"\x1bP", &mut out);
         assert_eq!(out, vec![alt_p.clone()], "not waiting");
-        assert!(!d.waiting());
+        assert!(!waiting(&mut d));
         for pending in [&b"\x1bP"[..], b"\x1bP1"] {
             let mut d = Decoder::default();
             d.expect(t0);

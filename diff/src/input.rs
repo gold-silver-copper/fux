@@ -125,9 +125,8 @@ macro_rules! stack {
                     let shown: fn(&$fux::decode::Input) -> String = $shown;
                     let inputs: Vec<String> = inputs.iter().map(shown).collect();
                     format!(
-                        "[{}] waiting {} until {:?}",
+                        "[{}] until {:?}",
                         inputs.join(", "),
-                        self.0.waiting(),
                         self.0
                             .deadline()
                             .map(|d| d.saturating_duration_since(start))
