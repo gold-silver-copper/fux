@@ -2211,9 +2211,12 @@ impl Session {
                 if let Some(given) = given {
                     self.give_tab_name(made.1, given)?;
                 }
-                // Before any of its output is read: it all goes there.
+                // Before any of its output is read: it all goes there. One
+                // that can't be emptied stops what was started.
+                let log = log.map(emptied).transpose();
+                let log = log.inspect_err(|_| self.close_pane(made.2, None))?;
                 if let Some(pane) = self.panes.get_mut(&made.2) {
-                    pane.log = log.map(emptied).transpose()?;
+                    pane.log = log;
                 }
                 Ok(Self::made_ids(made, Kind::Pane))
             }
@@ -3791,6 +3794,22 @@ mod tests {
             assert_eq!(text.as_deref(), Some("kept"), "{code}");
             assert_eq!(mode, Some(0o640), "{code}");
         }
+        Ok(())
+    }
+
+    /// A run whose log can't be readied (procfs refuses a file's mode
+    /// change) fails, and leaves no program of its own running.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_run_whose_log_fails_leaves_nothing_running() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let panes = s.panes.len();
+        let ran = run(
+            &mut s,
+            "opts str /proc/self/comm log-to str /bin/cat program run",
+        );
+        assert!(ran.is_err_and(|e| e.contains("log")), "refused");
+        assert_eq!(s.panes.len(), panes);
         Ok(())
     }
 
