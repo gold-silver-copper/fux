@@ -22,7 +22,7 @@ pub(crate) fn request(value: impl Into<Request>) -> Request {
 pub struct Termios(libc::termios);
 
 /// The modes only one kernel has, as nothing on the other.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 mod only {
     use libc::tcflag_t;
     pub const IUCLC: tcflag_t = libc::IUCLC;

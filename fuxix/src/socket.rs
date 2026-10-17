@@ -1,7 +1,7 @@
 //! Unix stream sockets: made one step at a time, because fux sets a
 //! socket's mode between binding it and listening on it, which std's
 //! `UnixListener::bind` does in one.
-use crate::errno::{Errno, Result, check};
+use crate::errno::{Errno, Result, check, check_size, fit};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -9,7 +9,7 @@ use std::path::Path;
 /// A new Unix stream socket, close-on-exec: atomically where the system
 /// allows, and on macOS, which has no flag for it, straight after.
 pub fn stream() -> Result<OwnedFd> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
     #[cfg(target_os = "macos")]
     let kind = libc::SOCK_STREAM;
@@ -42,7 +42,7 @@ fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
     if bytes.len() > max_path_len() {
         return Err(Errno::NAMETOOLONG);
     }
-    address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| Errno::INVAL)?;
+    address.sun_family = fit(libc::AF_UNIX)?;
     for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
         *slot = libc::c_char::from_ne_bytes([*byte]);
     }
@@ -91,15 +91,14 @@ fn addressed(
 
 /// The effective user ID of the process at the other end of the connected
 /// Unix socket `socket`, as the kernel recorded it.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn peer_uid(socket: impl AsFd) -> Result<u32> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
         gid: 0,
     };
-    let mut length =
-        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(|_| Errno::INVAL)?;
+    let mut length: libc::socklen_t = fit(size_of::<libc::ucred>())?;
     // SAFETY: the pointers are to a whole ucred and its length, which the
     // call fills and updates.
     let got = unsafe {
@@ -132,15 +131,9 @@ pub fn peer_uid(socket: impl AsFd) -> Result<u32> {
 #[repr(C, align(8))]
 struct Control([u8; 64]);
 
-/// `value` as the type a field of a control message has, which differs
-/// between platforms (`usize` on Linux, `u32` on macOS).
-fn fit<T: TryFrom<U>, U>(value: U) -> Result<T> {
-    T::try_from(value).map_err(|_| Errno::INVAL)
-}
-
 /// The size of one descriptor, as the CMSG macros take sizes.
 fn int_size() -> Result<libc::c_uint> {
-    libc::c_uint::try_from(std::mem::size_of::<libc::c_int>()).map_err(|_| Errno::INVAL)
+    fit(size_of::<libc::c_int>())
 }
 
 /// Sends `bytes` on the connected Unix socket `socket` with `fd` attached
@@ -183,7 +176,7 @@ pub fn send_with_fd(socket: impl AsFd, bytes: &[u8], fd: impl AsFd) -> Result<us
     unsafe { std::ptr::write_unaligned(data.cast::<libc::c_int>(), raw) };
     // SAFETY: the message's buffers live for the call.
     let sent = unsafe { libc::sendmsg(socket.as_fd().as_raw_fd(), &message, 0) };
-    usize::try_from(sent).map_err(|_| Errno::last())
+    check_size(sent)
 }
 
 /// Receives into `buffer` from the Unix socket `socket`, and a descriptor
@@ -201,16 +194,16 @@ pub fn recv_with_fd(socket: impl AsFd, buffer: &mut [u8]) -> Result<(usize, Opti
     message.msg_iovlen = 1;
     message.msg_control = control.0.as_mut_ptr().cast();
     message.msg_controllen = fit(control.0.len())?;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     let flags = libc::MSG_CMSG_CLOEXEC;
     #[cfg(target_os = "macos")]
     let flags = 0;
     // SAFETY: the message's buffers live for the call, of the sizes given.
     let got = unsafe { libc::recvmsg(socket.as_fd().as_raw_fd(), &mut message, flags) };
-    let got = usize::try_from(got).map_err(|_| Errno::last())?;
+    let got = check_size(got)?;
     // SAFETY: CMSG_LEN computes a size from a number.
-    let empty = usize::try_from(unsafe { libc::CMSG_LEN(0) }).map_err(|_| Errno::INVAL)?;
-    let size = std::mem::size_of::<libc::c_int>();
+    let empty: usize = fit(unsafe { libc::CMSG_LEN(0) })?;
+    let size = size_of::<libc::c_int>();
     let mut received = Vec::new();
     // SAFETY: the kernel filled `msg_controllen` bytes of the control buffer
     // with whole headers: the first is in it, or null.

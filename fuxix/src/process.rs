@@ -1,8 +1,8 @@
 //! Processes: their IDs, signals, sessions, and how they end.
-use crate::errno::{Errno, Result, check};
+use crate::errno::{Errno, Result, check, fit};
 use std::fmt;
 use std::num::NonZeroI32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A process ID, process group or session: always positive. The system
 /// uses 0 and negative numbers for "none" and for groups, and a signal sent
@@ -146,8 +146,8 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
     // SAFETY: `time` is a valid timespec for clock_gettime to fill, and it
     // is read only after the call says it filled it.
     check(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) })?;
-    let seconds = u64::try_from(time.tv_sec).map_err(|_| Errno::INVAL)?;
-    let nanos = u32::try_from(time.tv_nsec).map_err(|_| Errno::INVAL)?;
+    let seconds: u64 = fit(time.tv_sec)?;
+    let nanos: u32 = fit(time.tv_nsec)?;
     Ok(std::time::Duration::new(seconds, nanos))
 }
 
@@ -220,7 +220,7 @@ pub fn reap(pid: Pid) -> Result<Option<Status>> {
 /// are asked for; macOS reports a stop all the same (bevy-final finding
 /// 020), so the report's code decides.
 fn waited(pid: Pid, keep: libc::c_int) -> Result<Option<Status>> {
-    let id = libc::id_t::try_from(pid.as_raw()).map_err(|_| Errno::INVAL)?;
+    let id: libc::id_t = fit(pid.as_raw())?;
     let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
     // SAFETY: `info` is a whole siginfo_t, which waitid fills; with WNOHANG
     // and nothing to report, it leaves it zeroed.
@@ -258,7 +258,7 @@ fn waited(pid: Pid, keep: libc::c_int) -> Result<Option<Status>> {
 pub fn adopt_orphans() -> Result<()> {
     // SAFETY: prctl with PR_SET_CHILD_SUBREAPER takes numbers and touches
     // no memory.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) })?;
     Ok(())
 }
@@ -267,7 +267,7 @@ pub fn adopt_orphans() -> Result<()> {
 /// not keep: the orphans it adopted ([`adopt_orphans`]); none on macOS. Its
 /// own children are kept, for whoever waits for them.
 pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
         let _ = reap(pid);
     }
@@ -278,14 +278,14 @@ pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
 /// The processes this one started, those they started in turn, and the
 /// orphans it adopted ([`adopt_orphans`]); not itself. A runaway tree is
 /// cut short past 4,096.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn tree() -> Vec<Pid> {
     below("self")
 }
 
 /// The processes under `root` (or `self`), by each one's threads'
 /// children: a runaway tree is cut short past 4,096.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn below(root: impl fmt::Display) -> Vec<Pid> {
     let mut found = children(root);
     let mut next = 0;
@@ -299,7 +299,7 @@ fn below(root: impl fmt::Display) -> Vec<Pid> {
 }
 
 /// The children of `pid` (or `self`), by each of its threads'.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn children(pid: impl fmt::Display) -> Vec<Pid> {
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task"));
     (tasks.into_iter().flatten().filter_map(|t| t.ok()))
@@ -338,14 +338,14 @@ fn listed<T: Default + Clone>(
     call: impl FnOnce(*mut libc::c_void, libc::c_int) -> libc::c_int,
 ) -> Option<Vec<T>> {
     let mut list = vec![T::default(); room];
-    let bytes = libc::c_int::try_from(std::mem::size_of_val(list.as_slice())).ok()?;
+    let bytes = libc::c_int::try_from(size_of_val(list.as_slice())).ok()?;
     let written = usize::try_from(call(list.as_mut_ptr().cast(), bytes)).ok()?;
     list.truncate(written);
     Some(list)
 }
 
 /// `pid`'s command line, when the system says.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn argv(pid: Pid) -> Option<Vec<String>> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let words: Vec<String> = raw
@@ -364,7 +364,7 @@ pub fn argv(_pid: Pid) -> Option<Vec<String>> {
 }
 
 /// The name of `pid`'s program, when the system says.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn name(pid: Pid) -> Option<String> {
     let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
     Some(comm.trim_end_matches('\n').to_owned()).filter(|n| !n.is_empty())
@@ -383,7 +383,7 @@ pub fn name(pid: Pid) -> Option<String> {
 }
 
 /// The current directory of `pid`, when the system says.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 pub fn cwd(pid: Pid) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
@@ -393,7 +393,7 @@ pub fn cwd(pid: Pid) -> Option<PathBuf> {
 pub fn cwd(pid: Pid) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
-    let bytes = libc::c_int::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
+    let bytes = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()).ok()?;
     // SAFETY: the buffer is exactly one `proc_vnodepathinfo`, which the call
     // fills; a short return is checked before the value is read.
     let read = unsafe {
@@ -620,7 +620,7 @@ pub enum Activity {
 }
 
 /// What a blocked thread waits in, by its system call.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Blocked {
     /// read and its kind, on this descriptor.
@@ -645,7 +645,7 @@ enum Blocked {
 /// Where the descriptors a poll watches are: an array of `len` `pollfd`s
 /// at `at` in the program's memory (poll), the set of the descriptors below
 /// `len` read from, at `at` (select), or an epoll descriptor (epoll_wait).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Watched {
     Fds { at: u64, len: u64 },
@@ -654,7 +654,7 @@ enum Watched {
 }
 
 /// What one thread of a process does, as the probe weighs it.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy)]
 enum Thread {
     /// Running, or about to.
@@ -678,7 +678,7 @@ enum Thread {
 /// What a system call waits for, by its number (`libc::SYS_*`, this
 /// machine's) and its arguments.
 #[cfg(all(
-    any(target_os = "linux", target_os = "android"),
+    not(target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 fn blocked_in(nr: libc::c_long, args: &[u64]) -> Blocked {
@@ -727,7 +727,7 @@ fn blocked_in(nr: libc::c_long, args: &[u64]) -> Blocked {
 
 /// Another machine: nothing is known of its system call numbers.
 #[cfg(all(
-    any(target_os = "linux", target_os = "android"),
+    not(target_os = "macos"),
     not(any(target_arch = "x86_64", target_arch = "aarch64"))
 ))]
 fn blocked_in(_nr: libc::c_long, _args: &[u64]) -> Blocked {
@@ -735,7 +735,7 @@ fn blocked_in(_nr: libc::c_long, _args: &[u64]) -> Blocked {
 }
 
 /// What thread `tid` of `pid` is blocked in; `None` while it runs.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
     match stat.rsplit_once(')')?.1.split_whitespace().next()? {
@@ -759,10 +759,10 @@ fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
 
 /// Whether `pid`'s descriptor `fd` is the terminal at `tty` (or its own
 /// controlling terminal, as `/dev/tty`).
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
+#[cfg(not(target_os = "macos"))]
+fn is_terminal(pid: Pid, fd: u64, tty: &Path) -> bool {
     std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
-        .is_ok_and(|target| target == tty || target == std::path::Path::new("/dev/tty"))
+        .is_ok_and(|target| target == tty || target == Path::new("/dev/tty"))
 }
 
 /// Whether a poll in `pid` watches the terminal at `tty` for input: a
@@ -770,8 +770,8 @@ fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
 /// descriptor of the epoll set asking `EPOLLIN` (its `fdinfo`). Read from
 /// the program's memory, which a process that may read its system calls
 /// may read too; `None` if what says cannot be read.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> Option<bool> {
+#[cfg(not(target_os = "macos"))]
+fn watches_terminal(pid: Pid, watched: Watched, tty: &Path) -> Option<bool> {
     use std::os::unix::fs::FileExt;
     // `len` bytes of its memory at `at`; none at a null address.
     let memory = |at: u64, len: u64| -> Option<Vec<u8>> {
@@ -832,8 +832,8 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> Option
 /// waits for the terminal and none of the others can go on alone, on a
 /// timer or polling: else polling, as it may draw again on its own; else
 /// waiting.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
+#[cfg(not(target_os = "macos"))]
+fn process_activity(pid: Pid, tty: &Path) -> Option<Activity> {
     let thread = |tid: &str| match thread_blocked(pid, tid) {
         None => Thread::Runs,
         Some(Blocked::Read(fd)) if is_terminal(pid, fd, tty) => Thread::Reads,
@@ -897,8 +897,8 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
 /// it, waiting if they wait on something else. Linux and Android tell by
 /// what each thread is blocked in, its system call
 /// (`/proc/PID/task/TID/syscall`).
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
+#[cfg(not(target_os = "macos"))]
+pub fn activity(group: Pid, tty: &Path, leader: Pid) -> Activity {
     let in_group = |pid: &Pid| {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
@@ -937,8 +937,8 @@ pub fn activity(group: Pid, tty: &std::path::Path, leader: Pid) -> Activity {
 }
 
 /// Whether process `pid` itself is blocked reading the terminal at `tty`.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
+#[cfg(not(target_os = "macos"))]
+pub fn reads_terminal(pid: Pid, tty: &Path) -> bool {
     process_activity(pid, tty) == Some(Activity::Reading)
 }
 
@@ -946,7 +946,7 @@ pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
 /// each runs or waits: busy while one of the group's runs (or waits on the
 /// disk, uninterruptible), idle once every one waits.
 #[cfg(target_os = "macos")]
-pub fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
+pub fn activity(group: Pid, _tty: &Path, _leader: Pid) -> Activity {
     let pids = listed(1024, |buffer, bytes| {
         // SAFETY: the buffer is `bytes` long and writable; the call says
         // how many IDs it wrote.
@@ -973,7 +973,7 @@ pub fn activity(group: Pid, _tty: &std::path::Path, _leader: Pid) -> Activity {
 /// Whether process `pid` itself is blocked reading the terminal at `tty`:
 /// never known on macOS, which does not say what a waiting thread waits on.
 #[cfg(target_os = "macos")]
-pub fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
+pub fn reads_terminal(_pid: Pid, _tty: &Path) -> bool {
     false
 }
 
@@ -1001,7 +1001,7 @@ fn running(pid: Pid) -> Option<Option<bool>> {
     if threads.is_empty() {
         return exists(pid).then_some(None);
     }
-    let Ok(size) = libc::c_int::try_from(std::mem::size_of::<libc::proc_threadinfo>()) else {
+    let Ok(size) = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()) else {
         return Some(None);
     };
     let mut known = false;

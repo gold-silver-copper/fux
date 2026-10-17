@@ -1,5 +1,5 @@
 //! Waiting on several descriptors at once.
-use crate::errno::{Errno, Result, check};
+use crate::errno::{Result, check, fit};
 use std::marker::PhantomData;
 use std::ops::{BitOr, BitOrAssign};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -10,14 +10,14 @@ use std::time::Duration;
 pub struct Events(libc::c_short);
 
 impl Events {
-    pub const IN: Events = Events(libc::POLLIN);
-    pub const OUT: Events = Events(libc::POLLOUT);
-    pub const ERR: Events = Events(libc::POLLERR);
-    pub const HUP: Events = Events(libc::POLLHUP);
-    pub const NVAL: Events = Events(libc::POLLNVAL);
+    pub const IN: Self = Self(libc::POLLIN);
+    pub const OUT: Self = Self(libc::POLLOUT);
+    pub const ERR: Self = Self(libc::POLLERR);
+    pub const HUP: Self = Self(libc::POLLHUP);
+    pub const NVAL: Self = Self(libc::POLLNVAL);
 
     /// Whether any event of `other` is here.
-    pub fn intersects(self, other: Events) -> bool {
+    pub fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
     }
 
@@ -27,14 +27,14 @@ impl Events {
 }
 
 impl BitOr for Events {
-    type Output = Events;
-    fn bitor(self, other: Events) -> Events {
-        Events(self.0 | other.0)
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 }
 
 impl BitOrAssign for Events {
-    fn bitor_assign(&mut self, other: Events) {
+    fn bitor_assign(&mut self, other: Self) {
         self.0 |= other.0;
     }
 }
@@ -47,8 +47,8 @@ pub struct PollFd<'fd> {
 }
 
 impl<'fd> PollFd<'fd> {
-    pub fn new(fd: &'fd impl AsFd, events: Events) -> PollFd<'fd> {
-        PollFd {
+    pub fn new(fd: &'fd impl AsFd, events: Events) -> Self {
+        Self {
             raw: libc::pollfd {
                 fd: fd.as_fd().as_raw_fd(),
                 events: events.0,
@@ -69,12 +69,12 @@ impl<'fd> PollFd<'fd> {
 /// (`ppoll`); on macOS it is rounded up to a whole millisecond, so a short
 /// one does not become a busy loop.
 pub fn poll(fds: &mut [PollFd<'_>], timeout: Option<Duration>) -> Result<usize> {
-    let count = libc::nfds_t::try_from(fds.len()).map_err(|_| Errno::INVAL)?;
+    let count: libc::nfds_t = fit(fds.len())?;
     let ready = wait(fds, count, timeout)?;
-    usize::try_from(ready).map_err(|_| Errno::INVAL)
+    fit(ready)
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn wait(
     fds: &mut [PollFd<'_>],
     count: libc::nfds_t,

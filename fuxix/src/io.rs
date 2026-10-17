@@ -88,7 +88,7 @@ pub fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
 pub fn cloexec_from(first: i32, listed: Option<i32>) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let start = libc::c_uint::try_from(first).map_err(|_| crate::Errno::INVAL)?;
+        let start: libc::c_uint = crate::errno::fit(first)?;
         // SAFETY: close_range takes three plain numbers and touches no
         // memory; with CLOSE_RANGE_CLOEXEC it closes nothing.
         let done = unsafe {

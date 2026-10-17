@@ -72,7 +72,7 @@ impl AsFd for Slave {
 /// The master as a plain descriptor, for a caller that wants it otherwise:
 /// blocking, say.
 impl From<Master> for OwnedFd {
-    fn from(master: Master) -> OwnedFd {
+    fn from(master: Master) -> Self {
         master.0
     }
 }
@@ -185,7 +185,7 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
 }
 
 /// A new PTY master, granted.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(not(target_os = "macos"))]
 fn granted_master() -> Result<OwnedFd, Error> {
     let master = open_master().map_err(at("posix_openpt"))?;
     // SAFETY: grantpt takes a descriptor and touches no memory.
@@ -241,7 +241,7 @@ const GRANT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// runs unwatched.
 #[cfg(any(target_os = "macos", test))]
 fn watched<T>(
-    fd: std::os::fd::BorrowedFd<'_>,
+    fd: BorrowedFd<'_>,
     limit: std::time::Duration,
     null: impl FnOnce() -> std::io::Result<std::fs::File>,
     call: impl FnOnce() -> T,
@@ -304,7 +304,7 @@ fn replace_with_null(raw: libc::c_int, null: &std::fs::File) -> bool {
 /// does; older releases may refuse it with `EINVAL`, and then the flag is
 /// set straight after the open).
 fn open_master() -> crate::Result<OwnedFd> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     // SAFETY: posix_openpt takes flags and touches no memory.
     let raw =
         check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) })?;
@@ -391,7 +391,7 @@ fn redrive<T>(
 fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
     let fd = master.as_fd().as_raw_fd();
     let mut buffer: [libc::c_char; 128] = [0; 128];
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(target_os = "macos"))]
     // SAFETY: the buffer is writable for its length, which is passed; the
     // call reports its errors as a number rather than in errno.
     match unsafe { libc::ptsname_r(fd, buffer.as_mut_ptr(), buffer.len()) } {
@@ -415,7 +415,7 @@ fn path(buffer: &[libc::c_char]) -> PathBuf {
         .take_while(|c| **c != 0)
         .map(|c| u8::from_ne_bytes(c.to_ne_bytes()))
         .collect();
-    PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
+    PathBuf::from(OsStr::from_bytes(&bytes))
 }
 
 #[cfg(test)]
