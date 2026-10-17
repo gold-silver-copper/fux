@@ -965,10 +965,7 @@ impl Line {
                 let ours = r.id() == print.row;
                 let cells = r.cells().enumerate();
                 for (col, cell) in cells.filter(|(_, c)| !c.is_wide_continuation()) {
-                    let text = match cell.contents() {
-                        text if cell.has_contents() && text != fux_vt::PLACEHOLDER => text,
-                        _ => " ",
-                    };
+                    let text = cell.shown();
                     let col = u16::try_from(col).unwrap_or(u16::MAX);
                     line.push(text, ours && print.cols.0 <= col && col < print.cols.1);
                 }

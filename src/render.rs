@@ -589,7 +589,10 @@ impl Grid {
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
         let row = self.row(y).filter(|c| !c.is_wide_continuation());
-        row.map(shown).collect::<String>().trim_end().to_owned()
+        row.map(|c| c.shown())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
     }
 
     /// Writes `text` from (y, x), clipped at `limit`, wide glyphs whole; the
@@ -672,16 +675,6 @@ fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
 /// than their keys, so a frame with it is not memo'd (`Frame::of`).
 fn own_colours(screen: &fux_vt::Screen) -> bool {
     screen.colors_changed() || screen.mode(fux_vt::Mode::ReverseVideo)
-}
-
-/// What a cell shows: its text, or a space if it has none.
-/// A cell's glyph as it is painted and captured: a blank for an empty cell,
-/// and for one a picture covers, which the picture is drawn over.
-pub fn shown(cell: CellRef<'_>) -> &str {
-    match cell.contents() {
-        text if cell.has_contents() && text != fux_vt::PLACEHOLDER => text,
-        _ => " ",
-    }
 }
 
 const GRAY_BG: Color = Color::Idx(236);
@@ -1414,7 +1407,7 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
         before = before.saturating_sub(1);
     }
     grid.get(y, before)
-        .is_some_and(|glyph| fux_vt::continues_cluster(shown(glyph), first))
+        .is_some_and(|glyph| fux_vt::continues_cluster(glyph.shown(), first))
 }
 
 /// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run of
@@ -1686,7 +1679,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                 let text = if wide && cx.saturating_add(1) >= new.cols {
                     " "
                 } else {
-                    shown(cell)
+                    cell.shown()
                 };
                 let attrs = cell.attributes();
                 if current != Some(attrs) {

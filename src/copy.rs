@@ -7,10 +7,9 @@
 use crate::act::{CopyAct, Seek};
 use crate::id::ClientId;
 use crate::id::PaneId;
-use crate::render::shown;
 use crate::session::{self, Error, Session};
 use crate::view::{Mode, Notice};
-use fux_vt::{CellRef, Row, RowId, Screen};
+use fux_vt::{Row, RowId, Screen};
 
 /// The most cells one copy takes.
 pub const MAX_CELLS: usize = 262_144;
@@ -205,9 +204,9 @@ pub struct Bar<'a> {
 /// A row's cells as (column, class): 0 blank, 1 word, 2 other. The row end
 /// is a blank.
 fn classes(row: Row<'_>) -> Vec<(u16, u8)> {
-    let class = |cell: CellRef<'_>| {
-        let c = cell.contents().chars().next().unwrap_or(' ');
-        if c.is_whitespace() || !cell.has_contents() {
+    let class = |text: &str| {
+        let c = text.chars().next().unwrap_or(' ');
+        if c.is_whitespace() {
             0
         } else if c.is_alphanumeric() || c == '_' {
             1
@@ -215,19 +214,17 @@ fn classes(row: Row<'_>) -> Vec<(u16, u8)> {
             2
         }
     };
-    let mut out: Vec<(u16, u8)> = glyphs(row).map(|(col, cell)| (col, class(cell))).collect();
+    let mut out: Vec<(u16, u8)> = glyphs(row).map(|(col, text)| (col, class(text))).collect();
     let end = out.last().map_or(0, |(c, _)| c.saturating_add(1));
     out.push((end, 0));
     out
 }
 
-/// A row's cells and their columns, but for the second halves of wide
-/// glyphs.
-fn glyphs(row: Row<'_>) -> impl Iterator<Item = (u16, CellRef<'_>)> {
+/// A row's glyphs as a copy takes them (`Row::copied`), and their columns.
+fn glyphs(row: Row<'_>) -> impl Iterator<Item = (u16, &str)> {
     // A row is never wider than a u16 screen.
-    (0..=u16::MAX)
-        .zip(row.cells())
-        .filter(|(_, cell)| !cell.is_wide_continuation())
+    let glyphs = row.copied(0, usize::MAX);
+    glyphs.map_while(|(col, text)| Some((u16::try_from(col).ok()?, text)))
 }
 
 /// A position in the flat sequence of cells: a row and an index into its
@@ -364,9 +361,7 @@ pub fn find<'a>(query: &str, from: Place<'a>, seek: Seek) -> Option<Place<'a>> {
     let mut matches_in = |row: Row<'_>, cols: &mut Vec<u16>| {
         cols.clear();
         folded.clear();
-        folded.extend(
-            glyphs(row).flat_map(|(_, cell)| shown(cell).chars().map(|c| fold(c, ignore_case))),
-        );
+        folded.extend(glyphs(row).flat_map(|(_, text)| text.chars().map(|c| fold(c, ignore_case))));
         let starts: Vec<usize> = (0..folded.len())
             .filter(|at| {
                 folded.get(*at) == Some(&first)
@@ -380,7 +375,7 @@ pub fn find<'a>(query: &str, from: Place<'a>, seek: Seek) -> Option<Place<'a>> {
         }
         // A match: the columns of this row, then, and of each match in it.
         let columns: Vec<u16> = glyphs(row)
-            .flat_map(|(col, cell)| shown(cell).chars().map(move |_| col))
+            .flat_map(|(col, text)| text.chars().map(move |_| col))
             .collect();
         cols.extend(starts.iter().filter_map(|at| columns.get(*at).copied()));
     };
@@ -457,18 +452,14 @@ pub fn text(
             Select::Line => (0, cols.saturating_sub(1)),
             Select::Block => (left, right),
         };
+        // Refused long before it could saturate.
+        cells = cells.saturating_add(usize::from(to.saturating_sub(from)).saturating_add(1));
+        if cells > MAX_CELLS {
+            return Err(Error::SelectionTooLarge);
+        }
         let mut line = String::new();
-        // Starting on the second half of a wide glyph takes the glyph.
-        let row_cells = glyph_start(row, from)..=to;
-        for cell in row_cells.map_while(|col| row.cell(usize::from(col))) {
-            // Refused long before it could saturate.
-            cells = cells.saturating_add(1);
-            if cells > MAX_CELLS {
-                return Err(Error::SelectionTooLarge);
-            }
-            if !cell.is_wide_continuation() {
-                line.push_str(shown(cell));
-            }
+        for (_, glyph) in row.copied(usize::from(from), usize::from(to)) {
+            line.push_str(glyph);
         }
         let joined = kind != Select::Block && row.wrapped() && index < last;
         if joined {
@@ -1034,6 +1025,19 @@ mod tests {
             text(s, Select::Block, (at(0)?, 1), (at(3)?, 2))?,
             "bc\nf\n界x\nas"
         );
+        Ok(())
+    }
+
+    /// The blank a wide glyph that did not fit leaves at a soft-wrapped
+    /// row's end is no part of the text: a copy joins over it.
+    #[test]
+    fn a_wide_glyphs_spacer_is_no_text() -> Result<(), Box<dyn std::error::Error>> {
+        let p = screen("abcd世\r\n".as_bytes(), 3, 5)?;
+        let s = p.screen();
+        let top = s.rows().len() - 3;
+        let at = |i| row(s, top + i);
+        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1))?, "abcd世");
+        assert_eq!(text(s, Select::Line, (at(0)?, 0), (at(1)?, 0))?, "abcd世");
         Ok(())
     }
 }

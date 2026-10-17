@@ -82,7 +82,7 @@ pub fn pane(
                     ("", lead)
                 } else {
                     lead = cell.attributes();
-                    (crate::render::shown(cell), lead)
+                    (cell.shown(), lead)
                 }
             });
         let cells: Cells<'_> = match view.cols {
