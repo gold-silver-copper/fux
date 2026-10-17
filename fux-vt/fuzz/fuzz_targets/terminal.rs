@@ -169,8 +169,9 @@ fuzz_target!(|data: &[u8]| {
     // replies (0x20), hyperlinks (0x40) and prompt marks (0x80); above the
     // row count, into reflow
     // (0x10), the kitty keyboard protocol (0x20), an identity (0x40) and
-    // colour-scheme updates (0x80); above the column count, into setting
-    // reports (DECRQSS, 0x40) and rectangle checksums (0x80).
+    // colour-scheme updates (0x80); above the column count, into pictures
+    // (sixel, 0x20), setting reports (DECRQSS, 0x40) and rectangle
+    // checksums (0x80).
     // Each is fuzzed alone and with the others, alongside the default.
     let options = Options::new()
         .set(Feature::Events, history & 0x10 != 0)
@@ -184,6 +185,7 @@ fuzz_target!(|data: &[u8]| {
             version: "1.2.3",
         }))
         .set(Feature::ColorSchemeUpdates, r & 0x80 != 0)
+        .set(Feature::Pictures, c & 0x20 != 0)
         .set(Feature::SettingReports, c & 0x40 != 0)
         .set(Feature::RectangleChecksums, c & 0x80 != 0);
     let size = Size::new(1 + u16::from(r % 16), 1 + u16::from(c % 24)).expect("one at least");

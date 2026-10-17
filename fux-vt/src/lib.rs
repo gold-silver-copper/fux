@@ -86,12 +86,12 @@ pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};
 pub use parser::{
-    Event, Feature, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink,
+    Event, Feature, Frame, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink,
     Unhandled,
 };
 pub use screen::{
     CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,
-    PLACEHOLDER, Screen, Shown,
+    PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
 };
 pub use unicode::{UNICODE_VERSION, continues_cluster};
 

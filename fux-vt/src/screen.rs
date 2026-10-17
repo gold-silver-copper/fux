@@ -449,7 +449,7 @@ pub struct Screen {
 
 mod pictures;
 mod shell;
-pub use pictures::{Graphics, PLACEHOLDER, Shown};
+pub use pictures::{Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
 pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;

@@ -236,18 +236,18 @@ fn make<A: Side, B: Side>(case: &Case) -> Result<Option<(A, B)>, Difference> {
 }
 
 /// `process_until_frame` over all of `bytes`, called again after each
-/// frame: what each call returned.
+/// frame begins or ends: what each call returned.
 fn frames<S: Side>(
     s: &mut S,
     bytes: &[u8],
     heard: &mut Vec<Heard>,
-) -> Vec<Result<Option<usize>, Error>> {
+) -> Vec<Result<Option<(usize, bool)>, Error>> {
     let mut results = Vec::new();
     let mut rest = bytes;
     // At most a call a byte, and one more.
     for _ in 0..=bytes.len() {
         let result = s.process_until_frame(rest, heard);
-        let taken = result.as_ref().ok().copied().flatten();
+        let taken = result.as_ref().ok().copied().flatten().map(|(n, _)| n);
         results.push(result);
         match taken.and_then(|n| rest.get(n..)) {
             Some(tail) if !tail.is_empty() && tail.len() < rest.len() => rest = tail,

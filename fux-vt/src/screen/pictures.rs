@@ -18,6 +18,12 @@ pub const PLACEHOLDER: &str = "\u{10EEEE}";
 /// The most pictures a screen keeps; a new one past it lets the oldest go.
 const MAX_PICTURES: usize = 64;
 
+/// The most bytes of pixels a screen's pictures hold together, however
+/// large their data says they are: a new one past it lets the oldest go.
+/// It holds the largest picture, 4096 by 2160 (`sixel::MAX_SIDE`), twice;
+/// the one being drawn takes at most that much more until it is placed.
+pub const PICTURE_BYTES: usize = 96 << 20;
+
 /// What the host's terminal draws, for the pictures a program asks about
 /// and draws: the size of a cell in pixels, if known, and whether it shows
 /// sixel graphics.
@@ -136,10 +142,18 @@ impl Screen {
             alternate,
             id: self.picture_ids,
         });
-        if self.pictures.len() > MAX_PICTURES {
+        // The new one is never past the bytes alone (`sixel::MAX_PIXELS`).
+        while self.pictures.len() > MAX_PICTURES || self.picture_bytes() > PICTURE_BYTES {
             self.pictures.pop_front();
         }
         Ok(())
+    }
+
+    /// The bytes of pixels the screen's pictures hold.
+    pub(crate) fn picture_bytes(&self) -> usize {
+        (self.pictures.iter())
+            .map(|p| p.picture.rgba.capacity())
+            .fold(0, usize::saturating_add)
     }
 
     /// The pictures the screen shows: on the screen in use, every cell they

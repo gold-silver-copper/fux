@@ -49,12 +49,13 @@ pub trait Side: Clone {
     fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error>;
     /// `Parser::process_with`, with what it gave the host.
     fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error>;
-    /// `Parser::process_until_frame`.
+    /// `Parser::process_until_frame`: how many bytes it took if it
+    /// stopped, and whether a frame began there (else one ended).
     fn process_until_frame(
         &mut self,
         bytes: &[u8],
         heard: &mut Vec<Heard>,
-    ) -> Result<Option<usize>, Error>;
+    ) -> Result<Option<(usize, bool)>, Error>;
     /// `Parser::resize`.
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error>;
     /// Everything about the screen but its rows.
