@@ -612,17 +612,19 @@ fn ind_and_nel_feed_a_line() -> Result {
     Ok(())
 }
 
-/// Tab stops (ECMA-48 8.3.62 HTS, 8.3.154 TBC, 8.3.10 CHT, 8.3.7 CBT),
-/// one set for both screens, as in xterm: every eight columns at first
-/// and after RIS, kept by DECSTR (the VT520 manual's table, p. 5-150,
-/// does not list them) and by a resize, as xterm keeps them. HT and CHT
-/// stop at the last column when no stop is left, CBT at the first. TBC
-/// 0 clears the stop at the cursor and 3 every stop; xterm ignores the
-/// others, which ECMA-48 defines for stops kept line by line, and so does
-/// fux-vt. With a wrap pending, CBT leaves the next glyph to wrap, as in
-/// xterm, where ECMA-48 moves back (README, "Departures from the
-/// references"). Expected values are xterm's (`fux-vt-compare replay
-/// --engines all --size 1x20`, `cases hts-and-tbc cht-and-cbt`).
+/// Tab stops (ECMA-48 8.3.62 HTS, 8.3.154 TBC, 8.3.10 CHT, 8.3.7 CBT), one
+/// set for both screens, as in xterm: every eight columns at first and
+/// after RIS, kept by DECSTR (the VT520 manual's table, p. 5-150, does not
+/// list them) and by a resize, as xterm keeps them. HT and CHT stop at the
+/// last column when no stop is left, CBT at the first. TBC 0 clears the
+/// stop at the cursor and 3 every stop, the two DEC STD 070 (TBC) defines;
+/// the others, which ECMA-48 defines for stops kept line by line, do
+/// nothing, as in xterm. With a wrap pending CBT moves back from the last
+/// column, the active position (ECMA-48 8.3.7), and so ends the wrap, as
+/// DEC STD 070 (Appendix D.6.1) ends it for a control that may move the
+/// cursor; xterm moves it but keeps the wrap. Expected values are xterm's
+/// (`fux-vt-compare replay --engines all --size 1x20`, `cases hts-and-tbc
+/// cht-and-cbt`), but for CBT with a wrap pending.
 #[test]
 fn tab_stops_are_set_cleared_and_kept() -> Result {
     assert_eq!(row(20, b"\x1b[3g\x1b[5G\x1bH\rX\tY")?, "X   Y");
@@ -646,9 +648,11 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
     p.resize(Size::new(1, 30)?)?;
     p.process(b"\r\t\t\tX")?;
     assert_eq!(lines(&p), ["                X"]);
-    // CBT with a wrap pending: the next glyph still wraps.
+    // CBT with a wrap pending moves back from the last column, and ends
+    // the wrap.
     let p = run(2, 10, b"abcdefghij\x1b[ZX")?;
-    assert_eq!(lines(&p), ["abcdefghij", "X"]);
+    assert_eq!(lines(&p), ["abcdefghXj", ""]);
+    assert!(!p.screen().pending_wrap());
     Ok(())
 }
 

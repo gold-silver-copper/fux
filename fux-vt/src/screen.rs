@@ -1585,8 +1585,9 @@ impl Screen {
     /// at, and once the cursor stops moving the rest of the count is
     /// spent: the work is the line's width at most, whatever the count.
     ///
-    /// It ends a pending wrap: DEC STD 070 (Appendix D.6.1) lists HT, and
-    /// CHT is HT that many times (xterm keeps the wrap through both).
+    /// It ends a pending wrap: DEC STD 070 (Appendix D.6.1) lists HT, CHT
+    /// is HT that many times, and CBT moves back from the last column
+    /// (xterm keeps the wrap through all three).
     fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
         let (mut col, mut last) = (g.cursor.col(), g.columns().last());
@@ -2377,9 +2378,9 @@ impl Screen {
         let pending = self.grid().cursor.pending_wrap;
         // Every cursor movement, erase and edit ends a pending wrap (DEC STD
         // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL,
-        // DL and DECSTBM below, once they are carried out, and CHT in
-        // `tab`. SU and SD are not among them: the cursor stays waiting to
-        // wrap, as in xterm.
+        // DL and DECSTBM below, once they are carried out, and CHT and CBT
+        // in `tab`. SU and SD are not among them: the cursor stays waiting
+        // to wrap, as in xterm.
         if matches!(byte, b'A'..=b'H' | b'X' | b'`' | b'a' | b'd' | b'e' | b'f') {
             self.grid_mut().cursor.pending_wrap = false;
         }
@@ -2545,14 +2546,11 @@ impl Screen {
             // CHT (ECMA-48 8.3.10): HT n times.
             b'I' => self.tab(n, true),
             // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
-            // column. With a wrap pending it does nothing, as in xterm.
-            b'Z' => {
-                if !self.grid().cursor.pending_wrap {
-                    self.tab(n, false);
-                }
-            }
+            // column.
+            b'Z' => self.tab(n, false),
             // TBC (ECMA-48 8.3.154): 0 clears the stop at the cursor, 3
-            // every stop; xterm ignores the others, and so does fux-vt.
+            // every stop, the two DEC STD 070 (TBC) defines; the others,
+            // for stops kept line by line, do nothing.
             b'g' => match p.first(0, 0) {
                 0 => {
                     let col = self.grid().cursor.col();

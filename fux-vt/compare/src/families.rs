@@ -854,9 +854,14 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "tabs",
         about: "HT, HTS, TBC, CHT and CBT",
-        status: Status::Differs(
-            "the panel splits on CBT with a wrap pending: ECMA-48 (8.3.7) moves back a tab stop; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor; fux-vt leaves the cursor in the last column, so text lands where xterm puts it (a recorded departure), while Ghostty, alacritty, libvterm, avt and wezterm move back and outvote fux-vt (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`)",
-        ),
+        status: Status::Decided {
+            why: "CBT with a wrap pending moves back a tab stop from the last column, the active position, as ECMA-48 (8.3.7) says, and ends the wrap, as DEC STD 070 (Appendix D.6.1) ends it for a control that may move the cursor, and fux-vt does: Ghostty, alacritty, libvterm, avt and wezterm move back; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`). HT and CHT end a pending wrap too (see `controls`), where xterm keeps it. avt, which agrees most, counts a pending wrap as one column past the last (`replay --engines avt --size 1x9 'abcdefghi\\e[Z'`), so the test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "ECMA-48 8.3.7",
+                test: "conformance::tab_stops_are_set_cleared_and_kept",
+            },
+        },
         ratty_only: false,
         generate: tabs,
     },

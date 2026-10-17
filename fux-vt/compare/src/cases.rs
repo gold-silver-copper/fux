@@ -307,6 +307,12 @@ pub const CASES: &[Named] = &[
     ),
     ("cht-and-cbt", "tabs", (1, 20), &["\\e[2IX\\e[ZY"]),
     (
+        "cbt-while-wrap-pending",
+        "tabs",
+        (2, 10),
+        &["abcdefghij\\e[ZX"],
+    ),
+    (
         "invalid-utf8-prints-a-replacement",
         "invalid-utf8",
         (1, 10),
