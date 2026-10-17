@@ -303,7 +303,8 @@ clipped to it unchanged, and a wide glyph cut by its edge reads as blank.
 their first half, soft wraps join, a picture's cells read as blanks
 (`CellRef::shown`), padding at hard line ends and past a history row's
 width is not copied, and cell and byte limits are checked before anything
-grows.
+grows. `Row::copied` gives one row's glyphs as a copy takes them, each with
+its column, for a copy of another shape.
 
 Marks are not consumed, so readers share them. `changed_since` says
 whether the screen may have changed (any processing counts);

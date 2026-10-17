@@ -333,6 +333,26 @@ impl<'a> Row<'a> {
             cell.read_as(text, last.1)
         })
     }
+    /// The glyphs of columns `from` through `to` as a copy takes them, each
+    /// with its column: a wide glyph whole, from either half; a blank cell,
+    /// or one a picture covers, as a space (`CellRef::shown`); and the
+    /// spacer the row may end in (`ends_in_spacer`) left out.
+    pub fn copied(
+        &self,
+        from: usize,
+        to: usize,
+    ) -> impl Iterator<Item = (usize, &'a str)> + use<'a> {
+        let from = match self.stored(from) {
+            Some(cell) if cell.is_wide_continuation() => from.saturating_sub(1),
+            Some(_) | None => from,
+        };
+        let spacer = usize::from(self.ends_in_spacer());
+        let end = self.width.saturating_sub(spacer).min(to.saturating_add(1));
+        let glyphs = self.cells().enumerate().take(end).skip(from);
+        glyphs
+            .filter(|(_, cell)| !cell.is_wide_continuation())
+            .map(|(col, cell)| (col, cell.shown()))
+    }
     /// The row's text, a cell at a time: a blank cell, or one holding a
     /// placeholder, as a space, the second half of a wide glyph left out,
     /// and the blanks at its end kept.
@@ -515,11 +535,6 @@ impl<'a> Window<'a> {
             Some(cell)
         }
     }
-    /// Whether the cell is its row's spacer (`Row::ends_in_spacer`).
-    fn spacer(&self, row: u16, col: u16) -> bool {
-        self.row(row)
-            .is_some_and(|r| usize::from(col).checked_add(1) == Some(r.len()) && r.ends_in_spacer())
-    }
     /// Whether row `row` of the window is soft-wrapped, its line going on in
     /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
@@ -534,19 +549,10 @@ impl<'a> Window<'a> {
         max_cells: usize,
         max_bytes: usize,
     ) -> Result<String, Error> {
-        let point = |(y, x): (u16, u16)| -> Result<(u16, u16), Error> {
-            if y >= self.rows() || x >= self.cols() {
-                return Err(Error::InvalidRange);
-            }
-            let x = if self.cell(y, x).is_some_and(|c| c.is_wide_continuation()) {
-                x.saturating_sub(1)
-            } else {
-                x
-            };
-            Ok((y, x))
-        };
-        let (a, b) = (point(a)?, point(b)?);
-        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        if a.0.max(b.0) >= self.rows() || a.1.max(b.1) >= self.cols() {
+            return Err(Error::InvalidRange);
+        }
+        let (start, end) = (a.min(b), a.max(b));
         // Exact: both points are in the window, so it has a last column.
         let last = self.cols().saturating_sub(1);
         let count = (start.0..=end.0)
@@ -561,17 +567,14 @@ impl<'a> Window<'a> {
             let left = if y == start.0 { start.1 } else { 0 };
             let right = if y == end.0 { end.1 } else { last };
             let line_start = output.len();
-            for x in left..=right {
-                // Clipped wide glyphs and padding beyond a historical row's
-                // original extent are display blanks, not stored copy text.
-                // In particular, padding must not enter a soft-wrapped join.
-                let Some(cell) = self.cell(y, x) else {
-                    continue;
-                };
-                if cell.is_wide_continuation() || self.spacer(y, x) {
-                    continue;
-                }
-                let text = cell.shown();
+            let row = self.row(y).ok_or(Error::InvalidRange)?;
+            // A wide glyph the window clips is a display blank, not stored
+            // copy text, and so is padding past a history row's width: it
+            // must not enter a soft-wrapped join.
+            let glyphs = row.copied(usize::from(left), usize::from(right));
+            let inside =
+                |(x, _): &(usize, &str)| u16::try_from(*x).is_ok_and(|x| self.cell(y, x).is_some());
+            for (_, text) in glyphs.filter(inside) {
                 if output
                     .len()
                     .checked_add(text.len())
@@ -581,7 +584,7 @@ impl<'a> Window<'a> {
                 }
                 output.push_str(text);
             }
-            if y == end.0 || !self.row_wrapped(y) {
+            if y == end.0 || !row.wrapped {
                 while output.len() > line_start && output.ends_with(' ') {
                     output.pop();
                 }
