@@ -1945,8 +1945,9 @@ impl Session {
         let follows = action.as_ref().map_or(Follows::Wait, |_| Follows::Action);
         if let Some(command) = action {
             let outcome = self.run_command(&command, origin);
-            if matches!(outcome.end, End::Failed { .. }) {
-                return Ok(Begun::Done(outcome));
+            match outcome.end {
+                End::Failed { .. } => return Ok(Begun::Done(outcome)),
+                End::Done | End::Answered(_) => {}
             }
         }
         let panes = (self.panes_of(target)?.into_iter())
