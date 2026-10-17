@@ -5,10 +5,11 @@
 //! application word that needs its host to do something first. It never
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
+use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
 use crate::compile::{Op, Program};
 use crate::error::{Code, Error, Failure, Wants, underflow};
 use crate::token::Token;
-use crate::value::{AppValue, Kind, List, NESTING, TOTAL, Text, Value};
+use crate::value::{AppValue, List, NESTING, TOTAL, Text, Value};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -781,11 +782,11 @@ impl<A> Sequence<A> {
 }
 
 /// What a built-in takes in one place, as the checker sees it: the kinds
-/// (`Kind` bits) a value there may be, and what a value of another kind is
-/// told (none for a place that takes any value).
+/// a value there may be, and what a value of another kind is told (none
+/// for a place that takes any value).
 #[derive(Clone, Copy)]
 pub(crate) struct Arg {
-    pub(crate) kinds: u8,
+    pub(crate) kinds: Kinds,
     pub(crate) wants: Option<fn(Builtin) -> Wants>,
 }
 
@@ -796,7 +797,7 @@ struct Any;
 
 impl Any {
     const ARG: Arg = Arg {
-        kinds: Kind::BITS,
+        kinds: ANY,
         wants: None,
     };
 
@@ -810,7 +811,7 @@ struct Int;
 
 impl Int {
     const ARG: Arg = Arg {
-        kinds: Kind::Int.bit(),
+        kinds: INT,
         wants: Some(Wants::Int),
     };
 
@@ -829,7 +830,7 @@ struct Seq;
 
 impl Seq {
     const ARG: Arg = Arg {
-        kinds: Kind::Str.bit() | Kind::List.bit(),
+        kinds: SEQ,
         wants: Some(Wants::Seq),
     };
 
@@ -847,7 +848,7 @@ struct Joined;
 
 impl Joined {
     const ARG: Arg = Arg {
-        kinds: Kind::List.bit(),
+        kinds: LIST,
         wants: Some(|_| Wants::Concat),
     };
 
@@ -866,7 +867,7 @@ struct Char;
 
 impl Char {
     const ARG: Arg = Arg {
-        kinds: Kind::Str.bit(),
+        kinds: STR,
         wants: Some(|_| Wants::Char),
     };
 

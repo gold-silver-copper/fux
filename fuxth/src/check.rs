@@ -35,15 +35,15 @@ const RECURSION_ROUNDS: u32 = 8;
 
 /// The kinds a value may be: a set, a bit for each `Kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Kinds(u8);
+pub(crate) struct Kinds(u8);
 
-const INT: Kinds = Kinds::one(Kind::Int);
+pub(crate) const INT: Kinds = Kinds::one(Kind::Int);
 const BOOL: Kinds = Kinds::one(Kind::Bool);
-const STR: Kinds = Kinds::one(Kind::Str);
-const LIST: Kinds = Kinds::one(Kind::List);
-const ANY: Kinds = Kinds(Kind::BITS);
+pub(crate) const STR: Kinds = Kinds::one(Kind::Str);
+pub(crate) const LIST: Kinds = Kinds::one(Kind::List);
+pub(crate) const ANY: Kinds = Kinds(Kind::BITS);
 /// A string or a list.
-const SEQ: Kinds = STR.union(LIST);
+pub(crate) const SEQ: Kinds = STR.union(LIST);
 
 impl Kinds {
     const fn one(kind: Kind) -> Self {
@@ -938,7 +938,7 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
     };
     // Each place's kind, as the machine takes it, the deepest first.
     for (i, arg) in args.iter().enumerate() {
-        if !at(i).may_be(Kinds(arg.kinds))
+        if !at(i).may_be(arg.kinds)
             && let Some(wants) = arg.wants
         {
             return Err(Failing::Type(wants(builtin).not(at(i).describe())));
