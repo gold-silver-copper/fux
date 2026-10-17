@@ -28,7 +28,7 @@ impl Grid {
                 .checked_add(usize::from(cursor.row))
                 .map(|row| (row, usize::from(past(cursor.col, cursor.pending_wrap))))
         };
-        let marks = [at(self.cursor), at(self.saved)];
+        let marks = [at(self.cursor), at(self.saved.cursor)];
         let layout = self.reflow(usize::from(cols), marks, &mut Layout)?;
         // Blank lines below the cursor are dropped before any line scrolls
         // into history: a mostly empty screen keeps its text on screen.
@@ -77,7 +77,10 @@ impl Grid {
             cursor: placed(self.cursor, cursor),
             // The saved cursor moves with its character as the cursor
             // does, so DECRC (as 1049 leaves the alternate screen) finds it.
-            saved: placed(self.saved, saved),
+            saved: Saved {
+                cursor: placed(self.saved.cursor, saved),
+                ..self.saved
+            },
             ..self.successor(size)
         };
         replacement.reserve_screen()?;

@@ -6,6 +6,7 @@ use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, trimmed};
 use crate::link::{Held, Hyperlink, Links, RowLinks};
+use crate::screen::Saved;
 use crate::style::Styles;
 use crate::{Attributes, CellRef, Error, Row, RowId};
 
@@ -309,8 +310,8 @@ pub(crate) struct Grid {
     history: History,
     size: Size,
     pub cursor: Cursor,
-    /// The cursor DECSC saved, which DECRC restores.
-    pub saved: Cursor,
+    /// What DECSC saved, which DECRC restores.
+    pub saved: Saved,
     /// The top and bottom margins (DECSTBM): the scrolling region.
     pub lines: Span,
     /// The left and right margins (DECSLRM, with DECLRMM set), set with
@@ -434,7 +435,7 @@ impl Grid {
             history: History::new(history_bytes),
             size,
             cursor: Cursor::default(),
-            saved: Cursor::default(),
+            saved: Saved::default(),
             lines: size.lines(),
             columns: size.columns(),
             lr: false,
@@ -1639,7 +1640,10 @@ impl Grid {
         };
         let mut replacement = Self {
             cursor: shifted(self.cursor),
-            saved: shifted(self.saved),
+            saved: Saved {
+                cursor: shifted(self.saved.cursor),
+                ..self.saved
+            },
             ..self.successor(size)
         };
         replacement.reserve_screen()?;
@@ -1734,7 +1738,7 @@ impl Grid {
         self.styles = Arc::default();
         self.recent = [(Attributes::default(), 0); RECENT];
         self.cursor = Cursor::default();
-        self.saved = Cursor::default();
+        self.saved = Saved::default();
         self.keyboard = KeyboardStack::default();
         self.reset_margins();
     }

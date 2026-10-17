@@ -75,7 +75,7 @@ impl Printed {
 /// after SI. G2, G3 and the national sets are not kept: a set other than
 /// Special Graphics is ASCII, as xterm reads one in UTF-8.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Charsets {
+pub(crate) struct Charsets {
     g0_graphics: bool,
     g1_graphics: bool,
     shifted: bool,
@@ -90,6 +90,19 @@ impl Charsets {
             self.g0_graphics
         }
     }
+}
+
+/// What DECSC saves and DECRC restores: the cursor, with its pending wrap
+/// and origin mode (DEC STD 070, Appendix D.6.1), the pen, the character
+/// sets and whether glyphs are protected (DECSCA's selective erase
+/// attribute, as the VT420 manual lists it and xterm saves it). Each grid
+/// keeps its own, as each of xterm's screens does.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Saved {
+    pub(crate) cursor: Cursor,
+    pub(crate) attributes: Attributes,
+    pub(crate) charsets: Charsets,
+    pub(crate) protect: u32,
 }
 
 /// The DEC Special Graphics character for `c`, as xterm draws it: 0x5f to
@@ -289,10 +302,7 @@ pub struct Screen {
     /// found lately (`Grid::table_style`).
     pen_style: u32,
     blank_style: u32,
-    saved_attributes: Attributes,
     charsets: Charsets,
-    /// The character sets DECSC saved, which DECRC restores.
-    saved_charsets: Charsets,
     /// The modes kept as bits (`Kind::Flag`, `Margins`, `Frame`,
     /// `SizeReport`) that are set.
     modes: Modes,
@@ -303,7 +313,6 @@ pub struct Screen {
     /// erase (DECSCA 1, SPA), else 0: or-ed into the style they are
     /// written in. DECSC saves it, as xterm does.
     protect: u32,
-    saved_protect: u32,
     /// Which erases leave protected glyphs.
     protection: Protection,
     tabs: TabStops,
@@ -423,13 +432,10 @@ impl Screen {
             attributes: Attributes::default(),
             pen_style: 0,
             blank_style: 0,
-            saved_attributes: Attributes::default(),
             charsets: Charsets::default(),
-            saved_charsets: Charsets::default(),
             modes: Modes::DEFAULT,
             saved_modes: Modes::default(),
             protect: 0,
-            saved_protect: 0,
             protection: Protection::Off,
             tabs: TabStops::default(),
             frames_begun: 0,
@@ -1593,27 +1599,28 @@ impl Screen {
         }
     }
 
-    /// DECSC: the cursor, with its pending wrap (DEC STD 070, Appendix
-    /// D.6.1), origin mode, the drawing attributes and whether glyphs are
-    /// protected (DECSCA's selective erase attribute, as the VT420 manual
-    /// lists it and xterm saves it).
+    /// DECSC, into the grid shown (`Saved`).
     fn save(&mut self) {
+        let (attributes, charsets, protect) = (self.attributes, self.charsets, self.protect);
         let g = self.grid_mut();
-        g.saved = g.cursor;
-        self.saved_attributes = self.attributes;
-        self.saved_charsets = self.charsets;
-        self.saved_protect = self.protect;
+        g.saved = Saved {
+            cursor: g.cursor,
+            attributes,
+            charsets,
+            protect,
+        };
     }
     /// DECRC. In origin mode the cursor comes back no further right than
     /// the right margin, as xterm's `CursorRestore` places it.
     fn restore(&mut self) {
         let g = self.grid_mut();
-        g.cursor = g.saved;
+        let saved = g.saved;
+        g.cursor = saved.cursor;
         g.set_col(g.cursor.col().min(g.addressed().1.last()));
-        self.attributes = self.saved_attributes;
+        self.attributes = saved.attributes;
         self.pen_changed();
-        self.charsets = self.saved_charsets;
-        self.protect = self.saved_protect;
+        self.charsets = saved.charsets;
+        self.protect = saved.protect;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
@@ -1689,9 +1696,9 @@ impl Screen {
                 self.alternate.reset_links();
                 self.alternate_active = false;
                 self.clear_on_show = None;
-                // The pen, the saved cursor's attributes, the character
-                // sets, protection and the palette, as DECSTR resets them;
-                // the grids' cursors and margins are new already.
+                // The pen, the character sets, protection and the palette,
+                // as DECSTR resets them; the grids' cursors, saved cursors
+                // and margins are new already.
                 self.soft_reset();
                 self.modes = Modes::DEFAULT;
                 self.tabs = TabStops::default();
@@ -1835,9 +1842,9 @@ impl Screen {
     /// back to their defaults, as the VT520 manual's table (p. 5-150) and
     /// DEC STD 070's Soft Terminal Reset (p. 4-37) list them: the cursor
     /// shown, DECOM, DECCKM and DECKPAM off, the scroll region the whole
-    /// screen, the pen and the saved cursor's attributes normal, the
-    /// character sets ASCII with G0 in GL, and the saved cursor home
-    /// (`Modes::SOFT_RESET` has the modes). DECAWM goes back to its
+    /// screen, the pen normal, the character sets ASCII with G0 in GL,
+    /// and the saved cursor home with them (`Modes::SOFT_RESET` has the
+    /// modes); the saved cursor is the shown screen's, as xterm resets it. DECAWM goes back to its
     /// default, which both leave to the terminal's setting (xterm's: on).
     /// The screen, the
     /// cursor, a pending wrap, the alternate screen, bracketed paste, focus
@@ -1847,20 +1854,17 @@ impl Screen {
         self.modes.reset(Modes::SOFT_RESET);
         self.attributes = Attributes::default();
         self.pen_changed();
-        self.saved_attributes = Attributes::default();
         self.charsets = Charsets::default();
-        self.saved_charsets = Charsets::default();
         // The left and right margins, and the selective erase attribute,
         // both in the VT520 manual's table, and what erasing leaves, as
         // xterm resets it.
         self.protect = 0;
-        self.saved_protect = 0;
         self.protection = Protection::Off;
         for g in [&mut self.primary, &mut self.alternate] {
             g.cursor.origin = false;
             g.reset_margins();
         }
-        self.grid_mut().saved = Cursor::default();
+        self.grid_mut().saved = Saved::default();
         // The palette, as xterm 411 resets it (in neither table); the
         // dynamic and special colours stay.
         if let Some(colours) = &mut self.colours {
