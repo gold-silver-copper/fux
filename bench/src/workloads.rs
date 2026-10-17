@@ -442,9 +442,10 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         if let Some(view) = s.views.get_mut(&c) {
             view.dirty = false;
         }
-        if !fux::render::compose_into(&s, c, &mut spare, &mut placement) {
+        let Some(view) = s.views.get(&c) else {
             continue;
-        }
+        };
+        fux::render::compose_view(&s, view, &mut spare, &mut placement);
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
         fux::render::paint_into(have.then_some(&shown), &spare, &mut buffer);
@@ -521,9 +522,10 @@ fn paint(
                     if baseline || !dirty {
                         continue;
                     }
-                    if !fux::render::compose_into(&s, c, &mut spare, &mut placement) {
+                    let Some(view) = s.views.get(&c) else {
                         continue;
-                    }
+                    };
+                    fux::render::compose_view(&s, view, &mut spare, &mut placement);
                     if have && spare == shown {
                         continue;
                     }

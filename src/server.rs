@@ -1209,14 +1209,10 @@ impl Server {
         let client = attached.client;
         // The title and bell marks first: the bar shows the marks.
         let before = session.before_paint(client);
-        if !render::compose_into(
-            session,
-            client,
-            &mut attached.spare,
-            &mut attached.placement,
-        ) {
+        let Some(view) = session.views.get(&client) else {
             return;
-        }
+        };
+        render::compose_view(session, view, &mut attached.spare, &mut attached.placement);
         if !before.is_empty() {
             attached.paint(&mut conn.out, &before);
         }

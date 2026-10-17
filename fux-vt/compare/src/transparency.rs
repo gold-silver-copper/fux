@@ -364,21 +364,11 @@ impl Through {
                 ) => {}
             }
         }
-        let dirty = self
-            .session
-            .views
-            .get(&self.client)
-            .is_some_and(|v| v.dirty);
-        if !dirty
-            || !render::compose_into(
-                &self.session,
-                self.client,
-                &mut self.spare,
-                &mut self.placement,
-            )
-        {
+        let view = self.session.views.get(&self.client);
+        let Some(view) = view.filter(|v| v.dirty) else {
             return Ok(());
-        }
+        };
+        render::compose_view(&self.session, view, &mut self.spare, &mut self.placement);
         if !(self.painted && self.spare == self.shown) {
             self.buffer.clear();
             let shown = self.painted.then_some(&self.shown);

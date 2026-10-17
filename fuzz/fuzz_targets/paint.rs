@@ -4,9 +4,16 @@
 //! writes. Bit 2 of the flags gives the new grid its own size, in the next two
 //! bytes, so that the paint is a full one. Bit 3 paints for a terminal that
 //! draws underline styles, and bit 4 says the old grid was painted for one.
-use fux::render::{Grid, paint};
+use fux::render::{Grid, paint_into};
 use fux_vt::{Attributes, CellRef, Color, Mode, Parser, UnderlineStyle};
 use libfuzzer_sys::fuzz_target;
+
+/// The bytes that turn `old` (or nothing) into `new`.
+fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
+    let mut out = Vec::new();
+    paint_into(old, new, &mut out);
+    out
+}
 
 /// A glyph: its text, whether it is wide. `None` is a cell never written.
 const GLYPHS: [Option<(&str, bool)>; 8] = [

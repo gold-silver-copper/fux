@@ -728,28 +728,20 @@ pub fn fit(text: &str, cols: u16) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// The client's screen as it should look now, in a grid of its own.
-pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
+/// The client's screen as it should look now, in a grid of its own, as a
+/// test reads it.
+#[cfg(test)]
+pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     let mut grid = Grid::new(0, 0);
-    compose_into(session, client, &mut grid, &mut Placement::default()).then_some(grid)
+    let view = session.views.get(&client)?;
+    compose_view(session, view, &mut grid, &mut Placement::default());
+    Some(grid)
 }
 
-/// Composes the client's screen as it should look now into `grid`, whatever
-/// it held, laying out its panes in `placement`; false if there is no such
-/// client. The grid's cells and the placement are reused, not made again;
-/// the frame's memo, the bar's text and the like are made each time.
-pub fn compose_into(
-    session: &Session,
-    client: ClientId,
-    grid: &mut Grid,
-    placement: &mut Placement,
-) -> bool {
-    let view = session.views.get(&client);
-    view.map(|view| compose_view(session, view, grid, placement))
-        .is_some()
-}
-
-/// Composes a view's screen, as `compose_into` a client's.
+/// Composes a view's screen as it should look now into `grid`, whatever it
+/// held, laying out its panes in `placement`. The grid's cells and the
+/// placement are reused, not made again; the frame's memo, the bar's text
+/// and the like are made each time.
 pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: &mut Placement) {
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
@@ -1418,8 +1410,10 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
     }
 }
 
-/// The bytes that turn `old` (what the client shows, or nothing) into `new`.
-pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
+/// The bytes that turn `old` (what the client shows, or nothing) into
+/// `new`, as a test reads them.
+#[cfg(test)]
+pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
     paint_into(old, new, &mut out);
     out
@@ -1657,6 +1651,13 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
+    /// `compose` into a grid and placement kept, as the server composes:
+    /// false if there is no such client.
+    fn compose_into(s: &Session, c: ClientId, grid: &mut Grid, placement: &mut Placement) -> bool {
+        let view = s.views.get(&c);
+        view.map(|view| compose_view(s, view, grid, placement))
+            .is_some()
+    }
     use super::*;
 
     /// A client's terminal keeps its own cursor shape until a pane sets

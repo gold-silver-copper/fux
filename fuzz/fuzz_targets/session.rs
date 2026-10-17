@@ -25,13 +25,28 @@ use fux::keymap::{Held, Keymap};
 use fux::keys::Keystroke;
 use fux::outer;
 use fux::protocol::{Asked, Context, Reply, ToAttached};
-use fux::render::{Grid, compose};
+use fux::render::{Grid, compose_view, paint_into};
 use fux::screens::{Effect, Screen};
 use fux::script::{Ask, Failed, Host, Local};
 use fux::session::{Begun, Origin, Outgoing, Session};
 use fux::view::Mode;
 use fuxth::Outcome as Ran;
 use libfuzzer_sys::fuzz_target;
+
+/// The client's screen as it should look now, in a grid of its own.
+fn compose(s: &Session, c: ClientId) -> Option<Grid> {
+    let view = s.views.get(&c)?;
+    let mut grid = Grid::new(0, 0);
+    compose_view(s, view, &mut grid, &mut fux::layout::Placement::default());
+    Some(grid)
+}
+
+/// The bytes that turn `old` (or nothing) into `new`.
+fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
+    let mut out = Vec::new();
+    paint_into(old, new, &mut out);
+    out
+}
 
 /// Programs from the command line, while clients type: they change what
 /// clients are looking at, and the bindings and layers they are in.
@@ -458,20 +473,21 @@ impl Run {
                     false,
                 )
             });
-            if !fux::render::compose_into(&self.s, c, spare, placement) {
+            let Some(view) = self.s.views.get(&c) else {
                 continue;
-            }
-            let whole = fux::render::compose(&self.s, c);
+            };
+            compose_view(&self.s, view, spare, placement);
+            let whole = compose(&self.s, c);
             assert!(
                 whole.as_ref() == Some(&*spare),
                 "{c}: composed in part, not as whole"
             );
             let old = painted.then_some(&*shown);
-            let fast = fux::render::paint(old, spare);
+            let fast = paint(old, spare);
             let (mut plain_old, mut plain_new) = (shown.clone(), spare.clone());
             plain_old.forget_memo();
             plain_new.forget_memo();
-            let slow = fux::render::paint(painted.then_some(&plain_old), &plain_new);
+            let slow = paint(painted.then_some(&plain_old), &plain_new);
             assert!(fast == slow, "{c}: the memo's paint differs");
             assert_eq!(
                 spare.same_as(shown),
