@@ -250,14 +250,21 @@ fn ready(
         .is_none_or(|stopped| stopped.revents().is_empty()))
 }
 
-/// The door beside `socket` opened to knock at, if a server holds it open.
-/// One no server reads, left by a server that stopped, is refused as a
-/// socket left so is.
+/// The door beside `socket` opened to knock at, if a server holds it open
+/// and it is a FIFO of this user's that others cannot reach, checked on
+/// the opened file. One no server reads, left by a server that stopped, is
+/// refused as a socket left so is.
 fn open_door(socket: &Path) -> io::Result<File> {
-    open_fifo(&path(socket), false, true).map_err(|e| match fuxix::Errno::from_io_error(&e) {
-        Some(fuxix::Errno::NXIO) => io::ErrorKind::ConnectionRefused.into(),
-        _ => e,
-    })
+    let door = match open_fifo(&path(socket), false, true) {
+        Err(e) if fuxix::Errno::from_io_error(&e) == Some(fuxix::Errno::NXIO) => {
+            return Err(io::ErrorKind::ConnectionRefused.into());
+        }
+        opened => opened?,
+    };
+    if !ours_fifo(&door.metadata()?) {
+        return Err(io::Error::other("the door is not a FIFO of this user's"));
+    }
+    Ok(door)
 }
 
 /// Whether a server holds the door beside `socket` open.
@@ -451,6 +458,13 @@ mod tests {
         std::fs::write(&regular, "")?;
         std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600))?;
         assert!(Door::open(&file).is_err(), "a file is no door");
+        // Nor to a client, which neither waits on it nor writes its knock
+        // there, nor counts it as a server's.
+        let started = std::time::Instant::now();
+        assert!(super::knock(&file).is_err(), "knocked at a file");
+        assert!(started.elapsed() < ANSWER, "waited at a file");
+        assert!(!served(&file), "a file served");
+        assert_eq!(std::fs::read(&regular)?, b"", "a knock written to a file");
         drop(door);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())

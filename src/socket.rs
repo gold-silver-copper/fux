@@ -298,6 +298,10 @@ pub fn check_client_socket(socket: &SocketPath) -> Result<(), Error> {
     let path = socket.path();
     let meta = match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // Its door is knocked at instead, in the same directory.
+            if crate::door::path(path).exists() {
+                private_directory(socket, false)?;
+            }
             return Err(Error::NoServer(path.to_owned()));
         }
         Err(error) => return Err(io(path)(error)),
@@ -693,6 +697,14 @@ mod tests {
             error.contains("mode 0700") && error.contains("mode 0755"),
             "{error}"
         );
+        // A client is refused there too, though it would knock at a door,
+        // not connect to a socket.
+        let socket = root.join("fux").join("s.sock");
+        fuxix::file::make_fifo(&crate::door::path(&socket), 0o600)?;
+        let socket = checked(&socket.display().to_string(), "socket")?;
+        let error = check_client_socket(&socket).err().map(|e| e.to_string());
+        let error = error.unwrap_or_default();
+        assert!(error.contains("mode 0755"), "{error}");
         let _ = fs::remove_dir_all(&root);
         Ok(())
     }
