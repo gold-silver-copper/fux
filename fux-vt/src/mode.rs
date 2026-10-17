@@ -83,7 +83,8 @@ modes! {
         AlternateScreen (true, 47) => Kind::Screen(Switch::Plain),
         /// DECNKM (`CSI ? 66 h`), the keypad mode `ESC =` and `ESC >` set too.
         ApplicationKeypad (true, 66) => Kind::Flag,
-        /// DECBKM (`CSI ? 67 h`), the backarrow key sending BS. State only.
+        /// DECBKM (`CSI ? 67 h`), the backarrow key sending BS, which
+        /// `Screen::key_mode` reads.
         BackarrowSendsBackspace (true, 67) => Kind::Flag,
         /// DECLRMM (`CSI ? 69 h`): DECSLRM sets left and right margins.
         LeftRightMargins (true, 69) => Kind::Margins,

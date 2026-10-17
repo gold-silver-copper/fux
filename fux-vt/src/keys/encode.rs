@@ -22,6 +22,9 @@ pub enum KeyMode {
         /// xterm's modifyOtherKeys, if set: the keys it applies to are
         /// `CSI 27 ; mods ; code ~`, the others keep their legacy bytes.
         other_keys: Option<OtherKeys>,
+        /// DECBKM (`CSI ? 67 h`): Backspace sends BS, and DEL with Ctrl;
+        /// reset, DEL, and BS with Ctrl.
+        backarrow: bool,
     },
     /// The kitty keyboard protocol (`references/modern/kitty_keyboard_protocol.html`),
     /// which leaves application cursor keys and modifyOtherKeys unread.
@@ -74,6 +77,7 @@ impl crate::Screen {
                 return KeyMode::Legacy {
                     application: self.mode(crate::Mode::ApplicationCursor),
                     other_keys: self.modify_other_keys(),
+                    backarrow: self.mode(crate::Mode::BackarrowSendsBackspace),
                 };
             }
         };
@@ -91,11 +95,13 @@ impl crate::Screen {
 }
 
 impl KeyMode {
-    /// Legacy keys, in normal or application cursor mode.
+    /// Legacy keys, in normal or application cursor mode, Backspace
+    /// sending DEL.
     pub fn legacy(application: bool) -> KeyMode {
         KeyMode::Legacy {
             application,
             other_keys: None,
+            backarrow: false,
         }
     }
 }
@@ -180,9 +186,10 @@ pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
         KeyMode::Legacy {
             application,
             other_keys: level,
+            backarrow,
         } => {
-            if !level.is_some_and(|level| other_keys(stroke, level, out)) {
-                legacy(stroke.press, application, out);
+            if !level.is_some_and(|level| other_keys(stroke, level, backarrow, out)) {
+                legacy(stroke.press, application, backarrow, out);
             }
         }
     }
@@ -380,6 +387,17 @@ impl Control {
 /// Alacritty send it, and its code in modifyOtherKeys.
 pub(crate) const CTRL_BACKSPACE: u8 = 0x08;
 
+/// Backspace's byte, and its code in modifyOtherKeys: DEL, and BS with
+/// Ctrl, the reverse with DECBKM set (`backarrow`), as xterm's backarrow
+/// toggle swaps them.
+fn backspace(ctrl: bool, backarrow: bool) -> u8 {
+    if ctrl == backarrow {
+        Control::Backspace.code()
+    } else {
+        CTRL_BACKSPACE
+    }
+}
+
 /// `CSI number ; modifier final`, the modifier left out when it is 1, none
 /// held, and then the number too if it is 1 (`CSI A`).
 fn numbered(out: &mut Vec<u8>, number: u8, modifier: u16, final_byte: char) {
@@ -407,7 +425,8 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 /// up: the Alt key is xterm's Meta modifier (`mod1` holds `Alt_L` and
 /// `Meta_L`; ctlseqs: "Common keyboard configurations assign the Meta
 /// modifier to an 'Alt' key"), metaSendsEscape is off, the backarrow key
-/// sends DEL, as fux's Backspace does, and Shift-Tab is Tab with Shift.
+/// sends DEL (BS with DECBKM set, `backarrow`), and Shift-Tab is Tab with
+/// Shift.
 /// So, at level 1:
 /// - Alt alone leaves a key its legacy bytes, Escape and all ("A bare
 ///   meta-modifier is independent of modifyOtherKeys"): emacs, which sets
@@ -431,14 +450,21 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 ///
 /// The code is the key's character, Shift applied (Ctrl-Shift-a is 65), as
 /// xterm sends the keysym; Backspace's is 127, or 8 with Ctrl, which the
-/// backarrow toggle leaves BS.
-fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
+/// backarrow toggle leaves BS (the reverse with DECBKM set).
+fn other_keys(stroke: Keystroke, level: OtherKeys, backarrow: bool, out: &mut Vec<u8>) -> bool {
     let KeyPress { key, mods } = stroke.press;
     let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & SHIFT_BIT != 0);
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
     let state = Modifiers { shift, ..mods };
     let (sym, code) = match Form::from(key) {
-        Form::Control(Control::Backspace) if mods.ctrl => (Sym::BackSpace, CTRL_BACKSPACE.into()),
+        Form::Control(Control::Backspace) => {
+            let sym = if mods.ctrl {
+                Sym::BackSpace
+            } else {
+                Sym::Control(Control::Backspace)
+            };
+            (sym, backspace(mods.ctrl, backarrow).into())
+        }
         Form::Control(control) => (Sym::Control(control), control.code().into()),
         Form::Text(c) => {
             let c = if shift { c.to_ascii_uppercase() } else { c };
@@ -580,7 +606,7 @@ fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
 /// modifyOtherKeys. Every key has an encoding but a function key past
 /// F12, which xterm has no bytes for: it sends nothing, where an ESC
 /// would be read as Escape.
-fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
+fn legacy(press: KeyPress, application: bool, backarrow: bool, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = press;
     let Modifiers { ctrl, alt, shift } = mods;
     // xterm's modifier parameter: 1 plus a bit for each, so at most 8.
@@ -600,10 +626,8 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
             // Z`, as a numbered key carries them.
             Control::Tab if shift && !ctrl && !alt => out.extend_from_slice(b"\x1b[Z"),
             Control::Tab if shift => numbered(out, 1, modifier, 'Z'),
-            Control::Backspace if ctrl => out.push(CTRL_BACKSPACE),
-            Control::Enter | Control::Tab | Control::Escape | Control::Backspace => {
-                out.push(control.code());
-            }
+            Control::Backspace => out.push(backspace(ctrl, backarrow)),
+            Control::Enter | Control::Tab | Control::Escape => out.push(control.code()),
         },
         Form::Unnumbered(_) => return,
         Form::Text(c) if ctrl && c.is_ascii() => out.push(control_byte(c).unwrap_or(c as u8)),
@@ -659,6 +683,7 @@ mod tests {
     const LEGACY: KeyMode = KeyMode::Legacy {
         application: false,
         other_keys: None,
+        backarrow: false,
     };
     const fn kitty_mode(alternate: bool, report: Report) -> KeyMode {
         KeyMode::Kitty { alternate, report }
@@ -795,6 +820,7 @@ mod tests {
         KeyMode::Legacy {
             application: false,
             other_keys: Some(level),
+            backarrow: false,
         }
     }
     const USUAL: KeyMode = other_keys_level(OtherKeys::Usual);
@@ -948,6 +974,38 @@ mod tests {
         }
     }
 
+    /// DECBKM (`CSI ? 67 h`; ctlseqs: "Backarrow key sends backspace"):
+    /// set, Backspace sends BS, and Ctrl-Backspace, which xterm's
+    /// backarrow toggle makes the other, DEL; reset, the reverse. Through
+    /// modifyOtherKeys the codes swap the same way; the kitty protocol
+    /// does not read it.
+    #[test]
+    fn decbkm_makes_backspace_send_bs() {
+        const BS: KeyMode = KeyMode::Legacy {
+            application: false,
+            other_keys: None,
+            backarrow: true,
+        };
+        const BS_ALL: KeyMode = KeyMode::Legacy {
+            application: false,
+            other_keys: Some(OtherKeys::All),
+            backarrow: true,
+        };
+        for (name, mode, bytes) in [
+            ("BSpace", BS, "\x08"),
+            ("C-BSpace", BS, "\x7f"),
+            ("M-BSpace", BS, "\x1b\x08"),
+            ("BSpace", LEGACY, "\x7f"),
+            ("C-BSpace", LEGACY, "\x08"),
+            ("M-BSpace", BS_ALL, "\x1b[27;3;8~"),
+            ("C-S-BSpace", BS_ALL, "\x1b[27;6;127~"),
+            ("BSpace", BS_ALL, "\x08"),
+            ("C-BSpace", BS_ALL, "\x7f"),
+        ] {
+            assert_eq!(named(name, mode), bytes, "{name} {mode:?}");
+        }
+    }
+
     /// A screen's kitty flags pick the protocol: disambiguate or all keys
     /// make it kitty's, whatever the cursor mode and modifyOtherKeys; the
     /// other flags alone leave legacy keys. A level past 3 changes no key.
@@ -959,6 +1017,14 @@ mod tests {
             ("\x1b[>4;1m\x1b[>16u", USUAL),
             ("\x1b[>4;3m", UNMODIFIED),
             ("\x1b[>4;4m", LEGACY),
+            (
+                "\x1b[?67h",
+                KeyMode::Legacy {
+                    application: false,
+                    other_keys: None,
+                    backarrow: true,
+                },
+            ),
             ("\x1b[?1h\x1b[>4;2m\x1b[>5u", ALTERNATE),
             ("\x1b[>8u", kitty_mode(false, Report::AllKeys)),
             ("\x1b[>25u", kitty_mode(false, Report::AllKeysWithText)),
