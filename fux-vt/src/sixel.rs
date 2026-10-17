@@ -145,15 +145,22 @@ impl Decoder {
             Command::None | Command::Raster => None,
             Command::Repeat => Some(a.min(MAX_SIDE)),
             Command::Colour => {
-                self.colour = usize::try_from(a).unwrap_or(0).min(255);
-                if self.count >= 4 {
-                    let rgb = match b {
-                        1 => hls(c, d, e),
-                        _ => [percent(c), percent(d), percent(e)],
-                    };
-                    if let Some(slot) = self.palette.get_mut(self.colour) {
-                        *slot = rgb;
+                // A definition in no coordinate system DEC STD 070 (8.1.3)
+                // lists, or past its ranges, is ignored whole, the colour's
+                // selection too; coordinates left out are 0.
+                let rgb = match (self.count, b) {
+                    (0, _) => None,
+                    (_, 1) if c <= 360 && d <= 100 && e <= 100 => Some(hls(c, d, e)),
+                    (_, 2) if c <= 100 && d <= 100 && e <= 100 => {
+                        Some([percent(c), percent(d), percent(e)])
                     }
+                    _ => return None,
+                };
+                self.colour = usize::try_from(a).unwrap_or(0).min(255);
+                if let Some(rgb) = rgb
+                    && let Some(slot) = self.palette.get_mut(self.colour)
+                {
+                    *slot = rgb;
                 }
                 None
             }
@@ -234,17 +241,14 @@ impl Decoder {
 
 /// A sixel colour's share, 0 to 100, as a byte.
 fn percent(n: u32) -> u8 {
-    let scaled = n.min(100).saturating_mul(255).checked_div(100).unwrap_or(0);
+    let scaled = n.saturating_mul(255).checked_div(100).unwrap_or(0);
     u8::try_from(scaled).unwrap_or(u8::MAX)
 }
 
 /// A colour given as hue (0 to 360, blue at 0), lightness and saturation
 /// (0 to 100), as the VT340 reads them, worked in thousandths.
 fn hls(hue: u32, lightness: u32, saturation: u32) -> [u8; 3] {
-    let (l, s) = (
-        i64::from(lightness.min(100)),
-        i64::from(saturation.min(100)),
-    );
+    let (l, s) = (i64::from(lightness), i64::from(saturation));
     // The VT340's hue 0 is blue; the usual wheel's 0 is red, 240° on.
     let h = i64::from(hue.checked_rem(360).unwrap_or(0)).saturating_add(240);
     let h = h.checked_rem(360).unwrap_or(0);
@@ -512,6 +516,39 @@ mod tests {
         // 200 is red's step 4 (204, 80%); 100 green's 2 (85, 33%: 84); 50
         // blue's 1 (51, 20%).
         assert_eq!(pixel(3), Some([204, 84, 51, 255]));
+    }
+
+    /// The colour at the picture's top left, of `data`.
+    fn first(data: &[u8]) -> Option<[u8; 4]> {
+        decode(data).and_then(|p| p.pixel(0, 0))
+    }
+
+    /// DEC STD 070, 8.1.3: a Pu other than 1 (HLS) or 2 (RGB), or a
+    /// coordinate past its range (hue 360, the rest 100), makes "the entire
+    /// color specifier command" ignored, "including the color select
+    /// parameter, Pc"; omitted coordinates are 0.
+    #[test]
+    fn a_colour_specifier_out_of_range_is_ignored_whole() {
+        let red = Some([255, 0, 0, 255]);
+        let blue = Some([0, 0, 255, 255]);
+        // Colour 1 red; then ignored, so it stays red.
+        for bad in [
+            "#1;0;0;0;100",
+            "#1;3;0;0;100",
+            "#1;2;0;0;101",
+            "#1;1;361;50;100",
+        ] {
+            assert_eq!(
+                first(format!("#1;2;100;0;0{bad}#1~").as_bytes()),
+                red,
+                "{bad}"
+            );
+        }
+        // Ignored, it selects nothing: the colour selected before paints.
+        assert_eq!(first(b"#2;2;0;0;100#2#3;2;200;0;0~"), blue);
+        // Hue 360 and an omitted blue are in range.
+        assert_eq!(first(b"#1;2;100;0#1~"), red);
+        assert_eq!(first(b"#1;1;360;50;100#1~"), blue);
     }
 
     /// Data that would draw past what a picture may hold makes none.
