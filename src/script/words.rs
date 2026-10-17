@@ -1,7 +1,7 @@
 //! fux's words: each a name, how many values it takes, what it does to the
 //! stack, and a line of help; and what each does, run by the program's
 //! [`Host`].
-use super::{Ask, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits};
+use super::{Answer, Ask, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
@@ -1092,11 +1092,21 @@ impl fuxth::Host for Host<'_> {
                     answer.said = Said::Json;
                     now(out, Value::App(Fux::Answer(answer)))
                 }
+                // Holding an answer with a status, still an answer: of JSON.
                 other @ (Value::Int(_)
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
+                | Value::App(_)) => {
+                    let text = json_of(&other).render();
+                    match super::code(std::slice::from_ref(&other)) {
+                        Some(code) => {
+                            let json = Some(text.clone());
+                            now(out, Answer::value(text, json, Said::Json, Some(code)))
+                        }
+                        None => now(out, Value::str(text)),
+                    }
+                }
             },
             "events" | "events-json" | "events-of" | "events-of-json" => {
                 let target = match name.starts_with("events-of") {

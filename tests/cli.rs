@@ -700,6 +700,11 @@ fn an_answers_status_goes_where_the_answer_goes() -> Outcome {
     assert_eq!(status(&[], &[])?, 124, "left");
     assert_eq!(status(&[], &["json"])?, 124, "its JSON");
     assert_eq!(status(&["list"], &["end"])?, 124, "in a list");
+    assert_eq!(
+        status(&["list"], &["end", "json"])?,
+        124,
+        "the JSON of a list"
+    );
     assert_eq!(status(&["str", "a"], &["str", "b"])?, 124, "of several");
     assert_eq!(status(&[], &["drop", "str", "ok"])?, 0, "dropped");
     Ok(())

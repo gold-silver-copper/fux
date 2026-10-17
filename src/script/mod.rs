@@ -1062,7 +1062,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         let _ = writeln!(host.out, "{}", value.text());
     }
     let _ = host.out.flush();
-    let status = status(&ran?);
+    let status = code(&ran?).map_or(0, |code| code.status().get());
     match out.failed {
         Some(error) => Err(Failed::new(
             Code::Output,
@@ -1072,20 +1072,26 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     }
 }
 
-/// The status of a run that finished: of the first value it left, in
-/// order, that is an answer with a status of its own, or a list holding one
-/// (an answer dropped or taken by a word took its status with it); else 0.
-fn status(values: &[Value<Fux>]) -> u8 {
-    let of = |value: &Value<Fux>| match value {
-        Value::App(Fux::Answer(answer)) => answer.code.map_or(0, |code| code.status().get()),
-        Value::List(list) => status(list.items()),
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => 0,
-    };
-    values
-        .iter()
-        .map(of)
-        .find(|status| *status != 0)
-        .unwrap_or(0)
+/// The code naming the status of the first value, in order, that is an
+/// answer with a status of its own, or a list holding one (an answer
+/// dropped or taken by a word took its status with it). A run that
+/// finished exits with its status, else 0.
+fn code(values: &[Value<Fux>]) -> Option<Code> {
+    values.iter().find_map(|value| match value {
+        Value::App(Fux::Answer(answer)) => answer.code,
+        Value::List(list) => code(list.items()),
+        Value::Int(_) | Value::Bool(_) | Value::Str(_) => None,
+        Value::App(
+            Fux::Pane(_)
+            | Fux::Tab(_)
+            | Fux::Workspace(_)
+            | Fux::Client(_)
+            | Fux::Opts(_)
+            | Fux::Keys(_)
+            | Fux::Mouse(_)
+            | Fux::Extent(_),
+        ) => None,
+    })
 }
 
 /// The most a program read from a file or stdin may be, and how that is
