@@ -116,9 +116,16 @@ if [[ ${1:-} == --cargo ]]; then
   shift
   exec cargo "$sub" --release --locked --manifest-path "$here/Cargo.toml" "$@"
 fi
+# A harness command's --jobs caps this build too.
+args=("$@")
+for i in "${!args[@]}"; do
+  if [[ ${args[i]} == --jobs && -n ${args[i + 1]:-} ]]; then
+    export CARGO_BUILD_JOBS=${args[i + 1]}
+  fi
+done
 cargo build --release --locked --quiet --manifest-path "$here/Cargo.toml"
 case ${1:-} in
   # The harness's commands (harness.sh says what each runs).
   quick | full | deep | fuzz | scoreboard) exec "$here/harness.sh" "$@" ;;
 esac
-exec "$here/target/release/fux-vt-compare" "$@"
+exec "${CARGO_TARGET_DIR:-$here/target}/release/fux-vt-compare" "$@"

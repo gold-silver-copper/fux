@@ -8,17 +8,27 @@
 #   fuzz [MINUTES]  every fuzz target in turn, a share of MINUTES (10) each
 #   scoreboard      the last runs' numbers, as JSON and Markdown
 #
+# quick, full, deep and fuzz take:
+#
+#   --jobs N        at most N checks at once, a check that runs threads of
+#                   its own alone with N of them, and N cargo jobs; without
+#                   it, a group's checks all run at once, each with every core
+#   --against REF   what the oracle and the instruction counts compare the
+#                   working tree with (default: the latest master); a run
+#                   whose results are kept names a fixed commit
+#
 # Results, logs and the fuzz ledger go to $FUX_HARNESS_OUT (default
 # fux-vt/compare/target/harness). Checks in a group run side by side; what
-# times itself or counts against master runs alone. Each command ends with a
+# times itself or counts against REF runs alone. Each command ends with a
 # one-screen summary, and exits 1 if any check failed.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out=${FUX_HARNESS_OUT:-$here/target/harness}
-compare=$here/target/release/fux-vt-compare
-bench=$root/bench/target/release/fux-bench
+# Where cargo builds them: CARGO_TARGET_DIR if set, as run.sh builds.
+compare=${CARGO_TARGET_DIR:-$here/target}/release/fux-vt-compare
+bench=${CARGO_TARGET_DIR:-$root/bench/target}/release/fux-bench
 mkdir -p "$out/logs" "$out/status"
 
 commit=$(git -C "$root" rev-parse --short HEAD)
@@ -40,12 +50,23 @@ step() {
   printf '  %-14s %s %4ss\n' "$name" "$([[ $rc == 0 ]] && echo ok || echo FAIL)" "$seconds"
 }
 
-# together STEP...: each STEP ("name command args") side by side.
+# together STEP...: each STEP ("name command args") side by side. With
+# --jobs N, at most N at a time, and a STEP marked "+" (one that runs N
+# threads itself) alone.
 together() {
   local spec pids=()
   for spec in "$@"; do
-    # shellcheck disable=SC2086 # each spec is words, split on purpose
-    step $spec &
+    if [[ -n $jobs ]] && { [[ $spec == +* ]] || ((${#pids[@]} >= jobs)); }; then
+      wait "${pids[@]}"
+      pids=()
+    fi
+    if [[ -n $jobs && $spec == +* ]]; then
+      # shellcheck disable=SC2086 # each spec is words, split on purpose
+      step ${spec#+}
+      continue
+    fi
+    # shellcheck disable=SC2086
+    step ${spec#+} &
     pids+=($!)
   done
   wait "${pids[@]}"
@@ -73,7 +94,7 @@ quick() {
     "random $compare run --cases 2000" \
     "cases $compare cases" \
     "encoders $compare encoders" \
-    "oracle $root/diff/oracle.sh"
+    "+oracle $root/diff/oracle.sh ${against:-} ${jobs:+--threads $jobs}"
 }
 
 build_bench() {
@@ -89,20 +110,22 @@ full() {
   together \
     "random-wide $compare run --cases 20000" \
     "random-no-reflow $compare run --cases 20000 --no-reflow" \
-    "esctest $compare esctest --json $out/esctest.json" \
-    "esctest-ghostty $compare esctest --terminal ghostty --beside fux-vt --json $out/esctest-ghostty.json"
-  echo "full: instructions against master (alone)"
+    "+esctest $compare esctest ${jobs:+--jobs $jobs} --json $out/esctest.json" \
+    "+esctest-ghostty $compare esctest ${jobs:+--jobs $jobs} --terminal ghostty --beside fux-vt --json $out/esctest-ghostty.json"
+  echo "full: instructions against ${against:-master} (alone)"
   ran+=(against)
   build_bench
   # Nine repeats, not the bench's five: on a busy machine five left a
   # workload's spread above the 3% it judges at.
-  step against "$bench" --against master --repeats 9 --json "$out/against.json"
+  step against "$bench" --against "${against:-master}" ${jobs:+--jobs "$jobs"} --repeats 9 \
+    --json "$out/against.json"
   # Each engine's memory, and its instructions per byte beside Ghostty's:
   # every measure a child process of its own. About 5 s and 45-60 s.
   echo "full: memory and instructions per byte, every engine in process (alone)"
   ran+=(footprint instructions)
-  step footprint "$compare" footprint --json "$out/footprint.json"
-  step instructions "$compare" bench --instructions --repeats 5 --json "$out/instructions.json"
+  step footprint "$compare" footprint ${jobs:+--jobs "$jobs"} --json "$out/footprint.json"
+  step instructions "$compare" bench --instructions ${jobs:+--jobs "$jobs"} --repeats 5 \
+    --json "$out/instructions.json"
 }
 
 # What `deep` takes beyond `full`, from the last run of each part here if
@@ -137,7 +160,7 @@ deep() {
   done
   echo "deep: esctest in a fux pane; tmux and zellij; feel; MB/s (each alone)"
   ran+=(esctest-in-fux multiplexers feel info)
-  step esctest-in-fux "$compare" esctest --in-fux --json "$out/esctest-in-fux.json"
+  step esctest-in-fux "$compare" esctest --in-fux ${jobs:+--jobs "$jobs"} --json "$out/esctest-in-fux.json"
   step multiplexers "$compare" transparency --multiplexers --json "$out/multiplexers.json"
   step feel "$bench" feel --json "$out/feel.json"
   step info "$bench" info --json "$out/info.json"
@@ -265,12 +288,31 @@ summary() {
 
 command=${1:-}
 shift || true
+jobs="" against="" minutes=10
+while (($#)); do
+  case $1 in
+    --jobs)
+      [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || { echo "harness.sh: --jobs takes a positive number" >&2; exit 2; }
+      jobs=$2
+      shift 2
+      ;;
+    --against)
+      [[ -n ${2:-} ]] || { echo "harness.sh: --against takes a ref" >&2; exit 2; }
+      against=$(git -C "$root" rev-parse --verify "$2^{commit}")
+      shift 2
+      ;;
+    *) minutes=$1; shift ;;
+  esac
+done
+if [[ -n $jobs ]]; then
+  export CARGO_BUILD_JOBS=$jobs
+fi
 started=$(date +%s)
 case $command in
   quick) quick; summary quick 60 "$started" ;;
   full) full; summary full 600 "$started" ;;
   deep) deep; summary deep "" "$started" ;;
-  fuzz) fuzz "${1:-10}"; summary fuzz "" "$started" ;;
+  fuzz) fuzz "$minutes"; summary fuzz "" "$started" ;;
   scoreboard) scoreboard ;;
-  *) echo "harness.sh: quick, full, deep, fuzz [MINUTES] or scoreboard" >&2; exit 2 ;;
+  *) echo "harness.sh: quick, full, deep, fuzz [MINUTES] (each [--jobs N] [--against REF]) or scoreboard" >&2; exit 2 ;;
 esac
