@@ -160,13 +160,12 @@ impl Session {
     /// The outer terminal gained or lost focus: the client's focused pane
     /// hears of it, if it asked.
     fn focus_event(&mut self, client: ClientId, gained: bool) {
-        let Some(pane) = self.focused(client) else {
-            return;
-        };
-        if let Some(p) = self.panes.get_mut(&pane)
-            && p.screen().mode(fux_vt::Mode::FocusReporting)
+        if let Some(p) = self
+            .focused(client)
+            .and_then(|pane| self.panes.get_mut(&pane))
+            && let Some(report) = p.screen().focus_report(gained)
         {
-            let _ = p.input.push(if gained { b"\x1b[I" } else { b"\x1b[O" });
+            let _ = p.input.push(report);
         }
     }
 
