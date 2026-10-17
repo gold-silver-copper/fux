@@ -474,12 +474,6 @@ struct Fill<'a> {
     text: Text,
     links: Option<RowLinks>,
 }
-impl Fill<'_> {
-    /// The links of the row being laid out, none at first.
-    fn links(&mut self) -> &mut RowLinks {
-        self.links.get_or_insert_default()
-    }
-}
 impl Reflow for Fill<'_> {
     fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: RunLinks<'_>) {
         if !self.rows.contains(&row) {
@@ -508,7 +502,8 @@ impl Reflow for Fill<'_> {
         if let Some((links, from)) = links {
             for (at, link) in links.within(from) {
                 let at = col.saturating_add(at.start)..col.saturating_add(at.end);
-                self.links().set(at, Some(link));
+                // The row's links, none until its first.
+                self.links.get_or_insert_default().set(at, Some(link));
             }
         }
     }
