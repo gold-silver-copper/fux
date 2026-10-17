@@ -3,7 +3,7 @@
 //! A server saves its whole session so, the ids asked for too, and a server
 //! started after a crash or a reboot runs it (through a client, as fuxth
 //! always runs) to bring the session back with the ids it had.
-use super::{MAIN, Session};
+use super::Session;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
 use crate::layout::{Axis, Split, Tree};
@@ -28,27 +28,27 @@ impl Session {
             // The first tab written opens its workspace: one before it may
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
-            for (index, tab) in ws.tabs().iter().enumerate() {
+            for tab in ws.tabs() {
                 if matches!(only, Some(AnyRef::Tab(t)) if t != tab.id) {
                     continue;
                 }
                 let Some(root) = tab.root() else {
                     continue;
                 };
-                self.dump_tab(ws, (index, tab), root, (whole, opens, ids), &mut out);
+                self.dump_tab(ws, tab, root, (whole, opens, ids), &mut out);
                 opens = false;
             }
         }
         out
     }
 
-    /// The lines that make tab `tab`, the `index`th of `ws`, and its panes:
+    /// The lines that make tab `tab` of `ws`, and its panes:
     /// with `whole`, as part of its workspace, which it `opens` if it is the
     /// first written.
     fn dump_tab(
         &self,
         ws: &Workspace,
-        (index, tab): (usize, &Tab),
+        tab: &Tab,
         root: &Tree,
         (whole, opens, ids): (bool, bool, bool),
         out: &mut String,
@@ -57,11 +57,6 @@ impl Session {
             return;
         };
         let program = self.program(first);
-        let default_name = match program {
-            Some(launch) => pane::named(&launch.argv),
-            None if index == 0 => MAIN.to_owned(),
-            None => crate::workspace::numbered(index.saturating_add(1)),
-        };
         // A saved session makes each workspace, with the ids it had, on a
         // server that has none; a dump run anywhere puts each tab in the
         // workspace of its name, made if there is none (`in`).
@@ -72,8 +67,8 @@ impl Session {
             (false, true) => line.extend([workspace(ws.id), "in".to_owned()]),
             (false, false) => line.extend(string(&ws.name).chain(["in".to_owned()])),
         }
-        let named = tab.given || tab.name != default_name;
-        if named && !makes {
+        // A name fux gave (`main`, `tab-N`, the program's) it gives again.
+        if tab.given && !makes {
             line.extend(string(&tab.name).chain(["name".to_owned()]));
         }
         if let Fit::Fixed(size) = tab.fit() {
@@ -103,7 +98,7 @@ impl Session {
                 &[&pane_name(first), "workspace", "let", &workspace(ws.id)],
             );
         }
-        if named && makes {
+        if tab.given && makes {
             push(out, &[&pane_name(first), "tab", "str", &tab.name, "rename"]);
         }
         if let Tree::Split(axis, split) = root {

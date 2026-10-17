@@ -4414,6 +4414,22 @@ mod tests {
         Ok(())
     }
 
+    /// A saved session names only the tabs given a name: one fux named by
+    /// its place (`tab-3`, its place now 2) comes back named by its place
+    /// again, not as a name given, which a tab named so later could not
+    /// take.
+    #[test]
+    fn a_dump_names_only_the_tabs_given_a_name() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let tab = "opts str +1 workspace in new-tab drop";
+        run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
+        run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
+        let dump = s.dump_layout(None, true);
+        assert!(!dump.contains("tab-3"), "{dump}");
+        assert!(dump.contains("given"), "{dump}");
+        Ok(())
+    }
+
     /// A kill from the command line names all it closed: a tab's
     /// workspace, when it was the last tab, as a pane's.
     #[test]
