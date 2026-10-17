@@ -12,7 +12,8 @@
 //! connected socket, with read(2), write(2) and poll(2) alone. No
 //! descriptor goes through them. Who may knock is who may write the
 //! directory: the user, as for the socket.
-use std::fs::{File, OpenOptions};
+use fuxix::poll::{Events, PollFd, poll};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
@@ -114,14 +115,14 @@ impl Door {
 impl Drop for Door {
     fn drop(&mut self) {
         // Its own still: removed.
-        if std::fs::symlink_metadata(&self.path).is_ok_and(|m| ours_fifo(&m)) {
-            let _ = std::fs::remove_file(&self.path);
+        if fs::symlink_metadata(&self.path).is_ok_and(|m| ours_fifo(&m)) {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
 
 /// Whether `meta` is a FIFO of this user's that others cannot reach.
-fn ours_fifo(meta: &std::fs::Metadata) -> bool {
+fn ours_fifo(meta: &fs::Metadata) -> bool {
     meta.file_type().is_fifo()
         && meta.uid() == fuxix::process::geteuid()
         && meta.mode() & 0o077 == 0
@@ -154,7 +155,7 @@ fn fifos(dir: &Path, name: &str) -> [PathBuf; 2] {
 
 fn remove(paths: &[PathBuf]) {
     for path in paths {
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -192,13 +193,12 @@ fn ready(
     stop: Option<&io::PipeReader>,
     timeout: Option<Duration>,
 ) -> io::Result<bool> {
-    use fuxix::poll::{Events, PollFd};
     let mut fds = match stop {
         Some(stop) => vec![PollFd::new(file, Events::IN), PollFd::new(stop, Events::IN)],
         None if timeout.is_some() => vec![PollFd::new(file, Events::IN)],
         None => return Ok(true),
     };
-    if fuxix::poll::poll(&mut fds, timeout)? == 0 {
+    if poll(&mut fds, timeout)? == 0 {
         return Err(io::ErrorKind::TimedOut.into());
     }
     Ok(fds
@@ -248,8 +248,8 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
         knocked.write_all(format!("{name}\n").as_bytes())?;
         // The server's byte: it has opened both. Read from the FIFO itself,
         // which shows nothing to poll until the server has written.
-        let mut fds = [fuxix::poll::PollFd::new(&down, fuxix::poll::Events::IN)];
-        if fuxix::poll::poll(&mut fds, Some(ANSWER))? == 0 {
+        let mut fds = [PollFd::new(&down, Events::IN)];
+        if poll(&mut fds, Some(ANSWER))? == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "no server answered at the door",

@@ -5,19 +5,19 @@
 use crate::act::Act;
 use crate::code::Code;
 use crate::decode::Input;
-use crate::door::Link;
+use crate::door::{self, Link};
 use crate::keymap::{Held, Keymap};
-use crate::keys::KeyPress;
+use crate::keys::{Key, KeyPress, Keystroke, Modifiers};
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
     Reply, Role, ToAttached, ToCommand,
 };
 use crate::screens::{Effect, Screen};
-use crate::socket::SocketPath;
+use crate::socket::{self, SocketPath};
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::SIGWINCH;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -46,15 +46,15 @@ const LEAVE: &str = "\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[
 /// Why a client could not reach the server, start one, or go on.
 #[derive(Debug)]
 pub enum Error {
-    Socket(crate::socket::Error),
+    Socket(socket::Error),
     Connect {
         path: PathBuf,
-        source: std::io::Error,
+        source: io::Error,
     },
     /// The server ended the connection, saying why.
     Refused(String),
     /// The server speaks another protocol.
-    Mismatch(crate::protocol::Mismatch),
+    Mismatch(Mismatch),
     Protocol(crate::protocol::Error),
     NotATerminal,
     /// Anything else that failed: why.
@@ -65,9 +65,7 @@ impl Error {
     /// What kind of failure it is: its code.
     pub fn code(&self) -> Code {
         match self {
-            Error::Socket(crate::socket::Error::NoServer(_)) | Error::Connect { .. } => {
-                Code::NoServer
-            }
+            Error::Socket(socket::Error::NoServer(_)) | Error::Connect { .. } => Code::NoServer,
             Error::Mismatch(_) => Code::Mismatch,
             Error::Socket(_)
             | Error::Refused(_)
@@ -83,14 +81,12 @@ impl std::fmt::Display for Error {
         match self {
             Error::Socket(error) => error.fmt(f),
             // A socket left by a server that is gone.
-            Error::Connect { path, source }
-                if source.kind() == std::io::ErrorKind::ConnectionRefused =>
-            {
+            Error::Connect { path, source } if source.kind() == ErrorKind::ConnectionRefused => {
                 write!(
                     f,
                     "no fux server is running at {} (one that stopped left it); {}",
                     path.display(),
-                    crate::socket::start_hint(path)
+                    socket::start_hint(path)
                 )
             }
             Error::Connect { path, source } => {
@@ -118,14 +114,14 @@ fn no_answer() -> Error {
 }
 
 /// A pipe or a thread of the client's own could not be made.
-impl From<std::io::Error> for Error {
-    fn from(error: std::io::Error) -> Error {
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Error {
         Error::Failed(error.to_string())
     }
 }
 
-impl From<crate::socket::Error> for Error {
-    fn from(error: crate::socket::Error) -> Error {
+impl From<socket::Error> for Error {
+    fn from(error: socket::Error) -> Error {
         Error::Socket(error)
     }
 }
@@ -141,10 +137,10 @@ static SAVED: Mutex<Option<Termios>> = Mutex::new(None);
 fn restore() {
     let saved = SAVED.lock().ok().and_then(|mut s| s.take());
     if let Some(termios) = saved {
-        let mut out = std::io::stdout();
+        let mut out = io::stdout();
         let _ = out.write_all(LEAVE.as_bytes());
         let _ = out.flush();
-        let _ = fuxix::terminal::set_attributes(std::io::stdin(), &termios);
+        let _ = fuxix::terminal::set_attributes(io::stdin(), &termios);
     }
 }
 
@@ -152,15 +148,15 @@ fn restore() {
 /// be served by this user; or its door (`crate::door`), where the system
 /// denies sockets (a sandbox) or the server serves its door alone.
 fn open(socket: &SocketPath) -> Result<Link, Error> {
-    let door = crate::door::path(socket.path());
+    let door = door::path(socket.path());
     // Said of the socket chosen, which a hint starts again.
     let failed = |source| Error::Connect {
         path: socket.path().to_owned(),
         source,
     };
-    let by_door = || crate::door::knock(socket.path()).map_err(failed);
-    match crate::socket::check_client_socket(socket) {
-        Err(crate::socket::Error::NoServer(_)) if door.exists() => return by_door(),
+    let by_door = || door::knock(socket.path()).map_err(failed);
+    match socket::check_client_socket(socket) {
+        Err(socket::Error::NoServer(_)) if door.exists() => return by_door(),
         Err(error) => return Err(error.into()),
         Ok(()) => {}
     }
@@ -173,7 +169,7 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
     let euid = fuxix::process::geteuid();
     match fuxix::socket::peer_uid(&stream) {
         Ok(uid) if uid == euid => Ok(Link::socket(stream)),
-        Ok(uid) => Err(std::io::Error::other(format!(
+        Ok(uid) => Err(io::Error::other(format!(
             "its server runs as uid {uid}, not this user's ({euid})"
         ))),
         Err(errno) => Err(errno.into()),
@@ -190,7 +186,7 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), E
     let mut decoder = Decoder::default();
     // A server that refuses a connection says why and closes it, maybe
     // before the Hello is written: its reason is still there to read.
-    let answer = read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER));
+    let answer = read_frame(&mut stream, &mut decoder, Some(door::ANSWER));
     let version = greeted(&ours, answer, sent)?;
     Ok((stream, decoder, version))
 }
@@ -307,7 +303,7 @@ impl Requests {
 
     /// What stops it from another thread: dropped, the request under way
     /// ends as if the server had closed the connection.
-    pub fn stopper(&mut self) -> Option<std::io::PipeWriter> {
+    pub fn stopper(&mut self) -> Option<io::PipeWriter> {
         self.stream.stopper().ok()
     }
 }
@@ -339,7 +335,7 @@ pub fn environment() -> Vec<(String, std::ffi::OsString)> {
 pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
     loop {
-        match read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER)) {
+        match read_frame(&mut stream, &mut decoder, Some(door::ANSWER)) {
             Ok(Some(Greeting::Done(_)) | None) => return Ok(()),
             Ok(Some(Greeting::Hello(_) | Greeting::Exit(_))) => {}
             Err(error) => return Err(error),
@@ -370,7 +366,7 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
         Err(Error::Mismatch(Mismatch { protocol, version })) => {
             Ok(Probe::Server { protocol, version })
         }
-        Err(Error::Socket(crate::socket::Error::NoServer(_))) => Ok(Probe::Absent),
+        Err(Error::Socket(socket::Error::NoServer(_))) => Ok(Probe::Absent),
         // A socket or a door left by a server that is gone.
         Err(Error::Connect { source, .. })
             if matches!(
@@ -387,14 +383,14 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
 /// Whether a server answers on `socket`: its socket, or, where sockets are
 /// denied, its door.
 pub fn answers(socket: &SocketPath) -> bool {
-    UnixStream::connect(socket.path()).is_ok() || crate::door::open_door(socket.path()).is_ok()
+    UnixStream::connect(socket.path()).is_ok() || door::open_door(socket.path()).is_ok()
 }
 
 /// Starts a server in the background, in a new session with its output in
 /// `fux.log` beside the socket, and waits for it to answer.
 pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
-    crate::socket::private_directory(socket, true)?;
+    socket::private_directory(socket, true)?;
     let log = socket.directory().join("fux.log");
     let output = std::fs::OpenOptions::new()
         .create(true)
@@ -445,7 +441,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
 
 /// The terminal's rows and columns; a server's default if it does not say.
 fn window_size() -> fux_vt::Size {
-    fuxix::terminal::window_size(std::io::stdout())
+    fuxix::terminal::window_size(io::stdout())
         .map_or(crate::session::default_size(), |s| (s.rows, s.cols).into())
 }
 
@@ -503,7 +499,7 @@ pub struct Keyboard {
     decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<Job>,
     told: std::sync::mpsc::Receiver<Ran>,
-    wake: std::io::PipeReader,
+    wake: io::PipeReader,
     /// Programs sent to the worker and not yet done, in order, each with
     /// whether it may open a screen.
     running: std::collections::VecDeque<bool>,
@@ -524,15 +520,15 @@ impl Keyboard {
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<Job>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
-        let (wake, mut poke) = std::io::pipe()?;
-        fuxix::io::set_nonblocking(&wake, true).map_err(std::io::Error::from)?;
+        let (wake, mut poke) = io::pipe()?;
+        fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
         let path = socket.path().to_string_lossy().into_owned();
         let stop = crate::script::Stop::default();
         let stops = stop.clone();
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
-                let chosen = crate::socket::Choice::Path(path);
+                let chosen = socket::Choice::Path(path);
                 let mut server = crate::script::Server::stoppable(chosen, stops.clone());
                 for job in todo {
                     stops.reset();
@@ -567,7 +563,7 @@ impl Keyboard {
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
-    pub fn wake(&self) -> &std::io::PipeReader {
+    pub fn wake(&self) -> &io::PipeReader {
         &self.wake
     }
 
@@ -627,7 +623,7 @@ impl Keyboard {
     fn held_stop(&self) -> bool {
         let mut last = self.waiting.iter().rev();
         let is = |input: Option<&Input>, key: KeyPress| matches!(input, Some(Input::Key(stroke)) if stroke.press == key);
-        let escape = KeyPress::new(crate::keys::Key::Escape, crate::keys::Modifiers::NONE);
+        let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
         is(last.next(), escape) && is(last.next(), self.keymap.prefix)
     }
 
@@ -695,8 +691,8 @@ impl Keyboard {
 
     /// A key typed: to the screen open, else through the bindings. Esc
     /// right after the prefix also stops a program its key ran, if one runs.
-    fn press(&mut self, stroke: crate::keys::Keystroke, acts: &mut Vec<Act>) {
-        let escape = KeyPress::new(crate::keys::Key::Escape, crate::keys::Modifiers::NONE);
+    fn press(&mut self, stroke: Keystroke, acts: &mut Vec<Act>) {
+        let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
         let column =
             matches!(&self.screen, Screen::Keys(Held::Column { path, .. }) if path.is_empty());
         if column && stroke.press == escape {
@@ -762,9 +758,7 @@ impl Keyboard {
                     self.waiting.push_back(Input::Key(press.into()))
                 }
                 crate::command::Input::Text(text) => {
-                    let keys = text
-                        .chars()
-                        .map(|c| Input::Key(crate::keys::KeyPress::char(c).into()));
+                    let keys = text.chars().map(|c| Input::Key(KeyPress::char(c).into()));
                     self.waiting.extend(keys);
                 }
                 crate::command::Input::Paste(text) => self.waiting.push_back(Input::Paste(text)),
@@ -834,7 +828,7 @@ pub fn attach(
     attaching: Attaching,
     size: Option<fux_vt::Size>,
 ) -> Result<(), Error> {
-    let stdin = std::io::stdin();
+    let stdin = io::stdin();
     let terminal = size.is_none();
     // A client with no terminal answers signals from the start. A
     // terminal's are caught once connected, so that ^C while connecting
@@ -877,7 +871,7 @@ pub fn attach(
         )
     });
     drop(raw);
-    let _ = writeln!(std::io::stdout(), "[{}]", result?);
+    let _ = writeln!(io::stdout(), "[{}]", result?);
     Ok(())
 }
 
@@ -905,7 +899,7 @@ impl Signals {
 struct Raw;
 
 impl Raw {
-    fn enter(stdin: &std::io::Stdin) -> Result<Raw, Error> {
+    fn enter(stdin: &io::Stdin) -> Result<Raw, Error> {
         let original =
             fuxix::terminal::attributes(stdin).map_err(failed("reading terminal modes"))?;
         let mut raw = original.clone();
@@ -925,7 +919,7 @@ impl Raw {
         // Made before raw mode, so that failing to set it restores too.
         let entered = Raw;
         fuxix::terminal::set_attributes(stdin, &raw).map_err(failed("setting raw mode"))?;
-        let mut stdout = std::io::stdout();
+        let mut stdout = io::stdout();
         let _ = stdout.write_all(ENTER.as_bytes());
         let _ = stdout.flush();
         Ok(entered)
@@ -978,8 +972,8 @@ fn attached(
 ) -> Result<String, Error> {
     let Signals { winch, stops } = signals;
     stream.set_read_timeout(None);
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut keyboard: Option<Keyboard> = None;
     let mut acts = Vec::new();
