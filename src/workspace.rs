@@ -41,8 +41,8 @@ pub struct Tab {
 /// it out on its own screen, whichever this is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
-    /// A client's screen, any attached client's: with none attached, its
-    /// panes keep their sizes.
+    /// A client's screen, any attached client's: with none attached, a
+    /// typical terminal's (`session::TYPICAL`).
     Clients,
     /// A screen of this size, client or none: `size` and `resize`.
     Fixed(fux_vt::Size),
@@ -56,10 +56,10 @@ pub(crate) fn numbered(place: usize) -> String {
 
 impl Fit {
     /// The area it lays a tab out in: a fixed size's, or `client`, a
-    /// client's screen, if there is one.
-    pub fn area(self, client: Option<Rect>) -> Option<Rect> {
+    /// client's screen.
+    pub fn area(self, client: Rect) -> Rect {
         match self {
-            Fit::Fixed(size) => Some(Rect::screen(size.rows(), size.cols())),
+            Fit::Fixed(size) => Rect::screen(size.rows(), size.cols()),
             Fit::Clients => client,
         }
     }
@@ -165,23 +165,17 @@ impl Workspace {
 
     /// The layouts of its tabs no client shows that changed since their
     /// panes were sized, each with the area its fit lays it out in given
-    /// `client`, any client's screen, for sizing them. Those are then taken
-    /// as sized, as is a shown one, by its clients; one with no area yet
-    /// waits for a client.
-    pub(crate) fn changed_unshown(
-        &mut self,
-        client: Option<Rect>,
-    ) -> impl Iterator<Item = (&Tree, Rect)> {
+    /// `client`, a client's screen, for sizing them. Those are then taken
+    /// as sized, as is a shown one, by its clients.
+    pub(crate) fn changed_unshown(&mut self, client: Rect) -> impl Iterator<Item = (&Tree, Rect)> {
         let (viewers, shown_to) = (&self.viewers, &self.shown);
         self.tabs.iter_mut().filter_map(move |tab| {
             let shown = viewers.iter().any(|c| shown_to.get(c) == Some(&tab.id));
-            let area = tab.fit.area(client).filter(|_| !shown);
-            if area.is_some() || shown {
-                let changed = std::mem::take(&mut tab.changed);
-                let tab = &*tab;
-                return tab.root.as_ref().filter(|_| changed).zip(area);
-            }
-            None
+            let changed = std::mem::take(&mut tab.changed);
+            let tab = &*tab;
+            (tab.root.as_ref())
+                .filter(|_| changed && !shown)
+                .map(|root| (root, tab.fit.area(client)))
         })
     }
 

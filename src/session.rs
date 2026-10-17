@@ -1488,7 +1488,7 @@ impl Session {
     fn tab_area(&self, fit: Fit, here: Here) -> Rect {
         let own = here.client().and_then(|c| self.views.get(&c));
         let client = own.or_else(|| self.views.values().next());
-        fit.area(client.map(Self::pane_area)).unwrap_or(TYPICAL)
+        fit.area(client.map_or(TYPICAL, Self::pane_area))
     }
 
     // -------------------------------------------------------------- repair
@@ -1618,7 +1618,7 @@ impl Session {
         }
         // With no client, a tab that fits clients is laid out as a typical
         // terminal would show it (`tab_area`).
-        let client = Some(self.views.values().next().map_or(TYPICAL, Self::pane_area));
+        let client = self.views.values().next().map_or(TYPICAL, Self::pane_area);
         let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed_unshown(client));
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
