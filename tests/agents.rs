@@ -2758,6 +2758,14 @@ fn a_failed_wait_answers_its_json() -> Outcome {
     assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
     assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
+    // The same when the wait is a defined word's last step.
+    let wait = [
+        &["define", "w"],
+        &p[..],
+        &["str", "NEVER", "wait-text", "wait", "end"],
+    ];
+    let out = server.fux(&[&wait.concat()[..], &["w", "json"]].concat())?;
+    assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
     Ok(())
 }
 

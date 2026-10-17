@@ -128,7 +128,7 @@ The host implements [`Host`]: `call(word, args, out)` gets the word's values
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
 host pushes before running the machine again; `machine.at()` is the token
 of the word it stopped at, and `machine.next()` the one it takes next, if its
-frame has one. `print(line)` prints. A word
+program has one. `print(line)` prints. A word
 gives as many values as its vocabulary says: the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise. A word that is one step (`dup`
 is `0 pick`) is copied in where it is called, so a mistake in it is placed

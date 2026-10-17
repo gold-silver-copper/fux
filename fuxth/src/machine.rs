@@ -253,12 +253,13 @@ impl<A: AppValue> Machine<A> {
             .or_else(|| self.program.token(frame.code, frame.step).cloned())
     }
 
-    /// The token of the step it takes next in the frame it is in: none at
-    /// the frame's end. A host that stopped it may look at what its program
-    /// does next with what it answers.
+    /// The token of the step it takes next: in the frame it is in or, past
+    /// that frame's end, in the one it returns to; none at the program's
+    /// end. A host that stopped it may look at what its program does next
+    /// with what it answers.
     pub fn next(&self) -> Option<Token> {
-        let frame = self.frames.last()?;
-        self.program.token(frame.code, frame.step).cloned()
+        let token = |frame: &Frame| self.program.token(frame.code, frame.step);
+        self.frames.iter().rev().find_map(token).cloned()
     }
 
     /// The token of the step before `step` in `code`: none at its first.
