@@ -476,9 +476,8 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn pop(&mut self) -> Result<Value<A>, Error> {
-        self.depth(1)?;
-        // The stack has it: none is the `false` put for one it lacks.
-        Ok(self.stack.pop().unwrap_or(Value::Bool(false)))
+        let [value] = self.take()?;
+        Ok(value)
     }
 
     /// Takes a boolean, as `if` and `until` do.
