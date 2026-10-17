@@ -65,10 +65,12 @@ impl Session {
             // one the screen's keys bring comes after.
             Act::Show(panel) => {
                 if let Some(view) = self.views.get_mut(&client) {
-                    let fresh = !matches!(
-                        &view.mode,
-                        Mode::Panel(was) if std::mem::discriminant(was) == std::mem::discriminant(&panel)
-                    );
+                    let fresh = match &view.mode {
+                        Mode::Panel(was) => {
+                            std::mem::discriminant(was) != std::mem::discriminant(&panel)
+                        }
+                        Mode::Normal | Mode::Copy(_) => true,
+                    };
                     if fresh {
                         view.notice = None;
                     }
