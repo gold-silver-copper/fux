@@ -2314,30 +2314,33 @@ impl Session {
                 // in X10 mode), a release; a move while a button is held is
                 // a drag.
                 // Released, or clicked, it is held no more; another button's
-                // release leaves it held.
+                // release leaves it held. X10 reports presses alone: a click
+                // is its press, and a release or the wheel, which it cannot
+                // say, is refused.
                 let unheld = |button| p.mouse_held.filter(|held| *held != button);
-                let (events, held) = match mouse {
+                let (events, held, beyond_x10) = match mouse {
                     Mouse::Click(button) => {
                         let button = button.reported();
                         let events = vec![event(Press, Some(button)), event(Release, Some(button))];
-                        (events, unheld(button))
+                        (events, unheld(button), false)
                     }
                     Mouse::Press(button) => {
                         let button = button.reported();
-                        (vec![event(Press, Some(button))], Some(button))
+                        (vec![event(Press, Some(button))], Some(button), false)
                     }
-                    Mouse::Wheel(way) => (vec![event(Press, Some(way.reported()))], p.mouse_held),
+                    Mouse::Wheel(way) => {
+                        (vec![event(Press, Some(way.reported()))], p.mouse_held, true)
+                    }
                     Mouse::Release(button) => {
                         let button = button.reported();
-                        (vec![event(Release, Some(button))], unheld(button))
+                        (vec![event(Release, Some(button))], unheld(button), true)
                     }
-                    Mouse::Move => (vec![event(Motion, p.mouse_held)], p.mouse_held),
+                    Mouse::Move => (vec![event(Motion, p.mouse_held)], p.mouse_held, false),
                 };
+                use fux_vt::MouseProtocolMode as Asked;
                 let mode = p.screen().mouse_protocol_mode();
-                let x10 = mode == fux_vt::MouseProtocolMode::Press;
-                // X10 reports presses alone: a click is its press, and a
-                // release or the wheel, which it cannot say, is refused.
-                if x10 && matches!(mouse, Mouse::Wheel(_) | Mouse::Release(_)) {
+                let x10 = mode == Asked::Press;
+                if x10 && beyond_x10 {
                     let message = format!(
                         "the program in {} asked for X10 mouse reports: presses alone, no releases or wheel",
                         p.id
@@ -2348,17 +2351,22 @@ impl Session {
                     let release = event.action == Release;
                     if !p.screen().encode_mouse(event, &mut report) && !(release && x10) {
                         let pane = p.id;
-                        let message = match (event.action, mode) {
-                            (_, fux_vt::MouseProtocolMode::None) => {
+                        let message = match mode {
+                            Asked::None => {
                                 format!("the program in {pane} has not asked for mouse reports")
                             }
-                            (Motion, _) => format!(
-                                "the program in {pane} takes no motion here: with no button pressed it asked for none, \
-                                 and asking for clicks alone (mode 1000) it takes no drags either"
-                            ),
-                            _ => format!(
-                                "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
-                            ),
+                            Asked::Press
+                            | Asked::PressRelease
+                            | Asked::ButtonMotion
+                            | Asked::AnyMotion => match event.action {
+                                Motion => format!(
+                                    "the program in {pane} takes no motion here: with no button pressed it asked for none, \
+                                     and asking for clicks alone (mode 1000) it takes no drags either"
+                                ),
+                                Press | Release => format!(
+                                    "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
+                                ),
+                            },
                         };
                         return Err(fail(Code::Mouse, message));
                     }
