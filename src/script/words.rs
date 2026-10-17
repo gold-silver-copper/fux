@@ -5,7 +5,8 @@ use super::{Ask, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Wa
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, Wheel, WsRef,
+    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Until, Wait, Wheel,
+    WsRef,
 };
 use crate::keys::Direction;
 use crate::layout::Axis;
@@ -497,14 +498,22 @@ const INPUT_MAX: usize = 900 * 1024;
 /// The wait an action makes, armed before it when `after`: what it names;
 /// or, from a command line (`settle`) or given any wait word (`timeout`
 /// alone), for each pane to settle.
-fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
+fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Wait> {
     let named = *waits != Waits::default();
-    (named || settle).then(|| Box::new(waited(waits, after)))
+    (named || settle).then(|| waited(waits, after))
+}
+
+/// `command`, then `wait` if there is one.
+fn followed(command: Command, wait: Option<Wait>) -> Request {
+    match wait {
+        Some(wait) => Request::Then(command, Box::new(wait)),
+        None => Request::Do(command),
+    }
 }
 
 /// The wait an input or a signal makes, armed before it, and the answer it
 /// gives: whether it waited.
-fn acted(waits: &Waits, settle: bool) -> (Option<Box<Wait>>, Then) {
+fn acted(waits: &Waits, settle: bool) -> (Option<Wait>, Then) {
     let then = wait(waits, true, settle);
     let waited = then.is_some();
     (then, Then::Outcome { waited })
@@ -527,17 +536,17 @@ fn waited(waits: &Waits, after: bool) -> Wait {
     }
 }
 
-fn ask(command: Command, then: Then) -> Ask {
+fn ask(request: impl Into<Request>, then: Then) -> Ask {
     Ask::Server {
-        command,
+        request: request.into(),
         client: None,
         then,
     }
 }
 
 /// An order to the server that answers nothing.
-fn tell(command: Command) -> Result<Done<Ask>, Failure> {
-    Ok(Done::Later(ask(command, Then::Nothing)))
+fn tell(request: impl Into<Request>) -> Result<Done<Ask>, Failure> {
+    Ok(Done::Later(ask(request, Then::Nothing)))
 }
 
 /// What this client does itself.
@@ -547,7 +556,7 @@ fn local(local: Local) -> Result<Done<Ask>, Failure> {
 
 fn ask_as(client: crate::id::ClientId, command: Command, then: Then) -> Ask {
     Ask::Server {
-        command,
+        request: command.into(),
         client: Some(client),
         then,
     }
@@ -809,7 +818,7 @@ impl fuxth::Host for Host<'_> {
                                 "run needs a program: opts str ./app program run",
                             ));
                         }
-                        Command::Run {
+                        let run = Command::Run {
                             workspace: built.place,
                             name: built.name,
                             size: built.size,
@@ -818,8 +827,9 @@ impl fuxth::Host for Host<'_> {
                             argv: built.argv,
                             log: built.log,
                             ids: built.ids,
-                            then: wait(&built.waits, false, self.settle),
-                        }
+                        };
+                        let run = followed(run, wait(&built.waits, false, self.settle));
+                        return later(ask(run, Then::Handle(Kind::Pane)));
                     }
                     "new-tab" => Command::NewTab {
                         target: built.place,
@@ -860,33 +870,29 @@ impl fuxth::Host for Host<'_> {
                         return Err(fail(Code::Unused, why));
                     }
                 };
-                later(ask(
-                    Command::Split {
-                        axis: built.axis.unwrap_or(Axis::Horizontal),
-                        target: p,
-                        cmd,
-                        cwd: built.cwd,
-                        env: built.env,
-                        run,
-                        id,
-                        then: wait(&built.waits, false, self.settle),
-                    },
-                    Then::Handle(Kind::Pane),
-                ))
+                let split = Command::Split {
+                    axis: built.axis.unwrap_or(Axis::Horizontal),
+                    target: p,
+                    cmd,
+                    cwd: built.cwd,
+                    env: built.env,
+                    run,
+                    id,
+                };
+                let split = followed(split, wait(&built.waits, false, self.settle));
+                later(ask(split, Then::Handle(Kind::Pane)))
             }
             "respawn" => {
                 let p = pane(name, &next()?)?;
                 let built = finished(name, next()?)?;
-                later(ask(
-                    Command::Respawn {
-                        target: p,
-                        kill: built.kill,
-                        env: built.env,
-                        argv: built.argv,
-                        then: wait(&built.waits, false, self.settle),
-                    },
-                    Then::Handle(Kind::Pane),
-                ))
+                let respawn = Command::Respawn {
+                    target: p,
+                    kill: built.kill,
+                    env: built.env,
+                    argv: built.argv,
+                };
+                let respawn = followed(respawn, wait(&built.waits, false, self.settle));
+                later(ask(respawn, Then::Handle(Kind::Pane)))
             }
             // ----------------------------------------------------- waiting
             "wait-text" | "wait-gone" => {
@@ -923,13 +929,8 @@ impl fuxth::Host for Host<'_> {
                 let built = finished(name, next()?)?;
                 // With a wait's time either way: on a tab or workspace, for
                 // each of its panes.
-                later(ask(
-                    Command::Wait {
-                        target: p,
-                        wait: waited(&built.waits, false),
-                    },
-                    Then::Outcome { waited: true },
-                ))
+                let wait = Request::Wait(p, waited(&built.waits, false));
+                later(ask(wait, Then::Outcome { waited: true }))
             }
             // ------------------------------------------------------- input
             "text" | "key" | "paste" | "paste-file" | "times" => {
@@ -1031,14 +1032,11 @@ impl fuxth::Host for Host<'_> {
                 let (then, answer) = acted(&built.waits, self.settle);
                 let target = target(name, &to)
                     .map_err(|_| wrong(name, "a pane, tab, workspace or client", &to))?;
-                later(ask(
-                    Command::SendKeys {
-                        target,
-                        inputs: built.inputs,
-                        then,
-                    },
-                    answer,
-                ))
+                let keys = Command::SendKeys {
+                    target,
+                    inputs: built.inputs,
+                };
+                later(ask(followed(keys, then), answer))
             }
             "mouse" => {
                 let action = string(name, &next()?)?;
@@ -1078,16 +1076,13 @@ impl fuxth::Host for Host<'_> {
                     return Err(wrong(name, "a mouse event (from mouse)", &m));
                 };
                 let (then, answer) = acted(&m.waits, self.settle);
-                later(ask(
-                    Command::SendMouse {
-                        target: p,
-                        mouse: m.mouse,
-                        row: m.row,
-                        col: m.col,
-                        then,
-                    },
-                    answer,
-                ))
+                let mouse = Command::SendMouse {
+                    target: p,
+                    mouse: m.mouse,
+                    row: m.row,
+                    col: m.col,
+                };
+                later(ask(followed(mouse, then), answer))
             }
             "signal" => {
                 let p = pane(name, &next()?)?;
@@ -1103,11 +1098,7 @@ impl fuxth::Host for Host<'_> {
                 // From a command line: answers once the program exited or settled.
                 let (then, answer) = acted(&Waits::default(), self.settle);
                 later(ask(
-                    Command::Signal {
-                        target: p,
-                        signal,
-                        then,
-                    },
+                    followed(Command::Signal { target: p, signal }, then),
                     answer,
                 ))
             }
@@ -1122,17 +1113,16 @@ impl fuxth::Host for Host<'_> {
                 };
                 // From a command line, or given a timeout, read once the pane
                 // settles.
-                let timed = built.waits.timeout.is_some();
-                let settle = (self.settle || timed).then_some(built.waits.timeout);
-                later(ask(
-                    Command::CapturePane {
+                let (history, view, timeout) = (built.history, built.view, built.waits.timeout);
+                let capture = match self.settle || timeout.is_some() {
+                    true => Request::Capture(p, history, view, timeout),
+                    false => Request::Do(Command::CapturePane {
                         target: p,
-                        history: built.history,
-                        view: built.view,
-                        settle,
-                    },
-                    then,
-                ))
+                        history,
+                        view,
+                    }),
+                };
+                later(ask(capture, then))
             }
             "ls" | "info" | "get" => {
                 let target = match name {
@@ -1169,7 +1159,7 @@ impl fuxth::Host for Host<'_> {
                     false => None,
                 };
                 let json = name.ends_with("json");
-                tell(Command::Events { target, json })
+                tell(Request::Events(target, json))
             }
             "dump" | "dump-of" => {
                 let target = match name {
@@ -1456,11 +1446,9 @@ impl fuxth::Host for Host<'_> {
             "grant" => {
                 let workspace = workspace(name, &next()?)?;
                 let socket = string(name, &next()?)?;
-                later(ask(Command::Grant { workspace, socket }, Then::Text))
+                later(ask(Request::Grant(workspace, socket), Then::Text))
             }
-            "revoke" => tell(Command::Revoke {
-                socket: string(name, &next()?)?,
-            }),
+            "revoke" => tell(Request::Revoke(string(name, &next()?)?)),
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
             // ------------------------------------------------------ config
             "prefix" | "bind" | "bind-root" | "unbind" | "unbind-root" | "unbind-all" | "label"

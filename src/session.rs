@@ -2,8 +2,8 @@
 //! every command that changes them.
 use crate::code::Code;
 use crate::command::{
-    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
-    Pick, Resized, Sibling, SwapWith, WsRef,
+    self, AnyRef, Armed, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
+    PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
@@ -331,6 +331,9 @@ pub enum Begun {
     Waiting(Box<crate::wait::Waiting>),
     /// `fux events`: a stream, until the client goes.
     Events(Box<crate::events::Subscription>),
+    /// A grant of a socket to the workspace (`grant`), or with none, its
+    /// revoking (`revoke`): the server's, which listens.
+    Grant(String, Option<WsRef>),
 }
 
 /// How long a closing pane's processes have to exit after the hangup.
@@ -487,6 +490,17 @@ impl Reach<'_> {
         }
     }
 
+    /// Whether `request` reaches only the granted workspace.
+    fn request(&self, request: &Request) -> Result<(), Error> {
+        match request {
+            Request::Do(command) | Request::Then(command, _) => self.command(command),
+            Request::Wait(target, _) => self.any(target),
+            Request::Capture(target, ..) => self.pane(*target),
+            Request::Events(target, _) => target.as_ref().map_or(Ok(()), |t| self.any(t)),
+            Request::Grant(..) | Request::Revoke(_) => self.refuse("another grant"),
+        }
+    }
+
     /// Whether `command` reaches only the granted workspace.
     fn command(&self, command: &Command) -> Result<(), Error> {
         match command {
@@ -525,8 +539,7 @@ impl Reach<'_> {
                 Resized::Tabs(target, _) => self.any(target),
                 Resized::Client(..) => self.refuse("a client's size"),
             },
-            Command::SendKeys { target, .. } | Command::Wait { target, .. } => self.any(target),
-            Command::Events { target, .. } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
+            Command::SendKeys { target, .. } => self.any(target),
             Command::Rename { target, .. } => match target {
                 AnyRef::Workspace(_) => self.refuse("renaming the workspace"),
                 AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
@@ -557,7 +570,6 @@ impl Reach<'_> {
                 self.refuse("the paste buffers, which are everyone's")
             }
             Command::Client { .. } => self.refuse("a client's screen"),
-            Command::Grant { .. } | Command::Revoke { .. } => self.refuse("another grant"),
             Command::DumpLayout { target } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
         }
     }
@@ -1853,75 +1865,71 @@ impl Session {
 
     /// Begins a request from a client: one that waits gives its wait,
     /// which the server asks for its answer until it has one; a stream of
-    /// events, its subscription; any other runs at once.
-    pub fn begin(&mut self, command: Command, origin: &Origin) -> Begun {
+    /// events, its subscription; a grant, for the server to make; any other
+    /// runs at once.
+    pub fn begin(&mut self, request: Request, origin: &Origin) -> Begun {
         // A size a saved session asks for that cannot be had here is left
         // as it comes, so one does not keep the rest from coming back.
-        if matches!(command, Command::ResizePane { .. }) && self.starting_for(origin).restoring {
-            let mut outcome = self.run_command(&command, origin);
+        if let Request::Do(command @ Command::ResizePane { .. }) = &request
+            && self.starting_for(origin).restoring
+        {
+            let mut outcome = self.run_command(command, origin);
             if matches!(outcome.end, End::Failed { .. }) {
                 outcome = Reply::default();
             }
             return Begun::Done(outcome);
         }
-        self.begin_command(command, origin)
+        self.begin_request(request, origin)
             .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
     }
 
-    /// `begin`'s work: what fails before a command runs is its error.
-    fn begin_command(&mut self, command: Command, origin: &Origin) -> Result<Begun, Error> {
-        let mut command = match self.scope(origin)? {
-            Some(scope) => self.scoped(command, &scope, origin)?,
-            None => command,
+    /// `begin`'s work: what fails before a request runs is its error.
+    fn begin_request(&mut self, request: Request, origin: &Origin) -> Result<Begun, Error> {
+        let request = match self.scope(origin)? {
+            Some(scope) => self.scoped(request, &scope, origin)?,
+            None => request,
         };
-        // Started, then waited for from its first output on.
-        if let Some(wait) = command.take_start_wait() {
-            return Ok(self.start_waiting(&command, *wait, origin));
-        }
-        if let Command::Events { target, json } = command {
-            let target = target.map(|t| self.there(t)).transpose()?;
-            return Ok(Begun::Events(Box::new(crate::events::Subscription {
-                target,
-                json,
-                seen: crate::events::Snapshot::of(self),
-            })));
-        }
-        // From a command line: read once the pane settles, said with its
-        // state.
-        if let Command::CapturePane {
-            target,
-            history,
-            view,
-            settle: Some(limit),
-        } = command
-        {
-            let wait = crate::command::Wait {
-                until: vec![crate::command::Until::Settled],
-                timeout: limit,
-                print: false,
-                after: false,
-                marks: false,
-            };
-            let pane = self.pane(target)?;
-            let now = Instant::now();
-            let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
-            waiting.capture = Some((history, view));
-            return Ok(self.wait_on(waiting, now));
-        }
-        let (target, wait, keys) = if let Command::Wait { target, wait } = command {
-            (target, wait, None)
-        } else if let Some((target, wait)) = command.acting_wait() {
-            (target, wait, Some(command))
-        } else {
-            return Ok(Begun::Done(self.run_command(&command, origin)));
+        let now = Instant::now();
+        let (target, wait, follows) = match request {
+            Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
+            Request::Then(command, wait) => match command.armed() {
+                Some(Armed::Before(target)) => (target, *wait, Some(command)),
+                // Started, then waited for from its first output on.
+                Some(Armed::Started) => return Ok(self.start_waiting(&command, *wait, origin)),
+                None => return Err(fail(Code::Unused, "this command takes no wait")),
+            },
+            Request::Wait(target, wait) => (target, wait, None),
+            // Read once the pane settles, said with its state.
+            Request::Capture(target, history, view, timeout) => {
+                let wait = crate::command::Wait {
+                    until: vec![crate::command::Until::Settled],
+                    timeout,
+                    print: false,
+                    after: false,
+                    marks: false,
+                };
+                let pane = self.pane(target)?;
+                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now, self.config.wait);
+                waiting.capture = Some((history, view));
+                return Ok(self.wait_on(waiting, now));
+            }
+            Request::Events(target, json) => {
+                let target = target.map(|t| self.there(t)).transpose()?;
+                return Ok(Begun::Events(Box::new(crate::events::Subscription {
+                    target,
+                    json,
+                    seen: crate::events::Snapshot::of(self),
+                })));
+            }
+            Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
+            Request::Revoke(socket) => return Ok(Begun::Grant(socket, None)),
         };
         let panes = (self.panes_of(target)?.into_iter())
             .map(|id| self.pane(id))
             .collect::<Result<Vec<_>, _>>()?;
-        let now = Instant::now();
         // Armed before any keys go in: what the keys bring is what it sees.
         let mut waiting = crate::wait::Waiting::new(&panes, wait, now, self.config.wait);
-        match keys {
+        match follows {
             Some(command) => {
                 let outcome = self.run_command(&command, origin);
                 if matches!(outcome.end, End::Failed { .. }) {
@@ -1941,15 +1949,15 @@ impl Session {
         }
     }
 
-    /// A command line from a granted socket, if it may run: with no target,
-    /// one that would act anywhere (`ls`, `run`, `new-tab`, `events`) acts
-    /// on the granted workspace; one that names, or comes from, anything
+    /// A request from a granted socket, if it may run: with no target, one
+    /// that would act anywhere (`ls`, `run`, `new-tab`, `events`) acts on
+    /// the granted workspace; one that names, or comes from, anything
     /// outside it, or reaches what is everyone's (the config, the buffers,
     /// clients, the server), is refused.
-    fn scoped(&self, command: Command, scope: &str, origin: &Origin) -> Result<Command, Error> {
+    fn scoped(&self, request: Request, scope: &str, origin: &Origin) -> Result<Request, Error> {
         // With no target, one that would act anywhere acts on the granted
         // workspace.
-        let mut command = command;
+        let mut request = request;
         let ws = self.resolve_ws(&WsRef::Name(scope.to_owned())).ok();
         let place = || Some(WsRef::Name(scope.to_owned()));
         // The granted workspace, which may be gone: then nothing.
@@ -1962,20 +1970,19 @@ impl Session {
             };
             ws.map(AnyRef::Workspace).ok_or_else(gone)
         };
-        if let Command::Run {
-            workspace: at @ None,
-            ..
-        }
-        | Command::NewTab {
-            target: at @ None, ..
-        } = &mut command
+        if let Request::Do(command) | Request::Then(command, _) = &mut request
+            && let Command::Run {
+                workspace: at @ None,
+                ..
+            }
+            | Command::NewTab {
+                target: at @ None, ..
+            } = command
         {
             *at = place();
         }
-        if let Command::DumpLayout { target: at @ None }
-        | Command::Events {
-            target: at @ None, ..
-        } = &mut command
+        if let Request::Do(Command::DumpLayout { target: at @ None })
+        | Request::Events(at @ None, _) = &mut request
         {
             *at = Some(whole()?);
         }
@@ -1985,8 +1992,8 @@ impl Session {
             scope,
             here: self.here(origin)?,
         };
-        reach.command(&command)?;
-        Ok(command)
+        reach.request(&request)?;
+        Ok(request)
     }
 
     /// Runs a command that starts a program and prints its pane's id, then
@@ -2152,7 +2159,6 @@ impl Session {
                 argv,
                 log,
                 ids,
-                ..
             } => {
                 self.want(*ids, starting.restoring)?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
@@ -2196,7 +2202,6 @@ impl Session {
                 kill,
                 ref env,
                 ref argv,
-                ..
             } => {
                 let id = self.pane(target)?.id;
                 self.respawn(id, kill, (env.as_slice(), argv), &starting)?;
@@ -2277,13 +2282,6 @@ impl Session {
                 }
                 Ok(Reply::default())
             }
-            Command::Wait { .. }
-            | Command::Events { .. }
-            | Command::Grant { .. }
-            | Command::Revoke { .. } => {
-                let message = "wait, events and grant run from the command line";
-                Err(fail(Code::CliOnly, message))
-            }
             Command::DumpLayout { target } => {
                 let only = match target {
                     Some(target) => Some(self.there(*target)?),
@@ -2296,7 +2294,6 @@ impl Session {
                 mouse,
                 row,
                 col,
-                ..
             } => {
                 let p = self.live_pane_mut(target)?;
                 let size = p.size();
@@ -2385,7 +2382,6 @@ impl Session {
                 ref env,
                 run,
                 id,
-                then: _,
             } => {
                 let wanted = Wanted {
                     pane: id,
@@ -2427,7 +2423,7 @@ impl Session {
                 let at = self.locate(new).ok_or(Error::NoPane(new))?;
                 Ok(Self::made_ids((at.0, at.1, new), Kind::Pane))
             }
-            &Command::Signal { target, signal, .. } => {
+            &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))?;
@@ -2523,9 +2519,7 @@ impl Session {
                 self.pane_mut(target)?.parser.clear_history();
                 Ok(Reply::default())
             }
-            &Command::SendKeys {
-                target, ref inputs, ..
-            } => {
+            &Command::SendKeys { target, ref inputs } => {
                 // Every pane must take them, or none is sent them: each
                 // one's, as its program takes keys, are made and fit first.
                 let mut each = Vec::new();
@@ -2546,7 +2540,6 @@ impl Session {
                 target,
                 history,
                 view,
-                ..
             } => {
                 let pane = self.pane(target)?;
                 let copying = self.copying(pane.id);
@@ -3356,6 +3349,8 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::{Origin, Reply, Session};
+    use crate::code::Code;
+    use crate::command::{Command, Request};
     use crate::config::Config;
     use crate::id::ClientId;
 
@@ -3389,15 +3384,15 @@ pub(crate) mod testing {
     impl crate::script::Asks for InProcess<'_> {
         fn ask(
             &mut self,
-            request: &crate::protocol::Request,
+            asked: &crate::protocol::Asked,
             out: &mut dyn std::io::Write,
         ) -> Result<Reply, crate::script::Failed> {
             let session = &mut *self.0;
-            let origin = match request.context.client {
+            let origin = match asked.context.client {
                 Some(client) if session.views.contains_key(&client) => Origin::Client(client),
                 Some(_) | None => Origin::Cli(super::Caller::default()),
             };
-            let outcome = match session.begin(request.command.clone(), &origin) {
+            let outcome = match session.begin(asked.request.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
                 super::Begun::Waiting(mut waiting) => {
                     let later = crate::after(std::time::Instant::now(), waiting.limit);
@@ -3406,6 +3401,9 @@ pub(crate) mod testing {
                 super::Begun::Events(_) => {
                     let _ = writeln!(out, "events stream from a real server only");
                     Reply::default()
+                }
+                super::Begun::Grant(..) => {
+                    Reply::failed(Code::Grant, "a grant is made by a real server only")
                 }
             };
             Ok(outcome)
@@ -3557,17 +3555,18 @@ pub(crate) mod testing {
         impl crate::script::Asks for Recorder<'_> {
             fn ask(
                 &mut self,
-                request: &crate::protocol::Request,
+                asked: &crate::protocol::Asked,
                 out: &mut dyn std::io::Write,
             ) -> Result<Reply, crate::script::Failed> {
-                let command = &request.command;
-                if let crate::command::Command::Resolve { .. } = command {
-                    return self.0.ask(request, out);
-                }
-                let recorded = if let crate::command::Command::Client { action, .. } = command {
-                    action.clone().here()
-                } else {
-                    command.clone()
+                let recorded = match &asked.request {
+                    Request::Do(Command::Client { action, .. }) => action.clone().here(),
+                    Request::Do(Command::Resolve { .. })
+                    | Request::Wait(..)
+                    | Request::Capture(..)
+                    | Request::Events(..)
+                    | Request::Grant(..)
+                    | Request::Revoke(_) => return self.0.ask(asked, out),
+                    Request::Do(command) | Request::Then(command, _) => command.clone(),
                 };
                 self.1.push(recorded);
                 Ok(Reply::default())

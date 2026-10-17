@@ -6,14 +6,14 @@
 //!
 //! Each frame is decoded once, as the type of frame allowed where it
 //! arrives: by a server, a `Hello`, then an `Attach` and `AttachedFrame`s,
-//! or one `Command`; by a client, its `Greeting`, then `ToCommand` frames,
+//! or one `Asked`; by a client, its `Greeting`, then `ToCommand` frames,
 //! or `ToAttached` ones. Its bytes are lent from the decoder. Any other
 //! kind, or a size of zero, does not decode.
 
 use crate::act::Act;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::command::{AnyRef, Command};
+use crate::command::{AnyRef, Request};
 use crate::id::{ClientId, PaneId};
 use crate::wire::{Wire, wire};
 use std::borrow::Cow;
@@ -334,15 +334,15 @@ wire! {
 
 wire! {
     /// A command client's frames after its `Hello`: requests, each answered
-    /// before the next.
+    /// before the next, and where each comes from.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Request {
-        pub command: Command,
+    pub struct Asked {
+        pub request: Request,
         pub context: Context,
     }
 }
 
-impl OneKind for Request {
+impl OneKind for Asked {
     const KIND: u8 = 6;
 }
 
@@ -680,13 +680,13 @@ mod tests {
         round_trip!(AttachedFrame, 4, AttachedFrame::Resize(size));
         round_trip!(AttachedFrame, 5, AttachedFrame::Detach);
         round_trip!(
-            Request,
+            Asked,
             6,
-            Request {
-                command: Command::Rename {
+            Asked {
+                request: Request::Do(crate::command::Command::Rename {
                     target: AnyRef::Pane(crate::id::PaneId::of(3)),
                     name: "界".into(),
-                },
+                }),
                 context: Context {
                     cwd: "/somewhere".into(),
                     pane: "%3".parse().ok(),
@@ -790,7 +790,7 @@ mod tests {
         let hello: Decode = |d| d.frame::<Hello>().map(drop);
         let attach: Decode = |d| d.frame::<Attach>().map(drop);
         let attached: Decode = |d| d.frame::<AttachedFrame>().map(drop);
-        let command: Decode = |d| d.frame::<Request>().map(drop);
+        let command: Decode = |d| d.frame::<Asked>().map(drop);
         let utf8 = "a frame's payload: a text that is not UTF-8";
         for (decode, bytes, message) in [
             (server, vec![0, 0, 0, 1, 99], "unexpected frame kind 99"),
@@ -819,7 +819,7 @@ mod tests {
             (
                 command,
                 vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
-                "a frame's payload: no Command has tag 255",
+                "a frame's payload: no Request has tag 255",
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),
             // A frame of no fields has no payload.

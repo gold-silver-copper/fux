@@ -130,7 +130,6 @@ const ELSEWHERE: &[(&str, &str)] = &[
     ("output", "writing to a closed stdout: the CLI"),
     ("nested", "attach from inside a fux pane: the CLI with FUX_PANE"),
     ("too_long", "a typed line past the PTY's line limit: needs a process"),
-    ("cli_only", "never given: the one producer, execute's arm for a command only the CLI runs, is unreachable (the review's D2)"),
     ("steps", "a key's program past its step budget: the client runs it with one, this harness without"),
     ("contract", "a word of fux's leaving a count its effect doesn't allow: no input can cause it"),
     ("failed", "the fallback for an unknown fuxth code: no input can cause it"),

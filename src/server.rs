@@ -10,7 +10,7 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, End, Frame, Greeting, Hello, Mismatch, Reply, Request, Role,
+    Asked, Attach, AttachedFrame, Decoder, End, Frame, Greeting, Hello, Mismatch, Reply, Role,
     ToAttached, ToCommand, split_into,
 };
 use crate::render::{self, Grid};
@@ -187,7 +187,7 @@ enum Stage {
     /// Its request waits for the restore that runs to end, so that it takes
     /// no id the restore asks for (`Server::request`). It is read only to
     /// notice the client go.
-    Held(Box<Request>),
+    Held(Box<Asked>),
     /// Its request waits for its pane (`wait`): it is answered once the
     /// wait has an answer. It is read only to notice the client go.
     Waiting(Box<Waiting>),
@@ -973,7 +973,7 @@ impl Server {
             if let Stage::Held(_) = conn.stage
                 && let Stage::Held(held) = std::mem::replace(&mut conn.stage, Stage::Command)
             {
-                self.request(index, held.command, held.context);
+                self.request(index, held.request, held.context);
             }
         }
     }
@@ -1585,10 +1585,10 @@ impl Server {
                 None => return Ok(false),
             },
             Stage::Command => {
-                let Some(Request { command, context }) = decoder.frame()? else {
+                let Some(Asked { request, context }) = decoder.frame()? else {
                     return Ok(false);
                 };
-                self.request(index, command, context);
+                self.request(index, request, context);
             }
             // Nothing more is asked of a waiting command, or a stream. A
             // connection that is ending has had its last word: what came
@@ -1611,7 +1611,7 @@ impl Server {
     fn request(
         &mut self,
         index: usize,
-        command: crate::command::Command,
+        request: crate::command::Request,
         context: crate::protocol::Context,
     ) {
         let restore_runs = self.saved.as_ref().is_some_and(Saved::restoring);
@@ -1632,7 +1632,7 @@ impl Server {
             Came::Socket | Came::Grant(_) => restore_runs,
         };
         if held {
-            conn.stage = Stage::Held(Box::new(Request { command, context }));
+            conn.stage = Stage::Held(Box::new(Asked { request, context }));
             return;
         }
         let crate::protocol::Context {
@@ -1651,42 +1651,6 @@ impl Server {
             Some(_) => Within::Other,
         };
         let cwd = Some(cwd).filter(|p| p.is_dir());
-        use crate::command::Command;
-        let granting = if let Command::Grant { workspace, socket } = &command {
-            Some((socket.clone(), Some(workspace.clone())))
-        } else if let Command::Revoke { socket } = &command {
-            Some((socket.clone(), None))
-        } else {
-            None
-        };
-        if let Some(granting) = granting {
-            let (outcome, revoked) = match conn.grant {
-                // `fux grant` from a granted socket: refused.
-                Some(_) => {
-                    let why = "a socket `grant` made cannot grant another";
-                    (Reply::failed(Code::NotGranted, why), None)
-                }
-                None => match &mut self.phase {
-                    Phase::Serving { listening, .. } => grant(listening, session, granting, cwd),
-                    Phase::Stopping(_) => {
-                        (Reply::failed(Code::Grant, "the server is stopping"), None)
-                    }
-                },
-            };
-            conn.answer(session, outcome);
-            // What waits or streams through a grant revoked ends.
-            for conn in (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
-            {
-                if matches!(
-                    conn.stage,
-                    Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_)
-                ) {
-                    let why = "the grant this came through was revoked";
-                    conn.end(session, &ToCommand::Exit(why));
-                }
-            }
-            return;
-        }
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         // A key's or the prompt's program acts where its client is; one
@@ -1701,13 +1665,36 @@ impl Server {
             None => Origin::Cli(Caller {
                 gave: pane,
                 within,
-                cwd,
+                cwd: cwd.clone(),
                 env,
                 came,
             }),
         };
-        match session.begin(command, &origin) {
+        match session.begin(request, &origin) {
             Begun::Done(outcome) => conn.answer(session, outcome),
+            Begun::Grant(socket, workspace) => {
+                let (outcome, revoked) = match &mut self.phase {
+                    Phase::Serving { listening, .. } => {
+                        grant(listening, session, (socket, workspace), cwd)
+                    }
+                    Phase::Stopping(_) => {
+                        (Reply::failed(Code::Grant, "the server is stopping"), None)
+                    }
+                };
+                conn.answer(session, outcome);
+                // What waits or streams through a grant revoked ends.
+                for conn in
+                    (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
+                {
+                    if matches!(
+                        conn.stage,
+                        Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_)
+                    ) {
+                        let why = "the grant this came through was revoked";
+                        conn.end(session, &ToCommand::Exit(why));
+                    }
+                }
+            }
             Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.

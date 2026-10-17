@@ -9,8 +9,8 @@ use crate::door::Link;
 use crate::keymap::{Held, Keymap};
 use crate::keys::KeyPress;
 use crate::protocol::{
-    Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL, Reply,
-    Request, Role, ToAttached, ToCommand,
+    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
+    Reply, Role, ToAttached, ToCommand,
 };
 use crate::screens::{Effect, Screen};
 use crate::socket::SocketPath;
@@ -281,11 +281,11 @@ impl Requests {
         })
     }
 
-    /// Sends `request`, and waits for its reply: what the server streams
+    /// Sends `asked`, and waits for its reply: what the server streams
     /// before it (`events`) goes to `out` as it comes.
-    pub fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Error> {
+    pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         self.stream.set_read_timeout(None);
-        send(&mut self.stream, request)?;
+        send(&mut self.stream, asked)?;
         loop {
             if let Some(reply) = self.take(out)? {
                 return Ok(reply);

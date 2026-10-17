@@ -164,8 +164,7 @@ the file, line and word it came from. Its exit status is 1, a usage error's
   `selection`, `name_taken`, `id`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `exited`, `still_running`, `not_run`, `only_shell`,
   `not_reading`, `start`, `size`, `mouse`, `signal`, `log`,
-  `not_a_directory`, `not_headless`, `own_server`, `people_attached`,
-  `cli_only`;
+  `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `exited` (3), `timeout` (124), `closed` (4), `gone` (4),
   `lost`, `stopped` (7);
 - a program of words: `steps`, `not_here`, `not_layout`, `not_config`,

@@ -24,7 +24,7 @@ use fux::id::{ClientId, PaneId};
 use fux::keymap::{Held, Keymap};
 use fux::keys::Keystroke;
 use fux::outer;
-use fux::protocol::{Context, Reply, Request, ToAttached};
+use fux::protocol::{Asked, Context, Reply, ToAttached};
 use fux::render::{Grid, compose};
 use fux::screens::{Effect, Screen};
 use fux::script::{Ask, Failed, Host, Local};
@@ -230,14 +230,14 @@ impl Run {
     /// A request of the session, as a server answers it: begun at once; a
     /// wait not waited on, there being no programs, and no time that both
     /// sessions share.
-    fn ask(&mut self, request: Request) -> Reply {
-        let origin = match request.context.client {
+    fn ask(&mut self, asked: Asked) -> Reply {
+        let origin = match asked.context.client {
             Some(client) if self.s.views.contains_key(&client) => Origin::Client(client),
             Some(_) | None => Origin::Cli(fux::session::Caller::default()),
         };
-        match self.s.begin(request.command, &origin) {
+        match self.s.begin(asked.request, &origin) {
             Begun::Done(outcome) => outcome,
-            Begun::Waiting(_) | Begun::Events(_) => Reply::default(),
+            Begun::Waiting(_) | Begun::Events(_) | Begun::Grant(..) => Reply::default(),
         }
     }
 
@@ -288,8 +288,8 @@ impl Run {
                     // builds it.
                     let context = host.context.clone();
                     let built = open.build(&mut |command| {
-                        Ok(self.ask(Request {
-                            command,
+                        Ok(self.ask(Asked {
+                            request: command.into(),
                             context: context.clone(),
                         }))
                     });
@@ -300,7 +300,7 @@ impl Run {
                 }
                 Ok(Ran::Suspended(Ask::Local(_))) => break Err("not in-process".to_owned()),
                 Ok(Ran::Suspended(Ask::Server {
-                    command,
+                    request,
                     client,
                     then,
                 })) => {
@@ -308,8 +308,7 @@ impl Run {
                     if client.is_some() {
                         context.client = client;
                     }
-                    let request = Request { command, context };
-                    let reply = self.ask(request);
+                    let reply = self.ask(Asked { request, context });
                     let values = fux::script::answered(reply, then);
                     let pushed = values.and_then(|values| {
                         values

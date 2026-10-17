@@ -3,7 +3,7 @@
 //! then the bytes a peer sends on the socket.
 use fux::bytes::ByteQueue;
 use fux::protocol::{
-    Attach, AttachedFrame, Decoder, Error, Frame, Greeting, Hello, MAX_FRAME, Request, ToAttached,
+    Asked, Attach, AttachedFrame, Decoder, Error, Frame, Greeting, Hello, MAX_FRAME, ToAttached,
     ToCommand, split_into,
 };
 use libfuzzer_sys::fuzz_target;
@@ -110,7 +110,7 @@ fuzz_target!(|data: &[u8]| {
         |d| Ok(d.frame::<Hello>()?.map(|f| encoded(&f))),
         |d| Ok(d.frame::<Attach>()?.map(|f| encoded(&f))),
         |d| Ok(d.frame::<AttachedFrame>()?.map(|f| encoded(&f))),
-        |d| Ok(d.frame::<Request>()?.map(|f| encoded(&f))),
+        |d| Ok(d.frame::<Asked>()?.map(|f| encoded(&f))),
         |d| Ok(d.frame::<Greeting>()?.map(|f| encoded(&f))),
         to_command,
         to_attached,

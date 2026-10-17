@@ -385,8 +385,6 @@ wire! {
             run: bool,
             /// The id it makes the pane with, if asked for.
             id: Option<PaneId>,
-            /// Then waits on the new pane, armed before its program writes.
-            then: Option<Box<Wait>>,
         },
         /// A program, started in place of a shell in a tab of its own, in a
         /// workspace no client is moved to.
@@ -400,8 +398,6 @@ wire! {
             /// A file everything the program writes goes to too.
             log: Option<String>,
             ids: Wanted,
-            /// Then waits, armed before the program writes anything.
-            then: Option<Box<Wait>>,
         },
         /// The program `run` started, started again in its pane.
         Respawn {
@@ -411,8 +407,6 @@ wire! {
             env: Env,
             /// Another program instead: the one it ran without.
             argv: Vec<String>,
-            /// Then waits, as run's does.
-            then: Option<Box<Wait>>,
         },
         /// A notice on the clients showing the target: every client without.
         Notify {
@@ -420,19 +414,11 @@ wire! {
             text: String,
         },
         Resize(what: Resized),
-        Wait {
-            /// The pane, or a tab's or workspace's every pane, each of which
-            /// answers.
-            target: AnyRef,
-            wait: Wait,
-        },
         SendMouse {
             target: PaneId,
             mouse: Mouse,
             row: u16,
             col: u16,
-            /// Then waits, armed before the event goes in, as send-keys' does.
-            then: Option<Box<Wait>>,
         },
         /// Closes a pane, a tab or a workspace.
         Kill {
@@ -444,7 +430,6 @@ wire! {
         Signal {
             target: PaneId,
             signal: fuxix::process::Signal,
-            then: Option<Box<Wait>>,
         },
         Rename {
             target: AnyRef,
@@ -466,28 +451,11 @@ wire! {
             /// The pane, or a tab's or workspace's every pane.
             target: AnyRef,
             inputs: Vec<Input>,
-            /// A wait for the program to go quiet once they are sent.
-            then: Option<Box<Wait>>,
-        },
-        /// What happens, a line each as it happens, until the client goes:
-        /// where the target is, or anywhere without one.
-        Events {
-            target: Option<AnyRef>,
-            json: bool,
         },
         /// What is there, as a layout file: everything, or one tab or
         /// workspace.
         DumpLayout {
             target: Option<AnyRef>,
-        },
-        /// A socket whose commands reach workspace `workspace` alone.
-        Grant {
-            workspace: WsRef,
-            socket: String,
-        },
-        /// The socket a grant made, closed.
-        Revoke {
-            socket: String,
         },
         /// What the pane's program writes, kept in a file from now on; `None`
         /// stops it.
@@ -505,10 +473,6 @@ wire! {
             target: PaneId,
             history: Option<usize>,
             view: CaptureView,
-            /// Read once the pane settles, waiting this long at most (if unsaid,
-            /// the server's `wait-seconds`), and said with its state; at once,
-            /// as it is, without.
-            settle: Option<Option<Duration>>,
         },
         Reorder {
             target: AnyRef,
@@ -690,7 +654,6 @@ impl Command {
             | C::Resolve { .. }
             | C::CapturePane { .. }
             | C::DumpLayout { .. }
-            | C::Wait { .. }
             | C::SendKeys { .. }
             | C::SendMouse { .. }
             | C::Signal { .. } => Reaches::Reads,
@@ -709,8 +672,7 @@ impl Command {
             | C::Log { .. }
             | C::ClearHistory { .. }
             | C::Reorder { .. } => Reaches::Shapes,
-            C::Events { .. } => Reaches::Streams,
-            C::KillServer { .. } | C::Grant { .. } | C::Revoke { .. } => Reaches::Server,
+            C::KillServer { .. } => Reaches::Server,
             C::Set { option, value } => Reaches::Settings { option, value },
             C::ListBuffers | C::ShowBuffer { .. } => Reaches::Buffers { reads: true },
             C::PasteBuffer { .. } => Reaches::Buffers { reads: false },
@@ -728,44 +690,94 @@ impl Command {
         }
     }
 
-    /// The pane a command acts on and the wait it then does, armed before
-    /// it acts: send-keys', send-mouse's and signal's.
-    pub fn acting_wait(&self) -> Option<(AnyRef, Wait)> {
-        if let Command::SendKeys {
-            target,
-            then: Some(wait),
-            ..
-        } = self
-        {
-            return Some((*target, (**wait).clone()));
+    /// When a wait it then does is armed (`Request::Then`), if it does one.
+    pub fn armed(&self) -> Option<Armed> {
+        use Command as C;
+        match self {
+            C::SendKeys { target, .. } => Some(Armed::Before(*target)),
+            C::SendMouse { target, .. } | C::Signal { target, .. } => {
+                Some(Armed::Before(AnyRef::Pane(*target)))
+            }
+            C::Run { .. } | C::Split { .. } | C::Respawn { .. } => Some(Armed::Started),
+            C::Ls { .. }
+            | C::KillServer { .. }
+            | C::NewWorkspace { .. }
+            | C::NewTab { .. }
+            | C::Notify { .. }
+            | C::Resize(_)
+            | C::Kill { .. }
+            | C::Rename { .. }
+            | C::MovePane { .. }
+            | C::SwapPane { .. }
+            | C::ResizePane { .. }
+            | C::DumpLayout { .. }
+            | C::Log { .. }
+            | C::ClearHistory { .. }
+            | C::CapturePane { .. }
+            | C::Reorder { .. }
+            | C::Set { .. }
+            | C::Resolve { .. }
+            | C::ListBuffers
+            | C::ShowBuffer { .. }
+            | C::PasteBuffer { .. }
+            | C::Client { .. } => None,
         }
-        if let Command::SendMouse {
-            target,
-            then: Some(wait),
-            ..
-        }
-        | Command::Signal {
-            target,
-            then: Some(wait),
-            ..
-        } = self
-        {
-            return Some((AnyRef::Pane(*target), (**wait).clone()));
-        }
-        None
     }
+}
 
-    /// Takes the wait `run`, `split` or `respawn` does once it has started
-    /// its program: the command then says only its pane, which the wait
-    /// answers of.
-    pub fn take_start_wait(&mut self) -> Option<Box<Wait>> {
-        if let Command::Run { then, .. }
-        | Command::Split { then, .. }
-        | Command::Respawn { then, .. } = self
-        {
-            return then.take();
+/// When the wait a command then does is armed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Armed {
+    /// Before it acts, in these panes: what its input or signal brings is
+    /// what the wait sees (send-keys, send-mouse, signal).
+    Before(AnyRef),
+    /// Once it has started its pane's program, on that pane, before the
+    /// server reads what the program writes (run, split, respawn).
+    Started,
+}
+
+wire! {
+    /// What a client asks of the server: a command, perhaps then a wait, or
+    /// what only a client's request does, the server holding its connection.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Request {
+        /// A command, at once.
+        Do(command: Command),
+        /// A command, then a wait, armed as the command's `armed` says.
+        Then(command: Command, wait: Box<Wait>),
+        /// A wait in the pane, or a tab's or workspace's every pane, each of
+        /// which answers.
+        Wait(target: AnyRef, wait: Wait),
+        /// A capture of the pane (its history and view) read once it
+        /// settles, waiting this long at most (if unsaid, the server's
+        /// `wait-seconds`), and said with its state.
+        Capture(target: PaneId, history: Option<usize>, view: CaptureView, timeout: Option<Duration>),
+        /// What happens, a line each as it happens, until the client goes:
+        /// where the target is, or anywhere without one.
+        Events(target: Option<AnyRef>, json: bool),
+        /// A socket whose commands reach workspace `workspace` alone.
+        Grant(workspace: WsRef, socket: String),
+        /// The socket a grant made, closed.
+        Revoke(socket: String),
+    }
+}
+
+/// A command, at once.
+impl From<Command> for Request {
+    fn from(command: Command) -> Request {
+        Request::Do(command)
+    }
+}
+
+impl Request {
+    /// What it reaches.
+    pub fn reaches(&self) -> Reaches<'_> {
+        match self {
+            Request::Do(command) | Request::Then(command, _) => command.reaches(),
+            Request::Wait(..) | Request::Capture(..) => Reaches::Reads,
+            Request::Events(..) => Reaches::Streams,
+            Request::Grant(..) | Request::Revoke(_) => Reaches::Server,
         }
-        None
     }
 }
 

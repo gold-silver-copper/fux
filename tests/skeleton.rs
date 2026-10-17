@@ -81,7 +81,7 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
 fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     use fux::command::Command;
     use fux::protocol::{
-        Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Reply, Request, Role, ToCommand,
+        Asked, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Reply, Role, ToCommand,
     };
     use std::io::{Read, Write};
     let server = Server::start("")?;
@@ -91,11 +91,12 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         version: "0".into(),
         role: Role::Command,
     };
-    let request = Request {
-        command: Command::Ls {
+    let request = Asked {
+        request: Command::Ls {
             target: None,
             get: None,
-        },
+        }
+        .into(),
         context: Context {
             cwd: std::path::PathBuf::new(),
             pane: None,

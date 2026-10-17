@@ -97,8 +97,6 @@ codes! {
     OwnServer "own_server",
     /// `kill-server` with people attached, not forced.
     PeopleAttached "people_attached",
-    /// What runs from the command line only.
-    CliOnly "cli_only",
     // How a wait ends.
     /// A wait's limit came first: exit status 124.
     Timeout "timeout",

@@ -13,11 +13,11 @@ mod stacks;
 mod words;
 
 use crate::code::Code;
-use crate::command::{AnyRef, Command, Extent, Input, Kind, Mouse, Until, WsRef};
+use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Until, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
 use crate::layout::Axis;
-use crate::protocol::{Context, End, Reply, Request, Scalar};
+use crate::protocol::{Asked, Context, End, Reply, Scalar};
 use crate::socket::Choice;
 use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
 use std::io::Write;
@@ -205,7 +205,7 @@ pub enum Ask {
     /// A request, as the client `client` (or the caller), and what to make
     /// of its reply.
     Server {
-        command: Command,
+        request: Request,
         client: Option<ClientId>,
         then: Then,
     },
@@ -525,8 +525,8 @@ fn client_failed(error: crate::client::Error) -> Failed {
 /// itself: a server (`Server`), the command line's (`Cli`), or in tests a
 /// session itself.
 pub trait Asks {
-    /// Asks `request`, what is streamed before its reply going to `out`.
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed>;
+    /// Asks `asked`, what is streamed before its reply going to `out`.
+    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed>;
     /// Does what the client does itself: by default, nothing, refused.
     fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
         refuse_local(what)
@@ -536,7 +536,7 @@ pub trait Asks {
 /// The server's: each request asked on one connection, opened at the
 /// first.
 impl Asks for Server {
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         let requests = match &mut self.requests {
             Some(requests) => requests,
             None => {
@@ -551,11 +551,11 @@ impl Asks for Server {
                 self.requests.insert(opened)
             }
         };
-        let asked = requests.ask(request, out).map_err(client_failed);
-        if asked.is_err() {
+        let reply = requests.ask(asked, out).map_err(client_failed);
+        if reply.is_err() {
             self.requests = None;
         }
-        asked
+        reply
     }
 }
 
@@ -564,8 +564,8 @@ impl Asks for Server {
 pub struct Cli(pub Server);
 
 impl Asks for Cli {
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        self.0.ask(request, out)
+    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
+        self.0.ask(asked, out)
     }
     fn local(&mut self, what: &Local, out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
         local(what, &mut self.0, out)
@@ -582,8 +582,8 @@ pub struct AsClient<'a> {
 }
 
 impl Asks for AsClient<'_> {
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        self.asks.ask(request, out)
+    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
+        self.asks.ask(asked, out)
     }
     fn local(&mut self, what: &Local, out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Open(open) = what else {
@@ -593,8 +593,8 @@ impl Asks for AsClient<'_> {
         let mut sink = std::io::sink();
         let screen = open.build(&mut |command| {
             asks.ask(
-                &Request {
-                    command,
+                &Asked {
+                    request: command.into(),
                     context: context.clone(),
                 },
                 &mut sink,
@@ -647,7 +647,7 @@ pub fn run_capped(
             }
             Outcome::Paused => {}
             Outcome::Suspended(Ask::Server {
-                command,
+                request,
                 client,
                 then,
             }) => {
@@ -656,7 +656,7 @@ pub fn run_capped(
                     context.client = client;
                 }
                 let reply = asks
-                    .ask(&Request { command, context }, host.out)
+                    .ask(&Asked { request, context }, host.out)
                     .map_err(|f| placed(machine, f))?;
                 match &reply.end {
                     End::Answered {
@@ -952,11 +952,11 @@ fn run_quiet(
 struct Settings<'a>(Option<&'a mut Server>);
 
 impl Asks for Settings<'_> {
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         use crate::command::Reaches as R;
-        match request.command.reaches() {
+        match asked.request.reaches() {
             R::Settings { option, value } => match &mut self.0 {
-                Some(server) => server.ask(request, out),
+                Some(server) => server.ask(asked, out),
                 None => match crate::config::Config::default().set(option, value) {
                     Ok(()) => Ok(Reply::default()),
                     Err(error) => Err(Failed::new(Code::Config, error.to_string())),
@@ -1021,9 +1021,9 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 struct Layout<'a>(&'a mut Server);
 
 impl Asks for Layout<'_> {
-    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         use crate::command::Reaches as R;
-        let refused = match request.command.reaches() {
+        let refused = match asked.request.reaches() {
             R::Server => Some("kill-server, grant or revoke"),
             R::Settings { .. } => Some("set"),
             R::Client { .. } => Some("a client's words"),
@@ -1037,7 +1037,7 @@ impl Asks for Layout<'_> {
                 Code::NotLayout,
                 format!("{word} in a saved session: it makes and shapes, and does nothing else"),
             )),
-            None => self.0.ask(request, out),
+            None => self.0.ask(asked, out),
         }
     }
 }
