@@ -206,14 +206,6 @@ impl Order {
         let top = self.top.wrapping_add(1);
         self.top = if top >= self.slots.len() { 0 } else { top };
     }
-    /// The rows, top to bottom, in two runs.
-    fn as_slices(&self) -> (&[usize], &[usize]) {
-        let top = self.top.min(self.slots.len());
-        match self.slots.split_at_checked(top) {
-            Some((before, from)) => (from, before),
-            None => (&[], &[]),
-        }
-    }
     fn as_mut_slices(&mut self) -> (&mut [usize], &mut [usize]) {
         let top = self.top.min(self.slots.len());
         match self.slots.split_at_mut_checked(top) {
@@ -221,9 +213,9 @@ impl Order {
             None => (&mut [], &mut []),
         }
     }
+    /// The rows' slots, top to bottom.
     fn iter(&self) -> impl Iterator<Item = &usize> {
-        let (front, back) = self.as_slices();
-        front.iter().chain(back)
+        (0..self.len()).filter_map(|row| self.get(row))
     }
 }
 

@@ -77,8 +77,8 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     for version in 1..=11 {
         wrapped.scroll(Size::of(5, 1).lines(), 1, UP, 0, &mut next, version)?;
     }
-    let (front, back) = wrapped.order.as_slices();
-    assert!(!front.is_empty() && !back.is_empty(), "the order wraps");
+    let order = &wrapped.order;
+    assert!((1..order.len()).contains(&order.top), "the order wraps");
     moves_are_removals_then_insertions(&contiguous);
     moves_are_removals_then_insertions(&wrapped);
     Ok(())
