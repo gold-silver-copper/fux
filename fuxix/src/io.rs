@@ -117,25 +117,22 @@ pub fn open_end() -> Option<i32> {
 }
 
 /// `cloexec_from` one descriptor at a time: on macOS, on Android, and on
-/// Linux older than 5.11 or where close_range is denied. Below the number
-/// this process may open (its soft `RLIMIT_NOFILE`, which may be 2^30),
-/// and, with `listed`, to the first free number past the listed end: one
+/// Linux older than 5.11 or where close_range is denied. From `first` to
+/// the first free number past `listed`, the listed end ([`open_end`],
+/// whatever the soft `RLIMIT_NOFILE`, as one above it may be open): one
 /// opened since the listing took the lowest number free, so those past
-/// the end lie next to it. Its cost follows the descriptors open, not the
-/// limit.
+/// the end lie next to it. (Not if another thread, between the listing
+/// and the fork, opened two without close-on-exec and closed the first:
+/// Rust's std opens none so.) Its cost follows the descriptors open. With
+/// nothing listed it would follow the limit, which may be 2^30: it fails
+/// instead, as /dev/fd is not there (ENOENT).
 fn cloexec_each(first: i32, listed: Option<i32>) -> Result<()> {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: getrlimit fills one rlimit, and `limit` is one.
-    check(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) })?;
-    let end = libc::c_int::try_from(limit.rlim_cur).unwrap_or(libc::c_int::MAX);
-    for fd in first..end {
+    let listed = listed.ok_or(crate::Errno::from_raw(libc::ENOENT))?;
+    for fd in first..=libc::c_int::MAX {
         match cloexec_raw(fd) {
             Ok(()) => {}
             Err(errno) if errno.raw() == libc::EBADF => {
-                if listed.is_some_and(|end| fd >= end) {
+                if fd >= listed {
                     return Ok(());
                 }
             }
@@ -192,12 +189,57 @@ mod tests {
         // And one at a time, as where the kernel has no close_range.
         let listed = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
         assert!(!is_cloexec(&listed));
-        cloexec_each(listed.as_raw_fd(), None).map_err(|e| e.to_string())?;
+        cloexec_each(listed.as_raw_fd(), open_end()).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&listed));
+        // With nothing listed, it fails rather than walk to the limit.
+        let none = cloexec_each(listed.as_raw_fd(), None);
+        assert_eq!(none, Err(Errno::from_raw(libc::ENOENT)));
         // Nothing was closed: both still read.
         let mut buffer = [0u8; 1];
         assert_eq!(read(&copy, &mut buffer), Ok(0));
         assert_eq!(read(&file, &mut buffer), Ok(0));
+        Ok(())
+    }
+
+    /// One at a time, the walk is bounded by the listing, not by the soft
+    /// limit: a descriptor at or above it (open before the limit fell, as
+    /// one a parent passes past `ulimit -Sn`) is marked too. In a child,
+    /// whose limit it lowers, making only async-signal-safe calls.
+    #[test]
+    fn one_at_a_time_marks_past_the_soft_limit() -> std::result::Result<(), String> {
+        let file = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
+        let high = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
+        let fd = high.as_raw_fd();
+        let mut low = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit fills one rlimit, and `low` is one.
+        check(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut low) })
+            .map_err(|e| e.to_string())?;
+        low.rlim_cur = libc::rlim_t::try_from(fd).map_err(|e| e.to_string())?;
+        // SAFETY: fork takes nothing; the child makes only async-signal-safe
+        // calls and ends with _exit.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // SAFETY: setrlimit reads one rlimit, and `low` is one; a lower
+            // soft limit is always allowed.
+            let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const low) };
+            let marked = lowered == 0 && cloexec_each(fd, fd.checked_add(1)).is_ok();
+            let code = i32::from(!(marked && is_cloexec(&high)));
+            // SAFETY: _exit ends the child at once, running nothing of the
+            // parent's.
+            unsafe { libc::_exit(code) };
+        }
+        assert!(pid > 0, "fork failed");
+        let mut status = 0;
+        // SAFETY: waitpid writes one int, and `status` is one.
+        let waited = unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert_eq!(waited, pid);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "not marked"
+        );
         Ok(())
     }
 
@@ -216,7 +258,15 @@ mod tests {
             // SAFETY: `raw` was just opened, and nothing else owns it.
             Ok(unsafe { OwnedFd::from_raw_fd(raw) })
         };
-        let low = at(700)?;
+        // Well below the soft limit (256 on macOS), well above std's own.
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit fills one rlimit, and `limit` is one.
+        check(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) })
+            .map_err(|e| e.to_string())?;
+        let low = at(i32::try_from(limit.rlim_cur / 2).unwrap_or(700).min(700))?;
         let below = at(low.as_raw_fd() + 5)?;
         let end = below.as_raw_fd() + 1;
         let next = at(end)?;
