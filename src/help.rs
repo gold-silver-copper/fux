@@ -132,9 +132,6 @@ pub fn explain(name: &str) -> Option<String> {
                 }
             }
         }
-        if let Some(example) = example(name) {
-            out.push_str(&format!("\n  {example}\n"));
-        }
         return Some(out);
     }
     if let Some((name, effect, about, code)) = library().into_iter().find(|(n, ..)| *n == name) {
