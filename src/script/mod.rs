@@ -338,7 +338,25 @@ impl From<fuxth::Error> for Failed {
     fn from(error: fuxth::Error) -> Failed {
         // A word given too few values, the wrong kind, or one out of its
         // range, says how it is used.
-        let usage = matches!(error.code, Lang::StackUnderflow | Lang::Type | Lang::Range);
+        let usage = match error.code {
+            Lang::StackUnderflow | Lang::Type | Lang::Range => true,
+            Lang::OpenQuote
+            | Lang::UnknownWord
+            | Lang::MissingToken
+            | Lang::BadName
+            | Lang::NotTopLevel
+            | Lang::Unmatched
+            | Lang::Unclosed
+            | Lang::StackOverflow
+            | Lang::CallDepth
+            | Lang::DivByZero
+            | Lang::Overflow
+            | Lang::Unset
+            | Lang::Fail
+            | Lang::TooLong
+            | Lang::Contract
+            | Lang::Host(_) => false,
+        };
         told(error, usage)
     }
 }
