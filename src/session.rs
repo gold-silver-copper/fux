@@ -1904,11 +1904,11 @@ impl Session {
         if let Request::Do(command @ Command::ResizePane { .. }) = &request
             && self.starting_for(origin).restoring
         {
-            let mut outcome = self.run_command(command, origin);
-            if matches!(outcome.end, End::Failed { .. }) {
-                outcome = Reply::default();
-            }
-            return Begun::Done(outcome);
+            let outcome = self.run_command(command, origin);
+            return Begun::Done(match outcome.end {
+                End::Failed { .. } => Reply::default(),
+                End::Done | End::Answered(_) => outcome,
+            });
         }
         self.begin_request(request, origin)
             .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
