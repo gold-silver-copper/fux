@@ -7,6 +7,8 @@
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
 #[cfg(test)]
+mod failures;
+#[cfg(test)]
 mod stacks;
 mod words;
 

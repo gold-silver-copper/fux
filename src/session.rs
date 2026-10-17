@@ -3454,7 +3454,7 @@ pub(crate) mod testing {
 
     /// Runs fuxth `code` as [`output_as`] does, settling as a command line
     /// does if `settle`: each value it left, its kind's name then its text's
-    /// first line (`pane %1`), or the failure's code.
+    /// first line (`pane %1`), or the failure's code and status.
     pub(crate) fn stack_as(
         session: &mut Session,
         client: Option<ClientId>,
@@ -3472,7 +3472,7 @@ pub(crate) mod testing {
                     )
                 })
                 .collect(),
-            Err(failed) => vec![format!("fails {}", failed.code)],
+            Err(failed) => vec![format!("fails {} {}", failed.code, failed.status)],
         }
     }
 
