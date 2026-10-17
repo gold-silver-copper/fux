@@ -789,7 +789,7 @@ pub const FAMILIES: &[Family] = &[
         name: "sgr",
         about: "SGR in semicolon form: every attribute, its reset, 16, 256 and RGB colours, underline colour",
         status: Status::Decided {
-            why: "SGR 21 is doubly underlined (ECMA-48, 8.3.117): an underline beside bold, as xterm, Ghostty, libvterm, xterm.js and tmux read it, where alacritty and avt take it as bold off. Bold and faint can both be on, as in xterm, though ECMA-48 makes them one attribute (a departure: fux-vt/README.md); avt and wezterm let faint replace bold. Together they outvote fux-vt (`replay --engines all --size 1x3 '\\e[1m\\e[21;2mX'`). xterm has no SGR 58, and abstains from a case that uses it",
+            why: "SGR 21 is doubly underlined (ECMA-48, 8.3.117): an underline beside bold, as xterm, Ghostty, libvterm, xterm.js and tmux read it, where alacritty and avt take it as bold off. Bold and faint can both be on, as in xterm, where ECMA-48 leaves their combination to the implementation (fux-vt/README.md, \"Where the standards leave the choice\"); avt and wezterm let faint replace bold. Together they outvote fux-vt (`replay --engines all --size 1x3 '\\e[1m\\e[21;2mX'`). xterm has no SGR 58, and abstains from a case that uses it",
             by: XTERM,
             authority: Authority::Standard {
                 section: "ECMA-48 8.3.117",
@@ -950,7 +950,7 @@ pub const FAMILIES: &[Family] = &[
         name: "reset",
         about: "RIS and DECSTR",
         status: Status::Decided {
-            why: "DECSTR shows the cursor and resets DECCKM, as the VT520 manual (DECSTR, Table 5-6) and DEC STD 070 (p. 4-37) say and xterm does, and turns autowrap on, as xterm does where both say off (a departure: fux-vt/README.md). The panel splits on each: cursor visibility (xterm, libvterm, avt and xterm.js reset it; Ghostty, alacritty, wezterm and tmux keep it), DECCKM (xterm, libvterm, wezterm and xterm.js reset it; Ghostty, alacritty, avt and tmux keep it) and autowrap (xterm, libvterm, wezterm and xterm.js turn it on; Ghostty, alacritty, avt and tmux keep it off), so once `modes` or `autowrap` has set them the default panel outvotes fux-vt (`replay --engines all --size 1x1 '\\e[?25l\\e[!p'`)",
+            why: "DECSTR shows the cursor and resets DECCKM, as the VT520 manual (DECSTR, Table 5-6) and DEC STD 070 (p. 4-37) say and xterm does, and sets autowrap to the terminal's setting, on, as xterm does and DEC STD 070 says (\"NVM if present\", where the VT520 manual says off). The panel splits on each: cursor visibility (xterm, libvterm, avt and xterm.js reset it; Ghostty, alacritty, wezterm and tmux keep it), DECCKM (xterm, libvterm, wezterm and xterm.js reset it; Ghostty, alacritty, avt and tmux keep it) and autowrap (xterm, libvterm, wezterm and xterm.js turn it on; Ghostty, alacritty, avt and tmux keep it off), so once `modes` or `autowrap` has set them the default panel outvotes fux-vt (`replay --engines all --size 1x1 '\\e[?25l\\e[!p'`)",
             by: XTERM,
             authority: Authority::Standard {
                 section: "DEC STD 070's Soft Terminal Reset (p. 4-37)",

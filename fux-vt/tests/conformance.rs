@@ -416,12 +416,11 @@ fn dec_special_graphics_draw_lines() -> Result {
 /// character set as printing it again would. ECMA-48 leaves REP undefined
 /// after a control function; xterm then repeats nothing, having forgotten
 /// its last character once a control, a sequence or a string (REP itself
-/// included) came after it, and so does fux-vt. After a cluster, xterm
-/// repeats the character that took the cell, without its marks, where
-/// ECMA-48 would repeat the last mark: fux-vt departs from the standard
-/// with xterm (README, "Departures from the references"). A wide glyph a
-/// one-column screen drops is still the preceding graphic character, so
-/// REP repeats it, dropped again. Expected values are xterm's
+/// included) came after it, and so does fux-vt. ECMA-48 knows no grapheme
+/// cluster: after one, xterm repeats the character that took the cell,
+/// without its marks, and so does fux-vt (README, "Where the standards
+/// leave the choice"). A wide glyph a one-column screen drops is still the
+/// preceding graphic character, so REP repeats it, dropped again. Expected values are xterm's
 /// (`fux-vt-compare replay --engines all --size 2x8`; `--size 1x1
 /// '#\u{754c}\e[4b'`).
 #[test]

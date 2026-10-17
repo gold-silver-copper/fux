@@ -19,12 +19,18 @@ assert_eq!((cell.contents(), cell.bold()), ("h", true));
 ```
 
 This document is the contract: what each sequence does, the options, the
-limits, and the departures from the references. The references are
+limits, and where the standards leave the choice. The references are
 ECMA-48, DEC STD 070, the VT520 manual, xterm's ctlseqs, Unicode 17 and the
 specs of modern extensions
 ([`references/README.md`](https://github.com/gold-silver-copper/fux/blob/master/references/README.md)).
-Where they are silent, or xterm departs from them, fux-vt does what xterm
-does, since fux sets `TERM=xterm-256color`.
+Where a standard specifies a behaviour, fux-vt does what it says: ECMA-48
+for its control functions, DEC STD 070 for DEC's (over the DEC product
+manuals), ECMA-35 for character sets, Unicode for text, the kitty
+keyboard, OSC 8 and OSC 133 specs for their protocols, and ctlseqs for
+xterm's own functions (over xterm 411 where xterm departs from it). Where
+the standards are silent or call a behaviour undefined, it does what xterm
+411 does, since fux sets `TERM=xterm-256color`. A row that differs from
+xterm says so.
 
 ## Sequence matrix
 
@@ -45,11 +51,11 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 | ESC D / E | IND: a line feed, LNM aside. NEL: a line feed, then to the column CR goes to. | `conformance::ind_and_nel_*` |
 | ESC M | RI: up a line, scrolling down at the top margin (between left and right margins only). Ends a pending wrap. | `margins::index_scrolls_between_the_margins` |
 | ESC c | RIS: both screens and history cleared; every mode, the pen, margins, tab stops, protection, links, keyboard stacks, cursor shape and palette back to their defaults. The dynamic and special colours and XTSAVE's saved modes stay. Row identities are never reused. | `semantics::regions_origin_and_reset_*` |
-| CSI ! p | DECSTR, as xterm does it: shows the cursor; resets IRM, DECOM, DECCKM, DECKPAM, DECLRMM, reverse wraparound and synchronized output; turns DECAWM on (see Departures); resets both screens' margins, the pen, protection, the character sets, the shown screen's saved cursor (home, default attributes and character sets) and the palette. Keeps the screen, cursor, pending wrap, tab stops, alternate screen, LNM, bracketed paste, focus reporting, mouse modes, cursor shape and keyboard state. | `conformance::a_soft_reset_*` |
+| CSI ! p | DECSTR, as xterm does it: shows the cursor; resets IRM, DECOM, DECCKM, DECKPAM, DECLRMM, reverse wraparound and synchronized output; sets DECAWM to the terminal's setting, on (DEC STD 070, DECSTR: "NVM if present", and revision note 29, recalling it from NVR; the VT520 manual's table says off, and `xterm-256color`'s `is2` and `rs2` rely on it on); resets both screens' margins, the pen, protection, the character sets, the shown screen's saved cursor (home, default attributes and character sets) and the palette. Keeps the screen, cursor, pending wrap, tab stops, alternate screen, LNM, bracketed paste, focus reporting, mouse modes, cursor shape and keyboard state. | `conformance::a_soft_reset_*` |
 | CSI 4 h / l | IRM, off: a printed glyph pushes what is at and after the cursor right, as ICH does, losing what passes the right margin; the row keeps its soft wrap. | `conformance::insert_mode_*` |
 | CSI 20 h / l | LNM, off: LF, VT and FF return the carriage too; IND does not. RIS resets it, DECSTR keeps it. Other ANSI modes are unhandled. | `modes::lnm_*` |
 | CSI A B C D E F G H d f \` a e | CUU and CPL stop at the top margin from at or below it, CUD and CNL at the bottom margin from at or above it, else at the screen's edge (xterm's `CursorUp`, `CursorDown`); CNL and CPL go to the column CR goes to. CUF and CUB stop at the right or left margin unless already past it. CUP, HVP, VPA and VPR count lines from the top margin and stay within the margins with DECOM set, and address the whole screen without (so VPR, unlike CUD, passes the bottom margin). CUP, HVP, CHA and HPA count columns from the left margin in origin mode, up to the right one. VPA and VPR keep the column (within the right margin in origin mode). HPR stops at the right margin in origin mode only. All end a pending wrap. | `conformance::line_and_column_addressing_*`, `margins::cursor_movements_*` |
-| CSI b | REP: the last printed character, Pn more times, as if printed again; a wide glyph a one-column screen drops is still the last printed. After any control, sequence or string (REP included) it does nothing until a character is printed. After a cluster it repeats the cluster's first character (see Departures). Copies past a screen and history's worth are skipped a line at a time, with the same result. | `conformance::rep_*`, `margins::rep_*` |
+| CSI b | REP: the last printed character, Pn more times, as if printed again; a wide glyph a one-column screen drops is still the last printed. After any control, sequence or string (REP included) it does nothing until a character is printed. After a cluster it repeats the cluster's first character (see "Where the standards leave the choice"). Copies past a screen and history's worth are skipped a line at a time, with the same result. | `conformance::rep_*`, `margins::rep_*` |
 | ESC H, CSI g, CSI I, CSI Z | Tab stops, one set for both screens: every eight columns at first and after RIS, kept by DECSTR and a resize. HTS sets one at the cursor's column. TBC 0 or none clears that one, 3 every one; the others do nothing, as DEC STD 070 (TBC) defines only these. CHT is HT n times; CBT goes back n stops, or to the first column (ECMA-48 8.3.7). Both end a pending wrap (see CSI ? 7), CBT moving back from the last column (xterm keeps the wrap). | `conformance::tab_stops_*` |
 | CSI @ P X | ICH, DCH, ECH, within the row. ICH and DCH stop at the right margin; outside the left and right margins they do nothing and keep a pending wrap, otherwise they end it. A wide glyph an edit cuts is blanked whole. DCH ends the row's soft wrap; ICH keeps it. ECH leaves ISO-protected glyphs. Blanks take the pen's colours and no other attribute (`bce`). | `margins::edits_stop_*` |
 | CSI L M S T | IL, DL, SU, SD within the margins, counts clamped to the region. With left and right margins only the cells between them move, rows keeping their identity, soft wrap and prompt mark, and a wide glyph across a margin is blanked first. IL and DL do nothing with the cursor outside the margins, else move it to the left margin. A soft wrap stays with its row, and the row above the region keeps its own, as xterm keeps them. Rows scrolled off the top of the whole screen (no left and right margins) by SU, a line feed or a wrap go to history; other scrolls discard them. New lines take the pen's colours. | `margins::scrolling_is_bounded_*`, `extended::deleting_or_inserting_lines_*` |
@@ -73,7 +79,7 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 | CSI ? 1047 / 1048 h / l | 1047: 47, clearing the alternate screen on leaving it. 1048: DECSC when set, DECRC when reset. | `conformance::modes_1047_and_1048` |
 | CSI ? 9 / 1000 / 1002 / 1003 h / l | `mouse_protocol_mode()`; the latest set wins, and a reset clears only the mode in force. Read by `Screen::encode_mouse`. | `semantics::alternate_mouse_modes_saved_cursor_and_replies` |
 | CSI ? 1005 / 1006 h / l | `mouse_protocol_encoding()`, by the same rules. Read by `Screen::encode_mouse`. | `semantics::alternate_mouse_modes_saved_cursor_and_replies` |
-| CSI m | SGR. 0 reset; 1 bold, 2 dim, both possible (see Departures); 3 italic; 4 underline, 21 double, `4:0`–`4:5` none, single, double, curly, dotted, dashed (`4:` is `4:0`; larger numbers change nothing); 5 slow, 6 rapid blink, each replacing the other; 7 inverse; 8 hidden; 9 strikeout; 22–29 end them (22 bold and dim, 24 any underline). 30–37, 90–97, 40–47, 100–107 indexed colours; 39, 49, 59 defaults. 38, 48, 58 (foreground, background, underline colour): `5;n`, `2;r;g;b` (values the list lacks are 0; another kind takes only itself), `5:n`, `2:r:g:b`, `2:cs:r:g:b` (colour space ignored). An out-of-range colour is skipped; the rest applies. | `conformance::sgr_*`, `conformance::underline_styles_*` |
+| CSI m | SGR. 0 reset; 1 bold, 2 dim, both possible (see "Where the standards leave the choice"); 3 italic; 4 underline, 21 double, `4:0`–`4:5` none, single, double, curly, dotted, dashed (`4:` is `4:0`; larger numbers change nothing); 5 slow, 6 rapid blink, each replacing the other; 7 inverse; 8 hidden; 9 strikeout; 22–29 end them (22 bold and dim, 24 any underline). 30–37, 90–97, 40–47, 100–107 indexed colours; 39, 49, 59 defaults. 38, 48, 58 (foreground, background, underline colour): `5;n`, `2;r;g;b` (values the list lacks are 0; another kind takes only itself), `5:n`, `2:r:g:b`, `2:cs:r:g:b` (colour space ignored). An out-of-range colour is skipped; the rest applies. | `conformance::sgr_*`, `conformance::underline_styles_*` |
 | CSI 5 n / 6 n / c | DSR 5 → `CSI 0 n`. DSR 6 → `CSI row ; col R`: the line counted from the top margin with DECOM set (the first line if above it), the column from the left margin in origin mode, a cursor waiting to wrap one past the last column (at it with `Options::identity`). DA (`CSI c`, `CSI 0 c`) → `CSI ? 1 ; 2 c` (`CSI ? 62 ; 22 c` with an identity). Other parameters and private forms are unhandled unless an option answers them. | `conformance::cursor_reports_*` |
 | ESC # 8 | DECALN: the screen filled with `E` in default attributes; all four margins reset (DECLRMM stays), origin mode off, cursor home, no wrap pending; the pen keeps its colours and loses its attributes. Each row's soft wrap and prompt mark end; a row already all plain `E` keeps its version. Other `ESC #` are unhandled. | `modes::decaln_*` |
 | ESC Z | DECID: answered as DA. | `modes::decid_*` |
@@ -317,28 +323,31 @@ their places. A stale mark forces a refresh; it never hides an update.
   [`compare/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md)
   runs fux-vt beside Ghostty, alacritty, libvterm, avt, wezterm, vt100,
   xterm.js, tmux and xterm on random cases, recordings of real programs and
-  esctest, failing where they outvote it; families that follow a recorded
-  choice, these departures among them, are checked against xterm
+  esctest, failing where they outvote it; a family a standard or xterm
+  decides is checked by the standard's test or beside xterm
   (`run.sh verdicts`). Results:
   [`SCOREBOARD.md`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/scoreboard/SCOREBOARD.md).
 
-## Departures from the references
+## Where the standards leave the choice
 
-Here xterm departs from the references, and fux-vt follows xterm, since
-programs are tested against it. Each item ends with a case to replay
-(`fux-vt/compare/run.sh replay --engines all --size RxC 'BYTES'`).
+Here the standards are silent or leave the behaviour to the
+implementation, and fux-vt does what xterm 411 does. Each item ends with a
+case to replay (`fux-vt/compare/run.sh replay --engines all --size RxC
+'BYTES'`).
 
-- **Bold and faint can both be on,** where ECMA-48 (8.3.117) makes them one
-  intensity (`1x3 '\e[1m\e[2mX'`).
-- **DECSTR turns autowrap on,** where the VT520 manual (Table 5-6) and DEC
-  STD 070 (p. 4-37) turn it off: `xterm-256color`'s `is2` and `rs2` (`tput
-  init`, `tput reset`) send DECSTR and rely on `am` (`2x3
-  '\e[?7l\e[!pabcd'`).
+- **Bold and faint can both be on.** ECMA-48 (8.3.117) names 1 "bold or
+  increased intensity" and 2 "faint, decreased intensity or second
+  colour", and leaves their combination to the implementation; 22 ends
+  both (`1x3 '\e[1m\e[2mX'`).
 - **REP after a grapheme cluster** repeats the character that took the
-  cell, where ECMA-48 (8.3.103) repeats the preceding graphic character,
-  the mark (`1x8 'e\u{301}\e[2b'`).
+  cell. ECMA-48 (8.3.103) repeats the preceding graphic character and
+  knows no cluster (`1x8 'e\u{301}\e[2b'`).
 - **REP after a control function** repeats nothing until a character is
   printed; ECMA-48 leaves it undefined (`1x8 '-\e[2b\e[2b'`).
-- **DECSED and DECSEL spare ISO-protected glyphs** too, "for backward
-  compatibility"; DEC STD 070 (5.11.1.2) knows DECSCA's attribute alone
-  (`2x10 'ab\eVcd\eWef\e[1;1H\e[?K'`).
+
+One departure from DEC STD 070 remains, until each glyph keeps which
+protection it has:
+
+- **DECSED and DECSEL spare ISO-protected glyphs** too, as xterm does "for
+  backward compatibility"; DEC STD 070 (5.11.1.2) knows DECSCA's attribute
+  alone (`2x10 'ab\eVcd\eWef\e[1;1H\e[?K'`).
