@@ -39,9 +39,9 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 /// A PTY's master: close-on-exec, so no program this process starts holds
 /// the PTY open, and nonblocking, so a read or write that would wait fails
 /// with `AGAIN` instead. Read and write it with [`crate::io`], and wait for
-/// it with [`crate::poll`].
+/// it with [`crate::poll`]. It keeps its slave's path.
 #[derive(Debug)]
-pub struct Master(OwnedFd);
+pub struct Master(OwnedFd, PathBuf);
 
 /// A PTY's slave, not yet given to the program that runs on it
 /// ([`Slave::spawn`]). It is close-on-exec, and not this process's
@@ -52,8 +52,8 @@ pub struct Slave(OwnedFd);
 impl Master {
     /// The path of its slave (`/dev/pts/N`), as programs on it see their
     /// terminal.
-    pub fn slave_path(&self) -> Option<PathBuf> {
-        slave_name(&self.0).ok()
+    pub fn slave_path(&self) -> &Path {
+        &self.1
     }
 }
 
@@ -181,7 +181,7 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
         .map_err(at("opening the PTY slave"))?;
     terminal::set_window_size(&master, size).map_err(at("TIOCSWINSZ"))?;
     crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
-    Ok((Master(master), Slave(OwnedFd::from(slave))))
+    Ok((Master(master, name), Slave(OwnedFd::from(slave))))
 }
 
 /// A new PTY master, granted.
