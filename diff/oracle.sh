@@ -59,4 +59,4 @@ rustc's errors: $log
 EOF
   exit 1
 fi
-"$here/target/release/fux-vt-oracle" "$@"
+"${CARGO_TARGET_DIR:-$here/target}/release/fux-vt-oracle" "$@"

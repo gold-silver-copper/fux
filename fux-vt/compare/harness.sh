@@ -144,47 +144,80 @@ deep() {
   fuzz "$fuzz_minutes"
 }
 
-# The fuzz targets: DIR TARGET [DICT] [ASAN_OPTIONS].
-targets=(
-  "fuzz protocol"
-  "fux-vt/fuzz keys"
-  "fuzz paint"
-  "fuzz layout"
-  "fuzz config fuzz/config.dict"
-  "fuzz session fuzz/session.dict quarantine_size_mb=16"
-  "fux-vt/fuzz terminal fux-vt/fuzz/terminal.dict"
-  "fux-vt/fuzz graphemes"
-  "fux-vt/fuzz cells"
-  "diff/fuzz oracle fux-vt/fuzz/terminal.dict"
+# The fuzz directories, each built and run on its own, so that one that
+# does not build is named and the others still run. Their targets are what
+# `cargo fuzz list` says, so a new one is never left out.
+fuzz_dirs=(fuzz fux-vt/fuzz diff/fuzz)
+
+# What a target takes beyond its corpus: TARGET DICT [ASAN_OPTIONS].
+fuzz_extras=(
+  "config fuzz/config.dict"
+  "session fuzz/session.dict quarantine_size_mb=16"
+  "fuxth_tokens fuzz/fuxth.dict"
+  "fuxth_run fuzz/fuxth.dict"
+  "fuxth_pause fuzz/fuxth.dict"
+  "terminal fux-vt/fuzz/terminal.dict"
+  "oracle fux-vt/fuzz/terminal.dict"
 )
 
 # fuzz MINUTES: each target for its share, from its stored corpus and what
 # earlier runs here found (kept in $out/fuzz-corpus, so the stored corpus
 # is left as it is). A crash is minimized; it and the minimized input are
 # listed, to be made a test. A line per target goes to fuzz.jsonl.
+#
+# diff/fuzz's target is the oracle, which builds against base-vt's pin in
+# diff/oracle/Cargo.toml: it is pinned first to the ref the oracle check
+# uses (diff/oracle.sh --pin), and the pin and Cargo.lock are put back
+# when the command ends.
 fuzz() {
-  local minutes=${1:-10} spec dir target dict asan share
+  local minutes=${1:-10} dir name target extra dict asan share built=() broken=() targets=()
+  local pin=$out/oracle-pin
+  mkdir -p "$pin"
+  cp "$root/diff/oracle/Cargo.toml" "$root/diff/Cargo.lock" "$pin/"
+  # shellcheck disable=SC2064 # the paths are fixed now
+  trap "cp $(printf %q "$pin/Cargo.toml") $(printf %q "$root/diff/oracle/Cargo.toml"); \
+    cp $(printf %q "$pin/Cargo.lock") $(printf %q "$root/diff/Cargo.lock")" EXIT
+  ran+=(fuzz-oracle-pin)
+  step fuzz-oracle-pin "$root/diff/oracle.sh" --pin ${against:+"$against"}
+  for dir in "${fuzz_dirs[@]}"; do
+    name=fuzz-build-${dir//\//-}
+    ran+=("$name")
+    (cd "$root" && step "$name" cargo +nightly fuzz build --fuzz-dir "$dir" -O -a)
+    if [[ $(cut -d' ' -f1 "$out/status/$name") == 0 ]]; then
+      built+=("$dir")
+      for target in $(cd "$root" && cargo +nightly fuzz list --fuzz-dir "$dir"); do
+        targets+=("$dir $target")
+      done
+    else
+      broken+=("$dir")
+    fi
+  done
+  echo "fuzz: ${#built[@]} of ${#fuzz_dirs[@]} directories build$( ((${#broken[@]})) && echo "; not: ${broken[*]} (logs/fuzz-build-*.log)")"
+  ((${#targets[@]} > 0)) || return 0
   share=$((minutes * 60 / ${#targets[@]}))
   ((share > 0)) || share=1
   echo "fuzz: ${#targets[@]} targets, ${share}s each"
-  (cd "$root" && cargo +nightly fuzz build --fuzz-dir fuzz -O -a >/dev/null 2>&1 &&
-    cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a >/dev/null 2>&1 &&
-    cargo +nightly fuzz build --fuzz-dir diff/fuzz -O -a >/dev/null 2>&1) ||
-    { echo "fuzz: the targets do not build (cargo +nightly fuzz build)"; return 1; }
   # The oracle's target starts from the oracle's own random cases, written
   # as its stored corpus (ignored by git), which reach far more than bytes.
-  "$root/diff/oracle.sh" --seeds "$root/diff/fuzz/corpus/oracle" --cases 1000 --streams 5 >/dev/null ||
-    { echo "fuzz: the oracle's seeds could not be written"; return 1; }
+  if [[ " ${built[*]} " == *" diff/fuzz "* ]]; then
+    ran+=(fuzz-oracle-seeds)
+    step fuzz-oracle-seeds "$root/diff/oracle.sh" ${against:+"$against"} \
+      --seeds "$root/diff/fuzz/corpus/oracle" --cases 1000 --streams 5 ${jobs:+--threads "$jobs"}
+  fi
   for spec in "${targets[@]}"; do
-    read -r dir target dict asan <<<"$spec"
+    read -r dir target <<<"$spec"
+    dict="" asan=""
+    for extra in "${fuzz_extras[@]}"; do
+      [[ $extra == "$target "* ]] && read -r _ dict asan <<<"$extra"
+    done
     local found=$out/fuzz-corpus/$target stored=$root/$dir/corpus/$target
     local args=(-max_total_time="$share" -rss_limit_mb=2048 -timeout=25)
-    [[ -n ${dict:-} ]] && args+=(-dict="$root/$dict")
+    [[ -n $dict ]] && args+=(-dict="$root/$dict")
     mkdir -p "$found"
     local corpora=("$found")
     [[ -d $stored ]] && corpora+=("$stored")
     ran+=("fuzz-$target")
-    (cd "$root" && ASAN_OPTIONS=${asan:-} step "fuzz-$target" \
+    (cd "$root" && ASAN_OPTIONS=$asan step "fuzz-$target" \
       cargo +nightly fuzz run "$target" --fuzz-dir "$dir" -O -a "${corpora[@]}" -- "${args[@]}")
     local rc seconds crash=""
     read -r rc seconds <"$out/status/fuzz-$target"
