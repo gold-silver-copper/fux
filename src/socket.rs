@@ -78,13 +78,12 @@ fn failed<'a, E: Into<io::Error>>(
 }
 
 /// A socket's path, checked: absolute, short enough for `sockaddr_un`, and
-/// naming a file in a directory that has a parent, the directory's own
-/// privacy being checked against that parent's.
+/// naming a file in a directory below `/`, whose privacy is checked as it
+/// is used (`private_directory`).
 #[derive(Clone, Debug)]
 pub struct SocketPath {
     path: PathBuf,
     directory: PathBuf,
-    above: PathBuf,
 }
 
 impl SocketPath {
@@ -212,11 +211,11 @@ pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Err
     if !path.is_absolute() {
         return refused(format!("{from} is {value:?}; it must be an absolute path"));
     }
-    let directories = path
-        .file_name()
+    let directory = (path.file_name())
         .and(path.parent())
-        .and_then(|directory| Some((directory.to_owned(), directory.parent()?.to_owned())));
-    let Some((directory, above)) = directories else {
+        .filter(|directory| directory.parent().is_some())
+        .map(Path::to_owned);
+    let Some(directory) = directory else {
         return refused(format!(
             "{from} is {value:?}; it must name a socket file in a directory below /"
         ));
@@ -229,11 +228,7 @@ pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Err
             value.len()
         ));
     }
-    Ok(SocketPath {
-        path,
-        directory,
-        above,
-    })
+    Ok(SocketPath { path, directory })
 }
 
 /// The directory holding the socket must be ours, mode 0700. The
@@ -244,11 +239,8 @@ pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Err
 /// makes it when it is missing (as a server does, or a client about to
 /// start one); nothing that already exists is modified.
 pub(crate) fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
-    let (directory, above) = (socket.directory(), socket.above.as_path());
+    let directory = socket.directory();
     let euid = geteuid();
-    above
-        .canonicalize()
-        .map_err(failed("socket directory parent ", above))?;
     if create {
         match DirBuilder::new().mode(0o700).create(directory) {
             // Set explicitly: the umask must not decide who reaches the socket.
