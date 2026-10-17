@@ -16,8 +16,8 @@ pub enum Status {
     /// (`why`), and which engines it is checked beside (`by`): xterm, for
     /// what xterm implements; for a feature it lacks, the engines that do
     /// what the feature's spec says. Left out of a random run, and checked
-    /// beside them by `verdicts`; with no check, the standard's test or
-    /// xterm agreeing, it fails.
+    /// beside them by `verdicts`, which also runs the standard's test; with
+    /// no check, the standard's test passing or xterm agreeing, it fails.
     Decided {
         why: &'static str,
         by: &'static [&'static str],
@@ -53,6 +53,44 @@ impl Authority {
             Self::Standard { section, test } => cited(section, test),
             Self::Xterm if by.contains(&"xterm") => Ok(()),
             Self::Xterm => Err("decided by xterm, which is not among its deciders".to_owned()),
+        }
+    }
+}
+
+impl Authority {
+    /// Runs the standard's test, alone, as `cargo test` builds it: whether
+    /// exactly it ran and passed (a test whose declaration and citation
+    /// stay but whose body fails is caught here, not by `check`). xterm's
+    /// check is its agreeing, which `verdicts` runs.
+    pub fn run(self) -> Result<(), String> {
+        let Self::Standard { test, .. } = self else {
+            return Ok(());
+        };
+        let (file, function) = test
+            .split_once("::")
+            .ok_or_else(|| format!("{test}: not file::function"))?;
+        let manifest = format!("{}/../Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let out = std::process::Command::new(cargo)
+            .args([
+                "test",
+                "--quiet",
+                "--manifest-path",
+                &manifest,
+                "--test",
+                file,
+            ])
+            .args(["--", "--exact", function, "--test-threads", "1"])
+            .output()
+            .map_err(|e| format!("running {test}: {e}"))?;
+        let report = String::from_utf8_lossy(&out.stdout);
+        if out.status.success() && report.contains("test result: ok. 1 passed;") {
+            Ok(())
+        } else {
+            Err(format!(
+                "{test} did not pass alone:\n{report}{}",
+                String::from_utf8_lossy(&out.stderr)
+            ))
         }
     }
 }
@@ -183,12 +221,10 @@ fn clusters(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// The C0 controls, but HT, which ends a pending wrap where xterm keeps it
+/// (`pending-wrap`'s `tab-ends-a-pending-wrap`, settled by its test).
 fn controls(r: &mut Rng) -> Vec<u8> {
-    pick(
-        r,
-        &["\r", "\n", "\r\n", "\x08", "\t", "\x0b", "\x0c", "\x07"],
-    )
-    .into_bytes()
+    pick(r, &["\r", "\n", "\r\n", "\x08", "\x0b", "\x0c", "\x07"]).into_bytes()
 }
 
 fn cursor(r: &mut Rng) -> Vec<u8> {
@@ -266,8 +302,12 @@ fn origin(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// DECAWM reset and set, each after a CR: with a wrap pending, or a glyph
+/// in the last column with DECAWM off, fux-vt follows DEC STD 070 where
+/// xterm keeps the flag (`pending-wrap`'s autowrap cases, settled by
+/// their test), and a CR ends either first.
 fn autowrap(r: &mut Rng) -> Vec<u8> {
-    pick(r, &["\x1b[?7l", "\x1b[?7h"]).into_bytes()
+    pick(r, &["\r\x1b[?7l", "\r\x1b[?7h"]).into_bytes()
 }
 
 fn pending_wrap(r: &mut Rng) -> Vec<u8> {
@@ -725,8 +765,8 @@ pub const FAMILIES: &[Family] = &[
         name: "controls",
         about: "CR, LF, VT, FF, BS, HT and BEL",
         status: Status::Decided {
-            why: "HT, LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says, as fux-vt does; xterm and every engine but avt keep it through HT (`replay --engines all --size 2x5 'abcde\\tX'`). The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`). No engine follows the appendix all through, so the test alone checks it",
-            by: &[],
+            why: "HT, LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says, as fux-vt does; xterm and every engine but avt keep it through HT (`replay --engines all --size 2x5 'abcde\\tX'`), which the generator leaves out and `pending-wrap` holds. The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`). The rest is checked beside xterm, and the appendix by the test",
+            by: XTERM,
             authority: Authority::Standard {
                 section: "DEC STD 070, Appendix D.6.1",
                 test: "conformance::a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it",
@@ -824,8 +864,8 @@ pub const FAMILIES: &[Family] = &[
         name: "autowrap",
         about: "DECAWM on and off",
         status: Status::Decided {
-            why: "a glyph in the last column sets the Last Column Flag only with DECAWM set, and resetting DECAWM clears it, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; every engine of the panel keeps a wrap pending through a reset of DECAWM (`replay --engines all --size 2x5 'abcde\\e[?7l\\e[?7hX'`), and xterm, Ghostty, alacritty and xterm.js leave one pending with DECAWM off, which libvterm, avt, wezterm and tmux do not (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`). No engine follows the appendix all through, so the test alone checks it",
-            by: &[],
+            why: "a glyph in the last column sets the Last Column Flag only with DECAWM set, and resetting DECAWM clears it, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; every engine of the panel keeps a wrap pending through a reset of DECAWM (`replay --engines all --size 2x5 'abcde\\e[?7l\\e[?7hX'`), and xterm, Ghostty, alacritty and xterm.js leave one pending with DECAWM off, which libvterm, avt, wezterm and tmux do not (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`). Those two the generator leaves out (a CR before each change) and `pending-wrap` holds; the rest is checked beside xterm, and the appendix by the test",
+            by: XTERM,
             authority: Authority::Standard {
                 section: "DEC STD 070, Appendix D.6.1",
                 test: "conformance::the_last_column_flag_is_set_with_autowrap_alone",

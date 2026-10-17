@@ -960,7 +960,9 @@ fn verdicts(args: &Args) -> Result<bool, String> {
     for &i in &chosen {
         let f = FAMILIES.get(i).ok_or("no such family")?;
         let unchecked = match f.status {
-            Status::Decided { by, authority, .. } => authority.check(by).err(),
+            Status::Decided { by, authority, .. } => {
+                authority.check(by).and_then(|()| authority.run()).err()
+            }
             Status::Agree | Status::Differs(_) => None,
         };
         if let Some(why) = unchecked {
@@ -978,7 +980,7 @@ fn verdicts(args: &Args) -> Result<bool, String> {
                     by: [], authority, ..
                 },
             ) => {
-                println!("== {} (checked by {authority})", f.name);
+                println!("== {} (checked by {authority}, which passes)", f.name);
                 continue;
             }
             (None, Status::Decided { by, .. }) => engines(&by.join(","))?,

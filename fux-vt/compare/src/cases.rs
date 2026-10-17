@@ -82,7 +82,9 @@ pub const CASES: &[Named] = &[
     ),
     // Recorded verdicts (families with `Status::Decided`): each pins one
     // point, and `verdicts` checks it beside the family's deciding engines
-    // (xterm, but for `prompts`).
+    // (xterm, but for `prompts` and `invalid-utf8`), or, for a family no
+    // engine follows all through (`by` empty: its cases the points where
+    // xterm departs from the standard), runs the family's test instead.
     //
     // Prompt marks (OSC 133): A does a fresh line, then marks the row; L
     // does the fresh line alone; ED 2 erases the marks with the rows.
@@ -109,7 +111,7 @@ pub const CASES: &[Named] = &[
     ),
     (
         "tab-ends-a-pending-wrap",
-        "controls",
+        "pending-wrap",
         (2, 5),
         &["abcde\\tX"],
     ),
@@ -122,13 +124,13 @@ pub const CASES: &[Named] = &[
     ("ed-ends-a-pending-wrap", "erase", (2, 5), &["abcde\\e[JX"]),
     (
         "resetting-autowrap-ends-a-pending-wrap",
-        "autowrap",
+        "pending-wrap",
         (2, 5),
         &["abcde\\e[?7l\\e[?7hX"],
     ),
     (
         "no-wrap-is-left-pending-with-autowrap-off",
-        "autowrap",
+        "pending-wrap",
         (2, 2),
         &["\\e[?7lca\\e[?7hX"],
     ),

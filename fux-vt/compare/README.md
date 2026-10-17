@@ -288,9 +288,11 @@ The random cases come from families of sequences (`src/families.rs`).
   decides names the fux-vt test whose doc comment cites the section;
   `by` is empty where no engine follows the standard all through (on
   screens of one or two columns xterm departs from DEC STD 070), and the
-  test is then the check. A family xterm decides is checked by xterm
-  agreeing. One whose check can't be made (the test missing or citing
-  something else, xterm not among `by` or not run) fails. The default
+  test is then the check. `verdicts` runs a standard's test alone (`cargo
+  test --exact`), for every family it decides, and the test must pass. A
+  family xterm decides is checked by xterm agreeing. One whose check
+  can't be made (the test missing, citing something else or failing,
+  xterm not among `by` or not run) fails. The default
   panel's majority is often the side the source decides against, so
   `run` leaves these out. `verdicts` runs each family's named cases, then
   random cases from it, beside `by`. `cases` fails a named case of a
