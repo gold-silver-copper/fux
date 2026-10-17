@@ -2233,11 +2233,11 @@ impl Screen {
         if options.identity().is_some() {
             // Level 2 (DEC STD 070, DA): fux-vt lacks level 3's terminal
             // state reports and level 4's text macros. Its extensions
-            // (Table 1), which do not yet name rectangular editing (28,
-            // DECFRA and the rest): selectively erasable characters (6:
-            // DECSCA, DECSED, DECSEL), horizontal scrolling (21: DECSLRM,
-            // DECIC, DECDC, DECBI, DECFI) and colour text (22).
-            Reply::of(format_args!("\x1b[?62{sixel};6;21;22c"))
+            // (Table 1): selectively erasable characters (6: DECSCA,
+            // DECSED, DECSEL), horizontal scrolling (21: DECSLRM, DECIC,
+            // DECDC, DECBI, DECFI), colour text (22) and rectangular
+            // editing (28: DECFRA and the rest).
+            Reply::of(format_args!("\x1b[?62{sixel};6;21;22;28c"))
         } else {
             Reply::of(format_args!("\x1b[?1;2{sixel}c"))
         }

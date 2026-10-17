@@ -174,8 +174,9 @@ impl From<Typed> for InputQueue {
 
 /// What fux tells programs it is: XTVERSION answers `fux` and its version,
 /// DA2 the version (`CSI > 1 ; Pv ; 0 c`), and DA1 a VT220-class terminal
-/// (`CSI ? 62 ; 6 ; 21 ; 22 c`). The user's decision, on the corpus's evidence:
-/// told it is fux, Claude Code asks for and uses synchronized output.
+/// (`CSI ? 62 ; 6 ; 21 ; 22 ; 28 c`). The user's decision, on the corpus's
+/// evidence: told it is fux, Claude Code asks for and uses synchronized
+/// output.
 pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
     name: "fux",
     version: env!("CARGO_PKG_VERSION"),
@@ -1505,7 +1506,7 @@ mod tests {
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
         assert_eq!(
             pane.input.drain_all(),
-            b"\x1b[?62;6;21;22c",
+            b"\x1b[?62;6;21;22;28c",
             "nothing known"
         );
         pane.colours = Colours {
@@ -1516,7 +1517,7 @@ mod tests {
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c\x1b]12;?\x07");
         assert_eq!(
             pane.input.drain_all(),
-            b"\x1b]11;rgb:0000/1010/ffff\x07\x1b]10;rgb:c0c0/c0c0/c0c0\x1b\\\x1b[?997;2n\x1b[?62;6;21;22c"
+            b"\x1b]11;rgb:0000/1010/ffff\x07\x1b]10;rgb:c0c0/c0c0/c0c0\x1b\\\x1b[?997;2n\x1b[?62;6;21;22;28c"
         );
         // DECRQM knows mode 2031, which the program sets.
         pane.output(b"\x1b[?2031h\x1b[?2031$p");

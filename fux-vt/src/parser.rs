@@ -665,8 +665,9 @@ impl FromIterator<Feature> for Options {
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
-/// (`CSI c`) answers `CSI ? 62 ; 6 ; 21 ; 22 c` (level 2, the VT220's,
-/// with selective erase, horizontal scrolling and colour text), secondary
+/// (`CSI c`) answers `CSI ? 62 ; 6 ; 21 ; 22 ; 28 c` (level 2, the
+/// VT220's, with selective erase, horizontal scrolling, colour text and
+/// rectangular editing), secondary
 /// DA (`CSI > c`) answers `CSI > 1 ; Pv ; 0 c` with `version` encoded as
 /// `major * 10000 + minor * 100 + patch`, XTVERSION (`CSI > q`) answers
 /// `DCS > | name version ST`, and cursor reports (DSR 6n, DECXCPR) give a

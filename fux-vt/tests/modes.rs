@@ -269,7 +269,7 @@ fn decid_is_answered_as_da1() -> Result {
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, options)?;
     assert_eq!(
         replies(&mut p, b"\x1bZ\x1b[c")?,
-        "^[[?62;6;21;22c^[[?62;6;21;22c"
+        "^[[?62;6;21;22;28c^[[?62;6;21;22;28c"
     );
     Ok(())
 }

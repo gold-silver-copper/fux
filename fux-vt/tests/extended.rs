@@ -348,7 +348,7 @@ fn an_identity_answers_device_attributes_and_version_queries() -> Result {
     assert_eq!(
         record.replies,
         [
-            "\x1b[?62;6;21;22c",
+            "\x1b[?62;6;21;22;28c",
             "\x1b[>1;500;0c",
             "\x1bP>|ratty 0.5.0\x1b\\",
             "\x1bP>|ratty 0.5.0\x1b\\",
