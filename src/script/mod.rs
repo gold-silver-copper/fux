@@ -669,31 +669,27 @@ pub fn run_capped(
                         };
                         match json && !reply.json.trim().is_empty() {
                             true => machine.push(Value::str(reply.json.trim_end()))?,
-                            false => {
-                                for value in
-                                    answered(answer, then).map_err(|f| placed(machine, f))?
-                                {
-                                    machine.push(value)?;
-                                }
-                            }
+                            false => pushed(machine, answered(answer, then))?,
                         }
                     }
                     End::Failed { .. } | End::Done => {}
                 }
-                for value in answered(reply, then).map_err(|f| placed(machine, f))? {
-                    machine.push(value)?;
-                }
+                pushed(machine, answered(reply, then))?;
             }
-            Outcome::Suspended(Ask::Local(what)) => {
-                for value in asks
-                    .local(&what, host.out)
-                    .map_err(|f| placed(machine, f))?
-                {
-                    machine.push(value)?;
-                }
-            }
+            Outcome::Suspended(Ask::Local(what)) => pushed(machine, asks.local(&what, host.out))?,
         }
     }
+}
+
+/// Pushes what a word asked for gave, or its failure, placed.
+fn pushed(
+    machine: &mut Machine<Fux>,
+    values: Result<Vec<Value<Fux>>, Failed>,
+) -> Result<(), Failed> {
+    for value in values.map_err(|f| placed(machine, f))? {
+        machine.push(value)?;
+    }
+    Ok(())
 }
 
 /// A failure in doing what the word the program stopped at asks, named
