@@ -284,6 +284,12 @@ impl Decoder {
         true
     }
 
+    /// The bytes of pixels drawn so far.
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> usize {
+        self.pixels.capacity()
+    }
+
     /// The picture drawn, unless it is empty or ran past what one may be.
     pub(crate) fn finish(mut self: Box<Self>) -> Option<Arc<Picture>> {
         self.end_command();
@@ -293,9 +299,11 @@ impl Decoder {
         // The background is colour register 0, as it ends (DEC STD 070,
         // 7.2, leaves it to the device).
         let [r, g, b] = self.palette.first().copied().unwrap_or([0; 3]);
-        for pixel in self.pixels.as_chunks_mut::<4>().0 {
-            if self.background && pixel[3] == 0 {
-                *pixel = [r, g, b, 255];
+        if self.background {
+            for pixel in self.pixels.as_chunks_mut::<4>().0 {
+                if pixel[3] == 0 {
+                    *pixel = [r, g, b, 255];
+                }
             }
         }
         Some(Arc::new(Picture {

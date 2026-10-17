@@ -11,7 +11,7 @@
 //!   turn on events, extended replies, mode reports, in-band resize, size
 //!   reports, colour-scheme updates, the kitty keyboard protocol and
 //!   reflow; the second's, hyperlinks, prompt marks, rectangle checksums,
-//!   setting reports, (two bits) an identity, and the palette.
+//!   setting reports, (two bits) an identity, the palette and pictures.
 //! - `ff rows cols`: a resize, to 1 to 40 rows and 1 to 100 columns.
 //! - `fb n`: a resize fux-vt refuses for capacity, to 65,535 rows and
 //!   1,100 columns or more (`n` picks), or to 65,535 by 65,535.
@@ -61,6 +61,7 @@ fn case(data: &[u8]) -> Option<Case> {
         rectangle_checksums: bit(b, 2),
         setting_reports: bit(b, 3),
         palette: bit(b, 6),
+        pictures: bit(b, 7),
         identity: match (b >> 4) & 3 {
             0 => None,
             n => IDENTITIES.get(usize::from(n.saturating_sub(1))).copied(),

@@ -248,21 +248,22 @@ impl Sink for Log {
 }
 
 /// `Parser::run` with every byte through `byte`, the general path every
-/// fast path keeps. As before any fast path but printable ASCII's, an `h`
-/// with a frame begun ends `process_until_frame` unless it is printed.
+/// fast path keeps.
 fn scalar(
     parser: &mut Parser,
     bytes: &[u8],
     until_frame: bool,
     sink: &mut impl Sink,
-) -> Result<Option<usize>, Error> {
+) -> Result<Option<(usize, Frame)>, Error> {
     if bytes.is_empty() {
         return Ok(None);
     }
     parser.screen.begin();
     for (i, &byte) in bytes.iter().enumerate() {
-        if parser.byte(byte, sink)? && until_frame {
-            return Ok(Some(i.saturating_add(1)));
+        if let Some(frame) = parser.byte(byte, sink)?
+            && until_frame
+        {
+            return Ok(Some((i.saturating_add(1), frame)));
         }
     }
     Ok(None)
@@ -359,7 +360,7 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
                 };
                 assert_eq!(got, want, "case {case}: {}", input.escape_ascii());
                 match got {
-                    Ok(Some(n)) => piece_left = piece_left.get(n..).unwrap_or_default(),
+                    Ok(Some((n, _))) => piece_left = piece_left.get(n..).unwrap_or_default(),
                     Ok(None) | Err(_) => break,
                 }
             }
@@ -537,7 +538,9 @@ fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
 /// parser carrying the bytes out has synchronized output reset: random
 /// bytes after a BSU, most escape sequences, with RM of several modes,
 /// RIS and DECSTR among them, and XTSAVE holding the mode either way,
-/// held a random piece more at a time and carried out a byte at a time.
+/// held a random piece more at a time and carried out a byte at a time;
+/// and `process_until_frame`, reading them in random pieces as they come,
+/// says `Frame::Ended` there.
 #[test]
 fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
     for case in 0..3000 {
@@ -548,7 +551,7 @@ fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
         }
         assert_eq!(
             parser.process_until_frame(b"\x1b[?2026h", &mut Log::default()),
-            Ok(Some(8))
+            Ok(Some((8, Frame::Begun)))
         );
         let fragments = r.below(40).saturating_add(1);
         let mut input = sequences(&mut r, fragments, false);
@@ -567,6 +570,25 @@ fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
                 .min(input.len());
             found = scan.end(input.get(..held).unwrap_or_default());
         }
+        // Read as it comes, in random pieces: where `process_until_frame`
+        // first says the frame ended.
+        let (mut streamed, mut read, mut told) = (parser.clone(), 0usize, None);
+        while told.is_none() && read < input.len() {
+            let piece = r.below(8).saturating_add(1);
+            let end = read.saturating_add(piece).min(input.len());
+            let mut at = read;
+            while let Some(rest) = input.get(at..end)
+                && let Some((taken, frame)) =
+                    streamed.process_until_frame(rest, &mut Log::default())?
+            {
+                at = at.saturating_add(taken);
+                if frame == Frame::Ended {
+                    told = Some(at);
+                    break;
+                }
+            }
+            read = end;
+        }
         let mut ended = None;
         for (i, byte) in input.iter().enumerate() {
             parser.process(std::slice::from_ref(byte))?;
@@ -576,6 +598,12 @@ fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
             }
         }
         assert_eq!(found, ended, "case {case}: {}", input.escape_ascii());
+        assert_eq!(
+            told,
+            ended,
+            "streamed, case {case}: {}",
+            input.escape_ascii()
+        );
     }
     Ok(())
 }

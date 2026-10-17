@@ -81,6 +81,7 @@ fn run(parser: &mut Parser, input: &[u8]) -> std::result::Result<Record, Error> 
 
 const KEYBOARD: Options = Options::new().with(Feature::KittyKeyboard);
 const REFLOW: Options = Options::new().with(Feature::Reflow);
+const PICTURES: Options = Options::new().with(Feature::Pictures);
 const RATTY: Identity = Identity {
     name: "ratty",
     version: "0.5.0",
@@ -854,7 +855,7 @@ fn the_history_budget_changes_on_a_live_parser() -> Result {
 /// scroll carries it up. The cursor ends below it.
 #[test]
 fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
-    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
     p.set_host_graphics(fux_vt::Graphics {
         cell: Some((4, 8)),
         sixel: true,
@@ -891,7 +892,7 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
 /// (`CellRef::shown`), not as the placeholder that marks them.
 #[test]
 fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
-    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
     p.set_host_graphics(fux_vt::Graphics {
         cell: Some((4, 8)),
         sixel: true,
@@ -909,7 +910,7 @@ type Drawn = ((u32, u32), Option<[u8; 4]>);
 
 /// The size, and the pixel at `x`, `y`, of the picture `sixel` draws.
 fn sixel_pixel(sixel: &str, (x, y): (u32, u32)) -> Result<Drawn> {
-    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
     p.process(format!("\x1bP{sixel}\x1b\\").as_bytes())?;
     let shown = p.screen().pictures().next().ok_or("no picture")?;
     let picture = shown.picture;
@@ -961,11 +962,33 @@ fn sixel_background_select_and_extent() -> Result {
     Ok(())
 }
 
+/// Without `Feature::Pictures`, sixel is ignored as any other DCS is:
+/// nothing is placed, the cells hold what was written around it, the
+/// cursor stays, and the terminal says no sixel though its host draws it.
+#[test]
+fn sixel_is_ignored_without_pictures() -> Result {
+    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    let mut replies = Vec::new();
+    p.process_with_replies(
+        b"ab\x1bPq\"1;1;4096;2160#1;2;100;0;0!6~-!6~\x1b\\cd\x1b[c\x1b[?1;1S",
+        |r| replies.extend_from_slice(r),
+    )?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    assert_eq!(lines(&p).first().map(|l| l.trim_end()), Some("abcd"));
+    assert_eq!(p.screen().cursor_position(), (0, 4));
+    assert_eq!(String::from_utf8_lossy(&replies), "\x1b[?1;2c");
+    Ok(())
+}
+
 /// The host's graphics are what a program is told: sixel in DA1, and the
 /// cell's and the screen's pixel sizes.
 #[test]
 fn graphics_queries_are_answered_from_the_host() -> Result {
-    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
     let replies = |p: &mut Parser, q: &[u8]| -> std::result::Result<String, Error> {
         let mut out = Vec::new();
         p.process_with_replies(q, |r| out.extend_from_slice(r))?;

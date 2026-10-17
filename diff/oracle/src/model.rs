@@ -205,6 +205,8 @@ pub struct Setup {
     pub setting_reports: bool,
     /// `Feature::Palette`.
     pub palette: bool,
+    /// `Feature::Pictures`.
+    pub pictures: bool,
     /// The name and version the terminal answers as.
     pub identity: Option<(&'static str, &'static str)>,
 }
@@ -234,12 +236,13 @@ impl Setup {
             rectangle_checksums: false,
             setting_reports: true,
             palette: true,
+            pictures: true,
             identity: Some(("fux", "0.17.0")),
         }
     }
 
     /// Each flag by name, to print, read back and turn off one at a time.
-    pub fn flags(&mut self) -> [(&'static str, &mut bool); 13] {
+    pub fn flags(&mut self) -> [(&'static str, &mut bool); 14] {
         [
             ("events", &mut self.events),
             ("extended_replies", &mut self.extended_replies),
@@ -254,6 +257,7 @@ impl Setup {
             ("rectangle_checksums", &mut self.rectangle_checksums),
             ("setting_reports", &mut self.setting_reports),
             ("palette", &mut self.palette),
+            ("pictures", &mut self.pictures),
         ]
     }
 }

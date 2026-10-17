@@ -314,7 +314,8 @@ fn only_a_main_screen_clear_moves_a_commands_output() -> Result<(), Error> {
 /// the cells they covered.
 #[test]
 fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
-    let mut p = crate::Parser::new(Size::of(6, 10), 10)?;
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(6, 10), 10, options)?;
     let sixel = b"\x1bPq#1;2;100;0;0!6~\x1b\\";
     p.process(sixel)?;
     p.process(b"\x1b[1;1Hx\x1b[3;5H")?;
@@ -323,5 +324,26 @@ fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
     assert_eq!(p.screen().pictures.len(), 1, "the covered one goes");
     p.process(b"\x1bc")?;
     assert_eq!(p.screen().pictures.len(), 0, "RIS lets every one go");
+    Ok(())
+}
+
+/// However large their data says they are, a screen's pictures hold at
+/// most `PICTURE_BYTES` of pixels, and the one being drawn at most the
+/// largest picture's: 64 pictures of one pixel whose raster attributes
+/// claim the largest size, 4096 by 2160, and one more left unfinished.
+#[test]
+fn pictures_hold_no_more_than_their_budget() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let hostile = b"\x1bP0;1q\"1;1;4096;2160#1;2;100;0;0@";
+    let largest = 4096 * 2160 * 4;
+    for _ in 0..64 {
+        p.process(hostile)?;
+        p.process(b"\x1b\\")?;
+        assert!(p.screen().picture_bytes() <= PICTURE_BYTES);
+    }
+    assert_eq!(p.screen().pictures().count(), 2, "two of the largest fit");
+    p.process(hostile)?;
+    assert!(p.picture_bytes() <= PICTURE_BYTES + largest);
     Ok(())
 }

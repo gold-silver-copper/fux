@@ -607,6 +607,14 @@ closed! {
         /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
         /// queries are events, with [`Feature::Events`].
         Palette,
+        /// Decode sixel graphics (`DCS P1 ; P2 ; P3 q … ST`) into pictures,
+        /// read with [`Screen::pictures`], for a host that draws them: each
+        /// takes the cells it covers, which hold [`crate::PLACEHOLDER`], and
+        /// a screen's pictures hold at most [`crate::PICTURE_BYTES`] of
+        /// pixels. Off, sixel is ignored, as every other DCS: nothing is
+        /// decoded or kept, the cells are what the program wrote around
+        /// it, and neither DA1 nor XTSMGRAPHICS says the terminal has sixel.
+        Pictures,
     }
 }
 
@@ -672,6 +680,20 @@ impl FromIterator<Feature> for Options {
     fn from_iter<I: IntoIterator<Item = Feature>>(features: I) -> Self {
         features.into_iter().fold(Self::new(), Self::with)
     }
+}
+
+/// What a sequence did to a frame drawn in synchronized output
+/// ([`Mode::SynchronizedOutput`]), for [`Parser::process_until_frame`] to
+/// stop after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Frame {
+    /// It set the mode (BSU, `CSI ? 2026 h`, or XTRESTORE of it saved
+    /// set), even while it was set: a frame begins.
+    Begun,
+    /// It reset the mode while it was set: the frame ends. ESU (`CSI ?
+    /// 2026 l`, beside other modes too), XTRESTORE of it saved reset,
+    /// DECSTR and RIS do. A resize ends it too, which the host makes.
+    Ended,
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
@@ -858,6 +880,12 @@ impl Parser {
     pub(crate) fn screen_mut(&mut self) -> &mut Screen {
         &mut self.screen
     }
+    /// The bytes of pixels its pictures hold, the one being drawn's too.
+    #[cfg(test)]
+    pub(crate) fn picture_bytes(&self) -> usize {
+        let drawing = self.sixel.as_ref().map_or(0, |d| d.bytes());
+        self.screen.picture_bytes().saturating_add(drawing)
+    }
     /// The terminal's state: what the screen shows, the cursor and the modes.
     pub fn screen(&self) -> &Screen {
         &self.screen
@@ -910,10 +938,12 @@ impl Parser {
     /// Tells the parser what the host's terminal draws, replacing what it
     /// told before: the size of a cell in pixels, which a program's
     /// `CSI 16 t` and `CSI 14 t` are answered with, and whether it shows
-    /// sixel graphics, which primary device attributes then say (`4`).
-    /// Pictures are kept either way; what the host shows of them is its
-    /// own ([`Screen::pictures`]).
-    pub fn set_host_graphics(&mut self, graphics: crate::Graphics) {
+    /// sixel graphics, which primary device attributes then say (`4`) with
+    /// [`Feature::Pictures`]. Pictures are kept with the feature, whether
+    /// the host shows them or not; what it shows of them is its own
+    /// ([`Screen::pictures`]).
+    pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
+        graphics.sixel &= self.options.has(Feature::Pictures);
         self.screen.set_graphics(graphics);
     }
     /// Resizes the terminal, reflowing the primary screen with
@@ -958,21 +988,23 @@ impl Parser {
         self.run::<false>(bytes, sink).map(|_| ())
     }
     /// Process output as [`Parser::process_with`] does, but stop right after
-    /// a sequence that sets synchronized output (`CSI ? 2026 h`, BSU), and
-    /// say how many bytes that took; `None` if no sequence did, and every
-    /// byte was processed. A host that holds a program's frames
-    /// ([`Mode::SynchronizedOutput`]) holds the rest from there, found
-    /// exactly as the parser reads it: split across calls, or set beside
-    /// other modes in one sequence.
+    /// a sequence that begins or ends a frame drawn in synchronized output
+    /// ([`Frame`]), and say how many bytes that took and which it did;
+    /// `None` if no sequence did, and every byte was processed. Found
+    /// exactly as the parser reads it: split across calls, or beside other
+    /// modes in one sequence. A host that holds a program's frames holds
+    /// the rest from a [`Frame::Begun`] on, unread, until
+    /// [`Parser::frame_scan`] finds its end; one that reads output as it
+    /// comes learns from a [`Frame::Ended`] that the frame is whole.
     pub fn process_until_frame(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<Option<usize>, Error> {
+    ) -> Result<Option<(usize, Frame)>, Error> {
         self.run::<true>(bytes, sink)
     }
     /// A [`FrameScan`] for the frame [`Parser::process_until_frame`] just
-    /// stopped at the start of.
+    /// stopped at the start of ([`Frame::Begun`]).
     pub fn frame_scan(&self) -> FrameScan {
         FrameScan {
             from: 0,
@@ -981,14 +1013,15 @@ impl Parser {
             saved: self.screen.saved_mode(Mode::SynchronizedOutput),
         }
     }
-    /// Processes `bytes`, stopping after a BSU if `UNTIL_FRAME`; how many
-    /// bytes it took if it stopped. A constant, so that `process_with`,
-    /// which does not stop, compiles without the check for one.
+    /// Processes `bytes`, stopping after a frame begins or ends if
+    /// `UNTIL_FRAME`; how many bytes it took if it stopped, and which. A
+    /// constant, so that `process_with`, which does not stop, compiles
+    /// without the check for one.
     fn run<const UNTIL_FRAME: bool>(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<Option<usize>, Error> {
+    ) -> Result<Option<(usize, Frame)>, Error> {
         if bytes.is_empty() {
             return Ok(None);
         }
@@ -1001,19 +1034,19 @@ impl Parser {
                 self.screen
                     .ascii(remaining.get(..length).unwrap_or_default())?;
                 remaining = remaining.get(length..).unwrap_or_default();
-                false
+                None
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // A C0 control, as `ground` carries it out.
                 self.control(byte, sink)?;
                 self.screen.forget_repeat();
                 remaining = tail;
-                false
+                None
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)?
             {
                 remaining = remaining.get(length..).unwrap_or_default();
-                false
+                None
             } else if ground && byte == 0x1b {
                 let (length, framed) = self.sequence(remaining, sink)?;
                 remaining = remaining.get(length..).unwrap_or_default();
@@ -1022,10 +1055,11 @@ impl Parser {
                 remaining = tail;
                 self.byte(byte, sink)?
             };
-            // A CSI that began a frame (BSU, or XTRESTORE of the mode)
-            // ends whatever was taken: stop right after it.
-            if UNTIL_FRAME && framed {
-                return Ok(Some(bytes.len().saturating_sub(remaining.len())));
+            // A sequence that began or ended a frame ends whatever was
+            // taken: stop right after it.
+            if UNTIL_FRAME && let Some(frame) = framed {
+                let taken = bytes.len().saturating_sub(remaining.len());
+                return Ok(Some((taken, frame)));
             }
         }
         Ok(None)
@@ -1051,8 +1085,12 @@ impl Parser {
     /// as `byte` does it. It stops before any other byte, or at the end,
     /// with the parser in the state `byte` would have left it in, for
     /// `byte` to go on from. Says how many bytes it took, at least the ESC,
-    /// and whether the sequence it carried out began a frame.
-    fn sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(usize, bool), Error> {
+    /// and whether the sequence it carried out began or ended a frame.
+    fn sequence(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl Sink,
+    ) -> Result<(usize, Option<Frame>), Error> {
         if bytes.get(1) == Some(&b'[') {
             return self.csi_sequence(bytes, sink);
         }
@@ -1071,25 +1109,29 @@ impl Parser {
                 },
                 b']' if first => {
                     let taken = self.osc_string(bytes.get(next..).unwrap_or_default());
-                    return Ok((next.saturating_add(taken), false));
+                    return Ok((next.saturating_add(taken), None));
                 }
                 // The other strings, which `byte` begins.
                 b'P' | b'X' | b'^' | b'_' if first => break,
                 0x30..=0x7e => {
                     self.state = State::Ground;
-                    self.escape_dispatch(read.as_slice(), byte, sink)?;
+                    let framed = self.escape_dispatch(read.as_slice(), byte, sink)?;
                     self.screen.forget_repeat();
-                    return Ok((next, false));
+                    return Ok((next, framed));
                 }
                 _ => break,
             }
             at = next;
         }
         self.state = State::Escape(read);
-        Ok((at, false))
+        Ok((at, None))
     }
     /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
-    fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(usize, bool), Error> {
+    fn csi_sequence(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl Sink,
+    ) -> Result<(usize, Option<Frame>), Error> {
         self.params.clear();
         // The parameter being read and how many there are, kept here
         // rather than in `params` until the sequence ends or this does: one
@@ -1117,7 +1159,7 @@ impl Parser {
                             self.params.end(len, ended);
                             self.params.full = true;
                             self.state = State::Csi(Phase::Param(marker));
-                            return Ok((next, false));
+                            return Ok((next, None));
                         }
                     }
                 }
@@ -1145,7 +1187,7 @@ impl Parser {
         } else {
             Phase::Param(marker)
         });
-        Ok((at, false))
+        Ok((at, None))
     }
     /// Begins an OSC string and takes its bytes `bytes` begins with, up to
     /// the BEL, CAN, SUB or ESC that ends it, at once rather than each
@@ -1245,14 +1287,15 @@ impl Parser {
         self.screen.control(byte)
     }
 
-    /// Reads one byte; whether it ended a CSI that began a frame.
-    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<bool, Error> {
+    /// Reads one byte; whether it ended a sequence that began or ended a
+    /// frame.
+    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<Option<Frame>, Error> {
         let state = self.state;
         if matches!(state, State::Ground) {
-            return self.ground(byte, sink).map(|()| false);
+            return self.ground(byte, sink).map(|()| None);
         }
         if let State::Utf8(read) = state {
-            return self.continuation(read, byte, sink).map(|()| false);
+            return self.continuation(read, byte, sink).map(|()| None);
         }
         // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence. ESC
         // also begins ST, so it completes a pending OSC string or DECRQSS.
@@ -1260,7 +1303,7 @@ impl Parser {
             self.state = State::Ground;
             self.sixel = None;
             self.screen.forget_repeat();
-            return Ok(false);
+            return Ok(None);
         }
         if byte == 0x1b {
             match state {
@@ -1282,9 +1325,9 @@ impl Parser {
                 | State::IgnoreString => {}
             }
             self.state = State::Escape(Intermediates::default());
-            return Ok(false);
+            return Ok(None);
         }
-        let mut framed = false;
+        let mut framed = None;
         match state {
             // Returned above; named for the match to be whole.
             State::Ground | State::Utf8(_) => {}
@@ -1332,7 +1375,7 @@ impl Parser {
                     ([], b'X' | b'^' | b'_') => self.state = State::IgnoreString,
                     (intermediates, _) => {
                         self.state = State::Ground;
-                        self.escape_dispatch(intermediates, byte, sink)?;
+                        framed = self.escape_dispatch(intermediates, byte, sink)?;
                     }
                 },
                 _ => {}
@@ -1367,7 +1410,9 @@ impl Parser {
                         && read.as_slice() == b"$"
                         && self.params.is_empty();
                     // Sixel: `q` with no intermediates.
-                    let sixel = byte == b'q' && read.as_slice().is_empty();
+                    let sixel = self.options.has(Feature::Pictures)
+                        && byte == b'q'
+                        && read.as_slice().is_empty();
                     self.state = if decrqss {
                         State::Request(Some(Bytes::default()))
                     } else if sixel {
@@ -1391,13 +1436,14 @@ impl Parser {
     }
 
     /// Carries out the escape sequence whose final byte is `byte`, its
-    /// intermediates collected.
+    /// intermediates collected; whether it ended a frame (RIS).
     fn escape_dispatch(
         &mut self,
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Frame>, Error> {
+        let framing = self.screen.mode(Mode::SynchronizedOutput);
         // DECID, the VT100's request for its identity, which the VT220
         // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
         // DA1 is.
@@ -1410,23 +1456,33 @@ impl Parser {
                 action: byte,
             });
         }
-        Ok(())
+        let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
+        Ok(ended.then_some(Frame::Ended))
     }
 
     /// Carries out the CSI sequence whose final byte is `byte`, its
     /// parameters collected; whether it began a frame (set synchronized
-    /// output), for `Parser::process_until_frame` to stop after.
+    /// output) or ended one (reset it while set), for
+    /// `Parser::process_until_frame` to stop after.
     fn csi_dispatch(
         &mut self,
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<bool, Error> {
-        let begun = self.screen.frames_begun();
+    ) -> Result<Option<Frame>, Error> {
+        let (begun, framing) = (
+            self.screen.frames_begun(),
+            self.screen.mode(Mode::SynchronizedOutput),
+        );
         let dispatch = self
             .screen
             .csi(&self.params, intermediates, byte, &self.options)?;
-        let framed = self.screen.frames_begun() != begun;
+        let framed = if self.screen.frames_begun() != begun {
+            Some(Frame::Begun)
+        } else {
+            let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
+            ended.then_some(Frame::Ended)
+        };
         match dispatch {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),

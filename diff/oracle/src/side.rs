@@ -235,9 +235,14 @@ macro_rules! side {
                     &mut self,
                     bytes: &[u8],
                     heard: &mut Vec<Heard>,
-                ) -> Result<Option<usize>, Error> {
-                    self.parser
-                        .process_until_frame(bytes, &mut Sink(heard))
+                ) -> Result<Option<(usize, bool)>, Error> {
+                    let frame = self.parser.process_until_frame(bytes, &mut Sink(heard));
+                    let begun = |frame| match frame {
+                        vt::Frame::Begun => true,
+                        vt::Frame::Ended => false,
+                    };
+                    frame
+                        .map(|f| f.map(|(taken, frame)| (taken, begun(frame))))
                         .map_err(error)
                 }
 

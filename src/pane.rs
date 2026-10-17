@@ -193,9 +193,10 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 /// far as its terminal draws them, `render::sgr`), the palette (a pane's
 /// program sets and asks its colours, OSC 4, 10 to 19 and the rest, and
 /// is drawn in them, `render::pane_colours`, without its client's palette
-/// changing), reflow (a resized pane's
-/// lines re-wrap at its new width, its history with them, as in the
-/// terminals fux runs in) and fux's identity.
+/// changing), pictures (sixel a pane's program draws, which fux draws on
+/// clients whose terminals draw sixel, `render::pictures`), reflow (a
+/// resized pane's lines re-wrap at its new width, its history with them,
+/// as in the terminals fux runs in) and fux's identity.
 pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with(Feature::Events)
     .with(Feature::ModeReports)
@@ -207,6 +208,7 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with(Feature::PromptMarks)
     .with(Feature::SettingReports)
     .with(Feature::Palette)
+    .with(Feature::Pictures)
     .with(Feature::Reflow)
     .with_identity(Some(IDENTITY));
 
@@ -882,14 +884,15 @@ impl Pane {
         // in, the parser's loop is compiled once and its byte handling is
         // inlined into it, as it was before frames were held; with two it
         // was not, and escape-heavy output was a quarter slower.
-        let mut begun = None;
-        let mut rest = bytes;
-        while let Ok(Some(taken)) = self.parser.process_until_frame(rest, &mut sink) {
-            if until_frame {
-                begun = Some(taken);
+        let (mut begun, mut read) = (None, 0usize);
+        while let Some(rest) = bytes.get(read..)
+            && let Ok(Some((taken, frame))) = self.parser.process_until_frame(rest, &mut sink)
+        {
+            read = read.saturating_add(taken);
+            if until_frame && frame == fux_vt::Frame::Begun {
+                begun = Some(read);
                 break;
             }
-            rest = rest.get(taken..).unwrap_or_default();
         }
         let replies = sink.replies;
         if !replies.is_empty() {
