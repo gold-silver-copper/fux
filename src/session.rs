@@ -1132,7 +1132,6 @@ impl Session {
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
-    /// `pane_mut`, for input: a pane whose program has exited takes none.
     fn live_pane_mut(&mut self, id: PaneId) -> Result<&mut Pane, Error> {
         let pane = self.pane_mut(id)?;
         match pane.process.exit_status() {
