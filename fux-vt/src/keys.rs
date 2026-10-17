@@ -163,9 +163,13 @@ impl KeyPress {
     pub fn new(key: Key, mods: Modifiers) -> Self {
         let mut press = Self { key, mods };
         if let Key::Char(c) = key {
+            // A letter's shift is its upper case, as it arrives typed (`S-a`
+            // is `A`); a control letter is lower case all the same.
             press.mods.shift = false;
-            if press.mods.ctrl && c.is_ascii_alphabetic() {
+            if press.mods.ctrl {
                 press.key = Key::Char(c.to_ascii_lowercase());
+            } else if mods.shift {
+                press.key = Key::Char(c.to_ascii_uppercase());
             }
         }
         press
@@ -355,11 +359,6 @@ impl std::str::FromStr for KeyPress {
         } else {
             let mut chars = rest.chars();
             match (chars.next(), chars.next()) {
-                // A letter's shift is its upper case, as it arrives typed
-                // (`S-a` is `A`); a control letter is lower case all the same.
-                (Some(c), None) if !c.is_control() && mods.shift => {
-                    Key::Char(c.to_ascii_uppercase())
-                }
                 (Some(c), None) if !c.is_control() => Key::Char(c),
                 _ => {
                     return Err(Error {
@@ -441,5 +440,13 @@ mod tests {
         for name in all_names() {
             assert_eq!(parse(&name).map(|k| k.to_string()), Some(name.clone()));
         }
+    }
+
+    /// One key, one value: Shift and `a` built is the `A` that `S-a` names.
+    #[test]
+    fn a_press_built_is_the_press_named() {
+        let shifted = KeyPress::new(Key::Char('a'), Modifiers::SHIFT);
+        assert_eq!(Some(shifted), parse("S-a"));
+        assert_eq!(shifted, KeyPress::char('A'));
     }
 }

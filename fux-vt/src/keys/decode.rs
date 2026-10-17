@@ -493,7 +493,10 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
 }
 
 /// One control byte or character, without an Escape prefix, and how many
-/// bytes it takes; none while it is incomplete.
+/// bytes it takes; none while it is incomplete. Always inlined into
+/// `decode`, as most keys are one byte: left to the compiler, it was not,
+/// and a key cost up to 9% more (`decode/legacy`).
+#[inline(always)]
 fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
     let first = *bytes.first()?;
     if let Some(control) = Control::of(first.into()) {
@@ -902,7 +905,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
                 .and_then(|f| press(Key::F(f), mods)),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
             27 => part(2, 0)
-                .and_then(|code| coded(code, mods, |c| c))
+                .and_then(|code| coded(code, mods, |c| KeyPress::new(Key::Char(c), mods)))
                 .map(|press| Input::Key(press.into())),
             // The others `encode.rs` sends (its `Form::Numbered`).
             _ => u8::try_from(first)
@@ -918,7 +921,13 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
                 base: part(0, 2),
                 mods: bits,
             };
-            let stroke = coded(first, mods, |c| typed(c, &kitty)).map(|press| Keystroke {
+            // The key's own code, which `typed` shifts.
+            let unshifted = Modifiers {
+                shift: false,
+                ..mods
+            };
+            let typed = |c| KeyPress::new(Key::Char(typed(c, &kitty)), unshifted);
+            let stroke = coded(first, mods, typed).map(|press| Keystroke {
                 press,
                 kitty: Some(kitty),
             });
@@ -949,9 +958,9 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
 /// held with `mods`: Enter, Tab, Escape and Backspace by their controls, 8
 /// as Ctrl-Backspace (BS, which Ctrl makes of Backspace); a kitty
 /// functional key by its number in the Private Use Area; else the
-/// character, as `char_of` reads it, unless it is another control, which
-/// names no key.
-fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> char) -> Option<KeyPress> {
+/// character's press, as `char_of` reads it with its modifiers, unless it
+/// is another control, which names no key.
+fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> KeyPress) -> Option<KeyPress> {
     if code == u32::from(CTRL_BACKSPACE) {
         let mods = Modifiers { ctrl: true, ..mods };
         return Some(KeyPress::new(Key::Backspace, mods));
@@ -960,11 +969,11 @@ fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> char) -> Opti
         Some(control) => control.key(),
         None => match code {
             0xe000..=0xf8ff => functional(code)?,
-            _ => Key::Char(
-                char::from_u32(code)
-                    .map(char_of)
-                    .filter(|c| !c.is_control())?,
-            ),
+            _ => {
+                return char::from_u32(code)
+                    .filter(|c| !c.is_control())
+                    .map(char_of);
+            }
         },
     };
     Some(KeyPress::new(key, mods))
@@ -1133,6 +1142,7 @@ mod tests {
             (b"\x1b\x02", "C-M-b"),
             (b"\xe7\x95\x8c", "\u{754c}"),
             (b"\x1b[27;5;105~", "C-i"),
+            (b"\x1b[27;2;97~", "S-a"),
         ] {
             assert_eq!(all(bytes), vec![key(name)], "{bytes:?}");
         }
@@ -1298,6 +1308,7 @@ mod tests {
             (b"\x1b[1089::99;3u", "M-c"),
             (b"\x1b[97;69u", "C-a"),
             (b"\x1b[97;67u", "M-A"),
+            (b"\x1b[97;68u", "M-a"),
             (b"\x1b[97;9u", "a"),
             (b"\x1b[32;5u", "C-Space"),
             (b"\x1b[120;7u", "C-M-x"),
