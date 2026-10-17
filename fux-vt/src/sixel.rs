@@ -96,9 +96,11 @@ impl Decoder {
         })
     }
 
-    /// Reads one byte of the data.
+    /// Reads one byte of the data. Format effectors, SPACE and DELETE are
+    /// ignored in it (DEC STD 070, 8.1 and its coding section): one inside a
+    /// command does not end it.
     pub(crate) fn push(&mut self, byte: u8) {
-        if self.spoilt {
+        if self.spoilt || matches!(byte, 0x08..=0x0d | b' ' | 0x7f) {
             return;
         }
         match byte {
@@ -549,6 +551,18 @@ mod tests {
         // Hue 360 and an omitted blue are in range.
         assert_eq!(first(b"#1;2;100;0#1~"), red);
         assert_eq!(first(b"#1;1;360;50;100#1~"), blue);
+    }
+
+    /// DEC STD 070, 8.1: "Format Effectors (0/8 to 0/13) and SPACE (2/0)
+    /// are ignored within sixel control strings", and DELETE too (its
+    /// coding section): one inside a colour command does not end it.
+    #[test]
+    fn format_effectors_space_and_delete_are_ignored() {
+        let blue = Some([0, 0, 255, 255]);
+        for gap in ["\n", "\r", "\t", "\x08", "\x0b", "\x0c", " ", "\x7f"] {
+            let data = format!("#1;2;0;{gap}0;100#1~");
+            assert_eq!(first(data.as_bytes()), blue, "{gap:?}");
+        }
     }
 
     /// Data that would draw past what a picture may hold makes none.
