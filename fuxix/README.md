@@ -46,7 +46,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `process::lead_session`, `pty::Slave::spawn` | between `fork` and `exec` (`pre_exec`): `io::cloexec_from(3)`, `setsid`, `TIOCSCTTY` | the same | std's spawn makes no session |
 | `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
-| `process::reap` | `waitpid(WNOHANG)` | the same | for a pid, not a `Child` |
+| `process::reap` | `waitid(WEXITED, WNOHANG)` | the same, ignoring the stops macOS reports | for a pid, not a `Child` |
 | `process::adopt_orphans`, `reap_orphans` | `prctl(PR_SET_CHILD_SUBREAPER)`; `waitpid(WNOHANG)` on each child in `/proc/self/task/*/children` not kept | nothing: macOS has no subreaper, so orphans go to launchd | not offered |
 | `process::tree` | this process's descendants, by `/proc/PID/task/*/children` | every process (`proc_listallpids`), as orphans leave the tree | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |

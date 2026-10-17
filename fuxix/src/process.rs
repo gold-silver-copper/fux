@@ -202,10 +202,22 @@ pub enum Status {
 }
 
 /// Whether `pid`, a child of this process, has ended, without reaping it:
-/// `None` while it runs, and while it is only stopped. macOS reports a stop
-/// here although only exits are asked for (bevy-final finding 020), so the
-/// report's code decides.
+/// `None` while it runs, and while it is only stopped.
 pub fn ended(pid: Pid) -> Result<Option<Status>> {
+    waited(pid, libc::WNOWAIT)
+}
+
+/// Reaps `pid`, a child of this process, if it has ended: `None` while it
+/// runs.
+pub fn reap(pid: Pid) -> Result<Option<Status>> {
+    waited(pid, 0)
+}
+
+/// How `pid`, a child of this process, ended, if it has, `keep` (0 or
+/// `WNOWAIT`) saying whether it stays to be reaped. Only exits and kills
+/// are asked for; macOS reports a stop all the same (bevy-final finding
+/// 020), so the report's code decides.
+fn waited(pid: Pid, keep: libc::c_int) -> Result<Option<Status>> {
     let id = libc::id_t::try_from(pid.as_raw()).map_err(|_| Errno::INVAL)?;
     let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
     // SAFETY: `info` is a whole siginfo_t, which waitid fills; with WNOHANG
@@ -215,7 +227,7 @@ pub fn ended(pid: Pid) -> Result<Option<Status>> {
             libc::P_PID,
             id,
             info.as_mut_ptr(),
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            libc::WEXITED | libc::WNOHANG | keep,
         )
     };
     check(result)?;
@@ -234,23 +246,6 @@ pub fn ended(pid: Pid) -> Result<Option<Status>> {
         libc::CLD_KILLED | libc::CLD_DUMPED => Some(Status::Signalled(status)),
         _ => None,
     })
-}
-
-/// Reaps `pid`, a child of this process, if it has ended: `None` while it
-/// runs.
-pub fn reap(pid: Pid) -> Result<Option<Status>> {
-    let mut status: libc::c_int = 0;
-    // SAFETY: `status` is a live int that waitpid writes.
-    let reaped = check(unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::WNOHANG) })?;
-    if reaped == 0 {
-        return Ok(None);
-    }
-    // Without WUNTRACED only an exit or a kill is reported.
-    Ok(Some(if libc::WIFSIGNALED(status) {
-        Status::Signalled(libc::WTERMSIG(status))
-    } else {
-        Status::Exited(libc::WEXITSTATUS(status))
-    }))
 }
 
 /// Makes this process the reaper of its descendants' orphans: a program
