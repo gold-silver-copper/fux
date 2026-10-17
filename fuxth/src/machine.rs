@@ -402,9 +402,9 @@ impl<A: AppValue> Machine<A> {
                     let list = self.list(items)?;
                     self.push(list)?;
                 }
-                Op::EachStart => match Sequence::of(self.pop()?) {
+                Op::EachStart => match Seq::of(self.pop()?) {
                     Ok(seq) => self.iters.push((seq, 0)),
-                    Err(other) => return Err(self.type_error(Wants::Each.not(other.kind()))),
+                    Err(kind) => return Err(self.type_error(Wants::Each.not(kind))),
                 },
                 Op::EachNext(out) => {
                     let out = *out;
@@ -762,15 +762,6 @@ pub(crate) enum Sequence<A> {
 }
 
 impl<A> Sequence<A> {
-    /// `value` as a sequence; the value itself back if it is none.
-    fn of(value: Value<A>) -> Result<Sequence<A>, Value<A>> {
-        match value {
-            Value::Str(s) => Ok(Sequence::Str(s)),
-            Value::List(list) => Ok(Sequence::List(list)),
-            other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => Err(other),
-        }
-    }
-
     /// How many elements it has.
     fn len(&self) -> usize {
         match self {
@@ -834,7 +825,11 @@ impl Seq {
     };
 
     fn of<A: AppValue>(value: Value<A>) -> Result<Sequence<A>, &'static str> {
-        Sequence::of(value).map_err(|other| other.kind())
+        match value {
+            Value::Str(s) => Ok(Sequence::Str(s)),
+            Value::List(list) => Ok(Sequence::List(list)),
+            other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => Err(other.kind()),
+        }
     }
 }
 
