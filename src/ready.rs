@@ -105,7 +105,11 @@ pub fn state(pane: &Pane, now: Instant) -> State {
 /// not yet heard), its first process's own group: busy once none is left
 /// in it. A shell back at its prompt, reading, reads.
 fn activity(pane: &Pane, child: &crate::process::Child, now: Instant) -> Activity {
-    let (since_key, answered) = (pane.since_key(now), pane.answered());
+    // How long ago the last key went to the program: forever, if none has
+    // (a read timed from a key waits with no limit before one); and whether
+    // the screen changed after it: the program answered it.
+    let since_key = (pane.written_at).map_or(Duration::MAX, |at| now.saturating_duration_since(at));
+    let answered = pane.written_at.is_some_and(|at| pane.changed_at > at);
     let leader = child.leader.pid();
     let group = fuxix::terminal::foreground_group(&child.master).unwrap_or(leader);
     // A read timed from a key (`VMIN` and `VTIME`) times the gap after the

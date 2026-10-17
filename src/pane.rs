@@ -901,19 +901,6 @@ impl Pane {
         begun
     }
 
-    /// How long ago at `now` the last key went to the program: forever, if
-    /// none has (a read timed from a key waits with no limit before one).
-    pub fn since_key(&self, now: Instant) -> Duration {
-        self.written_at
-            .map_or(Duration::MAX, |at| now.saturating_duration_since(at))
-    }
-
-    /// Whether the screen changed after the last key went in: the program
-    /// answered it.
-    pub fn answered(&self) -> bool {
-        self.written_at.is_some_and(|at| self.changed_at > at)
-    }
-
     /// Writes the waiting input, as far as the program's terminal takes it.
     pub fn write_input(&mut self) {
         let Process::Reading(child) = &self.process else {
