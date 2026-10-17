@@ -50,7 +50,7 @@ macro_rules! settings {
 }
 
 settings! {
-    shell "shell": Shell = Shell::new(default_shell()), Shell::parse;
+    shell "shell": Shell = default_shell(), Shell::parse;
     /// The bytes of history each pane keeps, for copy mode and `capture`.
     history_bytes "history-bytes": usize = 8 << 20, number(0, 1 << 30);
     /// How long an action or a wait waits at most, unless it says.
@@ -130,13 +130,17 @@ fn shell_of(passwd: &str, uid: u32) -> Option<String> {
     })
 }
 
-/// `SHELL`, else the login shell, else `/bin/sh`.
-fn default_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
+/// `SHELL`, else the login shell, else `/bin/sh`: the program alone, with
+/// no arguments.
+fn default_shell() -> Shell {
+    let program = (std::env::var("SHELL").ok())
         .filter(|s| !s.is_empty())
         .or_else(login_shell)
-        .unwrap_or_else(|| "/bin/sh".into())
+        .unwrap_or_else(|| "/bin/sh".into());
+    Shell {
+        program,
+        args: Vec::new(),
+    }
 }
 
 /// A whole number from `min` to `max`, read from its text.
@@ -168,13 +172,6 @@ pub struct Shell {
 }
 
 impl Shell {
-    fn new(program: String) -> Shell {
-        Shell {
-            program,
-            args: Vec::new(),
-        }
-    }
-
     /// A command line, split as a shell splits it: a program first.
     pub fn parse(value: &str) -> Result<Shell, Refused> {
         let words =
