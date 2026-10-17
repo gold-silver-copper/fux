@@ -7,19 +7,18 @@ use crate::command::{
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
-use crate::id::Wanted;
-use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
+use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
-use crate::pane::{InputQueue, Pane, Process, Runs, Typed, basename};
-use crate::process::Child;
+use crate::pane::{self, InputQueue, Pane, Process, Runs, Typed, basename};
+use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Follows, Waiting};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
 use fuxth::Code as Lang;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 mod layouts;
 use std::time::{Duration, Instant};
@@ -48,7 +47,7 @@ pub struct Dying {
 impl Dying {
     /// Kills the program, its terminal closed first (a dying writer can hold
     /// on to it); its leader, if it has yet to exit.
-    pub fn kill(self) -> Option<crate::process::Leader> {
+    pub fn kill(self) -> Option<process::Leader> {
         drop(self.child.master);
         self.child.leader.finish().err()
     }
@@ -233,18 +232,18 @@ impl Error {
     /// script to tell failures apart by.
     pub fn code(&self) -> Code {
         match self {
-            Error::NoWorkspace(_) => Code::NoWorkspace,
-            Error::NoPane(_) => Code::NoPane,
-            Error::NoTab(_) => Code::NoTab,
-            Error::NoPaneGiven | Error::NoWorkspaceGiven => Code::NoTarget,
-            Error::IdTaken(_) => Code::Id,
-            Error::NoClient(_) => Code::NoClient,
-            Error::NoBuffer(_) => Code::NoBuffer,
-            Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => Code::NothingThere,
-            Error::NoRows | Error::SelectionTooLarge => Code::Selection,
-            Error::NameReadAsTarget(_) => Code::Lang(Lang::BadName),
-            Error::NameTaken(_) => Code::NameTaken,
-            Error::Failed { code, .. } => *code,
+            Self::NoWorkspace(_) => Code::NoWorkspace,
+            Self::NoPane(_) => Code::NoPane,
+            Self::NoTab(_) => Code::NoTab,
+            Self::NoPaneGiven | Self::NoWorkspaceGiven => Code::NoTarget,
+            Self::IdTaken(_) => Code::Id,
+            Self::NoClient(_) => Code::NoClient,
+            Self::NoBuffer(_) => Code::NoBuffer,
+            Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
+            Self::NoRows | Self::SelectionTooLarge => Code::Selection,
+            Self::NameReadAsTarget(_) => Code::Lang(Lang::BadName),
+            Self::NameTaken(_) => Code::NameTaken,
+            Self::Failed { code, .. } => *code,
         }
     }
 }
@@ -252,55 +251,55 @@ impl Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NoWorkspace(id) => write!(f, "no workspace {id}"),
-            Error::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
-            Error::NoPane(id) => write!(f, "no pane {id}"),
-            Error::NoTab(id) => write!(f, "no tab {id}"),
-            Error::NoWorkspaceGiven => f.write_str(
+            Self::NoWorkspace(id) => write!(f, "no workspace {id}"),
+            Self::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
+            Self::NoPane(id) => write!(f, "no pane {id}"),
+            Self::NoTab(id) => write!(f, "no tab {id}"),
+            Self::NoWorkspaceGiven => f.write_str(
                 "no workspace given: name one (`str NAME workspace`; for new-tab, the \
                      option `str NAME in`)",
             ),
-            Error::IdTaken(id) => write!(
+            Self::IdTaken(id) => write!(
                 f,
                 "id {id}: that id, or a higher one, was given before, and ids are never given twice"
             ),
-            Error::NoClient(id) => write!(f, "no client {id}"),
-            Error::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Error::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
-            Error::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
-            Error::NoNeighbor { from, direction } => {
+            Self::NoClient(id) => write!(f, "no client {id}"),
+            Self::NoBuffer(index) => write!(f, "no buffer {index}"),
+            Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
+            Self::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
+            Self::NoNeighbor { from, direction } => {
                 write!(f, "no pane {} of {from}", direction.name())
             }
-            Error::NoRows => f.write_str("the pane has no rows"),
-            Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
-            Error::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Error::NameReadAsTarget(name) => write!(
+            Self::NoRows => f.write_str("the pane has no rows"),
+            Self::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
+            Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
+            Self::NameReadAsTarget(name) => write!(
                 f,
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
             ),
-            Error::Failed { message, .. } => f.write_str(message),
+            Self::Failed { message, .. } => f.write_str(message),
         }
     }
 }
 impl std::error::Error for Error {}
 
-impl From<crate::pane::Error> for Error {
-    fn from(error: crate::pane::Error) -> Error {
+impl From<pane::Error> for Error {
+    fn from(error: pane::Error) -> Self {
         let code = match error {
-            crate::pane::Error::NotReading => Code::NotReading,
-            crate::pane::Error::Terminal { .. } => Code::Start,
+            pane::Error::NotReading => Code::NotReading,
+            pane::Error::Terminal { .. } => Code::Start,
         };
         fail(code, error.to_string())
     }
 }
 
 /// `pane`'s program has ended, with `status`: it takes no input.
-fn ended(pane: PaneId, status: crate::process::Ended) -> Error {
+fn ended(pane: PaneId, status: Ended) -> Error {
     let was = match status {
-        crate::process::Ended::Exited(_) => "",
-        crate::process::Ended::Signalled(_) => "was ",
+        Ended::Exited(_) => "",
+        Ended::Signalled(_) => "was ",
     };
-    let told = crate::process::told(status);
+    let told = process::told(status);
     fail(Code::Exited, format!("the program in {pane} {was}{told}"))
 }
 
@@ -329,7 +328,7 @@ const TYPICAL: Rect = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
 const MOST: u16 = 4096;
 
 pub(crate) fn default_size() -> fux_vt::Size {
-    crate::pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
+    pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
 }
 
 pub struct Session {
@@ -604,13 +603,13 @@ fn failure(error: Error, origin: &Origin) -> Reply {
 }
 
 impl Session {
-    pub fn new(config: Config, socket: PathBuf, launch: bool) -> Session {
+    pub fn new(config: Config, socket: PathBuf, launch: bool) -> Self {
         // The process and the moment it started: no two runs share both.
         let since = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let server_id = format!("{}-{since:x}", std::process::id());
-        Session {
+        Self {
             workspaces: Vec::new(),
             panes: BTreeMap::new(),
             views: BTreeMap::new(),
@@ -709,7 +708,7 @@ impl Session {
     /// `target`, if it is there; else why not.
     pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
         let there = match target {
-            AnyRef::Pane(p) => self.panes.get(&p).map(|_| ()).ok_or(Error::NoPane(p)),
+            AnyRef::Pane(p) => self.pane(p).map(|_| ()),
             AnyRef::Tab(t) => self.tab(t).map(|_| ()).ok_or(Error::NoTab(t)),
             AnyRef::Workspace(w) => self.workspace(w).map(|_| ()).ok_or(Error::NoWorkspace(w)),
         };
@@ -763,7 +762,7 @@ impl Session {
         (argv, env): (&[String], &[(String, String)]),
         (cwd, fresh): (&Path, &Starting),
         size: fux_vt::Size,
-    ) -> Result<Option<(crate::process::Child, Option<String>)>, Error> {
+    ) -> Result<Option<(Child, Option<String>)>, Error> {
         let Some(socket) = &self.launch else {
             return Ok(None);
         };
@@ -797,7 +796,7 @@ impl Session {
             .cloned()
             .collect();
         unset.extend(marks.unset.iter().cloned());
-        let child = crate::process::spawn(&marks.argv, cwd, (&vars, &unset), size)
+        let child = process::spawn(&marks.argv, cwd, (&vars, &unset), size)
             .map_err(|m| fail(Code::Start, m))?;
         Ok(Some((child, nonce)))
     }
@@ -852,7 +851,7 @@ impl Session {
 
     /// The process group `fux signal` signals in a pane: the job its shell
     /// runs in the foreground, or the program `run` started; never a shell.
-    fn signalled(&self, target: PaneId) -> Result<crate::process::Pid, Error> {
+    fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
         let pane = self.pane(target)?;
         if let Some(status) = pane.process.exit_status() {
             return Err(ended(pane.id, status));
@@ -860,7 +859,7 @@ impl Session {
         // The program `run` started, unless that is a shell (`run -- bash`):
         // its foreground job, if any, is what a signal is for.
         let program = match (&pane.runs, pane.process.child()) {
-            (crate::pane::Runs::Program(launch), Some(child)) => {
+            (Runs::Program(launch), Some(child)) => {
                 // A shell taking commands typed at it: no -c, no script.
                 let shell = launch.argv.split_first().is_some_and(|(p, args)| {
                     let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
@@ -900,7 +899,7 @@ impl Session {
         let tab = (tabs_mut(&mut self.workspaces).find(|t| t.id == id)).ok_or(Error::NoTab(id))?;
         tab.name.clone_from(&name);
         tab.given = true;
-        let mut taken: std::collections::HashSet<String> = (self.workspaces.iter())
+        let mut taken: HashSet<String> = (self.workspaces.iter())
             .flat_map(|ws| std::iter::once(&ws.name).chain(ws.tabs().iter().map(|t| &t.name)))
             .cloned()
             .collect();
@@ -1143,7 +1142,7 @@ impl Session {
     /// The size a pane starts at in a new tab laid out on `fit`.
     fn start_size(&self, fit: Fit, here: Here) -> fux_vt::Size {
         let area = self.tab_area(fit, here);
-        crate::pane::size(area.h(), area.w())
+        pane::size(area.h(), area.w())
     }
 
     /// The size a pane split from `target` along `axis` starts at: its
@@ -1168,7 +1167,7 @@ impl Session {
                 );
                 fail(Code::Size, message)
             })?;
-        Ok(crate::pane::size(rect.h(), rect.w()))
+        Ok(pane::size(rect.h(), rect.w()))
     }
 
     /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
@@ -1628,7 +1627,7 @@ impl Session {
             let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
                 (rows.min(*h), cols.min(*w))
             });
-            let size = crate::pane::size(rows, cols);
+            let size = pane::size(rows, cols);
             if let Some(pane) = self.panes.get_mut(&id)
                 && pane.size() != size
             {
@@ -1746,8 +1745,8 @@ impl Session {
 
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
-    pub fn exited(&mut self, id: PaneId, ended: crate::process::Ended) {
-        let status = crate::process::shell_status(ended);
+    pub fn exited(&mut self, id: PaneId, ended: Ended) {
+        let status = process::shell_status(ended);
         // What a program wrote as it exited may still be on its terminal,
         // unread: its last screen is read whole before it is kept.
         let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
@@ -1768,7 +1767,7 @@ impl Session {
                     self.dying.insert(id, Dying { child, deadline });
                 }
                 for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
-                    self.info_to(client, format!("{id} {}", crate::process::told(ended)));
+                    self.info_to(client, format!("{id} {}", process::told(ended)));
                 }
                 self.touch();
             }
@@ -1912,8 +1911,8 @@ impl Session {
             Request::Wait(target, wait) => (target, wait, None),
             // Read once the pane settles, said with its state.
             Request::Capture(target, history, view, timeout) => {
-                let wait = crate::command::Wait {
-                    until: vec![crate::command::Until::Settled],
+                let wait = command::Wait {
+                    until: vec![command::Until::Settled],
                     timeout,
                     print: false,
                     marks: false,
@@ -2168,7 +2167,7 @@ impl Session {
                     self.check_tab_name(name, None)?;
                 }
                 // Named after its program, if that makes a name.
-                let derived = Some(crate::pane::named(argv)).filter(|n| check_name(n).is_ok());
+                let derived = Some(pane::named(argv)).filter(|n| check_name(n).is_ok());
                 let given = name.clone();
                 let name = name.clone().or(derived);
                 let start = (
@@ -2851,7 +2850,7 @@ impl Session {
                     if let Some(p) = self.panes.get(&pane) {
                         let process = match (p.process.child(), p.process.exit_status()) {
                             (Some(child), _) => format!(" pid {}", child.leader.pid()),
-                            (None, Some(ended)) => format!(" {}", crate::process::told(ended)),
+                            (None, Some(ended)) => format!(" {}", process::told(ended)),
                             (None, None) => String::new(),
                         };
                         out.push_str(&format!(
@@ -3157,7 +3156,7 @@ fn new_pane(
     let (argv, cmd, runs, env) = match start {
         Start::Shell(cmd, env) => (shell.as_slice(), cmd, Runs::Shell, env),
         Start::Program(argv, env) => {
-            let launch = crate::pane::Launch {
+            let launch = pane::Launch {
                 argv: argv.to_vec(),
                 cwd: cwd.to_path_buf(),
                 env: env.to_vec(),
