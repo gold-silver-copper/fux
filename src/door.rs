@@ -135,12 +135,13 @@ fn knock_name(name: &str) -> Option<&str> {
 }
 
 /// Opens the FIFO at `path` without waiting for its other end, a symbolic
-/// link refused.
+/// link refused, and a terminal there never taken as the server's own.
 fn open_fifo(path: &Path, read: bool, write: bool) -> io::Result<File> {
+    use fuxix::file::{NOCTTY, NOFOLLOW, NONBLOCK};
     OpenOptions::new()
         .read(read)
         .write(write)
-        .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW)
+        .custom_flags(NONBLOCK | NOFOLLOW | NOCTTY)
         .open(path)
 }
 
