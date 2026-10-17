@@ -25,9 +25,8 @@ word runs. What is left at the end is printed, a value a line. An action
 answers once its pane settles (30s at most, as a wait waits: the server's
 `wait-seconds`; `SECS timeout` changes it, `0 timeout` answers at once). A
 failure prints `fux: CODE: MESSAGE` on stderr, with how the word is used
-(one of fux's own); an action's or a wait's status is the exit status (3
-exited first, 4 closed, 7 the program is blocked reading its terminal and
-the text has not come, 124 still busy), any other failure 1. Each `fux` is a fresh program.
+(one of fux's own); the exit statuses: `fux help-agents`, under Status.
+Each `fux` is a fresh program.
 
 Most steps have one of these shapes (UPPER = what you fill in):
 
