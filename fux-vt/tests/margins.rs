@@ -318,6 +318,45 @@ fn decbi_and_decfi_move_or_shift_the_columns() -> Result {
     Ok(())
 }
 
+/// SL and SR (`CSI Pn SP @`, `CSI Pn SP A`; ECMA-48 8.3.121, 8.3.135):
+/// the data moved Pn columns left or right, blanks coming in, the cursor
+/// staying; within the scrolling region and the left and right margins,
+/// and only with the cursor between them, as xterm bounds them
+/// (`fux-vt-compare replay --engines xterm --size 6x12`).
+#[test]
+fn sl_and_sr_shift_the_columns() -> Result {
+    let p = framed("\x1b[1;1H\x1b[2 @")?;
+    assert_eq!(lines(&p).get(1).map(String::as_str), Some("MNOPQRSTUVWX"));
+    let p = framed("\x1b[3;4H\x1b[2 @")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MNQRST  UVWX",
+            "abefgh  ijkl",
+            "mnqrst  uvwx",
+            "014567  8901",
+            "",
+        ]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 3));
+    let p = framed("\x1b[3;4H\x1b[ A")?;
+    assert_eq!(
+        lines(&p),
+        [
+            "ABCDEFGHIJKL",
+            "MN OPQRSUVWX",
+            "ab cdefgijkl",
+            "mn opqrsuvwx",
+            "01 234568901",
+            "",
+        ]
+    );
+    let p = run(2, 5, b"abcde\r\nfghij\x1b[9 @")?;
+    assert_eq!(lines(&p), ["", ""]);
+    Ok(())
+}
+
 /// DECIC and DECDC (`CSI Pn ' }`, `CSI Pn ' ~`; DEC STD 070, 5.4.3; the
 /// VT510 manual): Pn columns inserted or deleted at the cursor's, in every
 /// line of the scrolling region, between the left and right margins, the

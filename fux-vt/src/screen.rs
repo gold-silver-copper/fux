@@ -1825,23 +1825,33 @@ impl Screen {
     /// sequence's way.
     #[inline(never)]
     fn index_column(&mut self, forward: bool) {
+        let g = self.grid_mut();
+        g.cursor.pending_wrap = false;
+        let (col, columns) = (g.cursor.col(), g.columns());
+        let margin = if forward {
+            columns.last()
+        } else {
+            columns.first()
+        };
+        if col == margin {
+            self.shift_columns(1, !forward);
+        } else if forward {
+            g.set_col(col.saturating_add(1));
+        } else {
+            g.set_col(col.saturating_sub(1));
+        }
+    }
+
+    /// The columns between the margins of every line of the scrolling
+    /// region moved `count` right, or left, blanks coming in at the margin
+    /// they leave; the cursor stays. SL and SR, and DECBI and DECFI at a
+    /// margin.
+    fn shift_columns(&mut self, count: u16, right: bool) {
         let blank = self.blank_style();
         self.with_grid(|g, _, version| {
-            g.cursor.pending_wrap = false;
-            let (col, columns, lines) = (g.cursor.col(), g.columns(), g.lines);
-            let margin = if forward {
-                columns.last()
-            } else {
-                columns.first()
-            };
-            if col == margin {
-                for y in lines.first()..=lines.last() {
-                    g.edit_row(y, columns.first(), 1, !forward, blank, version);
-                }
-            } else if forward {
-                g.set_col(col.saturating_add(1));
-            } else {
-                g.set_col(col.saturating_sub(1));
+            let (first, lines) = (g.columns().first(), g.lines);
+            for y in lines.first()..=lines.last() {
+                g.edit_row(y, first, count, right, blank, version);
             }
         });
     }
@@ -2609,7 +2619,7 @@ impl Screen {
     }
 
     /// The CSI sequences with an intermediate the screen carries out
-    /// (DECSCUSR and DECSTR aside): DECSCA, DECIC and DECDC. `csi` leaves
+    /// (DECSCUSR and DECSTR aside): DECSCA, DECIC, DECDC, SL and SR. `csi` leaves
     /// them unhandled, and the parser asks here then (`csi_dispatch`):
     /// carried out in `csi`, even out of line, they cost every CSI a
     /// percent or two of its instructions.
@@ -2639,6 +2649,17 @@ impl Screen {
             (b"'", b'}' | b'~') => {
                 self.break_cluster();
                 self.edit_columns(p.first(0, 1), byte == b'}');
+            }
+            // SL and SR (`CSI Pn SP @`, `CSI Pn SP A`; ECMA-48 8.3.121,
+            // 8.3.135): the data moved Pn columns left or right, within the
+            // margins, and with the cursor between them, as xterm bounds
+            // them.
+            (b" ", b'@' | b'A') => {
+                self.break_cluster();
+                let g = self.grid();
+                if g.lines.contains(g.cursor.row()) && g.in_columns() {
+                    self.shift_columns(p.first(0, 1), byte == b'A');
+                }
             }
             _ => return Dispatch::Unhandled,
         }
