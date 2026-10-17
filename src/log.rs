@@ -55,7 +55,7 @@ pub enum Origin {
 #[derive(Clone, Debug)]
 pub enum Event {
     /// A piece of output, and what it printed.
-    Output(Option<Box<Printed>>),
+    Output(Box<Printed>),
     /// The program rang the bell.
     Bell,
     /// The program sent a notification (OSC 9, 777): its text.
@@ -187,7 +187,7 @@ impl Log {
     /// What each piece of output after `seq` printed, oldest first.
     pub fn printed_after(&self, seq: Seq) -> impl Iterator<Item = (Seq, &Printed)> {
         self.after(seq).filter_map(|e| {
-            let Event::Output(Some(p)) = &e.event else {
+            let Event::Output(p) = &e.event else {
                 return None;
             };
             Some((e.seq, &**p))
@@ -205,7 +205,7 @@ fn held(event: &Event) -> usize {
     let own = match event {
         // What it takes on the heap: what it printed, each run's echo and
         // change, and the text an echo is of, shared by its runs, once.
-        Event::Output(printed) => printed.as_ref().map_or(0, |p| {
+        Event::Output(p) => {
             let echo = (p.echo.iter()).find_map(|e| match e {
                 crate::classify::Echo::Of(text) => Some(text.len()),
                 crate::classify::Echo::Not | crate::classify::Echo::Is => None,
@@ -217,7 +217,7 @@ fn held(event: &Event) -> usize {
                 .saturating_add(runs)
                 .saturating_add(echo.unwrap_or(0))
                 .saturating_add(std::mem::size_of::<Printed>())
-        }),
+        }
         Event::Notification(text) | Event::Title(text) => text.len(),
         Event::Bell | Event::Done(_) | Event::Resize(_) => 0,
     };

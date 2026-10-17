@@ -849,8 +849,7 @@ impl Pane {
         });
         // A piece that printed nothing has no reader in the journal.
         if let Some(printed) = printed {
-            self.record
-                .push(seq, crate::log::Event::Output(Some(printed)));
+            self.record.push(seq, crate::log::Event::Output(printed));
         }
         // What else the piece did, after it, in the order it came; a shell
         // command's end, by the shell's marks, with the last one's status.
