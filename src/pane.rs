@@ -1160,9 +1160,9 @@ impl Pane {
         history: usize,
     ) -> Result<Process, Error> {
         // Named after its program, unless renamed.
-        let name = match matches!(&self.runs, Runs::Program(old) if named(&old.argv) == self.name) {
-            true => named(&launch.argv),
-            false => self.name.clone(),
+        let name = match &self.runs {
+            Runs::Program(old) if named(&old.argv) == self.name => named(&launch.argv),
+            Runs::Program(_) | Runs::Shell => self.name.clone(),
         };
         let runs = Runs::Program(launch);
         // A new program, its own pane: a wait counts from its start. Kept

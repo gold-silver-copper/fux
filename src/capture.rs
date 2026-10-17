@@ -4,7 +4,7 @@
 use crate::command::{CaptureView, Source};
 use crate::id::ClientId;
 use crate::json::Json;
-use crate::pane::Pane;
+use crate::pane::{Pane, Process, Runs};
 use fux_vt::{Attributes, Color, Mode, MouseProtocolMode, Rgb};
 use std::time::Instant;
 
@@ -301,8 +301,8 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     let commands = screen.commands();
     let argv = match (&pane.runs, pane.process.job()) {
         (_, Some(job)) => fuxix::process::argv(job),
-        (crate::pane::Runs::Program(launch), None) => Some(launch.argv.clone()),
-        (crate::pane::Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
+        (Runs::Program(launch), None) => Some(launch.argv.clone()),
+        (Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
     };
     let (exited, signal) = match pane.process.exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
@@ -310,10 +310,13 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         None => (Json::Null, Json::Null),
     };
     // A program a restore brought back, waiting for `respawn`.
-    let paused = matches!(
-        (&pane.process, &pane.runs),
-        (crate::pane::Process::Absent, crate::pane::Runs::Program(_))
-    );
+    let paused = match pane.process {
+        Process::Absent => match pane.runs {
+            Runs::Program(_) => true,
+            Runs::Shell => false,
+        },
+        Process::Reading(_) | Process::HungUp(_) | Process::Exited(_) => false,
+    };
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
         // reading, waiting, busy, exited 0, …: whether to look now.
