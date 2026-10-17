@@ -144,12 +144,10 @@ enum Wake {
     Stop,
     /// A connection's client may be painted (`Conn::paint_due`).
     Paint(usize),
-    /// A connection's wait is to be asked for its answer (`Waiting::due`).
-    Answer,
-    /// The layout is saved, if it changed.
-    Save,
-    /// A restore's thread is looked at again (`Server::after_restore`).
-    Restore,
+    /// The loop runs again, which after every wake asks the waits for
+    /// their answers (`Waiting::due`), saves the layout if it changed, and
+    /// looks at a restore's thread again (`Server::after_restore`).
+    Look,
 }
 
 /// What a connection comes over: a socket, or a door's two FIFOs, which
@@ -925,16 +923,16 @@ impl Server {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
-        let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Save)));
+        let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Look)));
         let restore = (self.saved.as_ref()).filter(|s| s.restore.is_some());
-        let restore = restore.map(|_| (crate::after(Instant::now(), RESTORE_LOOK), Wake::Restore));
+        let restore = restore.map(|_| (crate::after(Instant::now(), RESTORE_LOOK), Wake::Look));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| {
             let Stage::Waiting(waiting) = &conn.stage else {
                 return None;
             };
-            Some((waiting.due(), Wake::Answer))
+            Some((waiting.due(), Wake::Look))
         });
         session
             .chain(grace)
@@ -970,7 +968,7 @@ impl Server {
             }
             // The loop answers waits and saves after every wake: these only
             // set when it wakes.
-            Wake::Answer | Wake::Save | Wake::Restore => {}
+            Wake::Look => {}
         }
         ControlFlow::Continue(())
     }
