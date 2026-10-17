@@ -1222,24 +1222,8 @@ impl Screen {
             return Ok(());
         }
         if width == 0 {
-            let g = self.grid();
-            let (row, col) = (g.cursor.row(), g.next_column());
-            let above = row.checked_sub(1);
-            let previous = if let Some(left) = col.checked_sub(1) {
-                Some((row, left))
-            } else if let Some(above) = above
-                && g.live_wrapped(above)
-            {
-                Some((above, g.size().columns().last()))
-            } else {
-                None
-            };
-            if let Some((row, mut col)) = previous {
-                if g.stored(row, col)
-                    .is_some_and(Compact::is_wide_continuation)
-                {
-                    col = col.saturating_sub(1);
-                }
+            if let Some((row, col)) = self.before_cursor() {
+                let g = self.grid();
                 // A blank cell takes a space for the mark to follow, and
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
@@ -1342,6 +1326,23 @@ impl Screen {
         Ok(())
     }
 
+    /// The cell before the cursor, which a mark joins: the one left of it,
+    /// or else the last of the soft-wrapped row above; of a wide glyph, its
+    /// first half.
+    fn before_cursor(&self) -> Option<(u16, u16)> {
+        let g = self.grid();
+        let (row, col) = (g.cursor.row(), g.next_column());
+        let (row, col) = match col.checked_sub(1) {
+            Some(left) => (row, left),
+            None => {
+                let above = row.checked_sub(1).filter(|&above| g.live_wrapped(above))?;
+                (above, g.size().columns().last())
+            }
+        };
+        let second = g.stored(row, col)?.is_wide_continuation();
+        Some((row, if second { col.saturating_sub(1) } else { col }))
+    }
+
     /// Joins `c` to the cell printed last, if the cursor is just past it and
     /// `c` continues its grapheme cluster (UAX #29, see `unicode.rs`): a
     /// spacing vowel sign, a variation selector, a ZWJ sequence, a flag's
@@ -1359,14 +1360,13 @@ impl Screen {
             if c.width() != Some(0) {
                 return None;
             }
-            let mut left = col.checked_sub(1)?;
-            if g.stored(row, left)?.is_wide_continuation() {
-                left = left.checked_sub(1)?;
-            }
+            // The cell before the cursor, on the cursor's row: on the row
+            // above, it fails the row check below.
+            let at = self.before_cursor()?;
             // Its cluster's state, from its text.
-            let cluster = Cluster::of(g.cell(row, left)?.contents());
+            let cluster = Cluster::of(g.cell(at.0, at.1)?.contents());
             Some(Printed {
-                at: (row, left),
+                at,
                 cluster,
                 full: false,
             })
