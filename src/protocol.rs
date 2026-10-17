@@ -14,7 +14,7 @@ use crate::bytes::ByteQueue;
 use crate::code::Code;
 use crate::command::{AnyRef, Command};
 use crate::id::{ClientId, PaneId};
-use crate::wire::{Wire, wire_enum, wire_struct};
+use crate::wire::{Wire, wire};
 use std::num::NonZeroU8;
 
 /// Bumped on any change to the frames below.
@@ -110,21 +110,23 @@ impl std::fmt::Display for Mismatch {
 
 impl std::error::Error for Mismatch {}
 
-/// What a connecting client is for; its tag is its byte in a `Hello`'s
-/// payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    /// An interactive client: `Attach`, then input.
-    Attach,
-    /// One command, then its output.
-    Command,
-    /// Stop the server. Accepted whatever the protocol version, so that
-    /// `fux force-kill-server` can always stop a server from another fux version:
-    /// for that, a `Hello`'s frame and payload never change.
-    Kill,
-    /// A client with no terminal (`COLS ROWS headless`): `Attach`, then
-    /// nothing but its end; the server sizes it (`resize-client`).
-    Headless,
+wire! {
+    /// What a connecting client is for; its tag is its byte in a `Hello`'s
+    /// payload.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Role {
+        /// An interactive client: `Attach`, then input.
+        Attach,
+        /// One command, then its output.
+        Command,
+        /// Stop the server. Accepted whatever the protocol version, so that
+        /// `fux force-kill-server` can always stop a server from another fux version:
+        /// for that, a `Hello`'s frame and payload never change.
+        Kill,
+        /// A client with no terminal (`COLS ROWS headless`): `Attach`, then
+        /// nothing but its end; the server sizes it (`resize-client`).
+        Headless,
+    }
 }
 
 /// The frames one side expects at one point of a connection, decoded from
@@ -178,27 +180,17 @@ fn put<'a>(frame: &impl Frame<'a>, out: &mut Vec<u8>) -> usize {
     payload
 }
 
-/// Both ways, the first frame from each side: a client's says what it is
-/// for, the server's answer the role it took.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Hello {
-    pub protocol: u32,
-    pub version: String,
-    pub role: Role,
+wire! {
+    /// Both ways, the first frame from each side: a client's says what it is
+    /// for, the server's answer the role it took. Its fields go in the order
+    /// declared, which never changes, nor do they (`Role::Kill`).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Hello {
+        pub protocol: u32,
+        pub role: Role,
+        pub version: String,
+    }
 }
-
-wire_enum!(Role {
-    Attach,
-    Command,
-    Kill,
-    Headless,
-});
-
-wire_struct!(Hello {
-    protocol,
-    role,
-    version
-});
 
 impl Hello {
     /// This build's `Hello`, for `role`.
@@ -215,24 +207,19 @@ impl OneKind for Hello {
     const KIND: u8 = kind::HELLO;
 }
 
-/// An attaching client's one frame after its `Hello`: its terminal's size,
-/// the workspace it asks for, whether it only watches, and its
-/// environment, which panes started from its keys take what
-/// `update-environment` names from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Attach {
-    pub size: fux_vt::Size,
-    pub workspace: Option<String>,
-    pub read_only: bool,
-    pub env: Vec<(String, String)>,
+wire! {
+    /// An attaching client's one frame after its `Hello`: its terminal's size,
+    /// the workspace it asks for, whether it only watches, and its
+    /// environment, which panes started from its keys take what
+    /// `update-environment` names from.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Attach {
+        pub size: fux_vt::Size,
+        pub workspace: Option<String>,
+        pub read_only: bool,
+        pub env: Vec<(String, String)>,
+    }
 }
-
-wire_struct!(Attach {
-    size,
-    workspace,
-    read_only,
-    env
-});
 
 impl OneKind for Attach {
     const KIND: u8 = kind::ATTACH;
@@ -271,81 +258,80 @@ impl Frame<'_> for AttachedFrame {
     }
 }
 
-/// Where a request comes from: the caller's directory, its pane
-/// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
-/// environment, which panes it starts take what `update-environment` names
-/// from, the client whose binding or prompt runs it, and whether it brings
-/// back a saved session.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Context {
-    pub cwd: std::path::PathBuf,
-    pub pane: Option<PaneId>,
-    pub server: Option<String>,
-    pub env: Vec<(String, String)>,
-    pub client: Option<ClientId>,
-    pub restoring: bool,
+wire! {
+    /// Where a request comes from: the caller's directory, its pane
+    /// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
+    /// environment, which panes it starts take what `update-environment` names
+    /// from, the client whose binding or prompt runs it, and whether it brings
+    /// back a saved session.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Context {
+        pub cwd: std::path::PathBuf,
+        pub pane: Option<PaneId>,
+        pub server: Option<String>,
+        pub env: Vec<(String, String)>,
+        pub client: Option<ClientId>,
+        pub restoring: bool,
+    }
 }
 
-/// A command client's frames after its `Hello`: requests, each answered
-/// before the next.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Request {
-    pub command: Command,
-    pub context: Context,
+wire! {
+    /// A command client's frames after its `Hello`: requests, each answered
+    /// before the next.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Request {
+        pub command: Command,
+        pub context: Context,
+    }
 }
-
-wire_struct!(Context {
-    cwd,
-    pane,
-    server,
-    env,
-    client,
-    restoring
-});
-
-wire_struct!(Request { command, context });
 
 impl OneKind for Request {
     const KIND: u8 = kind::COMMAND;
 }
 
-/// A field's value, as its JSON has it, if it is a number, a bool or a
-/// string.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Scalar {
-    Int(i64),
-    Bool(bool),
-    Str(String),
+wire! {
+    /// A field's value, as its JSON has it, if it is a number, a bool or a
+    /// string.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Scalar {
+        Int(n: i64),
+        Bool(b: bool),
+        Str(s: String),
+    }
 }
 
-/// The server's answer to a request: how it ended; what it says as text,
-/// and as JSON where it has a JSON form; the panes, tabs or workspaces it
-/// made or found; a field's value.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Reply {
-    pub end: End,
-    pub text: String,
-    pub json: String,
-    pub ids: Vec<AnyRef>,
-    pub value: Option<Scalar>,
+wire! {
+    /// The server's answer to a request: how it ended; what it says as text,
+    /// and as JSON where it has a JSON form; the panes, tabs or workspaces it
+    /// made or found; a field's value.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Reply {
+        pub end: End,
+        pub text: String,
+        pub json: String,
+        pub ids: Vec<AnyRef>,
+        pub value: Option<Scalar>,
+    }
 }
 
-/// How a request ended: its exit status, and why it failed, if it did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum End {
-    #[default]
-    Done,
-    /// Answered with a status of its own, and the code that names it, no
-    /// failure: a wait met by its program's exit (its status), or a pane
-    /// said as it stands (4 closed, 7 reading short of the text, 124 still
-    /// busy).
-    Answered { status: NonZeroU8, code: Code },
-    /// Failed, with its status, its code and why.
-    Failed {
-        status: NonZeroU8,
-        code: Code,
-        message: String,
-    },
+wire! {
+    /// How a request ended: its exit status, and why it failed, if it did.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub enum End {
+        #[default]
+        Done,
+        /// Answered with a status of its own, and the code that names it, no
+        /// failure: a wait met by its program's exit (its status), or a pane
+        /// said as it stands (4 closed, 7 reading short of the text, 124 still
+        /// busy).
+        Answered { status: NonZeroU8, code: Code },
+        /// Failed, with its status, its code and why.
+        Failed {
+            status: NonZeroU8,
+            code: Code,
+            message: String,
+        },
+    }
 }
 
 impl End {
@@ -394,22 +380,6 @@ impl Reply {
         }
     }
 }
-
-wire_enum!(Scalar { Int(n), Bool(b), Str(s) });
-
-wire_enum!(End {
-    Done,
-    Answered { status, code },
-    Failed { status, code, message },
-});
-
-wire_struct!(Reply {
-    end,
-    text,
-    json,
-    ids,
-    value
-});
 
 /// The server's frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
