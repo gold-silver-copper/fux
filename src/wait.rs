@@ -26,18 +26,7 @@ use crate::ready::{self, State};
 use crate::session::Session;
 use fux_vt::{Print, Row, RowId};
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
-
-/// The exit statuses a wait ends with, besides 0 (what it waited for came)
-/// and the 1 and 2 of any command.
-pub const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
-pub const GONE: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
-/// The program reads its terminal, and the text waited for has not come
-/// (or gone): fux judges it cannot before the agent types.
-pub const STOPPED: NonZeroU8 = NonZeroU8::MIN.saturating_add(6);
-/// As `timeout(1)`.
-pub const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 
 /// Said first of what came when lines of it were let go past history's
 /// budget.
@@ -268,22 +257,17 @@ impl Waiting {
         }
         // The first end with a status other than 0, in order, names the
         // whole: a failure, if one failed, with every pane's why.
-        let first = (answers.iter()).find(|a| a.end.status() != 0);
+        let first = answers.iter().find_map(|a| a.end.code());
         let why: String = (answers.iter())
             .filter_map(|a| match &a.end {
                 End::Failed { message, .. } => Some(format!("{}\n", message.trim_end())),
-                End::Done | End::Answered { .. } => None,
+                End::Done | End::Answered(_) => None,
             })
             .collect();
-        let first = first.and_then(|a| Some((NonZeroU8::new(a.end.status())?, a.end.code()?)));
         let end = match first {
             None => End::Done,
-            Some((status, code)) if why.is_empty() => End::Answered { status, code },
-            Some((status, code)) => End::Failed {
-                status,
-                code,
-                message: why,
-            },
+            Some(code) if why.is_empty() => End::Answered(code),
+            Some(code) => End::Failed { code, message: why },
         };
         Some(Reply {
             end,
@@ -312,12 +296,8 @@ impl Wait {
     /// wait's a failure.
     fn gone(&self, id: PaneId) -> Reply {
         let end = match self.until.contains(&Until::Settled) {
-            true => End::Answered {
-                status: GONE,
-                code: Code::Closed,
-            },
+            true => End::Answered(Code::Closed),
             false => End::Failed {
-                status: GONE,
                 code: Code::Closed,
                 message: format!("{id}: the pane closed"),
             },
@@ -358,11 +338,7 @@ impl Wait {
             let field = Some(("output", Json::str(lines.clone())));
             shown(lines, field)
         };
-        let failed = |status, code, message: String| End::Failed {
-            status,
-            code,
-            message,
-        };
+        let failed = |code, message: String| End::Failed { code, message };
         // Why it failed, and why it may never be met, if a reason shows.
         let why = |reason: String, hint: Option<&str>| match hint {
             Some(hint) => format!("{reason}; {hint}"),
@@ -373,10 +349,7 @@ impl Wait {
             Told::Found(Found::Stopped) => {
                 let cut = watch.cut(pane).unwrap_or_default();
                 let screen = format!("{cut}{}", text(pane, self.marks, false));
-                let end = End::Answered {
-                    status: STOPPED,
-                    code: Code::Stopped,
-                };
+                let end = End::Answered(Code::Stopped);
                 (State::Reading, None, output(screen), end)
             }
             // Met: the program's own status is its state's (`exited 3`).
@@ -395,10 +368,7 @@ impl Wait {
                 let state = state();
                 let end = match limit.is_zero() || state != State::Busy {
                     true => End::Done,
-                    false => End::Answered {
-                        status: TIMED_OUT,
-                        code: Code::Timeout,
-                    },
+                    false => End::Answered(Code::Timeout),
                 };
                 let asked = self.print.then(came).unwrap_or_default();
                 (state, None, output(asked), end)
@@ -431,7 +401,7 @@ impl Wait {
                     "{id}: its program {told} while waiting for {}",
                     self.describe()
                 );
-                let end = failed(EXITED, Code::Exited, why(reason, hint));
+                let end = failed(Code::Exited, why(reason, hint));
                 (State::Exited(ended), None, last(3), end)
             }
             Told::Replaced => {
@@ -443,7 +413,7 @@ impl Wait {
                     state(),
                     None,
                     shown(String::new(), None),
-                    failed(EXITED, Code::Exited, reason),
+                    failed(Code::Exited, reason),
                 )
             }
             // How long the screen was still, so the next step is clear: the
@@ -455,7 +425,7 @@ impl Wait {
                     limit.as_secs_f64(),
                     self.describe()
                 );
-                let end = failed(TIMED_OUT, Code::Timeout, why(reason, hint));
+                let end = failed(Code::Timeout, why(reason, hint));
                 (state(), None, last(1), end)
             }
         };

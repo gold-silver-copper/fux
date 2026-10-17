@@ -149,9 +149,11 @@ the input was. A few cases look the same either way, and are taken so:
 
 ## Status
 
-0 done (settled, or the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr,
-one line (a line end in it shown as `\n`), with how the word is used when
-one of fux's own words was given too few values or the wrong kind; 3 the program exited before the wait;
+Each status means one thing, its code naming which. 0 done (settled, or
+the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr, one line (a line
+end in it shown as `\n`), with how the word is used when one of fux's own
+words was given too few values or the wrong kind; 2 a command used wrongly
+(`usage`); 3 the program exited (or was started again) before the wait;
 4 the pane closed; 7 the program is blocked reading its terminal and the
 text has not come (or gone); 124 still busy at the time limit (with `0 timeout`, a wait for a text
 or the exit not met at once). A met wait for the exit (`wait-exit`) is 0:

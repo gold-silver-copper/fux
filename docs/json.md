@@ -160,8 +160,8 @@ its journal recorded them, one line each.
 ## Errors
 
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
-the file, line and word it came from. Its exit status is 1, a usage error's
-2, a wait's its own (below). CODE stays; every one fux gives
+the file, line and word it came from. Its exit status is its code's: 1,
+`usage`'s 2, a wait's its own (below). CODE stays; every one fux gives
 (`src/code.rs` says what each means):
 
 - reaching a server: `no_server`, `mismatch`, `client`, `not_granted`,
@@ -169,12 +169,12 @@ the file, line and word it came from. Its exit status is 1, a usage error's
 - what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `id`, `ids_exhausted`, `bad_value`, `usage`;
-- what a command meets: `exited`, `still_running`, `not_run`, `only_shell`,
+- what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `not_reading`, `start`, `size`, `mouse`, `signal`, `log`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `exited` (3), `timeout` (124), `closed` (4), `gone` (4),
   `lost`, `stopped` (7);
-- a program of words: `steps`, `not_here`, `not_layout`, `not_config`,
+- a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,
   `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,

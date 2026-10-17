@@ -297,22 +297,18 @@ pub struct Ended {
     pub stack: Vec<Value<Fux>>,
 }
 
-/// A run's failure: its status (a wait's: 3, 4, 7, 124; a usage error's: 2;
-/// else 1), its code and its message.
+/// A run's failure: its code, which names its status, and its message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
-    pub status: std::num::NonZeroU8,
     pub code: Code,
     pub message: String,
 }
 
 impl Failed {
-    /// A failure of kind `code`, with its status, and why.
+    /// A failure of kind `code`, and why.
     pub fn new(code: impl Into<Code>, message: impl Into<String>) -> Failed {
-        let code = code.into();
         Failed {
-            status: code.status(),
-            code,
+            code: code.into(),
             message: message.into(),
         }
     }
@@ -627,7 +623,10 @@ pub fn run_capped(
     let mut status = 0;
     loop {
         if stop.is_some_and(Stop::stopped) {
-            return Err(Failed::new(Code::Stopped, "stopped (the prefix, then Esc)"));
+            return Err(Failed::new(
+                Code::Cancelled,
+                "stopped (the prefix, then Esc)",
+            ));
         }
         if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
             let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
@@ -654,9 +653,7 @@ pub fn run_capped(
                     .ask(&Asked { request, context }, host.out)
                     .map_err(|f| placed(machine, f))?;
                 match &reply.end {
-                    End::Answered {
-                        status: answered, ..
-                    } => status = answered.get(),
+                    End::Answered(code) => status = code.status().get(),
                     // A failure that answered too (a wait's): its answer is
                     // left, printed before why it failed; as JSON, if the
                     // program's next word asks for it.
@@ -741,22 +738,14 @@ fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
 /// A reply, or its failure: why, from its message, else from what it said.
 pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
     match reply.end {
-        End::Failed {
-            status,
-            code,
-            message,
-        } => {
+        End::Failed { code, message } => {
             let message = match (message.trim_end(), reply.text.trim_end()) {
                 ("", text) => text,
                 (message, _) => message,
             };
-            Err(Failed {
-                status,
-                code,
-                message: message.to_owned(),
-            })
+            Err(Failed::new(code, message))
         }
-        End::Done | End::Answered { .. } => Ok(reply),
+        End::Done | End::Answered(_) => Ok(reply),
     }
 }
 

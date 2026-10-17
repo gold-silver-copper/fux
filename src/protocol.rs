@@ -17,7 +17,6 @@ use crate::command::{AnyRef, Request};
 use crate::id::{ClientId, PaneId};
 use crate::wire::{Wire, wire};
 use std::borrow::Cow;
-use std::num::NonZeroU8;
 
 /// Bumped on any change to the frames below.
 pub const PROTOCOL: u32 = 11;
@@ -372,39 +371,32 @@ wire! {
 }
 
 wire! {
-    /// How a request ended: its exit status, and why it failed, if it did.
+    /// How a request ended: the code that names its exit status, if not 0,
+    /// and why it failed, if it did.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub enum End {
         #[default]
         Done,
-        /// Answered with a status of its own, and the code that names it, no
-        /// failure: a pane said as it stands (4 closed, 7 reading short of
-        /// the text, 124 still busy).
-        Answered { status: NonZeroU8, code: Code },
-        /// Failed, with its status, its code and why.
-        Failed {
-            status: NonZeroU8,
-            code: Code,
-            message: String,
-        },
+        /// Answered with a status of its own, no failure: a pane said as it
+        /// stands (closed, reading short of the text, still busy).
+        Answered(code: Code),
+        /// Failed, with its code and why.
+        Failed { code: Code, message: String },
     }
 }
 
 impl End {
-    /// The exit status.
-    pub fn status(&self) -> u8 {
-        match self {
-            End::Done => 0,
-            End::Answered { status, .. } | End::Failed { status, .. } => status.get(),
-        }
-    }
-
     /// The code that names its status, if it has one.
     pub fn code(&self) -> Option<Code> {
         match self {
             End::Done => None,
-            End::Answered { code, .. } | End::Failed { code, .. } => Some(*code),
+            End::Answered(code) | End::Failed { code, .. } => Some(*code),
         }
+    }
+
+    /// The exit status.
+    pub fn status(&self) -> u8 {
+        self.code().map_or(0, |code| code.status().get())
     }
 }
 
@@ -423,7 +415,6 @@ impl Reply {
     pub fn failed(code: Code, message: impl Into<String>) -> Self {
         Self {
             end: End::Failed {
-                status: code.status(),
                 code,
                 message: message.into(),
             },

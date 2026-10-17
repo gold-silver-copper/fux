@@ -130,7 +130,7 @@ pub fn main() -> ExitCode {
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
             let _ = writeln!(std::io::stderr(), "fux: {failed}");
-            failed.status.get()
+            failed.code.status().get()
         }
     };
     let _ = stdout.flush();

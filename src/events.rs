@@ -11,7 +11,7 @@ use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::log::{Event as Recorded, Seq};
 use crate::process::Ended;
-use crate::protocol::{End, Reply};
+use crate::protocol::Reply;
 use crate::session::Session;
 use std::collections::BTreeMap;
 
@@ -187,14 +187,7 @@ impl Ending {
     /// The stream's reply, as it ends.
     pub fn reply(&self) -> Reply {
         match self {
-            Self::Gone => Reply {
-                end: End::Failed {
-                    status: crate::wait::GONE,
-                    code: Code::Gone,
-                    message: "everything it watched has closed".into(),
-                },
-                ..Reply::default()
-            },
+            Self::Gone => Reply::failed(Code::Gone, "everything it watched has closed"),
             Self::Lost => Reply::failed(Code::Lost, "events: the reader fell too far behind"),
             Self::Stopped(_) => Reply::default(),
         }

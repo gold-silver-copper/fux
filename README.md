@@ -58,7 +58,7 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
 - An action (`run`, `send-keys`, `capture`, a bare `wait` …) answers once
   its pane settles, with its state and what came since: `%3 reading · done
   0`, then the output. A failure prints `fux: CODE: MESSAGE` on stderr,
-  with the file, line and word, and exits 1; an action's or wait's own
+  with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
   status is the exit status: 3 the program exited first, 4 the pane closed,
   7 the program reads its terminal and the waited text has not come, 124
   still busy at the time limit (`SECS timeout`; the `wait-seconds` setting,

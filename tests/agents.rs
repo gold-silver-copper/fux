@@ -104,8 +104,13 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         "text",
         "send-keys",
     ])?;
+    // A failure, 1, named apart from a wait's program that exited first.
     assert_eq!(refused.status, 1);
-    assert!(refused.stderr.contains("exited 3"), "{}", refused.stderr);
+    assert!(
+        refused.stderr.starts_with("fux: not_running: ") && refused.stderr.contains("exited 3"),
+        "{}",
+        refused.stderr
+    );
     // A program that cannot start is refused, saying why.
     let missing = server.fux(&run(&[], &["/no/such/program"]))?;
     assert_eq!(missing.status, 1);

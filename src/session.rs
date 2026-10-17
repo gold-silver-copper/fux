@@ -299,8 +299,8 @@ fn ended(pane: PaneId, status: Ended) -> Error {
         Ended::Exited(_) => "",
         Ended::Signalled(_) => "was ",
     };
-    let told = process::told(status);
-    fail(Code::Exited, format!("the program in {pane} {was}{told}"))
+    let told = format!("the program in {pane} {was}{}", process::told(status));
+    fail(Code::NotRunning, told)
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
@@ -3411,7 +3411,7 @@ pub(crate) mod testing {
                     )
                 })
                 .collect(),
-            Err(failed) => vec![format!("fails {} {}", failed.code, failed.status)],
+            Err(failed) => vec![format!("fails {} {}", failed.code, failed.code.status())],
         }
     }
 

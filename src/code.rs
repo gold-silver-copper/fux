@@ -4,12 +4,35 @@
 //! them; `docs/json.md` lists them all.
 use std::num::NonZeroU8;
 
-/// `codes! { /// doc  Variant "name", … }` expands to the enum `Code` of
-/// those variants and `Lang`, the language's own codes; `Code::ALL`, fux's
-/// own in order; and `fuxth::Code::from`, each one as the language takes it
-/// (one of fux's as `Host`, by its name).
+/// The exit statuses, a meaning each, besides 0: what was asked came.
+/// Any failure but these.
+const FAILED: NonZeroU8 = NonZeroU8::MIN;
+/// A command used wrongly.
+const USAGE: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
+/// The program exited, or was started again, before the wait was met.
+const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
+/// The pane waited on closed, or everything an event stream watched.
+const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
+/// The program reads its terminal, and the text waited for has not come
+/// (or gone): fux judges it cannot before the agent types.
+const READING: NonZeroU8 = NonZeroU8::MIN.saturating_add(6);
+/// The time limit came first, the program still at work: as `timeout(1)`.
+const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
+
+/// `codes! { /// doc  Variant "name", Closed "closed" CLOSED, … }` expands
+/// to the enum `Code` of those variants and `Lang`, the language's own
+/// codes; `Code::ALL`, fux's own in order; `Code::status`, each one's exit
+/// status: the one its row names (`Code::Closed => CLOSED`), else `FAILED`,
+/// as for the language's; and `fuxth::Code::from`, each one as the language
+/// takes it (one of fux's as `Host`, by its name).
 macro_rules! codes {
-    ($($(#[$doc:meta])* $variant:ident $name:literal,)*) => {
+    (@status) => {
+        FAILED
+    };
+    (@status $status:ident) => {
+        $status
+    };
+    ($($(#[$doc:meta])* $variant:ident $name:literal $($status:ident)?,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Code {
             $($(#[$doc])* $variant,)*
@@ -19,6 +42,15 @@ macro_rules! codes {
 
         impl Code {
             pub const ALL: &[Code] = &[$(Code::$variant),*];
+
+            /// The exit status a failure, or an answer, of this kind ends
+            /// with.
+            pub fn status(self) -> NonZeroU8 {
+                match self {
+                    $(Code::$variant => codes!(@status $($status)?),)*
+                    Code::Lang(_) => FAILED,
+                }
+            }
         }
 
         impl From<Code> for fuxth::Code {
@@ -73,11 +105,11 @@ codes! {
     IdsExhausted "ids_exhausted",
     /// A value out of what a word takes.
     BadValue "bad_value",
-    /// A command used wrongly: exit status 2.
-    Usage "usage",
+    /// A command used wrongly.
+    Usage "usage" USAGE,
     // What a command meets.
-    /// A program that exited: it takes no input, or exited first.
-    Exited "exited",
+    /// A program that exited, which takes no input.
+    NotRunning "not_running",
     /// A program still running, which a respawn would not end.
     StillRunning "still_running",
     /// A respawn of a pane whose program `run` did not start.
@@ -105,21 +137,23 @@ codes! {
     /// `kill-server` with people attached, not forced.
     PeopleAttached "people_attached",
     // How a wait ends.
-    /// A wait's limit came first: exit status 124.
-    Timeout "timeout",
-    /// The pane waited on closed: exit status 4.
-    Closed "closed",
-    /// Everything an event stream watched closed: exit status 4.
-    Gone "gone",
+    /// The program exited, or was started again, before the wait was met.
+    Exited "exited" EXITED,
+    /// A wait's limit came first.
+    Timeout "timeout" TIMED_OUT,
+    /// The pane waited on closed.
+    Closed "closed" CLOSED,
+    /// Everything an event stream watched closed.
+    Gone "gone" CLOSED,
     /// The reader of an event stream fell too far behind.
     Lost "lost",
-    /// The program reads its terminal and the text has not come: exit
-    /// status 7. A run the prefix then Esc stopped is named so too, with
-    /// status 1.
-    Stopped "stopped",
+    /// The program reads its terminal and the text has not come.
+    Stopped "stopped" READING,
     // A program of words.
     /// A run of more steps than allowed.
     Steps "steps",
+    /// A run the prefix, then Esc, stopped.
+    Cancelled "cancelled",
     /// A word the client runs itself (attach, server, start, status), which
     /// runs from the command line only: not a key's, a config's or a saved
     /// session's.
@@ -155,13 +189,6 @@ codes! {
 }
 
 impl Code {
-    /// The exit status a failure of this kind ends with: a usage error's 2,
-    /// any other's 1 (a wait says its own: 3, 4, 7, 124).
-    pub fn status(self) -> NonZeroU8 {
-        let usage = u8::from(self == Code::Usage);
-        NonZeroU8::MIN.saturating_add(usage)
-    }
-
     /// Every code: fux's own, then the language's.
     pub fn all() -> impl Iterator<Item = Code> {
         let lang = fuxth::Code::ALL.iter().map(|code| Code::Lang(*code));
