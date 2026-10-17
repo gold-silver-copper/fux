@@ -215,6 +215,19 @@ impl Stage {
             Stage::Closing | Stage::Dead => false,
         }
     }
+
+    /// Whether a request of its is under way: held, waiting or streaming.
+    fn asked(&self) -> bool {
+        match self {
+            Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => true,
+            Stage::Hello(_)
+            | Stage::Attaching(..)
+            | Stage::Attached(_)
+            | Stage::Command
+            | Stage::Closing
+            | Stage::Dead => false,
+        }
+    }
 }
 
 /// An attached client: its view's id, its terminal if the server took it,
@@ -429,7 +442,7 @@ impl Conn {
         let bytes = crate::wire::encode(&reply);
         split_into(&bytes, ToCommand::Part, &mut self.out);
         self.send(session, &ToCommand::PartsEnd);
-        if matches!(self.stage, Stage::Waiting(_) | Stage::Events(_)) {
+        if self.stage.asked() {
             self.enter(session, Stage::Command);
         }
     }
@@ -1675,10 +1688,7 @@ impl Server {
                 for conn in
                     (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
                 {
-                    if matches!(
-                        conn.stage,
-                        Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_)
-                    ) {
+                    if conn.stage.asked() {
                         let why = "the grant this came through was revoked";
                         conn.end(session, &ToCommand::Exit(why));
                     }
