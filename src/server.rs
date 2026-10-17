@@ -10,7 +10,8 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, End, Frame, Hello, Mismatch, Reply, Request, Role, ServerFrame,
+    Attach, AttachedFrame, Decoder, End, Frame, Greeting, Hello, Mismatch, Reply, Request, Role,
+    ToAttached, ToCommand, split_into,
 };
 use crate::render::{self, Grid};
 use crate::session::{Begun, Caller, Came, Dying, Origin, Outgoing, Session, Timer, Within};
@@ -301,7 +302,7 @@ impl TakenTerminal {
     /// for it closed.
     fn give_back(mut self, out: &mut ByteQueue) {
         if self.flush() && !self.out.is_empty() {
-            ServerFrame::split_into(self.out.as_slice(), ServerFrame::Paint, out);
+            split_into(self.out.as_slice(), ToAttached::Paint, out);
         }
     }
 }
@@ -356,7 +357,7 @@ impl Attached {
     fn paint(&mut self, out: &mut ByteQueue, bytes: &[u8]) {
         match &mut self.tty {
             Some(tty) => tty.out.push(bytes),
-            None => ServerFrame::split_into(bytes, ServerFrame::Paint, out),
+            None => split_into(bytes, ToAttached::Paint, out),
         }
     }
 }
@@ -417,7 +418,7 @@ impl Conn {
 
     /// Encodes a frame straight into the output; a connection whose frame
     /// cannot be encoded fails.
-    fn send(&mut self, session: &mut Session, frame: &ServerFrame) {
+    fn send<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>) {
         if self.out.push_with(|out| frame.encode_into(out)).is_err() {
             self.enter(session, Stage::Dead);
         }
@@ -427,8 +428,8 @@ impl Conn {
     /// as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, reply: Reply) {
         let bytes = crate::wire::encode(&reply);
-        ServerFrame::split_into(&bytes, ServerFrame::Part, &mut self.out);
-        self.send(session, &ServerFrame::PartsEnd);
+        split_into(&bytes, ToCommand::Part, &mut self.out);
+        self.send(session, &ToCommand::PartsEnd);
         if matches!(self.stage, Stage::Waiting(_) | Stage::Events(_)) {
             self.enter(session, Stage::Command);
         }
@@ -436,9 +437,27 @@ impl Conn {
 
     /// Sends the connection's last frame, its client detached and its
     /// terminal given back first: it closes once what waits is sent.
-    fn end(&mut self, session: &mut Session, frame: &ServerFrame) {
+    fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>) {
         self.enter(session, Stage::Closing);
         self.send(session, frame);
+    }
+
+    /// Sends the client attached here `frame`: bytes for its terminal
+    /// written there if the server took it, else framed; an `Exit` as its
+    /// last frame.
+    fn tell(&mut self, session: &mut Session, frame: &ToAttached) {
+        match frame {
+            ToAttached::Paint(bytes) => {
+                if let Stage::Attached(attached) = &mut self.stage {
+                    attached.paint(&mut self.out, bytes);
+                }
+            }
+            ToAttached::Exit(_) => self.end(session, frame),
+            ToAttached::Welcome(..)
+            | ToAttached::Ended
+            | ToAttached::Run(_)
+            | ToAttached::Keys(_) => self.send(session, frame),
+        }
     }
 
     /// Writes what waits for the client's terminal, as far as it takes it;
@@ -451,7 +470,7 @@ impl Conn {
             && !tty.flush()
         {
             attached.tty = None;
-            self.end(session, &ServerFrame::Exit("detached: the terminal closed"));
+            self.end(session, &ToAttached::Exit("detached: the terminal closed"));
         }
     }
 
@@ -989,7 +1008,7 @@ impl Server {
             };
             let (lines, over) = subscription.told(&now, &self.session);
             if over {
-                ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
                 let gone = Reply {
                     end: End::Failed {
                         status: crate::wait::GONE,
@@ -1006,12 +1025,12 @@ impl Server {
             }
             if conn.out.len() > crate::events::BACKLOG {
                 let lost = Event::stream("lost", Vec::new()).line(subscription.json);
-                ServerFrame::split_into(lost.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                split_into(lost.as_bytes(), ToCommand::Stdout, &mut conn.out);
                 let lost = Reply::failed(Code::Lost, "events: the reader fell too far behind");
                 conn.answer(&mut self.session, lost);
                 continue;
             }
-            ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+            split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
         }
     }
 
@@ -1124,44 +1143,34 @@ impl Server {
                 let reason = Json::str(reason.clone());
                 let stopped = Event::stream("stopped", vec![("reason", reason)]);
                 let line = stopped.line(subscription.json);
-                ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                split_into(line.as_bytes(), ToCommand::Stdout, &mut conn.out);
                 conn.answer(&mut self.session, Reply::default());
             }
-            if conn.stage.reads() {
-                conn.end(&mut self.session, &ServerFrame::Exit(&exit));
+            let session = &mut self.session;
+            match conn.stage {
+                Stage::Hello(_) => conn.end(session, &Greeting::Exit(&exit)),
+                Stage::Attaching(..) | Stage::Attached(_) => {
+                    conn.end(session, &ToAttached::Exit(&exit));
+                }
+                Stage::Command | Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => {
+                    conn.end(session, &ToCommand::Exit(&exit));
+                }
+                Stage::Closing | Stage::Dead => {}
             }
         }
     }
 
     fn flush_outbox(&mut self) {
         for outgoing in std::mem::take(&mut self.session.outbox) {
-            let client = match outgoing {
+            let (client, frame) = match outgoing {
                 Outgoing::Shutdown { reason, keep } => {
                     self.stop(reason, keep);
                     continue;
                 }
-                Outgoing::Bytes(client, _)
-                | Outgoing::Exit(client, _)
-                | Outgoing::Run(client, _)
-                | Outgoing::Keys(client, _)
-                | Outgoing::Ended(client) => client,
+                Outgoing::To(client, frame) => (client, frame),
             };
-            let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) else {
-                continue;
-            };
-            let session = &mut self.session;
-            match outgoing {
-                Outgoing::Bytes(_, bytes) => {
-                    if let Stage::Attached(attached) = &mut conn.stage {
-                        attached.paint(&mut conn.out, &bytes);
-                    }
-                }
-                Outgoing::Exit(_, reason) => conn.end(session, &ServerFrame::Exit(&reason)),
-                Outgoing::Run(_, code) => conn.send(session, &ServerFrame::Run(&code)),
-                Outgoing::Keys(_, keys) => conn.send(session, &ServerFrame::Keys(keys)),
-                Outgoing::Ended(_) => conn.send(session, &ServerFrame::Ended),
-                // Stopped above.
-                Outgoing::Shutdown { .. } => {}
+            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                conn.tell(&mut self.session, &frame);
             }
         }
     }
@@ -1367,7 +1376,7 @@ impl Server {
         let euid = fuxix::process::geteuid();
         if fuxix::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
             && stream.set_nonblocking(true).is_ok()
-            && let Ok(bytes) = ServerFrame::Exit(NO_DESCRIPTORS).encode()
+            && let Ok(bytes) = Greeting::Exit(NO_DESCRIPTORS).encode()
         {
             // A fresh socket's buffer holds the frame; if not, the peer
             // sees the connection close.
@@ -1406,7 +1415,7 @@ impl Server {
             conn.flush_tty(session);
         }
         if flags.intersects(PollFlags::HUP | PollFlags::ERR) && conn.attached().is_some() {
-            conn.end(session, &ServerFrame::Exit("detached: the terminal closed"));
+            conn.end(session, &ToAttached::Exit("detached: the terminal closed"));
         }
     }
 
@@ -1511,17 +1520,17 @@ impl Server {
                 if conn.grant.is_some() && hello.role != Role::Command {
                     let refused = "a socket `fux grant` made takes commands only: no client \
                                    attaches through it, and it stops no server";
-                    conn.end(session, &ServerFrame::Exit(refused));
+                    conn.end(session, &Greeting::Exit(refused));
                     return Ok(true);
                 }
                 let between = Mismatch::between(&hello, &ours);
-                conn.send(session, &ServerFrame::Hello(ours));
+                conn.send(session, &Greeting::Hello(ours));
                 match (between, hello.role) {
                     (Err(mismatch), _) => {
-                        conn.end(session, &ServerFrame::Exit(&mismatch.to_string()));
+                        conn.end(session, &Greeting::Exit(&mismatch.to_string()));
                     }
                     (Ok(()), Role::Kill) => {
-                        conn.end(session, &ServerFrame::Done(0));
+                        conn.end(session, &Greeting::Done(0));
                         self.stop("stopped by fux force-kill-server".into(), false);
                     }
                     (Ok(()), Role::Attach) => {
@@ -1551,8 +1560,9 @@ impl Server {
                             view.read_only = read_only;
                             view.env = env;
                         }
-                        // The client's terminal, if it sent it: taken, the
-                        // client is told before anything is painted.
+                        // The client's terminal, if it sent it, taken or
+                        // not: the client is told so, and its id, before
+                        // anything is painted.
                         let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
                         let taken = tty.as_ref().map(Option::is_some);
                         let tty = tty.flatten().map(TakenTerminal::new);
@@ -1560,15 +1570,9 @@ impl Server {
                             session,
                             Stage::Attached(Box::new(Attached::new(client, tty))),
                         );
-                        if let Some(taken) = taken {
-                            conn.send(session, &ServerFrame::Terminal(taken));
-                        }
-                        // Told its id: its bindings' `me`, a headless
-                        // client's to print.
-                        let id = format!("{client}\n");
-                        conn.send(session, &ServerFrame::Stdout(id.as_bytes()));
+                        conn.send(session, &ToAttached::Welcome(client, taken));
                     }
-                    Err(error) => conn.end(session, &ServerFrame::Exit(&error.to_string())),
+                    Err(error) => conn.end(session, &ToAttached::Exit(&error.to_string())),
                 }
             }
             Stage::Attached(attached) => match decoder.frame()? {
@@ -1580,7 +1584,7 @@ impl Server {
                     attached.known = false;
                     session.resize(attached.client, size.rows(), size.cols());
                 }
-                Some(AttachedFrame::Detach) => conn.end(session, &ServerFrame::Exit("detached")),
+                Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
                 None => return Ok(false),
             },
             Stage::Command => {
@@ -1681,7 +1685,7 @@ impl Server {
                     Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_)
                 ) {
                     let why = "the grant this came through was revoked";
-                    conn.end(session, &ServerFrame::Exit(why));
+                    conn.end(session, &ToCommand::Exit(why));
                 }
             }
             return;
@@ -1711,7 +1715,7 @@ impl Server {
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
                 let ready = Event::stream("ready", Vec::new()).line(subscription.json);
-                conn.send(session, &ServerFrame::Stdout(ready.as_bytes()));
+                conn.send(session, &ToCommand::Stdout(ready.as_bytes().into()));
                 conn.enter(session, Stage::Events(subscription));
             }
         }
@@ -1896,10 +1900,13 @@ mod tests {
         let mut painted = Vec::new();
         let mut exit = None;
         while let Ok(Some(frame)) = decoder.frame() {
-            if let ServerFrame::Paint(bytes) = frame {
-                painted.extend_from_slice(bytes);
-            } else if let ServerFrame::Exit(reason) = frame {
-                exit = Some(reason.to_owned());
+            match frame {
+                ToAttached::Paint(bytes) => painted.extend_from_slice(&bytes),
+                ToAttached::Exit(reason) => exit = Some(reason.to_owned()),
+                ToAttached::Welcome(..)
+                | ToAttached::Ended
+                | ToAttached::Run(_)
+                | ToAttached::Keys(_) => {}
             }
         }
         (painted, exit)
@@ -1939,7 +1946,7 @@ mod tests {
             tty.out.push(b"end");
         }
         conn.flush_tty(&mut session);
-        conn.end(&mut session, &ServerFrame::Exit("detached"));
+        conn.end(&mut session, &ToAttached::Exit("detached"));
         let (painted, exit) = sent(&conn);
         assert!(painted.ends_with(b"end"), "the last of what waited");
         assert_eq!(exit.as_deref(), Some("detached"));

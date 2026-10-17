@@ -208,7 +208,7 @@ decoded!(base, baseline::protocol::Decoder, |d, _kind| d
     .transpose());
 
 decoded!(cur, fux::protocol::Decoder, |d, kind| {
-    use fux::protocol::{Attach, AttachedFrame, Frame, Hello, ServerFrame};
+    use fux::protocol::{Attach, AttachedFrame, Frame, Greeting, Hello, ToAttached, ToCommand};
     fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
         frame
             .map(|f| f.encode().map_err(|e| format!("{e:?}")))
@@ -219,7 +219,11 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
         Some(1) => again(d.frame::<Hello>().map_err(error)?),
         Some(2) => again(d.frame::<Attach>().map_err(error)?),
         Some(3..=5) => again(d.frame::<AttachedFrame>().map_err(error)?),
-        _ => again(d.frame::<ServerFrame>().map_err(error)?),
+        // A paint, as to an attached client; output, as to a command
+        // client; the rest as the server's first frames.
+        Some(7) => again(d.frame::<ToAttached>().map_err(error)?),
+        Some(9) => again(d.frame::<ToCommand>().map_err(error)?),
+        _ => again(d.frame::<Greeting>().map_err(error)?),
     }
 });
 
@@ -227,20 +231,20 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
 /// baseline's, then the current fux's.
 fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use baseline::protocol::Stream as Base;
-    use fux::protocol::ServerFrame as Cur;
-    let (mut a, mut b) = (Vec::new(), Vec::new());
-    let streams: [(_, fn(_) -> _); 2] = [(Base::Paint, Cur::Paint), (Base::Stdout, Cur::Stdout)];
-    for (base, cur) in streams {
+    use fux::protocol::{ToAttached, ToCommand, split_into};
+    let mut a = Vec::new();
+    for base in [Base::Paint, Base::Stdout] {
         let mut queue = baseline::bytes::ByteQueue::default();
         queue.push(b"before");
         base.encode_into(payload, &mut queue);
         a.extend_from_slice(queue.as_slice());
-        let mut queue = fux::bytes::ByteQueue::default();
-        queue.push(b"before");
-        Cur::split_into(payload, cur, &mut queue);
-        b.extend_from_slice(queue.as_slice());
     }
-    (a, b)
+    let mut b = fux::bytes::ByteQueue::default();
+    b.push(b"before");
+    split_into(payload, ToAttached::Paint, &mut b);
+    b.push(b"before");
+    split_into(payload, ToCommand::Stdout, &mut b);
+    (a, b.as_slice().to_vec())
 }
 
 /// `spec`, encoded by the baseline.

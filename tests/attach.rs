@@ -442,7 +442,7 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 
 #[test]
 fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
-    use fux::protocol::{Frame, Hello, ServerFrame};
+    use fux::protocol::{Frame, Greeting, Hello};
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
@@ -467,7 +467,7 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
         };
         decoder.push(buffer.get(..n).unwrap_or_default());
         while let Some(frame) = decoder.frame().map_err(e)? {
-            if let ServerFrame::Exit(reason) = frame {
+            if let Greeting::Exit(reason) = frame {
                 exit = Some(reason.to_owned());
             }
         }
@@ -503,16 +503,16 @@ fn fake_server(
 /// even when that server hangs up as soon as it has said so.
 #[test]
 fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
-    use fux::protocol::{Frame, Hello, Role, ServerFrame};
+    use fux::protocol::{Frame, Greeting, Hello, Role};
     let (dir, listener) = fake_server("mismatch")?;
     let server = std::thread::spawn(move || -> Outcome {
         let (mut stream, _) = listener.accept().map_err(e)?;
-        let hello = ServerFrame::Hello(Hello {
+        let hello = Greeting::Hello(Hello {
             protocol: 999,
             version: "9.9.9".into(),
             role: Role::Command,
         });
-        let exit = ServerFrame::Exit("whatever the server says");
+        let exit = Greeting::Exit("whatever the server says");
         for frame in [hello, exit] {
             std::io::Write::write_all(&mut stream, &frame.encode().map_err(e)?).map_err(e)?;
         }
@@ -539,7 +539,7 @@ fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
 /// terminal back.
 #[test]
 fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
-    use fux::protocol::{Frame, Hello, PROTOCOL, Role, ServerFrame};
+    use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role};
     let (dir, listener) = fake_server("stalled")?;
     let server = std::thread::spawn(move || -> Result<std::os::unix::net::UnixStream, String> {
         // `fux attach` first connects only to see that a server answers: the
@@ -550,7 +550,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
                 break stream;
             }
         };
-        let hello = ServerFrame::Hello(Hello {
+        let hello = Greeting::Hello(Hello {
             protocol: PROTOCOL,
             version: "0".into(),
             role: Role::Attach,
@@ -939,7 +939,7 @@ fn attach_with(
     fd: impl std::os::fd::AsFd,
     until: impl Fn(&[String]) -> bool,
 ) -> Result<(std::os::unix::net::UnixStream, Vec<String>), String> {
-    use fux::protocol::{Attach, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
+    use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
     use std::io::{Read, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
     let hello = Hello {
@@ -979,7 +979,15 @@ fn attach_with(
                 ) => {}
             Err(error) => return Err(e(error)),
         }
-        while let Some(frame) = decoder.frame::<ServerFrame>().map_err(e)? {
+        // The server's Hello, then what it sends an attached client.
+        if frames.is_empty()
+            && let Some(frame) = decoder.frame::<Greeting>().map_err(e)?
+        {
+            frames.push(format!("{frame:?}"));
+        }
+        while !frames.is_empty()
+            && let Some(frame) = decoder.frame::<ToAttached>().map_err(e)?
+        {
             frames.push(format!("{frame:?}"));
         }
     }
@@ -987,20 +995,20 @@ fn attach_with(
 }
 
 /// A client that sends its terminal with its `Attach` is told the server
-/// took it, first; then the server writes the paints to the terminal
+/// took it, first, with its id; then the server writes the paints to the terminal
 /// itself. The client still reads its keys and sends them as actions.
 #[test]
 fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
     let server = Server::start("")?;
     let (master, slave) = fuxix::pty::open(pty_size(8, 30)?).map_err(e)?;
     let (stream, frames) = attach_with(&server, &slave, |f| {
-        f.iter().any(|f| f.starts_with("Terminal"))
+        f.iter().any(|f| f.starts_with("Welcome"))
     })?;
     // First after the server's hello.
     let first = frames.iter().find(|f| !f.starts_with("Hello"));
     assert_eq!(
         first.map(String::as_str),
-        Some("Terminal(true)"),
+        Some("Welcome(ClientId(1), Some(true))"),
         "{frames:?}"
     );
     drop(slave);
@@ -1067,7 +1075,7 @@ fn a_descriptor_that_is_no_terminal_is_not_taken() -> Outcome {
     let first = frames.iter().find(|f| !f.starts_with("Hello"));
     assert_eq!(
         first.map(String::as_str),
-        Some("Terminal(false)"),
+        Some("Welcome(ClientId(1), Some(false))"),
         "{frames:?}"
     );
     Ok(())

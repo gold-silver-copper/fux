@@ -44,6 +44,7 @@ use crate::engines::pane;
 use crate::snapshot::{self, Diff, Field, Line, Snapshot};
 use fux::id::{ClientId, PaneId};
 use fux::layout::{Placement, Rect};
+use fux::protocol::ToAttached;
 use fux::render::{self, Grid};
 use fux::session::{Outgoing, Session};
 use std::fmt::Write as _;
@@ -344,18 +345,22 @@ impl Through {
         self.session.hold_copies();
         for outgoing in std::mem::take(&mut self.session.outbox) {
             match outgoing {
-                Outgoing::Bytes(client, bytes) if client == self.client => {
+                Outgoing::To(client, ToAttached::Paint(bytes)) if client == self.client => {
                     self.terminal.process(&bytes)?;
                 }
-                Outgoing::Exit(client, reason) if client == self.client => {
+                Outgoing::To(client, ToAttached::Exit(reason)) if client == self.client => {
                     return Err(format!("fux detached the client: {reason}"));
                 }
                 Outgoing::Shutdown { reason, .. } => return Err(format!("fux stopped: {reason}")),
-                Outgoing::Bytes(..)
-                | Outgoing::Exit(..)
-                | Outgoing::Run(..)
-                | Outgoing::Keys(..)
-                | Outgoing::Ended(..) => {}
+                Outgoing::To(
+                    _,
+                    ToAttached::Paint(_)
+                    | ToAttached::Exit(_)
+                    | ToAttached::Welcome(..)
+                    | ToAttached::Run(_)
+                    | ToAttached::Keys(_)
+                    | ToAttached::Ended,
+                ) => {}
             }
         }
         let dirty = self

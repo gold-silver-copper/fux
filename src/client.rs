@@ -9,8 +9,8 @@ use crate::door::Link;
 use crate::keymap::{Held, Keymap};
 use crate::keys::KeyPress;
 use crate::protocol::{
-    Attach, AttachedFrame, Context, Decoder, Frame, Hello, Mismatch, PROTOCOL, Reply, Request,
-    Role, ServerFrame,
+    Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL, Reply,
+    Request, Role, ToAttached, ToCommand,
 };
 use crate::screens::{Effect, Screen};
 use crate::socket::SocketPath;
@@ -200,20 +200,20 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), E
 /// sent.
 fn greeted(
     ours: &Hello,
-    answer: Result<Option<ServerFrame>, Error>,
+    answer: Result<Option<Greeting>, Error>,
     sent: Result<(), Error>,
 ) -> Result<String, Error> {
     match (answer, sent) {
-        (Ok(Some(ServerFrame::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
+        (Ok(Some(Greeting::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
         // A server of another protocol says so, though it hung up before
         // reading the Hello.
-        (Ok(Some(ServerFrame::Hello(theirs))), sent) => {
+        (Ok(Some(Greeting::Hello(theirs))), sent) => {
             Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
             sent.map(|()| theirs.version.to_owned())
         }
         (_, Err(error)) => Err(error),
         (Err(error), Ok(())) => Err(error),
-        (Ok(_), Ok(())) => Err(no_answer()),
+        (Ok(Some(Greeting::Done(_)) | None), Ok(())) => Err(no_answer()),
     }
 }
 
@@ -226,11 +226,11 @@ fn send<'a>(stream: &mut Link, frame: &impl Frame<'a>) -> Result<(), Error> {
 
 /// The next frame the server sends, waiting `timeout` at most for each
 /// read; none once it has closed.
-fn read_frame<'d>(
+fn read_frame<'d, F: Frame<'d>>(
     stream: &mut Link,
     decoder: &'d mut Decoder,
     timeout: Option<Duration>,
-) -> Result<Option<ServerFrame<'d>>, Error> {
+) -> Result<Option<F>, Error> {
     stream.set_read_timeout(timeout);
     while !decoder.ready()? {
         if !read_more(stream, decoder)? {
@@ -302,25 +302,18 @@ impl Requests {
     pub fn take(&mut self, out: &mut dyn Write) -> Result<Option<Reply>, Error> {
         while let Some(frame) = self.decoder.frame()? {
             match frame {
-                ServerFrame::Stdout(bytes) => {
-                    let _ = out.write_all(bytes).and_then(|()| out.flush());
+                ToCommand::Stdout(bytes) => {
+                    let _ = out.write_all(&bytes).and_then(|()| out.flush());
                 }
-                ServerFrame::Part(bytes) => self.parts.extend_from_slice(bytes),
-                ServerFrame::PartsEnd => {
+                ToCommand::Part(bytes) => self.parts.extend_from_slice(&bytes),
+                ToCommand::PartsEnd => {
                     let parts = std::mem::take(&mut self.parts);
                     let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
                     return reply
                         .map(Some)
                         .map_err(|e| Error::Protocol(crate::protocol::Error::Wire(e)));
                 }
-                ServerFrame::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
-                ServerFrame::Hello(_)
-                | ServerFrame::Paint(_)
-                | ServerFrame::Done(_)
-                | ServerFrame::Terminal(_)
-                | ServerFrame::Ended
-                | ServerFrame::Run(_)
-                | ServerFrame::Keys(_) => {}
+                ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
             }
         }
         Ok(None)
@@ -360,8 +353,8 @@ pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
     loop {
         match read_frame(&mut stream, &mut decoder, Some(crate::door::ANSWER)) {
-            Ok(Some(ServerFrame::Done(_))) | Ok(None) => return Ok(()),
-            Ok(Some(_)) => {}
+            Ok(Some(Greeting::Done(_)) | None) => return Ok(()),
+            Ok(Some(Greeting::Hello(_) | Greeting::Exit(_))) => {}
             Err(error) => return Err(error),
         }
     }
@@ -661,21 +654,15 @@ impl Keyboard {
     /// A frame from the server: copy mode it ended, a program to run (a
     /// screen asked of it from elsewhere), keys to take as typed
     /// (`send-keys` to it).
-    pub fn frame(&mut self, frame: ServerFrame<'_>) -> Vec<Act> {
+    pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Act> {
         match frame {
             // A screen it ended, if the client has not left it already.
-            ServerFrame::Ended if self.screen.is_open() => self.screen = Screen::default(),
-            ServerFrame::Ended => {}
-            ServerFrame::Run(code) => self.run(code.to_owned()),
-            ServerFrame::Keys(typed) => self.typed(typed),
-            ServerFrame::Hello(_)
-            | ServerFrame::Paint(_)
-            | ServerFrame::Exit(_)
-            | ServerFrame::Stdout(_)
-            | ServerFrame::Done(_)
-            | ServerFrame::Terminal(_)
-            | ServerFrame::Part(_)
-            | ServerFrame::PartsEnd => {}
+            ToAttached::Ended if self.screen.is_open() => self.screen = Screen::default(),
+            ToAttached::Ended => {}
+            ToAttached::Run(code) => self.run(code),
+            ToAttached::Keys(typed) => self.typed(typed),
+            // The attachment's own: `attached` reads them.
+            ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
         }
         self.release()
     }
@@ -986,7 +973,7 @@ fn send_with_terminal<'a>(
 /// terminal's keys, with `terminal`, and runs them through the client's
 /// keys; writes the paints the server relays; passes on the terminal's new
 /// size, and a signal that detaches. Until the server says the client's id
-/// (its first `Stdout`), an `Exit` is a refusal.
+/// (its `Welcome`), an `Exit` is a refusal.
 fn attached(
     socket: &SocketPath,
     stream: &mut Link,
@@ -1011,22 +998,18 @@ fn attached(
         // Every whole frame the server sent.
         while let Some(frame) = decoder.frame()? {
             match (frame, &mut keyboard) {
-                (ServerFrame::Paint(bytes), _) => {
+                (ToAttached::Paint(bytes), _) => {
                     if terminal {
                         stdout
-                            .write_all(bytes)
+                            .write_all(&bytes)
                             .map_err(failed("writing the terminal"))?;
                     }
                 }
-                (ServerFrame::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
-                (ServerFrame::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
-                (ServerFrame::Stdout(said), None) => {
-                    let said = String::from_utf8_lossy(said);
-                    let me = said.trim().parse().map_err(|_| no_answer())?;
+                (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
+                (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
+                (ToAttached::Welcome(me, _), None) => {
                     if !terminal {
-                        let _ = stdout
-                            .write_all(said.as_bytes())
-                            .and_then(|()| stdout.flush());
+                        let _ = writeln!(stdout, "{me}").and_then(|()| stdout.flush());
                     }
                     let keymap = attaching.keymap.clone();
                     keyboard = Some(Keyboard::new(socket, me, keymap, attaching.read_only)?);
@@ -1136,7 +1119,7 @@ mod tests {
         }
     }
 
-    fn write(peer: &mut UnixStream, frame: &ServerFrame) {
+    fn write(peer: &mut UnixStream, frame: &Greeting) {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
     }
 
@@ -1145,16 +1128,16 @@ mod tests {
     #[test]
     fn the_client_tells_a_refusal_from_a_timeout() {
         let wait = Duration::from_millis(50);
-        assert!(answer(|peer| write(peer, &ServerFrame::Hello(ours())), wait).is_ok());
+        assert!(answer(|peer| write(peer, &Greeting::Hello(ours())), wait).is_ok());
         // A server of another protocol is refused before anything else is
         // sent to it.
-        let other = ServerFrame::Hello(Hello {
+        let other = Greeting::Hello(Hello {
             protocol: PROTOCOL + 1,
             ..ours()
         });
         let mismatched = answer(|peer| write(peer, &other), wait);
         assert!(matches!(&mismatched, Err(Error::Mismatch(m)) if m.protocol == PROTOCOL + 1));
-        let refused = answer(|peer| write(peer, &ServerFrame::Exit("busy")), wait);
+        let refused = answer(|peer| write(peer, &Greeting::Exit("busy")), wait);
         assert!(matches!(&refused, Err(Error::Refused(reason)) if reason == "busy"));
         let silent = answer(|_| {}, wait);
         assert_eq!(
@@ -1172,7 +1155,7 @@ mod tests {
             Err(Error::Protocol(crate::protocol::Error::UnexpectedKind(99)))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(&ours(), Ok(Some(ServerFrame::Exit("no"))), Err(no_answer()));
+        let both = greeted(&ours(), Ok(Some(Greeting::Exit("no"))), Err(no_answer()));
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }

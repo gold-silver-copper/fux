@@ -3,9 +3,11 @@
 //! then the bytes a peer sends on the socket.
 use fux::bytes::ByteQueue;
 use fux::protocol::{
-    Attach, AttachedFrame, Decoder, Error, Frame, Hello, MAX_FRAME, Request, ServerFrame,
+    Attach, AttachedFrame, Decoder, Error, Frame, Greeting, Hello, MAX_FRAME, Request, ToAttached,
+    ToCommand, split_into,
 };
 use libfuzzer_sys::fuzz_target;
+use std::borrow::Cow;
 use std::num::NonZeroUsize;
 
 /// `bytes` in pieces of `size`, the last one maybe shorter.
@@ -59,31 +61,44 @@ fn encoded<'a>(frame: &impl Frame<'a>) -> Vec<u8> {
     bytes.unwrap_or_default()
 }
 
-/// A server's frame, encoded again. A stream's is what the stream writes
-/// for its payload (a reply's part too), and an empty stream writes
-/// nothing.
-fn server(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
-    let Some(frame) = decoder.frame::<ServerFrame>()? else {
+/// A stream's frame, `bytes`, is what the stream writes for its payload
+/// (a reply's part too), and an empty stream writes nothing.
+fn splits_back<'a, F: Frame<'a>>(bytes: &[u8], payload: &'a [u8], frame: fn(Cow<'a, [u8]>) -> F) {
+    let mut queue = ByteQueue::default();
+    split_into(payload, frame, &mut queue);
+    // A header and no payload.
+    let expected: &[u8] = if bytes.len() == 5 { &[] } else { bytes };
+    assert_eq!(queue.as_slice(), expected);
+}
+
+/// A server's frame to a command client, encoded again.
+fn to_command(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
+    let Some(frame) = decoder.frame::<ToCommand>()? else {
         return Ok(None);
     };
     let bytes = encoded(&frame);
-    let mut queue = ByteQueue::default();
-    match frame {
-        ServerFrame::Paint(p) => ServerFrame::split_into(p, ServerFrame::Paint, &mut queue),
-        ServerFrame::Stdout(p) => ServerFrame::split_into(p, ServerFrame::Stdout, &mut queue),
-        ServerFrame::Part(p) => ServerFrame::split_into(p, ServerFrame::Part, &mut queue),
-        ServerFrame::Hello(_)
-        | ServerFrame::Exit(_)
-        | ServerFrame::Done(_)
-        | ServerFrame::Terminal(_)
-        | ServerFrame::Ended
-        | ServerFrame::Run(_)
-        | ServerFrame::Keys(_)
-        | ServerFrame::PartsEnd => return Ok(Some(bytes)),
+    match &frame {
+        ToCommand::Stdout(p) => splits_back(&bytes, p, ToCommand::Stdout),
+        ToCommand::Part(p) => splits_back(&bytes, p, ToCommand::Part),
+        ToCommand::Exit(_) | ToCommand::PartsEnd => {}
     }
-    // A header and no payload.
-    let expected: &[u8] = if bytes.len() == 5 { &[] } else { &bytes };
-    assert_eq!(queue.as_slice(), expected);
+    Ok(Some(bytes))
+}
+
+/// A server's frame to an attached client, encoded again.
+fn to_attached(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
+    let Some(frame) = decoder.frame::<ToAttached>()? else {
+        return Ok(None);
+    };
+    let bytes = encoded(&frame);
+    match &frame {
+        ToAttached::Paint(p) => splits_back(&bytes, p, ToAttached::Paint),
+        ToAttached::Welcome(..)
+        | ToAttached::Exit(_)
+        | ToAttached::Ended
+        | ToAttached::Run(_)
+        | ToAttached::Keys(_) => {}
+    }
     Ok(Some(bytes))
 }
 
@@ -91,12 +106,14 @@ fuzz_target!(|data: &[u8]| {
     let Some((&size, stream)) = data.split_first() else {
         return;
     };
-    let kinds: [Next; 5] = [
+    let kinds: [Next; 7] = [
         |d| Ok(d.frame::<Hello>()?.map(|f| encoded(&f))),
         |d| Ok(d.frame::<Attach>()?.map(|f| encoded(&f))),
         |d| Ok(d.frame::<AttachedFrame>()?.map(|f| encoded(&f))),
         |d| Ok(d.frame::<Request>()?.map(|f| encoded(&f))),
-        server,
+        |d| Ok(d.frame::<Greeting>()?.map(|f| encoded(&f))),
+        to_command,
+        to_attached,
     ];
     for next in kinds {
         // However the bytes arrive, the same frames and the same error;

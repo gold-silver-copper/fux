@@ -39,6 +39,7 @@
 use crate::decode::Reply;
 use crate::id::PaneId;
 use crate::id::{ClientId, TabId};
+use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
 use crate::view::View;
 use fux_vt::ModeStatus;
@@ -181,7 +182,8 @@ impl Session {
     /// paint stream; the client's decoder expects the answers.
     pub(crate) fn ask(&mut self, client: ClientId, queries: &[u8]) {
         if self.views.contains_key(&client) {
-            self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
+            let queries = ToAttached::Paint(queries.to_vec().into());
+            self.outbox.push(Outgoing::To(client, queries));
         }
     }
 
@@ -227,7 +229,7 @@ impl Session {
                     ModeStatus::NotRecognized | ModeStatus::PermanentlyReset => return,
                 };
                 terminal.asked = terminal.asked.saturating_add(1);
-                self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
+                (self.outbox).push(Outgoing::To(client, ToAttached::Paint(queries.into())));
             }
             // DA1, the last answer to every round of questions: a change
             // waiting on colours the terminal did not give is told now.
@@ -247,7 +249,7 @@ impl Session {
             Reply::KittyFlags(_) if !terminal.kitty => {
                 terminal.kitty = true;
                 self.outbox
-                    .push(Outgoing::Bytes(client, KITTY_PUSH.to_vec()));
+                    .push(Outgoing::To(client, ToAttached::Paint(KITTY_PUSH.into())));
             }
             // From now on the client is painted underline styles; what it
             // shows already, painted plain, is painted again
@@ -382,7 +384,8 @@ impl Session {
                 .is_none_or(|last| now.saturating_duration_since(last) >= BELL_GAP)
             {
                 view.last_bell = Some(now);
-                self.outbox.push(Outgoing::Bytes(view.id, BELL.to_vec()));
+                self.outbox
+                    .push(Outgoing::To(view.id, ToAttached::Paint(BELL.into())));
             }
         }
     }
@@ -519,15 +522,19 @@ mod tests {
     fn sent(s: &mut Session, c: ClientId) -> Vec<Vec<u8>> {
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut s.outbox)
             .into_iter()
-            .partition(|o| matches!(o, Outgoing::Bytes(to, _) if *to == c));
+            .partition(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(_)) if *to == c));
         s.outbox = rest;
         mine.into_iter()
             .filter_map(|o| match o {
-                Outgoing::Bytes(_, bytes) => Some(bytes),
-                Outgoing::Exit(..)
-                | Outgoing::Run(..)
-                | Outgoing::Keys(..)
-                | Outgoing::Ended(..)
+                Outgoing::To(_, ToAttached::Paint(bytes)) => Some(bytes.into_owned()),
+                Outgoing::To(
+                    _,
+                    ToAttached::Welcome(..)
+                    | ToAttached::Exit(_)
+                    | ToAttached::Ended
+                    | ToAttached::Run(_)
+                    | ToAttached::Keys(_),
+                )
                 | Outgoing::Shutdown { .. } => None,
             })
             .collect()

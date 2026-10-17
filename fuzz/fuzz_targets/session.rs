@@ -10,8 +10,8 @@
 //! has open (`screens::Screen`), else through its bindings (`keymap::Held`,
 //! one keymap all clients share). Its actions go to the session, and its
 //! programs run in-process as that client (a screen one opens opens), as do
-//! the programs the session hands a client (`Outgoing::Run`) and keys sent
-//! to it (`Outgoing::Keys`).
+//! the programs the session hands a client (`ToAttached::Run`) and keys sent
+//! to it (`ToAttached::Keys`).
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
@@ -24,7 +24,7 @@ use fux::id::{ClientId, PaneId};
 use fux::keymap::{Held, Keymap};
 use fux::keys::Keystroke;
 use fux::outer;
-use fux::protocol::{Context, Reply, Request};
+use fux::protocol::{Context, Reply, Request, ToAttached};
 use fux::render::{Grid, compose};
 use fux::screens::{Effect, Screen};
 use fux::script::{Ask, Failed, Host, Local};
@@ -389,7 +389,7 @@ impl Run {
         match outgoing {
             // What fux asks a client's terminal: when it attaches, and
             // after the terminal's answers.
-            Outgoing::Bytes(_, bytes)
+            Outgoing::To(_, ToAttached::Paint(bytes))
                 if [
                     outer::QUERIES,
                     outer::COLOUR_QUERIES,
@@ -398,8 +398,8 @@ impl Run {
                     outer::KITTY_PUSH,
                     outer::BELL,
                 ]
-                .contains(&bytes.as_slice()) => {}
-            Outgoing::Bytes(_, bytes) => {
+                .contains(&&*bytes) => {}
+            Outgoing::To(_, ToAttached::Paint(bytes)) => {
                 // Else OSC 52, with at most MAX_CLIPBOARD bytes of base64.
                 let payload = bytes
                     .strip_prefix(b"\x1b]52;c;")
@@ -412,17 +412,19 @@ impl Run {
                         .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
                 );
             }
-            Outgoing::Exit(client, _) => self.detach(client),
+            Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
+            // Sent only as a client attaches, by the server.
+            Outgoing::To(_, ToAttached::Welcome(..)) => panic!("a welcome from the session"),
             Outgoing::Shutdown { .. } => self.shut = true,
-            Outgoing::Run(client, code) => self.run_as(client, &code),
-            Outgoing::Ended(client) => {
+            Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code),
+            Outgoing::To(client, ToAttached::Ended) => {
                 if let Some(keys) = self.keys.get_mut(&client)
                     && keys.screen.is_open()
                 {
                     keys.screen = Screen::default();
                 }
             }
-            Outgoing::Keys(client, typed) => {
+            Outgoing::To(client, ToAttached::Keys(typed)) => {
                 for input in typed {
                     match input {
                         fux::command::Input::Key(press) => self.press(client, press.into()),

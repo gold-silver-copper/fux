@@ -81,7 +81,7 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
 fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     use fux::command::Command;
     use fux::protocol::{
-        Context, Decoder, Frame, Hello, PROTOCOL, Reply, Request, Role, ServerFrame,
+        Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Reply, Request, Role, ToCommand,
     };
     use std::io::{Read, Write};
     let server = Server::start("")?;
@@ -115,19 +115,13 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     decoder.push(&answer);
     // The reply comes in pieces, whole at their end.
     let (mut parts, mut reply) = (Vec::new(), None);
-    while let Some(frame) = decoder.frame::<ServerFrame>().map_err(e)? {
+    let hello = decoder.frame::<Greeting>().map_err(e)?;
+    assert!(matches!(hello, Some(Greeting::Hello(_))), "{hello:?}");
+    while let Some(frame) = decoder.frame::<ToCommand>().map_err(e)? {
         match frame {
-            ServerFrame::Part(bytes) => parts.extend_from_slice(bytes),
-            ServerFrame::PartsEnd => reply = Some(fux::wire::Reader::new(&parts).whole::<Reply>()),
-            ServerFrame::Hello(_)
-            | ServerFrame::Paint(_)
-            | ServerFrame::Exit(_)
-            | ServerFrame::Stdout(_)
-            | ServerFrame::Done(_)
-            | ServerFrame::Terminal(_)
-            | ServerFrame::Ended
-            | ServerFrame::Run(_)
-            | ServerFrame::Keys(_) => {}
+            ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
+            ToCommand::PartsEnd => reply = Some(fux::wire::Reader::new(&parts).whole::<Reply>()),
+            ToCommand::Exit(_) | ToCommand::Stdout(_) => {}
         }
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;

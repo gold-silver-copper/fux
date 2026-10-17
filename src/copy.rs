@@ -504,7 +504,10 @@ fn start(session: &mut Session, client: ClientId) {
         }
         Err(error) => {
             session.error_to(client, error.to_string());
-            session.outbox.push(crate::session::Outgoing::Ended(client));
+            let ended = crate::protocol::ToAttached::Ended;
+            session
+                .outbox
+                .push(crate::session::Outgoing::To(client, ended));
         }
     }
 }

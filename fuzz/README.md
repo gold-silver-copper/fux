@@ -45,8 +45,8 @@ hello, attach, actions and requests, or the server's frames), into
   by byte.
 - After draining, `buffered()` is under `4 + MAX_FRAME`.
 - Each frame round-trips through `Frame::encode`; `Frame::encode_into`
-  after other bytes appends the same bytes; a paint, stdout, stderr or
-  reply-part frame is what `ServerFrame::split_into` writes for its
+  after other bytes appends the same bytes; a paint, stdout or
+  reply-part frame is what `protocol::split_into` writes for its
   payload.
 
 **`paint`**: `render::paint` diffs applied to a fux-vt terminal.
@@ -103,8 +103,8 @@ chooser, prompt, confirmation or copy mode), else through its bindings
 (`keymap::Held`, one keymap the clients share). It sends the session its
 actions, and runs its programs in-process as itself (a screen one opens,
 built with what the session answers, opens), as it does the programs the
-session hands it (`Outgoing::Run`) and the keys sent to it
-(`Outgoing::Keys`); `Outgoing::Ended` ends its copy mode. Operations: bytes a
+session hands it (`ToAttached::Run`) and the keys sent to it
+(`ToAttached::Keys`); `ToAttached::Ended` ends its copy mode. Operations: bytes a
 client types (whole or in pieces), the Escape deadline, resizes, one to
 three clients attaching and detaching, a fixed list of programs (tabs,
 splits, overlays for a client, `bind`/`unbind`, `prefix`, `set`, `detach`,
@@ -115,8 +115,8 @@ the outbox, takes queued pane input), then checks:
 - every pane is in exactly one tab's layout, every view's screen composes,
   and every attached client has keys;
 - a client shown a repeat bar is in a repeat mode;
-- every `Outgoing::Bytes` is OSC 52 with at most `MAX_CLIPBOARD` bytes of
-  base64;
+- every `ToAttached::Paint` the session sends is a question for the
+  terminal or OSC 52 with at most `MAX_CLIPBOARD` bytes of base64;
 - a key typed in a repeat mode is not sent on to the pane, and reaches no
   pane unless the binding it runs there sends keys or pastes;
 - a second session given every byte one at a time ends with the same `ls`,

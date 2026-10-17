@@ -7,7 +7,9 @@
 use fux::act::Act;
 use fux::client::Keyboard;
 use fux::keymap::Keymap;
-use fux::protocol::{Attach, AttachedFrame, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
+use fux::protocol::{
+    Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
+};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -334,6 +336,8 @@ pub struct Client {
     socket: fux::socket::SocketPath,
     keymap: Keymap,
     read_only: bool,
+    /// Whether the server's Hello has come.
+    greeted: bool,
     /// Its keys, once the server has said its id.
     keyboard: Option<Keyboard>,
     /// Bytes typed before then, typed once it has.
@@ -377,6 +381,7 @@ impl Client {
             socket: server.socket_path()?,
             keymap: server.keymap.clone(),
             read_only,
+            greeted: false,
             keyboard: None,
             typed: Vec::new(),
             id: None,
@@ -468,32 +473,34 @@ impl Client {
             }
         }
         let mut acts = Vec::new();
-        while let Some(frame) = self.decoder.frame().map_err(e)? {
+        // The server's Hello, or why there is none, then what it sends an
+        // attached client.
+        while !self.greeted {
+            match self.decoder.frame::<Greeting>().map_err(e)? {
+                Some(Greeting::Hello(_)) => self.greeted = true,
+                Some(Greeting::Exit(reason)) => self.exit = Some(reason.to_owned()),
+                Some(Greeting::Done(_)) | None => break,
+            }
+        }
+        while self.greeted
+            && let Some(frame) = self.decoder.frame().map_err(e)?
+        {
             match frame {
-                ServerFrame::Paint(bytes) => {
-                    self.painted.extend_from_slice(bytes);
-                    self.terminal.process(bytes).map_err(e)?;
+                ToAttached::Paint(bytes) => {
+                    self.painted.extend_from_slice(&bytes);
+                    self.terminal.process(&bytes).map_err(e)?;
                 }
-                ServerFrame::Exit(reason) => self.exit = Some(reason.to_owned()),
-                ServerFrame::Stdout(said) if self.keyboard.is_none() => {
-                    let said = String::from_utf8_lossy(said).trim().to_owned();
-                    let me = said
-                        .parse()
-                        .map_err(|_| format!("a client's id, not {said:?}"))?;
+                ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
+                ToAttached::Welcome(me, _) if self.keyboard.is_none() => {
                     let keymap = self.keymap.clone();
                     self.keyboard =
                         Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);
-                    self.id = Some(said);
+                    self.id = Some(me.to_string());
                 }
-                frame @ (ServerFrame::Hello(_)
-                | ServerFrame::Stdout(_)
-                | ServerFrame::Done(_)
-                | ServerFrame::Terminal(_)
-                | ServerFrame::Ended
-                | ServerFrame::Run(_)
-                | ServerFrame::Keys(_)
-                | ServerFrame::Part(_)
-                | ServerFrame::PartsEnd) => {
+                frame @ (ToAttached::Welcome(..)
+                | ToAttached::Ended
+                | ToAttached::Run(_)
+                | ToAttached::Keys(_)) => {
                     if let Some(keyboard) = &mut self.keyboard {
                         acts.extend(keyboard.frame(frame));
                     }

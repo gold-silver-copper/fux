@@ -180,6 +180,13 @@ impl PaneId {
         PaneId(n)
     }
 }
+/// A client by number, for tests of what is sent it.
+#[cfg(test)]
+impl ClientId {
+    pub(crate) fn of(n: u32) -> ClientId {
+        ClientId(n)
+    }
+}
 #[cfg(test)]
 impl Ids {
     /// Uses up the tab IDs.

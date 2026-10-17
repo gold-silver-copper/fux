@@ -14,7 +14,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::pane::{InputQueue, Pane, Process, Runs, Typed, basename};
 use crate::process::Child;
-use crate::protocol::{End, Reply};
+use crate::protocol::{End, Reply, ToAttached};
 use crate::view::{ClientKind, Mode, View};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
@@ -25,18 +25,12 @@ use std::time::{Duration, Instant};
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outgoing {
-    /// Bytes for a client's terminal outside any paint: a copy (OSC 52),
-    /// questions for the terminal, the bell, the keyboard flags pushed.
-    Bytes(ClientId, Vec<u8>),
-    /// Detach a client, telling it why.
-    Exit(ClientId, String),
-    /// fuxth for a client to run as its own, typed at its command prompt.
-    Run(ClientId, String),
-    /// Keys for a client to take as typed at its terminal (`send-keys` to
-    /// a client): its bindings see them.
-    Keys(ClientId, Vec<command::Input>),
-    /// Tell a client the server ended its screen by itself.
-    Ended(ClientId),
+    /// A frame for a client: bytes for its terminal outside any paint (a
+    /// copy, OSC 52; questions for the terminal; the bell; the keyboard
+    /// flags pushed), fuxth to run as its own, keys to take as typed at its
+    /// terminal (`send-keys` to a client), its screen ended by the server,
+    /// or its detach, saying why.
+    To(ClientId, ToAttached<'static>),
     /// Stop the server, saying why; with `keep`, its layout is kept for
     /// the next server to bring back, as after a crash.
     Shutdown { reason: String, keep: bool },
@@ -1485,7 +1479,7 @@ impl Session {
             .collect();
         self.views = views;
         for client in ended {
-            self.outbox.push(Outgoing::Ended(client));
+            self.outbox.push(Outgoing::To(client, ToAttached::Ended));
         }
         self.size_panes();
         self.hold_copies();
@@ -1512,7 +1506,7 @@ impl Session {
             } else {
                 view.mode = Mode::Normal;
                 view.error("copy mode ended: the history dropped the rows it held");
-                self.outbox.push(Outgoing::Ended(view.id));
+                self.outbox.push(Outgoing::To(view.id, ToAttached::Ended));
             }
         }
     }
@@ -1520,7 +1514,7 @@ impl Session {
     /// Ends what a view shows if what it is about is gone: copy mode whose
     /// pane closed or is no longer focused, a client's screen about a pane,
     /// tab or workspace that closed. Whether it did, which its client is
-    /// told (`Outgoing::Ended`), the mode being the client's.
+    /// told (`ToAttached::Ended`), the mode being the client's.
     fn repair(&self, view: &mut View) -> bool {
         use crate::act::{List, Panel};
         let focus = self.focused(view.id);
@@ -1838,7 +1832,8 @@ impl Session {
             if fits {
                 let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
                 for &client in to {
-                    self.outbox.push(Outgoing::Bytes(client, osc.clone()));
+                    self.outbox
+                        .push(Outgoing::To(client, ToAttached::Paint(osc.clone().into())));
                 }
             }
         }
@@ -2628,17 +2623,20 @@ impl Session {
                         return crate::overlay::choices(self, client, choices);
                     }
                     ClientAction::Run(ref code) => {
-                        self.outbox.push(Outgoing::Run(client, code.clone()));
+                        self.outbox
+                            .push(Outgoing::To(client, ToAttached::Run(code.clone())));
                         return Ok(Reply::default());
                     }
                     // Taken as typed at its terminal: its bindings see them.
                     ClientAction::Keys(ref inputs) => {
-                        self.outbox.push(Outgoing::Keys(client, inputs.clone()));
+                        self.outbox
+                            .push(Outgoing::To(client, ToAttached::Keys(inputs.clone())));
                         return Ok(Reply::default());
                     }
                     ClientAction::Detach => {
                         self.detach(client);
-                        self.outbox.push(Outgoing::Exit(client, "detached".into()));
+                        self.outbox
+                            .push(Outgoing::To(client, ToAttached::Exit("detached")));
                         return Ok(Reply::default());
                     }
                     ClientAction::Capture => {
@@ -3498,19 +3496,20 @@ pub(crate) mod testing {
     /// What the server sent clients, taken as their clients take it: a
     /// program to run, keys typed, copy mode ended. The rest is left.
     pub(crate) fn deliver(session: &mut Session) {
+        use crate::protocol::ToAttached;
         let outbox = std::mem::take(&mut session.outbox);
         let mut kept = Vec::new();
         for outgoing in outbox {
             match outgoing {
-                super::Outgoing::Run(client, code) => session.run_as(client, &code),
-                super::Outgoing::Ended(client) => {
+                super::Outgoing::To(client, ToAttached::Run(code)) => session.run_as(client, &code),
+                super::Outgoing::To(client, ToAttached::Ended) => {
                     if let Some(keys) = session.test_keys.get_mut(&client)
                         && keys.screen.is_open()
                     {
                         keys.screen = crate::screens::Screen::default();
                     }
                 }
-                super::Outgoing::Keys(client, inputs) => {
+                super::Outgoing::To(client, ToAttached::Keys(inputs)) => {
                     use crate::decode::Input;
                     let typed = inputs.into_iter().flat_map(|input| match input {
                         crate::command::Input::Key(press) => vec![Input::Key(press.into())],
@@ -3522,8 +3521,10 @@ pub(crate) mod testing {
                     });
                     session.inputs(client, typed.collect());
                 }
-                other @ (super::Outgoing::Bytes(..)
-                | super::Outgoing::Exit(..)
+                other @ (super::Outgoing::To(
+                    _,
+                    ToAttached::Paint(_) | ToAttached::Exit(_) | ToAttached::Welcome(..),
+                )
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
                 }
@@ -3870,7 +3871,7 @@ mod tests {
         let sent = |s: &Session| {
             s.outbox
                 .iter()
-                .any(|o| matches!(o, Outgoing::Bytes(c, b) if *c == client && b == b"\x1b]52;c;Zm9v\x07"))
+                .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
         };
         assert!(sent(&s));
         s.outbox.clear();
