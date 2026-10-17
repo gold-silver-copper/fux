@@ -998,10 +998,8 @@ impl fuxth::Host for Host<'_> {
                 later(ask(followed(keys, then), Then::Outcome))
             }
             "mouse" => {
-                let action = next()?;
-                let (row, col) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
                 let mouse = one_of(
-                    &action,
+                    &next()?,
                     &[
                         ("click", Mouse::Click(Button::Left)),
                         ("right", Mouse::Click(Button::Right)),
@@ -1013,6 +1011,7 @@ impl fuxth::Host for Host<'_> {
                         ("move", Mouse::Move),
                     ],
                 )?;
+                let (row, col) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
                 now(
                     out,
                     Value::App(Fux::Mouse(Box::new(MouseEvent {

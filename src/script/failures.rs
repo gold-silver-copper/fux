@@ -94,6 +94,7 @@ const ROWS: &[Fails] = &[
     fails("stack_overflow", Cli, "begin 1 false until", "fails stack_overflow 1"),
     fails("call_depth", Cli, "define f f 1 end f", "fails call_depth 1"),
     fails("type", Cli, "str a 1 add", "fails type 1"),
+    fails("type", Cli, "5 70000 0 mouse", "fails type 1"),
     fails("div_by_zero", Cli, "1 0 div", "fails div_by_zero 1"),
     fails("overflow", Cli, "9223372036854775807 1 add", "fails overflow 1"),
     fails("unset", Cli, "false if 1 let n then n", "fails unset 1"),
