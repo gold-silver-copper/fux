@@ -759,7 +759,7 @@ impl Watch {
         let pieces = pane.record.printed_after(self.looked.max(self.start.from));
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
-        let wanted: Vec<Vec<char>> = (texts.iter()).map(|t| folded(bare(t))).collect();
+        let wanted: Vec<String> = (texts.iter()).map(|t| normal(bare(t))).collect();
         let runs = pieces.flat_map(|(seq, p)| p.runs().map(move |(r, e, f)| (seq, r, e, f)));
         for (seq, whole, echo, fresh) in runs {
             // Only what it changed is news: what it printed as its row held
@@ -790,7 +790,7 @@ impl Watch {
             }
             // A text found here holds some of what the run changed: one of
             // its characters.
-            let run = folded(print.text);
+            let run = normal(print.text);
             if !wanted.iter().any(|text| overlaps(&run, text)) {
                 continue;
             }
@@ -1151,34 +1151,19 @@ fn part<'a>(print: &fux_vt::Print<'a>, (from, to): (usize, usize)) -> Option<fux
     })
 }
 
-/// `text` as a wait compares it, case and runs of blanks aside, its
-/// ends kept: a run of a line to set against a text.
-fn folded(text: &str) -> Vec<char> {
-    let mut out: Vec<char> = Vec::new();
-    for c in text.chars() {
-        match c.is_whitespace() {
-            true if out.last() == Some(&' ') => {}
-            true => out.push(' '),
-            false => out.extend(fold(c)),
-        }
-    }
-    out
-}
-
 /// Whether a text found on a line could take in some of `run`, printed on
-/// it: one holds the other, or one's end is the other's start.
-fn overlaps(run: &[char], text: &[char]) -> bool {
-    let holds = |a: &[char], b: &[char]| {
-        (0..=a.len().saturating_sub(b.len()))
-            .any(|at| a.get(at..).is_some_and(|a| a.starts_with(b)))
-    };
-    let joins = |a: &[char], b: &[char]| {
+/// it, both `normal`: one holds the other, or one's end is the other's
+/// start. A run's normal form is a part of its line's, so a text the line
+/// holds over a character the run printed passes; a run of blanks alone
+/// is `""`, which every text holds.
+fn overlaps(run: &str, text: &str) -> bool {
+    let joins = |a: &str, b: &str| {
         (1..=a.len().min(b.len())).any(|k| {
             a.get(a.len().saturating_sub(k)..)
                 .is_some_and(|end| b.starts_with(end))
         })
     };
-    holds(run, text) || holds(text, run) || joins(run, text) || joins(text, run)
+    run.contains(text) || text.contains(run) || joins(run, text) || joins(text, run)
 }
 
 /// How many times a line shows TEXT: case ignored, runs of blanks as one,
