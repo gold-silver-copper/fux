@@ -1719,11 +1719,12 @@ impl Server {
                     }
                 };
                 conn.answer(session, outcome);
-                // What waits or streams through a grant revoked ends.
+                // Every connection through a grant revoked ends, idle or
+                // not: one kept would reach what the path is granted next.
                 for conn in
                     (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
                 {
-                    if conn.stage.asked() {
+                    if conn.stage.reads() {
                         let why = "the grant this came through was revoked";
                         conn.end(session, &ToCommand::Exit(why));
                     }

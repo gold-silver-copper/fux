@@ -343,6 +343,34 @@ fn a_grant_reaches_one_workspace() -> Outcome {
     Ok(())
 }
 
+/// A revoke ends every connection through the grant, idle ones too: else
+/// one kept open would reach whatever the same path is granted next.
+#[test]
+fn a_revoke_ends_an_idle_connection_through_it() -> Outcome {
+    use fux::protocol::{Frame, Hello, PROTOCOL, Role};
+    use std::io::{Read, Write};
+    let server = Server::start("")?;
+    let granted = server.dir.join("s").join("granted.sock");
+    let socket = granted.to_string_lossy().into_owned();
+    server.ok(&["str", "main", "str", &socket, "grant"])?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&granted).map_err(e)?;
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "0".into(),
+        role: Role::Command,
+    };
+    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+    server.ok(&["str", &socket, "revoke"])?;
+    // Told to go, then closed; not left waiting for its next request.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .map_err(e)?;
+    let mut told = Vec::new();
+    stream.read_to_end(&mut told).map_err(e)?;
+    assert!(!told.is_empty(), "the connection was closed unsaid");
+    Ok(())
+}
+
 /// A server killed outright comes back on its socket with the panes it
 /// had, their ids, splits and sizes: a program waits for `respawn`, which
 /// starts it again. `force-kill-server` forgets it.
