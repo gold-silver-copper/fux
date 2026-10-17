@@ -533,6 +533,20 @@ fn act(client: crate::id::ClientId, action: ClientAction) -> Ask {
     )
 }
 
+/// The words that take a pane and a way, and the command each makes of
+/// them: their arguments declared by type, read in that order.
+type PaneWay = fn(crate::id::PaneId, Direction) -> Command;
+const PANE_WAY: &[(&str, PaneWay)] = &[
+    ("move-beside", |target, way| Command::MovePane {
+        target,
+        to: MoveTo::Beside(way),
+    }),
+    ("swap-toward", |target, way| Command::SwapPane {
+        target,
+        with: SwapWith::Toward(way),
+    }),
+];
+
 /// How a screen's word makes its screen from what follows the client.
 enum Opens {
     Alone(Open),
@@ -592,6 +606,10 @@ impl fuxth::Host for Host<'_> {
         let resolve = |text: String, kind: Kind| {
             later(ask(Command::Resolve { text, kind }, Then::Handle(kind)))
         };
+        // A word of a family whose arguments are declared by type: read so.
+        if let Some((_, make)) = PANE_WAY.iter().find(|(word, _)| *word == name) {
+            return tell(make(pane(&next()?)?, direction(&next()?)?));
+        }
         // A client's own screens, which it opens itself: from its keys or
         // prompt, here; asked from elsewhere, relayed for it to run.
         if let Some((_, opens)) = SCREENS.iter().find(|(word, _)| *word == name) {
@@ -1199,27 +1217,11 @@ impl fuxth::Host for Host<'_> {
                 };
                 tell(Command::MovePane { target: p, to })
             }
-            "move-beside" => {
-                let p = pane(&next()?)?;
-                let way = direction(&next()?)?;
-                tell(Command::MovePane {
-                    target: p,
-                    to: MoveTo::Beside(way),
-                })
-            }
             "swap-panes" => {
                 let (a, b) = (pane(&next()?)?, pane(&next()?)?);
                 tell(Command::SwapPane {
                     target: a,
                     with: SwapWith::Pane(b),
-                })
-            }
-            "swap-toward" => {
-                let p = pane(&next()?)?;
-                let way = direction(&next()?)?;
-                tell(Command::SwapPane {
-                    target: p,
-                    with: SwapWith::Toward(way),
                 })
             }
             "reorder" => {
@@ -1587,6 +1589,16 @@ mod tests {
             .find(|w| w.name == "send-keys")
             .map(Word::gives);
         assert_eq!(send, Some(1), "an outcome, with a wait or without");
+    }
+
+    /// The family declared by type takes what its type says, a pane and a
+    /// way, and gives nothing: the checker's counts are its rows'.
+    #[test]
+    fn a_typed_familys_words_take_what_their_type_says() {
+        for (name, _) in PANE_WAY {
+            let word = WORDS.iter().find(|w| w.name == *name);
+            assert_eq!(word.map(|w| (w.takes, w.gives())), Some((2, 0)), "{name}");
+        }
     }
 
     /// A wait and an action's wait leave how long to the server
