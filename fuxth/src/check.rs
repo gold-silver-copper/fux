@@ -96,11 +96,10 @@ struct State {
     outer: Vec<State>,
     /// What kind each open `each` gives, innermost last.
     iters: Vec<Kinds>,
-    /// The kinds the code's own `let` names hold, by slot.
+    /// The kinds the code's own `let` names hold, by slot: a definition's
+    /// locals, or the top level's globals (a definition has no globals of
+    /// its own, and may run when one has changed).
     names: Vec<Kinds>,
-    /// The kinds the top level's `let` names hold, by slot: kept only at
-    /// the top level (a definition may run when one has changed).
-    globals: Vec<Kinds>,
 }
 
 /// The kinds slot `slot` of `names` holds: any, if not known.
@@ -110,9 +109,7 @@ fn named(names: &[Kinds], slot: usize) -> Kinds {
 
 /// Sets slot `slot` of `names` to `kinds`.
 fn name(names: &mut Vec<Kinds>, slot: usize, kinds: Kinds) {
-    if names.len() <= slot {
-        names.resize(slot.saturating_add(1), ANY);
-    }
+    names.resize(names.len().max(slot.saturating_add(1)), ANY);
     if let Some(at) = names.get_mut(slot) {
         *at = kinds;
     }
@@ -256,7 +253,6 @@ impl State {
             outer: Vec::new(),
             iters: Vec::new(),
             names: Vec::new(),
-            globals: Vec::new(),
         }
     }
 
@@ -353,7 +349,6 @@ impl State {
             outer: outer.map(|(a, b)| a.join(b)).collect(),
             iters: iters.map(|(a, b)| a.union(*b)).collect(),
             names: join_names(&self.names, &other.names),
-            globals: join_names(&self.globals, &other.globals),
         }
     }
 
@@ -859,20 +854,14 @@ impl<'a, A> Unit<'a, A> {
             }
             Op::Jump(_) | Op::EachNext(_) => {}
             Op::JumpUnless(_) => must(Wants::Flag, state.pop1()?, BOOL)?,
-            Op::SetLocal(slot) => {
+            Op::SetLocal(slot) | Op::SetGlobal(slot) => {
                 let kinds = state.pop1()?;
                 name(&mut state.names, *slot, kinds);
             }
             Op::GetLocal(slot) => state.push(named(&state.names, *slot)),
-            Op::SetGlobal(slot) => {
-                let kinds = state.pop1()?;
-                if self.own.is_none() {
-                    name(&mut state.globals, *slot, kinds);
-                }
-            }
             Op::GetGlobal(slot) => {
                 let kinds = if self.own.is_none() {
-                    named(&state.globals, *slot)
+                    named(&state.names, *slot)
                 } else {
                     ANY
                 };
@@ -882,7 +871,6 @@ impl<'a, A> Unit<'a, A> {
                 let mut inner = State::start(true);
                 inner.iters = state.iters.clone();
                 inner.names = state.names.clone();
-                inner.globals = state.globals.clone();
                 inner.outer = std::mem::take(&mut state.outer);
                 inner
                     .outer
@@ -894,7 +882,6 @@ impl<'a, A> Unit<'a, A> {
                 outer.outer = std::mem::take(&mut state.outer);
                 outer.iters = state.iters.clone();
                 outer.names = std::mem::take(&mut state.names);
-                outer.globals = std::mem::take(&mut state.globals);
                 outer.push(LIST);
                 *state = outer;
             }
