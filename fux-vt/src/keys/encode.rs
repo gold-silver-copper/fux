@@ -501,13 +501,12 @@ impl Sym {
 /// level 2, Shift alone on a character other than Space types its text;
 /// level 3 sends an unmodified key too.
 fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
-    if state.is_empty() {
-        return match level {
-            OtherKeys::Usual | OtherKeys::All => false,
-            OtherKeys::Unmodified => true,
-        };
-    }
+    // At level 1, a key with no modifier ends `false` below: `allowed`
+    // leaves none.
     match level {
+        OtherKeys::Usual => {}
+        OtherKeys::All if state.is_empty() => return false,
+        OtherKeys::Unmodified if state.is_empty() => return true,
         OtherKeys::All | OtherKeys::Unmodified => {
             return match sym {
                 Sym::BackSpace => state != Modifiers::CTRL,
@@ -515,7 +514,6 @@ fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
                 Sym::Char(c) => state != Modifiers::SHIFT || c == ' ',
             };
         }
-        OtherKeys::Usual => {}
     }
     if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT {
         return false;
