@@ -2114,7 +2114,12 @@ impl Screen {
         // 4: sixel graphics, when the host's terminal shows them.
         let sixel = if self.graphics.sixel { ";4" } else { "" };
         if options.identity().is_some() {
-            Reply::of(format_args!("\x1b[?62{sixel};22c"))
+            // Level 2 (DEC STD 070, DA): fux-vt lacks level 3's terminal
+            // state reports and level 4's rectangular area operations. Its
+            // extensions (Table 1): selectively erasable characters (6:
+            // DECSCA, DECSED, DECSEL), horizontal scrolling (21: DECSLRM,
+            // DECIC, DECDC, DECBI, DECFI) and colour text (22).
+            Reply::of(format_args!("\x1b[?62{sixel};6;21;22c"))
         } else {
             Reply::of(format_args!("\x1b[?1;2{sixel}c"))
         }

@@ -453,7 +453,7 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
         "pane",
         "opts",
         "str",
-        "62;4;22c",
+        "62;4;6;21;22c",
         "wait-text",
         "wait",
     ])?;
