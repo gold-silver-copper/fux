@@ -1207,15 +1207,9 @@ impl Screen {
         } else {
             raw
         };
-        if ('\u{80}'..'\u{a0}').contains(&c) {
-            return Ok(());
-        }
-        let width = c.width();
-        if width.is_none() && u32::from(c) < 256 {
-            return Ok(());
-        }
-        // Too wide for the grid, whatever the number, so not printed.
-        let Ok(width) = u16::try_from(width.unwrap_or(1)) else {
+        // A control character (C0, DEL or C1, the only ones of no width)
+        // is not printed.
+        let Some(width) = c.width().and_then(|w| u16::try_from(w).ok()) else {
             return Ok(());
         };
         // Nor where it fits nowhere, but for a pending wrap, which xterm
