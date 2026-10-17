@@ -477,11 +477,16 @@ impl<A: AppValue> Machine<A> {
             .ok_or_else(|| self.fail(ErrorCode::StackUnderflow, "takes 1 value"))
     }
 
-    /// The top two values, the deeper first.
+    /// Takes one of a built-in's values, whose depth `builtin` has checked.
+    fn take(&mut self) -> Result<Value<A>, Error> {
+        (self.stack.pop()).ok_or_else(|| self.fail(ErrorCode::StackUnderflow, "takes 1 value"))
+    }
+
+    /// The top two values, the deeper first: a built-in's, whose depth
+    /// `builtin` has checked.
     fn pop2(&mut self) -> Result<(Value<A>, Value<A>), Error> {
-        self.depth(2)?;
-        let b = self.pop()?;
-        let a = self.pop()?;
+        let b = self.take()?;
+        let a = self.take()?;
         Ok((a, b))
     }
 
@@ -517,9 +522,9 @@ impl<A: AppValue> Machine<A> {
         self.fail(ErrorCode::TooLong, message)
     }
 
-    /// Takes a count: an integer, 0 or more.
+    /// Takes a built-in's count: an integer, 0 or more.
     fn count(&mut self, word: Builtin) -> Result<usize, Error> {
-        match self.pop()? {
+        match self.take()? {
             Value::Int(n) => usize::try_from(n).map_err(|_| {
                 self.range_error(format!("{} takes a count from 0, not {n}", word.name()))
             }),
@@ -605,8 +610,10 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn builtin<H: Host<Value = A>>(&mut self, builtin: Builtin, host: &mut H) -> Result<(), Error> {
+        // Too few values are said as the word takes them, before any is.
+        self.depth(builtin.takes())?;
         match builtin {
-            Builtin::Drop => self.pop().map(|_| ()),
+            Builtin::Drop => self.take().map(|_| ()),
             Builtin::Pick => {
                 let n = self.count(builtin)?;
                 self.pick(n)
@@ -633,13 +640,13 @@ impl<A: AppValue> Machine<A> {
                 self.push(Value::Bool(a == b))
             }
             Builtin::Len => {
-                let seq = self.pop()?;
+                let seq = self.take()?;
                 let n = self.seq_len(&seq, builtin)?;
                 self.push(Value::Int(i64::try_from(n).unwrap_or(i64::MAX)))
             }
             Builtin::At => {
-                let i = self.pop()?;
-                let seq = self.pop()?;
+                let i = self.take()?;
+                let seq = self.take()?;
                 let len = self.seq_len(&seq, builtin)?;
                 let i = self.index(&i, len, builtin)?;
                 if let Value::Str(s) = &seq
@@ -653,9 +660,9 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             Builtin::Slice => {
-                let to = self.pop()?;
-                let from = self.pop()?;
-                let seq = self.pop()?;
+                let to = self.take()?;
+                let from = self.take()?;
+                let seq = self.take()?;
                 let len = self.seq_len(&seq, builtin)?;
                 let (Value::Int(a), Value::Int(b)) = (&from, &to) else {
                     return Err(self.type_error(format!(
@@ -686,7 +693,7 @@ impl<A: AppValue> Machine<A> {
                 self.push(part)
             }
             Builtin::Concat => {
-                let list = self.pop()?;
+                let list = self.take()?;
                 let Value::List(list) = list else {
                     return Err(self.type_error(Wants::Concat.not(list.kind())));
                 };
@@ -694,22 +701,22 @@ impl<A: AppValue> Machine<A> {
                 self.push(joined)
             }
             Builtin::Push => {
-                let x = self.pop()?;
-                let seq = self.pop()?;
+                let x = self.take()?;
+                let seq = self.take()?;
                 let pushed = self.pushed(seq, x)?;
                 self.push(pushed)
             }
             Builtin::Put => {
-                let x = self.pop()?;
-                let i = self.pop()?;
-                let seq = self.pop()?;
+                let x = self.take()?;
+                let i = self.take()?;
+                let seq = self.take()?;
                 let len = self.seq_len(&seq, builtin)?;
                 let i = self.index(&i, len, builtin)?;
                 let put = self.put(seq, i, x)?;
                 self.push(put)
             }
             Builtin::Code => {
-                let c = self.pop()?;
+                let c = self.take()?;
                 let one = match &c {
                     Value::Str(s) => {
                         let mut chars = s.chars();
@@ -727,7 +734,7 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             Builtin::Char => {
-                let n = self.pop()?;
+                let n = self.take()?;
                 let Value::Int(n) = n else {
                     return Err(self.type_error(Wants::Int(builtin).not(n.kind())));
                 };
@@ -737,11 +744,11 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             Builtin::Kind => {
-                let x = self.pop()?;
+                let x = self.take()?;
                 self.push(Value::str(x.kind_name()))
             }
             Builtin::String => {
-                let x = self.pop()?;
+                let x = self.take()?;
                 self.walk(&x);
                 // Made only as far as a string may be long.
                 let Some(text) = x.text_upto(LONGEST) else {
@@ -753,13 +760,13 @@ impl<A: AppValue> Machine<A> {
                 self.push(Value::Str(Rc::new(text)))
             }
             Builtin::Print => {
-                let x = self.pop()?;
+                let x = self.take()?;
                 self.walk(&x);
                 let text = x.text();
                 host.print(&text).map_err(|f| self.fail(f.code, f.message))
             }
             Builtin::Fail => {
-                let x = self.pop()?;
+                let x = self.take()?;
                 Err(self.fail(ErrorCode::Fail, x.text()))
             }
         }

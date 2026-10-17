@@ -534,6 +534,19 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
         said("0 maybe drop 0 maybe drop"),
         "stack_underflow: t:1: drop: takes 1 value, and the stack has 0"
     );
+    // Too few, as the word takes them, not as one of its pops does.
+    for (text, takes, has) in [
+        ("str a 0 maybe at", 2, 1),
+        ("str a 1 0 maybe slice", 3, 2),
+        ("str a 0 maybe push", 2, 1),
+        ("str a 1 0 maybe put", 3, 2),
+    ] {
+        let word = text.rsplit(' ').next().unwrap_or_default();
+        assert_eq!(
+            said(text),
+            format!("stack_underflow: t:1: {word}: takes {takes} values, and the stack has {has}")
+        );
+    }
     // A host that gives what its word doesn't say is caught at once.
     assert_eq!(
         said("liar"),
