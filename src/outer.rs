@@ -370,6 +370,7 @@ impl Session {
         let Some(tab) = ws.tabs_mut().iter_mut().find(|t| t.holds(id)) else {
             return;
         };
+        let mut rung = Vec::new();
         for view in self.views.values_mut() {
             let Some(&shown) = viewers.get(&view.id) else {
                 continue;
@@ -383,10 +384,10 @@ impl Session {
                 .is_none_or(|last| now.saturating_duration_since(last) >= BELL_GAP)
             {
                 view.last_bell = Some(now);
-                self.outbox
-                    .push(Outgoing::To(view.id, ToAttached::Paint(BELL.into())));
+                rung.push(view.id);
             }
         }
+        rung.into_iter().for_each(|client| self.ask(client, BELL));
     }
 
     /// What client `client`'s terminal is sent before it is painted: the
