@@ -529,12 +529,11 @@ impl Attributes {
     }
     /// How the text blinks.
     pub fn blink(self) -> Blink {
-        if self.flags & Self::SLOW_BLINK != 0 {
-            Blink::Slow
-        } else if self.flags & Self::RAPID_BLINK != 0 {
-            Blink::Rapid
-        } else {
-            Blink::None
+        // Both bits, which `with_blink` never sets, read as slow.
+        match self.flags & Self::BLINK {
+            0 => Blink::None,
+            Self::RAPID_BLINK => Blink::Rapid,
+            _ => Blink::Slow,
         }
     }
 }
