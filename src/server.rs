@@ -10,8 +10,7 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, End, Frame, Hello, MAX_PAYLOAD, Mismatch, Reply, Request, Role,
-    ServerFrame,
+    Attach, AttachedFrame, Decoder, End, Frame, Hello, Mismatch, Reply, Request, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
 use crate::session::{Begun, Caller, Came, Dying, Origin, Outgoing, Session, Timer, Within};
@@ -424,16 +423,12 @@ impl Conn {
         }
     }
 
-    /// Answers a request with its outcome, and takes the next.
+    /// Answers a request with its outcome, encoded once and sent in pieces
+    /// as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, reply: Reply) {
         let bytes = crate::wire::encode(&reply);
-        if bytes.len() < MAX_PAYLOAD {
-            self.send(session, &ServerFrame::Reply(Box::new(reply)));
-        } else {
-            // Too large for one frame: in pieces, then the end.
-            ServerFrame::split_into(&bytes, ServerFrame::Part, &mut self.out);
-            self.send(session, &ServerFrame::PartsEnd);
-        }
+        ServerFrame::split_into(&bytes, ServerFrame::Part, &mut self.out);
+        self.send(session, &ServerFrame::PartsEnd);
         if matches!(self.stage, Stage::Waiting(_) | Stage::Events(_)) {
             self.enter(session, Stage::Command);
         }

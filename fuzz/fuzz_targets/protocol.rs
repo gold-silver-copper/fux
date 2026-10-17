@@ -71,13 +71,11 @@ fn server(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
     match frame {
         ServerFrame::Paint(p) => ServerFrame::split_into(p, ServerFrame::Paint, &mut queue),
         ServerFrame::Stdout(p) => ServerFrame::split_into(p, ServerFrame::Stdout, &mut queue),
-        ServerFrame::Stderr(p) => ServerFrame::split_into(p, ServerFrame::Stderr, &mut queue),
         ServerFrame::Part(p) => ServerFrame::split_into(p, ServerFrame::Part, &mut queue),
         ServerFrame::Hello(_)
         | ServerFrame::Exit(_)
         | ServerFrame::Done { .. }
         | ServerFrame::Terminal { .. }
-        | ServerFrame::Reply(_)
         | ServerFrame::Ended
         | ServerFrame::Run(_)
         | ServerFrame::Keys(_)

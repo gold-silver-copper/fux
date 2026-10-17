@@ -302,10 +302,9 @@ impl Requests {
     pub fn take(&mut self, out: &mut dyn Write) -> Result<Option<Reply>, Error> {
         while let Some(frame) = self.decoder.frame()? {
             match frame {
-                ServerFrame::Stdout(bytes) | ServerFrame::Stderr(bytes) => {
+                ServerFrame::Stdout(bytes) => {
                     let _ = out.write_all(bytes).and_then(|()| out.flush());
                 }
-                ServerFrame::Reply(reply) => return Ok(Some(*reply)),
                 ServerFrame::Part(bytes) => self.parts.extend_from_slice(bytes),
                 ServerFrame::PartsEnd => {
                     let parts = std::mem::take(&mut self.parts);
@@ -673,10 +672,8 @@ impl Keyboard {
             | ServerFrame::Paint(_)
             | ServerFrame::Exit(_)
             | ServerFrame::Stdout(_)
-            | ServerFrame::Stderr(_)
             | ServerFrame::Done { .. }
             | ServerFrame::Terminal { .. }
-            | ServerFrame::Reply(_)
             | ServerFrame::Part(_)
             | ServerFrame::PartsEnd => {}
         }

@@ -35,10 +35,8 @@ mod kind {
     pub const PAINT: u8 = 7;
     pub const EXIT: u8 = 8;
     pub const STDOUT: u8 = 9;
-    pub const STDERR: u8 = 10;
     pub const DONE: u8 = 11;
     pub const TERMINAL: u8 = 12;
-    pub const REPLY: u8 = 13;
     pub const ENDED: u8 = 14;
     pub const RUN: u8 = 15;
     pub const KEYS: u8 = 16;
@@ -389,7 +387,6 @@ pub enum ServerFrame<'a> {
     Paint(&'a [u8]),
     Exit(&'a str),
     Stdout(&'a [u8]),
-    Stderr(&'a [u8]),
     Done {
         status: u8,
     },
@@ -400,8 +397,6 @@ pub enum ServerFrame<'a> {
     Terminal {
         taken: bool,
     },
-    /// A request's answer.
-    Reply(Box<Reply>),
     /// To an attached client: the server ended its screen by itself (copy
     /// mode whose rows dropped from history, whose pane went or is no longer
     /// focused, or with no pane to copy; a menu, chooser, prompt or
@@ -413,8 +408,9 @@ pub enum ServerFrame<'a> {
     /// To an attached client: keys to take as typed at its terminal
     /// (`send-keys` to a client).
     Keys(Vec<crate::command::Input>),
-    /// A piece of a reply too large for one frame: its encoding, in order,
-    /// whole once `PartsEnd` comes.
+    /// A piece of a request's reply: its encoding, in order, whole once
+    /// `PartsEnd` comes. A reply goes in pieces as long as fit, so it is
+    /// encoded once, whatever its length.
     Part(&'a [u8]),
     PartsEnd,
 }
@@ -443,10 +439,8 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
             kind::PAINT => Ok(ServerFrame::Paint(payload)),
             kind::EXIT => text().map(ServerFrame::Exit).map_err(Error::Wire),
             kind::STDOUT => Ok(ServerFrame::Stdout(payload)),
-            kind::STDERR => Ok(ServerFrame::Stderr(payload)),
             kind::DONE => read(payload).map(|status| ServerFrame::Done { status }),
             kind::TERMINAL => read(payload).map(|taken| ServerFrame::Terminal { taken }),
-            kind::REPLY => read(payload).map(|reply| ServerFrame::Reply(Box::new(reply))),
             kind::ENDED => read(payload).map(|()| ServerFrame::Ended),
             kind::RUN => text().map(ServerFrame::Run).map_err(Error::Wire),
             kind::PART => Ok(ServerFrame::Part(payload)),
@@ -459,7 +453,6 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
     fn write(&self, out: &mut Vec<u8>) -> u8 {
         match self {
             ServerFrame::Hello(hello) => hello.write(out),
-            ServerFrame::Reply(reply) => wired(out, kind::REPLY, &**reply),
             ServerFrame::Keys(keys) => wired(out, kind::KEYS, keys),
             ServerFrame::Done { status } => wired(out, kind::DONE, status),
             ServerFrame::Terminal { taken } => wired(out, kind::TERMINAL, taken),
@@ -471,7 +464,6 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
             ServerFrame::Paint(bytes) => raw(out, kind::PAINT, bytes),
             ServerFrame::Exit(reason) => raw(out, kind::EXIT, reason.as_bytes()),
             ServerFrame::Stdout(bytes) => raw(out, kind::STDOUT, bytes),
-            ServerFrame::Stderr(bytes) => raw(out, kind::STDERR, bytes),
         }
     }
 }
@@ -679,14 +671,14 @@ mod tests {
         round_trip!(ServerFrame, 7, ServerFrame::Paint(&[0, 1, 2, 255]));
         round_trip!(ServerFrame, 8, ServerFrame::Exit("detached"));
         round_trip!(ServerFrame, 9, ServerFrame::Stdout(b"out"));
-        round_trip!(ServerFrame, 10, ServerFrame::Stderr(&[]));
         round_trip!(ServerFrame, 11, ServerFrame::Done { status: 2 });
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: true });
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: false });
-        round_trip!(ServerFrame, 13, ServerFrame::Reply(Box::default()));
         round_trip!(ServerFrame, 14, ServerFrame::Ended);
         round_trip!(ServerFrame, 15, ServerFrame::Run("me zoom"));
         round_trip!(ServerFrame, 16, ServerFrame::Keys(Vec::new()));
+        round_trip!(ServerFrame, 17, ServerFrame::Part(b"reply"));
+        round_trip!(ServerFrame, 18, ServerFrame::PartsEnd);
         // A Hello's bytes never change, so that `Kill` reaches a server of
         // any version: the length, the kind, the protocol, the role, then
         // the version's length and bytes.

@@ -134,8 +134,8 @@ fn stream(r: &mut Rng) -> Vec<u8> {
 }
 
 /// What the current fux refuses of the whole frame `held` begins with,
-/// whatever its payload, which the baseline takes: a `Terminal`, or a size
-/// of zero, read before the fields after it. A command, which each reads
+/// whatever its payload, which the baseline takes: a `Terminal`, a
+/// `Stderr` (which it no longer has), or a size of zero, read before the fields after it. A command, which each reads
 /// as a frame of its own, both stop at.
 fn refused(held: &[u8]) -> Option<String> {
     let (header, rest) = held.split_first_chunk::<4>()?;
@@ -146,7 +146,7 @@ fn refused(held: &[u8]) -> Option<String> {
     let cols = payload.get(2..).and_then(<[u8]>::first_chunk::<2>);
     let zero = rows == Some(&[0, 0]) || (rows.is_some() && cols == Some(&[0, 0]));
     match kind {
-        6 | 12 => Some(format!("UnexpectedKind({kind})")),
+        6 | 10 | 12 => Some(format!("UnexpectedKind({kind})")),
         2 | 4 if zero => Some("ZeroSize".into()),
         _ => None,
     }
@@ -229,11 +229,7 @@ fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use baseline::protocol::Stream as Base;
     use fux::protocol::ServerFrame as Cur;
     let (mut a, mut b) = (Vec::new(), Vec::new());
-    let streams: [(_, fn(_) -> _); 3] = [
-        (Base::Paint, Cur::Paint),
-        (Base::Stdout, Cur::Stdout),
-        (Base::Stderr, Cur::Stderr),
-    ];
+    let streams: [(_, fn(_) -> _); 2] = [(Base::Paint, Cur::Paint), (Base::Stdout, Cur::Stdout)];
     for (base, cur) in streams {
         let mut queue = baseline::bytes::ByteQueue::default();
         queue.push(b"before");

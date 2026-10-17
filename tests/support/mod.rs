@@ -487,10 +487,8 @@ impl Client {
                 }
                 frame @ (ServerFrame::Hello(_)
                 | ServerFrame::Stdout(_)
-                | ServerFrame::Stderr(_)
                 | ServerFrame::Done { .. }
                 | ServerFrame::Terminal { .. }
-                | ServerFrame::Reply(_)
                 | ServerFrame::Ended
                 | ServerFrame::Run(_)
                 | ServerFrame::Keys(_)
