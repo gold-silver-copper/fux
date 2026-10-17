@@ -631,12 +631,14 @@ impl fuxth::Host for Host<'_> {
                     "tab" => Kind::Tab,
                     _ => Kind::Workspace,
                 };
-                // An action's answer is its pane.
-                let mut found = next()?;
-                if let Value::App(Fux::Answer(answer)) = &found
-                    && let Some(p) = answer.said.pane()
-                {
-                    found = Value::App(Fux::Pane(p));
+                // A handle (an action's answer is its pane) of the kind is
+                // itself; another kind's is looked for by its id.
+                let found = next()?;
+                if let Ok(id) = target(&found) {
+                    return match id.kind() == kind {
+                        true => now(out, Value::App(super::handle(id))),
+                        false => resolve(id.to_string(), kind),
+                    };
                 }
                 match found {
                     // An empty name names nothing: never the caller's own,
@@ -647,14 +649,6 @@ impl fuxth::Host for Host<'_> {
                         format!("an empty name names no {name}: `here` is the pane this runs in"),
                     )),
                     Value::Str(s) => resolve(s.to_string(), kind),
-                    Value::App(app @ (Fux::Pane(_) | Fux::Tab(_) | Fux::Workspace(_))) => {
-                        match (kind, &app) {
-                            (Kind::Pane, Fux::Pane(_))
-                            | (Kind::Tab, Fux::Tab(_))
-                            | (Kind::Workspace, Fux::Workspace(_)) => now(out, Value::App(app)),
-                            _ => resolve(Value::App(app).text(), kind),
-                        }
-                    }
                     other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
                         Err(wrong("a name, or a pane, tab or workspace", &other))
                     }
