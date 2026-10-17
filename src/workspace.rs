@@ -82,9 +82,6 @@ pub struct Seat {
 }
 
 impl Seat {
-    pub fn focus(&self) -> Option<PaneId> {
-        self.focus
-    }
     pub fn last(&self) -> Option<PaneId> {
         self.last
     }
