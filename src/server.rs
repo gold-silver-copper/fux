@@ -1900,7 +1900,9 @@ mod tests {
     }
 
     /// A grant from a directory whose name is not UTF-8 is bound at the
-    /// path it names and records, not at a lossy spelling of it.
+    /// path it names and records, not at a lossy spelling of it. Linux
+    /// only: macOS's file systems refuse a name that is not UTF-8.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_grant_from_a_directory_not_utf8_binds_its_own_path() -> Result<(), String> {
         use std::os::unix::ffi::OsStrExt;
