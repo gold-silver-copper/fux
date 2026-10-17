@@ -331,7 +331,7 @@ impl std::str::FromStr for KeyPress {
             *held = true;
             rest = tail;
         }
-        let key = if rest == "BTab" {
+        let key = if rest.eq_ignore_ascii_case("BTab") {
             mods.shift = true;
             Key::Tab
         } else if let Some((_, key)) = NAMED
@@ -387,6 +387,8 @@ mod tests {
             ("C-M-Left", "C-M-Left"),
             ("S-Up", "S-Up"),
             ("BTab", "BTab"),
+            ("btab", "BTab"),
+            ("BTAB", "BTab"),
             ("S-Tab", "BTab"),
             ("Enter", "Enter"),
             ("enter", "Enter"),
