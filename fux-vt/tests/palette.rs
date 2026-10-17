@@ -198,10 +198,11 @@ fn osc_104_resets_entries() -> Result {
 
 /// The special colours (ctlseqs: bold, underline, blink, reverse and
 /// italic): OSC 5 ; c, or OSC 4 ; 256 + c, set and answered in the form
-/// asked; OSC 105 resets those listed, and none alone, as xterm 411 (where
-/// ctlseqs says every one); OSC 104 ; 256 + c resets one too. One never set is not answered: xterm's
-/// default is its foreground, which fux-vt does not know. Neither is OSC 4
-/// past 260, nor OSC 5 past 4.
+/// asked; OSC 105 resets those listed, and every one with none listed
+/// (ctlseqs, OSC 105: "If no parameters are given, all special colors will
+/// be reset"); OSC 104 ; 256 + c resets one too. One never set is not
+/// answered: xterm's default is its foreground, which fux-vt does not
+/// know. Neither is OSC 4 past 260, nor OSC 5 past 4.
 #[test]
 fn special_colours_are_set_queried_and_reset() -> Result {
     let (heard, parser) = run(
@@ -234,14 +235,7 @@ fn special_colours_are_set_queried_and_reset() -> Result {
         PALETTE,
         &[&set[..], b"\x1b]105\x07\x1b]5;0;?;1;?;2;?\x07"].concat(),
     )?;
-    assert_eq!(
-        heard,
-        said(&[
-            "^[]5;0;rgb:3030/3030/3030^G",
-            "^[]5;1;rgb:4040/4040/4040^G",
-            "^[]5;2;rgb:5050/5050/5050^G",
-        ])
-    );
+    assert_eq!(heard, said(&[]));
     Ok(())
 }
 

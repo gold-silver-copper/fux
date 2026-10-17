@@ -371,9 +371,9 @@ fn pairs(
 /// OSC 104 (`offset` 0) and OSC 105 (`offset` 256): the colours listed back
 /// to the terminal's own, read as xterm's `ResetAnsiColorRequest` reads
 /// them, up to the first that is no number or is followed by anything but
-/// `;`. With none listed, OSC 104 resets every palette entry, as ctlseqs
-/// says; OSC 105 resets nothing, as in xterm 411, where ctlseqs says every
-/// special colour (the README's "Departures from the references").
+/// `;`. With none listed, OSC 104 resets every palette entry and OSC 105
+/// every special colour, as ctlseqs says (xterm 411 resets no special
+/// colour).
 fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
     let Some(c) = colours else {
         return;
@@ -381,6 +381,8 @@ fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
     if rest.is_empty() {
         if offset == 0 {
             c.reset_palette();
+        } else {
+            c.special = [None; 5];
         }
         return;
     }
