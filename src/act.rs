@@ -159,16 +159,6 @@ wire! {
     }
 }
 
-impl Seek {
-    /// The other way.
-    pub fn reversed(self) -> Seek {
-        match self {
-            Seek::Forward => Seek::Backward,
-            Seek::Backward => Seek::Forward,
-        }
-    }
-}
-
 /// What moves a list (a menu, a chooser), made of the client's keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListAct {

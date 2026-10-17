@@ -633,14 +633,13 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         key @ (CopyAct::Next | CopyAct::Previous) => {
             match copy.search.clone() {
                 Some(search) => {
-                    let search = Search {
-                        seek: if key == CopyAct::Next {
-                            search.seek
-                        } else {
-                            search.seek.reversed()
-                        },
-                        ..search
+                    // Previous seeks the other way.
+                    let seek = match (key == CopyAct::Next, search.seek) {
+                        (true, seek) => seek,
+                        (false, Seek::Forward) => Seek::Backward,
+                        (false, Seek::Backward) => Seek::Forward,
                     };
+                    let search = Search { seek, ..search };
                     jump(copy, screen, height, at, &search, &mut view.notice);
                 }
                 None => view.error("no search yet: f or r starts one"),
