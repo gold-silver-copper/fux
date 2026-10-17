@@ -18,8 +18,8 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 /// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
-/// `PARSING`, their names, `Parsing::ALL` in that order, and `name`, a
-/// match giving each one's: `If "if",` gives `Parsing::If`, named "if".
+/// `Parsing::ALL` in that order, and `name`, a match giving each one's:
+/// `If "if",` gives `Parsing::If`, named "if".
 macro_rules! parsing {
     ($($variant:ident $name:literal,)*) => {
         /// The words that read the token after them, or shape the program:
@@ -29,11 +29,8 @@ macro_rules! parsing {
             $($variant,)*
         }
 
-        /// The parsing words' names, in `Parsing::ALL`'s order.
-        pub const PARSING: [&str; [$($name),*].len()] = [$($name),*];
-
         impl Parsing {
-            pub const ALL: [Parsing; PARSING.len()] = [$(Parsing::$variant),*];
+            pub const ALL: [Parsing; [$($name),*].len()] = [$(Parsing::$variant),*];
 
             pub fn name(self) -> &'static str {
                 match self {
