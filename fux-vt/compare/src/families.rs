@@ -676,11 +676,11 @@ pub const FAMILIES: &[Family] = &[
         name: "controls",
         about: "CR, LF, VT, FF, BS, HT and BEL",
         status: Status::Decided {
-            why: "LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm does; HT keeps it, as xterm and every engine but avt do, though the appendix lists HT (a departure: fux-vt/README.md). The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`)",
-            by: XTERM,
+            why: "HT, LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says, as fux-vt does; xterm and every engine but avt keep it through HT (`replay --engines all --size 2x5 'abcde\\tX'`). The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`). No engine follows the appendix all through, so the test alone checks it",
+            by: &[],
             authority: Authority::Standard {
                 section: "DEC STD 070, Appendix D.6.1",
-                test: "conformance::a_pending_wrap_is_a_flag_on_the_last_column",
+                test: "conformance::a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it",
             },
         },
         ratty_only: false,

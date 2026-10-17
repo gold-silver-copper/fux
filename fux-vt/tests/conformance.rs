@@ -55,10 +55,10 @@ fn a_pending_wrap_is_a_flag_on_the_last_column() -> Result {
 /// DEC STD 070, Appendix D.6.1: Save Cursor saves the Last Column Flag
 /// and Restore Cursor restores it; xterm does the same for DECSC and
 /// SCOSC. What the appendix does not list leaves the flag set: SGR, and
-/// SU, as in xterm. HT is in the list, but xterm, and every engine
-/// `fux-vt-compare` runs but avt and vt100, leave the flag set at the
-/// last column (`replay --engines all --size 2x5 'abcde\tX'`): fux-vt
-/// follows xterm.
+/// SU, as in xterm. HT is in the list, so it ends the wrap, and CHT, HT
+/// that many times, does too; xterm, and every engine `fux-vt-compare`
+/// runs but avt and vt100, leave the flag set at the last column
+/// (`replay --engines all --size 2x5 'abcde\tX'`).
 #[test]
 fn a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it() -> Result {
     for (save, restore) in [(&b"\x1b7"[..], &b"\x1b8"[..]), (b"\x1b[s", b"\x1b[u")] {
@@ -70,10 +70,17 @@ fn a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it() -
         assert_eq!(lines(&p), ["abcde", "X"], "{save:?}");
         assert!(p.screen().row_wrapped(0), "{save:?}");
     }
-    for keep in [&b"\t"[..], b"\x1b[1m", b"\x1b[?25l"] {
+    for keep in [&b"\x1b[1m"[..], b"\x1b[?25l"] {
         let p = run(2, 5, &[&b"abcde"[..], keep, b"X"].concat())?;
         assert_eq!(lines(&p), ["abcde", "X"], "{keep:?}");
         assert_eq!(p.screen().cursor_position(), (1, 1), "{keep:?}");
+    }
+    for tab in [&b"\t"[..], b"\x1b[I", b"\x1b[2I"] {
+        let p = run(2, 5, &[&b"abcde"[..], tab].concat())?;
+        assert_eq!(p.screen().cursor_position(), (0, 4), "{tab:?}");
+        assert!(!p.screen().pending_wrap(), "{tab:?}");
+        let p = run(2, 5, &[&b"abcde"[..], tab, b"X"].concat())?;
+        assert_eq!(lines(&p), ["abcdX", ""], "{tab:?}");
     }
     let p = run(2, 5, b"abcde\x1b[SX")?;
     assert_eq!(lines(&p), ["", "X"]);

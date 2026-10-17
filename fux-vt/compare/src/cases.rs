@@ -108,7 +108,7 @@ pub const CASES: &[Named] = &[
         ],
     ),
     (
-        "tab-keeps-a-pending-wrap",
+        "tab-ends-a-pending-wrap",
         "controls",
         (2, 5),
         &["abcde\\tX"],

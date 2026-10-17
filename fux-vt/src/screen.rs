@@ -1552,8 +1552,7 @@ impl Screen {
         let new_line = self.mode(Mode::NewLine);
         let g = self.grid_mut();
         // BS, LF, VT, FF and CR end a pending wrap (DEC STD 070, Appendix
-        // D.6.1). HT does not: it leaves a cursor in the last column where
-        // it is, still waiting to wrap, as xterm does.
+        // D.6.1); HT too, in `tab`.
         if matches!(byte, 8 | 13) {
             g.cursor.pending_wrap = false;
         }
@@ -1585,6 +1584,9 @@ impl Screen {
     /// Each stop is found from the last, never past the column it stops
     /// at, and once the cursor stops moving the rest of the count is
     /// spent: the work is the line's width at most, whatever the count.
+    ///
+    /// It ends a pending wrap: DEC STD 070 (Appendix D.6.1) lists HT, and
+    /// CHT is HT that many times (xterm keeps the wrap through both).
     fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
         let (mut col, mut last) = (g.cursor.col(), g.columns().last());
@@ -1603,7 +1605,9 @@ impl Screen {
             }
             col = to;
         }
-        self.grid_mut().set_col(col);
+        let g = self.grid_mut();
+        g.set_col(col);
+        g.cursor.pending_wrap = false;
     }
     /// Whether BS and CUB wrap back: reverse wraparound, either kind, with
     /// DECAWM, as xterm has it.
@@ -2373,8 +2377,9 @@ impl Screen {
         let pending = self.grid().cursor.pending_wrap;
         // Every cursor movement, erase and edit ends a pending wrap (DEC STD
         // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL,
-        // DL and DECSTBM below, once they are carried out. SU and SD are not
-        // among them: the cursor stays waiting to wrap, as in xterm.
+        // DL and DECSTBM below, once they are carried out, and CHT in
+        // `tab`. SU and SD are not among them: the cursor stays waiting to
+        // wrap, as in xterm.
         if matches!(byte, b'A'..=b'H' | b'X' | b'`' | b'a' | b'd' | b'e' | b'f') {
             self.grid_mut().cursor.pending_wrap = false;
         }
@@ -2537,8 +2542,7 @@ impl Screen {
                 self.pen_changed();
             }
             b'b' => self.repeat(n)?,
-            // CHT (ECMA-48 8.3.10): HT n times. Like HT, it leaves a
-            // pending wrap waiting in the last column.
+            // CHT (ECMA-48 8.3.10): HT n times.
             b'I' => self.tab(n, true),
             // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
             // column. With a wrap pending it does nothing, as in xterm.
