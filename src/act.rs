@@ -11,138 +11,152 @@ use crate::keys::colour::Scheme;
 use crate::keys::decode::Reply;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::keys::{Keystroke, Kitty, Modifiers};
-use crate::wire::{closed_wire, wire_enum, wire_struct};
+use crate::wire::{closed_wire, wire, wire_enum, wire_struct};
 use fux_vt::ModeStatus;
 
-/// One action of an attached client.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Act {
-    /// A key typed, as literal input to the focused pane.
-    Key(Keystroke),
-    /// Pasted text, for the focused pane.
-    Paste(String),
-    Mouse(MouseEvent),
-    Focus(bool),
-    /// The terminal's answer to a question fux asked it.
-    Reply(Reply),
-    /// Draw one of the client's screens over its panes.
-    Show(Panel),
-    /// Draw none: the client is back to its panes (copy mode left too).
-    Hide,
-    /// A notice, from a binding's program: an error if `error`.
-    Notice {
-        text: String,
-        error: bool,
-    },
-    Copy(CopyAct),
+wire! {
+    /// One action of an attached client.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum Act {
+        /// A key typed, as literal input to the focused pane.
+        Key(stroke: Keystroke),
+        /// Pasted text, for the focused pane.
+        Paste(text: String),
+        Mouse(event: MouseEvent),
+        Focus(gained: bool),
+        /// The terminal's answer to a question fux asked it.
+        Reply(reply: Reply),
+        /// Draw one of the client's screens over its panes.
+        Show(panel: Panel),
+        /// Draw none: the client is back to its panes (copy mode left too).
+        Hide,
+        /// A notice, from a binding's program: an error if `error`.
+        Notice {
+            text: String,
+            error: bool,
+        },
+        Copy(act: CopyAct),
+    }
 }
 
-/// What the server draws of a client's screen: the client holds all of its
-/// state, and sends it again as it changes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Panel {
-    /// The command column: the client's bindings of one layer.
-    Column(Column),
-    /// A repeat mode's bar: `RESIZE  h j k l · Esc`.
-    Repeat(String),
-    /// A menu or a chooser.
-    List(List),
-    /// A line being typed: the command prompt, a rename (of `about`).
-    Prompt {
-        title: String,
-        before: String,
-        after: String,
-        about: Option<AnyRef>,
-    },
-    /// A question answered y or n, about closing `about`.
-    Confirm { question: String, about: AnyRef },
+wire! {
+    /// What the server draws of a client's screen: the client holds all of its
+    /// state, and sends it again as it changes.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Panel {
+        /// The command column: the client's bindings of one layer.
+        Column(column: Column),
+        /// A repeat mode's bar: `RESIZE  h j k l · Esc`.
+        Repeat(bar: String),
+        /// A menu or a chooser.
+        List(list: List),
+        /// A line being typed: the command prompt, a rename (of `about`).
+        Prompt {
+            title: String,
+            before: String,
+            after: String,
+            about: Option<AnyRef>,
+        },
+        /// A question answered y or n, about closing `about`.
+        Confirm { question: String, about: AnyRef },
+    }
 }
 
-/// The command column as a client shows it.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct Column {
-    pub title: String,
-    /// The keys typed so far, as the bar shows them: `C-b t`.
-    pub keys: String,
-    pub entries: Vec<ColumnEntry>,
-    pub selected: usize,
+wire! {
+    /// The command column as a client shows it.
+    #[derive(Clone, Debug, PartialEq, Eq, Default)]
+    pub struct Column {
+        pub title: String,
+        /// The keys typed so far, as the bar shows them: `C-b t`.
+        pub keys: String,
+        pub entries: Vec<ColumnEntry>,
+        pub selected: usize,
+    }
 }
 
-/// One binding of a column: its key, what it does, the group it is listed
-/// under, and whether it opens a layer of more keys.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ColumnEntry {
-    pub key: String,
-    pub label: String,
-    pub group: String,
-    pub layer: bool,
-    /// Bound without the prefix: listed after the rest, under headings of
-    /// their own.
-    pub root: bool,
+wire! {
+    /// One binding of a column: its key, what it does, the group it is listed
+    /// under, and whether it opens a layer of more keys.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ColumnEntry {
+        pub key: String,
+        pub label: String,
+        pub group: String,
+        pub layer: bool,
+        /// Bound without the prefix: listed after the rest, under headings of
+        /// their own.
+        pub root: bool,
+    }
 }
 
-/// A menu or a chooser, as drawn: its rows, the one marked current, the one
-/// selected, and whether `r` and `x` act on its rows (a chooser's do).
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct List {
-    pub title: String,
-    pub items: Vec<String>,
-    pub current: Option<usize>,
-    pub selected: usize,
-    pub chooser: bool,
-    /// What it was opened for: if it goes, the server closes the list.
-    pub about: Option<AnyRef>,
+wire! {
+    /// A menu or a chooser, as drawn: its rows, the one marked current, the one
+    /// selected, and whether `r` and `x` act on its rows (a chooser's do).
+    #[derive(Clone, Debug, PartialEq, Eq, Default)]
+    pub struct List {
+        pub title: String,
+        pub items: Vec<String>,
+        pub current: Option<usize>,
+        pub selected: usize,
+        pub chooser: bool,
+        /// What it was opened for: if it goes, the server closes the list.
+        pub about: Option<AnyRef>,
+    }
 }
 
-/// What moves, selects and copies in copy mode.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CopyAct {
-    /// Copy mode starts, on the focused pane.
-    Enter,
-    Leave,
-    Left,
-    Right,
-    Up,
-    Down,
-    WordForward,
-    WordBack,
-    /// The first glyph of the line.
-    FirstInk,
-    /// The last glyph of the line.
-    LastInk,
-    LineStart,
-    Top,
-    Bottom,
-    HalfUp,
-    HalfDown,
-    PageUp,
-    PageDown,
-    Next,
-    Previous,
-    /// The cursor to the next shell prompt, or the one before.
-    Prompt(Seek),
-    SelectChar,
-    SelectLine,
-    SelectBlock,
-    /// The other end of the selection.
-    OtherEnd,
-    /// Copy what is selected, and leave.
-    Yank,
-    /// The search line the client is typing, for the bar: forward or back,
-    /// and its text before and after the cursor; none once it is done.
-    Typing(Option<(Seek, String, String)>),
-    /// Find `query`, forward or back, from the cursor.
-    Find {
-        query: String,
-        seek: Seek,
-    },
+wire! {
+    /// What moves, selects and copies in copy mode.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum CopyAct {
+        /// Copy mode starts, on the focused pane.
+        Enter,
+        Leave,
+        Left,
+        Right,
+        Up,
+        Down,
+        WordForward,
+        WordBack,
+        /// The first glyph of the line.
+        FirstInk,
+        /// The last glyph of the line.
+        LastInk,
+        LineStart,
+        Top,
+        Bottom,
+        HalfUp,
+        HalfDown,
+        PageUp,
+        PageDown,
+        Next,
+        Previous,
+        /// The cursor to the next shell prompt, or the one before.
+        Prompt(seek: Seek),
+        SelectChar,
+        SelectLine,
+        SelectBlock,
+        /// The other end of the selection.
+        OtherEnd,
+        /// Copy what is selected, and leave.
+        Yank,
+        /// The search line the client is typing, for the bar: forward or back,
+        /// and its text before and after the cursor; none once it is done.
+        Typing(line: Option<(Seek, String, String)>),
+        /// Find `query`, forward or back, from the cursor.
+        Find {
+            query: String,
+            seek: Seek,
+        },
+    }
 }
 
-/// Which way a search goes: toward later rows, or earlier ones.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Seek {
-    Forward,
-    Backward,
+wire! {
+    /// Which way a search goes: toward later rows, or earlier ones.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Seek {
+        Forward,
+        Backward,
+    }
 }
 
 impl Seek {
@@ -248,73 +262,4 @@ wire_enum!(Reply {
     Attributes { sixel },
     CellSize { width, height },
     UnderlineStyles,
-});
-wire_struct!(ColumnEntry {
-    key,
-    label,
-    group,
-    layer,
-    root
-});
-wire_struct!(Column {
-    title,
-    keys,
-    entries,
-    selected
-});
-wire_struct!(List {
-    title,
-    items,
-    current,
-    selected,
-    chooser,
-    about
-});
-wire_enum!(Panel {
-    Column(column),
-    Repeat(bar),
-    List(list),
-    Prompt { title, before, after, about },
-    Confirm { question, about },
-});
-wire_enum!(CopyAct {
-    Enter,
-    Leave,
-    Left,
-    Right,
-    Up,
-    Down,
-    WordForward,
-    WordBack,
-    FirstInk,
-    LastInk,
-    LineStart,
-    Top,
-    Bottom,
-    HalfUp,
-    HalfDown,
-    PageUp,
-    PageDown,
-    Next,
-    Previous,
-    Prompt(seek),
-    SelectChar,
-    SelectLine,
-    SelectBlock,
-    OtherEnd,
-    Yank,
-    Typing(line),
-    Find { query, seek },
-});
-wire_enum!(Seek { Forward, Backward });
-wire_enum!(Act {
-    Key(k),
-    Paste(text),
-    Mouse(m),
-    Focus(gained),
-    Reply(reply),
-    Show(panel),
-    Hide,
-    Notice { text, error },
-    Copy(a),
 });
