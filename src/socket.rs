@@ -241,8 +241,9 @@ pub(crate) fn checked(value: &str, from: &'static str) -> Result<SocketPath, Err
 /// root's show as another uid (65534), and what keeps a connection private
 /// is that each side checks the other's user (the server its clients', a
 /// client its server's), whoever could rename what lies above. `create`
-/// makes it when it is missing; nothing that already exists is modified.
-fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
+/// makes it when it is missing (as a server does, or a client about to
+/// start one); nothing that already exists is modified.
+pub(crate) fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
     let (directory, above) = (socket.directory(), socket.above.as_path());
     let euid = geteuid();
     above
@@ -284,12 +285,6 @@ fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
         )));
     }
     Ok(())
-}
-
-/// Makes the socket's private directory if it is missing, checking it as a
-/// server does; for a client about to start one.
-pub fn prepare_directory(socket: &SocketPath) -> Result<(), Error> {
-    private_directory(socket, true)
 }
 
 /// A client refuses a socket that is not in a private directory of its own

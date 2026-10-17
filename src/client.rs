@@ -403,14 +403,14 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
 /// Whether a server answers on `socket`: its socket, or, where sockets are
 /// denied, its door.
 pub fn answers(socket: &SocketPath) -> bool {
-    UnixStream::connect(socket.path()).is_ok() || crate::door::served(socket.path())
+    UnixStream::connect(socket.path()).is_ok() || crate::door::open_door(socket.path()).is_ok()
 }
 
 /// Starts a server in the background, in a new session with its output in
 /// `fux.log` beside the socket, and waits for it to answer.
 pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
-    crate::socket::prepare_directory(socket)?;
+    crate::socket::private_directory(socket, true)?;
     let log = socket.directory().join("fux.log");
     let output = std::fs::OpenOptions::new()
         .create(true)
