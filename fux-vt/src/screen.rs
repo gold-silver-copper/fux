@@ -220,6 +220,33 @@ fn checksum_of(cell: &CellRef<'_>) -> u16 {
     base.wrapping_add(marks).wrapping_add(rendition)
 }
 
+/// `a` as DECCARA (or DECRARA, `reverse`) with SGR's numbers `groups` leaves
+/// it (DEC STD 070, 5.12.1), each in turn: 1 bold, 4 underlined, 5 blinking
+/// and 7 inverse set (reversed); DECCARA's 22, 24, 25 and 27 end each; 0
+/// ends (reverses) all four. Other numbers change nothing: no colour is a
+/// rendition either changes, and DECRARA has no reverse of one.
+fn rendition(mut a: Attributes, groups: &[&[u16]], reverse: bool) -> Attributes {
+    const DEC: [(u16, u16, u16, u16); 4] = [
+        (1, 22, Attributes::BOLD, Attributes::BOLD),
+        (4, 24, Attributes::UNDERLINE, Attributes::SINGLE_UNDERLINE),
+        (5, 25, Attributes::BLINK, Attributes::SLOW_BLINK),
+        (7, 27, Attributes::INVERSE, Attributes::INVERSE),
+    ];
+    for n in groups.iter().filter_map(|group| group.first()) {
+        for (on, off, mask, bits) in DEC {
+            let set = match reverse {
+                true => (*n == 0 || *n == on).then_some(a.flags & mask == 0),
+                false if *n == on => Some(true),
+                false => (*n == 0 || *n == off).then_some(false),
+            };
+            if let Some(set) = set {
+                a.flags = (a.flags & !mask) | if set { bits } else { 0 };
+            }
+        }
+    }
+    a
+}
+
 /// The tab stops (ECMA-48: HTS sets one, TBC clears; HT, CHT and CBT move
 /// to them), one set for both screens, as in xterm: one every eight
 /// columns at first and after RIS. Kept for every column the terminal has
@@ -356,6 +383,9 @@ struct Terminal {
     modify_other_keys: Option<OtherKeys>,
     /// What DSR 75 reports of the data integrity flag.
     integrity: Integrity,
+    /// DECSACE 2: DECCARA and DECRARA change a rectangle; else (0, 1, the
+    /// default) the stream of positions from its first to its last.
+    rectangle: bool,
 }
 
 /// Terminal state. Reading a window never changes where subsequent output lands.
@@ -2102,10 +2132,11 @@ impl Screen {
     }
 
     /// DEC STD 070's rectangular area operations (5.12.1), by final byte:
-    /// DECFRA (`x`), DECERA (`z`), DECSERA (`{`) and DECCRA (`v`), on the
-    /// rectangle their parameters name (`rectangle`), which none of the
-    /// margins bounds otherwise, the cursor staying where it is. A page
-    /// parameter is ignored: there is one. Out of line, as they are rare.
+    /// DECFRA (`x`), DECERA (`z`), DECSERA (`{`), DECCARA (`r`), DECRARA
+    /// (`t`) and DECCRA (`v`), on the rectangle their parameters name
+    /// (`rectangle`), which none of the margins bounds otherwise, the
+    /// cursor staying where it is. A page parameter is ignored: there is
+    /// one. Out of line, as they are rare.
     #[inline(never)]
     fn rectangle_area(&mut self, p: &Parameters, byte: u8) {
         // DECFRA's rectangle follows its character.
@@ -2140,6 +2171,26 @@ impl Screen {
             // DECSERA: the glyphs DECSCA does not protect, SPA's guard being
             // no DECSCA, made spaces in their own attributes.
             b'{' => self.each_row(lines, |g, y, v| g.blank_unprotected(y, span, v)),
+            // DECCARA and DECRARA: SGR's numbers from the fifth parameter
+            // on (DECCARA's default 0), over the rectangle, or with
+            // DECSACE's stream from its first position to its last, every
+            // row between them whole.
+            b'r' | b't' => {
+                let reverse = byte == b't';
+                let none = !reverse && p.groups().nth(4).is_none();
+                let given = p.groups().skip(4);
+                let groups: Vec<&[u16]> = given.chain(none.then_some(&[0][..])).collect();
+                let change = |a| rendition(a, &groups, reverse);
+                let (rectangle, cols) = (self.terminal.rectangle, self.size().cols());
+                // The rectangle's edge, or a stream's, but at its ends.
+                let edge =
+                    |end: bool, at: u16, whole: u16| if rectangle || end { at } else { whole };
+                self.each_row(lines, |g, y, v| {
+                    let start = edge(y == lines.first(), span.0, 0);
+                    let end = edge(y == lines.last(), span.1, cols);
+                    g.restyle(y, (start, end), rectangle, v, change);
+                });
+            }
             // DECCRA: to `Ptd ; Pld`, addressed as the rectangle is.
             _ => {
                 let (to_lines, to_columns) = self.grid().addressed();
@@ -2350,6 +2401,11 @@ impl Screen {
                 let (left, right) = self.left_right_margins();
                 let (left, right) = (left.saturating_add(1), right.saturating_add(1));
                 let _ = write!(out, "{left};{right}s");
+            }
+            // DECSACE's extent: 2 a rectangle, 0 a stream.
+            b"*x" => {
+                let extent = if self.terminal.rectangle { 2 } else { 0 };
+                let _ = write!(out, "{extent}*x");
             }
             // DECSCA's selective erase attribute, which SPA is not.
             b"\"q" => {
@@ -2820,8 +2876,16 @@ impl Screen {
                 }
                 _ => None,
             },
-            (b"$", b'x' | b'z' | b'{' | b'v') => {
+            (b"$", b'x' | b'z' | b'{' | b'r' | b't' | b'v') => {
                 self.rectangle_area(p, byte);
+                return Some(Dispatch::Done);
+            }
+            // DECSACE (DEC STD 070, 5.12.1): 2 a rectangle, 0 and 1 a
+            // stream; another is ignored.
+            (b"*", b'x') => {
+                if n <= 2 {
+                    self.terminal.rectangle = n == 2;
+                }
                 return Some(Dispatch::Done);
             }
             (b"*", b'y') if options.has(Feature::RectangleChecksums) => {

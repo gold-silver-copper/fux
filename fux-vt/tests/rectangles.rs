@@ -1,9 +1,10 @@
 //! The rectangular area operations of DEC STD 070, 5.12.1 (VT420, level
 //! 4): DECFRA (`CSI Pch ; Pt ; Pl ; Pb ; Pr $ x`), DECERA (`$ z`), DECSERA
-//! (`$ {`) and DECCRA (`$ v`). Each expected screen is worked out by hand from the
+//! (`$ {`), DECCARA (`$ r`), DECRARA (`$ t`), DECCRA (`$ v`) and DECSACE
+//! (`CSI Ps * x`). Each expected screen is worked out by hand from the
 //! standard's text, which each test quotes.
 
-use fux_vt::{Parser, Size};
+use fux_vt::{Feature, Options, Parser, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
@@ -153,5 +154,73 @@ fn deccra_copies_a_rectangle() -> Result {
     let cell = screen.cell(3, 0);
     assert!(cell.is_some_and(|c| c.contents() == "A" && c.attributes().inverse()));
     assert_eq!(screen.cursor_position(), (0, 1));
+    Ok(())
+}
+
+/// DEC STD 070, 5.12.1, DECCARA sets the renditions SGR's 1, 4, 5 and 7
+/// name over the area, and 22, 24, 25, 27 or 0 (the default) end them;
+/// DECRARA reverses those 1, 4, 5 and 7 name, or all four for 0. The
+/// characters stay. With DECSACE 0 or 1 (the default) the area is the
+/// stream of positions from the first to the last, its unoccupied
+/// positions unaffected; with 2 the rectangle, whose unoccupied positions
+/// become blanks and are affected.
+#[test]
+fn deccara_and_decrara_change_renditions() -> Result {
+    let bold = |p: &Parser| -> Vec<String> {
+        let screen = p.screen();
+        (0..4)
+            .map(|y| {
+                (0..6)
+                    .map(|x| match screen.cell(y, x) {
+                        Some(c) if c.attributes().bold() => 'B',
+                        Some(c) if c.has_contents() => '.',
+                        _ => '_',
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    // A stream from (1, 2) to (3, 5), and a rectangle; in either, a left
+    // past the right is ignored.
+    let short = "\x1b[2;4H\x1b[K";
+    let stream = after(&format!("{short}\x1b[1;2;3;5;1$r"))?;
+    assert_eq!(bold(&stream), [".BBBBB", "BBB___", "BBBBB.", "......"]);
+    let inverted = after(&format!("{short}\x1b[1;5;3;2;1$r"))?;
+    assert_eq!(bold(&inverted), ["......", "...___", "......", "......"]);
+    let rectangle = after(&format!("{short}\x1b[2*x\x1b[1;2;3;5;1$r"))?;
+    assert_eq!(bold(&rectangle), [".BBBB.", ".BBBB_", ".BBBB.", "......"]);
+    assert_eq!(lines(&rectangle), ["abcdef", "ghi", "mnopqr", "stuvwx"]);
+    // DECCARA 0, its default, ends what 1 set; DECRARA reverses.
+    let ended = after("\x1b[2*x\x1b[1;1;2;6;1$r\x1b[1;2;1;3$r")?;
+    assert_eq!(bold(&ended), ["B..BBB", "BBBBBB", "......", "......"]);
+    let reversed = after("\x1b[2*x\x1b[1;1;1;3;1$r\x1b[1;2;1;4;1$t")?;
+    assert_eq!(bold(&reversed), ["B..B..", "......", "......", "......"]);
+    let parser = after("\x1b[2*x\x1b[1;1;1;1;4;7$r\x1b[1;1;1;2;0$t")?;
+    let screen = parser.screen();
+    let a = |x| screen.cell(0, x).map(|c| c.attributes());
+    assert!(a(0).is_some_and(|a| !a.underline() && !a.inverse() && a.bold()));
+    assert!(a(1).is_some_and(|a| a.underline() && a.inverse() && a.bold()));
+    // DECRARA with no rendition does nothing; colours are none.
+    assert_eq!(
+        bold(&after("\x1b[1;1;4;6$t\x1b[1;1;4;6;31$r")?),
+        bold(&after("")?)
+    );
+    Ok(())
+}
+
+/// DEC STD 070, 5.12.1, DECSACE: 0 and 1 select the stream, 2 the
+/// rectangle; DECRQSS reports it.
+#[test]
+fn decsace_is_reported() -> Result {
+    let options = Options::new().with(Feature::SettingReports);
+    let mut parser = Parser::with_options(Size::new(2, 4)?, 0, options)?;
+    let mut replies = Vec::new();
+    let ask = b"\x1bP$q*x\x1b\\";
+    for set in [&b"\x1b[2*x"[..], b"\x1b[1*x", b"\x1b[2*x\x1b[7*x"] {
+        parser.process_with_replies(set, |_| {})?;
+        parser.process_with_replies(ask, |r| replies.push(r.to_vec()))?;
+    }
+    let reply = |n: u8| format!("\x1bP1$r{}*x\x1b\\", char::from(n)).into_bytes();
+    assert_eq!(replies, [reply(b'2'), reply(b'0'), reply(b'2')]);
     Ok(())
 }
