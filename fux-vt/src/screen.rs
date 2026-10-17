@@ -100,8 +100,12 @@ impl Printed {
 /// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 to G3, each ASCII or
 /// DEC Special Graphics, the one in GL, and the one a single shift invokes
 /// for the next character. The national sets are not kept: a set other
-/// than Special Graphics is ASCII, as xterm reads one in UTF-8.
+/// than Special Graphics is ASCII, as xterm reads one in UTF-8. Four
+/// bytes, aligned as a `u32`, which `ascii` reads once a run: three bytes
+/// among the screen's other bytes made the printing paths count up to
+/// 0.3% more instructions as those changed (bench-commit).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C, align(4))]
 pub(crate) struct Charsets {
     /// Which sets are DEC Special Graphics, a bit each (`Set::bit`).
     graphics: u8,
@@ -152,9 +156,9 @@ impl Charsets {
 
 /// What DECSC saves and DECRC restores: the cursor, with its pending wrap
 /// and origin mode (DEC STD 070, Appendix D.6.1), the pen, the character
-/// sets and whether glyphs are protected (DECSCA's selective erase
-/// attribute, as the VT420 manual lists it and xterm saves it). Each grid
-/// keeps its own, as each of xterm's screens does.
+/// sets and DECSCA's selective erase attribute (as the VT420 manual lists
+/// it; SPA's guarded area is no state of the cursor's). Each grid keeps its
+/// own, as each of xterm's screens does.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Saved {
     pub(crate) cursor: Cursor,
@@ -313,23 +317,6 @@ pub(crate) enum Dispatch {
     Unhandled,
 }
 
-/// Which protected glyphs erasing leaves (xterm's `protected_mode`): set
-/// by the last DECSCA (DEC's) or SPA (ISO's) for the whole terminal, as the
-/// glyphs printed after either are protected; none after a reset.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Protection {
-    /// No erase leaves any glyph.
-    #[default]
-    Off,
-    /// DECSED and DECSEL leave protected glyphs (DEC STD 070, 5.11.1.2,
-    /// Selectively Erasable Character Attribute); ED, EL and ECH erase
-    /// them, as on a VT220.
-    Dec,
-    /// Every erase, ED, EL, ECH, DECSED and DECSEL, leaves them (ECMA-48,
-    /// SPA and ERM reset; xterm, where DECSED and DECSEL do too).
-    Iso,
-}
-
 /// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR, 775):
 /// power-up (73) until it has been reported once after the screen is made
 /// or RIS, then no error since the last report (70). Four bytes, as a
@@ -390,12 +377,19 @@ pub struct Screen {
     /// The modes XTSAVE saved set. One never saved is reset, as in xterm,
     /// and RIS and DECSTR keep them, as xterm 411 does.
     saved_modes: Modes,
-    /// [`PROTECTED`] while the glyphs printed are protected from selective
-    /// erase (DECSCA 1, SPA), else 0: or-ed into the style they are
-    /// written in. DECSC saves it, as xterm does.
+    /// [`PROTECTED`] while DECSCA 1 protects the glyphs printed from
+    /// DECSED and DECSEL (DEC STD 070, 5.11.1.2), else 0: or-ed into the
+    /// style they are written in. DECSC saves it, as xterm does.
     protect: u32,
-    /// Which erases leave protected glyphs.
-    protection: Protection,
+    /// `TABLED` while the glyphs printed are in SPA's guarded area
+    /// (ECMA-48 8.3.140), which ED, EL and ECH leave, else 0: or-ed into
+    /// the pen's style (`pen_changed`), it makes that the table's, where
+    /// the style keeps `Attributes::GUARDED` (`pen_style`). Folded so, the
+    /// guard costs `pen_changed`, which every SGR calls, no branch.
+    guard: u32,
+    /// Whether a glyph either protects may be on a grid: erases look for
+    /// them only then. Set at DECSCA 1 and SPA; RIS clears it.
+    protected: bool,
     tabs: TabStops,
     /// How many times synchronized output has been set, for
     /// `Parser::process_until_frame`.
@@ -519,7 +513,8 @@ impl Screen {
             modes: Modes::DEFAULT,
             saved_modes: Modes::default(),
             protect: 0,
-            protection: Protection::Off,
+            guard: 0,
+            protected: false,
             tabs: TabStops::default(),
             frames_begun: 0,
             cursor_shape: CursorShape::Initial,
@@ -583,7 +578,7 @@ impl Screen {
     /// (`pen_style`, `blank_style`), to find it when next asked for: every
     /// change of `attributes` is followed by this.
     fn pen_changed(&mut self) {
-        self.pen_style = self.attributes.inline_style().unwrap_or(TABLED);
+        self.pen_style = self.attributes.inline_style().unwrap_or(TABLED) | self.guard;
         self.blank_style = UNKNOWN;
     }
     /// The number of the pen's style in the grid shown.
@@ -594,7 +589,7 @@ impl Screen {
         if style < TABLED {
             return style;
         }
-        let attributes = self.attributes;
+        let attributes = self.attributes.with_guard(self.guard != 0);
         self.grid_mut().table_style(attributes)
     }
     /// The number, in the grid shown, of the style of the pen's colours
@@ -1796,14 +1791,14 @@ impl Screen {
             // left margin (xterm's `CASE_NEL`).
             b'E' => self.new_line()?,
             // SPA and EPA (ECMA-48 8.3.140, 8.3.49): the glyphs printed
-            // between them are protected, and every erase leaves them (ISO
-            // protection, xterm's `CASE_SPA`); EPA keeps the kind of
-            // protection, as xterm does.
-            b'V' => {
-                self.protection = Protection::Iso;
-                self.protect = PROTECTED;
+            // between them are a guarded area, which ED, EL and ECH leave
+            // (ISO protection).
+            b'V' | b'W' => {
+                let guarded = byte == b'V';
+                self.guard = if guarded { TABLED } else { 0 };
+                self.protected |= guarded;
+                self.pen_changed();
             }
-            b'W' => self.protect = 0,
             // HTS (ECMA-48 8.3.62): a tab stop at the cursor's column.
             b'H' => {
                 let col = self.grid().cursor.col();
@@ -1850,6 +1845,7 @@ impl Screen {
                 self.encoding = MouseProtocolEncoding::Default;
                 self.modify_other_keys = None;
                 self.integrity = Integrity::PowerUp;
+                self.protected = false;
                 self.structural = self.version;
             }
             // ST (ECMA-48 8.3.143) is done too: it ended the string before
@@ -1940,35 +1936,30 @@ impl Screen {
         }
     }
 
-    /// ECH under ISO protection: the columns `start` to `end` of row `row`
-    /// erased but for their protected glyphs. Out of line, as protection is
-    /// rare and `csi` is on every CSI's way.
+    /// ECH while glyphs may be protected: the columns `start` to `end` of
+    /// row `row` erased but for their guarded glyphs (ISO's). Out of line,
+    /// as protection is rare and `csi` is on every CSI's way.
     #[inline(never)]
     fn erase_kept(&mut self, row: u16, start: u16, end: u16) {
         let blank = self.blank_style();
-        self.with_grid(|g, _, v| g.erase_unprotected(row, start, end, blank, v));
+        self.with_grid(|g, _, v| g.erase_unprotected(row, start, end, blank, v, true));
     }
 
     /// ED or EL (`display`), or DECSED or DECSEL (`private`), in `mode`,
-    /// while glyphs may be protected: DECSED and DECSEL leave them with any
-    /// protection, ED and EL with ISO's alone (xterm's `do_erase_display`
-    /// and `do_erase_line`). Whether it erased: ED and EL under DEC
-    /// protection erase every cell, as `csi` does without. The rest is as
+    /// while glyphs may be protected: DECSED and DECSEL leave the glyphs
+    /// DECSCA protects (DEC STD 070, 5.11.1.2), ED and EL the guarded ones
+    /// (ECMA-48, SPA with ERM reset), each knowing its own. The rest is as
     /// for ED and EL. An erase that finds no protected glyph leaves the
     /// protection as it is (DEC STD 070, 5.11.1.2; ECMA-48 8.3.140), where
     /// xterm ends it after an ED of the whole screen. Out of line: inlined,
     /// the tmux recordings count up to 0.35% more instructions (fux-bench).
     #[inline(never)]
-    fn erase_protected(&mut self, private: bool, display: bool, part: Erase) -> bool {
-        if !private && self.protection != Protection::Iso {
-            return false;
-        }
+    fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
         let blank = self.blank_style();
         let version = self.version;
         self.grid_mut().erase_in(display, part, |g, y, start, end| {
-            g.erase_unprotected(y, start, end, blank, version)
+            g.erase_unprotected(y, start, end, blank, version, !private);
         });
-        true
     }
 
     /// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
@@ -2029,14 +2020,14 @@ impl Screen {
             self.grid_mut().cursor.pending_wrap = false;
         }
         self.modes.reset(Modes::SOFT_RESET);
+        // The selective erase attribute, in the VT520 manual's table, and
+        // the guarded area, as xterm ends it.
+        self.protect = 0;
+        self.guard = 0;
         self.attributes = Attributes::default();
         self.pen_changed();
         self.charsets = Charsets::default();
-        // The left and right margins, and the selective erase attribute,
-        // both in the VT520 manual's table, and what erasing leaves, as
-        // xterm resets it.
-        self.protect = 0;
-        self.protection = Protection::Off;
+        // The left and right margins, in the VT520 manual's table too.
         for g in [&mut self.primary, &mut self.alternate] {
             g.cursor.origin = false;
             g.reset_margins();
@@ -2313,7 +2304,7 @@ impl Screen {
             }
             // DECSCA's selective erase attribute, which SPA is not.
             b"\"q" => {
-                let on = self.protect != 0 && self.protection == Protection::Dec;
+                let on = self.protect != 0;
                 let _ = write!(out, "{}\"q", u8::from(on));
             }
             _ => return Setting::Unknown,
@@ -2580,11 +2571,11 @@ impl Screen {
                 self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', blank, v));
             }
             // Erased cells take the pen's colours alone, as xterm's do.
-            // Under ISO protection (SPA) the protected glyphs stay.
+            // Guarded glyphs (SPA's) stay.
             b'X' => {
                 let a = self.blank_style();
                 let end = col.saturating_add(n);
-                if self.protection == Protection::Iso {
+                if self.protected {
                     self.erase_kept(row, col, end);
                 } else {
                     self.with_grid(|g, _, v| g.erase(row, col, end, a, v));
@@ -2602,19 +2593,17 @@ impl Screen {
                     return Ok(Dispatch::Unhandled);
                 };
                 // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
-                // protected glyphs; ED and EL only ISO's (SPA), as xterm's
-                // `do_erase_display` has it.
-                if self.protection != Protection::Off
-                    && self.erase_protected(private, byte == b'J', part)
-                {
-                    return Ok(Dispatch::Done);
-                }
-                let a = self.blank_style();
-                self.with_grid(|g, _, v| {
-                    g.erase_in(byte == b'J', part, |g, y, start, end| {
-                        g.erase(y, start, end, a, v);
+                // DECSCA's glyphs, ED and EL SPA's.
+                if self.protected {
+                    self.erase_protected(private, byte == b'J', part);
+                } else {
+                    let a = self.blank_style();
+                    self.with_grid(|g, _, v| {
+                        g.erase_in(byte == b'J', part, |g, y, start, end| {
+                            g.erase(y, start, end, a, v);
+                        });
                     });
-                });
+                }
                 if byte == b'J' && part == Erase::All {
                     self.screen_erased();
                 }
@@ -2711,16 +2700,15 @@ impl Screen {
         match (intermediates, byte) {
             // DECSCA (`CSI Ps " q`; DEC STD 070, 5.11.1.2): 1 protects the
             // glyphs printed next from DECSED and DECSEL, 0 and 2 end it,
-            // as xterm reads it, and any of them makes the protection
-            // DEC's.
-            (b"\"", b'q') => {
-                self.protection = Protection::Dec;
-                match p.first(0, 0) {
-                    0 | 2 => self.protect = 0,
-                    1 => self.protect = PROTECTED,
-                    _ => {}
+            // as xterm reads it.
+            (b"\"", b'q') => match p.first(0, 0) {
+                0 | 2 => self.protect = 0,
+                1 => {
+                    self.protect = PROTECTED;
+                    self.protected = true;
                 }
-            }
+                _ => {}
+            },
             // DECIC and DECDC (`CSI Pn ' }`, `CSI Pn ' ~`; DEC STD 070,
             // 5.4.3): columns inserted or deleted at the cursor's in every
             // line of the scrolling region.

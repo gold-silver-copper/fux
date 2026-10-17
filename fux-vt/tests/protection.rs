@@ -2,11 +2,12 @@
 //! EPA (`ESC V`, `ESC W`), DECSED (`CSI ? Ps J`) and DECSEL (`CSI ? Ps
 //! K`). DEC protection (DEC STD 070, 5.11.1.2, Selectively Erasable
 //! Character Attribute) keeps a glyph from DECSED and DECSEL only; ISO
-//! protection (ECMA-48, SPA and EPA, with ERM reset) from every erase, ED,
-//! EL and ECH too, and, as xterm has it for compatibility, DECSED and
-//! DECSEL. Expected values are xterm's (XTerm 411): each case was replayed
-//! in xterm beside fux-vt (`fux-vt-compare replay --engines xterm --size
-//! 2x10 'BYTES'`) and the two agree.
+//! protection (ECMA-48, SPA and EPA, with ERM reset: a guarded area) from
+//! ED, EL and ECH. Each glyph keeps which it has, either or both, as each
+//! standard knows its own alone. Expected values are xterm's (XTerm 411:
+//! `fux-vt-compare replay --engines xterm --size 2x10 'BYTES'`) where the
+//! standards agree with it; xterm keeps one kind for the whole terminal,
+//! the last DECSCA's or SPA's, and has DECSED and DECSEL spare ISO's too.
 
 use fux_vt::{Color, Parser, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -53,22 +54,35 @@ fn dec_protection_keeps_glyphs_from_selective_erase() -> Result {
     Ok(())
 }
 
-/// SPA starts glyphs protected from every erase, EPA ends them (ECMA-48
-/// 8.3.140 and 8.3.49, with ERM, 7.2.6, reset): ED, EL and ECH leave them,
-/// and so do DECSED and DECSEL, as xterm has it (esctest marks that a
-/// known xterm bug, DECSED_doesNotRespectISOProtect). A DECSCA after SPA
-/// makes the protection DEC's again: EL erases them then.
+/// SPA starts a guarded area, EPA ends it (ECMA-48 8.3.140 and 8.3.49,
+/// with ERM, 7.2.6, reset): ED, EL and ECH leave its glyphs. DECSED and
+/// DECSEL know DECSCA's attribute alone (DEC STD 070, 5.11.1.2), and erase
+/// them, where xterm leaves them (esctest's DECSED_doesNotRespectISOProtect
+/// expects so). A DECSCA inside the area protects its glyphs both ways.
 #[test]
-fn iso_protection_keeps_glyphs_from_every_erase() -> Result {
+fn iso_protection_keeps_glyphs_from_ed_el_and_ech() -> Result {
     let row = "ab\x1bVcd\x1bWef";
     assert_eq!(after(&format!("{row}\x1b[1;1H\x1b[K"))?, ["  cd", ""]);
-    assert_eq!(after(&format!("{row}\x1b[1;1H\x1b[?K"))?, ["  cd", ""]);
+    assert_eq!(after(&format!("{row}\x1b[1;1H\x1b[?K"))?, ["", ""]);
     assert_eq!(after(&format!("{row}\x1b[1;1H\x1b[4X"))?, ["  cdef", ""]);
     let screen = format!("{row}\r\nxyz\x1b[2;2H");
     assert_eq!(after(&format!("{screen}\x1b[J"))?, ["abcdef", "x"]);
     assert_eq!(after(&format!("{screen}\x1b[1J"))?, ["  cd", "  z"]);
     assert_eq!(after(&format!("{screen}\x1b[2J"))?, ["  cd", ""]);
-    assert_eq!(after("\x1bVab\x1b[1\"qcd\x1b[1;1H\x1b[2K")?, ["", ""]);
+    assert_eq!(after("\x1bVab\x1b[1\"qcd\x1b[1;1H\x1b[2K")?, ["abcd", ""]);
+    assert_eq!(after("\x1bVab\x1b[1\"qcd\x1b[1;1H\x1b[?2K")?, ["  cd", ""]);
+    Ok(())
+}
+
+/// Each glyph keeps its own protection, whichever came last: the ISO
+/// glyphs stay through ED and the DEC ones through DECSED, an unprotected
+/// one through neither.
+#[test]
+fn each_glyph_keeps_its_own_protection() -> Result {
+    let row = "\x1bVab\x1bW\x1b[1\"qcd\x1b[0\"qef";
+    assert_eq!(after(&format!("{row}\x1b[2J"))?, ["ab", ""]);
+    assert_eq!(after(&format!("{row}\x1b[?2J"))?, ["  cd", ""]);
+    assert_eq!(after(&format!("{row}\x1b[1;1H\x1b[6X"))?, ["ab", ""]);
     Ok(())
 }
 
@@ -91,7 +105,7 @@ fn an_erase_that_finds_no_protected_glyph_keeps_the_protection() -> Result {
         ["abcd", ""]
     );
     assert_eq!(
-        after("\x1bVab\x1bW\x1b[2Jcd\x1b[1;1H\x1bVef\x1bW\x1b[1;1H\x1b[?2K")?,
+        after("\x1bVab\x1bW\x1b[2Jcd\x1b[1;1H\x1bVef\x1bW\x1b[1;1H\x1b[2K")?,
         ["ef", ""]
     );
     assert_eq!(
@@ -102,16 +116,18 @@ fn an_erase_that_finds_no_protected_glyph_keeps_the_protection() -> Result {
 }
 
 /// DECSC saves whether glyphs are protected, and DECRC restores it (the
-/// VT510 manual, DECSC: "selective erase attribute"); DECSTR ends it and
-/// the protection, as the VT520 manual's table and xterm have it, the
-/// glyphs protected before staying so.
+/// VT510 manual, DECSC: "selective erase attribute"); DECSTR ends it, as
+/// DEC STD 070's Soft Terminal Reset (`Current Attributes: not selective
+/// erasable`) and the VT520 manual's table have it, the glyphs protected
+/// before staying so (xterm, keeping one protection for the terminal,
+/// erases them).
 #[test]
 fn the_saved_cursor_and_decstr() -> Result {
     assert_eq!(
         after("\x1b[1\"qab\x1b7\x1b[0\"qcd\x1b8ef\x1b[1;1H\x1b[?2K")?,
         ["abef", ""]
     );
-    assert_eq!(after("\x1b[1\"qab\x1b[!pcd\x1b[1;1H\x1b[?2K")?, ["", ""]);
+    assert_eq!(after("\x1b[1\"qab\x1b[!pcd\x1b[1;1H\x1b[?2K")?, ["ab", ""]);
     assert_eq!(
         after("\x1b[1\"qab\x1b[!p\x1b[1\"qcd\x1b[1;1H\x1b[?2K")?,
         ["abcd", ""]
@@ -147,7 +163,11 @@ fn protection_goes_with_the_glyph() -> Result {
         ["xyab", ""]
     );
     assert_eq!(
-        after("\x1bVa\u{4e00}b\x1bWc\x1b[1;1H\x1b[?2K\x1b[1;1H\x1b[2K")?,
+        after("\x1bVa\u{4e00}b\x1bWc\x1b[1;1H\x1b[2K")?,
+        ["a\u{4e00}b", ""]
+    );
+    assert_eq!(
+        after("\x1b[1\"qa\u{4e00}b\x1b[0\"qc\x1b[1;1H\x1b[?2K")?,
         ["a\u{4e00}b", ""]
     );
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;

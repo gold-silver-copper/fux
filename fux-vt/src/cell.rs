@@ -183,10 +183,14 @@ macro_rules! flags {
 impl Attributes {
     // The bits of `flags`: one for each style, but the underline, whose
     // style's number (`UnderlineStyle`, 0 for none) takes three bits from
-    // `UNDERLINE_SHIFT`. Bit 3, the underline's while it had no style, is spare.
+    // `UNDERLINE_SHIFT`, and `GUARDED`.
     pub(crate) const BOLD: u16 = 1;
     pub(crate) const DIM: u16 = 2;
     pub(crate) const ITALIC: u16 = 4;
+    /// A glyph in SPA's guarded area (ECMA-48 8.3.140), which ED, EL and
+    /// ECH leave: kept in its style, as a cell's word has no bit to spare,
+    /// and never read out (`Styles::get` drops it). No pen has it.
+    pub(crate) const GUARDED: u16 = 8;
     pub(crate) const INVERSE: u16 = 16;
     pub(crate) const SLOW_BLINK: u16 = 32;
     pub(crate) const RAPID_BLINK: u16 = 64;
@@ -300,6 +304,10 @@ impl Attributes {
             word(self.foreground) | word(self.background) << 32,
             word(self.underline_color) | u64::from(self.flags) << 32,
         )
+    }
+    /// These attributes guarded (`GUARDED`) or not.
+    pub(crate) const fn with_guard(self, on: bool) -> Self {
+        self.with_flag(Self::GUARDED, on)
     }
     /// What an erase, a scroll or an insertion fills cells with while these
     /// attributes are the pen: its colours alone, as xterm fills them (the

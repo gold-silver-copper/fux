@@ -1093,22 +1093,35 @@ impl Grid {
         erase(self, row, start, end);
     }
 
-    /// `erase`, leaving protected glyphs (DECSCA, SPA) as they are: each
-    /// run of unprotected cells between them is erased, as xterm's
-    /// `ClearInLine2` erases around them. A wide glyph's second half is
-    /// protected if its first half is. Out of line, as protection is rare.
+    /// `erase`, leaving protected glyphs as they are: the guarded ones
+    /// (SPA's) if `guarded`, else DECSCA's. Each run of other cells between
+    /// them is erased, as xterm's `ClearInLine2` erases around them. A wide
+    /// glyph's second half is protected if its first half is. Out of line,
+    /// as protection is rare.
     #[inline(never)]
-    pub fn erase_unprotected(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) {
+    pub fn erase_unprotected(
+        &mut self,
+        row: u16,
+        start: u16,
+        end: u16,
+        style: u32,
+        version: u64,
+        guarded: bool,
+    ) {
         let end = end.min(self.size.cols());
-        let cells = self.live_cells(row);
+        let (cells, styles) = (self.live_cells(row), &self.styles);
+        let kept = |c: &Compact| match guarded {
+            true => styles.guarded(c.style()),
+            false => c.is_protected(),
+        };
         let protected = |at: usize| {
             cells.get(at).is_some_and(|c| {
-                c.is_protected()
+                kept(c)
                     || c.is_wide_continuation()
                         && at
                             .checked_sub(1)
                             .and_then(|i| cells.get(i))
-                            .is_some_and(Compact::is_protected)
+                            .is_some_and(kept)
             })
         };
         let mut runs = Vec::new();
