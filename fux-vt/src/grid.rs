@@ -26,7 +26,12 @@ pub(crate) struct Cursor {
     pub pending_wrap: bool,
     /// `pending_wrap` came back with DECRC: the Last Column Flag, which
     /// setting autowrap keeps (DEC STD 070, Appendix D.6.1), even if it
-    /// was off. A glyph's own flag is never restored.
+    /// was off. A glyph's own flag is never restored. It means something
+    /// only while `pending_wrap` is set: what clears that (CR, a cursor
+    /// move, `wrap`, a mode change) may leave this, and the flag is read
+    /// only through both (`Screen::last_column_flag`). Only `advance_within`
+    /// (which clears this) and DECRC (which sets this to the flag it
+    /// restores) set `pending_wrap`.
     pub restored: bool,
     /// Origin mode (DECOM).
     pub origin: bool,

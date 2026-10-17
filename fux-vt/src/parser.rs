@@ -678,11 +678,11 @@ impl FromIterator<Feature> for Options {
 /// (`CSI c`) answers as level 2, the VT220's, with selective erase,
 /// horizontal scrolling, colour text and rectangular editing, and sixel
 /// when the host shows it (`Screen::primary_attributes` writes it);
-/// secondary DA (`CSI > c`) answers `CSI > 1 ; Pv ; 0 c` with `version` encoded as
-/// `major * 10000 + minor * 100 + patch`, XTVERSION (`CSI > q`) answers
-/// `DCS > | name version ST`, and cursor reports (DSR 6n, DECXCPR) give a
-/// cursor waiting to wrap at the last column, as xterm does, rather than
-/// one past it.
+/// secondary DA (`CSI > c`) answers `CSI > 1 ; Pv ; 0 c` with `version`
+/// encoded as `major * 10000 + minor * 100 + patch`, XTVERSION (`CSI > q`)
+/// answers `DCS > | name version ST`, and cursor reports (DSR 6n, DECXCPR)
+/// give a cursor waiting to wrap at the last column, as xterm does, rather
+/// than one past it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
     /// The terminal's name, as XTVERSION reports it.

@@ -171,8 +171,7 @@ every encoder beside libghostty-vt's, with its recorded verdicts.
 - Keypad, mouse and focus modes are state only. Keys, pastes, focus
   changes and mouse events are encoded only when the host asks
   (`keys::encode`, `Screen::focus_report`, `Screen::encode_mouse`, see
-  [Keys](#keys)); nothing a program writes makes
-  fux-vt send input.
+  [Keys](#keys)); nothing a program writes makes fux-vt send input.
 - Sixel is the one graphics protocol (see its row): pictures are kept as
   pixels for the host to draw (`Screen::pictures`), and none reaches the
   host's terminal unless the host sends it.

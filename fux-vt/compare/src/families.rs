@@ -55,16 +55,15 @@ impl Authority {
             Self::Xterm => Err("decided by xterm, which is not among its deciders".to_owned()),
         }
     }
-}
 
-impl Authority {
     /// Runs the standard's test, alone, as `cargo test` builds it: whether
     /// exactly it ran and passed (a test whose declaration and citation
     /// stay but whose body fails is caught here, not by `check`). xterm's
     /// check is its agreeing, which `verdicts` runs.
     pub fn run(self) -> Result<(), String> {
-        let Self::Standard { test, .. } = self else {
-            return Ok(());
+        let test = match self {
+            Self::Standard { test, .. } => test,
+            Self::Xterm => return Ok(()),
         };
         let (file, function) = test
             .split_once("::")
