@@ -46,11 +46,6 @@ pub enum State {
 }
 
 impl State {
-    /// Whether an agent should look now: anything but busy.
-    pub fn settled(self) -> bool {
-        !matches!(self, State::Busy)
-    }
-
     /// The word an answer starts with.
     pub fn word(self) -> String {
         match self {

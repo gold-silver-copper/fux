@@ -197,7 +197,7 @@ impl Waiting {
     pub fn due(&self) -> Instant {
         let now = Instant::now();
         let probe = (self.wait.until.iter())
-            .any(|u| matches!(u, Until::Settled | Until::Text(_) | Until::Gone(_)))
+            .any(Until::probes)
             .then(|| crate::after(now, PROBE));
         // A pane seen settled is looked at again once its hold is up.
         let held = (self.watches.iter())
@@ -543,6 +543,24 @@ fn tail(pane: &Pane, n: usize) -> Vec<String> {
 }
 
 impl Until {
+    /// Whether it waits on what the screen shows: a text, or a text gone.
+    fn shows(&self) -> bool {
+        match self {
+            Until::Text(_) | Until::Gone(_) => true,
+            Until::Exit | Until::Bell | Until::Settled => false,
+        }
+    }
+
+    /// Whether it asks what the pane's program is blocked in, which changes
+    /// with nothing on the screen to wake the server: to settle, or to know
+    /// a text shown or gone cannot come (status 7).
+    fn probes(&self) -> bool {
+        match self {
+            Until::Text(_) | Until::Gone(_) | Until::Settled => true,
+            Until::Exit | Until::Bell => false,
+        }
+    }
+
     /// The condition as an error says what did not come.
     fn describe(&self) -> String {
         match self {
@@ -715,7 +733,7 @@ impl Watch {
         // A text that cannot come, or go: the program reads its terminal,
         // having had a moment to print after what began the wait, seen so
         // on more than one probe, never on one look alone.
-        let shown = (wait.until.iter()).any(|u| matches!(u, Until::Text(_) | Until::Gone(_)));
+        let shown = (wait.until.iter()).any(Until::shows);
         if !shown || wait.until.contains(&Until::Settled) {
             return None;
         }
@@ -859,31 +877,31 @@ impl Watch {
         (began, now): (Instant, Instant),
         more: bool,
     ) -> Option<Found> {
+        use crate::ready::State;
         let state = crate::ready::state(pane, now);
-        // Settled on two looks a hold apart, the screen as it
-        // was: output still in the terminal's buffers, which
-        // the kernel has yet to hand fux, is in by then.
-        // A bare `wait` on a pane that may go on alone
-        // (`waiting`, or quiet with nothing known) waits for
-        // something new, what it waits on or a change, for
-        // `MORE` at most.
-        let maybe = matches!(
-            state,
-            crate::ready::State::Waiting | crate::ready::State::Settled
-        );
-        let more = more && now < crate::after(began, MORE);
-        if !state.settled() || (more && maybe && pane.revision == self.revision) {
+        // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
+        // with nothing known) waits for something new, what it waits on or
+        // a change, for `MORE` at most.
+        let more = more && now < crate::after(began, MORE) && pane.revision == self.revision;
+        let unsettled = match state {
+            State::Busy => true,
+            State::Waiting | State::Settled => more,
+            // An exit settles at once.
+            State::Exited(_) => return Some(Found::Settled(state)),
+            State::Reading | State::Absent => false,
+        };
+        if unsettled {
             self.settled_since = None;
-            None
-        } else if let crate::ready::State::Exited(_) = state {
-            Some(Found::Settled(state))
-        } else {
-            let since = (self.settled_since)
-                .filter(|since| since.1 == pane.revision)
-                .unwrap_or((now, pane.revision));
-            self.settled_since = Some(since);
-            (now >= crate::after(since.0, HOLD)).then_some(Found::Settled(state))
+            return None;
         }
+        // Settled on two looks a hold apart, the screen as it was: output
+        // still in the terminal's buffers, which the kernel has yet to hand
+        // fux, is in by then.
+        let since = (self.settled_since)
+            .filter(|since| since.1 == pane.revision)
+            .unwrap_or((now, pane.revision));
+        self.settled_since = Some(since);
+        (now >= crate::after(since.0, HOLD)).then_some(Found::Settled(state))
     }
 
     fn since(&self, pane: &Pane) -> Since {
