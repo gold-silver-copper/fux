@@ -1858,13 +1858,7 @@ impl Screen {
         if !g.lines.contains(g.cursor.row()) || !g.in_columns() {
             return;
         }
-        let (col, lines) = (g.cursor.col(), g.lines);
-        let blank = self.blank_style();
-        self.with_grid(|g, _, version| {
-            for y in lines.first()..=lines.last() {
-                g.edit_row(y, col, count, insert, blank, version);
-            }
-        });
+        self.shift_columns(g.cursor.col(), count, insert);
     }
 
     /// DECBI (`ESC 6`) and DECFI (`forward`, `ESC 9`; DEC STD 070, Back
@@ -1886,7 +1880,7 @@ impl Screen {
             columns.first()
         };
         if col == margin {
-            self.shift_columns(1, !forward);
+            self.shift_columns(columns.first(), 1, !forward);
         } else if forward {
             g.set_col(col.saturating_add(1));
         } else {
@@ -1894,16 +1888,16 @@ impl Screen {
         }
     }
 
-    /// The columns between the margins of every line of the scrolling
-    /// region moved `count` right, or left, blanks coming in at the margin
-    /// they leave; the cursor stays. SL and SR, and DECBI and DECFI at a
-    /// margin.
-    fn shift_columns(&mut self, count: u16, right: bool) {
+    /// The columns from `from` to the right margin of every line of the
+    /// scrolling region moved `count` right, or left, blanks coming in at
+    /// the side they leave; the cursor stays. SL and SR, and DECBI and
+    /// DECFI at a margin, from the left margin; DECIC and DECDC from the
+    /// cursor's column.
+    fn shift_columns(&mut self, from: u16, count: u16, right: bool) {
         let blank = self.blank_style();
         self.with_grid(|g, _, version| {
-            let (first, lines) = (g.columns().first(), g.lines);
-            for y in lines.first()..=lines.last() {
-                g.edit_row(y, first, count, right, blank, version);
+            for y in g.lines.first()..=g.lines.last() {
+                g.edit_row(y, from, count, right, blank, version);
             }
         });
     }
@@ -2688,7 +2682,7 @@ impl Screen {
                 self.break_cluster();
                 let g = self.grid();
                 if g.lines.contains(g.cursor.row()) && g.in_columns() {
-                    self.shift_columns(p.first(0, 1), byte == b'A');
+                    self.shift_columns(g.columns().first(), p.first(0, 1), byte == b'A');
                 }
                 return Some(Dispatch::Done);
             }
