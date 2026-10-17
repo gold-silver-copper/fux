@@ -2,10 +2,10 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::mode::{Kind, Mode, ModeStatus, RESET_FOR_GOOD};
+use crate::mode::Mode;
 use crate::{
-    Error, Reply, Rgb, Screen, Size,
-    screen::{Dispatch, Integrity, Setting},
+    Error, Rgb, Screen, Size,
+    screen::{Dispatch, Setting},
 };
 
 #[cfg(test)]
@@ -544,7 +544,7 @@ impl Identity {
     /// The version as DA2's firmware field: its parts, at most three, as
     /// digits in base 100, anything past a `-` or `+` dropped: `0.5.0` is
     /// 500, `1.2` is 102 (a test pins the short forms).
-    fn encoded_version(&self) -> u32 {
+    pub(crate) fn encoded_version(&self) -> u32 {
         let release = self.version.split(['-', '+']).next().unwrap_or_default();
         release.split('.').take(3).fold(0u32, |sum, part| {
             let part = part.parse::<u32>().unwrap_or(0).min(99);
@@ -1246,18 +1246,13 @@ impl Parser {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
             Dispatch::Unhandled => {
-                if !intermediates.is_empty()
-                    && matches!(
-                        self.screen
-                            .intermediate_csi(&self.params, intermediates, byte),
-                        Dispatch::Done
-                    )
+                match self
+                    .screen
+                    .other_csi(&self.params, intermediates, byte, &self.options)
                 {
-                    return Ok(framed);
-                }
-                match self.query_reply(intermediates, byte) {
-                    Some(reply) => sink.reply(reply.as_bytes()),
-                    None => sink.unhandled(Unhandled::Csi {
+                    Some(Dispatch::Done) => {}
+                    Some(Dispatch::Reply(reply)) => sink.reply(reply.as_bytes()),
+                    Some(Dispatch::Unhandled) | None => sink.unhandled(Unhandled::Csi {
                         params: Params(&self.params),
                         intermediates,
                         action: byte,
@@ -1376,114 +1371,5 @@ impl Parser {
             }
         }
         Ok(())
-    }
-
-    /// Replies enabled by [`Feature::ExtendedReplies`] and
-    /// [`Options::identity`] for CSI sequences the screen does not answer
-    /// itself.
-    #[inline(never)]
-    fn query_reply(&mut self, intermediates: &[u8], byte: u8) -> Option<Reply> {
-        let n = self.params.first(0, 0);
-        let extended = self.options.has(Feature::ExtendedReplies);
-        let modes = extended || self.options.has(Feature::ModeReports);
-        let identity = self.options.identity();
-        match (intermediates, byte) {
-            (b"?", b'n') if extended => match n {
-                6 => {
-                    let (row, col) = self.screen.reported_cursor(&self.options);
-                    Some(Reply::of(format_args!("\x1b[?{row};{col}R")))
-                }
-                // The DSRs of DEC's other devices, which fux-vt has none
-                // of (DEC STD 070, DSR, and its extensions'): no printer
-                // (-7), no UDK extension (-11), a keyboard of unknown
-                // language (as a VT220 reports it, which DA2 says fux-vt
-                // is: the VT520 manual sends its status and type at level
-                // 4 only), no locator (-13), of unknown type, no macro
-                // space and so DECCKSR's checksum of no macros, labelled as
-                // asked.
-                15 => Some(Reply::of(format_args!("\x1b[?13n"))),
-                25 => Some(Reply::of(format_args!("\x1b[?23n"))),
-                26 => Some(Reply::of(format_args!("\x1b[?27;0n"))),
-                55 => Some(Reply::of(format_args!("\x1b[?53n"))),
-                56 => Some(Reply::of(format_args!("\x1b[?57;0n"))),
-                62 => Some(Reply::of(format_args!("\x1b[0*{{"))),
-                63 => {
-                    let label = self.params.first(1, 0);
-                    Some(Reply::of(format_args!("\x1bP{label}!~0000\x1b\\")))
-                }
-                // The data integrity flag: power-up (73), until reported,
-                // then no errors since the last report (70); RIS is a
-                // power-up again.
-                75 => {
-                    let integrity = &mut self.screen.integrity;
-                    let status = std::mem::replace(integrity, Integrity::Reported).report();
-                    Some(Reply::of(format_args!("\x1b[?{status}n")))
-                }
-                // Not configured for multiple sessions.
-                85 => Some(Reply::of(format_args!("\x1b[?83n"))),
-                _ => None,
-            },
-            (b">", b'c') if n == 0 => match identity {
-                Some(identity) => {
-                    let version = identity.encoded_version();
-                    Some(Reply::of(format_args!("\x1b[>1;{version};0c")))
-                }
-                None if extended => Some(Reply::of(format_args!("\x1b[>1;10;0c"))),
-                None => None,
-            },
-            (b">", b'q') if n == 0 => {
-                let identity = identity?;
-                let length = identity.name.len().checked_add(identity.version.len())?;
-                if length > Identity::MAX_LEN {
-                    return None;
-                }
-                let (name, version) = (identity.name, identity.version);
-                Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
-            }
-            (b"", b't') if n == 18 && self.options.has(Feature::SizeReports) => {
-                let (rows, cols) = self.screen.size().into();
-                Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
-            }
-            // The cell's and the text area's size in pixels, from the host's
-            // terminal: how a program sizes the pictures it draws.
-            (b"", b't') if n == 16 => {
-                let (width, height) = self.screen.graphics().cell?;
-                Some(Reply::of(format_args!("\x1b[6;{height};{width}t")))
-            }
-            (b"", b't') if n == 14 => {
-                let (height, width) = self.screen.pixel_size()?;
-                Some(Reply::of(format_args!("\x1b[4;{height};{width}t")))
-            }
-            // XTSMGRAPHICS, read: 256 colour registers, and pictures as
-            // large as the screen.
-            (b"?", b'S') if self.screen.graphics().sixel && self.params.first(1, 0) == 1 => match n
-            {
-                1 => Some(Reply::of(format_args!("\x1b[?1;0;256S"))),
-                2 => {
-                    let (height, width) = self.screen.pixel_size()?;
-                    Some(Reply::of(format_args!("\x1b[?2;0;{width};{height}S")))
-                }
-                _ => None,
-            },
-            (b"*", b'y') if self.options.has(Feature::RectangleChecksums) => {
-                Some(self.screen.rectangle_checksum(&self.params))
-            }
-            // DECRQM.
-            (b"?$" | b"$", b'p') if modes => {
-                let private = intermediates == b"?$";
-                let mode = Mode::of(n, private, &self.options);
-                let status = match mode.map(|m| (m, m.kind())) {
-                    None if !private && RESET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlyReset,
-                    None | Some((_, Kind::SaveCursor)) => ModeStatus::NotRecognized,
-                    Some((_, Kind::Permanent(true))) => ModeStatus::PermanentlySet,
-                    Some((_, Kind::Permanent(false))) => ModeStatus::PermanentlyReset,
-                    Some((mode, _)) if self.screen.mode(mode) => ModeStatus::Set,
-                    Some(_) => ModeStatus::Reset,
-                };
-                let (marker, status) = (if private { "?" } else { "" }, status.number());
-                Some(Reply::of(format_args!("\x1b[{marker}{n};{status}$y")))
-            }
-            _ => None,
-        }
     }
 }

@@ -2,11 +2,11 @@ use crate::compact::{Compact, PROTECTED};
 use crate::keys::KITTY_FLAGS;
 use crate::keys::encode::OtherKeys;
 use crate::link::Held;
-use crate::mode::{Kind, Mode, Modes, Switch};
+use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, Switch};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Rgb, Row,
-    RowId, Rows, UnderlineStyle, Window,
+    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, Mark, Options, Reply,
+    Rgb, Row, RowId, Rows, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, Written},
     parser::Parameters,
@@ -2685,36 +2685,46 @@ impl Screen {
         Ok(Dispatch::Done)
     }
 
-    /// The CSI sequences with an intermediate the screen carries out
-    /// (DECSCUSR and DECSTR aside): DECSCA, DECIC, DECDC, SL and SR. `csi` leaves
-    /// them unhandled, and the parser asks here then (`csi_dispatch`):
-    /// carried out in `csi`, even out of line, they cost every CSI a
-    /// percent or two of its instructions.
+    /// The CSI sequences `csi` leaves unhandled, the parser asks here then
+    /// (`Parser::csi_dispatch`): DECSCA, DECIC, DECDC, SL and SR, carried
+    /// out, and the queries' replies, some enabled by
+    /// [`Feature::ExtendedReplies`] and [`Options::identity`]; `None` for
+    /// the rest, unhandled. Carried out in `csi`, even out of line, they cost every
+    /// CSI a percent or two of its instructions.
     #[inline(never)]
-    pub(crate) fn intermediate_csi(
+    pub(crate) fn other_csi(
         &mut self,
         p: &Parameters,
         intermediates: &[u8],
         byte: u8,
-    ) -> Dispatch {
-        match (intermediates, byte) {
+        options: &Options,
+    ) -> Option<Dispatch> {
+        let n = p.first(0, 0);
+        let extended = options.has(Feature::ExtendedReplies);
+        let modes = extended || options.has(Feature::ModeReports);
+        let identity = options.identity();
+        let reply = match (intermediates, byte) {
             // DECSCA (`CSI Ps " q`; DEC STD 070, 5.11.1.2): 1 protects the
             // glyphs printed next from DECSED and DECSEL, 0 and 2 end it,
             // as xterm reads it.
-            (b"\"", b'q') => match p.first(0, 0) {
-                0 | 2 => self.protect = 0,
-                1 => {
-                    self.protect = PROTECTED;
-                    self.protected = true;
+            (b"\"", b'q') => {
+                match n {
+                    0 | 2 => self.protect = 0,
+                    1 => {
+                        self.protect = PROTECTED;
+                        self.protected = true;
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+                return Some(Dispatch::Done);
+            }
             // DECIC and DECDC (`CSI Pn ' }`, `CSI Pn ' ~`; DEC STD 070,
             // 5.4.3): columns inserted or deleted at the cursor's in every
             // line of the scrolling region.
             (b"'", b'}' | b'~') => {
                 self.break_cluster();
                 self.edit_columns(p.first(0, 1), byte == b'}');
+                return Some(Dispatch::Done);
             }
             // SL and SR (`CSI Pn SP @`, `CSI Pn SP A`; ECMA-48 8.3.121,
             // 8.3.135): the data moved Pn columns left or right, within the
@@ -2726,10 +2736,105 @@ impl Screen {
                 if g.lines.contains(g.cursor.row()) && g.in_columns() {
                     self.shift_columns(p.first(0, 1), byte == b'A');
                 }
+                return Some(Dispatch::Done);
             }
-            _ => return Dispatch::Unhandled,
-        }
-        Dispatch::Done
+            (b"?", b'n') if extended => match n {
+                6 => {
+                    let (row, col) = self.reported_cursor(options);
+                    Some(Reply::of(format_args!("\x1b[?{row};{col}R")))
+                }
+                // The DSRs of DEC's other devices, which fux-vt has none
+                // of (DEC STD 070, DSR, and its extensions'): no printer
+                // (-7), no UDK extension (-11), a keyboard of unknown
+                // language (as a VT220 reports it, which DA2 says fux-vt
+                // is: the VT520 manual sends its status and type at level
+                // 4 only), no locator (-13), of unknown type, no macro
+                // space and so DECCKSR's checksum of no macros, labelled as
+                // asked.
+                15 => Some(Reply::of(format_args!("\x1b[?13n"))),
+                25 => Some(Reply::of(format_args!("\x1b[?23n"))),
+                26 => Some(Reply::of(format_args!("\x1b[?27;0n"))),
+                55 => Some(Reply::of(format_args!("\x1b[?53n"))),
+                56 => Some(Reply::of(format_args!("\x1b[?57;0n"))),
+                62 => Some(Reply::of(format_args!("\x1b[0*{{"))),
+                63 => {
+                    let label = p.first(1, 0);
+                    Some(Reply::of(format_args!("\x1bP{label}!~0000\x1b\\")))
+                }
+                // The data integrity flag: power-up (73), until reported,
+                // then no errors since the last report (70); RIS is a
+                // power-up again.
+                75 => {
+                    let integrity = &mut self.integrity;
+                    let status = std::mem::replace(integrity, Integrity::Reported).report();
+                    Some(Reply::of(format_args!("\x1b[?{status}n")))
+                }
+                // Not configured for multiple sessions.
+                85 => Some(Reply::of(format_args!("\x1b[?83n"))),
+                _ => None,
+            },
+            (b">", b'c') if n == 0 => match identity {
+                Some(identity) => {
+                    let version = identity.encoded_version();
+                    Some(Reply::of(format_args!("\x1b[>1;{version};0c")))
+                }
+                None if extended => Some(Reply::of(format_args!("\x1b[>1;10;0c"))),
+                None => None,
+            },
+            (b">", b'q') if n == 0 => {
+                let identity = identity?;
+                let length = identity.name.len().checked_add(identity.version.len())?;
+                if length > Identity::MAX_LEN {
+                    return None;
+                }
+                let (name, version) = (identity.name, identity.version);
+                Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
+            }
+            (b"", b't') if n == 18 && options.has(Feature::SizeReports) => {
+                let (rows, cols) = self.size().into();
+                Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
+            }
+            // The cell's and the text area's size in pixels, from the host's
+            // terminal: how a program sizes the pictures it draws.
+            (b"", b't') if n == 16 => {
+                let (width, height) = self.graphics().cell?;
+                Some(Reply::of(format_args!("\x1b[6;{height};{width}t")))
+            }
+            (b"", b't') if n == 14 => {
+                let (height, width) = self.pixel_size()?;
+                Some(Reply::of(format_args!("\x1b[4;{height};{width}t")))
+            }
+            // XTSMGRAPHICS, read: 256 colour registers, and pictures as
+            // large as the screen.
+            (b"?", b'S') if self.graphics().sixel && p.first(1, 0) == 1 => match n {
+                1 => Some(Reply::of(format_args!("\x1b[?1;0;256S"))),
+                2 => {
+                    let (height, width) = self.pixel_size()?;
+                    Some(Reply::of(format_args!("\x1b[?2;0;{width};{height}S")))
+                }
+                _ => None,
+            },
+            (b"*", b'y') if options.has(Feature::RectangleChecksums) => {
+                Some(self.rectangle_checksum(p))
+            }
+            // DECRQM.
+            (b"?$" | b"$", b'p') if modes => {
+                let private = intermediates == b"?$";
+                let mode = Mode::of(n, private, options);
+                let status = match mode.map(|m| (m, m.kind())) {
+                    None if !private && RESET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlyReset,
+                    None | Some((_, Kind::SaveCursor)) => ModeStatus::NotRecognized,
+                    Some((_, Kind::Permanent(true))) => ModeStatus::PermanentlySet,
+                    Some((_, Kind::Permanent(false))) => ModeStatus::PermanentlyReset,
+                    Some((mode, _)) if self.mode(mode) => ModeStatus::Set,
+                    Some(_) => ModeStatus::Reset,
+                };
+                let (marker, status) = (if private { "?" } else { "" }, status.number());
+                Some(Reply::of(format_args!("\x1b[{marker}{n};{status}$y")))
+            }
+            _ => None,
+        };
+        reply.map(Dispatch::Reply)
     }
 
     fn sgr(&mut self, p: &Parameters) {
