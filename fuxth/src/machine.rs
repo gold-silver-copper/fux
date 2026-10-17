@@ -903,7 +903,10 @@ impl Char {
 /// in `builtin` the arm `Builtin::Len => { let [s] = m.take()?; let s =
 /// Seq::of(s).map_err(…)?; { m.push(…) } }`.
 macro_rules! builtins {
-    ($m:ident $host:ident; $($variant:ident $name:literal ($($arg:ident: $ty:ident),*) $effect:literal $about:literal $body:block)*) => {
+    ($m:ident $host:ident; $(
+        $variant:ident $name:literal ($($arg:ident: $ty:ident),*) $effect:literal
+        $about:literal $body:block
+    )*) => {
         /// The words fuxth itself gives: its core. Everything else is the
         /// standard library, written in fuxth.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -949,12 +952,17 @@ macro_rules! builtins {
         }
 
         impl<A: AppValue> Machine<A> {
-            fn builtin<H: Host<Value = A>>(&mut self, word: Builtin, $host: &mut H) -> Result<(), Error> {
+            fn builtin<H: Host<Value = A>>(
+                &mut self,
+                word: Builtin,
+                $host: &mut H,
+            ) -> Result<(), Error> {
                 let $m = self;
                 match word {
                     $(Builtin::$variant => {
                         let [$($arg),*] = $m.take()?;
-                        $(let $arg = $ty::of($arg).map_err(|got| $m.refused(word, $ty::ARG, got))?;)*
+                        $(let $arg = $ty::of($arg)
+                            .map_err(|got| $m.refused(word, $ty::ARG, got))?;)*
                         $body
                     })*
                 }
@@ -967,11 +975,13 @@ builtins! { m host;
     Drop "drop" (_x: Any) "x --" "the top value dropped" {
         Ok(())
     }
-    Pick "pick" (n: Int) "xn … x0 n -- xn … x0 xn" "a copy of the value n under the top (0 pick copies the top)" {
+    Pick "pick" (n: Int) "xn … x0 n -- xn … x0 xn"
+        "a copy of the value n under the top (0 pick copies the top)" {
         let n = m.count(Builtin::Pick, n)?;
         m.pick(n)
     }
-    Roll "roll" (n: Int) "xn … x0 n -- xn-1 … x0 xn" "the value n under the top moved to the top (1 roll swaps)" {
+    Roll "roll" (n: Int) "xn … x0 n -- xn-1 … x0 xn"
+        "the value n under the top moved to the top (1 roll swaps)" {
         let n = m.count(Builtin::Roll, n)?;
         m.roll(n)
     }
@@ -987,7 +997,8 @@ builtins! { m host;
     Div "div" (a: Int, b: Int) "n m -- n/m" "integer division, checked; it truncates toward zero" {
         m.arithmetic(a.checked_div(b), b)
     }
-    Lt "lt" (a: Any, b: Any) "a b -- a<b" "whether a comes before b: two integers, two strings or two lists" {
+    Lt "lt" (a: Any, b: Any) "a b -- a<b"
+        "whether a comes before b: two integers, two strings or two lists" {
         m.walk(if a.weight() < b.weight() { &a } else { &b });
         match compare(&a, &b) {
             Some(order) => m.push(Value::Bool(order == Ordering::Less)),
@@ -1001,7 +1012,8 @@ builtins! { m host;
     Len "len" (s: Seq) "seq -- n" "how many elements a string or list has" {
         m.push(Value::Int(i64::try_from(s.len()).unwrap_or(i64::MAX)))
     }
-    At "at" (s: Seq, i: Int) "seq i -- x" "element i, from 0 (of a string, a one-character string)" {
+    At "at" (s: Seq, i: Int) "seq i -- x"
+        "element i, from 0 (of a string, a one-character string)" {
         let len = s.len();
         let i = m.index(i, len)?;
         let item = match &s {
@@ -1018,7 +1030,8 @@ builtins! { m host;
             None => Err(m.range_error(format!("index {i}, and it has {len}"))),
         }
     }
-    Slice "slice" (s: Seq, from: Int, to: Int) "seq from to -- seq" "the elements from `from` up to before `to`" {
+    Slice "slice" (s: Seq, from: Int, to: Int) "seq from to -- seq"
+        "the elements from `from` up to before `to`" {
         let len = s.len();
         let bounds = usize::try_from(from).ok().zip(usize::try_from(to).ok());
         let Some((a, b)) = bounds.filter(|(a, b)| a <= b && *b <= len) else {
@@ -1037,7 +1050,8 @@ builtins! { m host;
         };
         m.push(part)
     }
-    Concat "concat" (list: Joined) "list -- seq" "a list of strings joined into one string, or a list of lists into one list" {
+    Concat "concat" (list: Joined) "list -- seq"
+        "a list of strings joined into one string, or a list of lists into one list" {
         let joined = m.concat(&list)?;
         m.push(joined)
     }
@@ -1045,7 +1059,8 @@ builtins! { m host;
         let pushed = m.pushed(s, x)?;
         m.push(pushed)
     }
-    Put "put" (s: Seq, i: Int, x: Any) "seq i x -- seq" "element i replaced by x (in a string, by a string)" {
+    Put "put" (s: Seq, i: Int, x: Any) "seq i x -- seq"
+        "element i replaced by x (in a string, by a string)" {
         let i = m.index(i, s.len())?;
         let put = m.put(s, i, x)?;
         m.push(put)

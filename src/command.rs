@@ -751,7 +751,12 @@ wire! {
         /// A capture of the pane (its history and view) read once it
         /// settles, waiting this long at most (if unsaid, the server's
         /// `wait-seconds`), and said with its state.
-        Capture(target: PaneId, history: Option<usize>, view: CaptureView, timeout: Option<Duration>),
+        Capture(
+            target: PaneId,
+            history: Option<usize>,
+            view: CaptureView,
+            timeout: Option<Duration>
+        ),
         /// What happens, a line each as it happens, until the client goes:
         /// where the target is, or anywhere without one.
         Events(target: Option<AnyRef>, json: bool),
