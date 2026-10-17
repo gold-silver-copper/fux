@@ -508,8 +508,8 @@ mod tests {
         assert_eq!(fine.map(|env| encode(&env)), Some(vars("A_1")));
     }
 
-    /// A capture's view goes as full, join, styles, source, marks, then
-    /// its rows and columns, whatever order its fields are declared in.
+    /// A capture's view goes field by field in the order they are declared
+    /// (full, join, styles, source, marks, rows, cols): the bytes pin it.
     #[test]
     fn a_capture_view_keeps_its_bytes() {
         let view = CaptureView {
@@ -524,8 +524,6 @@ mod tests {
         assert_eq!(encode(&view), [1, 0, 1, 1, 0, 1, 0, 1, 0, 2, 0]);
     }
 
-    /// A share of a tab is 1 to 100 percent, from the wire too: 250 would
-    /// give a pane two and a half times the tab.
     /// A command's directory is the path's bytes, UTF-8 or not: one that
     /// is not still reaches the session as it was named.
     #[test]
@@ -544,6 +542,8 @@ mod tests {
         assert!(matches!(read, Some(Command::Split { cwd: Some(cwd), .. }) if cwd == dir));
     }
 
+    /// A share of a tab is 1 to 100 percent, from the wire too: 250 would
+    /// give a pane two and a half times the tab.
     #[test]
     fn a_percent_past_100_is_refused() {
         let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();
