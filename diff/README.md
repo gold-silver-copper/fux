@@ -43,7 +43,7 @@ area differed, 2 for a bad argument.
 | Area | Input | Compared |
 | --- | --- | --- |
 | `layout` | random trees, weights 0 to `u32::MAX`, areas up to `u16::MAX` wide | placements, neighbours, resizes, splits, removals and swaps |
-| `protocol` | random frames and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces; a command frame stops both (the baseline's is a command line, the current one a typed request) |
+| `protocol` | random frames and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces; a frame each reads as a type of its own stops both: a command (the baseline's a command line, the current one's a typed request), an attach, an attached client's input (the baseline's the bytes typed, the current one's a typed `Act`), a hello of the `Headless` role the baseline lacks |
 | `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster), and the cursor shape, now a `CursorShape`, which drops a Ps ctlseqs lists no style for |
 | `input` | client input in pieces with Escape timeouts, key names, pastes, held command lines, pane input queues | decoded input and the Escape deadline, encoded keys and pastes, the queues |
 | `copy` | screens and history from random lines; searches both ways | matches, copied text, row positions |
