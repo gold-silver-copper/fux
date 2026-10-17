@@ -858,11 +858,13 @@ impl fuxth::Host for Host<'_> {
                 else {
                     return Err(fail(Code::Id, "split makes a pane alone: its id is %N"));
                 };
-                let run = !built.argv.is_empty();
-                let cmd = if run {
-                    built.argv
-                } else {
-                    built.typed.into_iter().collect()
+                let (run, cmd) = match (built.argv.is_empty(), built.typed) {
+                    (true, typed) => (false, typed.into_iter().collect()),
+                    (false, None) => (true, built.argv),
+                    (false, Some(_)) => {
+                        let why = "split takes no typed with a program: a line is typed into the shell the program replaces";
+                        return Err(fail(Code::Unused, why));
+                    }
                 };
                 later(ask(
                     Command::Split {

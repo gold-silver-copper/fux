@@ -71,6 +71,7 @@ const ROWS: &[Fails] = &[
     fails("not_here", Key, "str c1 client 10 10 headless", "fails not_here 1"),
     fails("unused", Cli, "%1 opts str x wait-text capture", "fails unused 1"),
     fails("unused", Cli, "%1 opts main-screen alt-screen capture", "fails unused 1"),
+    fails("unused", Cli, "%1 opts str /bin/cat program str hi typed split", "fails unused 1"),
     fails("not_a_key", Cli, "%1 keys str Nope key send-keys", "fails not_a_key 1"),
     fails("no_keys", Cli, "%1 keys send-keys", "fails no_keys 1"),
     fails("not_a_client", Cli, "me", "fails not_a_client 1"),
