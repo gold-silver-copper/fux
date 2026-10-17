@@ -49,18 +49,18 @@ pub struct Modes {
 }
 
 impl Modes {
-    /// Appends what turns the terminal's modes from `old`, if known, into
-    /// these; its cursor's shape is `shape` either way, as a resize, which
-    /// forgets what it shows, leaves the shape.
-    fn diff(&self, old: Option<&Modes>, shape: CursorShape, out: &mut Vec<u8>) {
-        if old.map(|o| o.mouse) != Some(self.mouse) {
+    /// Appends what turns the terminal's modes, `shown` if `known`, into
+    /// these; its cursor's shape is `shown`'s either way, as a resize,
+    /// which forgets what it shows, leaves the shape.
+    fn diff(&self, shown: &Modes, known: bool, out: &mut Vec<u8>) {
+        if !known || shown.mouse != self.mouse {
             // Off first, as a terminal not known may have any on.
             out.extend_from_slice(MOUSE_OFF.as_bytes());
             if self.mouse != 0 {
                 let _ = write!(out, "\x1b[?{}h\x1b[?1006h", self.mouse);
             }
         }
-        cursor_shape(shape, self.cursor_shape, out);
+        cursor_shape(shown.cursor_shape, self.cursor_shape, out);
     }
 }
 
@@ -1421,20 +1421,19 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
 #[cfg(test)]
 pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
-    let shape = old.map_or(CursorShape::Initial, |o| o.modes.cursor_shape);
-    paint_into(old, shape, new, &mut out);
+    let blank = Grid::new(new.rows, new.cols);
+    paint_into(old.unwrap_or(&blank), old.is_some(), new, &mut out);
     out
 }
 
-/// Appends the bytes that turn `old` (what the client shows, or nothing)
-/// into `new` to `out`, the terminal's cursor `shape` known either way.
-pub fn paint_into(old: Option<&Grid>, shape: CursorShape, new: &Grid, out: &mut Vec<u8>) {
-    if let Some(old) = old
-        && echo(old, new, out)
-    {
+/// Appends the bytes that turn `shown`, what the client shows if `known`
+/// (else what it last showed, whose cursor shape it keeps), into `new` to
+/// `out`.
+pub fn paint_into(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
+    if known && echo(shown, new, out) {
         return;
     }
-    paint_whole(old, shape, new, out);
+    paint_whole(shown, known, new, out);
 }
 
 /// Whether row `y` of two grids of a size shows the same: its cells, and,
@@ -1559,7 +1558,8 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     true
 }
 /// [`paint_into`] without the echo's short way.
-fn paint_whole(old: Option<&Grid>, shape: CursorShape, new: &Grid, out: &mut Vec<u8>) {
+fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
+    let old = known.then_some(shown);
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     // Learning that the terminal draws underline styles repaints it whole,
     // so that what it shows takes them.
@@ -1648,7 +1648,7 @@ fn paint_whole(old: Option<&Grid>, shape: CursorShape, new: &Grid, out: &mut Vec
         hyperlink(out, None);
     }
     out.extend_from_slice(b"\x1b[0m");
-    new.modes.diff(old.map(|o| &o.modes), shape, out);
+    new.modes.diff(&shown.modes, known, out);
     if let Some((y, x)) = new.cursor {
         goto(out, y, x);
         out.extend_from_slice(b"\x1b[?25h");
@@ -1684,7 +1684,7 @@ mod tests {
             let mut new = Grid::new(2, 3);
             new.modes.cursor_shape = shape;
             let mut out = Vec::new();
-            paint_into(known.then_some(&old), was, &new, &mut out);
+            paint_into(&old, known, &new, &mut out);
             let out = String::from_utf8_lossy(&out).into_owned();
             let shapes = ["\x1b[0 q\x1b[7 q", "\x1b[0 q", "\x1b[5 q", "\x1b[6 q"];
             shapes
@@ -1799,8 +1799,7 @@ mod tests {
                 plain_old.forget_memo();
                 plain_new.forget_memo();
                 let mut slow = Vec::new();
-                let shape = plain_old.modes.cursor_shape;
-                paint_whole(painted.then_some(&plain_old), shape, &plain_new, &mut slow);
+                paint_whole(&plain_old, painted, &plain_new, &mut slow);
                 if !bytes.starts_with(b"\x1b[?2026h") {
                     short += 1;
                 }

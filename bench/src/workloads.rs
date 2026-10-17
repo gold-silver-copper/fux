@@ -448,12 +448,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         fux::render::compose_view(&s, view, &mut spare, &mut placement);
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
-        fux::render::paint_into(
-            have.then_some(&shown),
-            shown.modes.cursor_shape,
-            &spare,
-            &mut buffer,
-        );
+        fux::render::paint_into(&shown, have, &spare, &mut buffer);
         painted = painted.saturating_add(buffer.len());
         frames = frames.saturating_add(1);
         black_box(&buffer);
@@ -535,12 +530,7 @@ fn paint(
                         continue;
                     }
                     buffer.clear();
-                    fux::render::paint_into(
-                        have.then_some(&shown),
-                        shown.modes.cursor_shape,
-                        &spare,
-                        &mut buffer,
-                    );
+                    fux::render::paint_into(&shown, have, &spare, &mut buffer);
                     painted = painted.saturating_add(buffer.len());
                     frames = frames.saturating_add(1);
                     black_box(&buffer);

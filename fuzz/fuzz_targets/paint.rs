@@ -11,8 +11,8 @@ use libfuzzer_sys::fuzz_target;
 /// The bytes that turn `old` (or nothing) into `new`.
 fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
-    let shape = old.map_or(fux_vt::CursorShape::Initial, |o| o.modes.cursor_shape);
-    paint_into(old, shape, new, &mut out);
+    let blank = Grid::new(new.rows, new.cols);
+    paint_into(old.unwrap_or(&blank), old.is_some(), new, &mut out);
     out
 }
 

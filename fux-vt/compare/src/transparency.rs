@@ -371,9 +371,7 @@ impl Through {
         render::compose_view(&self.session, view, &mut self.spare, &mut self.placement);
         if !(self.painted && self.spare == self.shown) {
             self.buffer.clear();
-            let shown = self.painted.then_some(&self.shown);
-            let shape = self.shown.modes.cursor_shape;
-            render::paint_into(shown, shape, &self.spare, &mut self.buffer);
+            render::paint_into(&self.shown, self.painted, &self.spare, &mut self.buffer);
             self.terminal.process(&self.buffer)?;
             self.paints = self.paints.saturating_add(1);
             self.painted_bytes = self.painted_bytes.saturating_add(self.buffer.len());

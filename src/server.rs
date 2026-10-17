@@ -1237,14 +1237,13 @@ impl Server {
                     || !attached.spare.same_in(&attached.shown, p.area)
             })
             .collect();
-        let shown = known.then_some(&attached.shown);
+        let shown = &attached.shown;
         // The same screen as the client shows: nothing to send, not even
         // the envelope, whose cursor hide and show would restart a blinking
         // cursor.
-        if shown.is_none_or(|shown| !attached.spare.same_as(shown)) {
+        if !known || !attached.spare.same_as(shown) {
             self.paint_buffer.clear();
-            let shape = attached.shown.modes.cursor_shape;
-            render::paint_into(shown, shape, &attached.spare, &mut self.paint_buffer);
+            render::paint_into(shown, known, &attached.spare, &mut self.paint_buffer);
             attached.paint(&mut conn.out, &self.paint_buffer);
             mem::swap(&mut attached.shown, &mut attached.spare);
             attached.known = true;
