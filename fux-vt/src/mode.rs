@@ -65,7 +65,8 @@ modes! {
         ApplicationCursor (true, 1) => Kind::Flag,
         /// DECSCLM, smooth scroll (`CSI ? 4 h`). State only.
         SmoothScroll (true, 4) => Kind::Flag,
-        /// DECSCNM, reverse video (`CSI ? 5 h`). State only.
+        /// DECSCNM, reverse video (`CSI ? 5 h`). State only: the host draws
+        /// it.
         ReverseVideo (true, 5) => Kind::Flag,
         /// DECOM (`CSI ? 6 h`): lines are addressed from the top margin.
         Origin (true, 6) => Kind::Origin,

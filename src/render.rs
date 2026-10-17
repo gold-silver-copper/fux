@@ -219,7 +219,7 @@ impl Frame {
         let mut panes = Vec::with_capacity(placement.panes.len());
         for (id, rect) in &placement.panes {
             let screen = session.panes.get(id)?.screen();
-            if screen.colors_changed() {
+            if own_colours(screen) {
                 return None;
             }
             panes.push((*id, *rect, screen.size().into()));
@@ -638,17 +638,28 @@ impl Grid {
 /// the colour it set, and the default foreground and background, if it set
 /// them (OSC 10, 11), as those; each colour it left alone, or reset, as it
 /// is, for the client's terminal to draw in its own. A default underline
-/// colour is the foreground's, and stays.
+/// colour is the foreground's, and stays. With DECSCNM set (DEC STD 070,
+/// Screen Mode: the screen in reverse video), every cell's inverse is
+/// turned over, so a reversed glyph shows plain.
 fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
     let colour = |c: Color, default: Option<Rgb>| match c {
         Color::Idx(n) => screen.palette_color(n).map_or(c, Color::Rgb),
         Color::Default => default.map_or(c, Color::Rgb),
         Color::Rgb(..) => c,
     };
+    let reverse = screen.mode(fux_vt::Mode::ReverseVideo);
     attributes
         .with_foreground(colour(attributes.foreground(), screen.dynamic_color(10)))
         .with_background(colour(attributes.background(), screen.dynamic_color(11)))
         .with_underline_color(colour(attributes.underline_color(), None))
+        .with_inverse(attributes.inverse() != reverse)
+}
+
+/// Whether a pane is drawn in colours of its own (`pane_colours`): its
+/// program changed some, or set DECSCNM. Its rows then depend on more
+/// than their keys, so a frame with it is not memo'd (`Frame::of`).
+fn own_colours(screen: &fux_vt::Screen) -> bool {
+    screen.colors_changed() || screen.mode(fux_vt::Mode::ReverseVideo)
 }
 
 /// What a cell shows: its text, or a space if it has none.
@@ -881,7 +892,7 @@ fn put_panes(
         };
         let screen = pane.screen();
         // A pane whose program changed its colours is drawn in them.
-        let colours = screen.colors_changed().then_some(screen);
+        let colours = own_colours(screen).then_some(screen);
         let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
         let window = at.map_or_else(|| screen.window(), |at| at.top.window());
         let width = rect.w().min(window.cols());
@@ -2452,6 +2463,39 @@ mod tests {
             let expected = format!("\x1b]4;1;rgb:{answer}\x07");
             assert_eq!(String::from_utf8_lossy(&asked), expected, "pane {id}");
         }
+        Ok(())
+    }
+
+    /// DECSCNM (`CSI ? 5 h`; DEC STD 070, Screen Mode: the whole screen in
+    /// reverse video) is drawn: a pane that sets it is painted with every
+    /// cell's inverse turned over, blanks too, so a reversed glyph shows
+    /// plain; the pane beside it is not; the rows it prints later are
+    /// painted so too, and resetting it paints them plain again.
+    #[test]
+    fn a_pane_in_reverse_video_is_painted_reversed() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
+        s.output(PaneId::of(1), b"\x1b[?5ha\x1b[7mb\x1b[27m");
+        s.output(PaneId::of(2), b"a");
+        let mut client = fux_vt::Parser::new(fux_vt::Size::new(6, 41)?, 0)?;
+        let inverse =
+            |p: &fux_vt::Parser, y: u16, x: u16| p.screen().cell(y, x).map(|c| c.inverse());
+        let grid = compose(&s, c).ok_or("a screen")?;
+        client.process(&paint(None, &grid))?;
+        assert_eq!(inverse(&client, 0, 0), Some(true));
+        assert_eq!(inverse(&client, 0, 1), Some(false));
+        assert_eq!(inverse(&client, 0, 2), Some(true));
+        assert_eq!(inverse(&client, 0, 21), Some(false));
+        s.output(PaneId::of(1), b"\r\nc");
+        let next = compose(&s, c).ok_or("a screen")?;
+        client.process(&paint(Some(&grid), &next))?;
+        assert_eq!(inverse(&client, 1, 0), Some(true));
+        s.output(PaneId::of(1), b"\x1b[?5l");
+        let plain = compose(&s, c).ok_or("a screen")?;
+        client.process(&paint(Some(&next), &plain))?;
+        assert_eq!(inverse(&client, 0, 0), Some(false));
+        assert_eq!(inverse(&client, 0, 1), Some(true));
+        assert_eq!(inverse(&client, 1, 0), Some(false));
         Ok(())
     }
 
