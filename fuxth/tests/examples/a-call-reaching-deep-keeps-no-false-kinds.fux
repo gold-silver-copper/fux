@@ -1,0 +1,9 @@
+# A word that, one way through, reaches deeper than it surely uses moves
+# its caller's values, and so does a word that calls it: what was known of
+# their kinds is not, after either call.
+# expect: x 4 y 4
+define c if 2 roll then end
+define b c end
+define d c 0 end
+1 str x 3 true b add
+1 str y 3 true d drop add

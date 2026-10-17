@@ -95,9 +95,6 @@ struct State {
     outer: Vec<State>,
     /// What kind each open `each` gives, innermost last.
     iters: Vec<Kinds>,
-    /// Whether a `roll` of a depth not known before running ran: values
-    /// below may have moved, so what was known of their kinds is not.
-    scrambled: bool,
     /// The kinds the code's own `let` names hold, by slot.
     names: Vec<Kinds>,
     /// The kinds the top level's `let` names hold, by slot: kept only at
@@ -135,8 +132,6 @@ struct Summary {
     /// The stack where it returns, counted from where it was called;
     /// `None` if it never returns.
     exit: Option<State>,
-    /// Whether it may move its caller's values (a `roll` of unknown depth).
-    scrambled: bool,
     /// Whether every way through it stops at `fail`: a call to it is as
     /// `fail` is.
     stops: bool,
@@ -168,7 +163,6 @@ impl Summary {
         Summary {
             need: 0,
             exit: Some(exit),
-            scrambled: true,
             stops: false,
         }
     }
@@ -241,7 +235,6 @@ impl State {
             bounded,
             outer: Vec::new(),
             iters: Vec::new(),
-            scrambled: false,
             names: Vec::new(),
             globals: Vec::new(),
         }
@@ -349,7 +342,6 @@ impl State {
             bounded: self.bounded,
             outer,
             iters,
-            scrambled: self.scrambled || other.scrambled,
             names: join_names(&self.names, &other.names),
             globals: join_names(&self.globals, &other.globals),
         }
@@ -425,7 +417,6 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
                         (Some(old), None) => Some(old.clone()),
                         (None, new) => new,
                     },
-                    scrambled: old.scrambled || new.scrambled,
                     stops: old.stops && new.stops,
                 }),
             };
@@ -567,7 +558,6 @@ impl<'a, A> Unit<'a, A> {
         let Some((mut states, ends)) = self.ends(false) else {
             return Some(Summary::anything());
         };
-        let scrambled = states.values().any(|(s, _)| s.scrambled);
         let exit = states.remove(&end).map(|(state, _)| state);
         let all = ends.need(exit.as_ref())?;
         let stops = exit.is_none() && ends.diverged.is_none();
@@ -583,7 +573,6 @@ impl<'a, A> Unit<'a, A> {
         Some(Summary {
             need: all.max(once),
             exit,
-            scrambled,
             stops,
         })
     }
@@ -613,7 +602,6 @@ impl<'a, A> Unit<'a, A> {
             Some((mut states, ends)) => {
                 let end = code.ops.len();
                 let exit = states.remove(&end).map(|(state, _)| state);
-                let scrambled = states.values().any(|(s, _)| s.scrambled);
                 // Every way fails: by a mistake the checker is sure of, or
                 // at a `fail` (with one mistake at least: a word that only
                 // ever calls `fail` is called to fail).
@@ -628,7 +616,6 @@ impl<'a, A> Unit<'a, A> {
                     (exit, _) => Special::Does(Summary {
                         need: 0,
                         exit,
-                        scrambled,
                         stops: false,
                     }),
                 }
@@ -819,6 +806,7 @@ impl<'a, A> Unit<'a, A> {
                         Special::Unknown => {}
                     }
                 }
+                let (before, _) = state.depth();
                 state.pop(usize::try_from(summary.need).unwrap_or(0))?;
                 // Depths as every call has them; kinds, where the kinds
                 // this call gives tell more, as this call has them (a way
@@ -835,24 +823,21 @@ impl<'a, A> Unit<'a, A> {
                             }
                         }
                     }
-                    (
-                        does.exit.as_ref().and(exit),
-                        does.scrambled || summary.scrambled,
-                    )
+                    does.exit.as_ref().and(exit)
                 });
-                let (exit, scrambled) = match &refined {
-                    Some((exit, scrambled)) => (exit.as_ref(), *scrambled),
-                    None => (summary.exit.as_ref(), summary.scrambled),
+                let exit = match &refined {
+                    Some(exit) => exit.as_ref(),
+                    None => summary.exit.as_ref(),
                 };
                 // A way that went deeper than every way surely does may
-                // have replaced the caller's values down to there.
-                let deeper = exit.is_some_and(|exit| exit.reached.saturating_add(summary.need) < 0);
-                if deeper {
+                // have replaced the caller's values down to there: what was
+                // known of their kinds is not, and the caller has reached
+                // as deep, for its own callers.
+                if let Some(exit) = exit
+                    && exit.reached.saturating_add(summary.need) < 0
+                {
                     state.forget(0, 0);
-                }
-                if scrambled {
-                    state.forget(0, 0);
-                    state.scrambled = true;
+                    state.reached = state.reached.min(before.saturating_add(exit.reached));
                 }
                 let Some(exit) = exit else {
                     return Ok(if summary.stops {
@@ -908,7 +893,6 @@ impl<'a, A> Unit<'a, A> {
                 outer.iters = state.iters.clone();
                 outer.names = std::mem::take(&mut state.names);
                 outer.globals = std::mem::take(&mut state.globals);
-                outer.scrambled = outer.scrambled || state.scrambled;
                 outer.push(LIST);
                 *state = outer;
             }
@@ -992,10 +976,10 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
             int(builtin, at(0))?;
             let one = state.pop1()?;
             state.push(one);
-            // Some value from below comes up: what was known of their
-            // kinds, and of the caller's, is not any more.
+            // Some value from below comes up, from as deep as any: what was
+            // known of their kinds, and of the caller's, is not any more.
             state.forget(0, 0);
-            state.scrambled = true;
+            state.reached = BIG.saturating_neg();
         }
         Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div => {
             let (a, b) = (at(0), at(1));
