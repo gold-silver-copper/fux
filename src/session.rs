@@ -410,31 +410,32 @@ pub const RUN_WORKSPACE: &str = "agent";
 
 /// A log file, made if it is not there: what a program writes may be
 /// secret, so it is the user's alone.
-/// A link is not followed, and a file there already is made the user's
-/// alone too. It is emptied by `emptied`, once nothing refuses the log.
+/// A link is not followed. A file there already is made the user's alone
+/// too, and emptied, by `emptied`, once nothing refuses the log.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let failed = |e| fail(Code::Log, format!("the log {}: {e}", path.display()));
     if path.is_symlink() {
         let link = std::io::Error::other("a symbolic link, which a log does not follow");
         return Err(failed(link));
     }
-    let file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .custom_flags(fuxix::file::NOFOLLOW)
         .open(path)
-        .map_err(failed)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(failed)?;
-    Ok(file)
+        .map_err(failed)
 }
 
-/// `file`, a log, emptied: a FIFO or a terminal has nothing to empty.
+/// `file`, a log, made the user's alone and emptied: a FIFO or a terminal
+/// has nothing to empty.
 fn emptied(file: std::fs::File) -> Result<std::fs::File, Error> {
-    let failed = |e| fail(Code::Log, format!("emptying the log: {e}"));
+    use std::os::unix::fs::PermissionsExt;
+    let failed = |e| fail(Code::Log, format!("the log: {e}"));
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(failed)?;
     if file.metadata().map_err(failed)?.is_file() {
         file.set_len(0).map_err(failed)?;
     }
@@ -3756,10 +3757,12 @@ mod tests {
     use super::*;
 
     /// A run refused (its name is taken, its workspace is not there or
-    /// can't be made) leaves the log file it names as it was: the
-    /// file is emptied only for a run that starts.
+    /// can't be made) leaves the log file it names as it was, its contents
+    /// and its mode: the file is emptied and made the user's alone only for
+    /// a run that starts.
     #[test]
     fn a_refused_run_leaves_its_log_alone() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
         let mut s = started(Config::default())?;
         let log = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
         let line = |opts: &str| {
@@ -3767,7 +3770,10 @@ mod tests {
             format!("opts {opts} str '{log}' log-to str /bin/cat program run")
         };
         run(&mut s, &line("str a name"))?;
+        // The one that starts makes it the user's alone.
+        assert_eq!(std::fs::metadata(&log)?.permissions().mode() & 0o777, 0o600);
         std::fs::write(&log, "kept")?;
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o640))?;
         let refused = [
             (line("str a name"), "name_taken"),
             (line("str +9 in"), "no_workspace"),
@@ -3776,12 +3782,14 @@ mod tests {
         ];
         let kept = refused.map(|(line, code)| {
             let failed = run(&mut s, &line).is_err_and(|e| e.contains(code));
-            (code, failed, std::fs::read_to_string(&log).ok())
+            let mode = std::fs::metadata(&log).map(|m| m.permissions().mode() & 0o777);
+            (code, failed, std::fs::read_to_string(&log).ok(), mode.ok())
         });
         std::fs::remove_file(&log)?;
-        for (code, failed, text) in kept {
+        for (code, failed, text, mode) in kept {
             assert!(failed, "{code}");
             assert_eq!(text.as_deref(), Some("kept"), "{code}");
+            assert_eq!(mode, Some(0o640), "{code}");
         }
         Ok(())
     }
