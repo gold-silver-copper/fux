@@ -368,8 +368,7 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
 pub fn vocabulary() -> fuxth::Vocabulary {
     let mut vocabulary = fuxth::Vocabulary::default();
     for word in WORDS {
-        let gives = word.gives();
-        vocabulary.add(word.name, word.takes, gives..=gives);
+        vocabulary.add(word.name, word.takes, word.gives());
     }
     vocabulary
 }

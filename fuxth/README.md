@@ -107,7 +107,7 @@ comments at a word's start.
 use fuxth::{Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary, token};
 
 let mut words = Vocabulary::default();
-let ask = words.add("ask", 1, 1..=1);   // takes one value, gives one
+let ask = words.add("ask", 1, 1);   // takes one value, gives one
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
@@ -127,8 +127,7 @@ The host implements [`Host`]: `call(word, args, out)` gets the word's values
 host pushes before running the machine again; `machine.at()` is the token
 of the word it stopped at, and `machine.next()` the one it takes next, if its
 frame has one. `print(line)` prints. A word
-gives as many values as its vocabulary says (a range, for one that gives a
-value only sometimes): the checker counts on it, and the machine fails a run
+gives as many values as its vocabulary says: the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise. A word that is one step (`dup`
 is `0 pick`) is copied in where it is called, so a mistake in it is placed
 at the call.

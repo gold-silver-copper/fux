@@ -2,11 +2,10 @@
 //! end, through every suspension.
 use crate::*;
 
-/// A host with one value of its own, a ticket, and five words: `ticket`
+/// A host with one value of its own, a ticket, and four words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
-/// for the host to answer; `nope`, which fails; `maybe` (n -- [n]), which
-/// gives n back only above 0; and `liar`, which says it gives a value and
-/// gives none.
+/// for the host to answer; `nope`, which fails; and `liar`, which says it
+/// gives a value and gives none.
 #[derive(Clone, Debug, PartialEq)]
 struct Ticket(i64);
 
@@ -33,13 +32,7 @@ impl Host for Toy {
         let args: Vec<_> = args.collect();
         assert_eq!(told, args.len(), "an exact count of the values taken");
         match (word, args.as_slice()) {
-            (3, [Value::Int(n)]) => {
-                if *n > 0 {
-                    out.push(Value::Int(*n));
-                }
-                Ok(Done::Now)
-            }
-            (4, []) => Ok(Done::Now),
+            (3, []) => Ok(Done::Now),
             (0, []) => {
                 out.push(Value::App(Ticket(7)));
                 Ok(Done::Now)
@@ -72,13 +65,16 @@ fn with_stdlib() -> Compiler<Ticket> {
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    words.add("ticket", 0, 1..=1);
-    words.add("ask", 1, 1..=1);
-    words.add("nope", 0, 0..=0);
-    words.add("maybe", 1, 0..=1);
-    words.add("liar", 0, 1..=1);
+    words.add("ticket", 0, 1);
+    words.add("ask", 1, 1);
+    words.add("nope", 0, 0);
+    words.add("liar", 0, 1);
     words
 }
+
+/// `maybe` (n -- [n]): n back only above 0, so what it leaves is known
+/// only as it runs. Written on the line it is used on.
+const MAYBE: &str = "define maybe dup 0 gt if else drop then end ";
 
 /// Runs `text` (a file's), answering each `ask` with ten times its
 /// number, a step at a time to cover every pause; the stack it ends with.
@@ -368,6 +364,10 @@ fn the_checker_says_what_and_where() {
             .and_then(|()| compiler.finish().map(|_| ()));
         compiled.err().map(|e| e.to_string()).unwrap_or_default()
     };
+    let (maybe_drop, maybe_swap) = (
+        format!("{MAYBE}0 maybe drop drop"),
+        format!("{MAYBE}0 maybe swap"),
+    );
     for (text, said) in [
         (
             "drop",
@@ -379,11 +379,11 @@ fn the_checker_says_what_and_where() {
         ),
         // maybe gives one value or none: then a drop leaves none for sure.
         (
-            "0 maybe drop drop",
+            maybe_drop.as_str(),
             "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 here",
         ),
         (
-            "0 maybe swap",
+            maybe_swap.as_str(),
             "stack_underflow: t:1: swap: takes 2 values, and the stack has at most 1 here",
         ),
         (
@@ -559,7 +559,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
         "type: t:1: if: takes a boolean (from eq or lt), not a ticket"
     );
     assert_eq!(
-        said("0 maybe drop 0 maybe drop"),
+        said(&format!("{MAYBE}0 maybe drop 0 maybe drop")),
         "stack_underflow: t:1: drop: takes 1 value, and the stack has 0"
     );
     // Too few, as the word takes them, not as one of its pops does.
@@ -571,14 +571,14 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     ] {
         let word = text.rsplit(' ').next().unwrap_or_default();
         assert_eq!(
-            said(text),
+            said(&format!("{MAYBE}{text}")),
             format!("stack_underflow: t:1: {word}: takes {takes} values, and the stack has {has}")
         );
     }
     // A host that gives what its word doesn't say is caught at once.
     assert_eq!(
         said("liar"),
-        "contract: t:1: liar: the application gave 0 values, and its word says 1..=1"
+        "contract: t:1: liar: the application gave 0 values, and its word says 1"
     );
     let mut compiler = with_stdlib();
     compiler.add(&token::source("t", "1\n  2 ask")?)?;

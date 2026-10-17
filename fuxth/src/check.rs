@@ -768,13 +768,8 @@ impl<'a, A> Unit<'a, A> {
             Op::App(id) => {
                 let (takes, gives) = self.program.vocabulary.effect(*id);
                 state.pop(takes)?;
-                let (lo, hi) = (*gives.start(), *gives.end());
-                if lo == hi {
-                    for _ in 0..lo {
-                        state.push(ANY);
-                    }
-                } else {
-                    state.forget(count(lo), count(hi));
+                for _ in 0..gives {
+                    state.push(ANY);
                 }
             }
             Op::Call(id) => {

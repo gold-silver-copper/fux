@@ -45,10 +45,14 @@ impl Rng {
     }
 }
 
-/// The host words both know: `ask` (n -- n*10), answered later, as a
-/// server's answer is; `maybe` (n -- [n]), which gives n back only if it
-/// is above 0.
+/// The words both know beyond the standard library: `ask` (n -- n*10), the
+/// host's, answered later, as a server's answer is; `maybe` (n -- [n]),
+/// which gives n back only if it is above 0, defined in fuxth (`MAYBE`),
+/// as no host word gives a count known only as it runs.
 pub const HOST_WORDS: [&str; 2] = ["ask", "maybe"];
+
+/// `maybe`, read by both after the standard library.
+const MAYBE: &str = "define maybe dup 0 gt if else drop then end\n";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Nothing;
@@ -59,7 +63,7 @@ impl AppValue for Nothing {
     }
 }
 
-/// The host: two words, and what is printed.
+/// The host: one word, and what is printed.
 #[derive(Default)]
 pub struct Toy {
     pub printed: Vec<String>,
@@ -72,17 +76,11 @@ impl Host for Toy {
         &mut self,
         word: usize,
         args: Args<'_, Nothing>,
-        out: &mut Vec<Value<Nothing>>,
+        _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<i64>, Failure> {
         let args: Vec<_> = args.collect();
         match (word, args.as_slice()) {
             (0, [Value::Int(n)]) => Ok(Done::Later(*n)),
-            (1, [Value::Int(n)]) => {
-                if *n > 0 {
-                    out.push(Value::Int(*n));
-                }
-                Ok(Done::Now)
-            }
             _ => Err(Failure::new(
                 fuxth::Code::Host("not_a_number"),
                 "takes an integer",
@@ -98,8 +96,7 @@ impl Host for Toy {
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    words.add("ask", 1, 1..=1);
-    words.add("maybe", 1, 0..=1);
+    words.add("ask", 1, 1);
     words
 }
 
@@ -170,6 +167,7 @@ thread_local! {
 fn library() -> Result<Compiler<Nothing>, Error> {
     let mut compiler = Compiler::new(vocabulary());
     compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
+    compiler.add(&token::source("maybe.fux", MAYBE)?)?;
     compiler.prepare();
     Ok(compiler)
 }
@@ -347,8 +345,11 @@ impl Naive {
         let mut naive = Naive::new();
         let tokens = |source: &str, text: &str| token::source(source, text).unwrap_or_default();
         let library = tokens("stdlib.fux", STDLIB);
+        let maybe = tokens("maybe.fux", MAYBE);
         let program = tokens("program", text);
-        let ran = naive.exec(&library).and_then(|()| naive.exec(&program));
+        let ran = (naive.exec(&library))
+            .and_then(|()| naive.exec(&maybe))
+            .and_then(|()| naive.exec(&program));
         let mut failing = std::mem::take(&mut naive.calls);
         failing.extend(ran.as_ref().err().map(|(_, line)| *line));
         let ended = match ran {
@@ -769,16 +770,8 @@ impl Naive {
                 self.pop(at)?;
                 Err(err("fail", at))
             }
-            "ask" | "maybe" => match self.pop(at)? {
-                V::Int(n) if text == "ask" => {
-                    self.push(V::Int(n.checked_mul(10).ok_or(err("overflow", 0))?))
-                }
-                V::Int(n) => {
-                    if n > 0 {
-                        self.push(V::Int(n))?;
-                    }
-                    Ok(())
-                }
+            "ask" => match self.pop(at)? {
+                V::Int(n) => self.push(V::Int(n.checked_mul(10).ok_or(err("overflow", 0))?)),
                 V::Bool(_) | V::Str(_) | V::List(_) => Err(err("not_a_number", at)),
             },
             _ => Err(err("unknown_word", at)),

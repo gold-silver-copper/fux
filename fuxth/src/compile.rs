@@ -14,7 +14,6 @@ use crate::machine::Builtin;
 use crate::token::Token;
 use crate::value::Value;
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 /// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
@@ -100,17 +99,16 @@ impl Parsing {
 }
 
 /// The application's words: each a name, how many values it takes, and
-/// how many it gives (a range, for a word that gives a value only
-/// sometimes).
+/// how many it gives.
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
-    words: Vec<(String, usize, RangeInclusive<usize>)>,
+    words: Vec<(String, usize, usize)>,
 }
 
 impl Vocabulary {
     /// Adds a word taking `takes` values and giving `gives`; its id, which
     /// the host is called with. A name given twice keeps its first word.
-    pub fn add(&mut self, name: &str, takes: usize, gives: RangeInclusive<usize>) -> usize {
+    pub fn add(&mut self, name: &str, takes: usize, gives: usize) -> usize {
         if let Some(id) = self.words.iter().position(|(n, _, _)| n == name) {
             return id;
         }
@@ -120,10 +118,10 @@ impl Vocabulary {
 
     /// How many values the word `id` takes, and how many it gives: none,
     /// for an id no word has.
-    pub(crate) fn effect(&self, id: usize) -> (usize, RangeInclusive<usize>) {
+    pub(crate) fn effect(&self, id: usize) -> (usize, usize) {
         self.words
             .get(id)
-            .map_or((0, 0..=0), |(_, takes, gives)| (*takes, gives.clone()))
+            .map_or((0, 0), |(_, takes, gives)| (*takes, *gives))
     }
 }
 

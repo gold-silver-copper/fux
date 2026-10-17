@@ -10,7 +10,6 @@ use crate::error::{Code as ErrorCode, Error, Failure, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, Kind, List, Text, Value};
 use std::cmp::Ordering;
-use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 /// What runs the application's words.
@@ -155,7 +154,7 @@ pub struct Machine<A> {
     out: Vec<Value<A>>,
     /// A suspended application word: the stack's depth before it gave
     /// anything, and how many values it gives.
-    pending: Option<(usize, RangeInclusive<usize>)>,
+    pending: Option<(usize, usize)>,
     /// Steps the last long step costs beyond its own.
     extra: u64,
     /// Elements built so far.
@@ -435,17 +434,15 @@ impl<A: AppValue> Machine<A> {
 
     /// Whether an application word gave as many values as its vocabulary
     /// says: the checker counted on it. `depth` is the stack's before it
-    /// gave any.
-    fn given(&self, (depth, gives): (usize, RangeInclusive<usize>)) -> Result<(), Error> {
+    /// gave any. Kept out of `run`'s loop: inlined there, it made every
+    /// program 2 to 5% slower (fuxth's bench).
+    #[inline(never)]
+    fn given(&self, (depth, gives): (usize, usize)) -> Result<(), Error> {
         let given = self.stack.len().saturating_sub(depth);
-        if gives.contains(&given) {
+        if given == gives {
             return Ok(());
         }
-        let message = format!(
-            "the application gave {given} values, and its word says {}..={}",
-            gives.start(),
-            gives.end()
-        );
+        let message = format!("the application gave {given} values, and its word says {gives}");
         Err(self.fail(ErrorCode::Contract, message))
     }
 
