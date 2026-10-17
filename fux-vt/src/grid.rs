@@ -1514,18 +1514,12 @@ impl Grid {
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
         self.history.push(m.arriving(cells, self.size.cols()))?;
-        self.retire_extras(slot);
-        Ok(())
-    }
-
-    /// The text and links of the row in `slot`, which history has just
-    /// taken, go with it: a copy of the text, and the links themselves.
-    #[cold]
-    #[inline(never)]
-    fn retire_extras(&mut self, slot: usize) {
+        // The row's text and links, which history has just taken, go with
+        // it: a copy of the text, and the links themselves.
         let text = self.texts.get(slot).map(Text::exact);
         let links = (self.linked.get_mut(slot).map(std::mem::take)).filter(|l| !l.is_empty());
         self.history.attach(text, links);
+        Ok(())
     }
 
     /// Moves the screen's row at `from` to `to`, the rows between closing
