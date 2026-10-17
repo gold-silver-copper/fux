@@ -354,6 +354,10 @@ fn a_revoke_ends_an_idle_connection_through_it() -> Outcome {
     let socket = granted.to_string_lossy().into_owned();
     server.ok(&["str", "main", "str", &socket, "grant"])?;
     let mut stream = std::os::unix::net::UnixStream::connect(&granted).map_err(e)?;
+    // Before the revoke: macOS refuses a timeout on a socket its peer closed.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .map_err(e)?;
     let hello = Hello {
         protocol: PROTOCOL,
         version: "0".into(),
@@ -362,9 +366,6 @@ fn a_revoke_ends_an_idle_connection_through_it() -> Outcome {
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
     server.ok(&["str", &socket, "revoke"])?;
     // Told to go, then closed; not left waiting for its next request.
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .map_err(e)?;
     let mut told = Vec::new();
     stream.read_to_end(&mut told).map_err(e)?;
     assert!(!told.is_empty(), "the connection was closed unsaid");
