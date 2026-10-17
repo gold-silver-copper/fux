@@ -413,7 +413,7 @@ pub const RUN_WORKSPACE: &str = "agent";
 /// A link is not followed. A file there already is made the user's alone
 /// too, and emptied, by `emptied`, once nothing refuses the log.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let failed = |e| fail(Code::Log, format!("the log {}: {e}", path.display()));
     if path.is_symlink() {
         let link = std::io::Error::other("a symbolic link, which a log does not follow");
@@ -427,12 +427,10 @@ fn open_log(path: &Path) -> Result<std::fs::File, Error> {
         .custom_flags(fuxix::file::NOFOLLOW)
         .open(path)
         .map_err(failed)?;
-    // Its mode is set once the run starts: one only its owner may set
-    // refuses the run now, before anything runs.
-    let euid = fuxix::process::geteuid();
-    if euid != 0 && file.metadata().map_err(failed)?.uid() != euid {
-        return Err(failed(std::io::ErrorKind::PermissionDenied.into()));
-    }
+    // Its mode is set once the run starts: setting the mode it has asks
+    // now whether that will be allowed, before anything runs.
+    let mode = file.metadata().map_err(failed)?.permissions();
+    file.set_permissions(mode).map_err(failed)?;
     Ok(file)
 }
 
@@ -3817,12 +3815,18 @@ mod tests {
         );
         assert!(ran.is_err_and(|e| e.contains("log")), "refused");
         assert_eq!(s.panes.len(), panes);
+        // Refused before it started: its pane's id was never taken.
+        run(&mut s, "opts str /bin/cat program run")?;
+        assert!(
+            s.panes.contains_key(&PaneId::of(2)),
+            "the next run's pane is %2"
+        );
         Ok(())
     }
 
     /// A log whose mode only another user may set (`/dev/null`, root's)
     /// refuses the run before anything starts: no pane is made for it, so
-    /// the next run's pane is the next id.
+    /// the next run's pane is the next id (ids are never given twice).
     #[test]
     fn a_log_another_user_owns_refuses_the_run_first() -> Result<(), String> {
         if fuxix::process::geteuid() == 0 {
