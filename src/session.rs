@@ -2011,8 +2011,7 @@ impl Session {
             return Begun::Done(outcome);
         };
         let now = Instant::now();
-        let follows = Follows::Started(outcome.text);
-        let waiting = Waiting::new(&[pane], wait, follows, now, self.config.wait);
+        let waiting = Waiting::new(&[pane], wait, Follows::Started, now, self.config.wait);
         self.wait_on(waiting, now)
     }
 

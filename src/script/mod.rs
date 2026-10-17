@@ -662,12 +662,27 @@ pub fn run_capped(
                     End::Answered {
                         status: answered, ..
                     } => status = answered.get(),
-                    // A failure that answered too (`run`'s pane): its answer
-                    // is left, printed before why it failed.
+                    // A failure that answered too (a wait's): its answer is
+                    // left, printed before why it failed; as JSON, if the
+                    // program's next word asks for it.
                     End::Failed { message, .. }
                         if !message.trim().is_empty() && !reply.text.trim().is_empty() =>
                     {
-                        machine.push(Value::str(reply.text.trim_end()))?;
+                        let json = machine.next().is_some_and(|word| &*word.text == "json");
+                        let answer = Reply {
+                            end: End::Done,
+                            ..reply.clone()
+                        };
+                        match json && !reply.json.trim().is_empty() {
+                            true => machine.push(Value::str(reply.json.trim_end()))?,
+                            false => {
+                                for value in
+                                    answered(answer, then).map_err(|f| placed(machine, f))?
+                                {
+                                    machine.push(value)?;
+                                }
+                            }
+                        }
                     }
                     End::Failed { .. } | End::Done => {}
                 }

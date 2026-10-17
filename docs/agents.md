@@ -61,9 +61,11 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   each piece of output as it arrives, and where a bell rang among them). A
   text: case ignored, blanks as one, from a word's start (`READY` is not in
   `NOT_READY`); `^T` a line's first word, indented or not, `T$` its last.
-  Met, it answers the line that holds the text (`run`: the pane, then that
-  line; `wait-gone`, the pane's state; after `run` or `respawn` a text must
-  show before it can go). A wait counts what the program printed since your
+  Met, it answers the state line, ending with what met it (`%2 busy · met
+  "READY"`), then the line that holds the text (`wait-gone`: what came; after
+  `run` or `respawn` a text must show before it can go). Failed (exited first,
+  timed out), it answers the state line and the pane's last lines, and says
+  why on stderr. A wait counts what the program printed since your
   last input to the pane (or since it started): lines scrolled away, and
   text drawn over in the same breath (`printf 'READY\rxxxxx'`), too; it
   never starts too late. It never matches what you typed: the echo of your

@@ -95,8 +95,9 @@ its own status):
 ```
 
 `state` is the pane's (above), or `closed`: a settling action or bare
-`wait` whose pane closed answers `{"pane":"%3","state":"closed","status":4}`,
-with no `output` and nothing on stderr. `output` is what came since the
+`wait` whose pane closed answers
+`{"pane":"%3","state":"closed","status":4,"code":"closed"}`, with no
+`output` and nothing on stderr. `code` names a status that is not 0. `output` is what came since the
 input, from the line the keys went in on if it changed (its prompt too;
 a `no_change` answer holds nothing), else from the first line that
 changed (a lone Enter, a password or raw keys, which echo nothing), or the
@@ -108,10 +109,10 @@ ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `unread` (bytes of input fux holds, not yet
 taken by the terminal; what waits in the terminal's own buffers is not
 counted). A
-wait for a text or a bell answers what met it:
+wait for a text or a bell answers what met it too:
 
 ```json
-{"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
+{"pane":"%3","state":"busy","met":"text","text":"PASS","line":"12 tests PASS","status":0}
 ```
 
 | `met` | Also |
@@ -122,12 +123,18 @@ wait for a text or a bell answers what met it:
 `status` is the exit status. A wait for a text, a bell or the exit that
 fails (the program exited first or was started again, 3; the pane closed,
 4; the time limit, 124) ends the
-program with that status and says why on stderr, `fux: CODE: MESSAGE`: it
-leaves no answer to print, but what `run`, `split` or `respawn` started
-is printed first, its pane alone (`%2`, as text, `json` or not), and so are the
-answers of the words before it. A wait on a tab's or a workspace's panes
-that fails in one prints first the answers of those that met it, a line each
-as text, `json` or not (`%3 READY`).
+program with that status and says why on stderr, one line, `fux: CODE:
+MESSAGE`; its answer is printed first, as text, or as JSON when `json`
+follows it, `output` its pane's last lines (three when its program exited,
+one at the time limit; none for a pane closed or started again):
+
+```json
+{"pane":"%3","state":"busy","status":124,"code":"timeout","output":"y\n"}
+```
+
+The answers of the words before it are printed first too. A wait on a
+tab's or a workspace's panes answers a line each, the first failing status
+naming the whole.
 
 ## `events-json`, `X events-of-json`
 

@@ -22,6 +22,17 @@ fn body(out: &str) -> &str {
     out.split_once('\n').map_or("", |(_, rest)| rest)
 }
 
+/// What a met wait answers after its state line, which names the pane,
+/// says its state (any: its program goes on) and ends with what met it
+/// (`%2 busy · met "READY"`): the line the text came on, then the screen if
+/// asked. A first line that says no `met` keeps the whole answer.
+fn met(out: &str) -> &str {
+    match head(out).contains(" · met ") {
+        true => body(out),
+        false => out,
+    }
+}
+
 /// `argv` as options words: its program, then each argument.
 fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
     let mut words = Vec::new();
@@ -110,7 +121,7 @@ fn wait_answers_as_the_pane_shows_or_settles() -> Outcome {
     let p = ["str", pane.as_str(), "pane", "opts"];
     let two =
         server.ok(&[&p[..], &["str", "two", "wait-text", "5", "timeout", "wait"]].concat())?;
-    assert_eq!(two, "two\n", "the line it is on");
+    assert_eq!(met(&two), "two\n", "the line it is on");
     assert!(
         start.elapsed() < std::time::Duration::from_secs(4),
         "it answers as it comes"
@@ -480,7 +491,11 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     let pane = id(&server.ok(&run(&["40", "10", "size"], &["sh", "-c", script]))?);
     let enter = ["str", pane.as_str(), "pane", "keys", "str", "Enter", "key"];
     let found = server.ok(&[&enter[..], &["str", "needle", "wait-text", "send-keys"]].concat())?;
-    assert_eq!(found, "the needle line\n", "found though it scrolled away");
+    assert_eq!(
+        met(&found),
+        "the needle line\n",
+        "found though it scrolled away"
+    );
     let json = server.ok(&[
         "str",
         &pane,
@@ -569,7 +584,7 @@ fn answers_say_what_the_program_does() -> Outcome {
         )
     );
     let since = server.ok(&[&p[..], &["str", "later", "wait-text", "wait"]].concat())?;
-    assert_eq!(since, "later\n", "it came after the keys");
+    assert_eq!(met(&since), "later\n", "it came after the keys");
     let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
     assert_eq!(
         (now.status, now.stdout.as_str()),
@@ -701,9 +716,11 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "wait-text",
         "respawn",
     ];
+    let again = server.ok(&again)?;
+    assert_eq!(id(&again), pane, "its pane, then the line waited for");
     assert_eq!(
-        server.ok(&again)?,
-        format!("{pane}\nfull b\n"),
+        met(&again),
+        "full b\n",
         "its pane, then the line waited for"
     );
     let empty = server.fux(&["str", &pane, "pane", "opts", "str", "", "wait-text", "wait"])?;
@@ -790,7 +807,7 @@ fn shells_mark_their_commands_with_no_setup() -> Outcome {
     assert_eq!(done(&line(&server, "sh", "false")?), Some("done 1"));
     let echo = "echo RESULT=$((6*7))";
     assert_eq!(
-        server.ok(&typed("sh", echo, &["str", "RESULT=", "wait-text"]))?,
+        met(&server.ok(&typed("sh", echo, &["str", "RESULT=", "wait-text"]))?),
         "RESULT=42\n",
         "not the typed line"
     );
@@ -929,7 +946,7 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     let click = ["str", "dialog", "pane", "str", "click", "0", "0", "mouse"];
     let answered =
         server.ok(&[&click[..], &["str", "clicked", "wait-text", "send-mouse"]].concat())?;
-    assert_eq!(answered, "clicked once\n");
+    assert_eq!(met(&answered), "clicked once\n");
     let ignored = server.ok(&[&click[..], &["send-mouse"]].concat())?;
     assert!(ignored.ends_with(&format!("{UNCHANGED}\n")), "{ignored}");
     // A selection in reverse video, marked in plain text.
@@ -960,27 +977,25 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
         "wait",
     ])?;
     assert_eq!(term.status, 124);
-    assert!(
-        term.stderr.contains("unchanged for") && term.stderr.contains("last line: `still here`"),
-        "{}",
-        term.stderr
-    );
+    assert!(term.stderr.contains("unchanged for"), "{}", term.stderr);
+    assert_eq!(body(&term.stdout), "still here\n", "its last line");
     server.ok(&["str", "stub", "pane", "str", "KILL", "signal"])?;
     let kill = server.fux(&["str", "stub", "pane", "opts", "wait-exit", "wait"])?;
     assert_eq!(
         (kill.status, kill.stdout.lines().next()),
         (137, Some("%4 killed by SIGKILL"))
     );
-    // A program that exits first: its last words come with the error.
+    // A program that exits first: its last words come with its answer.
     let crash = server.fux(&run(
         &["str", "READY", "wait-text"],
         &["sh", "-c", "echo 'fatal: no config'; exit 2"],
     ))?;
     assert_eq!(crash.status, 3);
-    assert!(
-        crash.stderr.contains("fatal: no config"),
+    assert_eq!(
+        body(&crash.stdout),
+        "fatal: no config\n",
         "{}",
-        crash.stderr
+        crash.stdout
     );
     // A tab closed by its name.
     server.ok(&["str", "dialog", "tab", "kill"])?;
@@ -1067,11 +1082,11 @@ fn waits_hold_up_under_stress() -> Outcome {
     line(&server, "sh", "clear; echo READY")?;
     // Cleared and printed again, other text: new, on the same row.
     assert_eq!(
-        server.ok(&typed(
+        met(&server.ok(&typed(
             "sh",
             "clear; echo READY 2",
             &["str", "READY", "wait-text"]
-        ))?,
+        ))?),
         "READY 2\n"
     );
     let spaced = [
@@ -1096,7 +1111,7 @@ fn waits_hold_up_under_stress() -> Outcome {
         "wait-text",
         "send-keys",
     ];
-    assert_eq!(server.ok(&spaced)?, "done42\n");
+    assert_eq!(met(&server.ok(&spaced)?), "done42\n");
     server.ok(&run(
         &["str", "r", "name", "0", "timeout"],
         &["sleep", "60"],
@@ -1432,11 +1447,11 @@ fn the_rechecks_hold() -> Outcome {
     let ask = r#"read l; echo "answer: $(echo $l | tr a-z A-Z)"; exec cat"#;
     server.ok(&run(&["str", "ask", "name"], &["sh", "-c", ask]))?;
     assert_eq!(
-        server.ok(&typed(
+        met(&server.ok(&typed(
             "ask",
             "a",
             &["str", "answer:", "wait-text", "5", "timeout"]
-        ))?,
+        ))?),
         "answer: A\n"
     );
     Ok(())
@@ -1455,7 +1470,7 @@ fn a_prompt_waited_for_is_the_next_one() -> Outcome {
     ))?;
     let started = std::time::Instant::now();
     let prompt = server.ok(&typed("sh", "sleep 0.5", &["str", "mine>", "wait-text"]))?;
-    assert_eq!(prompt, "mine>\n");
+    assert_eq!(met(&prompt), "mine>\n");
     assert!(
         started.elapsed() >= std::time::Duration::from_millis(400),
         "not the echo"
@@ -1474,7 +1489,7 @@ fn output_after_a_clear_is_not_the_echo() -> Outcome {
         "clear; echo READY",
         &["str", "READY", "wait-text"],
     ))?;
-    assert_eq!(ready, "READY\n");
+    assert_eq!(met(&ready), "READY\n");
     Ok(())
 }
 
@@ -1491,10 +1506,10 @@ fn a_program_that_echoes_nothing_is_heard() -> Outcome {
         &["sh", "-c", quiet],
     ))?;
     let closed = server.ok(&typed("q", "shutdown x", &["str", "CLOSED", "wait-text"]))?;
-    assert_eq!(closed, "CLOSED cleanly\n");
+    assert_eq!(met(&closed), "CLOSED cleanly\n");
     let keys = ["str", "q", "pane", "keys", "str", "Enter", "key"];
     let next = server.ok(&[&keys[..], &["str", "NEXT", "wait-text", "send-keys"]].concat())?;
-    assert_eq!(next, "NEXT\n");
+    assert_eq!(met(&next), "NEXT\n");
     let over =
         "stty -onlcr; echo 'WATCH READY'; read l; printf '\\r\\033[2KPARKED t-1\\r\\n'; exec cat";
     server.ok(&run(
@@ -1502,7 +1517,7 @@ fn a_program_that_echoes_nothing_is_heard() -> Outcome {
         &["sh", "-c", over],
     ))?;
     let parked = server.ok(&typed("o", "park t-1", &["str", "PARKED", "wait-text"]))?;
-    assert_eq!(parked, "PARKED t-1\n");
+    assert_eq!(met(&parked), "PARKED t-1\n");
     Ok(())
 }
 
@@ -1540,7 +1555,8 @@ fn every_pane_and_every_start_is_waited_for() -> Outcome {
         "wait-text",
         "respawn",
     ])?;
-    assert_eq!(respawned, format!("{pane}\nvalue 7\n"));
+    assert_eq!(id(&respawned), pane);
+    assert_eq!(met(&respawned), "value 7\n");
     let split = server.ok(&[
         "str",
         &pane,
@@ -1626,7 +1642,7 @@ fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
         "wait-text",
         "wait",
     ])?;
-    assert_eq!(ready, "READY\n");
+    assert_eq!(met(&ready), "READY\n");
     Ok(())
 }
 
@@ -1845,7 +1861,7 @@ fn a_wait_misses_no_line_however_fast_it_passes() -> Outcome {
         "wait-text",
         "wait",
     ])?;
-    assert_eq!(came, "FIRST one\n");
+    assert_eq!(met(&came), "FIRST one\n");
     let long = server.ok(&run(&[], &["sh", "-c", "seq 100; read x"]))?;
     assert!(
         body(&long).starts_with("… earlier lines not kept") && long.ends_with("\n100\n"),
@@ -1925,7 +1941,7 @@ fn a_reply_after_the_typed_text_is_not_its_echo() -> Outcome {
         &["sh", "-c", reply],
     ))?;
     let done = server.ok(&typed("q", "request42", &["str", "DONE42", "wait-text"]))?;
-    assert_eq!(done, "request42 DONE42\n");
+    assert_eq!(met(&done), "request42 DONE42\n");
     // Within what was typed, it is the echo; the hint says what works.
     server.ok(&run(&["str", "e", "name"], &["sh", "-c", "read l; exit 0"]))?;
     let echoed = server.fux(&typed("e", "exit46", &["str", "exit46", "wait-text"]))?;
@@ -2144,10 +2160,13 @@ fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
     );
     let reason = format!("{busy}: timed out after 1s waiting for \"NEVER\" to show");
     assert!(both.stderr.contains(&reason), "{}", both.stderr);
+    // Its last line is its answer's.
+    let mut lines = both.stdout.lines();
+    let busy_head = lines.find(|l| l.starts_with(&format!("{busy} ")));
     assert!(
-        both.stderr.trim_end().ends_with("last line: `y`"),
+        busy_head.is_some() && lines.next() == Some("y"),
         "{}",
-        both.stderr
+        both.stdout
     );
     // None at work at the limit: the one still running is named, not the
     // one that exited before it.
@@ -2454,7 +2473,7 @@ fn keys_with_no_enter_are_their_echo() -> Outcome {
         "timeout",
         "send-keys",
     ];
-    assert_eq!(server.ok(&enter)?, "WORKING\n");
+    assert_eq!(met(&server.ok(&enter)?), "WORKING\n");
     Ok(())
 }
 
@@ -2482,7 +2501,7 @@ fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
     let kept = id(&server.ok(&run(&[], &["sh", "-c", "echo GONE_LINE; seq 200; read x"]))?);
     let found = wait(&kept, "GONE_LINE")?;
     assert_eq!(
-        (found.status, found.stdout.as_str()),
+        (found.status, met(&found.stdout)),
         (0, "GONE_LINE\n"),
         "{}",
         found.stderr
@@ -2692,10 +2711,30 @@ fn a_failed_runs_pane_is_printed() -> Outcome {
     assert_eq!(out.status, 3, "{}", out.stderr);
     let pane = id(&out.stdout);
     assert!(
-        pane.starts_with('%') && out.stdout == format!("{pane}\n"),
+        pane.starts_with('%') && head(&out.stdout).starts_with(&format!("{pane} exited 2")),
         "{}",
         out.stdout
     );
+    assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
+    Ok(())
+}
+
+/// A failed wait asked for JSON answers its JSON on stdout, as a met one
+/// does, and says why on one line of stderr.
+#[test]
+fn a_failed_wait_answers_its_json() -> Outcome {
+    let server = Server::start("")?;
+    // Its program's own status, 2, is the met exit's.
+    let started = server.fux(&run(&["wait-exit"], &["sh", "-c", "echo LAST; exit 2"]))?;
+    let pane = id(&started.stdout);
+    let p = ["str", pane.as_str(), "pane", "opts"];
+    let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait", "json"]].concat())?;
+    assert_eq!(out.status, 3, "{}", out.stderr);
+    let answer = format!(
+        r#"{{"pane":"{pane}","state":"exited 2","status":3,"code":"exited","output":"LAST\n"}}"#
+    );
+    assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
+    assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
     assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
     Ok(())
 }
@@ -2753,7 +2792,7 @@ fn a_later_wait_skips_a_line_redrawn_the_same() -> Outcome {
         "timeout",
         "wait",
     ];
-    assert_eq!(server.ok(&wait)?, "PREVIEW VALID\n");
+    assert_eq!(met(&server.ok(&wait)?), "PREVIEW VALID\n");
     Ok(())
 }
 
@@ -3058,7 +3097,7 @@ a[3] &= ~termios.ECHO
         "timeout",
     ])?;
     assert_eq!(enter.status, 0, "{}{}", enter.stdout, enter.stderr);
-    assert_eq!(enter.stdout, "Password: ACCEPTED\n");
+    assert_eq!(met(&enter.stdout), "Password: ACCEPTED\n");
     let later = server.fux(&[
         "str",
         &pane,
@@ -3545,13 +3584,18 @@ fn the_condition_met_first_answers() -> Outcome {
         server.fux(&words)
     };
     let text = wait(&exits, &["wait-exit", "str", "READY", "wait-text"])?;
-    assert_eq!((text.status, text.stdout.as_str()), (0, "READY\n"));
+    assert_eq!((text.status, met(&text.stdout)), (0, "READY\n"));
     let script = "echo READY; sleep 0.2; printf '\\a'; sleep 0.2; echo DONE; read x";
     let rings = id(&server.ok(&run(&["str", "DONE", "wait-text"], &["sh", "-c", script]))?);
     let text = wait(&rings, &["wait-bell", "str", "READY", "wait-text"])?;
-    assert_eq!((text.status, text.stdout.as_str()), (0, "READY\n"));
+    assert_eq!((text.status, met(&text.stdout)), (0, "READY\n"));
     let bell = wait(&rings, &["str", "DONE", "wait-text", "wait-bell"])?;
-    assert_eq!((bell.status, bell.stdout.as_str()), (0, "bell\n"));
+    assert_eq!((bell.status, met(&bell.stdout)), (0, ""));
+    assert!(
+        head(&bell.stdout).ends_with(" · met bell"),
+        "{}",
+        bell.stdout
+    );
     Ok(())
 }
 
@@ -3613,7 +3657,7 @@ fn keys_typed_while_a_command_runs_are_echo() -> Outcome {
         started.elapsed() >= std::time::Duration::from_millis(1500),
         "{done}"
     );
-    assert_eq!(done, "DONE\n");
+    assert_eq!(met(&done), "DONE\n");
     Ok(())
 }
 
@@ -3837,7 +3881,7 @@ fn the_first_condition_to_come_answers_a_text_gone_too() -> Outcome {
         "wait",
     ];
     assert_eq!(
-        server.ok(&first)?.trim_end(),
+        met(&server.ok(&first)?).trim_end(),
         "FIRST",
         "the text that came first"
     );

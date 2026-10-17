@@ -251,6 +251,14 @@ impl<A: AppValue> Machine<A> {
             .or_else(|| self.program.token(frame.code, frame.step).cloned())
     }
 
+    /// The token of the step it takes next in the frame it is in: none at
+    /// the frame's end. A host that stopped it may look at what its program
+    /// does next with what it answers.
+    pub fn next(&self) -> Option<Token> {
+        let frame = self.frames.last()?;
+        self.program.token(frame.code, frame.step).cloned()
+    }
+
     /// The token of the step before `step` in `code`: none at its first.
     fn before(&self, code: Option<usize>, step: usize) -> Option<Token> {
         self.program.token(code, step.checked_sub(1)?).cloned()

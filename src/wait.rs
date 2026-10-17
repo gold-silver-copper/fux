@@ -80,9 +80,8 @@ pub enum Follows {
     /// The action it was armed before (send-keys, send-mouse, signal).
     Action,
     /// The program a command has just started (run, split, respawn): its
-    /// screen is blank, so a text is gone only once it has appeared. What
-    /// the command printed (its pane) comes first.
-    Started(String),
+    /// screen is blank, so a text is gone only once it has appeared.
+    Started,
     /// A capture to give once the pane settles (`capture` from a command
     /// line): its history and view; the client picks text or JSON.
     Capture(Option<usize>, CaptureView),
@@ -93,7 +92,7 @@ impl Follows {
     /// something new (a bare `wait`).
     fn mode(&self) -> (bool, bool) {
         match self {
-            Follows::Started(_) => (true, false),
+            Follows::Started => (true, false),
             Follows::Wait => (false, true),
             Follows::Action | Follows::Capture(..) => (false, false),
         }
@@ -216,37 +215,24 @@ impl Waiting {
     /// up.
     pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let mut outcome = self.look(session, now)?;
-        let lead = match &self.follows {
-            // A capture asked to settle first: its state line, then the
-            // capture.
-            &Follows::Capture(history, view) => {
-                let watched = self.watches.first();
-                if let Some(pane) = watched.and_then(|w| session.panes.get(&w.pane)) {
-                    let copying = session.copying(pane.id);
-                    let (read, form) = crate::capture::pane(pane, history, view, true, copying);
-                    // Its JSON, read at the same moment, for `json` to give.
-                    outcome.json = form.unwrap_or_default();
-                    let line = outcome.text.lines().next().unwrap_or_default();
-                    outcome.text = format!("{line}\n{read}");
-                }
-                ""
-            }
-            Follows::Started(lead) => lead.as_str(),
-            Follows::Wait | Follows::Action => "",
+        // A capture asked to settle first: its state line, then the capture.
+        let capture = match self.follows {
+            Follows::Capture(history, view) => Some((history, view)),
+            Follows::Wait | Follows::Action | Follows::Started => None,
         };
-        // An answer that starts with the pane's state names the pane itself.
-        let named = lead.trim_end();
-        let lead = if !named.is_empty() && outcome.text.starts_with(&format!("{named} ")) {
-            ""
-        } else {
-            lead
-        };
-        // The pane it answers of: an answer of one pane is that pane, the
-        // one a command it follows made.
-        Some(Reply {
-            text: format!("{lead}{}", outcome.text),
-            ..outcome
-        })
+        let watched = self
+            .watches
+            .first()
+            .and_then(|w| session.panes.get(&w.pane));
+        if let (Some((history, view)), Some(pane)) = (capture, watched) {
+            let copying = session.copying(pane.id);
+            let (read, form) = crate::capture::pane(pane, history, view, true, copying);
+            // Its JSON, read at the same moment, for `json` to give.
+            outcome.json = form.unwrap_or_default();
+            let line = outcome.text.lines().next().unwrap_or_default();
+            outcome.text = format!("{line}\n{read}");
+        }
+        Some(outcome)
     }
 
     /// Each pane answers on its own, as a lone pane's wait would, and the
@@ -254,7 +240,6 @@ impl Waiting {
     /// failing status. At the limit, each pane yet to answer is said as it
     /// is.
     fn look(&mut self, session: &Session, now: Instant) -> Option<Reply> {
-        let several = self.watches.len() > 1;
         let (wait, texts, limit) = (&self.wait, self.texts.as_slice(), self.limit);
         let (window, mode) = ((self.began, now), self.follows.mode());
         let late = now >= self.deadline;
@@ -267,10 +252,10 @@ impl Waiting {
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *answer = Some(wait.told(pane, told, (several, limit), watch.since(pane)));
+                *answer = Some(wait.told(pane, told, limit, watch.since(pane)));
             } else if late {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *answer = Some(wait.told(pane, told, (several, limit), watch.since(pane)));
+                *answer = Some(wait.told(pane, told, limit, watch.since(pane)));
             }
         }
         let answers: Vec<&Reply> = self
@@ -321,264 +306,217 @@ enum Told {
     TimedOut(Option<&'static str>),
 }
 
-impl Told {
-    /// The status a wait that ended so ends with, if not 0, and the code
-    /// that names it.
-    fn status(&self) -> Option<(NonZeroU8, Code)> {
-        match self {
-            // As timeout(1): the program's own status, once it exits.
-            Told::Found(Found::Exit(ended)) => {
-                let status = crate::process::shell_status(*ended);
-                NonZeroU8::new(u8::try_from(status).unwrap_or(u8::MAX)).map(|s| (s, Code::Exited))
-            }
-            Told::Found(Found::Stopped) => Some((STOPPED, Code::Stopped)),
-            Told::Found(Found::Text { .. } | Found::Gone | Found::Bell(_) | Found::Settled(_)) => {
-                None
-            }
-            Told::Exited(..) | Told::Replaced => Some((EXITED, Code::Exited)),
-            Told::TimedOut(_) => Some((TIMED_OUT, Code::Timeout)),
-        }
-    }
-}
-
 impl Wait {
     /// The outcome of a wait whose pane `id` closed: a settling action's
     /// (a shell that exited) said with status 4, not a failure; any other
     /// wait's a failure.
     fn gone(&self, id: PaneId) -> Reply {
-        if !self.until.contains(&Until::Settled) {
-            let message = format!("{id}: the pane closed");
-            return failed(id, (GONE, Code::Closed), String::new(), message);
-        }
-        let stdout = format!("{id} closed\n");
-        let state = vec![("state", Json::str("closed"))];
-        answer(id, Some((GONE, Code::Closed)), stdout, state, None)
+        let end = match self.until.contains(&Until::Settled) {
+            true => End::Answered {
+                status: GONE,
+                code: Code::Closed,
+            },
+            false => End::Failed {
+                status: GONE,
+                code: Code::Closed,
+                message: format!("{id}: the pane closed"),
+            },
+        };
+        let body = (String::new(), Vec::new());
+        said(id, "closed".into(), Vec::new(), body, end)
     }
 
     /// The outcome of a wait that ended so in `pane`.
-    fn told(
-        &self,
-        pane: &Pane,
-        told: Told,
-        (several, limit): (bool, Duration),
-        since: Since,
-    ) -> Reply {
+    fn told(&self, pane: &Pane, told: Told, limit: Duration, since: Since) -> Reply {
         use crate::ready::State;
         let (id, now) = (pane.id, Instant::now());
-        let status = told.status();
-        // A settling action, a wait the program stopped short of, an exit
-        // or a text gone: its state, then what came since it began, if asked.
-        let settled = |state, status, body| self.settled(pane, state, status, body, since);
+        let state = || crate::ready::state(pane, now);
         let came = || since_text(pane, since, self.marks);
-        let asked = || match self.print {
-            true => came(),
-            false => String::new(),
+        let output = |body: String| {
+            let field = ("output", Json::str(body.clone()));
+            (body, vec![field])
         };
-        let (said, met) = match told {
+        // What met it, or its last lines, then the screen if asked.
+        let shown = |first: String, field: Option<(&'static str, Json<'static>)>| {
+            let screen = self.print.then(|| text(pane, self.marks, false));
+            let body = format!("{first}{}", screen.as_deref().unwrap_or_default());
+            let screen = screen.map(|screen| ("screen", Json::str(screen)));
+            (body, field.into_iter().chain(screen).collect())
+        };
+        let last = |n| {
+            let lines: String = tail(pane, n).iter().map(|l| format!("{l}\n")).collect();
+            let field = Some(("output", Json::str(lines.clone())));
+            shown(lines, field)
+        };
+        let failed = |status, code, message: String| End::Failed {
+            status,
+            code,
+            message,
+        };
+        // Why it failed, and why it may never be met, if a reason shows.
+        let why = |reason: String, hint: Option<&str>| match hint {
+            Some(hint) => format!("{reason}; {hint}"),
+            None => reason,
+        };
+        let (state, met, body, end) = match told {
             // A text that cannot come: the screen, to act on what is there.
             Told::Found(Found::Stopped) => {
                 let cut = since.cut.unwrap_or_default();
                 let screen = format!("{cut}{}", text(pane, self.marks, false));
-                return settled(State::Reading, status, screen);
+                let end = End::Answered {
+                    status: STOPPED,
+                    code: Code::Stopped,
+                };
+                (State::Reading, None, output(screen), end)
             }
+            // As timeout(1): the program's own status.
             Told::Found(Found::Exit(ended)) => {
-                return settled(State::Exited(ended), status, came());
+                let status = u8::try_from(crate::process::shell_status(ended)).unwrap_or(u8::MAX);
+                let end = NonZeroU8::new(status).map_or(End::Done, |status| End::Answered {
+                    status,
+                    code: Code::Exited,
+                });
+                (State::Exited(ended), None, output(came()), end)
             }
             // A text gone leaves the pane as it is.
-            Told::Found(Found::Gone) => {
-                return settled(crate::ready::state(pane, now), status, came());
+            Told::Found(Found::Gone) => (state(), None, output(came()), End::Done),
+            Told::Found(Found::Settled(state)) => {
+                let asked = self.print.then(came).unwrap_or_default();
+                (state, None, output(asked), End::Done)
             }
-            Told::Found(Found::Settled(state)) => return settled(state, status, asked()),
             // At its limit a settling wait fails (124) only while busy; `0
             // timeout` answers at once, as it is, and never fails.
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
-                let state = crate::ready::state(pane, now);
-                let calm = limit.is_zero() || state != State::Busy;
-                return settled(state, status.filter(|_| !calm), asked());
+                let state = state();
+                let end = match limit.is_zero() || state != State::Busy {
+                    true => End::Done,
+                    false => End::Answered {
+                        status: TIMED_OUT,
+                        code: Code::Timeout,
+                    },
+                };
+                let asked = self.print.then(came).unwrap_or_default();
+                (state, None, output(asked), end)
             }
             Told::Found(Found::Text { text, line }) => {
+                let note = format!("met {text:?}");
                 let fields = vec![
                     ("met", Json::str("text")),
                     ("text", Json::str(text)),
                     ("line", Json::str(line.clone())),
                 ];
-                (line, Ok(fields))
+                let body = shown(format!("{line}\n"), None);
+                (state(), Some((note, fields)), body, End::Done)
             }
             Told::Found(Found::Bell(notification)) => {
-                let said = notification
-                    .as_ref()
-                    .map_or_else(|| "bell".to_owned(), |n| format!("notification: {n}"));
+                let note = (notification.as_ref()).map_or_else(
+                    || "met bell".to_owned(),
+                    |n| format!("met notification {n:?}"),
+                );
                 let notification = notification.map_or(Json::Null, Json::str);
                 let fields = vec![("met", Json::str("bell")), ("notification", notification)];
-                (said, Ok(fields))
+                let body = shown(String::new(), None);
+                (state(), Some((note, fields)), body, End::Done)
             }
+            // Its last words, which an agent would otherwise ask for next: a
+            // crash says why.
             Told::Exited(ended, hint) => {
-                // Its last words, which an agent would otherwise ask for next:
-                // a crash says why.
-                let mut message = format!(
-                    "{id}: its program {} while waiting for {}",
-                    crate::process::told(ended),
+                let told = crate::process::told(ended);
+                let reason = format!(
+                    "{id}: its program {told} while waiting for {}",
                     self.describe()
                 );
-                for line in tail(pane, 3) {
-                    message.push_str(&format!("\n  {line}"));
-                }
-                if let Some(hint) = hint {
-                    message.push_str(&format!("\n({hint})"));
-                }
-                (String::new(), Err(message))
+                let end = failed(EXITED, Code::Exited, why(reason, hint));
+                (State::Exited(ended), None, last(3), end)
             }
             Told::Replaced => {
-                let message = format!(
+                let reason = format!(
                     "{id}: its program was started again (respawn) while waiting for {}",
                     self.describe()
                 );
-                (String::new(), Err(message))
+                (
+                    state(),
+                    None,
+                    shown(String::new(), None),
+                    failed(EXITED, Code::Exited, reason),
+                )
             }
+            // How long the screen was still, so the next step is clear: the
+            // state line says what the pane does.
             Told::TimedOut(hint) => {
-                // What the pane is doing, so the next step is clear: still
-                // busy, or settled on a prompt that will not change.
-                let state = crate::ready::state(pane, now);
                 let idle = now.saturating_duration_since(pane.changed_at).as_secs();
-                let mut message = format!(
-                    "{id}: timed out after {}s waiting for {}",
+                let reason = format!(
+                    "{id}: timed out after {}s waiting for {}; the screen unchanged for {idle}s",
                     limit.as_secs_f64(),
                     self.describe()
                 );
-                // What it does: reading its terminal, waiting, busy…
-                let word = state.word();
-                message.push_str(&format!("; {id} {word}, the screen unchanged for {idle}s"));
-                if state == State::Busy {
-                    message.push_str("; still busy: the same wait waits on");
-                }
-                if let Some(line) = tail(pane, 1).pop() {
-                    message.push_str(&format!("; last line: `{line}`"));
-                }
-                let queued = pane.input_queued();
-                if queued > 0 {
-                    message.push_str(&format!(
-                        "; {queued} bytes of input not yet read by the program"
-                    ));
-                }
-                if let Some(hint) = hint {
-                    message.push_str(&format!("\n  {hint}"));
-                }
-                (String::new(), Err(message))
+                let end = failed(TIMED_OUT, Code::Timeout, why(reason, hint));
+                (state(), None, last(1), end)
             }
         };
-        let screen = self.print.then(|| text(pane, self.marks, false));
-        let said = match (said.is_empty(), several) {
-            (true, _) => said,
-            (false, true) => format!("{id} {said}\n"),
-            (false, false) => format!("{said}\n"),
-        };
-        let stdout = format!("{said}{}", screen.as_deref().unwrap_or_default());
+        let mut notes = self.notes(pane, state, since);
+        // What met it, or with nothing met, what waits on while it is busy.
         match met {
-            Ok(fields) => {
-                let screen = screen.map(|screen| ("screen", Json::str(screen)));
-                answer(id, status, stdout, fields, screen)
+            Some(met) => notes.push(met),
+            None if state == State::Busy => {
+                notes.push((format!("`{id} opts wait` waits on"), Vec::new()));
             }
-            // A failure always has a status: its told one.
-            Err(message) => failed(
-                id,
-                status.unwrap_or((NonZeroU8::MIN, Code::Failed)),
-                stdout,
-                message,
-            ),
+            None => {}
         }
-    }
-
-    /// A settled pane's answer: its state line, then `body`.
-    fn settled(
-        &self,
-        pane: &Pane,
-        state: crate::ready::State,
-        status: Option<(NonZeroU8, Code)>,
-        body: String,
-        since: Since,
-    ) -> Reply {
-        let (line, notes) = self.state_line(pane.id, pane, state, since);
-        let mut fields = vec![("state", Json::str(state.word()))];
-        fields.extend(notes);
-        let stdout = format!("{line}\n{body}");
-        let output = Some(("output", Json::str(body)));
-        answer(pane.id, status, stdout, fields, output)
+        said(id, state.word(), notes, body, end)
     }
 }
 
-/// A wait's failure in pane `id`, with its status and code: why, on
-/// stderr, beside what it prints. It leaves no answer, so no JSON.
-fn failed(id: PaneId, (status, code): (NonZeroU8, Code), text: String, message: String) -> Reply {
-    Reply {
-        end: End::Failed {
-            status,
-            code,
-            message,
-        },
-        text,
-        ids: vec![AnyRef::Pane(id)],
-        ..Reply::default()
-    }
-}
+/// A note of a state line, or a body, and its JSON fields.
+type Note = (String, Vec<(&'static str, Json<'static>)>);
 
-/// A wait's answer of pane `id`: its JSON the pane, `fields`, the status,
-/// then `last`, if any.
-fn answer(
-    id: PaneId,
-    status: Option<(NonZeroU8, Code)>,
-    stdout: String,
-    fields: Vec<(&'static str, Json<'static>)>,
-    last: Option<(&'static str, Json<'static>)>,
-) -> Reply {
-    let mut all = vec![("pane", Json::str(id.to_string()))];
-    all.extend(fields);
-    all.push(("status", Json::int(status.map_or(0, |(s, _)| s.get()))));
-    all.extend(last);
+/// A pane's answer to a wait, one record said two ways: as text, its state
+/// line (`%3 reading · done 0`, the pane, its state and the notes) and then
+/// `body`'s text; as JSON, the pane, the state, each note's fields, the
+/// status, the code of one that is not 0, and `body`'s fields.
+fn said(id: PaneId, state: String, notes: Vec<Note>, body: Note, end: End) -> Reply {
+    let mut line = format!("{id} {state}");
+    let pane = ("pane", Json::str(id.to_string()));
+    let mut fields = vec![pane, ("state", Json::str(state))];
+    for (note, said) in notes {
+        line.push_str(&format!(" · {note}"));
+        fields.extend(said);
+    }
+    fields.push(("status", Json::int(end.status())));
+    fields.extend(end.code().map(|code| ("code", Json::str(code.name()))));
+    let (body, said) = body;
+    fields.extend(said);
     Reply {
-        end: status.map_or(End::Done, |(status, code)| End::Answered { status, code }),
-        text: stdout,
-        json: format!("{}\n", Json::Object(all).render()),
+        end,
+        text: format!("{line}\n{body}"),
+        json: format!("{}\n", Json::Object(fields).render()),
         ids: vec![AnyRef::Pane(id)],
         ..Reply::default()
     }
 }
 
 impl Wait {
-    /// A settled pane's first line: its id and state, then what else is
-    /// known: a shell command that ended, keys read that drew nothing, keys
-    /// not read yet; and those notes as JSON fields.
-    fn state_line(
-        &self,
-        id: PaneId,
-        pane: &Pane,
-        state: crate::ready::State,
-        since: Since,
-    ) -> (String, Vec<(&'static str, Json<'static>)>) {
-        let mut line = format!("{id} {}", state.word());
-        let mut fields = Vec::new();
+    /// What a state line says after the state: a shell command that ended,
+    /// keys read that drew nothing, keys not read yet.
+    fn notes(&self, pane: &Pane, state: crate::ready::State, since: Since) -> Vec<Note> {
+        let mut notes = Vec::new();
         let commands = pane.screen().commands();
         if commands.finished > since.start.finished {
             let status = commands.last_status;
-            match status {
-                Some(status) => line.push_str(&format!(" · done {status}")),
-                None => line.push_str(" · done"),
-            }
-            let status = status.map_or(Json::Null, Json::int);
-            fields.push(("done", status));
+            let said = status.map_or_else(|| "done".to_owned(), |s| format!("done {s}"));
+            notes.push((said, vec![("done", status.map_or(Json::Null, Json::int))]));
         }
         if self.after && pane.revision == since.revision && state == crate::ready::State::Reading {
-            line.push_str(" · no change");
-            fields.push(("no_change", Json::Bool(true)));
-        }
-        if state == crate::ready::State::Busy {
-            line.push_str(&format!(" · `{id} opts wait` waits on"));
+            notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
         }
         let queued = pane.input_queued();
         if queued > 0 {
-            line.push_str(&format!(" · {queued} bytes unread"));
-            fields.push(("unread", Json::int(queued)));
+            notes.push((
+                format!("{queued} bytes unread"),
+                vec![("unread", Json::int(queued))],
+            ));
         }
-        (line, fields)
+        notes
     }
 
     /// Its conditions, as an error says what did not come.

@@ -124,7 +124,9 @@ loop {
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
-host pushes before running the machine again. `print(line)` prints. A word
+host pushes before running the machine again; `machine.at()` is the token
+of the word it stopped at, and `machine.next()` the one it takes next, if its
+frame has one. `print(line)` prints. A word
 gives as many values as its vocabulary says (a range, for one that gives a
 value only sometimes): the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise. A word that is one step (`dup`
