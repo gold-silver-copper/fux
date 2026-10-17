@@ -2737,7 +2737,7 @@ impl Screen {
             // The cell's and the text area's size in pixels, from the host's
             // terminal: how a program sizes the pictures it draws.
             (b"", b't') if n == 16 => {
-                let (width, height) = self.graphics().cell?;
+                let (width, height) = self.graphics.cell?;
                 Some(Reply::of(format_args!("\x1b[6;{height};{width}t")))
             }
             (b"", b't') if n == 14 => {
@@ -2746,7 +2746,7 @@ impl Screen {
             }
             // XTSMGRAPHICS, read: 256 colour registers, and pictures as
             // large as the screen.
-            (b"?", b'S') if self.graphics().sixel && p.first(1, 0) == 1 => match n {
+            (b"?", b'S') if self.graphics.sixel && p.first(1, 0) == 1 => match n {
                 1 => Some(Reply::of(format_args!("\x1b[?1;0;256S"))),
                 2 => {
                     let (height, width) = self.pixel_size()?;

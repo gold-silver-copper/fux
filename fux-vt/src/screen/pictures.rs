@@ -78,10 +78,6 @@ impl Screen {
         self.graphics = graphics;
     }
 
-    pub(crate) fn graphics(&self) -> Graphics {
-        self.graphics
-    }
-
     /// Places `picture` at the cursor: its cells take the placeholder, a
     /// row at a time down from the cursor's (scrolling at the bottom, as a
     /// terminal scrolls a sixel picture), clipped at the right edge; the
