@@ -1414,17 +1414,11 @@ impl Session {
         true
     }
 
-    /// Gives a client an error notice, if it is still attached.
-    pub fn error_to(&mut self, client: ClientId, text: impl Into<String>) {
+    /// Gives a client a notice, an error's if `error`, if it is still
+    /// attached.
+    pub fn notify_to(&mut self, client: ClientId, text: impl Into<String>, error: bool) {
         if let Some(view) = self.views.get_mut(&client) {
-            view.error(text);
-        }
-    }
-
-    /// Gives a client a notice, if it is still attached.
-    pub fn info_to(&mut self, client: ClientId, text: impl Into<String>) {
-        if let Some(view) = self.views.get_mut(&client) {
-            view.info(text);
+            view.notify(text, error);
         }
     }
 
@@ -1522,7 +1516,10 @@ impl Session {
                 copy.held_at = Some(screen.mark());
             } else {
                 view.mode = Mode::Normal;
-                view.error("copy mode ended: the history dropped the rows it held");
+                view.notify(
+                    "copy mode ended: the history dropped the rows it held",
+                    true,
+                );
                 let ended = ToAttached::Ended(ScreenKind::Copy);
                 self.outbox.push(Outgoing::To(view.id, ended));
             }
@@ -1561,7 +1558,7 @@ impl Session {
             Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
         };
         view.mode = Mode::Normal;
-        view.error(gone);
+        view.notify(gone, true);
         Some(kind)
     }
 
@@ -1682,7 +1679,7 @@ impl Session {
             let closed = why.is_none();
             if let Some(why) = why {
                 for client in &viewers {
-                    self.info_to(*client, format!("{id} {} {why}", pane.label()));
+                    self.notify_to(*client, format!("{id} {} {why}", pane.label()), false);
                 }
             }
             self.end(id, pane.process, closed);
@@ -1767,7 +1764,7 @@ impl Session {
                     self.dying.insert(id, Dying { child, deadline });
                 }
                 for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
-                    self.info_to(client, format!("{id} {}", process::told(ended)));
+                    self.notify_to(client, format!("{id} {}", process::told(ended)), false);
                 }
                 self.touch();
             }
@@ -1835,9 +1832,10 @@ impl Session {
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
             view.dirty = true;
             if dropped {
-                view.error(format!(
-                    "{id} is not reading its input; a terminal reply was dropped"
-                ));
+                view.notify(
+                    format!("{id} is not reading its input; a terminal reply was dropped"),
+                    true,
+                );
             }
         }
     }
@@ -2219,7 +2217,7 @@ impl Session {
                     },
                 };
                 for client in to {
-                    self.info_to(client, text.clone());
+                    self.notify_to(client, text.clone(), false);
                 }
                 Ok(Reply::default())
             }
@@ -3597,9 +3595,9 @@ pub(crate) mod testing {
         /// notice, as its client shows them.
         pub(crate) fn run_as(&mut self, client: ClientId, code: &str) {
             match output_as(self, Some(client), code) {
-                Err(error) => self.error_to(client, error),
+                Err(error) => self.notify_to(client, error, true),
                 Ok(said) if !said.trim().is_empty() => {
-                    self.info_to(client, said.trim().replace('\n', "  "));
+                    self.notify_to(client, said.trim().replace('\n', "  "), false);
                 }
                 Ok(_) => {}
             }

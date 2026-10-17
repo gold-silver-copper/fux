@@ -494,7 +494,7 @@ fn start(session: &mut Session, client: ClientId) {
             view.notice = None;
         }
         Err(error) => {
-            session.error_to(client, error.to_string());
+            session.notify_to(client, error.to_string(), true);
             let ended = crate::protocol::ToAttached::Ended(crate::protocol::ScreenKind::Copy);
             session
                 .outbox
@@ -642,7 +642,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                     let search = Search { seek, ..search };
                     jump(copy, screen, height, at, &search, &mut view.notice);
                 }
-                None => view.error("no search yet: f or r starts one"),
+                None => view.notify("no search yet: f or r starts one", true),
             }
             return;
         }
@@ -658,7 +658,10 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                         Seek::Backward => "earlier",
                         Seek::Forward => "later",
                     };
-                    view.error(format!("no {which} prompt (shells mark them with OSC 133)"));
+                    view.notify(
+                        format!("no {which} prompt (shells mark them with OSC 133)"),
+                        true,
+                    );
                     return;
                 }
             }
@@ -759,7 +762,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         Ok(copied) => copied,
         Err(why) => {
             leave(session, client);
-            return session.error_to(client, why);
+            return session.notify_to(client, why, true);
         }
     };
     let characters = copied.chars().count();
@@ -771,7 +774,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         note.push_str(" to buffer 0; too large for the clipboard");
     }
     leave(session, client);
-    session.info_to(client, note);
+    session.notify_to(client, note, false);
 }
 
 #[cfg(test)]

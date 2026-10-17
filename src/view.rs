@@ -158,19 +158,10 @@ impl View {
         }
     }
 
-    pub fn info(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: false,
-        });
-        self.dirty = true;
-    }
-
-    pub fn error(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: true,
-        });
+    /// Shows a notice, an error's if `error`.
+    pub fn notify(&mut self, text: impl Into<String>, error: bool) {
+        let text = text.into();
+        self.notice = Some(Notice { text, error });
         self.dirty = true;
     }
 }

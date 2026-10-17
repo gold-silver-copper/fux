@@ -8,7 +8,7 @@ use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::layout::Placement;
 use crate::session::Session;
-use crate::view::{Mode, Notice};
+use crate::view::Mode;
 
 impl Session {
     /// Actions from a client.
@@ -83,11 +83,7 @@ impl Session {
                     view.mode = Mode::Normal;
                 }
             }
-            Act::Notice { text, error } => {
-                if let Some(view) = self.views.get_mut(&client) {
-                    view.notice = Some(Notice { text, error });
-                }
-            }
+            Act::Notice { text, error } => self.notify_to(client, text, error),
             Act::Copy(act) => crate::copy::act(self, client, act),
         }
         if let Some(view) = self.views.get_mut(&client) {
@@ -139,7 +135,7 @@ impl Session {
         }
         let screen = p.parser.screen();
         if let Err(error) = p.input.push_with(|out| write(screen, out)) {
-            self.error_to(client, error.to_string());
+            self.notify_to(client, error.to_string(), true);
         }
     }
 
@@ -728,7 +724,7 @@ mod tests {
                 refused.push(keys.clone());
                 // Leaving a repeat mode clears what its keys said.
                 if !repeat {
-                    ran.error_to(d, error);
+                    ran.notify_to(d, error, true);
                 }
             }
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
@@ -743,7 +739,7 @@ mod tests {
     fn ran(code: &str) -> Result<String, String> {
         let (mut s, c) = busy()?;
         if let Err(error) = output_as(&mut s, Some(c), code) {
-            s.error_to(c, error);
+            s.notify_to(c, error, true);
         }
         state(&mut s, c)
     }
