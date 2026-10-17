@@ -888,9 +888,9 @@ impl Char {
 /// Expands rows `Variant "name" (arg: Marker, …) "effect" "about" { body }`
 /// to the enum `Builtin` of those variants: `Builtin::ALL` in that order;
 /// `name`, `effect` and `about`, each a match giving that row's column;
-/// `args`, its places' markers' `ARG`s, the deepest first; `takes`, how
-/// many; and `Machine::builtin`, which runs one. It takes as many values
-/// as the word takes (too few fail it), turns each into what its
+/// `args`, its places' markers' `ARG`s, the deepest first (as many as it
+/// takes); and `Machine::builtin`, which runs one. It takes as many values
+/// as the row names (`take::<N>`; too few fail it), turns each into what its
 /// marker gives (a value of another kind fails the word), and runs the
 /// row's body with them bound to the row's names. In a body, `m` is the
 /// machine and `host` its host, as the macro's first line names them.

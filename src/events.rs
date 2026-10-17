@@ -96,7 +96,8 @@ pub struct Event {
 }
 
 /// What happened: to a pane, tab or workspace, or (from `Moved` on) to a
-/// pane.
+/// pane. The type does not tie it to its `Place`: `between`, which makes
+/// every event, gives the pane-only ones a pane's place.
 #[derive(Clone, Debug, PartialEq)]
 pub enum What {
     /// Made; a tab or workspace with its name.

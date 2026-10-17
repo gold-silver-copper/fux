@@ -621,7 +621,9 @@ pub enum Reaches<'a> {
     /// Panes, tabs and workspaces, read; or a pane's program, handed input
     /// or a signal whose effect, if any, comes back as its output.
     Reads,
-    /// Panes, tabs and workspaces, made, shaped, named or ended.
+    /// Panes, tabs and workspaces, made, shaped, named or ended; or what
+    /// they hold changed for those who see them: a notification, a log, a
+    /// pane's history cleared.
     Shapes,
     /// Their events, streamed until the reader goes: never ending of itself.
     Streams,
