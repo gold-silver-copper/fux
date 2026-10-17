@@ -142,7 +142,7 @@ libvterm, avt and wezterm, all in this process and fast.
 - **xterm.js, tmux and xterm don't vote by default.** They run in
   processes of their own, about 20 times slower. Add them with `--engines
   panel,xterm.js` and so on. `cases` uses every engine.
-- **The panel can be wrong.** Where it splits, xterm and the references
+- **The panel can be wrong.** Where it splits, the standards and xterm
   decide: such a family is "decided" and checked by `verdicts` (see
   "Families").
 
@@ -278,19 +278,23 @@ The random cases come from families of sequences (`src/families.rs`).
 
 - **Agree** (`Status::Agree`): no seed tried finds a case where the panel
   outvotes fux-vt. `run` checks these by default.
-- **Decided** (`Status::Decided`): the engines split, and fux-vt follows a
-  recorded choice. That choice is what the references say
-  ([`references/README.md`](../../references/README.md) says which settles
-  what), or what xterm does where it departs from them (fux-vt's
-  [README](../README.md), "Departures from the references") or they are
-  silent. Its reason (`why`) names the reference and where the engines
-  stand, and `by` names the engines that decide it: xterm for the VT
-  families, and for a feature xterm lacks (OSC 133), the engines that follow
-  the feature's spec. The default panel's majority is often the side
-  fux-vt chose against, so `run` leaves these out. `verdicts` runs each
-  family's named cases, then random cases from it, beside its deciding
-  engines. `cases` fails a named case of a decided family where those
-  engines outvote fux-vt.
+- **Decided** (`Status::Decided`): the engines split, and a source
+  settles it (`authority`): a standard's section where it speaks
+  (`Authority::Standard`), else xterm 411 (`Authority::Xterm`), as
+  fux-vt's [README](../README.md) orders them. Its reason (`why`) says
+  where the engines stand, and `by` names the engines it is checked
+  beside: xterm for the VT families, and for a feature xterm lacks (OSC
+  133), the engines that follow the feature's spec. A family a standard
+  decides names the fux-vt test whose doc comment cites the section;
+  `by` is empty where no engine follows the standard all through (on
+  screens of one or two columns xterm departs from DEC STD 070), and the
+  test is then the check. A family xterm decides is checked by xterm
+  agreeing. One whose check can't be made (the test missing or citing
+  something else, xterm not among `by` or not run) fails. The default
+  panel's majority is often the side the source decides against, so
+  `run` leaves these out. `verdicts` runs each family's named cases, then
+  random cases from it, beside `by`. `cases` fails a named case of a
+  decided family where those engines outvote fux-vt.
 - **Differs** (`Status::Differs`): the panel splits on a documented fux-vt
   choice, or on something the engines agree on for reasons of their own,
   or fux-vt has a defect still to fix. The reason says which.

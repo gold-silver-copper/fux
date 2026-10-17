@@ -56,7 +56,8 @@ fn a_prompt_marks_its_row_and_the_others_change_nothing() -> Result {
 }
 
 /// `A` and `L` do a fresh line first: a new line unless the cursor is in
-/// the first column (the semantic prompts proposal; Ghostty does it so).
+/// the first column (`references/modern/osc133_semantic_prompts.md`,
+/// "Commands"; Ghostty does it so).
 #[test]
 fn a_and_l_start_a_fresh_line() -> Result {
     let mut p = Parser::with_options(Size::new(4, 10)?, 0, MARKS)?;
