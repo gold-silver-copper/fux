@@ -3073,21 +3073,16 @@ impl Session {
         else {
             return Ok(None);
         };
-        let Some(at) = self.grants.iter().position(|g| g.socket == *socket) else {
+        let Some(grant) = self.grants.iter().find(|g| g.socket == *socket) else {
             let message = "the grant this socket came through was revoked";
             return Err(fail(Code::NotGranted, message));
         };
-        let pinned = self.grants.get(at).and_then(|g| g.pinned);
-        if let Some(ws) = pinned.and_then(|id| self.workspace(id)) {
+        if let Some(ws) = grant.pinned.and_then(|id| self.workspace(id)) {
             return Ok(Some(ws.name.clone()));
         }
-        let name = self
-            .grants
-            .get(at)
-            .map(|g| g.workspace.clone())
-            .unwrap_or_default();
+        let name = grant.workspace.clone();
         let found = self.resolve_ws(&WsRef::Name(name.clone())).ok();
-        if let Some(grant) = self.grants.get_mut(at) {
+        if let Some(grant) = self.grants.iter_mut().find(|g| g.socket == *socket) {
             grant.pinned = found;
         }
         Ok(Some(name))
