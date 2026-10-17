@@ -3172,8 +3172,9 @@ fn last_output_holds_a_parse_error_and_whole_rows() -> Outcome {
     Ok(())
 }
 
-/// The last output of a full-screen command, read with `main-screen` too,
-/// is its screen: the cursor is said where it is on it.
+/// The last output of a full-screen command is its screen: the cursor is
+/// said where it is on it. (With `main-screen` too it is refused: a capture
+/// reads one screen.)
 #[test]
 fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
     let server = Server::start("")?;
@@ -3185,7 +3186,6 @@ fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
         &shell,
         "pane",
         "opts",
-        "main-screen",
         "last-output",
         "json",
         "capture",

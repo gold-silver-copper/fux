@@ -93,8 +93,8 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output; while one runs, its output so far:
-  a full-screen one's is its screen to the cursor's row, whole, whatever
-  `main-screen` or `alt-screen` say), `joined` (with `rows`, a
+  a full-screen one's is its screen to the cursor's row, whole; one of
+  `main-screen`, `alt-screen` and `last-output` at most), `joined` (with `rows`, a
   wrapped line touched is taken whole, the cursor with it), `marks`, `styles`,
   `json` (screen and state). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after (in

@@ -1,7 +1,7 @@
 //! What `capture` and `capture-client` print: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state if asked.
-use crate::command::CaptureView;
+use crate::command::{CaptureView, Source};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::Pane;
@@ -36,7 +36,11 @@ pub fn pane(
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
     let alt = screen.mode(Mode::AlternateScreen);
-    let live = view.last_output || if view.main { !alt } else { !view.alt || alt };
+    let live = match view.source {
+        Source::Shown | Source::LastOutput => true,
+        Source::Main => !alt,
+        Source::Alternate => alt,
+    };
     let (cursor_row, cursor_col) = screen.cursor_position();
     let cursor_id = (live && screen.mode(Mode::ShowCursor))
         .then(|| screen.window().row(cursor_row).map(|row| row.id()))
@@ -192,65 +196,18 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
 
 /// The rows a capture reads, each with the columns of it it reads: the
 /// screen and `history` rows above it (of the main screen with `main-screen`), or
-/// the last command's output between its marks: while one runs, its output
-/// so far, to the cursor.
+/// the last command's output.
 fn rows_of(
     screen: &fux_vt::Screen,
     history: Option<usize>,
     view: CaptureView,
 ) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
     let all = 0..usize::MAX;
-    if view.last_output {
-        let commands = screen.commands();
-        let (row, col) = screen.cursor_position();
-        let cursor = (screen.window().row(row)).map(|r| fux_vt::CommandMark { row: r.id(), col });
-        let running = commands.output_start.zip(cursor);
-        let Some((start, end)) = running.or(commands.last_output) else {
-            return Vec::new();
-        };
-        let Some(last) = screen.row_index(end.row) else {
-            return Vec::new();
-        };
-        // A start gone (history's limit cut it, or the screen was cleared or
-        // switched) or below the end: from what is kept above the end, the
-        // screen's top if the start was cleared.
-        let (first, start) = match screen.row_index(start.row) {
-            Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
-            Some(_) => (
-                screen.history_len().min(last),
-                fux_vt::CommandMark { col: 0, ..start },
-            ),
-            None => (0, fux_vt::CommandMark { col: 0, ..start }),
-        };
-        let rows: Vec<fux_vt::Row<'_>> = screen
-            .rows()
-            .skip(first)
-            .take(last.saturating_sub(first).saturating_add(1))
-            .collect();
-        let count = rows.len();
-        return rows
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, row)| {
-                let from = if i == 0 { usize::from(start.col) } else { 0 };
-                // The end mark at a line's start ends the output before it;
-                // past it, the row is the command's whole (the prompt goes on
-                // a row of its own), what it wrote right of the cursor too.
-                let to = match (i.saturating_add(1) == count, end.col) {
-                    (true, 0) => 0,
-                    (true, col) if i == 0 && start.col >= col => 0,
-                    _ => usize::MAX,
-                };
-                (from < to).then_some((row, from..to))
-            })
-            .collect();
-    }
-    let rows: Vec<fux_vt::Row<'_>> = if view.main {
-        screen.main_rows().collect()
-    } else if view.alt {
-        screen.alternate_rows().collect()
-    } else {
-        screen.rows().collect()
+    let rows: Vec<fux_vt::Row<'_>> = match view.source {
+        Source::Shown => screen.rows().collect(),
+        Source::Main => screen.main_rows().collect(),
+        Source::Alternate => screen.alternate_rows().collect(),
+        Source::LastOutput => return last_output(screen),
     };
     let shown = usize::from(screen.size().rows());
     let keep = shown.saturating_add(history.unwrap_or(0));
@@ -258,6 +215,53 @@ fn rows_of(
     rows.into_iter()
         .skip(skip)
         .map(|row| (row, all.clone()))
+        .collect()
+}
+
+/// The last command's output between its marks, a range of each row's
+/// columns: while one runs, its output so far, to the cursor.
+fn last_output(screen: &fux_vt::Screen) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
+    let commands = screen.commands();
+    let (row, col) = screen.cursor_position();
+    let cursor = (screen.window().row(row)).map(|r| fux_vt::CommandMark { row: r.id(), col });
+    let running = commands.output_start.zip(cursor);
+    let Some((start, end)) = running.or(commands.last_output) else {
+        return Vec::new();
+    };
+    let Some(last) = screen.row_index(end.row) else {
+        return Vec::new();
+    };
+    // A start gone (history's limit cut it, or the screen was cleared or
+    // switched) or below the end: from what is kept above the end, the
+    // screen's top if the start was cleared.
+    let (first, start) = match screen.row_index(start.row) {
+        Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
+        Some(_) => (
+            screen.history_len().min(last),
+            fux_vt::CommandMark { col: 0, ..start },
+        ),
+        None => (0, fux_vt::CommandMark { col: 0, ..start }),
+    };
+    let rows: Vec<fux_vt::Row<'_>> = screen
+        .rows()
+        .skip(first)
+        .take(last.saturating_sub(first).saturating_add(1))
+        .collect();
+    let count = rows.len();
+    rows.into_iter()
+        .enumerate()
+        .filter_map(|(i, row)| {
+            let from = if i == 0 { usize::from(start.col) } else { 0 };
+            // The end mark at a line's start ends the output before it;
+            // past it, the row is the command's whole (the prompt goes on
+            // a row of its own), what it wrote right of the cursor too.
+            let to = match (i.saturating_add(1) == count, end.col) {
+                (true, 0) => 0,
+                (true, col) if i == 0 && start.col >= col => 0,
+                _ => usize::MAX,
+            };
+            (from < to).then_some((row, from..to))
+        })
         .collect()
 }
 

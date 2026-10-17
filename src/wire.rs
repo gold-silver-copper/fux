@@ -4,7 +4,7 @@
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
     AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
-    PanePick, PaneResize, Percent, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
+    PanePick, PaneResize, Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
@@ -369,6 +369,12 @@ wire_enum!(MoveTo, "move" {
     4 => Beside(d),
 });
 wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
+wire_enum!(Source, "source" {
+    0 => Shown,
+    1 => Main,
+    2 => Alternate,
+    3 => LastOutput,
+});
 wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
 
 impl Wire for Percent {
@@ -391,9 +397,7 @@ wire_struct!(CaptureView {
     full,
     join,
     styles,
-    main,
-    alt,
-    last_output,
+    source,
     marks,
     rows,
     cols

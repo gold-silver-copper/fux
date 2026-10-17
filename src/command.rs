@@ -174,6 +174,22 @@ pub enum Input {
     Paste(String),
 }
 
+/// Which screen a capture reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Source {
+    /// The screen the pane shows, and its history.
+    #[default]
+    Shown,
+    /// The main screen and its history, though a program holds the
+    /// alternate one: what was printed before it took the screen.
+    Main,
+    /// The alternate screen as a full-screen program last drew it, though
+    /// it has left it, or exited.
+    Alternate,
+    /// The last shell command's output alone, between its OSC 133 marks.
+    LastOutput,
+}
+
 /// Which part of a pane's screen `capture` prints, and how.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CaptureView {
@@ -188,14 +204,8 @@ pub struct CaptureView {
     pub cols: Option<(u16, u16)>,
     /// Colours and attributes, as SGR escapes, or with `json` as runs.
     pub styles: bool,
-    /// The main screen and its history, though a program holds the
-    /// alternate one: what was printed before it took the screen.
-    pub main: bool,
-    /// The alternate screen as a full-screen program last drew it, though
-    /// it has left it, or exited.
-    pub alt: bool,
-    /// The last shell command's output alone, between its OSC 133 marks.
-    pub last_output: bool,
+    /// Which screen it reads.
+    pub source: Source,
     /// Reverse video, how a selection is drawn, between `⟦` and `⟧`.
     pub marks: bool,
 }

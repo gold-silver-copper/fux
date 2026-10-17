@@ -5,7 +5,7 @@ use super::{Ask, Fux, Host, Keys, Local, MouseEvent, Opts, Then, Waits};
 use crate::code::Code;
 use crate::command::{
     AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
-    Percent, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
+    Percent, Pick, Resized, Sibling, Source, SwapWith, Until, Wait, WsRef,
 };
 use crate::keys::Direction;
 use crate::keys::mouse::MouseButton;
@@ -112,7 +112,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys or a mouse event)"),
     word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor, over main-screen and alt-screen)"),
+    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
     word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0; joined, each line they touch whole"),
     word("Reading", "cols", 3, "opts from to -- opts", "capture: those columns only, from 0"),
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
@@ -759,8 +759,22 @@ impl fuxth::Host for Host<'_> {
                 }
                 with(name, x, out, |w| w.marks = true)
             }
+            "main-screen" | "alt-screen" | "last-output" => {
+                let mut o = next()?;
+                let view = &mut option(name, &mut o)?.view;
+                if view.source != Source::Shown {
+                    let why = format!("{name}: a capture reads one screen, and one is given");
+                    return Err(fail(Code::Unused, why));
+                }
+                view.source = match name {
+                    "main-screen" => Source::Main,
+                    "alt-screen" => Source::Alternate,
+                    _ => Source::LastOutput,
+                };
+                now(out, o)
+            }
             "horizontal" | "vertical" | "kill-first" | "all-history" | "joined" | "full"
-            | "styles" | "main-screen" | "alt-screen" | "last-output" => {
+            | "styles" => {
                 let mut o = next()?;
                 let built = option(name, &mut o)?;
                 match name {
@@ -770,10 +784,7 @@ impl fuxth::Host for Host<'_> {
                     "all-history" => built.history = Some(usize::MAX),
                     "joined" => built.view.join = true,
                     "full" => built.view.full = true,
-                    "styles" => built.view.styles = true,
-                    "main-screen" => built.view.main = true,
-                    "alt-screen" => built.view.alt = true,
-                    _ => built.view.last_output = true,
+                    _ => built.view.styles = true,
                 }
                 now(out, o)
             }

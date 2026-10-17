@@ -14,7 +14,7 @@
 //! program printed since, never only the echo of what was typed
 //! (`crate::classify`).
 use crate::code::Code;
-use crate::command::{AnyRef, CaptureView, Until, Wait};
+use crate::command::{AnyRef, CaptureView, Source, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
 use crate::log::Seq;
@@ -1263,7 +1263,11 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
     let view = |alt| CaptureView {
         join: true,
         marks,
-        alt,
+        source: if alt {
+            Source::Alternate
+        } else {
+            Source::Shown
+        },
         ..CaptureView::default()
     };
     let (first, _) = crate::capture::pane(pane, None, view(alt), false, false);
