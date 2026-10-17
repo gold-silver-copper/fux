@@ -349,11 +349,6 @@ pub struct Session {
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
-    /// How the panes the command under way starts start.
-    starting: Starting,
-    /// A restore is under way (`Session::restore`): ids come back as they
-    /// were, and programs wait for `respawn`.
-    restoring: bool,
     /// The sockets `fux grant` made, each with the workspace it reaches,
     /// for `ls` to list: the server holds them.
     pub grants: Vec<Grant>,
@@ -365,16 +360,20 @@ pub struct Session {
     pub(crate) test_keymap: crate::keymap::Keymap,
 }
 
-/// How the panes a command starts start: the variables they take from
-/// whoever starts them rather than the server (those `update-environment`
-/// names that the starter has, and those it has not, which they are not
-/// given either).
+/// How the panes a command starts start, passed to what starts them: the
+/// variables they take from whoever starts them rather than the server
+/// (those `update-environment` names that the starter has, and those it
+/// has not, which they are not given either). A pane started for no
+/// command (the first shell) starts as `Starting::default()` says.
 #[derive(Clone, Debug, Default)]
 struct Starting {
     set: Vec<(String, String)>,
     unset: Vec<String>,
     /// The socket they reach the server by, if not its own: a grant's.
     socket: Option<PathBuf>,
+    /// A restore is under way (`Session::restore`): ids come back as they
+    /// were, and programs wait for `respawn`.
+    restoring: bool,
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
@@ -598,8 +597,6 @@ impl Session {
             placed: Placement::default(),
             ids: Ids::default(),
             changes: 0,
-            starting: Starting::default(),
-            restoring: false,
             grants: Vec::new(),
             #[cfg(test)]
             test_keys: BTreeMap::new(),
@@ -611,7 +608,7 @@ impl Session {
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
         let home = home();
-        let start = (Start::Shell(&[], &[]), home.as_path());
+        let start = (Start::Shell(&[], &[]), home.as_path(), &Starting::default());
         let names = (Some(MAIN.into()), None);
         self.create_workspace(names, start, (Fit::Clients, default_size()))
             .map(|_| ())
@@ -727,10 +724,10 @@ impl Session {
         &self,
         id: PaneId,
         (argv, env): (&[String], &[(String, String)]),
-        cwd: &Path,
+        (cwd, fresh): (&Path, &Starting),
         size: fux_vt::Size,
     ) -> Result<Option<(crate::process::Child, Option<String>)>, Error> {
-        let (Some(socket), fresh) = (&self.launch, &self.starting) else {
+        let Some(socket) = &self.launch else {
             return Ok(None);
         };
         let mut dir = socket.as_os_str().to_owned();
@@ -774,8 +771,8 @@ impl Session {
         &mut self,
         id: PaneId,
         kill: bool,
-        env: &[(String, String)],
-        argv: &[String],
+        (env, argv): (&[(String, String)], &[String]),
+        starting: &Starting,
     ) -> Result<(), Error> {
         let pane = self.pane(id)?;
         let Runs::Program(launch) = &pane.runs else {
@@ -795,8 +792,13 @@ impl Session {
             launch.env.push((key.clone(), value.clone()));
         }
         let size = pane.size();
-        let (child, nonce) =
-            (self.spawn(id, (&launch.argv, &launch.env), &launch.cwd, size)?).unzip();
+        let spawned = self.spawn(
+            id,
+            (&launch.argv, &launch.env),
+            (&launch.cwd, starting),
+            size,
+        )?;
+        let (child, nonce) = spawned.unzip();
         let history = self.config.history_bytes;
         let pane = self.pane_mut(id)?;
         let old = pane.respawned(
@@ -892,15 +894,21 @@ impl Session {
     /// What panes started for `origin` take of its environment: none of
     /// it for one that sent none (a test, a client of no terminal).
     fn starting_for(&self, origin: &Origin) -> Starting {
-        let (env, socket) = match origin {
-            Origin::Cli(caller) => (caller.env.as_slice(), caller.grant.clone()),
+        let (env, socket, restoring) = match origin {
+            Origin::Cli(caller) => (
+                caller.env.as_slice(),
+                caller.grant.clone(),
+                caller.restoring,
+            ),
             Origin::Client(client) => (
                 self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
                 None,
+                false,
             ),
         };
         let mut fresh = Starting {
             socket,
+            restoring,
             ..Starting::default()
         };
         for name in (self.config.update_environment.iter()).filter(|_| !env.is_empty()) {
@@ -915,7 +923,7 @@ impl Session {
     /// The next ids made are `ids` (`id`), each of a kind in `kinds`, at
     /// most one of each, and none that is there or (outside a restore)
     /// was ever given.
-    fn want(&mut self, ids: &[AnyRef], kinds: &[Kind]) -> Result<(), Error> {
+    fn want(&mut self, ids: &[AnyRef], kinds: &[Kind], again: bool) -> Result<(), Error> {
         for (i, id) in ids.iter().enumerate() {
             let twice = ids.iter().take(i).any(|other| other.kind() == id.kind());
             if twice || !kinds.contains(&id.kind()) {
@@ -926,7 +934,7 @@ impl Session {
             if self.there(*id).is_ok() {
                 return Err(Error::IdTaken(*id));
             }
-            self.ids.want(*id, self.restoring)?;
+            self.ids.want(*id, again)?;
         }
         Ok(())
     }
@@ -1263,7 +1271,7 @@ impl Session {
     fn create_workspace(
         &mut self,
         (name, tab_name): (Option<String>, Option<String>),
-        start: (Start<'_>, &Path),
+        start: (Start<'_>, &Path, &Starting),
         (fit, size): (Fit, fux_vt::Size),
     ) -> Result<(WsId, TabId, PaneId), Error> {
         if let Some(name) = &name {
@@ -1294,7 +1302,7 @@ impl Session {
         &mut self,
         (ws, wanted): (Result<WsId, Error>, Option<&WsRef>),
         name: Option<String>,
-        start: (Start<'_>, &Path),
+        start: (Start<'_>, &Path, &Starting),
         place: (Fit, fux_vt::Size),
     ) -> Result<(WsId, TabId, PaneId), Error> {
         let ws = match (ws, wanted) {
@@ -1876,16 +1884,9 @@ impl Session {
     /// which the server asks for its answer until it has one; a stream of
     /// events, its subscription; any other runs at once.
     pub fn begin(&mut self, command: Command, origin: &Origin) -> Begun {
-        self.restoring = matches!(
-            origin,
-            Origin::Cli(Caller {
-                restoring: true,
-                ..
-            })
-        );
         // A size a saved session asks for that cannot be had here is left
         // as it comes, so one does not keep the rest from coming back.
-        if self.restoring && matches!(command, Command::ResizePane { .. }) {
+        if matches!(command, Command::ResizePane { .. }) && self.starting_for(origin).restoring {
             let mut outcome = self.run_command(&command, origin);
             if matches!(outcome.end, End::Failed { .. }) {
                 outcome = Reply::default();
@@ -2063,7 +2064,7 @@ impl Session {
 
     fn execute(&mut self, command: &Command, origin: &Origin) -> Result<Reply, Error> {
         let here = self.here(origin)?;
-        self.starting = self.starting_for(origin);
+        let starting = self.starting_for(origin);
         match command {
             Command::Ls { target, get } => {
                 // Through a grant, the granted workspace alone.
@@ -2131,10 +2132,14 @@ impl Session {
                 env,
                 ids,
             } => {
-                self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
+                self.want(
+                    ids,
+                    &[Kind::Workspace, Kind::Tab, Kind::Pane],
+                    starting.restoring,
+                )?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd, env), cwd.as_path());
+                let start = (Start::Shell(cmd, env), cwd.as_path(), &starting);
                 let place = (fit, self.start_size(fit, here));
                 let made = self.create_workspace((name.clone(), None), start, place)?;
                 self.follow(here, made.0, None, None);
@@ -2149,13 +2154,17 @@ impl Session {
                 env,
                 ids,
             } => {
-                self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
+                self.want(
+                    ids,
+                    &[Kind::Workspace, Kind::Tab, Kind::Pane],
+                    starting.restoring,
+                )?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd, env), cwd.as_path());
+                let start = (Start::Shell(cmd, env), cwd.as_path(), &starting);
                 let place = (fit, self.start_size(fit, here));
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
@@ -2178,7 +2187,11 @@ impl Session {
                 ids,
                 ..
             } => {
-                self.want(ids, &[Kind::Workspace, Kind::Tab, Kind::Pane])?;
+                self.want(
+                    ids,
+                    &[Kind::Workspace, Kind::Tab, Kind::Pane],
+                    starting.restoring,
+                )?;
                 let log = log
                     .as_ref()
                     .map(|p| open_log(&self.cwd_for(here, None).join(p)))
@@ -2195,7 +2208,7 @@ impl Session {
                 let derived = Some(crate::pane::named(argv)).filter(|n| check_name(n).is_ok());
                 let given = name.clone();
                 let name = name.clone().or(derived);
-                let start = (Start::Program(argv, env), cwd.as_path());
+                let start = (Start::Program(argv, env), cwd.as_path(), &starting);
                 let workspace = workspace
                     .clone()
                     .unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
@@ -2218,7 +2231,7 @@ impl Session {
                 ..
             } => {
                 let id = self.pane(target)?.id;
-                self.respawn(id, kill, env, argv)?;
+                self.respawn(id, kill, (env, argv), &starting)?;
                 Ok(Reply {
                     ids: vec![AnyRef::Pane(id)],
                     ..format!("{id}\n").into()
@@ -2399,7 +2412,7 @@ impl Session {
                 ref ids,
                 then: _,
             } => {
-                self.want(ids, &[Kind::Pane])?;
+                self.want(ids, &[Kind::Pane], starting.restoring)?;
                 let target = self.pane(target)?.id;
                 let cwd = self.start_dir(here, cwd.as_deref(), Some(target))?;
                 // The splitting client follows the new pane; from the CLI, the
@@ -2418,7 +2431,7 @@ impl Session {
                     true => Start::Program(cmd, env),
                     false => Start::Shell(cmd, env),
                 };
-                let pane = new_pane(self, &mut ids, (start, &cwd), size)?;
+                let pane = new_pane(self, &mut ids, (start, &cwd, &starting), size)?;
                 let tab = tab_of(&mut self.workspaces, target)?;
                 self.ids = ids;
                 let new = pane.id;
@@ -3194,7 +3207,7 @@ enum Start<'a> {
 fn new_pane(
     session: &Session,
     ids: &mut Ids,
-    (start, cwd): (Start<'_>, &Path),
+    (start, cwd, starting): (Start<'_>, &Path, &Starting),
     size: fux_vt::Size,
 ) -> Result<Pane, Error> {
     let config = &session.config;
@@ -3239,8 +3252,10 @@ fn new_pane(
     let mut pane = Pane::new(id, name, runs, size, config.history_bytes)?;
     pane.record.set_budget(config.journal_bytes);
     // A program brought back by a restore waits for `respawn`.
-    let paused = session.restoring && matches!(start, Start::Program(..));
-    if !paused && let Some((child, nonce)) = session.spawn(id, (argv, env), cwd, size)? {
+    let paused = starting.restoring && matches!(start, Start::Program(..));
+    if !paused
+        && let Some((child, nonce)) = session.spawn(id, (argv, env), (cwd, starting), size)?
+    {
         pane.process = Process::Reading(child);
         pane.mark_with(nonce);
     }
