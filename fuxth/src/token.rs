@@ -16,8 +16,8 @@ pub enum Place {
 impl std::fmt::Display for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Place::Line { source, line } => write!(f, "{source}:{line}"),
-            Place::Argument(n) => write!(f, "argument {n}"),
+            Self::Line { source, line } => write!(f, "{source}:{line}"),
+            Self::Argument(n) => write!(f, "argument {n}"),
         }
     }
 }

@@ -239,9 +239,9 @@ define is-lower code let n n 97 ge n 122 le and end
 # c -- flag : whether a one-character string is a letter A-Z or a-z
 define is-letter let c c is-upper c is-lower or end
 # s -- s : a-z made A-Z
-define upper let s list str '' s each let c c is-lower if c code 32 sub char else c then end end concat end
+define upper let s list s each let c c is-lower if c code 32 sub char else c then end end glue end
 # s -- s : A-Z made a-z
-define lower let s list str '' s each let c c is-upper if c code 32 add char else c then end end concat end
+define lower let s list s each let c c is-upper if c code 32 add char else c then end end glue end
 # s n -- s : s n times over
 define copies
   let n let s

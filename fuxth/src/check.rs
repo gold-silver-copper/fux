@@ -17,7 +17,7 @@ use crate::compile::{Op, Program, Steps};
 use crate::error::{Code, Error, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Past any real stack: an unbounded depth.
 const BIG: i64 = 1 << 40;
@@ -46,19 +46,19 @@ const ANY: Kinds = Kinds(Kind::BITS);
 const SEQ: Kinds = STR.union(LIST);
 
 impl Kinds {
-    const fn one(kind: Kind) -> Kinds {
-        Kinds(kind.bit())
+    const fn one(kind: Kind) -> Self {
+        Self(kind.bit())
     }
 
-    const fn union(self, other: Kinds) -> Kinds {
-        Kinds(self.0 | other.0)
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
-    const fn and(self, other: Kinds) -> Kinds {
-        Kinds(self.0 & other.0)
+    const fn and(self, other: Self) -> Self {
+        Self(self.0 & other.0)
     }
 
-    const fn may_be(self, kind: Kinds) -> bool {
+    const fn may_be(self, kind: Self) -> bool {
         self.0 & kind.0 != 0
     }
 
@@ -68,7 +68,7 @@ impl Kinds {
             return "any value".to_owned();
         }
         let said: Vec<&str> = (Kind::ALL.into_iter())
-            .filter(|kind| self.may_be(Kinds::one(*kind)))
+            .filter(|kind| self.may_be(Self::one(*kind)))
             .map(Kind::said)
             .collect();
         said.join(" or ")
@@ -171,12 +171,12 @@ enum Special {
 }
 
 /// The definitions checked again, by definition and the kinds given.
-type Specials = std::cell::RefCell<std::collections::HashMap<(usize, Vec<Kinds>), Special>>;
+type Specials = std::cell::RefCell<HashMap<(usize, Vec<Kinds>), Special>>;
 
 impl Summary {
     /// What a definition might do, for one the checker can't follow.
-    fn anything() -> Summary {
-        Summary {
+    fn anything() -> Self {
+        Self {
             need: 0,
             end: End::Returns(State::unknown()),
         }
@@ -238,8 +238,8 @@ enum Flow {
 }
 
 impl State {
-    fn start(bounded: bool) -> State {
-        State {
+    fn start(bounded: bool) -> Self {
+        Self {
             top: Vec::new(),
             lo: 0,
             hi: 0,
@@ -253,8 +253,8 @@ impl State {
     }
 
     /// A stack of which nothing is known: any depth, any kinds.
-    fn unknown() -> State {
-        let mut unknown = State::start(false);
+    fn unknown() -> Self {
+        let mut unknown = Self::start(false);
         unknown.forget(BIG.saturating_neg(), BIG);
         unknown
     }
@@ -325,9 +325,9 @@ impl State {
     }
 
     /// What either way may be.
-    fn join(&self, other: &State) -> State {
+    fn join(&self, other: &Self) -> Self {
         let kept = self.top.len().min(other.top.len());
-        let rest = |s: &State| len(&s.top).saturating_sub(i64::try_from(kept).unwrap_or(BIG));
+        let rest = |s: &Self| len(&s.top).saturating_sub(count(kept));
         let top = self.top.iter().rev().zip(other.top.iter().rev());
         let mut top: Vec<Kinds> = top.take(kept).map(|(a, b)| a.union(*b)).collect();
         top.reverse();
@@ -335,7 +335,7 @@ impl State {
         // nest, so no jump goes into or out of one.
         let outer = self.outer.iter().zip(&other.outer);
         let iters = self.iters.iter().zip(&other.iters);
-        State {
+        Self {
             top,
             lo: (self.lo.saturating_add(rest(self))).min(other.lo.saturating_add(rest(other))),
             hi: (self.hi.saturating_add(rest(self))).max(other.hi.saturating_add(rest(other))),
@@ -350,7 +350,7 @@ impl State {
 
     /// `joined` (this joined with a new way), with a depth that keeps
     /// changing taken as unbounded.
-    fn widen(&self, mut joined: State) -> State {
+    fn widen(&self, mut joined: Self) -> Self {
         let (lo, hi) = self.depth();
         let (new_lo, new_hi) = joined.depth();
         let top = len(&joined.top);
@@ -462,7 +462,7 @@ fn earliest(a: Option<Error>, b: Option<Error>) -> Option<Error> {
 
 /// Each block's state, by the step it starts at, with how often it has
 /// changed.
-type Blocks = std::collections::BTreeMap<usize, (State, u32)>;
+type Blocks = BTreeMap<usize, (State, u32)>;
 
 /// One code's check: the top level, or a definition.
 struct Unit<'a, A> {
@@ -487,7 +487,7 @@ impl<'a, A> Unit<'a, A> {
         start: State,
         known: &'a Known,
         own: Option<usize>,
-    ) -> Unit<'a, A> {
+    ) -> Self {
         let mut starts = BTreeSet::from([0]);
         for (at, op) in code.ops.iter().enumerate() {
             if let Op::Jump(to) | Op::JumpUnless(to) | Op::EachNext(to) = op {
@@ -495,7 +495,7 @@ impl<'a, A> Unit<'a, A> {
                 starts.insert(at.saturating_add(1));
             }
         }
-        Unit {
+        Self {
             program,
             code,
             start,
@@ -519,7 +519,7 @@ impl<'a, A> Unit<'a, A> {
     /// every run goes that far.
     fn ends(&self, forward: bool) -> Option<(Blocks, Ends)> {
         let first = (self.start.clone(), 0);
-        let mut states = std::collections::BTreeMap::from([(0, first)]);
+        let mut states = BTreeMap::from([(0, first)]);
         let mut todo = BTreeSet::from([0usize]);
         let mut diverged = Ends::default();
         // A block's state changes a bounded number of times: widened twice,
@@ -606,7 +606,7 @@ impl<'a, A> Unit<'a, A> {
         start.hi = start.lo;
         start.reached = start.lo;
         start.top = key.1.clone();
-        let unit = Unit::new(self.program, code, start, self.known, Some(id));
+        let unit = Self::new(self.program, code, start, self.known, Some(id));
         let special = match unit.ends(false) {
             None => Special::Unknown,
             Some((mut states, ends)) => {

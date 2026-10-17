@@ -6,9 +6,9 @@
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
 use crate::compile::{Op, Program};
-use crate::error::{Code as ErrorCode, Error, Failure, Wants, underflow};
+use crate::error::{Code, Error, Failure, Wants, underflow};
 use crate::token::Token;
-use crate::value::{AppValue, Kind, List, Text, Value};
+use crate::value::{AppValue, Kind, List, NESTING, TOTAL, Text, Value};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -105,8 +105,8 @@ pub struct Limits {
 impl Default for Limits {
     /// As many values on the stack as one list may hold, so `list … end`
     /// can gather any list there may be.
-    fn default() -> Limits {
-        Limits {
+    fn default() -> Self {
+        Self {
             stack: LONGEST,
             calls: 10_000,
         }
@@ -167,9 +167,9 @@ pub struct Machine<A> {
 }
 
 impl<A: AppValue> Machine<A> {
-    pub fn new(program: Program<A>, limits: Limits) -> Machine<A> {
+    pub fn new(program: Program<A>, limits: Limits) -> Self {
         let globals = vec![None; program.globals];
-        Machine {
+        Self {
             program: Rc::new(program),
             stack: Vec::new(),
             frames: vec![Frame {
@@ -201,7 +201,7 @@ impl<A: AppValue> Machine<A> {
     /// Pushes a value: a suspended word's result.
     pub fn push(&mut self, value: Value<A>) -> Result<(), Error> {
         if self.stack.len() >= self.limits.stack {
-            return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
+            return Err(self.fail(Code::StackOverflow, "the stack is full"));
         }
         self.stack.push(value);
         Ok(())
@@ -266,7 +266,7 @@ impl<A: AppValue> Machine<A> {
         self.program.token(code, step.checked_sub(1)?).cloned()
     }
 
-    fn fail(&self, code: ErrorCode, message: impl Into<String>) -> Error {
+    fn fail(&self, code: Code, message: impl Into<String>) -> Error {
         Error::new(code, message, self.at().as_ref())
     }
 
@@ -335,7 +335,7 @@ impl<A: AppValue> Machine<A> {
                     let done = done.map_err(|f| self.fail(f.code, f.message))?;
                     let given = (self.stack.len(), gives);
                     if self.stack.len().saturating_add(out.len()) > self.limits.stack {
-                        return Err(self.fail(ErrorCode::StackOverflow, "the stack is full"));
+                        return Err(self.fail(Code::StackOverflow, "the stack is full"));
                     }
                     self.stack.append(&mut out);
                     self.out = out;
@@ -359,7 +359,7 @@ impl<A: AppValue> Machine<A> {
                     } else if self.frames.len() > self.limits.calls {
                         let message =
                             format!("calls nest past {}: recursion too deep", self.limits.calls);
-                        return Err(self.fail(ErrorCode::CallDepth, message));
+                        return Err(self.fail(Code::CallDepth, message));
                     }
                     let base = self.locals.len();
                     let slots = program.words.get(*id).map_or(0, |w| w.locals);
@@ -436,7 +436,7 @@ impl<A: AppValue> Machine<A> {
             Some(value) => self.push(value),
             None => {
                 let message = "read before its let ran".to_owned();
-                Err(self.fail(ErrorCode::Unset, message))
+                Err(self.fail(Code::Unset, message))
             }
         }
     }
@@ -452,7 +452,7 @@ impl<A: AppValue> Machine<A> {
             return Ok(());
         }
         let message = format!("the application gave {given} values, and its word says {gives}");
-        Err(self.fail(ErrorCode::Contract, message))
+        Err(self.fail(Code::Contract, message))
     }
 
     fn jump(&mut self, to: usize) {
@@ -470,7 +470,7 @@ impl<A: AppValue> Machine<A> {
             return Ok(self.stack.len().saturating_sub(n));
         }
         let message = underflow("takes", n, &has.to_string(), !self.marks.is_empty());
-        Err(self.fail(ErrorCode::StackUnderflow, message))
+        Err(self.fail(Code::StackUnderflow, message))
     }
 
     fn pop(&mut self) -> Result<Value<A>, Error> {
@@ -490,15 +490,15 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn type_error(&self, message: impl Into<String>) -> Error {
-        self.fail(ErrorCode::Type, message)
+        self.fail(Code::Type, message)
     }
 
     fn range_error(&self, message: impl Into<String>) -> Error {
-        self.fail(ErrorCode::Range, message)
+        self.fail(Code::Range, message)
     }
 
     fn too_long(&self, message: impl Into<String>) -> Error {
-        self.fail(ErrorCode::TooLong, message)
+        self.fail(Code::TooLong, message)
     }
 
     /// `n` as `word`'s count: 0 or more.
@@ -564,8 +564,8 @@ impl<A: AppValue> Machine<A> {
     fn nested(&self) -> Error {
         self.too_long(format!(
             "lists nest at most {} deep, and hold at most {} in all, through the lists and strings in them",
-            crate::value::NESTING,
-            crate::value::TOTAL
+            NESTING,
+            TOTAL
         ))
     }
 
@@ -579,7 +579,7 @@ impl<A: AppValue> Machine<A> {
         let from = self.depth(n.saturating_add(1))?;
         match self.stack.get(from).cloned() {
             Some(value) => self.push(value),
-            None => Err(self.fail(ErrorCode::StackUnderflow, "pick reached past the stack")),
+            None => Err(self.fail(Code::StackUnderflow, "pick reached past the stack")),
         }
     }
 
@@ -588,8 +588,8 @@ impl<A: AppValue> Machine<A> {
     fn arithmetic(&mut self, result: Option<i64>, b: i64) -> Result<(), Error> {
         match result {
             Some(n) => self.push(Value::Int(n)),
-            None if b == 0 => Err(self.fail(ErrorCode::DivByZero, "division by zero")),
-            None => Err(self.fail(ErrorCode::Overflow, "past what an integer holds")),
+            None if b == 0 => Err(self.fail(Code::DivByZero, "division by zero")),
+            None => Err(self.fail(Code::Overflow, "past what an integer holds")),
         }
     }
 
@@ -628,7 +628,7 @@ impl<A: AppValue> Machine<A> {
             }
         }
         if strings {
-            let text = crate::value::Text::new(text);
+            let text = Text::new(text);
             self.build(text.chars_len())?;
             Ok(Value::Str(Rc::new(text)))
         } else {
@@ -773,8 +773,8 @@ impl<A> Sequence<A> {
     /// How many elements it has.
     fn len(&self) -> usize {
         match self {
-            Sequence::Str(s) => s.chars_len(),
-            Sequence::List(list) => list.items().len(),
+            Self::Str(s) => s.chars_len(),
+            Self::List(list) => list.items().len(),
         }
     }
 }
@@ -1086,6 +1086,6 @@ builtins! { m host;
         host.print(&text).map_err(|f| m.fail(f.code, f.message))
     }
     Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
-        Err(m.fail(ErrorCode::Fail, x.text()))
+        Err(m.fail(Code::Fail, x.text()))
     }
 }

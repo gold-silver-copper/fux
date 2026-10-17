@@ -29,11 +29,11 @@ macro_rules! parsing {
         }
 
         impl Parsing {
-            pub const ALL: [Parsing; [$($name),*].len()] = [$(Parsing::$variant),*];
+            pub const ALL: [Self; [$($name),*].len()] = [$(Self::$variant),*];
 
             pub fn name(self) -> &'static str {
                 match self {
-                    $(Parsing::$variant => $name,)*
+                    $(Self::$variant => $name,)*
                 }
             }
         }
@@ -56,8 +56,8 @@ parsing! {
 
 impl Builtin {
     /// The built-in `name` is, if one.
-    pub fn named(name: &str) -> Option<Builtin> {
-        Builtin::ALL.into_iter().find(|b| b.name() == name)
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|b| b.name() == name)
     }
 }
 
@@ -167,8 +167,8 @@ pub(crate) struct Steps<A> {
 }
 
 impl<A> Steps<A> {
-    fn new() -> Steps<A> {
-        Steps {
+    fn new() -> Self {
+        Self {
             ops: Vec::new(),
             tokens: Vec::new(),
             locals: 0,
@@ -278,7 +278,7 @@ pub struct Compiler<A> {
 }
 
 impl<A: Clone> Compiler<A> {
-    pub fn new(vocabulary: Vocabulary) -> Compiler<A> {
+    pub fn new(vocabulary: Vocabulary) -> Self {
         let mut names = HashMap::new();
         for (id, (name, _, _)) in vocabulary.words.iter().enumerate() {
             names.insert(Rc::from(name.as_str()), Entry::App(id));
@@ -288,7 +288,7 @@ impl<A: Clone> Compiler<A> {
         for builtin in Builtin::ALL {
             names.insert(Rc::from(builtin.name()), Entry::Builtin(builtin));
         }
-        Compiler {
+        Self {
             vocabulary,
             names,
             main: Steps::new(),
@@ -315,7 +315,7 @@ impl<A: Clone> Compiler<A> {
         let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
             let text = &*token.text;
-            let literal = std::mem::replace(&mut self.literal, false);
+            let literal = std::mem::take(&mut self.literal);
             match Parsing::named(text) {
                 Some(Parsing::Str) => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
