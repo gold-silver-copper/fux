@@ -435,7 +435,8 @@ impl Screen {
             return vec![Effect::Send(Act::Copy(typing))];
         }
         let act = copy_act(press);
-        // Leaving and copying end it, here as on the server.
+        // Leaving and copying end it, as `copy_act`'s bool says, here as on
+        // the server (copy.rs tests that the two agree).
         if act.as_ref().is_none_or(|(_, ends)| !ends) {
             *self = Self::Copy(None);
         }

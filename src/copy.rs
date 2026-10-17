@@ -573,6 +573,8 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     view.dirty = true;
     view.notice = None;
 
+    // Its rows gone, the key does nothing: `Session::settle`, after it,
+    // ends copy mode (`hold_copies`) and tells the client.
     let Some(at) = copy.resolve(screen) else {
         return;
     };
@@ -796,6 +798,36 @@ mod tests {
     /// A place as a row counted from the oldest, and a column.
     fn place((row, col): Place<'_>) -> (usize, u16) {
         (row.index(), col)
+    }
+
+    /// The client's copy-mode keys say which end copy mode; each ends it on
+    /// the server just when the client says it does.
+    #[test]
+    fn a_copy_key_ends_copy_mode_where_the_client_says() -> Result<(), String> {
+        use fux_vt::keys::{Key, KeyPress, Modifiers};
+        let mut keys: Vec<Key> = ('a'..='z').chain(['[', ']']).map(Key::Char).collect();
+        keys.extend([
+            Key::Escape,
+            Key::End,
+            Key::Home,
+            Key::PageUp,
+            Key::PageDown,
+            Key::Enter,
+        ]);
+        keys.extend(fux_vt::keys::Direction::ALL.map(Key::Arrow));
+        let acts = keys
+            .into_iter()
+            .filter_map(|k| crate::keymap::copy_act(KeyPress::new(k, Modifiers::NONE)));
+        for (copy_act, ends) in acts {
+            let (mut s, c) = crate::session::testing::attached(6, 30)?;
+            s.output(PaneId::of(1), b"one\r\ntwo");
+            act(&mut s, c, CopyAct::Enter);
+            act(&mut s, c, copy_act.clone());
+            let view = s.views.get(&c).ok_or("no view")?;
+            let copying = matches!(view.mode, Mode::Copy(_));
+            assert_eq!(!copying, ends, "{copy_act:?}");
+        }
+        Ok(())
     }
 
     /// `[` and `]` go to the previous and next prompt a shell marked (OSC
