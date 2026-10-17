@@ -72,7 +72,8 @@ impl std::str::FromStr for AnyRef {
 }
 
 impl Kind {
-    /// Every kind: a new one joins it, as it joins `name`'s match.
+    /// Every kind. Nothing checks it: list a new kind here too, as its
+    /// arm in `name`'s match is forced.
     pub const ALL: [Kind; 3] = [Kind::Pane, Kind::Tab, Kind::Workspace];
     pub fn name(self) -> &'static str {
         match self {

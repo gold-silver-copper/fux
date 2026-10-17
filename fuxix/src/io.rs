@@ -84,7 +84,8 @@ pub fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
 /// process runs another program. It allocates nothing and takes no lock,
 /// so it may run between `fork` and `exec`. `listed` ([`open_end`], taken
 /// before the fork) bounds the fallback where the kernel has no
-/// close_range.
+/// close_range; there, with `None` listed, it fails (`ENOENT`, as
+/// `/dev/fd` is not there) rather than walk up to the limit.
 pub fn cloexec_from(first: i32, listed: Option<i32>) -> Result<()> {
     #[cfg(target_os = "linux")]
     {

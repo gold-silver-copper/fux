@@ -182,8 +182,8 @@ pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     };
     // SAFETY: `lead` runs between fork and exec, where only
     // async-signal-safe calls may be made, and makes only those:
-    // close_range, or fcntl; setsid; ioctl. It allocates
-    // nothing, takes no lock, and its errors are numbers.
+    // close_range, or fcntl; setsid; ioctl. It allocates nothing, takes
+    // no lock, and its errors are numbers.
     unsafe { command.pre_exec(lead) };
 }
 

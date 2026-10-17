@@ -800,7 +800,10 @@ mod tests {
     }
 
     /// The client's copy-mode keys say which end copy mode; each ends it on
-    /// the server just when the client says it does.
+    /// the server just when the client says it does. The keys tried are
+    /// listed by hand (the letters, the brackets, the named keys
+    /// `copy_act` reads, unmodified): a key given an arm there later (Tab,
+    /// an F-key, a modified letter) is checked only once it joins the list.
     #[test]
     fn a_copy_key_ends_copy_mode_where_the_client_says() -> Result<(), String> {
         use fux_vt::keys::{Key, KeyPress, Modifiers};
