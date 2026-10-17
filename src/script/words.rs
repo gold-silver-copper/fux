@@ -10,6 +10,7 @@ use crate::command::{
 };
 use crate::keys::Direction;
 use crate::layout::Axis;
+use crate::screens::Open;
 use fuxth::Code as Lang;
 use fuxth::{Done, Failure, Value};
 use std::ops::RangeInclusive;
@@ -562,22 +563,32 @@ fn act(client: crate::id::ClientId, action: ClientAction) -> Ask {
     )
 }
 
+/// How a screen's word makes its screen from what follows the client.
+enum Opens {
+    Alone(Open),
+    Pane(fn(crate::id::PaneId) -> Open),
+    Target(fn(AnyRef) -> Open),
+}
+
+/// The words that open one of a client's own screens.
+#[rustfmt::skip]
+const SCREENS: &[(&str, Opens)] = &[
+    ("choose-tab", Opens::Alone(Open::ChooseTab(None))),
+    ("choose-workspace", Opens::Alone(Open::ChooseWorkspace(None))),
+    ("copy-mode", Opens::Alone(Open::Copy)),
+    ("command-prompt", Opens::Alone(Open::Prompt)),
+    ("choose-tab-for", Opens::Pane(|p| Open::ChooseTab(Some(p)))),
+    ("choose-workspace-for", Opens::Pane(|p| Open::ChooseWorkspace(Some(p)))),
+    ("choose-pane", Opens::Pane(Open::ChoosePane)),
+    ("menu", Opens::Target(Open::Menu)),
+    ("rename-prompt", Opens::Target(Open::Rename)),
+    ("confirm-close", Opens::Target(Open::Confirm)),
+];
+
 /// Whether `word` opens one of a client's own screens: a key's program
 /// that may open one holds the keys typed after it for the screen.
 pub fn opens(word: &str) -> bool {
-    matches!(
-        word,
-        "menu"
-            | "choose-tab"
-            | "choose-workspace"
-            | "choose-tab-for"
-            | "choose-workspace-for"
-            | "choose-pane"
-            | "rename-prompt"
-            | "confirm-close"
-            | "command-prompt"
-            | "copy-mode"
-    )
+    SCREENS.iter().any(|(name, _)| *name == word)
 }
 
 impl fuxth::Host for Host<'_> {
@@ -611,6 +622,20 @@ impl fuxth::Host for Host<'_> {
         let resolve = |text: String, kind: Kind| {
             later(ask(Command::Resolve { text, kind }, Then::Handle(kind)))
         };
+        // A client's own screens, which it opens itself: from its keys or
+        // prompt, here; asked from elsewhere, relayed for it to run.
+        if let Some((_, opens)) = SCREENS.iter().find(|(word, _)| *word == name) {
+            let c = client(name, &next()?)?;
+            let open = match opens {
+                Opens::Alone(open) => open.clone(),
+                Opens::Pane(open) => open(pane(name, &next()?)?),
+                Opens::Target(open) => open(target(name, &next()?)?),
+            };
+            return match self.context.client == Some(c) {
+                true => local(Local::Open(open)),
+                false => later(act(c, ClientAction::Run(open.code()))),
+            };
+        }
         match name {
             // ----------------------------------------------------- finding
             "pane" | "tab" | "workspace" => {
@@ -1350,28 +1375,6 @@ impl fuxth::Host for Host<'_> {
                     _ => ClientAction::SelectWorkspace(Pick::Step(step)),
                 };
                 later(act(c, action))
-            }
-            // A client's own screens, which it opens itself: from its keys
-            // or prompt, here; asked from elsewhere, relayed for it to run.
-            name if opens(name) => {
-                let c = client(name, &next()?)?;
-                use crate::screens::Open;
-                let open = match name {
-                    "choose-tab" => Open::ChooseTab(None),
-                    "choose-workspace" => Open::ChooseWorkspace(None),
-                    "copy-mode" => Open::Copy,
-                    "command-prompt" => Open::Prompt,
-                    "choose-tab-for" => Open::ChooseTab(Some(pane(name, &next()?)?)),
-                    "choose-workspace-for" => Open::ChooseWorkspace(Some(pane(name, &next()?)?)),
-                    "choose-pane" => Open::ChoosePane(pane(name, &next()?)?),
-                    "menu" => Open::Menu(target(name, &next()?)?),
-                    "rename-prompt" => Open::Rename(target(name, &next()?)?),
-                    _ => Open::Confirm(target(name, &next()?)?),
-                };
-                match self.context.client == Some(c) {
-                    true => local(Local::Open(open)),
-                    false => later(act(c, ClientAction::Run(open.code()))),
-                }
             }
             "capture-client" => {
                 let c = client(name, &next()?)?;
