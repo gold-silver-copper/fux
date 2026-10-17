@@ -254,6 +254,18 @@ pub const CASES: &[Named] = &[
         (1, 6),
         &["\\e)0\\x0elqk\\x0fq"],
     ),
+    (
+        "ls2-locks-g2-into-gl",
+        "charset-g2-g3",
+        (1, 4),
+        &["\\e*0\\enqq\\x0fq"],
+    ),
+    (
+        "ss3-shifts-g3-for-one-character",
+        "charset-g2-g3",
+        (1, 4),
+        &["\\e+0\\eOxx"],
+    ),
     ("rep-repeats-the-last-glyph", "repeat", (1, 8), &["-\\e[4b"]),
     (
         "rep-after-rep-repeats-nothing",

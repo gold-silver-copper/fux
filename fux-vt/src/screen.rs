@@ -97,25 +97,56 @@ impl Printed {
 }
 
 /// The character sets a program designates and shifts between (ECMA-35;
-/// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 and G1, each ASCII or
-/// DEC Special Graphics, and which of them is in GL, G1 after SO and G0
-/// after SI. G2, G3 and the national sets are not kept: a set other than
-/// Special Graphics is ASCII, as xterm reads one in UTF-8.
+/// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 to G3, each ASCII or
+/// DEC Special Graphics, the one in GL, and the one a single shift invokes
+/// for the next character. The national sets are not kept: a set other
+/// than Special Graphics is ASCII, as xterm reads one in UTF-8.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Charsets {
-    g0_graphics: bool,
-    g1_graphics: bool,
-    shifted: bool,
+    /// Which sets are DEC Special Graphics, a bit each (`Set::bit`).
+    graphics: u8,
+    /// The set in GL: G0 after SI, G1 after SO, G2 after LS2, G3 after LS3.
+    gl: Set,
+    /// G2 after SS2, G3 after SS3: the set of the next graphic character.
+    single: Option<Set>,
+}
+
+/// One of the four sets a program designates (ECMA-35, 6.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Set {
+    #[default]
+    G0,
+    G1,
+    G2,
+    G3,
+}
+
+impl Set {
+    fn bit(self) -> u8 {
+        1 << self as u8
+    }
 }
 
 impl Charsets {
-    /// Whether printable ASCII prints as DEC Special Graphics.
+    /// Whether text takes more than printing as it is: a single shift
+    /// waits, or the set in GL is DEC Special Graphics. `ascii` asks once
+    /// a run.
     fn graphics(self) -> bool {
-        if self.shifted {
-            self.g1_graphics
+        self.single.is_some() || self.graphics & self.gl.bit() != 0
+    }
+    /// The character `raw` prints as, in the set a single shift invokes,
+    /// which it spends, or else the set in GL.
+    fn map(&mut self, raw: char) -> char {
+        let set = self.single.take().unwrap_or(self.gl);
+        if self.graphics & set.bit() != 0 {
+            special_graphics(raw)
         } else {
-            self.g0_graphics
+            raw
         }
+    }
+    /// SCS: `set` designated DEC Special Graphics, or else ASCII.
+    fn designate(&mut self, set: Set, graphics: bool) {
+        self.graphics = (self.graphics & !set.bit()) | if graphics { set.bit() } else { 0 };
     }
 }
 
@@ -1151,7 +1182,7 @@ impl Screen {
 
     pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
         let c = if self.charsets.graphics() {
-            special_graphics(raw)
+            self.charsets.map(raw)
         } else {
             raw
         };
@@ -1568,8 +1599,8 @@ impl Screen {
             10..=12 => self.linefeed()?,
             13 => g.carriage_return(),
             // SO puts G1 in GL, SI G0.
-            14 => self.charsets.shifted = true,
-            15 => self.charsets.shifted = false,
+            14 => self.charsets.gl = Set::G1,
+            15 => self.charsets.gl = Set::G0,
             _ => {}
         }
         Ok(())
@@ -1698,11 +1729,14 @@ impl Screen {
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
-        // SCS: ESC ( F designates G0 and ESC ) F G1; F `0` is DEC Special
-        // Graphics, and any other set is ASCII here.
+        // SCS: ESC ( F designates G0, ESC ) F G1, ESC * F G2 and ESC + F
+        // G3; F `0` is DEC Special Graphics, and any other set is ASCII
+        // here.
         match intermediates {
-            b"(" => self.charsets.g0_graphics = byte == b'0',
-            b")" => self.charsets.g1_graphics = byte == b'0',
+            b"(" => self.charsets.designate(Set::G0, byte == b'0'),
+            b")" => self.charsets.designate(Set::G1, byte == b'0'),
+            b"*" => self.charsets.designate(Set::G2, byte == b'0'),
+            b"+" => self.charsets.designate(Set::G3, byte == b'0'),
             b"#" if byte == b'8' => {
                 self.alignment();
                 return Ok(true);
@@ -1720,6 +1754,12 @@ impl Screen {
             b'6' | b'9' => self.index_column(byte == b'9'),
             b'7' => self.save(),
             b'8' => self.restore(),
+            // LS2 and LS3 (ECMA-35, 9.3.1): G2 or G3 into GL; SS2 and SS3
+            // (9.4): either for the next graphic character alone.
+            b'n' => self.charsets.gl = Set::G2,
+            b'o' => self.charsets.gl = Set::G3,
+            b'N' => self.charsets.single = Some(Set::G2),
+            b'O' => self.charsets.single = Some(Set::G3),
             b'=' => self.modes.set(Mode::ApplicationKeypad, true),
             b'>' => self.modes.set(Mode::ApplicationKeypad, false),
             // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling

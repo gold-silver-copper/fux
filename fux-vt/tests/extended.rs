@@ -314,7 +314,7 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
     let mut p = Parser::new(Size::new(5, 20)?, 0)?;
     let record = run(
         &mut p,
-        b"\x1b[>1;2m\x1b[12h\x1b[?1u\x1b*B\x1bn\x1b[2;3:4^\x1b[H\x1b[?25l\x1b[1m\x1b7",
+        b"\x1b[>1;2m\x1b[12h\x1b[?1u\x1b-A\x1b~\x1b[2;3:4^\x1b[H\x1b[?25l\x1b[1m\x1b7",
     )?;
     assert_eq!(
         record.unhandled,
@@ -323,9 +323,10 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
             // SRM: of the ANSI modes, IRM and LNM alone are kept.
             "CSI 12h",
             "CSI ?1u",
-            // G2 is not kept: only G0 and G1 are designated.
-            "ESC *B",
-            "ESC n",
+            // The 96-character sets are not designated, nor shifted into
+            // GR, which UTF-8 leaves no room for.
+            "ESC -A",
+            "ESC ~",
             "CSI 2;3:4^"
         ]
     );

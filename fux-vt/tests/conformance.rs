@@ -366,6 +366,24 @@ fn row(cols: u16, bytes: &[u8]) -> Result<String> {
     Ok(lines(&p).into_iter().next().unwrap_or_default())
 }
 
+/// G2 and G3 (ECMA-35, 6.3 and 9; DEC STD 070, ch. 3): `ESC * F` and
+/// `ESC + F` designate them, `0` DEC Special Graphics; LS2 (`ESC n`) and
+/// LS3 (`ESC o`) invoke them into GL until another shift, SI or SO among
+/// them; SS2 (`ESC N`) and SS3 (`ESC O`) invoke G2 or G3 for the next
+/// graphic character alone. DECSC saves them with G0 and G1, and RIS
+/// designates ASCII again.
+#[test]
+fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
+    assert_eq!(row(6, b"\x1b*0\x1bnqq\x0fq")?, "\u{2500}\u{2500}q");
+    assert_eq!(row(6, b"\x1b+0\x1boxx\x0ex")?, "\u{2502}\u{2502}x");
+    assert_eq!(row(6, b"\x1b*0\x1bNqq")?, "\u{2500}q");
+    assert_eq!(row(6, b"\x1b+0\x1bOxx")?, "\u{2502}x");
+    assert_eq!(row(6, b"\x1b(0\x1b*B\x1bNqq")?, "q\u{2500}");
+    assert_eq!(row(6, b"\x1b*0\x1bn\x1b7\x0f\x1b8q")?, "\u{2500}");
+    assert_eq!(row(6, b"\x1b*0\x1bn\x1bcq")?, "q");
+    Ok(())
+}
+
 /// SCS (VT520 manual, Table 5-13 and 5-14; ECMA-35): `ESC ( 0` designates
 /// DEC Special Graphics as G0, `ESC ) 0` as G1, `ESC ( B` ASCII; SO puts
 /// G1 in GL and SI G0. `TERM=xterm-256color` draws boxes with them

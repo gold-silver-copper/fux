@@ -425,6 +425,21 @@ fn charset(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// `charset`'s pieces with G2 and G3: designated (ESC * 0, ESC + 0),
+/// shifted into GL (LS2, LS3), or for one character (SS2, SS3).
+fn charset_g2_g3(r: &mut Rng) -> Vec<u8> {
+    if r.chance(50) {
+        return charset(r);
+    }
+    pick(
+        r,
+        &[
+            "\x1b*0", "\x1b*B", "\x1b+0", "\x1b+B", "\x1bn", "\x1bo", "\x1bN", "\x1bO",
+        ],
+    )
+    .into_bytes()
+}
+
 fn repeat(r: &mut Rng) -> Vec<u8> {
     format!("{}{}", pick(r, &["-", "=", "界", ""]), csi(r, &["b"])).into_bytes()
 }
@@ -871,6 +886,20 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Agree,
         ratty_only: false,
         generate: charset,
+    },
+    Family {
+        name: "charset-g2-g3",
+        about: "G2 and G3: designated, locked into GL (LS2, LS3) and single-shifted (SS2, SS3), among G0 and G1",
+        status: Status::Decided {
+            why: "G2 and G3 are designated, locked into GL by LS2 and LS3 and invoked for one character by SS2 and SS3, as ECMA-35 (6.3, 9.3 and 9.4) says and xterm does, as fux-vt does; Ghostty, alacritty, libvterm, avt and wezterm keep none of them, and outvote fux-vt (`replay --engines all --size 1x1 '\\e*0\\enq'`)",
+            by: XTERM,
+            authority: Authority::Standard {
+                section: "ECMA-35, 6.3 and 9",
+                test: "conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character",
+            },
+        },
+        ratty_only: false,
+        generate: charset_g2_g3,
     },
     Family {
         name: "repeat",
