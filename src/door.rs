@@ -165,15 +165,12 @@ fn answer(dir: &Path, name: &str) -> io::Result<UnixStream> {
     let name = knock_name(name).ok_or_else(|| io::Error::other("not a knock"))?;
     let paths = fifos(dir, name);
     let [up_path, down_path] = &paths;
-    for path in &paths {
-        if !ours_fifo(&std::fs::symlink_metadata(path)?) {
-            return Err(io::Error::other("not a FIFO of this user's"));
-        }
-    }
+    // Checked as they were opened: no symbolic link is followed, and
+    // opening anything else the private directory may hold changes nothing.
     let up = open_fifo(up_path, true, false)?;
     let mut down = open_fifo(down_path, false, true)?;
     if !ours_fifo(&up.metadata()?) || !ours_fifo(&down.metadata()?) {
-        return Err(io::Error::other("a FIFO changed as it was opened"));
+        return Err(io::Error::other("not a FIFO of this user's"));
     }
     remove(&paths);
     fuxix::io::set_nonblocking(&down, false)?;
