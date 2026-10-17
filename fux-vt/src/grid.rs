@@ -353,10 +353,9 @@ impl Grid {
 
     /// Whether a screen of `size` is more than a grid holds.
     pub fn check_size(size: Size) -> Result<(), Error> {
-        if size.cells() > MAX_CELLS {
-            return Err(Error::Capacity);
-        }
-        Ok(())
+        (size.cells() <= MAX_CELLS)
+            .then_some(())
+            .ok_or(Error::Capacity)
     }
 
     pub fn new(
