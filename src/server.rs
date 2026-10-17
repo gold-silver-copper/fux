@@ -152,9 +152,16 @@ enum Wake {
     Restore,
 }
 
-/// A client's connection: its socket, and where it is in its life.
+/// What a connection comes over: a socket, or a door's two FIFOs, which
+/// carry no descriptor (`crate::door`).
+enum Wire {
+    Socket(UnixStream),
+    Door(crate::door::Fifos),
+}
+
+/// A client's connection: its wire, and where it is in its life.
 struct Conn {
-    stream: UnixStream,
+    wire: Wire,
     decoder: Decoder,
     out: ByteQueue,
     stage: Stage,
@@ -375,9 +382,9 @@ impl Attached {
 }
 
 impl Conn {
-    fn new(stream: UnixStream, grant: Option<PathBuf>) -> Conn {
+    fn new(wire: Wire, grant: Option<PathBuf>) -> Conn {
         Conn {
-            stream,
+            wire,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
             stage: Stage::Hello(None),
@@ -505,7 +512,11 @@ impl Conn {
     /// for its terminal is written too.
     fn flush(&mut self, session: &mut Session) {
         self.flush_tty(session);
-        if !write_out(&self.stream, &mut self.out) {
+        let written = match &self.wire {
+            Wire::Socket(stream) => write_out(stream, &mut self.out),
+            Wire::Door(fifos) => write_out(&fifos.down, &mut self.out),
+        };
+        if !written {
             self.enter(session, Stage::Dead);
         }
     }
@@ -1095,7 +1106,18 @@ impl Server {
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
-            add(PollFd::new(&conn.stream, flags), Slot::Conn(i));
+            match &conn.wire {
+                Wire::Socket(stream) => add(PollFd::new(stream, flags), Slot::Conn(i)),
+                // Each FIFO for its own way, and for its end.
+                Wire::Door(fifos) => {
+                    if flags.intersects(PollFlags::IN) {
+                        add(PollFd::new(&fifos.up, PollFlags::IN), Slot::Conn(i));
+                    }
+                    if flags.intersects(PollFlags::OUT) {
+                        add(PollFd::new(&fifos.down, PollFlags::OUT), Slot::Conn(i));
+                    }
+                }
+            }
             // Polled for its hangup, and for room to write what waits.
             if let Stage::Attached(attached) = &conn.stage
                 && let Some(tty) = &attached.tty
@@ -1320,7 +1342,7 @@ impl Server {
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
-                    self.conns.push(Conn::new(stream, through));
+                    self.conns.push(Conn::new(Wire::Socket(stream), through));
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 // A peer that gave up before it was accepted: the next may
@@ -1357,10 +1379,9 @@ impl Server {
         }
     }
 
-    /// Takes the connections knocks at the door bring: each is the server's
-    /// end of a pair relayed to a client's FIFOs, whose owner the door
-    /// checked, as the socket's peer check does. With `grant`, the door
-    /// beside that grant's socket.
+    /// Takes the connections knocks at the door bring: each a client's two
+    /// FIFOs, whose owner the door checked, as the socket's peer check
+    /// does. With `grant`, the door beside that grant's socket.
     fn open_door(&mut self, grant: usize) {
         let Some((
             Listening {
@@ -1371,10 +1392,9 @@ impl Server {
         else {
             return;
         };
-        for stream in door.knocks() {
-            if stream.set_nonblocking(true).is_ok() {
-                self.conns.push(Conn::new(stream, through.clone()));
-            }
+        for fifos in door.knocks() {
+            self.conns
+                .push(Conn::new(Wire::Door(fifos), through.clone()));
         }
     }
 
@@ -1458,7 +1478,13 @@ impl Server {
                 break false;
             };
             // A client may send its terminal with its `Attach`.
-            match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
+            let got = match &conn.wire {
+                Wire::Socket(stream) => fuxix::socket::recv_with_fd(stream, &mut self.read_buffer),
+                Wire::Door(fifos) => {
+                    fuxix::io::read(&fifos.up, &mut self.read_buffer).map(|n| (n, None))
+                }
+            };
+            match got {
                 Ok((0, _)) => break true,
                 Ok((n, fd)) => {
                     if let (
@@ -1853,7 +1879,7 @@ mod tests {
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
         let (tty, far) = UnixStream::pair().map_err(|e| e.to_string())?;
         tty.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let mut conn = Conn::new(stream, None);
+        let mut conn = Conn::new(Wire::Socket(stream), None);
         let tty = TakenTerminal::new(OwnedFd::from(tty));
         conn.stage = Stage::Attached(Box::new(Attached::new(client, Some(tty))));
         Ok((session, conn, peer, far))
