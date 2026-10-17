@@ -93,13 +93,21 @@ pub struct Caller {
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
     pub env: Vec<(String, String)>,
-    /// It brings back a saved session: the ids asked for are the ones it
-    /// had, and programs wait for `respawn`.
-    pub restoring: bool,
-    /// The socket of the grant it came through: what panes it starts are
-    /// told to reach the server by, so that what runs there is held to the
-    /// grant too.
-    pub grant: Option<PathBuf>,
+    pub came: Came,
+}
+
+/// How a caller on the CLI came to the server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Came {
+    /// By the server's own socket.
+    #[default]
+    Socket,
+    /// By the socket of a grant: what panes it starts are told to reach
+    /// the server by, so that what runs there is held to the grant too.
+    Grant(PathBuf),
+    /// It is the server's own restore of a saved session: the ids asked for
+    /// are the ones it had, and programs wait for `respawn`.
+    Restore,
 }
 
 /// The server whose pane a caller on the CLI runs in, as its
@@ -918,11 +926,11 @@ impl Session {
     /// it for one that sent none (a test, a client of no terminal).
     fn starting_for(&self, origin: &Origin) -> Starting {
         let (env, socket, restoring) = match origin {
-            Origin::Cli(caller) => (
-                caller.env.as_slice(),
-                caller.grant.clone(),
-                caller.restoring,
-            ),
+            Origin::Cli(caller) => match &caller.came {
+                Came::Socket => (caller.env.as_slice(), None, false),
+                Came::Grant(socket) => (caller.env.as_slice(), Some(socket.clone()), false),
+                Came::Restore => (caller.env.as_slice(), None, true),
+            },
             Origin::Client(client) => (
                 self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
                 None,
@@ -3110,7 +3118,7 @@ impl Session {
     /// workspace has it. Through a grant revoked, nothing.
     fn scope(&mut self, origin: &Origin) -> Result<Option<String>, Error> {
         let Origin::Cli(Caller {
-            grant: Some(socket),
+            came: Came::Grant(socket),
             ..
         }) = origin
         else {

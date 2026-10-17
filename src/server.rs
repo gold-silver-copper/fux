@@ -14,7 +14,7 @@ use crate::protocol::{
     ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer, Within};
+use crate::session::{Begun, Caller, Came, Dying, Origin, Outgoing, Session, Timer, Within};
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
@@ -1617,10 +1617,18 @@ impl Server {
             return;
         };
         // A restore is the server's own, which no grant's socket makes.
-        let restoring = context.restoring && restore_runs && conn.grant.is_none();
+        let came = match conn.grant.clone() {
+            Some(socket) => Came::Grant(socket),
+            None if context.restoring && restore_runs => Came::Restore,
+            None => Came::Socket,
+        };
         // While a saved session comes back, other requests wait for it,
         // so that none takes an id it asks for.
-        if restore_runs && !restoring {
+        let held = match came {
+            Came::Restore => false,
+            Came::Socket | Came::Grant(_) => restore_runs,
+        };
+        if held {
             conn.stage = Stage::Held(Box::new(Request { command, context }));
             return;
         }
@@ -1692,8 +1700,7 @@ impl Server {
                 within,
                 cwd,
                 env,
-                grant: conn.grant.clone(),
-                restoring,
+                came,
             }),
         };
         match session.begin(command, &origin) {
