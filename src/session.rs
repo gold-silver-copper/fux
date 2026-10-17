@@ -2281,10 +2281,7 @@ impl Session {
                 Ok(Reply::default())
             }
             Command::DumpLayout { target } => {
-                let only = match target {
-                    Some(target) => Some(self.there(*target)?),
-                    None => None,
-                };
+                let only = target.map(|t| self.there(t)).transpose()?;
                 Ok(self.dump_layout(only, false).into())
             }
             &Command::SendMouse {
