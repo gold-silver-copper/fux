@@ -204,8 +204,6 @@ pub enum Error {
     IdTaken(AnyRef),
     NoClient(ClientId),
     NoBuffer(usize),
-    /// The client focuses no pane.
-    NoPaneToCopy,
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
     OnlyOne(Kind),
     AtEnd(Kind),
@@ -219,8 +217,6 @@ pub enum Error {
     SelectionTooLarge,
     // A name that cannot be given.
     NameTaken(String),
-    /// `run` with a name a tab has: `str NAME tab` would not know which, so the program is not started. The tab and its panes.
-    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
     /// Any other failure, made in one place and told apart by its code
@@ -245,7 +241,7 @@ impl Error {
     pub fn code(&self) -> Code {
         match self {
             Error::NoWorkspace(_) => Code::NoWorkspace,
-            Error::NoPane(_) | Error::NoPaneToCopy => Code::NoPane,
+            Error::NoPane(_) => Code::NoPane,
             Error::NoTab(_) => Code::NoTab,
             Error::NoPaneGiven | Error::NoWorkspaceGiven => Code::NoTarget,
             Error::IdTaken(_) => Code::Id,
@@ -254,7 +250,7 @@ impl Error {
             Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoNeighbor { .. } => Code::NothingThere,
             Error::NoRows | Error::SelectionTooLarge => Code::Selection,
             Error::NameReadAsTarget(_) => Code::Lang(Lang::BadName),
-            Error::NameTaken(_) | Error::TabNameTaken(..) => Code::NameTaken,
+            Error::NameTaken(_) => Code::NameTaken,
             Error::Failed { code, .. } => *code,
         }
     }
@@ -277,7 +273,6 @@ impl std::fmt::Display for Error {
             ),
             Error::NoClient(id) => write!(f, "no client {id}"),
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Error::NoPaneToCopy => f.write_str("no pane to copy from"),
             Error::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
             Error::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
             Error::NoNeighbor { from, direction } => {
@@ -286,16 +281,6 @@ impl std::fmt::Display for Error {
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Error::TabNameTaken(name, tabs, panes) => {
-                let tabs_then_panes = (tabs.iter().map(|t| AnyRef::Tab(*t)))
-                    .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
-                let ids = joined(tabs_then_panes, " ");
-                let kills = joined(tabs, " tab kill`, `fux str ");
-                write!(
-                    f,
-                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
-                )
-            }
             Error::NameReadAsTarget(name) => write!(
                 f,
                 "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
@@ -3296,14 +3281,17 @@ fn no_tab_named<'a>(
     if tabs.is_empty() {
         return Ok(());
     }
-    let panes = tabs
-        .iter()
-        .flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
-    let panes = panes.collect();
-    Err(Error::TabNameTaken(
-        name.to_owned(),
-        tabs.iter().map(|t| t.id).collect(),
-        panes,
+    // `run` with such a name: `str NAME tab` would not know which, so the
+    // program is not started. The tabs, then their panes.
+    let panes = (tabs.iter()).flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
+    let ids = (tabs.iter().map(|t| AnyRef::Tab(t.id))).chain(panes.map(AnyRef::Pane));
+    let ids = joined(ids, " ");
+    let kills = joined(tabs.iter().map(|t| t.id), " tab kill`, `fux str ");
+    Err(fail(
+        Code::NameTaken,
+        format!(
+            "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
+        ),
     ))
 }
 
