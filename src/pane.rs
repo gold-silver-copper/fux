@@ -242,9 +242,8 @@ impl Title {
     pub fn as_str(&self) -> &str {
         &self.now
     }
-    /// The title a program set, without control characters, at most 256
-    /// characters of it.
-    /// Sets it from what a program sent; whether it changed.
+    /// Sets it from what a program sent, without control characters, at
+    /// most 256 characters of it; whether it changed.
     fn set(&mut self, title: &[u8]) -> bool {
         let text = String::from_utf8_lossy(title);
         self.become_(text.chars().filter(|c| !c.is_control()).take(256).collect())
@@ -415,8 +414,6 @@ impl Process {
     }
 }
 
-/// A digest of what `screen` shows: its glyphs, their attributes, and the
-/// cursor.
 /// What a pane runs, which says what its program's exit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runs {
