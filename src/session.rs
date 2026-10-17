@@ -1315,8 +1315,10 @@ impl Session {
 
     // ------------------------------------------------------------- clients
 
-    /// A client attaches, viewing `workspace` or the first one.
-    pub fn attach(
+    /// A client attaches, viewing `workspace` or the first one (the tests'
+    /// terminal client).
+    #[cfg(test)]
+    pub(crate) fn attach(
         &mut self,
         rows: u16,
         cols: u16,

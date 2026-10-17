@@ -205,7 +205,10 @@ impl Run {
     }
 
     fn attach(&mut self, rows: u16, cols: u16) {
-        if let Ok(id) = self.s.attach(rows, cols, None) {
+        if let Ok(id) = self
+            .s
+            .attach_as(fux::view::ClientKind::Terminal, rows, cols, None)
+        {
             self.keys.insert(id, Keys::default());
         }
     }

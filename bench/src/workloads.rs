@@ -396,7 +396,9 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     };
     let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
     s.start().map_err(|e| e.to_string())?;
-    let c = s.attach(41, 120, None).map_err(|e| e.to_string())?;
+    let c = s
+        .attach_as(fux::view::ClientKind::Terminal, 41, 120, None)
+        .map_err(|e| e.to_string())?;
     let pane = s.panes.keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
     for r in recordings.iter().take(8) {
@@ -470,7 +472,12 @@ fn paint(
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
     let c = s
-        .attach(first.rows.saturating_add(1), first.cols, None)
+        .attach_as(
+            fux::view::ClientKind::Terminal,
+            first.rows.saturating_add(1),
+            first.cols,
+            None,
+        )
         .map_err(|e| e.to_string())?;
     if split {
         let split = fux::command::Command::Split {
