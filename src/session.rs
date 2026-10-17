@@ -2208,11 +2208,10 @@ impl Session {
                 ref env,
                 ref argv,
             } => {
-                let id = self.pane(target)?.id;
-                self.respawn(id, kill, (env.as_slice(), argv), &starting)?;
+                self.respawn(target, kill, (env.as_slice(), argv), &starting)?;
                 Ok(Reply {
-                    ids: vec![AnyRef::Pane(id)],
-                    ..format!("{id}\n").into()
+                    ids: vec![AnyRef::Pane(target)],
+                    ..format!("{target}\n").into()
                 })
             }
             Command::Notify { target, text } => {
@@ -2400,10 +2399,9 @@ impl Session {
                     Here::Client(client, _) => vec![client],
                     Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
                 };
+                // Its tab found (by `split_size`) before the program
+                // starts, which nothing can then leave running.
                 let size = self.split_size(target, axis, here)?;
-                // Its tab found before the program starts, which nothing
-                // can then leave running.
-                tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
                 let start = match run {
                     true => Start::Program(cmd, env.as_slice()),
@@ -2483,8 +2481,7 @@ impl Session {
                 self.swap(source, other);
                 Ok(Reply::default())
             }
-            &Command::ResizePane { target, by } => {
-                let pane = self.pane(target)?.id;
+            &Command::ResizePane { target: pane, by } => {
                 let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
                 let area = self.reference_area(tab, here);
                 match by {
