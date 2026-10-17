@@ -249,18 +249,15 @@ pub(crate) fn private_directory(socket: &SocketPath, create: bool) -> Result<(),
     above
         .canonicalize()
         .map_err(failed("socket directory parent ", above))?;
-    match fs::symlink_metadata(directory) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
-            match DirBuilder::new().mode(0o700).create(directory) {
-                // Set explicitly: the umask must not decide who reaches the socket.
-                Ok(()) => fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
-                    .map_err(io(directory))?,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(failed("creating ", directory)(error)),
-            }
+    if create {
+        match DirBuilder::new().mode(0o700).create(directory) {
+            // Set explicitly: the umask must not decide who reaches the socket.
+            Ok(()) => fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                .map_err(io(directory))?,
+            // Whatever is there (a symbolic link too) is checked below.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(failed("creating ", directory)(error)),
         }
-        Err(error) => return Err(io(directory)(error)),
-        Ok(_) => {}
     }
     let meta = fs::symlink_metadata(directory).map_err(io(directory))?;
     let mode = meta.permissions().mode();
