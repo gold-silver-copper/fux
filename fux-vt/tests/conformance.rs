@@ -380,8 +380,11 @@ fn dec_special_graphics_draw_lines() -> Result {
 /// included) came after it, and so does fux-vt. After a cluster, xterm
 /// repeats the character that took the cell, without its marks, where
 /// ECMA-48 would repeat the last mark: fux-vt departs from the standard
-/// with xterm (README, "Departures from the references"). Expected values
-/// are xterm's (`fux-vt-compare replay --engines all --size 2x8`).
+/// with xterm (README, "Departures from the references"). A wide glyph a
+/// one-column screen drops is still the preceding graphic character, so
+/// REP repeats it, dropped again. Expected values are xterm's
+/// (`fux-vt-compare replay --engines all --size 2x8`; `--size 1x1
+/// '#\u{754c}\e[4b'`).
 #[test]
 fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(row(8, b"-\x1b[4b")?, "-----");
@@ -392,6 +395,7 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(row(8, "e\u{301}\x1b[2b".as_bytes())?, "e\u{301}ee");
     assert_eq!(row(8, b"\x1b(0q\x1b[2b")?, "\u{2500}\u{2500}\u{2500}");
     assert_eq!(lines(&run(2, 8, b"abcdefg\x1b[3b")?), ["abcdefgg", "gg"]);
+    assert_eq!(lines(&run(1, 1, "#界\x1b[4b".as_bytes())?), [""]);
     // Nothing to repeat: at the start, or after a control, a sequence or a
     // string, REP's own included.
     assert_eq!(row(8, b"\x1b[2b")?, "");

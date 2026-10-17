@@ -1163,7 +1163,9 @@ impl Screen {
         };
         // Nor where it fits nowhere, but for a pending wrap, which xterm
         // still carries out (`replay --engines xterm --size 3x1 'a\u{754c}'`).
+        // It is still the preceding graphic character, which REP repeats.
         if width > self.grid().size().cols() {
+            self.repeat = Some(raw);
             if self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap) {
                 let end = self.grid().line_end();
                 self.wrap(end, 0, width)?;
