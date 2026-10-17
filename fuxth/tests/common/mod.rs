@@ -225,6 +225,29 @@ pub struct Naive {
     pub printed: Vec<String>,
     /// The program's lines a run reached.
     pub reached: HashSet<u32>,
+    /// The lines whose step was gone through without failing, at least
+    /// once.
+    finished: HashSet<u32>,
+    /// The lines of the calls under way, the outermost first: a failure
+    /// leaves them as they were when it happened.
+    calls: Vec<u32>,
+}
+
+/// Where a naive run went: the lines it reached, and, for one that failed,
+/// the steps it failed in.
+pub struct Trace {
+    pub reached: HashSet<u32>,
+    finished: HashSet<u32>,
+    /// The line it failed at, and the lines of the calls it was inside.
+    failing: Vec<u32>,
+}
+
+impl Trace {
+    /// Whether every time the run reached `line` it failed there: in that
+    /// step, or in a word it calls, never going past it.
+    pub fn fails_at(&self, line: u32) -> bool {
+        self.failing.contains(&line) && !self.finished.contains(&line)
+    }
 }
 
 fn is_number(text: &str) -> bool {
@@ -296,34 +319,51 @@ impl Naive {
             steps: 0,
             printed: Vec::new(),
             reached: HashSet::new(),
+            finished: HashSet::new(),
+            calls: Vec::new(),
         }
     }
 
     /// Runs `text` after the standard library, on a thread with room for
     /// its Rust recursion: a call or block is a Rust call here.
-    pub fn run(text: &str) -> (Ended, HashSet<u32>) {
+    pub fn run(text: &str) -> (Ended, Trace) {
         let text = text.to_owned();
         std::thread::Builder::new()
             .stack_size(512 << 20)
             .spawn(move || Naive::run_here(&text))
             .ok()
             .and_then(|thread| thread.join().ok())
-            .unwrap_or((Ended::Endless, HashSet::new()))
+            .unwrap_or_else(|| {
+                let trace = Trace {
+                    reached: HashSet::new(),
+                    finished: HashSet::new(),
+                    failing: Vec::new(),
+                };
+                (Ended::Endless, trace)
+            })
     }
 
-    fn run_here(text: &str) -> (Ended, HashSet<u32>) {
+    fn run_here(text: &str) -> (Ended, Trace) {
         let mut naive = Naive::new();
         let tokens = |source: &str, text: &str| token::source(source, text).unwrap_or_default();
         let library = tokens("stdlib.fux", STDLIB);
         let program = tokens("program", text);
-        let ended = match naive.exec(&library).and_then(|()| naive.exec(&program)) {
+        let ran = naive.exec(&library).and_then(|()| naive.exec(&program));
+        let mut failing = std::mem::take(&mut naive.calls);
+        failing.extend(ran.as_ref().err().map(|(_, line)| *line));
+        let ended = match ran {
             Ok(()) => Ended::Left(naive.printed.clone(), naive.stack.clone()),
             Err((code, _)) if code == "steps" => Ended::Endless,
             Err((code, line)) if code == "calls" => Ended::Failed("call_depth".to_owned(), line),
             Err((code, line)) if code == "full" => Ended::Failed("stack_overflow".to_owned(), line),
             Err((code, line)) => Ended::Failed(code, line),
         };
-        (ended, naive.reached)
+        let trace = Trace {
+            reached: naive.reached,
+            finished: naive.finished,
+            failing,
+        };
+        (ended, trace)
     }
 
     fn floor(&self) -> usize {
@@ -454,7 +494,9 @@ impl Naive {
                     loop {
                         self.exec(body)?;
                         self.reached.insert(until_line);
-                        if self.flag(until_line)? {
+                        let done = self.flag(until_line)?;
+                        self.finished.insert(until_line);
+                        if done {
                             break;
                         }
                     }
@@ -495,6 +537,7 @@ impl Naive {
                     i = i.saturating_add(1);
                 }
             }
+            self.finished.insert(at);
         }
         Ok(())
     }
@@ -515,8 +558,13 @@ impl Naive {
                 return Err(err("calls", at));
             }
             self.frames.push(HashMap::new());
+            self.calls.push(at);
             let ran = self.exec(&body);
             self.frames.pop();
+            // A failure keeps the calls it happened inside.
+            if ran.is_ok() {
+                self.calls.pop();
+            }
             return ran;
         }
         self.builtin(text, at)

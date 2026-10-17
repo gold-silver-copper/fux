@@ -40,14 +40,14 @@ fn a_corpus_ends_the_same_every_way() -> std::io::Result<()> {
                 }
             }
         }
-        let (naive, reached) = Naive::run(&text);
+        let (naive, trace) = Naive::run(&text);
         let limit = |e: &Ended| matches!(e, Ended::Failed(c, _) if c == "call_depth" || c == "stack_overflow");
         match (&whole, &naive) {
             (Ended::Endless, _) | (_, Ended::Endless) => {}
             (a, b) if limit(a) || limit(b) => {}
             (Ended::Refused(code, line), naive) => {
-                let failed = matches!(naive, Ended::Failed(..));
-                if reached.contains(line) && !failed {
+                let failed = matches!(naive, Ended::Failed(..)) && trace.fails_at(*line);
+                if trace.reached.contains(line) && !failed {
                     wrong.push(format!(
                         "{name}: refused {code} at {line}, but the naive run {naive:?}"
                     ));

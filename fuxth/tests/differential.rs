@@ -34,7 +34,7 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
         let mut rng = Rng::new(seed);
         let text = program(&mut rng, seed);
         let ran = fuxth(&text, u64::MAX);
-        let (naive, reached) = Naive::run(&text);
+        let (naive, trace) = Naive::run(&text);
         // A limit each meets in its own place (a call in last place takes
         // no room in fuxth), and runs that never end, are compared no more.
         let limit = |e: &Ended| matches!(e, Ended::Failed(c, _) if c == "call_depth" || c == "stack_overflow");
@@ -42,12 +42,14 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
             (Ended::Refused(code, line), naive) => {
                 seen.refused = seen.refused.saturating_add(1);
                 // Refused only if reaching that step surely fails: there,
-                // as it says, or (a call) somewhere in what it calls.
+                // as it says, or (a call) somewhere in what it calls, the
+                // first time the run reaches it. A failure later, at
+                // another step, excuses nothing.
                 // A refusal promises the step fails, not with which code:
                 // the run may meet another mistake there first (an index
                 // past the end before the element's kind).
-                let failed_so = matches!(naive, Ended::Failed(..));
-                if reached.contains(line) && !failed_so {
+                let failed_so = matches!(naive, Ended::Failed(..)) && trace.fails_at(*line);
+                if trace.reached.contains(line) && !failed_so {
                     wrong.push(format!(
                         "seed {seed}: refused {code} at line {line}, which ran: {naive:?}\n{text}"
                     ));
@@ -180,8 +182,8 @@ fn agrees(text: &str, left: &Ended) -> bool {
     match fuxth(text, u64::MAX) {
         got @ Ended::Left(..) => got == *left,
         Ended::Refused(_, line) => {
-            let (naive, reached) = Naive::run(text);
-            naive == *left && !reached.contains(&line)
+            let (naive, trace) = Naive::run(text);
+            naive == *left && !trace.reached.contains(&line)
         }
         Ended::Failed(..) | Ended::Endless => false,
     }
