@@ -3,14 +3,13 @@
 //! client and every pane's PTY.
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{Event, Snapshot, Subscription};
+use crate::events::{BACKLOG, Ending, Snapshot, Subscription};
 use crate::id::{ClientId, PaneId};
-use crate::json::Json;
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::{Leader, Pid};
 use crate::protocol::{
-    Asked, Attach, AttachedFrame, Decoder, End, Frame, Greeting, Hello, Mismatch, Reply, Role,
+    Asked, Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
     ToAttached, ToCommand, split_into,
 };
 use crate::render::{self, Grid};
@@ -433,6 +432,14 @@ impl Conn {
         if matches!(self.stage, Stage::Waiting(_) | Stage::Events(_)) {
             self.enter(session, Stage::Command);
         }
+    }
+
+    /// Ends a stream of events so, `json` or not: its last line, then its
+    /// reply.
+    fn ends(&mut self, session: &mut Session, json: bool, ending: &Ending) {
+        let line = ending.line(json);
+        split_into(line.as_bytes(), ToCommand::Stdout, &mut self.out);
+        self.answer(session, ending.reply());
     }
 
     /// Sends the connection's last frame, its client detached and its
@@ -1006,31 +1013,16 @@ impl Server {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
             };
-            let (lines, over) = subscription.told(&now, &self.session);
-            if over {
+            let (lines, gone) = subscription.told(&now, &self.session);
+            let json = subscription.json;
+            // Behind with lines to tell: they are lost, and so is the stream.
+            let lost = gone.is_none() && !lines.is_empty() && conn.out.len() > BACKLOG;
+            if !lost {
                 split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
-                let gone = Reply {
-                    end: End::Failed {
-                        status: crate::wait::GONE,
-                        code: Code::Gone,
-                        message: "everything it watched has closed".into(),
-                    },
-                    ..Reply::default()
-                };
-                conn.answer(&mut self.session, gone);
-                continue;
             }
-            if lines.is_empty() {
-                continue;
+            if let Some(ending) = gone.or(lost.then_some(Ending::Lost)) {
+                conn.ends(&mut self.session, json, &ending);
             }
-            if conn.out.len() > crate::events::BACKLOG {
-                let lost = Event::stream("lost", Vec::new()).line(subscription.json);
-                split_into(lost.as_bytes(), ToCommand::Stdout, &mut conn.out);
-                let lost = Reply::failed(Code::Lost, "events: the reader fell too far behind");
-                conn.answer(&mut self.session, lost);
-                continue;
-            }
-            split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
         }
     }
 
@@ -1137,11 +1129,8 @@ impl Server {
             // A stream says why it ends, as one of its lines, and ends as a
             // command that is done.
             if let Stage::Events(subscription) = &conn.stage {
-                let reason = Json::str(reason.clone());
-                let stopped = Event::stream("stopped", vec![("reason", reason)]);
-                let line = stopped.line(subscription.json);
-                split_into(line.as_bytes(), ToCommand::Stdout, &mut conn.out);
-                conn.answer(&mut self.session, Reply::default());
+                let json = subscription.json;
+                conn.ends(&mut self.session, json, &Ending::Stopped(reason.clone()));
             }
             let session = &mut self.session;
             match conn.stage {
@@ -1698,7 +1687,7 @@ impl Server {
             Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
-                let ready = Event::stream("ready", Vec::new()).line(subscription.json);
+                let ready = crate::events::ready(subscription.json);
                 conn.send(session, &ToCommand::Stdout(ready.as_bytes().into()));
                 conn.enter(session, Stage::Events(subscription));
             }
