@@ -429,10 +429,10 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
 /// DECSTBM (DEC STD 070, 5-25): margins with the top above the bottom
 /// are set and the cursor goes home, obeying DECOM: the first line with
 /// DECOM reset, the top margin with it set (note 1); other margins are
-/// ignored (note 2). A bottom past the screen is ignored too (note 3),
-/// but xterm takes it as the last line, and fux-vt follows xterm
-/// (README, "Departures from the references"). Expected values are
-/// xterm's (`fux-vt-compare replay --engines all --size 5x5`).
+/// ignored (note 2), and so is one with a bottom past the screen (note
+/// 3), which xterm takes as the last line. Expected values are xterm's
+/// (`fux-vt-compare replay --engines all --size 5x5`) but for note 3,
+/// where they are the standard's.
 #[test]
 fn decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set() -> Result {
     let p = run(5, 5, b"abc\x1b[3;5rX")?;
@@ -445,9 +445,13 @@ fn decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set() -> Result {
         assert_eq!(lines(&p), ["", "", "  X", "", ""], "{invalid:?}");
         assert_eq!(p.screen().scroll_region(), (1, 3), "{invalid:?}");
     }
-    let p = run(5, 5, b"\x1b[3;3H\x1b[2;99rX")?;
+    for past in [&b"\x1b[2;99r"[..], b"\x1b[2;6r"] {
+        let p = run(5, 5, &[&b"\x1b[2;4r\x1b[3;3H"[..], past, b"X"].concat())?;
+        assert_eq!(p.screen().scroll_region(), (1, 3), "{past:?}");
+        assert_eq!(lines(&p), ["", "", "  X", "", ""], "{past:?}");
+    }
+    let p = run(5, 5, b"\x1b[2;4r\x1b[2;5rX")?;
     assert_eq!(p.screen().scroll_region(), (1, 4));
-    assert_eq!(lines(&p), ["X", "", "", "", ""]);
     // An ignored DECSTBM leaves a pending wrap waiting.
     let p = run(2, 5, b"abcde\x1b[2;2rX")?;
     assert_eq!(lines(&p), ["abcde", "X"]);

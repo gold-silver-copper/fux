@@ -1803,10 +1803,9 @@ impl Screen {
 
     /// DECSLRM (`CSI Pl ; Pr s`, DEC STD 070, 5-27), while DECLRMM is set:
     /// margins with the left one left of the right are set, and the cursor
-    /// goes home, obeying DECOM; others are ignored. A right margin past
-    /// the screen is its last column, as xterm reads it, as it reads
-    /// DECSTBM (where DEC STD 070 ignores it). Out of line, as `csi` is on
-    /// every CSI's way.
+    /// goes home, obeying DECOM; others are ignored, a right margin past
+    /// the screen too (notes 2 and 3; xterm takes it as the last column).
+    /// Out of line, as `csi` is on every CSI's way.
     #[inline(never)]
     fn set_left_right_margins(&mut self, p: &Parameters) {
         let cols = self.grid().size().cols();
@@ -2410,9 +2409,8 @@ impl Screen {
                 .position(n.saturating_sub(1), p.first(1, 1).saturating_sub(1)),
             // DECSLRM (`CSI Pl ; Pr s`, DEC STD 070, 5-27) while DECLRMM is
             // set: margins with the left one left of the right are set,
-            // and the cursor goes home, obeying DECOM; others are ignored.
-            // A right margin past the screen is its last column, as xterm
-            // reads it, as it reads DECSTBM (where DEC STD 070 ignores it).
+            // and the cursor goes home, obeying DECOM; others are ignored,
+            // a right margin past the screen too (notes 2 and 3).
             b's' if self.mode(Mode::LeftRightMargins) => self.set_left_right_margins(p),
             // SCOSC and SCORC share DECSC's slot and, like DECSC, save and
             // restore the attributes with the position.
@@ -2506,8 +2504,8 @@ impl Screen {
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
             // bottom are set, and the cursor goes home, obeying DECOM;
-            // others are ignored. A bottom past the screen is the last
-            // line, as xterm reads it, where DEC STD 070 ignores it.
+            // others are ignored, a bottom past the screen too (notes 2
+            // and 3; xterm takes it as the last line).
             b'r' => {
                 let lines = self.grid().size().lines();
                 let bottom = p.first(1, lines.end()).saturating_sub(1);
