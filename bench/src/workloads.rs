@@ -480,7 +480,7 @@ fn paint(
             cwd: None,
             env: Vec::new(),
             run: false,
-            ids: Vec::new(),
+            id: None,
             then: None,
         };
         s.run_command(
@@ -665,7 +665,7 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
             cwd: None,
             env: Vec::new(),
             run: false,
-            ids: Vec::new(),
+            id: None,
             then: None,
         };
         s.run_command(

@@ -6,7 +6,7 @@ use crate::command::{
     AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
     PanePick, PaneResize, Percent, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
 };
-use crate::id::{ClientId, PaneId, TabId, WsId};
+use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -382,6 +382,11 @@ impl Wire for Percent {
 wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To(axis, extent) });
 wire_enum!(Resized, "resized" { 0 => Tabs(t, size), 1 => Client(c, size) });
 wire_enum!(Input, "input" { 0 => Key(k), 1 => Text(t), 2 => Paste(t) });
+wire_struct!(Wanted {
+    pane,
+    tab,
+    workspace,
+});
 wire_struct!(CaptureView {
     full,
     join,
@@ -426,7 +431,7 @@ wire_enum!(Command, "command" {
     1 => KillServer { force },
     2 => NewWorkspace { name, cmd, size, cwd, env, ids },
     3 => NewTab { target, name, cmd, size, cwd, env, ids },
-    4 => Split { axis, target, cmd, cwd, env, run, ids, then },
+    4 => Split { axis, target, cmd, cwd, env, run, id, then },
     5 => Run { workspace, name, size, cwd, env, argv, log, ids, then },
     6 => Respawn { target, kill, env, argv, then },
     7 => Notify { target, text },

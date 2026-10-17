@@ -111,7 +111,7 @@ pub struct Opts {
     pub typed: Option<String>,
     pub axis: Option<Axis>,
     pub place: Option<WsRef>,
-    pub ids: Vec<AnyRef>,
+    pub ids: crate::id::Wanted,
     pub log: Option<String>,
     pub kill: bool,
     pub waits: Waits,

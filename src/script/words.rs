@@ -714,9 +714,16 @@ impl fuxth::Host for Host<'_> {
                     "id" => {
                         let text = string(name, &v)?;
                         let bad = format!("{text:?} is not %N, @N or +N");
-                        built
-                            .ids
-                            .push(text.parse().map_err(|()| fail(Code::BadValue, bad))?);
+                        let ids = &mut built.ids;
+                        let given = match text.parse().map_err(|()| fail(Code::BadValue, bad))? {
+                            AnyRef::Pane(id) => ids.pane.replace(id).is_some(),
+                            AnyRef::Tab(id) => ids.tab.replace(id).is_some(),
+                            AnyRef::Workspace(id) => ids.workspace.replace(id).is_some(),
+                        };
+                        if given {
+                            let why = format!("id {text}: one of its kind is given already");
+                            return Err(fail(Code::Id, why));
+                        }
                     }
                     "log-to" => built.log = Some(string(name, &v)?),
                     _ => built.history = Some(count(name, &v)?),
@@ -832,6 +839,14 @@ impl fuxth::Host for Host<'_> {
             "split" => {
                 let p = pane(name, &next()?)?;
                 let built = finished(name, next()?)?;
+                let crate::id::Wanted {
+                    pane: id,
+                    tab: None,
+                    workspace: None,
+                } = built.ids
+                else {
+                    return Err(fail(Code::Id, "split makes a pane alone: its id is %N"));
+                };
                 let run = !built.argv.is_empty();
                 let cmd = if run {
                     built.argv
@@ -846,7 +861,7 @@ impl fuxth::Host for Host<'_> {
                         cwd: built.cwd,
                         env: built.env,
                         run,
-                        ids: built.ids,
+                        id,
                         then: wait(&built.waits, false, self.settle),
                     },
                     Then::Handle(Kind::Pane),

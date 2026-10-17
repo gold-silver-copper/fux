@@ -90,46 +90,63 @@ pub(crate) struct Ids {
     wanted: Wanted,
 }
 
-/// The next id of each kind, as asked for.
+/// The ids a command asks to make its workspace, tab and pane with
+/// (`id`, as saved sessions give them): at most one of each kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Wanted {
-    pane: Option<u32>,
-    tab: Option<u32>,
-    workspace: Option<u32>,
+pub struct Wanted {
+    pub pane: Option<PaneId>,
+    pub tab: Option<TabId>,
+    pub workspace: Option<WsId>,
+}
+
+impl Wanted {
+    /// Each id it asks for.
+    pub fn each(&self) -> impl Iterator<Item = AnyRef> {
+        let pane = self.pane.map(AnyRef::Pane);
+        let tab = self.tab.map(AnyRef::Tab);
+        [pane, tab, self.workspace.map(AnyRef::Workspace)]
+            .into_iter()
+            .flatten()
+    }
 }
 
 impl Ids {
     pub(crate) fn pane(&mut self) -> Result<PaneId, Error> {
-        take(&mut self.pane, &mut self.wanted.pane, "pane").map(PaneId)
+        let wanted = self.wanted.pane.take().map(PaneId::number);
+        take(&mut self.pane, wanted, "pane").map(PaneId)
     }
     pub(crate) fn tab(&mut self) -> Result<TabId, Error> {
-        take(&mut self.tab, &mut self.wanted.tab, "tab").map(TabId)
+        let wanted = self.wanted.tab.take().map(TabId::number);
+        take(&mut self.tab, wanted, "tab").map(TabId)
     }
     pub(crate) fn workspace(&mut self) -> Result<WsId, Error> {
-        take(&mut self.workspace, &mut self.wanted.workspace, "workspace").map(WsId)
+        let wanted = self.wanted.workspace.take().map(WsId::number);
+        take(&mut self.workspace, wanted, "workspace").map(WsId)
     }
     pub(crate) fn client(&mut self) -> Result<ClientId, Error> {
-        take(&mut self.client, &mut None, "client").map(ClientId)
+        take(&mut self.client, None, "client").map(ClientId)
     }
 
-    /// The next id of its kind is `id`: refused if one as high was ever
-    /// given, which would give it twice, unless `again` (a restore, whose
-    /// ids these were, and are free).
-    pub(crate) fn want(&mut self, id: AnyRef, again: bool) -> Result<(), Error> {
-        let (last, wanted, n) = match id {
-            AnyRef::Pane(PaneId(n)) => (self.pane, &mut self.wanted.pane, n),
-            AnyRef::Tab(TabId(n)) => (self.tab, &mut self.wanted.tab, n),
-            AnyRef::Workspace(WsId(n)) => (self.workspace, &mut self.wanted.workspace, n),
-        };
-        if n == 0 || (n <= last && !again) {
-            return Err(Error::IdTaken(id));
+    /// The next ids made are `wanted`'s: refused if one as high as any was
+    /// ever given, which would give it twice, unless `again` (a restore,
+    /// whose ids these were, and are free).
+    pub(crate) fn want(&mut self, wanted: Wanted, again: bool) -> Result<(), Error> {
+        for id in wanted.each() {
+            let (last, n) = match id {
+                AnyRef::Pane(PaneId(n)) => (self.pane, n),
+                AnyRef::Tab(TabId(n)) => (self.tab, n),
+                AnyRef::Workspace(WsId(n)) => (self.workspace, n),
+            };
+            if n == 0 || (n <= last && !again) {
+                return Err(Error::IdTaken(id));
+            }
+            // An id far ahead would leave none after it: the ids would run out.
+            if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
+                let why = "too far ahead of the ids given so far, which would run out after it";
+                return Err(crate::session::fail(Code::Id, format!("id {id}: {why}")));
+            }
         }
-        // An id far ahead would leave none after it: the ids would run out.
-        if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
-            let why = "too far ahead of the ids given so far, which would run out after it";
-            return Err(crate::session::fail(Code::Id, format!("id {id}: {why}")));
-        }
-        *wanted = Some(n);
+        self.wanted = wanted;
         Ok(())
     }
 
@@ -142,8 +159,8 @@ impl Ids {
 /// How far ahead of the last id given an asked-for one may be.
 const MAX_JUMP: u32 = 1 << 16;
 
-fn take(counter: &mut u32, wanted: &mut Option<u32>, what: &'static str) -> Result<u32, Error> {
-    if let Some(n) = wanted.take() {
+fn take(counter: &mut u32, wanted: Option<u32>, what: &'static str) -> Result<u32, Error> {
+    if let Some(n) = wanted {
         *counter = (*counter).max(n);
         return Ok(n);
     }

@@ -53,6 +53,8 @@ const ROWS: &[Fails] = &[
     fails("nothing_there", Cli, "@1 str next reorder", "fails nothing_there 1"),
     fails("name_taken", Cli, "opts str main name new-tab drop opts str main name new-tab", "fails name_taken 1"),
     fails("id", Cli, "opts str %1 id new-tab", "fails id 1"),
+    fails("id", Cli, "opts str %5 id str %6 id new-tab", "fails id 1"),
+    fails("id", Cli, "%1 opts str @5 id split", "fails id 1"),
     fails("bad_value", Cli, "%1 str sideways move-beside", "fails bad_value 1"),
     fails("bad_value", Cli, "%1 str NOPE signal", "fails bad_value 1"),
     fails("usage", Cli, "str +x workspace", "fails usage 2"),

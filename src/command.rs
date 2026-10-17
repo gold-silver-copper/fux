@@ -1,7 +1,7 @@
 //! The requests a client sends the server: typed actions, each built by
 //! fuxth words in a client (`crate::script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
-use crate::id::{ClientId, PaneId, TabId, WsId};
+use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -268,7 +268,7 @@ pub enum Command {
         cwd: Option<String>,
         env: Vec<(String, String)>,
         /// The ids it makes, if asked for (`id`, as saved sessions have).
-        ids: Vec<AnyRef>,
+        ids: Wanted,
     },
     NewTab {
         target: Option<WsRef>,
@@ -277,7 +277,7 @@ pub enum Command {
         size: Size,
         cwd: Option<String>,
         env: Vec<(String, String)>,
-        ids: Vec<AnyRef>,
+        ids: Wanted,
     },
     Split {
         axis: Axis,
@@ -289,7 +289,8 @@ pub enum Command {
         /// `cmd` is the program, started in place of a shell, as `run`
         /// starts one.
         run: bool,
-        ids: Vec<AnyRef>,
+        /// The id it makes the pane with, if asked for.
+        id: Option<PaneId>,
         /// Then waits on the new pane, armed before its program writes.
         then: Option<Box<Wait>>,
     },
@@ -304,7 +305,7 @@ pub enum Command {
         argv: Vec<String>,
         /// A file everything the program writes goes to too.
         log: Option<String>,
-        ids: Vec<AnyRef>,
+        ids: Wanted,
         /// Then waits, armed before the program writes anything.
         then: Option<Box<Wait>>,
     },

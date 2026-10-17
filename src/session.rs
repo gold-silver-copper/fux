@@ -7,6 +7,7 @@ use crate::command::{
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
+use crate::id::Wanted;
 use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
@@ -920,23 +921,13 @@ impl Session {
         fresh
     }
 
-    /// The next ids made are `ids` (`id`), each of a kind in `kinds`, at
-    /// most one of each, and none that is there or (outside a restore)
-    /// was ever given.
-    fn want(&mut self, ids: &[AnyRef], kinds: &[Kind], again: bool) -> Result<(), Error> {
-        for (i, id) in ids.iter().enumerate() {
-            let twice = ids.iter().take(i).any(|other| other.kind() == id.kind());
-            if twice || !kinds.contains(&id.kind()) {
-                let message =
-                    format!("id {id}: not an id this command makes, or one of a kind given twice");
-                return Err(fail(Code::Id, message));
-            }
-            if self.there(*id).is_ok() {
-                return Err(Error::IdTaken(*id));
-            }
-            self.ids.want(*id, again)?;
+    /// The next ids made are `wanted`'s (`id`): none that is there or
+    /// (outside a restore) was ever given.
+    fn want(&mut self, wanted: Wanted, again: bool) -> Result<(), Error> {
+        if let Some(id) = wanted.each().find(|id| self.there(*id).is_ok()) {
+            return Err(Error::IdTaken(id));
         }
-        Ok(())
+        self.ids.want(wanted, again)
     }
 
     /// What a command that makes a pane prints: the ids it made, from
@@ -2126,11 +2117,7 @@ impl Session {
                 env,
                 ids,
             } => {
-                self.want(
-                    ids,
-                    &[Kind::Workspace, Kind::Tab, Kind::Pane],
-                    starting.restoring,
-                )?;
+                self.want(*ids, starting.restoring)?;
                 let cwd = self.start_dir(here, cwd.as_deref(), None)?;
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 let start = (Start::Shell(cmd, env), cwd.as_path(), &starting);
@@ -2148,11 +2135,7 @@ impl Session {
                 env,
                 ids,
             } => {
-                self.want(
-                    ids,
-                    &[Kind::Workspace, Kind::Tab, Kind::Pane],
-                    starting.restoring,
-                )?;
+                self.want(*ids, starting.restoring)?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
@@ -2181,11 +2164,7 @@ impl Session {
                 ids,
                 ..
             } => {
-                self.want(
-                    ids,
-                    &[Kind::Workspace, Kind::Tab, Kind::Pane],
-                    starting.restoring,
-                )?;
+                self.want(*ids, starting.restoring)?;
                 let log = log
                     .as_ref()
                     .map(|p| open_log(&self.cwd_for(here, None).join(p)))
@@ -2403,10 +2382,14 @@ impl Session {
                 ref cwd,
                 ref env,
                 run,
-                ref ids,
+                id,
                 then: _,
             } => {
-                self.want(ids, &[Kind::Pane], starting.restoring)?;
+                let wanted = Wanted {
+                    pane: id,
+                    ..Wanted::default()
+                };
+                self.want(wanted, starting.restoring)?;
                 let target = self.pane(target)?.id;
                 let cwd = self.start_dir(here, cwd.as_deref(), Some(target))?;
                 // The splitting client follows the new pane; from the CLI, the
