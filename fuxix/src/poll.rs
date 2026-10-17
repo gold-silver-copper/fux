@@ -16,11 +16,6 @@ impl Events {
     pub const HUP: Events = Events(libc::POLLHUP);
     pub const NVAL: Events = Events(libc::POLLNVAL);
 
-    /// Whether every event of `other` is here.
-    pub fn contains(self, other: Events) -> bool {
-        self.0 & other.0 == other.0
-    }
-
     /// Whether any event of `other` is here.
     pub fn intersects(self, other: Events) -> bool {
         self.0 & other.0 != 0
@@ -138,9 +133,9 @@ mod tests {
         ];
         assert_eq!(poll(&mut fds, None), Ok(2));
         let [read, write] = &fds;
-        assert!(read.revents().contains(Events::IN));
+        assert!(read.revents().intersects(Events::IN));
         assert!(write.revents().intersects(Events::OUT | Events::HUP));
-        assert!(!write.revents().contains(Events::IN));
+        assert!(!write.revents().intersects(Events::IN));
         Ok(())
     }
 }

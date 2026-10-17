@@ -1419,7 +1419,7 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        if flags.contains(PollFlags::OUT) {
+        if flags.intersects(PollFlags::OUT) {
             conn.flush_tty(session);
         }
         if flags.intersects(PollFlags::HUP | PollFlags::ERR) && conn.attached().is_some() {
@@ -1434,10 +1434,10 @@ impl Server {
         };
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
         // One that is not read learns that its peer is gone by writing.
-        if flags.contains(PollFlags::OUT) || (gone && !conn.stage.reads()) {
+        if flags.intersects(PollFlags::OUT) || (gone && !conn.stage.reads()) {
             conn.flush(&mut self.session);
         }
-        if flags.contains(PollFlags::IN) || gone {
+        if flags.intersects(PollFlags::IN) || gone {
             self.read_conn(index);
         }
     }
@@ -1714,7 +1714,7 @@ impl Server {
     }
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
-        if flags.contains(PollFlags::OUT)
+        if flags.intersects(PollFlags::OUT)
             && let Some(pane) = self.session.panes.get_mut(&id)
         {
             pane.write_input();
