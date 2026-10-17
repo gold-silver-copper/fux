@@ -12,6 +12,7 @@ use crate::keys::Direction;
 use crate::layout::Axis;
 use fuxth::Code as Lang;
 use fuxth::{Done, Failure, Value};
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
 /// A word of fux's vocabulary.
@@ -306,29 +307,35 @@ fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
     Ok(*n)
 }
 
-/// What a count or a cell can be: from 0 to the most it holds.
-trait Count: TryFrom<i64> {
-    const MOST: i64;
-}
+/// What a cell can be, and a count: from 0 to the most each holds.
+const CELL: RangeInclusive<i64> = 0..=u16::MAX as i64;
+const COUNT: RangeInclusive<i64> = 0..=i64::MAX;
 
-impl Count for u16 {
-    const MOST: i64 = u16::MAX as i64;
-}
-
-impl Count for u64 {
-    const MOST: i64 = i64::MAX;
-}
-
-impl Count for usize {
-    const MOST: i64 = i64::MAX;
-}
-
-/// A count or a cell: an integer from 0 that fits.
-fn count<T: Count>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
+/// An integer within `range`, as the type it goes in.
+fn within<T: TryFrom<i64>>(
+    word: &str,
+    value: &Value<Fux>,
+    range: RangeInclusive<i64>,
+) -> Result<T, Failure> {
     let n = int(word, value)?;
-    T::try_from(n).map_err(|_| match T::MOST {
-        i64::MAX => fail(Lang::Range, format!("{n} is out of range: from 0")),
-        most => fail(Lang::Range, format!("{n} is out of range: 0 to {most}")),
+    let fits = T::try_from(n).ok().filter(|_| range.contains(&n));
+    fits.ok_or_else(|| {
+        let said = match (range.start(), range.end()) {
+            (from, &i64::MAX) => format!("from {from}"),
+            (from, to) => format!("{from} to {to}"),
+        };
+        fail(Lang::Range, format!("{n} is out of range: {said}"))
+    })
+}
+
+/// One of a closed set, by its name; refused, naming each, if none.
+fn one_of<T: Copy>(word: &str, value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> {
+    let given = string(word, value)?;
+    let found = all.iter().find(|(name, _)| *name == given);
+    found.map(|(_, t)| *t).ok_or_else(|| {
+        let names: Vec<&str> = all.iter().map(|(name, _)| *name).collect();
+        let names = crate::words::listed(&names, "or");
+        fail(Code::BadValue, format!("{given:?} is not {names}"))
     })
 }
 
@@ -392,27 +399,7 @@ fn workspace(word: &str, value: &Value<Fux>) -> Result<WsRef, Failure> {
 }
 
 fn direction(word: &str, value: &Value<Fux>) -> Result<Direction, Failure> {
-    match string(word, value)?.as_str() {
-        "left" => Ok(Direction::Left),
-        "right" => Ok(Direction::Right),
-        "up" => Ok(Direction::Up),
-        "down" => Ok(Direction::Down),
-        other => Err(fail(
-            Code::BadValue,
-            format!("{other:?} is not left, right, up or down"),
-        )),
-    }
-}
-
-fn sibling(word: &str, value: &Value<Fux>) -> Result<Sibling, Failure> {
-    match string(word, value)?.as_str() {
-        "next" => Ok(Sibling::Next),
-        "previous" => Ok(Sibling::Previous),
-        other => Err(fail(
-            Code::BadValue,
-            format!("{other:?} is not next or previous"),
-        )),
-    }
+    one_of(word, value, &Direction::ALL.map(|way| (way.name(), way)))
 }
 
 /// Options a word would leave unused, refused rather than ignored: it
@@ -736,7 +723,7 @@ impl fuxth::Host for Host<'_> {
                         }
                     }
                     "log-to" => built.log = Some(string(name, &v)?),
-                    _ => built.history = Some(count(name, &v)?),
+                    _ => built.history = Some(within(name, &v, COUNT)?),
                 }
                 now(out, o)
             }
@@ -794,7 +781,7 @@ impl fuxth::Host for Host<'_> {
             }
             "rows" | "cols" => {
                 let mut o = next()?;
-                let (from, to) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
+                let (from, to) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
                 if from > to {
                     return Err(fail(
                         Lang::Range,
@@ -915,7 +902,7 @@ impl fuxth::Host for Host<'_> {
             }
             "timeout" => {
                 let x = next()?;
-                let n = count::<u64>(name, &next()?)?;
+                let n = within(name, &next()?, COUNT)?;
                 with(name, x, out, |w| w.timeout = Some(Duration::from_secs(n)))
             }
             "wait-exit" | "wait-bell" => {
@@ -960,13 +947,7 @@ impl fuxth::Host for Host<'_> {
                     }
                     // The input just before it, n times in all.
                     _ => {
-                        let n = int(name, &v)?;
-                        let n = usize::try_from(n)
-                            .ok()
-                            .filter(|n| (1..=1000).contains(n))
-                            .ok_or_else(|| {
-                                fail(Lang::Range, format!("{n}: a count from 1 to 1000"))
-                            })?;
+                        let n: usize = within(name, &v, 1..=1000)?;
                         let Some(last) = built.inputs.last().cloned() else {
                             return Err(fail(
                                 Code::NoKeys,
@@ -1040,26 +1021,22 @@ impl fuxth::Host for Host<'_> {
                 later(ask(followed(keys, then), answer))
             }
             "mouse" => {
-                let action = string(name, &next()?)?;
-                let (row, col) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
-                let mouse = match action.as_str() {
-                    "click" => Mouse::Click(Button::Left),
-                    "right" => Mouse::Click(Button::Right),
-                    "middle" => Mouse::Click(Button::Middle),
-                    "press" => Mouse::Press(Button::Left),
-                    "release" => Mouse::Release(Button::Left),
-                    "wheel-up" => Mouse::Wheel(Wheel::Up),
-                    "wheel-down" => Mouse::Wheel(Wheel::Down),
-                    "move" => Mouse::Move,
-                    other => {
-                        return Err(fail(
-                            Code::BadValue,
-                            format!(
-                                "mouse: {other:?} is not click, right, middle, press, release, wheel-up, wheel-down or move"
-                            ),
-                        ));
-                    }
-                };
+                let action = next()?;
+                let (row, col) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
+                let mouse = one_of(
+                    name,
+                    &action,
+                    &[
+                        ("click", Mouse::Click(Button::Left)),
+                        ("right", Mouse::Click(Button::Right)),
+                        ("middle", Mouse::Click(Button::Middle)),
+                        ("press", Mouse::Press(Button::Left)),
+                        ("release", Mouse::Release(Button::Left)),
+                        ("wheel-up", Mouse::Wheel(Wheel::Up)),
+                        ("wheel-down", Mouse::Wheel(Wheel::Down)),
+                        ("move", Mouse::Move),
+                    ],
+                )?;
                 now(
                     out,
                     Value::App(Fux::Mouse(Box::new(MouseEvent {
@@ -1087,15 +1064,8 @@ impl fuxth::Host for Host<'_> {
             }
             "signal" => {
                 let p = pane(name, &next()?)?;
-                let signal = string(name, &next()?)?;
-                let Some(signal) = fuxix::process::Signal::named(&signal) else {
-                    let all = fuxix::process::Signal::ALL.map(fuxix::process::Signal::name);
-                    let all = crate::words::listed(&all, "or");
-                    return Err(fail(
-                        Code::BadValue,
-                        format!("signal: {signal:?} is not {all}"),
-                    ));
-                };
+                let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
+                let signal = one_of(name, &next()?, &signals)?;
                 // From a command line: answers once the program exited or settled.
                 let (then, answer) = acted(&Waits::default(), self.settle);
                 later(ask(
@@ -1201,7 +1171,7 @@ impl fuxth::Host for Host<'_> {
             }
             "resize-client" => {
                 let c = client(name, &next()?)?;
-                let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
+                let (cols, rows) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
                     .ok_or_else(|| fail(Lang::Range, "columns and rows each from 1"))?;
@@ -1211,7 +1181,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let extent = match next()? {
                     Value::App(Fux::Extent(e)) => e,
-                    v @ Value::Int(_) => Extent::Cells(count(name, &v)?),
+                    v @ Value::Int(_) => Extent::Cells(within(name, &v, CELL)?),
                     other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
                         return Err(wrong(name, "cells or a percent", &other));
                     }
@@ -1236,7 +1206,7 @@ impl fuxth::Host for Host<'_> {
             "move-border" => {
                 let p = pane(name, &next()?)?;
                 let way = direction(name, &next()?)?;
-                let cells = count::<u16>(name, &next()?)?;
+                let cells = within(name, &next()?, CELL)?;
                 tell(Command::ResizePane {
                     target: p,
                     by: PaneResize::Border(way, cells),
@@ -1288,7 +1258,8 @@ impl fuxth::Host for Host<'_> {
             }
             "reorder" => {
                 let t = target(name, &next()?)?;
-                let toward = sibling(name, &next()?)?;
+                let siblings = [("next", Sibling::Next), ("previous", Sibling::Previous)];
+                let toward = one_of(name, &next()?, &siblings)?;
                 tell(Command::Reorder { target: t, toward })
             }
             "start-log" | "stop-log" => {
@@ -1305,13 +1276,13 @@ impl fuxth::Host for Host<'_> {
             "buffers" => later(ask(Command::ListBuffers, Then::Text)),
             "buffer" => later(ask(
                 Command::ShowBuffer {
-                    index: count(name, &next()?)?,
+                    index: within(name, &next()?, COUNT)?,
                 },
                 Then::Text,
             )),
             "paste-buffer" => {
                 let p = pane(name, &next()?)?;
-                let index = count(name, &next()?)?;
+                let index = within(name, &next()?, COUNT)?;
                 tell(Command::PasteBuffer { index, target: p })
             }
             // ----------------------------------------------------- clients
@@ -1331,7 +1302,7 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "headless" => {
-                let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
+                let (cols, rows) = (within(name, &next()?, CELL)?, within(name, &next()?, CELL)?);
                 let size = fux_vt::Size::new(rows, cols)
                     .map_err(|_| fail(Lang::Range, "a size of at least 1 by 1"))?;
                 local(Local::Attach {
@@ -1342,21 +1313,13 @@ impl fuxth::Host for Host<'_> {
             }
             "focus" => {
                 let c = client(name, &next()?)?;
-                let pick = match string(name, &next()?)?.as_str() {
-                    "next" => PanePick::Step(Sibling::Next),
-                    "previous" => PanePick::Step(Sibling::Previous),
-                    "last" => PanePick::Last,
-                    other => {
-                        PanePick::Toward(direction(name, &Value::str(other)).map_err(|_| {
-                            fail(
-                                Code::BadValue,
-                                format!(
-                                    "{other:?} is not left, right, up, down, next, previous or last"
-                                ),
-                            )
-                        })?)
-                    }
-                };
+                let ways = Direction::ALL.map(|way| (way.name(), PanePick::Toward(way)));
+                let steps = [
+                    ("next", PanePick::Step(Sibling::Next)),
+                    ("previous", PanePick::Step(Sibling::Previous)),
+                    ("last", PanePick::Last),
+                ];
+                let pick = one_of(name, &next()?, &[ways.as_slice(), &steps].concat())?;
                 later(act(c, ClientAction::SelectPane(pick)))
             }
             "focus-pane" => {
