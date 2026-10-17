@@ -358,7 +358,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "last_status",
             commands.last_status.map_or(Json::Null, Json::int),
         ),
-        ("bells", Json::int(pane.alerts.count())),
+        ("bells", Json::int(pane.alerts.rung)),
         (
             "notification",
             pane.alerts.last.clone().map_or(Json::Null, Json::str),

@@ -316,10 +316,10 @@ impl fux_vt::Sink for Sink<'_> {
             fux_vt::Event::Bell => {
                 self.happened.push(crate::log::Event::Bell);
                 *self.bell = true;
-                self.alerts.bells = self.alerts.bells.saturating_add(1);
+                self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
             fux_vt::Event::Notification(text) => {
-                self.alerts.notifications = self.alerts.notifications.saturating_add(1);
+                self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
                 self.happened
@@ -454,16 +454,9 @@ pub(crate) fn basename(program: &str) -> String {
 /// notifications (OSC 9, 777, 99) with the last one's text.
 #[derive(Clone, Debug, Default)]
 pub struct Alerts {
-    pub bells: u64,
-    pub notifications: u64,
-    pub last: Option<String>,
-}
-
-impl Alerts {
     /// Bells and notifications together, as `wait-bell` counts them.
-    pub fn count(&self) -> u64 {
-        self.bells.saturating_add(self.notifications)
-    }
+    pub rung: u64,
+    pub last: Option<String>,
 }
 
 pub struct Pane {
