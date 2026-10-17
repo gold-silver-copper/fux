@@ -3670,15 +3670,6 @@ pub(crate) mod testing {
     }
 }
 
-/// What a paste is to the program reading it: an edit, bracketed or one
-/// line; unbracketed with a line end, it submits lines.
-fn paste_unit(text: &str, bracketed: bool) -> crate::log::Unit {
-    match bracketed || !text.contains(['\r', '\n']) {
-        true => crate::log::Unit::Edit,
-        false => crate::log::Unit::Submit,
-    }
-}
-
 /// `inputs` as pane `p`'s program takes them, a piece at a time
 /// (`crate::log::Unit`): text typed in a row is one piece, keys that
 /// edit the line in a row another, and each other key, a lone Escape
@@ -3721,7 +3712,13 @@ fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, crate::log::Unit)> {
             }
             Input::Paste(text) => {
                 crate::encode::paste(text, bracketed, &mut bytes);
-                units.push((bytes, paste_unit(text, bracketed)));
+                // An edit, bracketed or one line; unbracketed with a line
+                // end, it submits lines.
+                let unit = match bracketed || !text.contains(['\r', '\n']) {
+                    true => Unit::Edit,
+                    false => Unit::Submit,
+                };
+                units.push((bytes, unit));
                 last = None;
                 continue;
             }
