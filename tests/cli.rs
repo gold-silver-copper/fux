@@ -641,6 +641,8 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
 
 /// A caller in a directory whose name is not UTF-8 starts what it runs
 /// there: the path's bytes reach the server as they are, not made text.
+/// Linux only: macOS's file systems refuse a name that is not UTF-8.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
