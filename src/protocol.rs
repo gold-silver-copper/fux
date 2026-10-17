@@ -208,23 +208,24 @@ impl<'a, T: Payload<'a>> Payload<'a> for (T,) {
     }
 }
 
-/// `frames! { pub enum Ty<'a> { One(x: X) = 3, Two(y: Y, z: Z) = 4, Bare = 5 } }`
+/// `frames! { pub enum Ty<'a> { One(x: X) = 3, Two(y: Y, z: Z) = 4, Bare = BARE } }`
 /// expands to the enum (`One(X)`, `Two(Y, Z)`, `Bare`; docs and attributes
 /// as written) and its `Frame<'a>`: `One` is kind 3, its payload `x`'s
 /// (`Payload`); `Two` kind 4, `y`'s then `z`'s, each a wire value; and
-/// `Bare` kind 5, its payload empty. Each is read back alike, and any other
-/// kind is `Error::UnexpectedKind`. So a frame's kind byte is written once,
-/// in its row, and two rows of one kind do not compile (an unreachable
-/// pattern). `x`, `y` and `z` only name the fields, as a macro can't make
-/// up names. An enum that lends its payload is declared `<'a>`, the
-/// lifetime of the bytes it is decoded from.
+/// `Bare` kind `BARE`, a const (a kind several enums have is named once),
+/// its payload empty. Each is read back alike, and any other kind is
+/// `Error::UnexpectedKind`. So a frame's kind byte is written once, in its
+/// row or its const, and two rows of one kind do not compile (an
+/// unreachable pattern, denied). `x`, `y` and `z` only name the fields,
+/// as a macro can't make up names. An enum that lends its payload is
+/// declared `<'a>`, the lifetime of the bytes it is decoded from.
 macro_rules! frames {
     (
         $(#[$m:meta])*
         $vis:vis enum $ty:ident $(<$a:lifetime>)? {
             $(
                 $(#[$vm:meta])*
-                $var:ident $(($($p:ident: $pt:ty),+))? = $kind:literal
+                $var:ident $(($($p:ident: $pt:ty),+))? = $kind:tt
             ),* $(,)?
         }
     ) => {
@@ -237,6 +238,7 @@ macro_rules! frames {
         }
 
         impl<'a> Frame<'a> for $ty $(<$a>)? {
+            #[deny(unreachable_patterns)]
             fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error> {
                 match kind {
                     $($kind => {
@@ -282,8 +284,13 @@ impl Hello {
     }
 }
 
+/// The kinds of a `Hello` and an `Exit`, which every client and server
+/// reads, of any version.
+const HELLO: u8 = 1;
+const EXIT: u8 = 8;
+
 impl OneKind for Hello {
-    const KIND: u8 = 1;
+    const KIND: u8 = HELLO;
 }
 
 wire! {
@@ -430,8 +437,8 @@ frames! {
     /// reads these, so their kinds and payloads never change.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Greeting<'a> {
-        Hello(hello: Hello) = 1,
-        Exit(reason: &'a str) = 8,
+        Hello(hello: Hello) = HELLO,
+        Exit(reason: &'a str) = EXIT,
         /// The kill's answer, with its status: 0.
         Done(status: u8) = 11,
     }
@@ -443,7 +450,7 @@ frames! {
     /// pieces; or an `Exit` saying why it ends.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum ToCommand<'a> {
-        Exit(reason: &'a str) = 8,
+        Exit(reason: &'a str) = EXIT,
         Stdout(bytes: Cow<'a, [u8]>) = 9,
         /// A piece of a request's reply: its encoding, in order, whole once
         /// `PartsEnd` comes. A reply goes in pieces as long as fit, so it is
@@ -479,7 +486,7 @@ frames! {
         /// Bytes for its terminal: a paint, or what the server sends it
         /// outside one (a copy, the bell, questions for the terminal).
         Paint(bytes: Cow<'a, [u8]>) = 7,
-        Exit(reason: &'a str) = 8,
+        Exit(reason: &'a str) = EXIT,
         /// The server ended its screen of that kind by itself (copy mode
         /// whose rows dropped from history, whose pane went or is no longer
         /// focused, or with no pane to copy; a menu, chooser, prompt or
