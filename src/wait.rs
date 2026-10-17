@@ -18,7 +18,7 @@ use crate::code::Code;
 use crate::command::{AnyRef, CaptureView, Source, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
-use crate::log::Seq;
+use crate::log::{Event, Seq};
 use crate::pane::{Before, Pane, Start};
 use crate::process::Ended;
 use crate::protocol::{End, Reply};
@@ -1188,7 +1188,14 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
         .collect();
     // A resize gives every row it keeps a new number, and brings nothing.
     let resized: HashSet<u64> = (pane.record.after(start.from))
-        .filter(|e| matches!(e.event, crate::log::Event::Resize(_)))
+        .filter(|e| match e.event {
+            Event::Resize(_) => true,
+            Event::Output(_)
+            | Event::Bell
+            | Event::Notification(_)
+            | Event::Title(_)
+            | Event::Done(_) => false,
+        })
         .map(|e| e.seq.0)
         .collect();
     let window = screen.window();
