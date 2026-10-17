@@ -885,7 +885,7 @@ fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
 /// A server may inherit descriptors without close-on-exec from whatever
 /// starts it: a shell that leaks them, or, in these tests, another thread
 /// opening one in the moment before it sets the flag. Its panes' programs
-/// inherit none of them. Before the launcher marked every descriptor above
+/// inherit none of them. Before a pane's start marked every descriptor above
 /// stderr close-on-exec, the tests above saw a PTY master and a socket of
 /// the test process in a pane, about once in 450 runs.
 #[test]

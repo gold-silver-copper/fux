@@ -123,8 +123,8 @@ next piece, a synchronized frame's release, the stop grace, and the rest
 after a refused connection. (Three, as first designed.)
 
 The loop has no threads, channels or task pools of its own, and nothing
-blocks it for long: starting a pane waits for its launcher to report
-(`process::launch`), and a stopping server waits a bounded time for its
+blocks it for long: starting a pane waits for std's spawn to report its
+`exec`, and a stopping server waits a bounded time for its
 panes. (On macOS, opening a PTY can stall in the kernel; fuxix runs that one
 call beside a watchdog thread, `pty::watched`.) The config file
 is read once, bounded, at startup and on `fux reload`.
@@ -154,16 +154,15 @@ A pane owns:
   the flag, it is set straight after. The slave is opened `O_CLOEXEC` too. The server has one
   thread, so no fork can happen in between. Every descriptor the server holds
   is close-on-exec. And whatever the server itself inherited without the
-  flag, the launcher marks every descriptor above stderr close-on-exec before
+  flag, the pane's start marks every descriptor above stderr close-on-exec before
   it runs the program, so a pane's program inherits only stdio; a test
   checks both;
 - a `fux_vt::Parser`;
 - a child process: the configured shell (`set shell`), always, started
-  through the launcher in the `fux` binary (`process::launch`) with the slave
-  as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. The
-  launcher, a program of its own rather than a `pre_exec` hook (which needs
-  `unsafe`), calls `setsid` and takes the slave as its controlling terminal;
-  std's spawn of it clears the signal mask, and `exec` restores SIGPIPE and
+  with the slave as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and
+  `FUX_SOCKET`. Between fork and exec, a `pre_exec` hook in fuxix
+  (`process::lead_session`, its `unsafe` there) calls `setsid` and takes the
+  slave as its controlling terminal; std's spawn clears the signal mask, and `exec` restores SIGPIPE and
   the handlers signal-hook installed. A test checks that a pane's program starts
   with an empty mask and ignores no signal fux ignores (on Linux, where
   /proc shows dispositions). A disposition fux itself inherited as ignored

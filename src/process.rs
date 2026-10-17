@@ -3,7 +3,7 @@
 pub use fuxix::process::Pid;
 use fuxix::process::{Signal, Status};
 use fuxix::pty::Master;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A pane's program: the leader of a session of its own, started by fux
 /// and not yet reaped. Unreaped, its pid is its group's and its session's
@@ -19,8 +19,7 @@ pub struct Child {
 }
 
 /// Starts `argv` on a new PTY of `size`, in its own session with the PTY as
-/// its controlling terminal, through the launcher in the `fux` binary
-/// (`fuxix::pty::launched`): with `env` set and `unset` removed from the
+/// its controlling terminal: with `env` set and `unset` removed from the
 /// server's environment.
 pub fn spawn(
     argv: &[String],
@@ -30,9 +29,8 @@ pub fn spawn(
 ) -> Result<Child, String> {
     let program = argv.first().ok_or("no program to run")?;
     let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(|e| e.to_string())?;
-    let fux = launcher().map_err(|e| format!("finding the fux binary: {e}"))?;
     let (child, pid) = slave
-        .spawn(&fux, argv, |command| {
+        .spawn(argv, |command| {
             // TERM_PROGRAM is fux's, as tmux sets its own: the outer
             // terminal's would have programs use features of a terminal they
             // are not talking to (Claude Code, under Ghostty, pushed kitty
@@ -57,15 +55,6 @@ pub fn spawn(
         leader: Leader(pid, false),
         master,
     })
-}
-
-/// The `fux` binary to run the launcher from: on Linux the server's own
-/// image, even once its file is replaced or removed.
-fn launcher() -> std::io::Result<PathBuf> {
-    if cfg!(target_os = "linux") {
-        return Ok(PathBuf::from("/proc/self/exe"));
-    }
-    std::env::current_exe()
 }
 
 pub use fuxix::process::Status as Ended;

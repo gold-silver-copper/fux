@@ -111,12 +111,8 @@ pub(crate) fn drain(mut pipe: &PipeReader) {
 /// runs it; any other words are a fuxth program.
 pub fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        Some(fuxix::pty::LAUNCH) => {
-            return ExitCode::from(fuxix::pty::launched(args.get(1..).unwrap_or_default()));
-        }
-        Some(SERVE) => return serve(args.get(1..).unwrap_or_default()),
-        Some(_) | None => {}
+    if let Some((SERVE, rest)) = args.split_first().map(|(a, rest)| (a.as_str(), rest)) {
+        return serve(rest);
     }
     let mut stdout = std::io::stdout();
     let status = match script::main(&args, &mut stdout) {

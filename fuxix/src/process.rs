@@ -157,6 +157,34 @@ pub fn setsid() -> Result<()> {
     check(unsafe { libc::setsid() }).map(drop)
 }
 
+/// Has `command`'s program, once spawned, lead a new session, holding no
+/// descriptor but its stdin, stdout and stderr: what this process holds
+/// without close-on-exec, inherited from a shell that leaks descriptors or
+/// opened by a thread racing the spawn, goes no further. With `terminal`,
+/// its stdin, a terminal, becomes the session's controlling terminal. The
+/// spawn clears the signal mask, and `exec` restores the dispositions Rust
+/// and signal handlers changed, so the program starts as it would from a
+/// shell.
+pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
+    use std::os::unix::process::CommandExt;
+    let lead = move || -> std::io::Result<()> {
+        crate::io::cloexec_from(3)?;
+        setsid()?;
+        if terminal {
+            let set = crate::terminal::request(libc::TIOCSCTTY)?;
+            let steal: libc::c_int = 0;
+            // SAFETY: TIOCSCTTY takes an int and touches no memory.
+            check(unsafe { libc::ioctl(0, set, steal) })?;
+        }
+        Ok(())
+    };
+    // SAFETY: `lead` runs between fork and exec, where only
+    // async-signal-safe calls may be made, and makes only those:
+    // close_range, or getrlimit and fcntl; setsid; ioctl. It allocates
+    // nothing, takes no lock, and its errors are numbers.
+    unsafe { command.pre_exec(lead) };
+}
+
 /// The session of `pid`. `None` if there is none to name: the process is
 /// gone, or is a kernel thread, whose session is 0.
 pub fn session(pid: Pid) -> Option<Pid> {

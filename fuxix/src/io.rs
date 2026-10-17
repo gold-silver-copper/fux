@@ -1,5 +1,5 @@
 //! Reading, writing and the flags of a descriptor.
-use crate::errno::{Errno, Result, check, check_size};
+use crate::errno::{Result, check, check_size};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
 /// Reads into `buffer`: how many bytes, 0 at the end.
@@ -81,11 +81,12 @@ pub fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
 /// and however: descriptors this process inherited without the flag, and
 /// ones another thread opened before it could set it. Nothing is closed,
 /// so no owner's descriptor stops being valid; each closes when this
-/// process runs another program.
+/// process runs another program. It allocates nothing and takes no lock,
+/// so it may run between `fork` and `exec`.
 pub fn cloexec_from(first: i32) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let start = libc::c_uint::try_from(first).map_err(|_| Errno::INVAL)?;
+        let start = libc::c_uint::try_from(first).map_err(|_| crate::Errno::INVAL)?;
         // SAFETY: close_range takes three plain numbers and touches no
         // memory; with CLOSE_RANGE_CLOEXEC it closes nothing.
         let done = unsafe {
@@ -101,25 +102,21 @@ pub fn cloexec_from(first: i32) -> Result<()> {
         }
         // Older than Linux 5.11: no such call (ENOSYS) or flag (EINVAL).
     }
-    cloexec_listed(first)
+    cloexec_each(first)
 }
 
-/// `cloexec_from` by listing this process's descriptors: on macOS, on
-/// Android, and on Linux older than 5.11.
-fn cloexec_listed(first: i32) -> Result<()> {
-    let listing = if cfg!(target_os = "macos") {
-        "/dev/fd"
-    } else {
-        "/proc/self/fd"
+/// `cloexec_from` one descriptor at a time, below the number this process
+/// may open (its soft `RLIMIT_NOFILE`): on macOS, on Android, and on Linux
+/// older than 5.11.
+fn cloexec_each(first: i32) -> Result<()> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
     };
-    // Listed first, then marked: the listing's own descriptor is closed by
-    // then, and is skipped as not open.
-    let open: Vec<libc::c_int> = std::fs::read_dir(listing)
-        .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))?
-        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
-        .filter(|fd| *fd >= first)
-        .collect();
-    for fd in open {
+    // SAFETY: getrlimit fills one rlimit, and `limit` is one.
+    check(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) })?;
+    let end = libc::c_int::try_from(limit.rlim_cur).unwrap_or(libc::c_int::MAX);
+    for fd in first..end {
         match cloexec_raw(fd) {
             Ok(()) => {}
             Err(errno) if errno.raw() == libc::EBADF => {}
@@ -132,6 +129,7 @@ fn cloexec_listed(first: i32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Errno;
     use std::os::fd::AsRawFd;
 
     fn is_cloexec(fd: impl AsFd) -> bool {
@@ -172,10 +170,10 @@ mod tests {
         assert!(!is_cloexec(&copy));
         cloexec_from(copy.as_raw_fd()).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&copy));
-        // And by listing, as where the kernel has no close_range.
+        // And one at a time, as where the kernel has no close_range.
         let listed = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
         assert!(!is_cloexec(&listed));
-        cloexec_listed(listed.as_raw_fd()).map_err(|e| e.to_string())?;
+        cloexec_each(listed.as_raw_fd()).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&listed));
         // Nothing was closed: both still read.
         let mut buffer = [0u8; 1];

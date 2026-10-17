@@ -793,7 +793,7 @@ impl Terminal {
         let (child, _) = {
             let _guard = SPAWN.lock().map_err(e)?;
             slave
-                .spawn(Path::new(fux()), argv, |command| {
+                .spawn(argv, |command| {
                     command
                         .env("TERM", "xterm-256color")
                         .env_remove("FUX_PANE")

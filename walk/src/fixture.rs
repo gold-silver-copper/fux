@@ -310,7 +310,7 @@ impl Fixture {
         let socket = self.socket.clone();
         let dir = self.dir.clone();
         let (child, _) = slave
-            .spawn(&self.fux, &argv, |command| {
+            .spawn(&argv, |command| {
                 environment(command, &dir);
                 command.env("FUX_SOCKET", &socket);
             })

@@ -38,11 +38,12 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | --- | --- | --- | --- |
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
-| `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `/proc/self/fd` (Android: always) | `/dev/fd` | not offered |
+| `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each below `RLIMIT_NOFILE` (Android: always) | `fcntl` on each below `RLIMIT_NOFILE` | not offered |
 | `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group`, `exists` | `kill`, `killpg`, `kill(pid, 0)` | the same | std signals only its own children, and only with SIGKILL |
 | `process::geteuid`, `setsid`, `session` | `geteuid`, `setsid`, `getsid` | the same | not offered |
+| `process::lead_session`, `pty::Slave::spawn` | between `fork` and `exec` (`pre_exec`): `io::cloexec_from(3)`, `setsid`, `TIOCSCTTY` | the same | std's spawn makes no session |
 | `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
 | `process::reap` | `waitpid(WNOHANG)` | the same | for a pid, not a `Child` |
@@ -52,7 +53,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `modes` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, the flags and characters (`ECHO` and `ICANON` in `c_lflag`, …) | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
-| `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
+| `terminal::foreground_group` | `tcgetpgrp` | the same | not offered |
 | `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
 | `socket::peer_uid` | `SO_PEERCRED` | `getpeereid` | `peer_cred` is unstable |
 | `file::pin` | `open(O_PATH \| O_NOFOLLOW)` | none | `O_PATH` has no name in std |

@@ -1118,11 +1118,6 @@ fn main() -> ExitCode {
     std::panic::set_hook(Box::new(|_| {}));
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if let Some((first, rest)) = argv.split_first()
-        && first == fuxix::pty::LAUNCH
-    {
-        return ExitCode::from(fuxix::pty::launched(rest));
-    }
-    if let Some((first, rest)) = argv.split_first()
         && first == instructions::CHILD
     {
         return match instructions::child(rest) {

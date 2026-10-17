@@ -720,8 +720,8 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
 }
 
 fn ready(baseline: bool, probes: usize) -> Result<Done, String> {
-    // A session without a launcher starts no programs, so the probe is
-    // asked of a child of this process: a sleep in a group of its own.
+    // The probe is asked of a child of this process, with no session
+    // around it: a sleep in a group of its own.
     let mut child = std::process::Command::new("sleep")
         .arg("3600")
         .process_group(0)

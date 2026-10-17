@@ -113,7 +113,7 @@ const ELSEWHERE: &[(&str, &str)] = &[
     ("client", "the client's own failures (its terminal, its socket)"),
     ("not_granted", "a request over a granted socket, outside its workspace: the server's grant check"),
     ("grant", "making a grant's socket: the server's"),
-    ("start", "a program that cannot start: needs the launcher (this harness starts none)"),
+    ("start", "a program that cannot start: this harness starts none"),
     ("signal", "sending a signal to a program that runs: needs a process"),
     ("stray_pane", "a command from a pane of another server: needs FUX_PANE and a server"),
     ("selection", "copy mode's selection, from its keys (copy.rs tests)"),

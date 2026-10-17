@@ -266,7 +266,7 @@ impl Session {
 }
 
 /// Opens a PTY of `rows` by `cols` and starts `argv` on it, leading a new
-/// session with it as its controlling terminal (`fuxix::pty::launched`);
+/// session with it as its controlling terminal (`fuxix::pty::Slave::spawn`);
 /// `setup` sets its directory and environment. The master is blocking.
 pub fn start(
     rows: u16,
@@ -278,9 +278,8 @@ pub fn start(
     let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
     let master = OwnedFd::from(master);
     fuxix::io::set_nonblocking(&master, false).map_err(|e| format!("the PTY: {e}"))?;
-    let me = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
     let (child, _) = slave
-        .spawn(&me, argv, setup)
+        .spawn(argv, setup)
         .map_err(|e| format!("starting {:?}: {e}", argv.first()))?;
     Ok((File::from(master), child))
 }

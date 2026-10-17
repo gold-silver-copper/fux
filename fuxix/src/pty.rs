@@ -10,10 +10,9 @@ use crate::process::Pid;
 use crate::terminal::{self, Size};
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
@@ -78,118 +77,59 @@ impl From<Master> for OwnedFd {
     }
 }
 
-/// The hidden argument a program that starts others on PTYs takes to be
-/// their launcher: `PROGRAM __launch ARGV...` calls [`launched`] with ARGV.
-/// It is fixed, as an older server may run a newer binary.
-pub const LAUNCH: &str = "__launch";
-
 impl Slave {
     /// Starts `argv` on this PTY, as the leader of a new session with the
-    /// PTY as its controlling terminal and its stdin, stdout and stderr;
-    /// `setup` sets its directory and environment. Returns once the program
-    /// runs, with its pid, or once it cannot, with why.
-    ///
-    /// Starting a process in a new session needs code between `fork` and
-    /// `exec`, which std allows only through `unsafe`. So `launcher`, a
-    /// binary that calls [`launched`] when run with [`LAUNCH`], runs that
-    /// code as a program of its own, and reports a failure, its `exec`'s
-    /// included, on a pipe that `exec` closes: as std reports its own.
+    /// PTY as its controlling terminal and its stdin, stdout and stderr,
+    /// and no other descriptor ([`crate::process::lead_session`]); `setup`
+    /// sets its directory and environment. Returns once the program runs,
+    /// with its pid, or once it cannot, with why.
     pub fn spawn<S: AsRef<OsStr>>(
         self,
-        launcher: &Path,
         argv: &[S],
         setup: impl FnOnce(&mut Command),
     ) -> std::io::Result<(Child, Pid)> {
-        let (mut failures, report) = std::io::pipe()?;
-        let mut child = {
-            let mut command = Command::new(launcher);
-            command.arg(LAUNCH).args(argv);
-            setup(&mut command);
-            command
-                .stdin(self.0.try_clone()?)
-                .stdout(report)
-                .stderr(self.0);
-            // Dropping `command` closes this side's ends of the pipe and
-            // the PTY.
-            command.spawn()?
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| std::io::Error::other("no program to run"))?;
+        let mut command = Command::new(program);
+        command.args(args);
+        setup(&mut command);
+        command
+            .stdin(self.0.try_clone()?)
+            .stdout(self.0.try_clone()?)
+            .stderr(self.0);
+        crate::process::lead_session(&mut command, true);
+        // Dropping `command` closes this side's copies of the PTY.
+        let child = match command.spawn() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(match missing_interpreter(&command, program.as_ref()) {
+                    Some(interpreter) => std::io::Error::other(format!(
+                        "its interpreter {interpreter} does not exist"
+                    )),
+                    None => error,
+                });
+            }
+            spawned => spawned?,
         };
-        let mut failure = String::new();
-        let read = failures.read_to_string(&mut failure);
-        if let (Ok(_), true, Some(pid)) = (&read, failure.is_empty(), Pid::of(&child)) {
-            return Ok((child, pid));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        Err(read.err().unwrap_or_else(|| std::io::Error::other(failure)))
+        let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
+        Ok((child, pid))
     }
 }
 
-/// The launcher: what a binary run as `BINARY __launch ARGV...` by
-/// [`Slave::spawn`] calls with ARGV, before anything else. It makes ARGV the
-/// leader of a new session on the PTY and becomes it, returning only if it
-/// could not, with the exit status to use.
-pub fn launched<S: AsRef<OsStr>>(argv: &[S]) -> u8 {
-    // Whatever the spawner inherited without close-on-exec, from a shell
-    // that leaks descriptors or a thread that raced its spawn, it passed on
-    // to here: marked, it goes no further, and the program gets stdio and
-    // nothing else.
-    let marked = crate::io::cloexec_from(3);
-    // A close-on-exec copy, so a successful `exec` closes the pipe; the
-    // program's stdout is the PTY.
-    let report = std::io::stdout().as_fd().try_clone_to_owned();
-    let failure = match marked {
-        Ok(()) => become_program(argv),
-        Err(errno) => std::io::Error::other(format!(
-            "marking inherited descriptors close-on-exec: {errno}"
-        )),
-    };
-    if let Ok(report) = report {
-        let _ = std::fs::File::from(report).write_all(failure.to_string().as_bytes());
-    }
-    127
-}
-
-/// Makes this process the leader of a new session with its stdin as the
-/// controlling terminal, then replaces it with `argv`; the error, if any
-/// step fails. The spawn cleared the signal mask, and `exec` restores the
-/// dispositions Rust and signal handlers changed, so the program starts
-/// as it would from a shell.
-fn become_program<S: AsRef<OsStr>>(argv: &[S]) -> std::io::Error {
-    let Some((program, args)) = argv.split_first() else {
-        return std::io::Error::other("no program to run");
-    };
-    if let Err(errno) = crate::process::setsid() {
-        return errno.into();
-    }
-    let terminal = std::io::stdin();
-    let steal: libc::c_int = 0;
-    let controlling = terminal::request(libc::TIOCSCTTY).and_then(|set| {
-        // SAFETY: TIOCSCTTY takes an int and touches no memory.
-        check(unsafe { libc::ioctl(terminal.as_fd().as_raw_fd(), set, steal) })
-    });
-    if let Err(errno) = controlling {
-        return errno.into();
-    }
-    let error = match terminal.as_fd().try_clone_to_owned() {
-        Ok(stdout) => Command::new(program).args(args).stdout(stdout).exec(),
-        Err(error) => error,
-    };
-    if error.kind() == std::io::ErrorKind::NotFound
-        && let Some(interpreter) = missing_interpreter(program.as_ref())
-    {
-        return std::io::Error::other(format!("its interpreter {interpreter} does not exist"));
-    }
-    error
-}
-
-/// The `#!` interpreter `program`'s file names, looked up as `exec` looks
-/// it up, if the file is there and the interpreter is not: what `exec`
-/// found missing.
-fn missing_interpreter(program: &OsStr) -> Option<String> {
+/// The `#!` interpreter `program`'s file names, looked up as `command`'s
+/// `exec` looks it up (in its directory, or on its `PATH`), if the file is
+/// there and the interpreter is not: what `exec` found missing.
+fn missing_interpreter(command: &Command, program: &OsStr) -> Option<String> {
     let file = if program.as_encoded_bytes().contains(&b'/') {
-        PathBuf::from(program)
+        let dir = command.get_current_dir();
+        dir.map_or_else(|| PathBuf::from(program), |dir| dir.join(program))
     } else {
-        std::env::split_paths(&std::env::var_os("PATH")?)
+        let set = command.get_envs().find(|(key, _)| *key == "PATH");
+        let path = set.map_or_else(
+            || std::env::var_os("PATH"),
+            |(_, path)| path.map(OsStr::to_owned),
+        )?;
+        std::env::split_paths(&path)
             .map(|dir| dir.join(program))
             .find(|file| file.is_file())?
     };
