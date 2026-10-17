@@ -474,7 +474,7 @@ pub struct Attaching {
 }
 
 /// Whether a key's program may open a screen: a word that opens one, other
-/// than the text `str` takes. The keys typed after its key wait for it; any
+/// than a token a word reads (`str menu`, `let menu`). The keys typed after its key wait for it; any
 /// other program runs while the keys go on.
 fn may_open(code: &str) -> bool {
     let Ok(tokens) = fuxth::token::source("key", code) else {
@@ -483,7 +483,7 @@ fn may_open(code: &str) -> bool {
     let mut quoted = false;
     tokens.iter().any(|token| {
         let opens = !quoted && crate::script::opens(&token.text);
-        quoted = &*token.text == "str" && !quoted;
+        quoted = !quoted && crate::script::reads_token(&token.text);
         opens
     })
 }
@@ -1109,6 +1109,8 @@ mod tests {
         assert!(may_open("me command-prompt"));
         assert!(!may_open("me focused opts horizontal split drop"));
         assert!(!may_open("str menu rename"));
+        assert!(!may_open("1 let menu"));
+        assert!(!may_open("define menu 1 end"));
     }
 
     /// Leaving sets no cursor shape: DECSCUSR 0 is a blinking block (ctlseqs),
