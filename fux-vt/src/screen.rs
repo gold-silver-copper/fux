@@ -657,6 +657,12 @@ impl Screen {
     pub fn pending_wrap(&self) -> bool {
         self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap)
     }
+    /// The Last Column Flag, autowrap on or off: a glyph's, set with it on,
+    /// or one DECRC restored.
+    fn last_column_flag(&self) -> bool {
+        let cursor = self.grid().cursor;
+        cursor.pending_wrap && (cursor.restored || self.mode(Mode::Autowrap))
+    }
     /// Whether `mode` is set, as DECRQM reports it. The alternate screen's
     /// three modes are set together, while it is shown; DECARM and 1048
     /// never are.
@@ -1737,7 +1743,7 @@ impl Screen {
     /// DECSC, into the grid shown (`Saved`).
     fn save(&mut self) {
         let (attributes, charsets, protect) = (self.attributes, self.charsets, self.protect);
-        let pending_wrap = self.pending_wrap();
+        let pending_wrap = self.last_column_flag();
         let g = self.grid_mut();
         let mut cursor = g.cursor;
         cursor.pending_wrap = pending_wrap;
@@ -1754,6 +1760,7 @@ impl Screen {
         let g = self.grid_mut();
         let saved = g.saved;
         g.cursor = saved.cursor;
+        g.cursor.restored = saved.cursor.pending_wrap;
         g.set_col(g.cursor.col().min(g.addressed().1.last()));
         self.attributes = saved.attributes;
         self.pen_changed();
@@ -2024,8 +2031,9 @@ impl Screen {
     /// reporting, mouse modes and kitty keyboard flags stay as they are,
     /// as in xterm.
     fn soft_reset(&mut self) {
-        // DECAWM comes back on with no wrap pending if it was off.
-        if !self.mode(Mode::Autowrap) {
+        // DECAWM comes back on with no wrap pending if it was off, but
+        // the Last Column Flag DECRC restored.
+        if !self.last_column_flag() {
             self.grid_mut().cursor.pending_wrap = false;
         }
         self.modes.reset(Modes::SOFT_RESET);
@@ -2310,8 +2318,9 @@ impl Screen {
         match mode.kind() {
             Kind::Flag => {
                 // Resetting DECAWM ends a pending wrap (DEC STD 070,
-                // Appendix D.6.1), and setting it again starts with none.
-                if mode == Mode::Autowrap && !(on && self.mode(mode)) {
+                // Appendix D.6.1), and setting it again starts with none
+                // but the Last Column Flag DECRC restored.
+                if mode == Mode::Autowrap && !(on && self.last_column_flag()) {
                     self.grid_mut().cursor.pending_wrap = false;
                 }
                 self.modes.set(mode, on);

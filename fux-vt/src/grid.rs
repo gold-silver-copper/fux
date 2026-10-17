@@ -24,6 +24,10 @@ pub(crate) struct Cursor {
     /// (`Screen::pending_wrap`) is not set. A mark joins the glyph either
     /// way. DECAWM's changes, DECSTR and DECSC treat it so.
     pub pending_wrap: bool,
+    /// `pending_wrap` came back with DECRC: the Last Column Flag, which
+    /// setting autowrap keeps (DEC STD 070, Appendix D.6.1), even if it
+    /// was off. A glyph's own flag is never restored.
+    pub restored: bool,
     /// Origin mode (DECOM).
     pub origin: bool,
 }
@@ -1906,7 +1910,7 @@ impl Grid {
     /// most the screen's width, so the cursor stays on it.
     #[inline]
     pub fn advance_within(&mut self, col: u16, end: u16) {
-        self.cursor.pending_wrap = col >= end;
+        (self.cursor.pending_wrap, self.cursor.restored) = (col >= end, false);
         self.cursor.col = col.min(end.saturating_sub(1));
     }
     /// Moves the cursor to row `row`, the last if past it.

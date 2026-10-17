@@ -108,6 +108,18 @@ fn the_last_column_flag_is_set_with_autowrap_alone() -> Result {
     let p = run(2, 5, b"abcde\x1b[?7l\x1b[?7hX")?;
     assert_eq!(lines(&p), ["abcdX", ""]);
     assert!(!p.screen().row_wrapped(0));
+    // A flag DECRC restores is the Last Column Flag ("restored when a
+    // Restore Cursor operation is performed"), which only resetting
+    // DECAWM clears, not setting it: with DECAWM set again, DECSET or
+    // DECSTR, the next glyph wraps; saved again meanwhile, it is kept.
+    for then in [&b"\x1b[?7h"[..], b"\x1b[!p", b"\x1b7\x1b8\x1b[?7h"] {
+        let p = run(
+            2,
+            5,
+            &[&b"abcde\x1b7\x1b[?7l\x1b8"[..], then, b"X"].concat(),
+        )?;
+        assert_eq!(lines(&p), ["abcde", "X"], "{then:?}");
+    }
     // No flag for DECSC to save, nor for DECSTR, which sets DECAWM, to
     // carry out; a mark still joins the glyph in the last column.
     for then in [&b"\x1b7\x1b[?7h\x1b8"[..], b"\x1b[!p"] {
