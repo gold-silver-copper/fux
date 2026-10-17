@@ -164,33 +164,28 @@ impl Session {
     /// The options a line gives pane `id`: where it starts, and a program's
     /// variables and words; with `ids`, the id it asks for.
     fn pane_words(&self, id: PaneId, ids: bool, line: &mut Vec<String>) {
-        match self.program(id) {
-            Some(launch) => {
-                line.extend(string(&launch.cwd.to_string_lossy()).chain(["cwd".to_owned()]));
-                for (key, value) in &launch.env {
-                    line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
-                }
-                if ids {
-                    line.extend(asked(&id.to_string()));
-                }
-                let mut words = launch.argv.iter();
-                if let Some(program) = words.next() {
-                    line.extend(string(program).chain(["program".to_owned()]));
-                }
-                for arg in words {
-                    line.extend(string(arg).chain(["arg".to_owned()]));
-                }
-                // Made, and left to run: a replay waits for no program.
-                line.extend(["0".to_owned(), "timeout".to_owned()]);
-            }
-            None => {
-                let cwd = self.cwd_for(super::Here::NOWHERE, Some(id));
-                line.extend(string(&cwd.to_string_lossy()).chain(["cwd".to_owned()]));
-                if ids {
-                    line.extend(asked(&id.to_string()));
-                }
-            }
+        let program = self.program(id);
+        let shell = || self.cwd_for(super::Here::NOWHERE, Some(id));
+        let cwd = program.map_or_else(shell, |launch| launch.cwd.clone());
+        line.extend(string(&cwd.to_string_lossy()).chain(["cwd".to_owned()]));
+        for (key, value) in program.iter().flat_map(|launch| &launch.env) {
+            line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
         }
+        if ids {
+            line.extend(asked(&id.to_string()));
+        }
+        let Some(launch) = program else {
+            return;
+        };
+        let mut words = launch.argv.iter();
+        if let Some(program) = words.next() {
+            line.extend(string(program).chain(["program".to_owned()]));
+        }
+        for arg in words {
+            line.extend(string(arg).chain(["arg".to_owned()]));
+        }
+        // Made, and left to run: a replay waits for no program.
+        line.extend(["0".to_owned(), "timeout".to_owned()]);
     }
 }
 
