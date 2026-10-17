@@ -1414,6 +1414,7 @@ mod tests {
                 let kitty = KeyMode::Kitty {
                     alternate: true,
                     report: Report::Disambiguated,
+                    backarrow: false,
                 };
                 assert_eq!(decoded(kitty), vec![Some(press)], "{prefix}{name}");
                 compared += 1;

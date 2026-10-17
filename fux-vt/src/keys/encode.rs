@@ -33,6 +33,8 @@ pub enum KeyMode {
         alternate: bool,
         /// Which keys are escapes.
         report: Report,
+        /// DECBKM, which Backspace's legacy byte follows.
+        backarrow: bool,
     },
 }
 
@@ -84,6 +86,7 @@ impl crate::Screen {
         KeyMode::Kitty {
             alternate: flags & ALTERNATE_KEYS != 0,
             report,
+            backarrow: self.mode(crate::Mode::BackarrowSendsBackspace),
         }
     }
 
@@ -151,7 +154,11 @@ const C1_PASTE_END: &[u8] = b"\xc2\x9b201~";
 /// and applies to the key, else legacy xterm bytes, which every key has.
 pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
     match mode {
-        KeyMode::Kitty { alternate, report } => kitty(stroke, alternate, report, out),
+        KeyMode::Kitty {
+            alternate,
+            report,
+            backarrow,
+        } => kitty(stroke, alternate, report, backarrow, out),
         KeyMode::Legacy {
             application,
             other_keys: level,
@@ -171,8 +178,9 @@ pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
 ///   unshifted key's, with the text as its third parameter if asked;
 /// - any other text key is `CSI code ; mods u`, with its shifted and
 ///   base-layout keys if `alternate` and known;
-/// - Enter, Tab and Backspace send their legacy byte unless modified (or all
-///   keys are reported), Escape is `CSI 27 u`;
+/// - Enter, Tab and Backspace send their legacy byte (Backspace's BS with
+///   DECBKM set, `backarrow`) unless modified (or all keys are reported),
+///   Escape is `CSI 27 u`;
 /// - the functional keys are `CSI 1 ; mods X` or `CSI X` (arrows, Home, End,
 ///   F1, F2, F4), or `CSI n ; mods ~` (Insert, Delete, the page keys, F3 as
 ///   13, F5 to F12), never SS3; a keypad key is its own `CSI n u`.
@@ -181,7 +189,7 @@ pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
 /// among them, if it spoke the protocol; else the press's, a capital letter
 /// counting as shifted. Only presses are sent: fux reports no repeats or
 /// releases (2), which the spec lets a terminal leave out.
-fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) {
+fn kitty(stroke: Keystroke, alternate: bool, report: Report, backarrow: bool, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = stroke.press;
     let exact = stroke.kitty;
     let all = report != Report::Disambiguated;
@@ -241,7 +249,11 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
             }
             out.push(b'u');
         }
-        // Enter, Tab and Backspace: the legacy byte, which is also the code.
+        // Enter, Tab and Backspace: the legacy byte, which is also the code
+        // but for Backspace with DECBKM set.
+        Form::Control(Control::Backspace) if held == 0 && !all => {
+            out.push(backspace(false, backarrow));
+        }
         Form::Control(control) if control != Control::Escape && held == 0 && !all => {
             out.push(control.code());
         }
@@ -659,7 +671,11 @@ mod tests {
         backarrow: false,
     };
     const fn kitty_mode(alternate: bool, report: Report) -> KeyMode {
-        KeyMode::Kitty { alternate, report }
+        KeyMode::Kitty {
+            alternate,
+            report,
+            backarrow: false,
+        }
     }
     const DISAMBIGUATED: KeyMode = kitty_mode(false, Report::Disambiguated);
     const ALTERNATE: KeyMode = kitty_mode(true, Report::Disambiguated);
@@ -950,10 +966,11 @@ mod tests {
     /// DECBKM (`CSI ? 67 h`; ctlseqs: "Backarrow key sends backspace"):
     /// set, Backspace sends BS, and Ctrl-Backspace, which xterm's
     /// backarrow toggle makes the other, DEL; reset, the reverse. Through
-    /// modifyOtherKeys the codes swap the same way; the kitty protocol
-    /// does not read it.
+    /// modifyOtherKeys the codes swap the same way. The kitty protocol's
+    /// Backspace "still generate[s] the same bytes as in legacy mode"
+    /// ("Disambiguate escape codes"), and its codes stay its own.
     #[test]
-    fn decbkm_makes_backspace_send_bs() {
+    fn decbkm_makes_backspace_send_bs() -> Result<(), crate::Error> {
         const BS: KeyMode = KeyMode::Legacy {
             application: false,
             other_keys: None,
@@ -962,6 +979,11 @@ mod tests {
         const BS_ALL: KeyMode = KeyMode::Legacy {
             application: false,
             other_keys: Some(OtherKeys::All),
+            backarrow: true,
+        };
+        let kitty_bs = KeyMode::Kitty {
+            alternate: false,
+            report: Report::Disambiguated,
             backarrow: true,
         };
         for (name, mode, bytes) in [
@@ -974,9 +996,17 @@ mod tests {
             ("C-S-BSpace", BS_ALL, "\x1b[27;6;127~"),
             ("BSpace", BS_ALL, "\x08"),
             ("C-BSpace", BS_ALL, "\x7f"),
+            ("BSpace", kitty_bs, "\x08"),
+            ("C-BSpace", kitty_bs, "\x1b[127;5u"),
+            ("BSpace", DISAMBIGUATED, "\x7f"),
         ] {
             assert_eq!(named(name, mode), bytes, "{name} {mode:?}");
         }
+        let options = crate::Feature::KittyKeyboard.into();
+        let mut parser = crate::Parser::with_options(crate::Size::of(4, 10), 0, options)?;
+        parser.process(b"\x1b[?67h\x1b[>1u")?;
+        assert_eq!(named("BSpace", parser.screen().key_mode()), "\x08");
+        Ok(())
     }
 
     /// A screen's kitty flags pick the protocol: disambiguate or all keys
