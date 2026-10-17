@@ -231,11 +231,6 @@ soft-wrapped, and is otherwise dropped. A glyph wider than the grid is
 dropped, the cursor unmoved but for a wrap pending before it, which is
 carried out, as xterm does.
 
-`Options`, `Error`, `Color`, `Blink`, `UnderlineStyle`,
-`MouseProtocolMode`, `MouseProtocolEncoding`, `Event` and `Unhandled` are
-`#[non_exhaustive]`: build options with `Options::new()` and its `const`
-`with_*` methods, and give matches a fallback arm.
-
 ## Storage, identity and windows
 
 Each screen is a grid: rows of cells in slots, a ring giving each screen

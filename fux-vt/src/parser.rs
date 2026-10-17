@@ -374,7 +374,6 @@ closed! {
     /// A piece of opt-in behaviour that needs the host's cooperation, turned on
     /// in [`Options`].
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[non_exhaustive]
     pub enum Feature {
         /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
         /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
@@ -557,7 +556,6 @@ impl Identity {
 /// A side effect requested by child output. Only delivered with
 /// [`Feature::Events`]; payloads are raw bytes, bounded by [`OSC_PAYLOAD_LIMIT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Event<'a> {
     /// OSC 0 or OSC 2.
     Title(&'a [u8]),
@@ -597,7 +595,6 @@ pub enum Event<'a> {
 /// log or answer it. Sequences cut short by their bounds (too many
 /// parameters or intermediates) are dropped without being reported.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub enum Unhandled<'a> {
     /// `CSI`, its private marker and intermediates, parameters and final byte.
     Csi {

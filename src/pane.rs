@@ -332,7 +332,7 @@ impl fux_vt::Sink for Sink<'_> {
                     *self.copied = Some(text);
                 }
             }
-            fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } | _ => {}
+            fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } => {}
         }
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`

@@ -68,7 +68,6 @@ impl Sink for Record {
                 intermediates,
                 action,
             } => format!("ESC {}{}", text(intermediates), char::from(action)),
-            _ => "?".to_owned(),
         });
     }
 }

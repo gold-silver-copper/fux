@@ -336,7 +336,6 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
                 MouseProtocolMode::PressRelease => Json::str("press_release"),
                 MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
                 MouseProtocolMode::AnyMotion => Json::str("any_motion"),
-                _ => Json::str("other"),
             },
         ),
         (
@@ -521,8 +520,7 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
     let colour = |c: Color| match c {
         Color::Idx(n) => Some(Json::int(n)),
         Color::Rgb(Rgb { r, g, b }) => Some(Json::str(format!("#{r:02x}{g:02x}{b:02x}"))),
-        // A kind of colour fux-vt does not know yet is told as the default.
-        Color::Default | _ => None,
+        Color::Default => None,
     };
     let mut fields = Vec::new();
     fields.extend(colour(a.foreground()).map(|c| ("fg", c)));

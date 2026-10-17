@@ -52,7 +52,6 @@ modes! {
     /// / `l`). [`Screen::mode`](crate::Screen::mode) says whether it is set, as
     /// DECRQM reports it.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[non_exhaustive]
     pub enum Mode {
         /// IRM (`CSI 4 h`): a glyph printed moves what is there right.
         Insert (false, 4) => Kind::Flag,

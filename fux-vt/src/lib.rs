@@ -411,7 +411,6 @@ impl Prints {
 
 /// Input/resource errors. Failing size changes leave the old screen intact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Error {
     /// More rows or cells than a grid may hold, or an allocation that failed.
     Capacity,

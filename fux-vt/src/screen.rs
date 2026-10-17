@@ -22,7 +22,6 @@ const TABLED: u32 = u32::MAX - 1;
 /// (`CSI ? 9 / 1000 / 1002 / 1003 h`). fux-vt sends no report of its own;
 /// the host encodes one with `Screen::encode_mouse`, which reads this.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum MouseProtocolMode {
     /// No reporting.
     #[default]
@@ -65,7 +64,6 @@ closed! {
 
 /// How mouse reports are to be encoded (`CSI ? 1005 / 1006 h`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum MouseProtocolEncoding {
     /// The legacy encoding: coordinates as single bytes.
     #[default]

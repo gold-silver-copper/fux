@@ -32,7 +32,7 @@ impl Sink for Record {
             Event::ColorQuery { number, bel } => {
                 format!("color:{number}:{}", if bel { "bel" } else { "st" })
             }
-            Event::Notification(_) | _ => "unknown".to_owned(),
+            Event::Notification(_) => "unknown".to_owned(),
         });
     }
 }

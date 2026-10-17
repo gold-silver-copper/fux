@@ -643,7 +643,7 @@ fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
     let colour = |c: Color, default: Option<Rgb>| match c {
         Color::Idx(n) => screen.palette_color(n).map_or(c, Color::Rgb),
         Color::Default => default.map_or(c, Color::Rgb),
-        Color::Rgb(..) | _ => c,
+        Color::Rgb(..) => c,
     };
     attributes
         .with_foreground(colour(attributes.foreground(), screen.dynamic_color(10)))
@@ -1302,15 +1302,18 @@ pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
         {
             let _ = write!(out, ";4:{}", style.number());
         }
-        // Single, a style the terminal does not draw, or one fux-vt does
-        // not know yet: a plain underline.
-        UnderlineStyle::Single | _ => out.extend_from_slice(b";4"),
+        // Single, or a style the terminal does not draw: a plain
+        // underline.
+        UnderlineStyle::Single
+        | UnderlineStyle::Double
+        | UnderlineStyle::Curly
+        | UnderlineStyle::Dotted
+        | UnderlineStyle::Dashed => out.extend_from_slice(b";4"),
     }
-    // A kind of blink fux-vt does not know yet is drawn as none.
     match a.blink() {
         fux_vt::Blink::Slow => out.extend_from_slice(b";5"),
         fux_vt::Blink::Rapid => out.extend_from_slice(b";6"),
-        fux_vt::Blink::None | _ => {}
+        fux_vt::Blink::None => {}
     }
     // The underline colour in ITU-T T.416's colon form (§13.1.8), with its
     // empty colour-space slot: a terminal that does not know SGR 58 skips
@@ -1327,8 +1330,7 @@ pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
         Color::Rgb(Rgb { r, g, b }) => {
             let _ = write!(out, ";58:2::{r}:{g}:{b}");
         }
-        // A kind of colour fux-vt does not know yet is drawn as the default.
-        Color::Default | _ => {}
+        Color::Default => {}
     }
     // `base` is 30 or 40, so no code comes near 255: every sum is exact.
     let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
@@ -1345,7 +1347,7 @@ pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
         Color::Rgb(Rgb { r, g, b }) => {
             let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
         }
-        Color::Default | _ => {}
+        Color::Default => {}
     };
     color(out, a.foreground(), 30);
     color(out, a.background(), 40);
@@ -1457,8 +1459,7 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
         M::None => 0,
         M::Press | M::PressRelease => 1000,
         M::ButtonMotion => 1002,
-        // `AnyMotion`, and a mode fux-vt may add later: the most.
-        M::AnyMotion | _ => 1003,
+        M::AnyMotion => 1003,
     }
 }
 

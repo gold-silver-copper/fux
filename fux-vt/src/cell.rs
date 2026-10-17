@@ -32,7 +32,6 @@ impl From<Rgb> for [u8; 3] {
 
 /// A default, indexed, or true-colour terminal colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Color {
     /// The terminal's default colour, foreground or background as it is used.
     #[default]
@@ -47,7 +46,6 @@ pub enum Color {
 /// How a cell blinks: SGR 5 (slow) and 6 (rapid) replace one another, and
 /// SGR 25 stops either.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Blink {
     /// Not blinking.
     #[default]
@@ -62,7 +60,6 @@ pub enum Blink {
 /// 8.3.117), and kitty's styles `4:0` to `4:5`
 /// (`references/modern/kitty_underlines.html`), numbered as they are there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 #[repr(u16)]
 pub enum UnderlineStyle {
     /// Not underlined (SGR 24, `4:0`).
