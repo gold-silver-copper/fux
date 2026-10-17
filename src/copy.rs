@@ -495,7 +495,7 @@ fn start(session: &mut Session, client: ClientId) {
         }
         Err(error) => {
             session.error_to(client, error.to_string());
-            let ended = crate::protocol::ToAttached::Ended;
+            let ended = crate::protocol::ToAttached::Ended(crate::protocol::ScreenKind::Copy);
             session
                 .outbox
                 .push(crate::session::Outgoing::To(client, ended));

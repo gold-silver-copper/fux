@@ -104,7 +104,7 @@ chooser, prompt, confirmation or copy mode), else through its bindings
 actions, and runs its programs in-process as itself (a screen one opens,
 built with what the session answers, opens), as it does the programs the
 session hands it (`ToAttached::Run`) and the keys sent to it
-(`ToAttached::Keys`); `ToAttached::Ended` ends its copy mode. Operations: bytes a
+(`ToAttached::Keys`); `ToAttached::Ended` ends its screen of that kind. Operations: bytes a
 client types (whole or in pieces), the Escape deadline, resizes, one to
 three clients attaching and detaching, a fixed list of programs (tabs,
 splits, overlays for a client, `bind`/`unbind`, `prefix`, `set`, `detach`,

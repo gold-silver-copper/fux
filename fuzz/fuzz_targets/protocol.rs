@@ -95,7 +95,7 @@ fn to_attached(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
         ToAttached::Paint(p) => splits_back(&bytes, p, ToAttached::Paint),
         ToAttached::Welcome(..)
         | ToAttached::Exit(_)
-        | ToAttached::Ended
+        | ToAttached::Ended(_)
         | ToAttached::Run(_)
         | ToAttached::Keys(_) => {}
     }

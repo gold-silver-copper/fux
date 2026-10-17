@@ -498,7 +498,7 @@ impl Client {
                     self.id = Some(me.to_string());
                 }
                 frame @ (ToAttached::Welcome(..)
-                | ToAttached::Ended
+                | ToAttached::Ended(_)
                 | ToAttached::Run(_)
                 | ToAttached::Keys(_)) => {
                     if let Some(keyboard) = &mut self.keyboard {

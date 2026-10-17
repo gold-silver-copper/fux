@@ -531,7 +531,7 @@ mod tests {
                     _,
                     ToAttached::Welcome(..)
                     | ToAttached::Exit(_)
-                    | ToAttached::Ended
+                    | ToAttached::Ended(_)
                     | ToAttached::Run(_)
                     | ToAttached::Keys(_),
                 )

@@ -487,7 +487,7 @@ impl Conn {
             }
             ToAttached::Exit(_) => self.end(session, frame),
             ToAttached::Welcome(..)
-            | ToAttached::Ended
+            | ToAttached::Ended(_)
             | ToAttached::Run(_)
             | ToAttached::Keys(_) => self.send(session, frame),
         }
@@ -1949,7 +1949,7 @@ mod tests {
                 ToAttached::Paint(bytes) => painted.extend_from_slice(&bytes),
                 ToAttached::Exit(reason) => exit = Some(reason.to_owned()),
                 ToAttached::Welcome(..)
-                | ToAttached::Ended
+                | ToAttached::Ended(_)
                 | ToAttached::Run(_)
                 | ToAttached::Keys(_) => {}
             }

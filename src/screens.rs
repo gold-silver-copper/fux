@@ -11,7 +11,7 @@ use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::{KeyPress, Keystroke};
-use crate::protocol::{End, Reply, Scalar};
+use crate::protocol::{End, Reply, Scalar, ScreenKind};
 use crate::script::Failed;
 use crate::view::Line;
 
@@ -279,20 +279,30 @@ impl Default for Screen {
 }
 
 impl Screen {
-    /// Whether it is one of the client's screens, not its bindings.
-    pub fn is_open(&self) -> bool {
-        !matches!(self, Screen::Keys(_))
+    /// What the server draws it as, if it is one of the client's screens;
+    /// nothing for its bindings.
+    pub fn kind(&self) -> Option<ScreenKind> {
+        match self {
+            Screen::Keys(_) => None,
+            Screen::Copy(_) => Some(ScreenKind::Copy),
+            Screen::List(_) | Screen::Prompt(_) | Screen::Confirm { .. } => Some(ScreenKind::Panel),
+        }
+    }
+
+    /// The server ended its screen of `kind`: closed, if it is still that
+    /// kind (the client may have opened another since).
+    pub fn ended(&mut self, kind: ScreenKind) {
+        if self.kind() == Some(kind) {
+            *self = Screen::default();
+        }
     }
 
     /// What opening it sends the server: the panel to draw, or copy mode's
     /// start.
     pub fn opened(&self) -> Option<Act> {
-        match self {
-            Screen::Keys(_) => None,
-            Screen::Copy(_) => Some(Act::Copy(CopyAct::Enter)),
-            Screen::List(_) | Screen::Prompt(_) | Screen::Confirm { .. } => {
-                self.panel().map(Act::Show)
-            }
+        match self.kind()? {
+            ScreenKind::Copy => Some(Act::Copy(CopyAct::Enter)),
+            ScreenKind::Panel => self.panel().map(Act::Show),
         }
     }
 
@@ -495,6 +505,22 @@ mod tests {
             chooser: true,
             about: None,
         })
+    }
+
+    /// What the server ended closes only a screen of its kind: copy mode
+    /// ending as a list opens leaves the list.
+    #[test]
+    fn a_screen_closes_only_for_its_own_kind_ending() {
+        let mut screen = list();
+        screen.ended(ScreenKind::Copy);
+        assert_eq!(screen, list());
+        screen.ended(ScreenKind::Panel);
+        assert_eq!(screen, Screen::default());
+        let mut copy = Screen::Copy(None);
+        copy.ended(ScreenKind::Panel);
+        assert_eq!(copy, Screen::Copy(None));
+        copy.ended(ScreenKind::Copy);
+        assert_eq!(copy, Screen::default());
     }
 
     /// A list moves, chooses, renames and closes on the client: each a

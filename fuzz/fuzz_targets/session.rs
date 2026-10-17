@@ -419,11 +419,9 @@ impl Run {
             Outgoing::To(_, ToAttached::Welcome(..)) => panic!("a welcome from the session"),
             Outgoing::Shutdown { .. } => self.shut = true,
             Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code),
-            Outgoing::To(client, ToAttached::Ended) => {
-                if let Some(keys) = self.keys.get_mut(&client)
-                    && keys.screen.is_open()
-                {
-                    keys.screen = Screen::default();
+            Outgoing::To(client, ToAttached::Ended(kind)) => {
+                if let Some(keys) = self.keys.get_mut(&client) {
+                    keys.screen.ended(kind);
                 }
             }
             Outgoing::To(client, ToAttached::Keys(typed)) => {
@@ -554,7 +552,9 @@ impl Run {
     }
 
     fn screen_open(&self, client: ClientId) -> bool {
-        self.keys.get(&client).is_some_and(|k| k.screen.is_open())
+        self.keys
+            .get(&client)
+            .is_some_and(|k| k.screen.kind().is_some())
     }
 
     /// What a screen's key or paste led to: actions sent, programs run.
@@ -577,7 +577,7 @@ impl Run {
         };
         let read_only = view.read_only;
         let mut keys = self.keys.remove(&client).unwrap_or_default();
-        if keys.screen.is_open() && !read_only {
+        if keys.screen.kind().is_some() && !read_only {
             let effects = keys.screen.key(&self.keymap, stroke, read_only);
             self.keys.insert(client, keys);
             self.effects(client, effects);

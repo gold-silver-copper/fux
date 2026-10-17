@@ -468,6 +468,17 @@ frames! {
     }
 }
 
+wire! {
+    /// Which of a client's screens the server draws: copy mode, or a panel
+    /// (a menu, chooser, prompt or confirmation). One the server ended is
+    /// closed on the client only if it is still of that kind.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ScreenKind {
+        Copy,
+        Panel,
+    }
+}
+
 frames! {
     /// The server's frames to an attaching client, and to the client once
     /// it is attached.
@@ -484,11 +495,11 @@ frames! {
         /// outside one (a copy, the bell, questions for the terminal).
         Paint(bytes: Cow<'a, [u8]>) = 7,
         Exit(reason: &'a str) = 8,
-        /// The server ended its screen by itself (copy mode whose rows
-        /// dropped from history, whose pane went or is no longer focused, or
-        /// with no pane to copy; a menu, chooser, prompt or confirmation
-        /// whose subject closed), the mode being the client's.
-        Ended = 14,
+        /// The server ended its screen of that kind by itself (copy mode
+        /// whose rows dropped from history, whose pane went or is no longer
+        /// focused, or with no pane to copy; a menu, chooser, prompt or
+        /// confirmation whose subject closed), the mode being the client's.
+        Ended(kind: ScreenKind) = 14,
         /// fuxth to run as its own, asked of it from elsewhere (`str c1
         /// client menu`).
         Run(code: String) = 15,
@@ -708,7 +719,7 @@ mod tests {
         for taken in [Some(true), Some(false), None] {
             round_trip!(ToAttached, 12, ToAttached::Welcome(client, taken));
         }
-        round_trip!(ToAttached, 14, ToAttached::Ended);
+        round_trip!(ToAttached, 14, ToAttached::Ended(ScreenKind::Copy));
         round_trip!(ToAttached, 15, ToAttached::Run("me zoom".into()));
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
         round_trip!(ToCommand, 17, ToCommand::Part(Cow::Borrowed(b"reply")));
@@ -822,11 +833,16 @@ mod tests {
                 "a frame's payload: no Request has tag 255",
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),
-            // A frame of no fields has no payload.
+            // A frame's payload is its fields, and no more.
             (
                 server,
-                vec![0, 0, 0, 2, 14, 0],
+                vec![0, 0, 0, 3, 14, 0, 0],
                 "a frame's payload: bytes after the value",
+            ),
+            (
+                server,
+                vec![0, 0, 0, 2, 14, 9],
+                "a frame's payload: no ScreenKind has tag 9",
             ),
             (
                 attached,

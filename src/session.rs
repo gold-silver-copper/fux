@@ -14,7 +14,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::pane::{InputQueue, Pane, Process, Runs, Typed, basename};
 use crate::process::Child;
-use crate::protocol::{End, Reply, ToAttached};
+use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Follows, Waiting};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
@@ -1486,12 +1486,13 @@ impl Session {
     pub fn settle(&mut self) {
         // Out of the session while they are repaired, which reads no view.
         let mut views = std::mem::take(&mut self.views);
-        let ended: Vec<ClientId> = (views.values_mut())
-            .filter_map(|view| self.repair(view).then_some(view.id))
+        let ended: Vec<(ClientId, ScreenKind)> = (views.values_mut())
+            .filter_map(|view| self.repair(view).map(|kind| (view.id, kind)))
             .collect();
         self.views = views;
-        for client in ended {
-            self.outbox.push(Outgoing::To(client, ToAttached::Ended));
+        for (client, kind) in ended {
+            self.outbox
+                .push(Outgoing::To(client, ToAttached::Ended(kind)));
         }
         self.size_panes();
         self.hold_copies();
@@ -1518,27 +1519,30 @@ impl Session {
             } else {
                 view.mode = Mode::Normal;
                 view.error("copy mode ended: the history dropped the rows it held");
-                self.outbox.push(Outgoing::To(view.id, ToAttached::Ended));
+                let ended = ToAttached::Ended(ScreenKind::Copy);
+                self.outbox.push(Outgoing::To(view.id, ended));
             }
         }
     }
 
     /// Ends what a view shows if what it is about is gone: copy mode whose
     /// pane closed or is no longer focused, a client's screen about a pane,
-    /// tab or workspace that closed. Whether it did, which its client is
-    /// told (`ToAttached::Ended`), the mode being the client's.
-    fn repair(&self, view: &mut View) -> bool {
+    /// tab or workspace that closed. Which kind it ended, if it did, which
+    /// its client is told (`ToAttached::Ended`), the mode being the client's.
+    fn repair(&self, view: &mut View) -> Option<ScreenKind> {
         use crate::act::{List, Panel};
         let focus = self.focused(view.id);
         // Copy mode's rows are looked for once the panes are sized
         // (`hold_copies`).
-        let gone = match &view.mode {
-            Mode::Copy(copy) if !self.panes.contains_key(&copy.pane) => {
-                "copy mode ended: its pane closed".to_owned()
-            }
-            Mode::Copy(copy) if Some(copy.pane) != focus => {
-                "copy mode ended: its pane is no longer focused".to_owned()
-            }
+        let (kind, gone) = match &view.mode {
+            Mode::Copy(copy) if !self.panes.contains_key(&copy.pane) => (
+                ScreenKind::Copy,
+                "copy mode ended: its pane closed".to_owned(),
+            ),
+            Mode::Copy(copy) if Some(copy.pane) != focus => (
+                ScreenKind::Copy,
+                "copy mode ended: its pane is no longer focused".to_owned(),
+            ),
             Mode::Panel(
                 Panel::List(List {
                     about: Some(about), ..
@@ -1547,12 +1551,14 @@ impl Session {
                     about: Some(about), ..
                 }
                 | Panel::Confirm { about, .. },
-            ) if self.there(*about).is_err() => format!("closed: {} is gone", about),
-            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return false,
+            ) if self.there(*about).is_err() => {
+                (ScreenKind::Panel, format!("closed: {} is gone", about))
+            }
+            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
         };
         view.mode = Mode::Normal;
         view.error(gone);
-        true
+        Some(kind)
     }
 
     /// The settings changed: every pane keeps the history they say.
@@ -3484,11 +3490,9 @@ pub(crate) mod testing {
         for outgoing in outbox {
             match outgoing {
                 super::Outgoing::To(client, ToAttached::Run(code)) => session.run_as(client, &code),
-                super::Outgoing::To(client, ToAttached::Ended) => {
-                    if let Some(keys) = session.test_keys.get_mut(&client)
-                        && keys.screen.is_open()
-                    {
-                        keys.screen = crate::screens::Screen::default();
+                super::Outgoing::To(client, ToAttached::Ended(kind)) => {
+                    if let Some(keys) = session.test_keys.get_mut(&client) {
+                        keys.screen.ended(kind);
                     }
                 }
                 super::Outgoing::To(client, ToAttached::Keys(inputs)) => {
@@ -3645,7 +3649,7 @@ pub(crate) mod testing {
                     return;
                 };
                 let keys = self.test_keys.entry(client).or_default();
-                let open = keys.screen.is_open();
+                let open = keys.screen.kind().is_some();
                 let act = match input {
                     Input::Key(stroke) => {
                         let effects = keys.screen.key(&self.test_keymap, stroke, read_only);

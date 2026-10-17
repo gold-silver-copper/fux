@@ -664,9 +664,7 @@ impl Keyboard {
     /// (`send-keys` to it).
     pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Act> {
         match frame {
-            // A screen it ended, if the client has not left it already.
-            ToAttached::Ended if self.screen.is_open() => self.screen = Screen::default(),
-            ToAttached::Ended => {}
+            ToAttached::Ended(kind) => self.screen.ended(kind),
             ToAttached::Run(code) => self.run(code),
             ToAttached::Keys(typed) => self.typed(typed),
             // The attachment's own: `attached` reads them.
@@ -766,7 +764,7 @@ impl Keyboard {
             Input::FocusOut => acts.push(Act::Focus(false)),
             // The mouse is a program's, while the client shows none of its
             // own screens.
-            Input::Mouse(_) if self.screen.is_open() => {}
+            Input::Mouse(_) if self.screen.kind().is_some() => {}
             Input::Mouse(event) => acts.push(Act::Mouse(event)),
         }
     }

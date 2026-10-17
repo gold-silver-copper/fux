@@ -360,7 +360,7 @@ impl Through {
                     | ToAttached::Welcome(..)
                     | ToAttached::Run(_)
                     | ToAttached::Keys(_)
-                    | ToAttached::Ended,
+                    | ToAttached::Ended(_),
                 ) => {}
             }
         }
