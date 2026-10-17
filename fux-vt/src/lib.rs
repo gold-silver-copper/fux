@@ -251,6 +251,18 @@ impl<'a> Row<'a> {
     pub fn is_empty(&self) -> bool {
         self.width == 0
     }
+    /// Whether the row, soft-wrapped, ends in a spacer: the blank in its
+    /// own last column that a wide glyph starting the next row did not fit
+    /// in, no part of the text (reflow and copies skip it).
+    pub(crate) fn ends_in_spacer(&self) -> bool {
+        self.wrapped
+            && (self.width.checked_sub(1))
+                .and_then(|col| self.stored(col))
+                .is_some_and(|c| c.is_blank(0))
+            && (self.below())
+                .and_then(|next| next.stored(0))
+                .is_some_and(compact::Compact::is_wide)
+    }
     /// The stored cell at column `col`, blank past those kept; `None` past
     /// the row's width.
     pub(crate) fn stored(&self, col: usize) -> Option<&'a compact::Compact> {
@@ -504,19 +516,10 @@ impl<'a> Window<'a> {
             Some(cell)
         }
     }
-    /// Whether the cell is the blank a reflow left at the end of a
-    /// soft-wrapped row when the wide glyph after it did not fit: no part of
-    /// the text.
+    /// Whether the cell is its row's spacer (`Row::ends_in_spacer`).
     fn spacer(&self, row: u16, col: u16) -> bool {
-        col.checked_add(1) == Some(self.cols())
-            && self.row_wrapped(row)
-            && self
-                .cell(row, col)
-                .is_some_and(|c| !c.has_contents() && c.attributes() == Attributes::default())
-            && row
-                .checked_add(1)
-                .and_then(|next| self.cell(next, 0))
-                .is_some_and(|c| c.is_wide())
+        self.row(row)
+            .is_some_and(|r| usize::from(col).checked_add(1) == Some(r.len()) && r.ends_in_spacer())
     }
     /// Whether row `row` of the window is soft-wrapped, its line going on in
     /// the next row.

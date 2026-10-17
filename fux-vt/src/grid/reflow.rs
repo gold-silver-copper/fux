@@ -183,7 +183,7 @@ impl Grid {
                 }
             }
             let mut taken = len.min(length.saturating_sub(base));
-            if i != end && self.spacer(row, i) {
+            if i != end && row.ends_in_spacer() {
                 // A cursor on a spacer goes with the glyph after it.
                 let spacer = base.saturating_add(len).saturating_sub(1);
                 for offset in &mut line.offsets {
@@ -300,19 +300,6 @@ impl Grid {
             }
         }
         0
-    }
-
-    /// Whether `row`, retained row `index`, soft-wrapped, ends in a spacer:
-    /// a blank that a wide glyph starting the next row did not fit in.
-    fn spacer(&self, row: Row<'_>, index: usize) -> bool {
-        row.width
-            .checked_sub(1)
-            .and_then(|col| row.stored(col))
-            .is_some_and(|c| c.is_blank(0))
-            && self
-                .row_at(index.saturating_add(1))
-                .and_then(|next| next.stored(0))
-                .is_some_and(Compact::is_wide)
     }
 
     /// The identity of retained row `index`, if it is at most `end`: the

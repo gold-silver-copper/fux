@@ -193,6 +193,26 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
     Ok(())
 }
 
+/// The blank a wide glyph that did not fit left at a soft-wrapped row's
+/// end is no part of the text, in the row's own last column: a history
+/// row narrower than the window, after a resize without reflow, copies
+/// without it, as at its own width.
+#[test]
+fn a_spacer_in_a_narrower_history_row_is_no_text() -> Result {
+    let mut p = Parser::new(Size::new(2, 5)?, 1 << 10)?;
+    p.process("abcd\u{4e16}\r\n\n".as_bytes())?;
+    assert_eq!(p.screen().history_len(), 2);
+    let text = |p: &Parser| -> Result<String> {
+        let row = p.screen().rows().next().ok_or(Error::InvalidRange)?;
+        let last = p.screen().size().cols().saturating_sub(1);
+        Ok(row.window().text((0, 0), (1, last), 40, 100)?)
+    };
+    assert_eq!(text(&p)?, "abcd\u{4e16}");
+    p.resize(Size::new(2, 10)?)?;
+    assert_eq!(text(&p)?, "abcd\u{4e16}");
+    Ok(())
+}
+
 #[test]
 fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
     let mut p = Parser::new(Size::new(4, 5)?, 0)?;
