@@ -120,7 +120,7 @@ impl Parameters {
         })
     }
     /// Whether no parameter was given (or only 0, which reads the same).
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len == 1 && self.values.first() == Some(&0)
     }
     /// The first value of the group `index`, or `default` if it is 0 or

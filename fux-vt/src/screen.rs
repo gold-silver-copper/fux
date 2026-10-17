@@ -2281,6 +2281,9 @@ impl Screen {
                 let flags = self.kitty_keyboard_flags();
                 return Some(Dispatch::Reply(Reply::of(format_args!("\x1b[?{flags}u"))));
             }
+            // XTMODKEYS with no parameters resets every resource,
+            // modifyOtherKeys too (ctlseqs); 0 alone reads the same.
+            (b">", b'm') if p.is_empty() => self.modify_other_keys = None,
             // Only resource 4 is modifyOtherKeys; other resources are unhandled.
             (b">", b'm') if p.groups().next() == Some(&[4][..]) => {
                 self.modify_other_keys = match p.first(1, 0) {
