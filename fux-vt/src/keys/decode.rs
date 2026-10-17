@@ -336,11 +336,13 @@ impl Decoder {
     /// sequence it was not waiting on when last marked, or on a paste that
     /// has had bytes since.
     pub fn mark(&mut self, now: Instant) {
-        if let State::Pending { since, .. }
-        | State::Dropping { since, .. }
-        | State::Paste { since, .. } = &mut self.state
-        {
-            since.get_or_insert(now);
+        match &mut self.state {
+            State::Pending { since, .. }
+            | State::Dropping { since, .. }
+            | State::Paste { since, .. } => {
+                since.get_or_insert(now);
+            }
+            State::Idle => {}
         }
     }
 
