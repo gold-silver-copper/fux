@@ -3099,11 +3099,7 @@ impl Session {
         }
         Ok(match workspace {
             WsRef::Name(name) => name.clone(),
-            WsRef::Id(_) => {
-                let id = self.resolve_ws(workspace)?;
-                self.workspace(id)
-                    .map_or_else(String::new, |w| w.name.clone())
-            }
+            WsRef::Id(id) => (self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.name).clone(),
         })
     }
 
