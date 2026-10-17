@@ -152,17 +152,23 @@ modes! {
     }
 }
 
-/// The ANSI modes ECMA-48 defines that fux-vt keeps in their reset state
-/// for good (7.1: "some or all of the modes may have one state only"):
-/// GATM, KAM (the keyboard never locked), CRM (controls performed), SRTM,
-/// ERM (ED, EL and ECH spare a guarded area), VEM, HEM, PUM, FEAM, FETM,
-/// MATM, TTM, SATM, TSM and EBM, which DECRQM answers permanently reset.
-pub(crate) const RESET_FOR_GOOD: [u16; 15] = [1, 2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19];
+/// The ANSI modes ECMA-48 (5th edition) defines that fux-vt keeps in their
+/// reset state for good (7.1: "some or all of the modes may have one state
+/// only"): GATM, KAM (the keyboard never locked), CRM (controls performed),
+/// SRTM, ERM (ED, EL and ECH spare a guarded area), VEM, BDSM (EXPLICIT:
+/// no implicit bidirectional processing), DCSM (PRESENTATION: there is no
+/// data component), HEM, PUM, FEAM, FETM, MATM, TTM, SATM and TSM, which
+/// DECRQM answers permanently reset. 19, the 4th edition's EBM, "shall not
+/// be used" (F.5.1), and is not recognized.
+pub(crate) const RESET_FOR_GOOD: [u16; 16] =
+    [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18];
 
-/// SRM, which fux-vt keeps in its set state for good, SIMULTANEOUS (ECMA-48
-/// 7.2.15; DEC STD 070's SRM, local echo off, its default): fux-vt never
-/// images what is typed. DECRQM answers it permanently set.
-pub(crate) const SEND_RECEIVE: u16 = 12;
+/// The ANSI modes fux-vt keeps in their set state for good, which DECRQM
+/// answers permanently set: SRM, SIMULTANEOUS (7.2.15; DEC STD 070's SRM,
+/// local echo off, its default), as fux-vt never images what is typed;
+/// GRCM, CUMULATIVE (7.2.8), as each SGR changes only the renditions it
+/// names; ZDM, DEFAULT (F.4.2), as a parameter of 0 is its default.
+pub(crate) const SET_FOR_GOOD: [u16; 3] = [12, 21, 22];
 
 impl Mode {
     /// What DECRQM reports for a mode SM and RM never change: 1048, an
