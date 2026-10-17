@@ -477,8 +477,11 @@ impl Grid {
         let width = u16::try_from(cells.len()).map_err(|_| Error::Capacity)?;
         let kept = trimmed(cells.get(..written).unwrap_or(cells));
         self.history.push(meta.arriving(kept, width))?;
-        // Empty text attaches none (`attach`).
-        self.history.attach(text.as_ref().map(Text::exact), links);
+        // A row with neither text nor links, as most are, attaches none.
+        let text = text.filter(|text| !text.is_empty());
+        if text.is_some() || links.is_some() {
+            self.history.attach(text.map(|text| text.exact()), links);
+        }
         self.history.trim();
         Ok(())
     }
