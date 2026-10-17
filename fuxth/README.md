@@ -50,7 +50,9 @@ line, the deepest first; `print` prints a value at once.
   application does something (asks a server); the run goes on once it has the
   answer. All of a run's state is data: no threads, no blocking, no Rust
   recursion in running a program, and dropping it stops it. A budget of steps
-  lets the host check for Ctrl-C in a loop that never pauses.
+  lets the host check for Ctrl-C in a loop that never pauses, and
+  `Machine::steps` counts every step taken, through every pause, for a host
+  that caps a run.
 - **Bounded.** 1,000,000 values on the stack, 10,000 nested calls; a string or
   list built holds at most 1,000,000 elements, a run builds at most
   16,000,000 in all, and a list holds at most 16,000,000 in all, counting

@@ -624,16 +624,14 @@ pub fn run_capped(
 ) -> Result<Ended, Failed> {
     // A wait met by its program's exit: the run ends with that status.
     let mut status = 0;
-    let mut taken: u64 = 0;
     loop {
         if stop.is_some_and(Stop::stopped) {
             return Err(Failed::new(Code::Stopped, "stopped (the prefix, then Esc)"));
         }
-        if let Some(steps) = steps.filter(|steps| taken > *steps) {
+        if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
             let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
             return Err(placed(machine, failed));
         }
-        taken = taken.saturating_add(SLICE);
         match machine.run(host, SLICE).map_err(|e| ours(machine, e))? {
             Outcome::Finished => {
                 return Ok(Ended {

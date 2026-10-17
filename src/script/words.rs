@@ -1640,6 +1640,27 @@ mod tests {
         );
     }
 
+    /// A request costs the steps the program took to make it, not a whole
+    /// slice of the cap: 200 settings are far under `PROGRAM_STEPS`, and a
+    /// loop still meets the cap.
+    #[test]
+    fn a_request_costs_its_own_steps_against_the_cap() {
+        let run = |config: &str| {
+            super::super::run_quiet(
+                "config",
+                config,
+                crate::client::context(),
+                None,
+                &mut super::super::Settings(None),
+            )
+            .map_err(|failed| failed.code)
+        };
+        let settings: String = std::iter::repeat_n("str clipboard str off set\n", 200).collect();
+        assert_eq!(run(&settings), Ok(()));
+        let forever = "begin false until";
+        assert_eq!(run(forever), Err(Code::Steps));
+    }
+
     #[test]
     fn a_default_capture_view_is_plain() {
         assert_eq!(crate::command::CaptureView::default(), Opts::default().view);

@@ -157,6 +157,8 @@ pub struct Machine<A> {
     pending: Option<(usize, usize)>,
     /// Steps the last long step costs beyond its own.
     extra: u64,
+    /// Steps taken in all, through every run, long steps' costs counted.
+    steps: u64,
     /// Elements built so far.
     built: u64,
     /// The step taken last: how many frames there were, its code, and its
@@ -185,6 +187,7 @@ impl<A: AppValue> Machine<A> {
             out: Vec::new(),
             pending: None,
             extra: 0,
+            steps: 0,
             built: 0,
             last: None,
         }
@@ -274,6 +277,12 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
+    /// Steps taken so far, in every run, a long step counted as the steps
+    /// it costs.
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
     /// Runs up to `budget` steps.
     pub fn run<H: Host<Value = A>>(
         &mut self,
@@ -284,12 +293,12 @@ impl<A: AppValue> Machine<A> {
             self.given(given)?;
         }
         let program = Rc::clone(&self.program);
-        let mut steps = 0u64;
+        let until = self.steps.saturating_add(budget);
         loop {
-            if steps >= budget {
+            if self.steps >= until {
                 return Ok(Outcome::Paused);
             }
-            steps = steps
+            self.steps = (self.steps)
                 .saturating_add(1)
                 .saturating_add(std::mem::take(&mut self.extra));
             let depth = self.frames.len();
