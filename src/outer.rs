@@ -178,12 +178,12 @@ impl Terminal {
 }
 
 impl Session {
-    /// Asks client `client`'s terminal `queries`, which end with DA1, in its
-    /// paint stream; the client's decoder expects the answers.
-    pub(crate) fn ask(&mut self, client: ClientId, queries: &[u8]) {
+    /// Writes `bytes` to client `client`'s terminal, in its paint stream:
+    /// questions, whose answers the client's decoder expects, or a mode it
+    /// sets.
+    pub(crate) fn ask(&mut self, client: ClientId, bytes: &'static [u8]) {
         if self.views.contains_key(&client) {
-            let queries = ToAttached::Paint(queries.to_vec().into());
-            self.outbox.push(Outgoing::To(client, queries));
+            (self.outbox).push(Outgoing::To(client, ToAttached::Paint(bytes.into())));
         }
     }
 
@@ -229,7 +229,7 @@ impl Session {
                     ModeStatus::NotRecognized | ModeStatus::PermanentlyReset => return,
                 };
                 terminal.asked = terminal.asked.saturating_add(1);
-                (self.outbox).push(Outgoing::To(client, ToAttached::Paint(queries.into())));
+                self.ask(client, queries);
             }
             // DA1, the last answer to every round of questions: a change
             // waiting on colours the terminal did not give is told now.
@@ -248,8 +248,7 @@ impl Session {
             // exactly from now on.
             Reply::KittyFlags(_) if !terminal.kitty => {
                 terminal.kitty = true;
-                self.outbox
-                    .push(Outgoing::To(client, ToAttached::Paint(KITTY_PUSH.into())));
+                self.ask(client, KITTY_PUSH);
             }
             // From now on the client is painted underline styles; what it
             // shows already, painted plain, is painted again
