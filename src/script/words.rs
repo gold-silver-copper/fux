@@ -1,7 +1,7 @@
 //! fux's words: each a name, how many values it takes, what it does to the
 //! stack, and a line of help; and what each does, run by the program's
 //! [`Host`].
-use super::{Ask, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits};
+use super::{Ask, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits};
 use crate::code::Code;
 use crate::command::{
     AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
@@ -1560,7 +1560,7 @@ impl Host<'_> {
                 match (name, keys.as_slice()) {
                     ("bind-root", [key]) => {
                         keymap.bind_root(*key, binding).map_err(refused)?;
-                        self.last_bound = Some((keys, true));
+                        self.last_bound = Some(Bound::Root(*key));
                     }
                     ("bind-root", _) => return Err(refused("bind-root takes one key".to_owned())),
                     _ => {
@@ -1574,7 +1574,7 @@ impl Host<'_> {
                                 false,
                             )
                             .map_err(refused)?;
-                        self.last_bound = Some((keys, false));
+                        self.last_bound = Some(Bound::Prefix(keys));
                     }
                 }
             }
@@ -1589,7 +1589,7 @@ impl Host<'_> {
             "unbind-all" => keymap.unbind_all(),
             _ => {
                 // label, group, repeat: the binding just made.
-                let Some((keys, root)) = self.last_bound.clone() else {
+                let Some(bound) = self.last_bound.clone() else {
                     return Err(refused(format!(
                         "{name} changes the binding just made: bind first"
                     )));
@@ -1598,13 +1598,11 @@ impl Host<'_> {
                     "repeat" => None,
                     _ => Some(string(name, &next()?)?),
                 };
-                let binding = match root {
-                    true => keymap
-                        .root
-                        .iter_mut()
-                        .find(|(k, _)| keys.first() == Some(k))
+                let binding = match &bound {
+                    Bound::Root(key) => (keymap.root.iter_mut())
+                        .find(|(k, _)| k == key)
                         .map(|(_, b)| b),
-                    false => keymap.binding_mut(&keys),
+                    Bound::Prefix(keys) => keymap.binding_mut(keys),
                 };
                 let Some(binding) = binding else {
                     return Err(refused("the binding just made is gone".to_owned()));
@@ -1612,12 +1610,14 @@ impl Host<'_> {
                 match (name, given) {
                     ("label", Some(text)) => binding.label = text,
                     ("group", Some(text)) => binding.group = text,
-                    _ if root => {
-                        return Err(refused(
-                            "a binding without the prefix does not repeat".to_owned(),
-                        ));
-                    }
-                    _ => keymap.set_repeat(&keys).map_err(refused)?,
+                    _ => match &bound {
+                        Bound::Root(_) => {
+                            return Err(refused(
+                                "a binding without the prefix does not repeat".to_owned(),
+                            ));
+                        }
+                        Bound::Prefix(keys) => keymap.set_repeat(keys).map_err(refused)?,
+                    },
                 }
             }
         }

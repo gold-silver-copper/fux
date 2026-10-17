@@ -235,6 +235,15 @@ pub enum Then {
     },
 }
 
+/// The keys of a binding just made.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Bound {
+    /// Keys after the prefix.
+    Prefix(Vec<crate::keys::KeyPress>),
+    /// One key, bound without the prefix.
+    Root(crate::keys::KeyPress),
+}
+
 /// What the client does itself.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Local {
@@ -262,9 +271,8 @@ pub struct Host<'a> {
     pub context: Context,
     /// The keymap a config's `bind` and `prefix` change.
     pub keymap: Option<&'a mut Keymap>,
-    /// The binding `label`, `group` and `repeat` change: its keys, and
-    /// whether it is bound without the prefix.
-    pub last_bound: Option<(Vec<crate::keys::KeyPress>, bool)>,
+    /// The binding `label`, `group` and `repeat` change.
+    pub last_bound: Option<Bound>,
     pub out: &'a mut dyn Write,
     /// A command line an agent or a person runs: an action waits for its
     /// pane to settle unless it names what to wait for. Bindings, configs

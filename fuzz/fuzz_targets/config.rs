@@ -13,7 +13,7 @@
 use fux::keymap::{Binding, Held, Keymap, Layer, Node};
 use fux::keys::{KeyPress, Keystroke};
 use fux::screens::Effect;
-use fux::script::{Fux, Host};
+use fux::script::{Bound, Fux, Host};
 use fuxth::{Machine, Outcome};
 use libfuzzer_sys::fuzz_target;
 
@@ -148,12 +148,12 @@ struct Models {
     prefix: KeyPress,
     prefixed: Vec<Model>,
     root: Vec<(KeyPress, Binding)>,
-    last: Option<(Vec<KeyPress>, bool)>,
+    last: Option<Bound>,
 }
 
 impl Models {
     /// What `keymap` holds, as a model.
-    fn of(keymap: &Keymap, last: Option<(Vec<KeyPress>, bool)>) -> Models {
+    fn of(keymap: &Keymap, last: Option<Bound>) -> Models {
         Models {
             prefix: keymap.prefix,
             prefixed: models_of(&keymap.bindings),
@@ -188,7 +188,7 @@ impl Models {
                         Some((_, old)) => *old = binding,
                         None => self.root.push((*key, binding)),
                     }
-                    self.last = Some((keys, true));
+                    self.last = Some(Bound::Root(*key));
                     return true;
                 }
                 // A sequence is a binding or a layer, never both; and
@@ -213,7 +213,7 @@ impl Models {
                     Some(old) => *old = new,
                     None => self.prefixed.push(new),
                 }
-                self.last = Some((keys, false));
+                self.last = Some(Bound::Prefix(keys));
                 true
             }
             Statement::Unbind { keys, root: true } => {
@@ -251,10 +251,10 @@ impl Models {
                 let label = matches!(statement, Statement::Label(_));
                 let binding = match &self.last {
                     None => None,
-                    Some((keys, true)) => (self.root.iter_mut())
-                        .find(|(k, _)| keys.first() == Some(k))
+                    Some(Bound::Root(key)) => (self.root.iter_mut())
+                        .find(|(k, _)| k == key)
                         .map(|(_, b)| b),
-                    Some((keys, false)) => (self.prefixed.iter_mut())
+                    Some(Bound::Prefix(keys)) => (self.prefixed.iter_mut())
                         .find(|b| b.keys == *keys)
                         .map(|b| &mut b.binding),
                 };
@@ -268,7 +268,7 @@ impl Models {
                 true
             }
             Statement::Repeat => {
-                let Some((keys, false)) = &self.last else {
+                let Some(Bound::Prefix(keys)) = &self.last else {
                     return false;
                 };
                 match self.prefixed.iter_mut().find(|b| b.keys == *keys) {
@@ -352,8 +352,8 @@ fn defaults() -> &'static Keymap {
 fn run_config(
     machine: &mut Machine<Fux>,
     keymap: &mut Keymap,
-    last: Option<(Vec<KeyPress>, bool)>,
-) -> (bool, Option<(Vec<KeyPress>, bool)>) {
+    last: Option<Bound>,
+) -> (bool, Option<Bound>) {
     let mut out = Vec::new();
     let mut host = Host {
         context: fux::protocol::Context::default(),
