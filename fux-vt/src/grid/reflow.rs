@@ -518,10 +518,7 @@ impl Reflow for Fill<'_> {
         if !self.rows.contains(&row) {
             return Ok(());
         }
-        let id = match id {
-            Some(id) => id,
-            None => next_id(self.next),
-        };
+        let id = id.unwrap_or_else(|| next_id(self.next));
         let cols = self.grid.size.cols();
         // The row's `used` mark is where its cells laid out end, so the
         // next reflow finds its text, and recycling clears it, from there.

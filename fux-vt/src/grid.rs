@@ -1618,10 +1618,7 @@ impl Grid {
         for source in 0..end {
             let old = self.row_at(source).filter(|_| source < old_retained);
             let is_history = source < live_top;
-            let id = match old {
-                Some(r) => r.id,
-                None => next_id(next),
-            };
+            let id = old.map_or_else(|| next_id(next), |r| r.id);
             let width = match old {
                 // A row is never wider than the u16 grid it was made in.
                 Some(r) if is_history => u16::try_from(r.width).map_err(|_| Error::Capacity)?,
