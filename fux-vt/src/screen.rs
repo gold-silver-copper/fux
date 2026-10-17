@@ -1304,7 +1304,7 @@ impl Screen {
                 }
                 // An overwrite at either half removes the other half too.
                 if cells.get(i).is_some_and(Compact::is_wide_continuation)
-                    && let Some(other) = i.checked_sub(1).and_then(|j| cells.get_mut(j))
+                    && let Some(other) = cells.get_mut(i.wrapping_sub(1))
                 {
                     *other = Compact::blank(style);
                 }

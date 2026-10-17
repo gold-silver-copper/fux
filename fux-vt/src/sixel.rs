@@ -243,7 +243,7 @@ impl Decoder {
 
 /// A sixel colour's share, 0 to 100, as a byte.
 fn percent(n: u32) -> u8 {
-    let scaled = n.saturating_mul(255).checked_div(100).unwrap_or(0);
+    let scaled = n.saturating_mul(255) / 100;
     u8::try_from(scaled).unwrap_or(u8::MAX)
 }
 
@@ -252,24 +252,16 @@ fn percent(n: u32) -> u8 {
 fn hls(hue: u32, lightness: u32, saturation: u32) -> [u8; 3] {
     let (l, s) = (i64::from(lightness), i64::from(saturation));
     // The VT340's hue 0 is blue; the usual wheel's 0 is red, 240° on.
-    let h = i64::from(hue.checked_rem(360).unwrap_or(0)).saturating_add(240);
-    let h = h.checked_rem(360).unwrap_or(0);
+    let h = i64::from(hue % 360).saturating_add(240) % 360;
     // Chroma, and the second-largest channel, both of 0 to 100_000.
     let chroma = 100i64
         .saturating_sub(l.saturating_mul(2).saturating_sub(100).abs())
         .saturating_mul(s)
         .saturating_mul(10);
-    let sector = h.checked_div(60).unwrap_or(0);
-    let within = h
-        .checked_rem(120)
-        .unwrap_or(0)
-        .saturating_mul(1000)
-        .checked_div(60)
-        .unwrap_or(0);
-    let second = chroma
-        .saturating_mul(1000i64.saturating_sub(within.saturating_sub(1000).abs()))
-        .checked_div(1000)
-        .unwrap_or(0);
+    let sector = h / 60;
+    let within = (h % 120).saturating_mul(1000) / 60;
+    let second =
+        chroma.saturating_mul(1000i64.saturating_sub(within.saturating_sub(1000).abs())) / 1000;
     let (r, g, b) = match sector {
         0 => (chroma, second, 0),
         1 => (second, chroma, 0),
@@ -278,15 +270,9 @@ fn hls(hue: u32, lightness: u32, saturation: u32) -> [u8; 3] {
         4 => (second, 0, chroma),
         _ => (chroma, 0, second),
     };
-    let base = l
-        .saturating_mul(1000)
-        .saturating_sub(chroma.checked_div(2).unwrap_or(0));
+    let base = l.saturating_mul(1000).saturating_sub(chroma / 2);
     let byte = |c: i64| {
-        let v = c
-            .saturating_add(base)
-            .saturating_mul(255)
-            .checked_div(100_000)
-            .unwrap_or(0);
+        let v = c.saturating_add(base).saturating_mul(255) / 100_000;
         u8::try_from(v.clamp(0, 255)).unwrap_or(0)
     };
     [byte(r), byte(g), byte(b)]
@@ -386,12 +372,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     // the size, square pixels.
     let _ = write!(out, "\x1bP0;1;0q\"1;1;{width};{height}");
     for (i, [r, g, b]) in palette.iter().enumerate() {
-        let share = |c: u8| {
-            u32::from(c)
-                .saturating_mul(100)
-                .checked_div(255)
-                .unwrap_or(0)
-        };
+        let share = |c: u8| u32::from(c).saturating_mul(100) / 255;
         let _ = write!(out, "#{i};2;{};{};{}", share(*r), share(*g), share(*b));
     }
     let colours = palette.len();

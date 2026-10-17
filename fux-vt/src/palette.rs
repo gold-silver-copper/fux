@@ -76,15 +76,7 @@ pub(crate) fn default(index: u8) -> Rgb {
             .into(),
         16..=231 => {
             let n = index.saturating_sub(16);
-            let channel = |weight: u8| {
-                level(
-                    n.checked_div(weight)
-                        .unwrap_or(0)
-                        .checked_rem(6)
-                        .unwrap_or(0),
-                )
-            };
-            [channel(36), channel(6), channel(1)].into()
+            [level(n / 36), level(n / 6 % 6), level(n % 6)].into()
         }
         _ => {
             let grey = index
@@ -200,8 +192,8 @@ impl Rgb {
     pub fn parse(spec: &[u8]) -> Option<Self> {
         let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
             // Three channels of 1 to 4 digits each, the digits the high bits.
-            let n = hex.len().checked_div(3)?;
-            if n == 0 || hex.len().checked_rem(3) != Some(0) || n > 4 {
+            let n = hex.len() / 3;
+            if n == 0 || hex.len() % 3 != 0 || n > 4 {
                 return None;
             }
             let shift = u32::try_from(n).ok()?.checked_mul(4)?;
@@ -264,15 +256,12 @@ pub(crate) fn answer(command: u16, index: Option<u16>, colour: Rgb, bel: bool) -
 
 /// `n` in decimal: at most three digits, as every colour number is.
 fn decimal(out: &mut Reply, n: u16) {
-    let digit = |d: u16| {
-        let d = u8::try_from(d.checked_rem(10).unwrap_or(0)).unwrap_or(0);
-        b'0'.saturating_add(d)
-    };
+    let digit = |d: u16| b'0'.saturating_add(u8::try_from(d % 10).unwrap_or(0));
     if n >= 100 {
-        out.push(&[digit(n.checked_div(100).unwrap_or(0))]);
+        out.push(&[digit(n / 100)]);
     }
     if n >= 10 {
-        out.push(&[digit(n.checked_div(10).unwrap_or(0))]);
+        out.push(&[digit(n / 10)]);
     }
     out.push(&[digit(n)]);
 }

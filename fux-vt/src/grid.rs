@@ -1008,12 +1008,13 @@ impl Grid {
             if let Some(cell) = cells.get(first)
                 && !cell.is_wide()
                 && cell.is_wide_continuation()
-                && let Some(other) = first.checked_sub(1).and_then(|i| cells.get_mut(i))
+                && let Some(other) = cells.get_mut(first.wrapping_sub(1))
             {
                 *other = other.blanked();
             }
-            if let Some(at) = reach.checked_sub(1)
-                && cells.get(at).is_some_and(Compact::is_wide)
+            if cells
+                .get(reach.wrapping_sub(1))
+                .is_some_and(Compact::is_wide)
             {
                 if let Some(other) = cells.get_mut(reach) {
                     *other = other.blanked();
@@ -1117,11 +1118,7 @@ impl Grid {
         let protected = |at: usize| {
             cells.get(at).is_some_and(|c| {
                 kept(c)
-                    || c.is_wide_continuation()
-                        && at
-                            .checked_sub(1)
-                            .and_then(|i| cells.get(i))
-                            .is_some_and(kept)
+                    || c.is_wide_continuation() && cells.get(at.wrapping_sub(1)).is_some_and(kept)
             })
         };
         let mut runs = Vec::new();
