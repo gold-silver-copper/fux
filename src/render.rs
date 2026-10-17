@@ -1233,7 +1233,8 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 /// highlighted and, but in a chooser, those that cannot run now dimmed.
 fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), PANEL.with_bold(true))];
-    let capacity = overlay::list_room(view.rows);
+    // Its items' rows: it has a title and a help line.
+    let capacity = overlay::panel_room(view.rows, 2);
     let entries = list.items.iter().enumerate().map(|(i, item)| {
         let marker = if list.current == Some(i) { "*" } else { " " };
         let attrs = PANEL.with_inverse(i == list.selected);
@@ -1278,7 +1279,9 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
         let text = &entry.label;
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
     }
-    let (heading, body_room) = overlay::column_room(view.rows);
+    // A heading, if there is room for it, then the entries.
+    let heading = view.rows.saturating_sub(1) >= 4;
+    let body_room = overlay::panel_room(view.rows, usize::from(heading));
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
         lines.push((column.title.as_str().into(), PANEL.with_bold(true)));

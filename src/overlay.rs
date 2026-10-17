@@ -106,19 +106,6 @@ pub fn window_start(len: usize, selected: usize, room: usize) -> usize {
         .min(len.saturating_sub(room))
 }
 
-/// Rows a chooser or menu shows its items in: it has a title and a help
-/// line.
-pub fn list_room(rows: u16) -> usize {
-    panel_room(rows, 2)
-}
-
-/// Whether the command column has room for its heading, and the rows it
-/// shows its entries in.
-pub fn column_room(rows: u16) -> (bool, usize) {
-    let heading = rows.saturating_sub(1) >= 4;
-    (heading, panel_room(rows, usize::from(heading)))
-}
-
 /// Sends a key to the client's focused pane, encoded as its program asked.
 pub fn send_key(session: &mut Session, client: ClientId, stroke: Keystroke) {
     let Some(pane) = session.focused(client) else {
