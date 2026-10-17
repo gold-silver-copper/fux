@@ -564,6 +564,22 @@ mod tests {
         assert_eq!(fine.map(|env| encode(&env)), Some(vars("A_1")));
     }
 
+    /// A capture's view goes as full, join, styles, source, marks, then
+    /// its rows and columns, whatever order its fields are declared in.
+    #[test]
+    fn a_capture_view_keeps_its_bytes() {
+        let view = CaptureView {
+            full: true,
+            join: false,
+            rows: Some((1, 2)),
+            cols: None,
+            styles: true,
+            source: Source::Main,
+            marks: false,
+        };
+        assert_eq!(encode(&view), [1, 0, 1, 1, 0, 1, 0, 1, 0, 2, 0]);
+    }
+
     /// A share of a tab is 1 to 100 percent, from the wire too: 250 would
     /// give a pane two and a half times the tab.
     #[test]

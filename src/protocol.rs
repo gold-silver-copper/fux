@@ -727,6 +727,10 @@ mod tests {
         };
         let head = [0, 0, 0, 16, 1, 0, 0, 0, 9, 2, 0, 0, 0, 6];
         assert_eq!(kill.encode(), Ok([&head[..], b"0.13.0"].concat()));
+        // Nor do the kill's answer's, which a client of any version reads
+        // after it: the length, the kind, and its status, 0.
+        let done = ServerFrame::Done { status: 0 };
+        assert_eq!(done.encode(), Ok(vec![0, 0, 0, 2, 11, 0]));
         // Each role's byte is the wire format's too: after the length, the
         // kind and the protocol's four bytes.
         for (role, byte) in [
