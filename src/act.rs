@@ -221,9 +221,9 @@ pub enum Edit {
 }
 
 wire_enum!(MouseAction {
-    Press,
-    Release,
-    Motion,
+    Press(button),
+    Release(button),
+    Motion(button),
 });
 closed_wire!(ModeStatus, "mode status"; Scheme, "scheme");
 wire_struct!(Modifiers { ctrl, alt, shift });
@@ -236,7 +236,6 @@ wire_struct!(Kitty {
 wire_struct!(Keystroke { press, kitty });
 wire_struct!(MouseEvent {
     action,
-    button,
     mods,
     row,
     col

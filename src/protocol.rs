@@ -675,8 +675,7 @@ mod tests {
         // Every mouse button, Back and Forward too, arrives as itself.
         for button in [MouseButton::Back, MouseButton::Forward] {
             let act = Act::Mouse(MouseEvent {
-                action: MouseAction::Press,
-                button: Some(button),
+                action: MouseAction::Press(button),
                 mods: Modifiers::default(),
                 row: 1,
                 col: 2,

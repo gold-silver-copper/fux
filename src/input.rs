@@ -185,17 +185,19 @@ impl Session {
         let inside = rect.contains(event.row, event.col);
         let seat = self.shown_tab(client).and_then(|t| t.seat(client));
         let held = seat.is_some_and(|s| s.held);
-        let pressed =
-            event.action == MouseAction::Press && event.button.is_some_and(|b| !b.is_wheel());
-        if !(inside || held && event.action != MouseAction::Press) {
+        // A press of a button, not the wheel, holds it; a release lets go.
+        let (press, holds) = match event.action {
+            MouseAction::Press(button) => (true, (!button.is_wheel()).then_some(true)),
+            MouseAction::Release(_) => (false, Some(false)),
+            MouseAction::Motion(_) => (false, None),
+        };
+        if !(inside || held && !press) {
             return;
         }
-        if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client)) {
-            if pressed {
-                seat.held = true;
-            } else if event.action == MouseAction::Release {
-                seat.held = false;
-            }
+        if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client))
+            && let Some(holds) = holds
+        {
+            seat.held = holds;
         }
         // Kept to the pane.
         let (row, col) = rect.clamp(event.row, event.col);

@@ -611,23 +611,20 @@ fn mouse_events() -> Vec<MouseEvent> {
         for mods in all_mods() {
             for button in BUTTONS {
                 out.push(MouseEvent {
-                    action: MouseAction::Press,
-                    button: Some(button),
+                    action: MouseAction::Press(button),
                     mods,
                     row,
                     col,
                 });
                 if !button.is_wheel() {
                     out.push(MouseEvent {
-                        action: MouseAction::Release,
-                        button: Some(button),
+                        action: MouseAction::Release(Some(button)),
                         mods,
                         row,
                         col,
                     });
                     out.push(MouseEvent {
-                        action: MouseAction::Motion,
-                        button: Some(button),
+                        action: MouseAction::Motion(Some(button)),
                         mods,
                         row,
                         col,
@@ -635,8 +632,7 @@ fn mouse_events() -> Vec<MouseEvent> {
                 }
             }
             out.push(MouseEvent {
-                action: MouseAction::Motion,
-                button: None,
+                action: MouseAction::Motion(None),
                 mods,
                 row,
                 col,
@@ -662,7 +658,7 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
                 padding_right: 0,
                 padding_left: 0,
             })
-            .set_any_button_pressed(event.button.is_some() && event.action == MouseAction::Motion)
+            .set_any_button_pressed(matches!(event.action, MouseAction::Motion(Some(_))))
             .set_track_last_cell(false);
         let mut g = gmouse::Event::new().map_err(err("mouse event"))?;
         let mut held = gkey::Mods::empty();
@@ -680,17 +676,18 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
                 .saturating_mul(size)
                 .saturating_add(size / 2)) as f32
         };
-        g.set_action(match event.action {
-            MouseAction::Press => gmouse::Action::Press,
-            MouseAction::Release => gmouse::Action::Release,
-            MouseAction::Motion => gmouse::Action::Motion,
-        })
-        .set_button(event.button.map(ghostty_button))
-        .set_mods(held)
-        .set_position(gmouse::Position {
-            x: px(event.col, CELL.0),
-            y: px(event.row, CELL.1),
-        });
+        let (action, button) = match event.action {
+            MouseAction::Press(button) => (gmouse::Action::Press, Some(button)),
+            MouseAction::Release(button) => (gmouse::Action::Release, button),
+            MouseAction::Motion(held) => (gmouse::Action::Motion, held),
+        };
+        g.set_action(action)
+            .set_button(button.map(ghostty_button))
+            .set_mods(held)
+            .set_position(gmouse::Position {
+                x: px(event.col, CELL.0),
+                y: px(event.row, CELL.1),
+            });
         let mut ours = Vec::new();
         pair.fux.screen().encode_mouse(event, &mut ours);
         let mut theirs = Vec::new();

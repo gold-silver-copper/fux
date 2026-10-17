@@ -1728,10 +1728,10 @@ mod tests {
     #[test]
     fn mouse_reports_are_events_and_pastes_are_bounded() {
         use crate::keys::mouse::{MouseAction, MouseButton};
+        use MouseButton::Left;
         let left = |action, row, col| {
             Input::Mouse(MouseEvent {
                 action,
-                button: Some(MouseButton::Left),
                 mods: Modifiers::NONE,
                 row,
                 col,
@@ -1739,14 +1739,14 @@ mod tests {
         };
         assert_eq!(
             all(b"\x1b[M !!a"),
-            vec![left(MouseAction::Press, 0, 0), key("a")]
+            vec![left(MouseAction::Press(Left), 0, 0), key("a")]
         );
         assert_eq!(
             all(b"\x1b[<0;10;5Ma\x1b[<0;10;5m"),
             vec![
-                left(MouseAction::Press, 4, 9),
+                left(MouseAction::Press(Left), 4, 9),
                 key("a"),
-                left(MouseAction::Release, 4, 9)
+                left(MouseAction::Release(Some(Left)), 4, 9)
             ]
         );
         // What no report is: dropped, never typed.

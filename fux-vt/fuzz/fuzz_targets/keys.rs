@@ -5,7 +5,7 @@
 //! bracketed again, holds no end marker but its own.
 use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
 use fux_vt::keys::encode::{PASTE_END, PASTE_START, paste};
-use fux_vt::keys::mouse::mouse_bytes;
+use fux_vt::keys::mouse::{MouseAction, mouse_bytes};
 use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
@@ -75,10 +75,12 @@ fuzz_target!(|data: &[u8]| {
                 MouseProtocolEncoding::Sgr,
                 &mut sgr,
             );
-            assert!(
-                sent || event.button.is_some_and(|b| b.is_wheel()),
-                "{event:?}"
-            );
+            // The wheel is never released or held.
+            let wheel = match event.action {
+                MouseAction::Press(_) => false,
+                MouseAction::Release(b) | MouseAction::Motion(b) => b.is_some_and(|b| b.is_wheel()),
+            };
+            assert!(sent || wheel, "{event:?}");
             if sent {
                 assert_eq!(
                     decode(&sgr, 0),

@@ -2326,9 +2326,8 @@ impl Session {
                     return Err(fail(Code::Mouse, message));
                 }
                 let mut report = Vec::new();
-                let event = |action, button| fux_vt::keys::mouse::MouseEvent {
+                let event = |action| fux_vt::keys::mouse::MouseEvent {
                     action,
-                    button,
                     mods: fux_vt::keys::Modifiers::default(),
                     row,
                     col,
@@ -2345,21 +2344,19 @@ impl Session {
                 let (events, held, beyond_x10) = match mouse {
                     Mouse::Click(button) => {
                         let button = button.reported();
-                        let events = vec![event(Press, Some(button)), event(Release, Some(button))];
+                        let events = vec![event(Press(button)), event(Release(Some(button)))];
                         (events, unheld(button), false)
                     }
                     Mouse::Press(button) => {
                         let button = button.reported();
-                        (vec![event(Press, Some(button))], Some(button), false)
+                        (vec![event(Press(button))], Some(button), false)
                     }
-                    Mouse::Wheel(way) => {
-                        (vec![event(Press, Some(way.reported()))], p.mouse_held, true)
-                    }
+                    Mouse::Wheel(way) => (vec![event(Press(way.reported()))], p.mouse_held, true),
                     Mouse::Release(button) => {
                         let button = button.reported();
-                        (vec![event(Release, Some(button))], unheld(button), true)
+                        (vec![event(Release(Some(button)))], unheld(button), true)
                     }
-                    Mouse::Move => (vec![event(Motion, p.mouse_held)], p.mouse_held, false),
+                    Mouse::Move => (vec![event(Motion(p.mouse_held))], p.mouse_held, false),
                 };
                 use fux_vt::MouseProtocolMode as Asked;
                 let mode = p.screen().mouse_protocol_mode();
@@ -2372,7 +2369,10 @@ impl Session {
                     return Err(fail(Code::Mouse, message));
                 }
                 for event in events {
-                    let release = event.action == Release;
+                    let release = match event.action {
+                        Release(_) => true,
+                        Press(_) | Motion(_) => false,
+                    };
                     if !p.screen().encode_mouse(event, &mut report) && !(release && x10) {
                         let pane = p.id;
                         let message = match mode {
@@ -2383,11 +2383,11 @@ impl Session {
                             | Asked::PressRelease
                             | Asked::ButtonMotion
                             | Asked::AnyMotion => match event.action {
-                                Motion => format!(
+                                Motion(_) => format!(
                                     "the program in {pane} takes no motion here: with no button pressed it asked for none, \
                                      and asking for clicks alone (mode 1000) it takes no drags either"
                                 ),
-                                Press | Release => format!(
+                                Press(_) | Release(_) => format!(
                                     "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
                                 ),
                             },
