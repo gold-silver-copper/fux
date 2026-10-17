@@ -1111,12 +1111,24 @@ impl Session {
         })
     }
 
-    /// Sends `inputs` to pane `id`'s program, a piece at a time (`units`).
-    fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
-        let p = self.live_pane_mut(id)?;
-        p.note_input();
-        let units = units(p, inputs);
-        Ok(p.send(units, Instant::now())?)
+    /// Sends `inputs` to the programs of `target`'s panes, a piece at a time
+    /// (`units`).
+    fn send_keys(&mut self, target: AnyRef, inputs: &[Input]) -> Result<Reply, Error> {
+        // Every pane must take them, or none is sent them: each one's, as
+        // its program takes keys, are made and fit first.
+        let mut each = Vec::new();
+        for id in self.panes_of(target)? {
+            let pane = self.live_pane_mut(id)?;
+            let units = units(pane, inputs);
+            pane.room_for(&units)?;
+            each.push((id, units));
+        }
+        for (id, units) in each {
+            let pane = self.pane_mut(id)?;
+            pane.note_input();
+            pane.send(units, Instant::now())?;
+        }
+        Ok(Reply::default())
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
@@ -2516,23 +2528,7 @@ impl Session {
                 self.pane_mut(target)?.parser.clear_history();
                 Ok(Reply::default())
             }
-            &Command::SendKeys { target, ref inputs } => {
-                // Every pane must take them, or none is sent them: each
-                // one's, as its program takes keys, are made and fit first.
-                let mut each = Vec::new();
-                for id in self.panes_of(target)? {
-                    let pane = self.live_pane_mut(id)?;
-                    let units = units(pane, inputs);
-                    pane.room_for(&units)?;
-                    each.push((id, units));
-                }
-                for (id, units) in each {
-                    let pane = self.pane_mut(id)?;
-                    pane.note_input();
-                    pane.send(units, Instant::now())?;
-                }
-                Ok(Reply::default())
-            }
+            &Command::SendKeys { target, ref inputs } => self.send_keys(target, inputs),
             &Command::CapturePane {
                 target,
                 history,
@@ -2590,8 +2586,7 @@ impl Session {
             &Command::PasteBuffer { index, target } => {
                 let text = self.buffers.get(index).cloned();
                 let paste = Input::Paste(text.ok_or(Error::NoBuffer(index))?);
-                self.send_inputs(target, &[paste])
-                    .map(|()| Reply::default())
+                self.send_keys(AnyRef::Pane(target), &[paste])
             }
             &Command::Client { client, ref action } => {
                 // The client named (`str c1 client`), else the one the command came from.
