@@ -37,7 +37,9 @@ fn cursor_after(input: &[u8]) -> Result<(u16, u16)> {
 /// never locked; CRM (3) CONTROL, controls performed; ERM (6) PROTECT, ED,
 /// EL and ECH sparing a guarded area. DECRQM answers them permanently
 /// reset (4), set or not. The same numbers as DEC private modes are
-/// others; SRM (12) is not recognized (0).
+/// others. SRM (12) has its set state only, SIMULTANEOUS (7.2.15; DEC STD
+/// 070's SRM: set, local echo off, the default), as fux-vt never images
+/// what is typed: DECRQM answers it permanently set (3), reset or not.
 #[test]
 fn decrqm_reports_the_deprecated_ansi_modes_permanently_reset() -> Result {
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
@@ -48,8 +50,8 @@ fn decrqm_reports_the_deprecated_ansi_modes_permanently_reset() -> Result {
         assert_eq!(replies(&mut p, ask.as_bytes())?, format!("^[[{n};4$y"));
     }
     assert_eq!(
-        replies(&mut p, b"\x1b[12$p\x1b[?5$p")?,
-        "^[[12;0$y^[[?5;2$y"
+        replies(&mut p, b"\x1b[12$p\x1b[12l\x1b[12$p\x1b[?5$p")?,
+        "^[[12;3$y^[[12;3$y^[[?5;2$y"
     );
     Ok(())
 }

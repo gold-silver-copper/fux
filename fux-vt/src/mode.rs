@@ -159,6 +159,11 @@ modes! {
 /// MATM, TTM, SATM, TSM and EBM, which DECRQM answers permanently reset.
 pub(crate) const RESET_FOR_GOOD: [u16; 15] = [1, 2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19];
 
+/// SRM, which fux-vt keeps in its set state for good, SIMULTANEOUS (ECMA-48
+/// 7.2.15; DEC STD 070's SRM, local echo off, its default): fux-vt never
+/// images what is typed. DECRQM answers it permanently set.
+pub(crate) const SEND_RECEIVE: u16 = 12;
+
 impl Mode {
     /// What DECRQM reports for a mode SM and RM never change: 1048, an
     /// action, is not recognized, and DECARM and 2027 are reset or set for

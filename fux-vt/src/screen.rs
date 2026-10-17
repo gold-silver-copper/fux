@@ -2,7 +2,7 @@ use crate::compact::{Compact, PROTECTED};
 use crate::keys::KITTY_FLAGS;
 use crate::keys::encode::OtherKeys;
 use crate::link::Held;
-use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, Switch};
+use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SEND_RECEIVE, Switch};
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, Mark, Options, Reply,
@@ -2755,6 +2755,7 @@ impl Screen {
                 let mode = Mode::of(n, private, options);
                 let status = match mode {
                     None if !private && RESET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlyReset,
+                    None if !private && n == SEND_RECEIVE => ModeStatus::PermanentlySet,
                     None => ModeStatus::NotRecognized,
                     Some(mode) => mode.fixed().unwrap_or(match self.mode(mode) {
                         true => ModeStatus::Set,

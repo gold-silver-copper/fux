@@ -169,11 +169,12 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
         b"\x1b[?1000;1$y",
         b"\x1b[?1002;2$y",
         b"\x1b[?4242;0$y",
-        // IRM and LNM, the ANSI modes fux-vt keeps; SRM it does not.
+        // IRM and LNM, the ANSI modes fux-vt keeps; SRM, set for good
+        // (ECMA-48 7.2.15: fux-vt never images what is typed).
         b"\x1b[4;2$y",
         b"\x1b[4;1$y",
         b"\x1b[20;2$y",
-        b"\x1b[12;0$y",
+        b"\x1b[12;3$y",
     ];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
     assert!(record.events.is_empty(), "replies do not imply events");
