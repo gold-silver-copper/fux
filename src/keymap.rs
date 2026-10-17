@@ -829,38 +829,49 @@ pub fn confirm_act(press: KeyPress) -> Option<bool> {
     }
 }
 
-/// A key in copy mode that moves, selects, copies or leaves. Letters, in
-/// either case, and the brackets; one with Ctrl or Alt is no key's. The
-/// arrows, paging keys, Home, End, Enter and Esc too. `f` and `r`, which
-/// open its search line, are the client's own (`crate::screens`).
-pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
-    let act = match (letter(press), press.key) {
-        (Some('q'), _) | (_, Key::Escape) => CopyAct::Leave,
-        (Some('h'), _) | (_, Key::Arrow(Direction::Left)) => CopyAct::Left,
-        (Some('l'), _) | (_, Key::Arrow(Direction::Right)) => CopyAct::Right,
-        (Some('j'), _) | (_, Key::Arrow(Direction::Down)) => CopyAct::Down,
-        (Some('k'), _) | (_, Key::Arrow(Direction::Up)) => CopyAct::Up,
-        (Some('w'), _) => CopyAct::WordForward,
-        (Some('b'), _) => CopyAct::WordBack,
-        (Some('a'), _) => CopyAct::FirstInk,
-        (Some('e'), _) | (_, Key::End) => CopyAct::LastInk,
-        (_, Key::Home) => CopyAct::LineStart,
-        (Some('t'), _) => CopyAct::Top,
-        (Some('z'), _) => CopyAct::Bottom,
-        (Some('u'), _) => CopyAct::HalfUp,
-        (Some('d'), _) => CopyAct::HalfDown,
-        (_, Key::PageUp) => CopyAct::PageUp,
-        (_, Key::PageDown) => CopyAct::PageDown,
-        (Some('n'), _) => CopyAct::Next,
-        (Some('p'), _) => CopyAct::Previous,
-        (Some('['), _) => CopyAct::Prompt(Seek::Backward),
-        (Some(']'), _) => CopyAct::Prompt(Seek::Forward),
-        (Some('v'), _) => CopyAct::SelectChar,
-        (Some('s'), _) => CopyAct::SelectLine,
-        (Some('x'), _) => CopyAct::SelectBlock,
-        (Some('o'), _) => CopyAct::OtherEnd,
-        (Some('y'), _) | (_, Key::Enter) => CopyAct::Yank,
-        _ => return None,
+/// A key in copy mode that moves, selects, copies or leaves, and whether
+/// it ends copy mode (leaving and copying do). Letters, in either case,
+/// and the brackets; one with Ctrl or Alt is no key's. The arrows, paging
+/// keys, Home, End, Enter and Esc too. `f` and `r`, which open its search
+/// line, are the client's own (`crate::screens`).
+pub fn copy_act(press: KeyPress) -> Option<(CopyAct, bool)> {
+    let act = match press.key {
+        Key::Char(_) => match letter(press)? {
+            'q' => (CopyAct::Leave, true),
+            'h' => (CopyAct::Left, false),
+            'l' => (CopyAct::Right, false),
+            'j' => (CopyAct::Down, false),
+            'k' => (CopyAct::Up, false),
+            'w' => (CopyAct::WordForward, false),
+            'b' => (CopyAct::WordBack, false),
+            'a' => (CopyAct::FirstInk, false),
+            'e' => (CopyAct::LastInk, false),
+            't' => (CopyAct::Top, false),
+            'z' => (CopyAct::Bottom, false),
+            'u' => (CopyAct::HalfUp, false),
+            'd' => (CopyAct::HalfDown, false),
+            'n' => (CopyAct::Next, false),
+            'p' => (CopyAct::Previous, false),
+            '[' => (CopyAct::Prompt(Seek::Backward), false),
+            ']' => (CopyAct::Prompt(Seek::Forward), false),
+            'v' => (CopyAct::SelectChar, false),
+            's' => (CopyAct::SelectLine, false),
+            'x' => (CopyAct::SelectBlock, false),
+            'o' => (CopyAct::OtherEnd, false),
+            'y' => (CopyAct::Yank, true),
+            _ => return None,
+        },
+        Key::Escape => (CopyAct::Leave, true),
+        Key::Arrow(Direction::Left) => (CopyAct::Left, false),
+        Key::Arrow(Direction::Right) => (CopyAct::Right, false),
+        Key::Arrow(Direction::Down) => (CopyAct::Down, false),
+        Key::Arrow(Direction::Up) => (CopyAct::Up, false),
+        Key::End => (CopyAct::LastInk, false),
+        Key::Home => (CopyAct::LineStart, false),
+        Key::PageUp => (CopyAct::PageUp, false),
+        Key::PageDown => (CopyAct::PageDown, false),
+        Key::Enter => (CopyAct::Yank, true),
+        Key::Tab | Key::Backspace | Key::Delete | Key::Insert | Key::F(_) => return None,
     };
     Some(act)
 }

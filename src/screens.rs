@@ -454,10 +454,10 @@ impl Screen {
         }
         let act = copy_act(press);
         // Leaving and copying end it, here as on the server.
-        if !matches!(act, Some(CopyAct::Leave | CopyAct::Yank)) {
+        if act.as_ref().is_none_or(|(_, ends)| !ends) {
             *self = Screen::Copy(None);
         }
-        act.map(|act| Effect::Send(Act::Copy(act)))
+        act.map(|(act, _)| Effect::Send(Act::Copy(act)))
             .into_iter()
             .collect()
     }
