@@ -420,9 +420,14 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     command
         .arg(crate::SERVE)
         .arg(socket.path())
+        .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(output);
+    // A daemon (daemon(7)): in a session of its own, which outlives the
+    // terminal this client runs in, holding none of the client's
+    // descriptors but stdio, and no directory of its busy.
+    fuxix::process::lead_session(&mut command, false);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {

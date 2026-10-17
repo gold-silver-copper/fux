@@ -152,7 +152,7 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
 }
 
 /// Makes this process the leader of a new session, whose ID is its pid.
-pub fn setsid() -> Result<()> {
+fn setsid() -> Result<()> {
     // SAFETY: setsid takes nothing and touches no memory.
     check(unsafe { libc::setsid() }).map(drop)
 }

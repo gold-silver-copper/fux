@@ -42,7 +42,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group`, `exists` | `kill`, `killpg`, `kill(pid, 0)` | the same | std signals only its own children, and only with SIGKILL |
-| `process::geteuid`, `setsid`, `session` | `geteuid`, `setsid`, `getsid` | the same | not offered |
+| `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
 | `process::lead_session`, `pty::Slave::spawn` | between `fork` and `exec` (`pre_exec`): `io::cloexec_from(3)`, `setsid`, `TIOCSCTTY` | the same | std's spawn makes no session |
 | `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |

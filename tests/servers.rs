@@ -116,6 +116,46 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     Ok(())
 }
 
+/// A server a client starts is a daemon (daemon(7)): it holds none of the
+/// client's descriptors beyond stdio, and keeps no directory of its busy.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let here = server.dir.join("here");
+    std::fs::create_dir_all(&here).map_err(e)?;
+    let held = here.join("held");
+    let started = {
+        let _guard = spawning()?;
+        let file = std::fs::File::create(&held).map_err(e)?;
+        let _leaked = fuxix::io::duplicate_inheritable(&file).map_err(e)?;
+        Command::new(FUX)
+            .args(["str", "d", "server", "start"])
+            .current_dir(&here)
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_STATE_HOME", rt.join("state"))
+            .env_remove("FUX_SOCKET")
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(e)?
+    };
+    assert!(started.status.success(), "{started:?}");
+    let socket = rt.join("fux").join("d.sock");
+    let pid = serving(&socket).ok_or("no server serves d")?;
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).map_err(e)?;
+    let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).map_err(e)?;
+    let holds = (fds.filter_map(Result::ok))
+        .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+        .any(|target| target == held);
+    let _ = named(&rt, &["str", "d", "server", "force-kill-server"], &[]);
+    assert_eq!(cwd, std::path::Path::new("/"), "the server's directory");
+    assert!(!holds, "the server holds its client's descriptor");
+    Ok(())
+}
+
 /// `fux events` tells what happens, a line each, from `ready` on: a pane
 /// made, a command's end, its bell, its exit, its close.
 #[test]

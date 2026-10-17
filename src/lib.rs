@@ -132,8 +132,7 @@ pub fn main() -> ExitCode {
 /// help lists it, though a person can type it too.
 pub const SERVE: &str = "__serve";
 
-/// A server, started by a client: it leaves the client's session first, so
-/// that it outlives the terminal the client ran in.
+/// A server, started by a client (`client::start_server`).
 fn serve(args: &[String]) -> ExitCode {
     let fail = |message: String| {
         let _ = writeln!(std::io::stderr(), "fux server: {message}");
@@ -143,8 +142,6 @@ fn serve(args: &[String]) -> ExitCode {
         return fail("no socket".to_owned());
     };
     let fresh = args.get(1).is_some_and(|a| a == "fresh");
-    // Fails only for a session leader already, which is as good.
-    let _ = fuxix::process::setsid();
     let socket = match socket::checked(path, "socket") {
         Ok(socket) => socket,
         Err(error) => return fail(error.to_string()),
