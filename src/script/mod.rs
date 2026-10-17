@@ -563,8 +563,8 @@ impl Asks for Cli {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         self.0.ask(asked, out)
     }
-    fn local(&mut self, what: &Local, out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
-        local(what, &mut self.0, out)
+    fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+        local(what, &mut self.0)
     }
 }
 
@@ -816,11 +816,7 @@ pub fn handle(id: crate::command::AnyRef) -> Fux {
 
 /// What a program does that the client does itself, from the command line:
 /// attaching, choosing and starting a server, and asking after servers.
-fn local(
-    what: &Local,
-    server: &mut Server,
-    _out: &mut dyn Write,
-) -> Result<Vec<Value<Fux>>, Failed> {
+fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
     match what {
         Local::Server(chosen) => server.choose(chosen.clone()),
         Local::Attach {
