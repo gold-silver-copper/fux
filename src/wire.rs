@@ -99,21 +99,15 @@ macro_rules! int_wire {
 }
 int_wire!(u8, u16, u32, u64, i64);
 
-/// `nonzero_wire!(NonZeroU8 u8 "status", …)` expands to `impl Wire for
-/// NonZeroU8` and so on: the number's bytes, 0 refused as `Bad("status")`.
-macro_rules! nonzero_wire {
-    ($($ty:ident $int:ident $what:literal),*) => {$(
-        impl Wire for std::num::$ty {
-            fn put(&self, out: &mut Vec<u8>) {
-                self.get().put(out);
-            }
-            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-                Self::new($int::get(r)?).ok_or(Error::Bad($what))
-            }
-        }
-    )*};
+/// An exit status that is not 0: 0 is refused.
+impl Wire for std::num::NonZeroU8 {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.get().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Self::new(u8::get(r)?).ok_or(Error::Bad("status"))
+    }
 }
-nonzero_wire!(NonZeroU8 u8 "status");
 
 /// Nothing: a value of no bytes, as an empty frame's payload.
 impl Wire for () {
