@@ -1081,27 +1081,15 @@ impl Grid {
         erase(self, row, start, end);
     }
 
-    /// `erase`, leaving protected glyphs as they are: the guarded ones
-    /// (SPA's) if `guarded`, else DECSCA's. Each run of other cells between
-    /// them is erased, as xterm's `ClearInLine2` erases around them. A wide
-    /// glyph's second half is protected if its first half is. Out of line,
-    /// as protection is rare.
+    /// `erase`, leaving the guarded glyphs (SPA's) as they are. Each run of
+    /// other cells between them is erased, as xterm's `ClearInLine2` erases
+    /// around them. A wide glyph's second half is guarded if its first half
+    /// is. Out of line, as protection is rare.
     #[inline(never)]
-    pub fn erase_unprotected(
-        &mut self,
-        row: u16,
-        start: u16,
-        end: u16,
-        style: u32,
-        version: u64,
-        guarded: bool,
-    ) {
+    pub fn erase_unprotected(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) {
         let end = end.min(self.size.cols());
         let (cells, styles) = (self.live_cells(row), &self.styles);
-        let kept = |c: &Compact| match guarded {
-            true => styles.guarded(c.style()),
-            false => c.is_protected(),
-        };
+        let kept = |c: &Compact| styles.guarded(c.style());
         let protected = |at: usize| {
             cells.get(at).is_some_and(|c| {
                 kept(c)
@@ -1143,9 +1131,9 @@ impl Grid {
         self.set_link(row, span, None, version);
     }
 
-    /// DECSERA: each glyph DECSCA does not protect in the columns `start`
-    /// to `end` of live row `row` made a space, keeping its attributes;
-    /// empty cells stay empty (DEC STD 070, DECSERA). A wide glyph's second
+    /// DECSERA, DECSED and DECSEL: each glyph DECSCA does not protect in
+    /// the columns `start` to `end` of live row `row` made a space, keeping
+    /// its attributes; empty cells stay empty (DEC STD 070, each of them). A wide glyph's second
     /// half goes with its first, and one the span cuts is blanked whole.
     pub fn blank_unprotected(&mut self, row: u16, (start, end): (u16, u16), version: u64) {
         let span = usize::from(start)..usize::from(end);

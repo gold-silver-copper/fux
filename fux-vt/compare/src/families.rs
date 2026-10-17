@@ -747,7 +747,7 @@ pub const FAMILIES: &[Family] = &[
         name: "erase",
         about: "ED, EL and ECH",
         status: Status::Decided {
-            why: "ED, EL and ECH end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm and Ghostty do; alacritty, libvterm, avt, wezterm and tmux keep it, as xterm.js does but on ECH, and outvote fux-vt (`replay --engines all --size 2x4 'abcd\\e[KX'`). ED and EL with several parameters, which carry out each in turn (DEC STD 070, their algorithms; `conformance::ed_and_el_carry_out_each_parameter`), where xterm reads the first alone (`replay --engines xterm --size 1x6 'abcdef\\e[1;3H\\e[1;0K'`), are left out of the generator, xterm being its check",
+            why: "ED, EL and ECH end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm and Ghostty do; alacritty, libvterm, avt, wezterm and tmux keep it, as xterm.js does but on ECH, and outvote fux-vt (`replay --engines all --size 2x4 'abcd\\e[KX'`). ED and EL with several parameters, which carry out each in turn (DEC STD 070, their algorithms; `conformance::ed_and_el_carry_out_each_parameter`), where xterm reads the first alone (`replay --engines xterm --size 1x6 'abcdef\\e[1;3H\\e[1;0K'`), are left out of the generator, xterm being its check; so are DECSED and DECSEL, which make each glyph a space in its own rendition (DEC STD 070, DECSEL and DECSED; `protection::selective_erase_leaves_each_position_its_rendition`), where xterm gives it the pen's colours (`replay --engines xterm --size 2x4 '\\e[41mab\\e[mc\\e[42m\\e[1;2H\\e[?1K'`)",
             by: XTERM,
             authority: Authority::Standard {
                 section: "DEC STD 070, Appendix D.6.1",

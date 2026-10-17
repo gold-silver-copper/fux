@@ -115,6 +115,38 @@ fn an_erase_that_finds_no_protected_glyph_keeps_the_protection() -> Result {
     Ok(())
 }
 
+/// DEC STD 070, DECSEL and DECSED (5-159, 5-162): each erasable position
+/// is "changed to the Space character (2/0). The character rendition and
+/// attributes associated with each position do not change", and "empty
+/// character positions" are "not affected": not the pen's, as ED's blanks
+/// are. So whether or not a glyph was ever protected.
+#[test]
+fn selective_erase_leaves_each_position_its_rendition() -> Result {
+    for bytes in [
+        "\x1b[1;31;44mab\x1b[1\"qc\x1b[0\"q\x1b[m\x1b[42m\x1b[1;1H\x1b[?2K",
+        "\x1b[1;31;44mab\x1b[1\"qc\x1b[0\"q\x1b[m\x1b[42m\x1b[?2J",
+        "\x1b[1;31;44mab\x1b[mc\x1b[42m\x1b[1;2H\x1b[?1K",
+        "\x1b[1;31;44mab\x1b[mc\x1b[42m\x1b[1;2H\x1b[?1J",
+    ] {
+        let mut p = Parser::new(Size::new(2, 10)?, 0)?;
+        p.process(bytes.as_bytes())?;
+        let cell = |x| p.screen().cell(0, x);
+        for x in [0, 1] {
+            let erased = cell(x).is_some_and(|c| {
+                c.contents() == " "
+                    && c.fgcolor() == Color::Idx(1)
+                    && c.bgcolor() == Color::Idx(4)
+                    && c.attributes().bold()
+            });
+            assert!(erased, "{bytes:?}, column {x}");
+        }
+        assert_eq!(lines(&p), ["  c", ""], "{bytes:?}");
+        let empty = cell(3).is_some_and(|c| !c.has_contents() && c.bgcolor() == Color::Default);
+        assert!(empty, "{bytes:?}");
+    }
+    Ok(())
+}
+
 /// DECSC saves whether glyphs are protected, and DECRC restores it (the
 /// VT510 manual, DECSC: "selective erase attribute"); DECSTR ends it, as
 /// DEC STD 070's Soft Terminal Reset (`Current Attributes: not selective
@@ -138,7 +170,7 @@ fn the_saved_cursor_and_decstr() -> Result {
 /// A protected glyph keeps its protection where it goes: ICH, DCH, IL and
 /// IRM move it with it; REP repeats it protected; a glyph printed over it
 /// takes the pen's. A wide glyph's second half goes with its first. The
-/// blanks an erase leaves take the pen's colours (`bce`), as ED's do.
+/// blanks EL leaves take the pen's colours (`bce`), as ED's do.
 #[test]
 fn protection_goes_with_the_glyph() -> Result {
     assert_eq!(

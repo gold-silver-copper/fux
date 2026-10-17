@@ -1941,23 +1941,32 @@ impl Screen {
     #[inline(never)]
     fn erase_kept(&mut self, row: u16, start: u16, end: u16) {
         let blank = self.blank_style();
-        self.with_grid(|g, _, v| g.erase_unprotected(row, start, end, blank, v, true));
+        self.with_grid(|g, _, v| g.erase_unprotected(row, start, end, blank, v));
     }
 
-    /// ED or EL (`display`), or DECSED or DECSEL (`private`), in `mode`,
-    /// while glyphs may be protected: DECSED and DECSEL leave the glyphs
-    /// DECSCA protects (DEC STD 070, 5.11.1.2), ED and EL the guarded ones
-    /// (ECMA-48, SPA with ERM reset), each knowing its own. The rest is as
+    /// ED or EL (`display`) while glyphs may be protected, or DECSED or
+    /// DECSEL (`private`), in `mode`. DECSED and DECSEL make each glyph
+    /// DECSCA does not protect a space, its rendition and attributes as
+    /// they were, and leave empty positions empty (DEC STD 070, DECSEL and
+    /// DECSED; 5.11.1.2), as DECSERA does; one reaching the last column
+    /// ends the row's soft wrap, as ED's and xterm's do. ED and EL leave the
+    /// guarded glyphs (ECMA-48, SPA with ERM reset), the rest erased as
     /// for ED and EL. An erase that finds no protected glyph leaves the
     /// protection as it is (DEC STD 070, 5.11.1.2; ECMA-48 8.3.140), where
     /// xterm ends it after an ED of the whole screen. Out of line: inlined,
     /// the tmux recordings count up to 0.35% more instructions (fux-bench).
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
-        let blank = self.blank_style();
-        let version = self.version;
+        let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
         self.grid_mut().erase_in(display, part, |g, y, start, end| {
-            g.erase_unprotected(y, start, end, blank, version, !private);
+            if private {
+                g.blank_unprotected(y, (start, end), version);
+                if end >= cols {
+                    g.wrap(y, false, version);
+                }
+            } else {
+                g.erase_unprotected(y, start, end, blank, version);
+            }
         });
     }
 
@@ -2647,8 +2656,8 @@ impl Screen {
                     };
                     known = true;
                     // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
-                    // DECSCA's glyphs, ED and EL SPA's.
-                    if self.protected {
+                    // DECSCA's glyphs and every rendition, ED and EL SPA's.
+                    if private || self.protected {
                         self.erase_protected(private, byte == b'J', part);
                     } else {
                         let a = self.blank_style();
