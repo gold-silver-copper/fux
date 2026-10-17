@@ -1523,11 +1523,7 @@ impl Grid {
     #[cold]
     #[inline(never)]
     fn retire_extras(&mut self, slot: usize) {
-        let text = self
-            .texts
-            .get(slot)
-            .filter(|text| !text.is_empty())
-            .map(Text::exact);
+        let text = self.texts.get(slot).map(Text::exact);
         let links = (self.linked.get_mut(slot).map(std::mem::take)).filter(|l| !l.is_empty());
         self.history.attach(text, links);
     }
