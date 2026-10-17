@@ -337,10 +337,14 @@ impl History {
 
     /// Room for a row of `len` cells, if there is not: a row more in
     /// `rows`, doubling, up to the most the budget holds (`most_rows`);
-    /// and its cells: the newest block grows,
-    /// doubling, until it holds a block; else a block to start, the spare
-    /// if it holds the row, or a block, or for the first block as much as
-    /// its first row needs.
+    /// and its cells, after the newest block's or in a block of its own:
+    /// the newest block grows, doubling, until it holds a block; else a
+    /// block starts, the spare if it holds the row, or a block, or for the
+    /// first block as much as its first row needs. Fails only if there is
+    /// no memory for it. Out of line: a row arriving in history usually
+    /// fits where the last one ended.
+    #[cold]
+    #[inline(never)]
     fn make_room(&mut self, len: usize) -> Result<(), Error> {
         if self.rows.len() == self.rows.capacity() {
             let capacity = self
@@ -364,17 +368,17 @@ impl History {
         if self.older.len() >= BLOCKS.saturating_sub(2) {
             return Err(Error::Capacity);
         }
-        if self.spare.capacity() >= len {
-            return Ok(());
+        if self.spare.capacity() < len {
+            let capacity = if self.newest.capacity() == 0 && self.older.is_empty() {
+                len
+            } else {
+                len.max(BLOCK)
+            };
+            let mut block = Vec::new();
+            crate::reserve(&mut block, capacity)?;
+            self.spare = block;
         }
-        let capacity = if self.newest.capacity() == 0 && self.older.is_empty() {
-            len
-        } else {
-            len.max(BLOCK)
-        };
-        let mut block = Vec::new();
-        crate::reserve(&mut block, capacity)?;
-        self.spare = block;
+        self.start_block();
         Ok(())
     }
 
@@ -386,7 +390,7 @@ impl History {
     pub(crate) fn push(&mut self, row: Arriving<'_>) -> Result<(), Error> {
         let len = row.cells.len();
         if self.rows.len() == self.rows.capacity() || !self.fits(len) {
-            self.room_for(len)?;
+            self.make_room(len)?;
         }
         let start = u16::try_from(self.newest.len()).unwrap_or(0);
         // A row of one cell, as a short line's often is, is stored, not
@@ -396,20 +400,6 @@ impl History {
             cells => self.newest.extend_from_slice(cells),
         }
         self.keep(row, (self.newest_block, start));
-        Ok(())
-    }
-
-    /// Room for a row of `len` cells, after the newest block's or in a
-    /// block of its own (`make_room`); nothing changed if there is none.
-    /// Out of line, and `make_room` with it: a row arriving in history
-    /// usually fits where the last one ended.
-    #[cold]
-    #[inline(never)]
-    fn room_for(&mut self, len: usize) -> Result<(), Error> {
-        self.make_room(len)?;
-        if !self.fits(len) {
-            self.start_block();
-        }
         Ok(())
     }
 
