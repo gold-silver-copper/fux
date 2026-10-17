@@ -4,8 +4,8 @@
 use super::{Ask, Fux, Host, Keys, Local, MouseEvent, Opts, Then, Waits};
 use crate::code::Code;
 use crate::command::{
-    AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize, Pick,
-    Resized, Sibling, SwapWith, Until, Wait, WsRef,
+    AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
+    Percent, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
 };
 use crate::keys::Direction;
 use crate::keys::mouse::MouseButton;
@@ -1210,13 +1210,13 @@ impl fuxth::Host for Host<'_> {
             }
             "percent" => {
                 let n = int(name, &next()?)?;
-                let Some(n) = u8::try_from(n).ok().filter(|n| (1..=100).contains(n)) else {
+                let Some(share) = u8::try_from(n).ok().and_then(Percent::new) else {
                     return Err(fail(
                         Code::Range,
                         format!("percent takes 1 to 100, not {n}"),
                     ));
                 };
-                now(out, Value::App(Fux::Extent(Extent::Percent(n))))
+                now(out, Value::App(Fux::Extent(Extent::Percent(share))))
             }
             "move-border" => {
                 let p = pane(name, &next()?)?;

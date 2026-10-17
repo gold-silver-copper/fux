@@ -122,7 +122,26 @@ pub type Size = Option<fux_vt::Size>;
 pub enum Extent {
     Cells(u16),
     /// Of the tab's width or height.
-    Percent(u8),
+    Percent(Percent),
+}
+
+/// A share, 1 to 100 percent: there is no other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Percent(u8);
+
+impl Percent {
+    pub fn new(n: u8) -> Option<Percent> {
+        (1..=100).contains(&n).then_some(Percent(n))
+    }
+    pub fn get(self) -> u8 {
+        self.0
+    }
+    /// Its share of `of`, at least 1.
+    pub fn of(self, of: u16) -> u16 {
+        let share = u32::from(of).saturating_mul(u32::from(self.0)) / 100;
+        // At most `of`, which a u16 holds.
+        u16::try_from(share).unwrap_or(of).max(1)
+    }
 }
 
 /// How `resize-x`, `resize-y` and `move-border` resize a pane.

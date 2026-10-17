@@ -85,7 +85,7 @@ impl AppValue for Fux {
             Fux::Client(c) => c.to_string(),
             Fux::Answer(answer) => answer.text.clone(),
             Fux::Extent(Extent::Cells(n)) => n.to_string(),
-            Fux::Extent(Extent::Percent(n)) => format!("{n}%"),
+            Fux::Extent(Extent::Percent(n)) => format!("{}%", n.get()),
             Fux::Opts(_) | Fux::Keys(_) | Fux::Mouse(_) => format!("({})", self.kind()),
         }
     }

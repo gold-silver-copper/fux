@@ -1180,13 +1180,7 @@ impl Session {
     ) -> Result<String, Error> {
         let cells = |extent: Extent, of: u16| match extent {
             Extent::Cells(n) => n,
-            Extent::Percent(p) => {
-                let share = u32::from(of).saturating_mul(u32::from(p)).checked_div(100);
-                share
-                    .and_then(|n| u16::try_from(n).ok())
-                    .unwrap_or(of)
-                    .max(1)
-            }
+            Extent::Percent(p) => p.of(of),
         };
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;

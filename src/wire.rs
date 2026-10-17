@@ -4,7 +4,7 @@
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
     AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
-    PanePick, PaneResize, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
+    PanePick, PaneResize, Percent, Pick, Resized, Sibling, SwapWith, Until, Wait, WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
@@ -370,6 +370,15 @@ wire_enum!(MoveTo, "move" {
 });
 wire_enum!(SwapWith, "swap" { 0 => Pane(p), 1 => Toward(d) });
 wire_enum!(Extent, "extent" { 0 => Cells(n), 1 => Percent(n) });
+
+impl Wire for Percent {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.get().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Percent::new(u8::get(r)?).ok_or(Error::Bad("percent"))
+    }
+}
 wire_enum!(PaneResize, "resize" { 0 => Border(d, n), 1 => To(axis, extent) });
 wire_enum!(Resized, "resized" { 0 => Tabs(t, size), 1 => Client(c, size) });
 wire_enum!(Input, "input" { 0 => Key(k), 1 => Text(t), 2 => Paste(t) });
@@ -467,5 +476,14 @@ mod tests {
         each(&Signal::ALL);
         each(&fux_vt::ModeStatus::ALL);
         each(&crate::keys::colour::Scheme::ALL);
+    }
+
+    /// A share of a tab is 1 to 100 percent, from the wire too: 250 would
+    /// give a pane two and a half times the tab.
+    #[test]
+    fn a_percent_past_100_is_refused() {
+        let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();
+        assert!(read(250).is_none() && read(0).is_none());
+        assert_eq!(read(100).map(|e| encode(&e)), Some(vec![1, 100]));
     }
 }
