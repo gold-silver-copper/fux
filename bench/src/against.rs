@@ -118,7 +118,7 @@ fn build(root: &Path, worktree: &Path, target: &Path) -> Result<PathBuf, String>
 }
 
 /// A run's count and what it printed, or why it failed.
-type Counted = Result<(u64, String), String>;
+type Counted = Result<crate::count::Run, String>;
 
 /// One child run to count.
 struct Task {
@@ -224,7 +224,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
     )?;
     let head = git(&root, &["rev-parse", "HEAD"])?;
     let dirty = !git(&root, &["status", "--porcelain"])?.is_empty();
-    let counter = Counter::detect()?;
+    let (counter, counter_setup) = Counter::detect()?;
     let corpus = crate::corpus::dir(&root);
     let recordings = crate::corpus::recordings(&corpus)?;
     let specs: Vec<workloads::Spec> = workloads::list(&recordings)
@@ -317,8 +317,11 @@ pub fn run(options: &Options) -> Result<bool, String> {
     let mut counts = vec![[[Vec::new(), Vec::new()], [Vec::new(), Vec::new()]]; names.len()];
     let mut paints: Vec<[Option<(u64, u64)>; 2]> = vec![[None, None]; names.len()];
     for (task, result) in tasks.iter().zip(&results) {
-        let (n, stdout) = result.as_ref().map_err(Clone::clone)?;
-        let n = i64::try_from(*n).unwrap_or(i64::MAX);
+        let run = result.as_ref().map_err(Clone::clone)?;
+        let (n, stdout) = (
+            i64::try_from(run.instructions).unwrap_or(i64::MAX),
+            &run.stdout,
+        );
         if let Some(list) = counts
             .get_mut(task.workload)
             .and_then(|c| c.get_mut(task.side))
@@ -430,6 +433,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
         "working_tree_commit": head,
         "working_tree_changed": dirty,
         "counter": counter.name(),
+        "counter_setup": counter_setup,
         "repeats": options.repeats,
         "jobs": options.jobs,
         "threshold_percent": options.threshold,

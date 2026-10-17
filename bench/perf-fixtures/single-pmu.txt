@@ -1,0 +1,8 @@
+fux-perf: perf version 6.6
+fux-perf: cpus all
+fux-perf: begin
+# started on Sat Oct 17 16:45:25 2026
+
+instructions:u: 10558014 1000000 1000000
+10558014,,instructions:u,1000000,100.00,,
+fux-perf: end

@@ -1,0 +1,12 @@
+fux-perf: perf version 7.2.10-1
+fux-perf: cpus 4-11
+fux-perf: pmu apple_avalanche_pmu 4-11
+fux-perf: pmu apple_blizzard_pmu 0-3
+fux-perf: begin
+# started on Sat Oct 17 16:45:25 2026
+
+instructions:u: 10040388 1156000 1156000
+instructions:u: 0 1156000 0
+10040388,,apple_avalanche_pmu/instructions/u,1156000,100.00,,
+<not counted>,,apple_blizzard_pmu/instructions/u,0,0.00,,
+fux-perf: end

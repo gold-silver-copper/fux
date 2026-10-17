@@ -143,7 +143,7 @@ pub fn run(
     json: Option<&str>,
 ) -> Result<bool, String> {
     let started = Instant::now();
-    let counter = Counter::detect()?;
+    let (counter, counter_setup) = Counter::detect()?;
     let kinds: Vec<&Kind> = std::iter::once(&SUBJECT)
         .chain(engines.iter().filter_map(|&i| ENGINES.get(i)))
         .collect();
@@ -233,14 +233,23 @@ pub fn run(
         let Some(task) = tasks.get(*i) else {
             continue;
         };
+        let fed = loads.get(task.workload).map(|(n, _)| n.to_string());
+        let result = result.as_ref().map_err(Clone::clone).and_then(|run| {
+            // The child prints the bytes it made: the same as here.
+            if Some(run.stdout.trim()) == fed.as_deref() {
+                Ok(run)
+            } else {
+                Err(format!("the child made {:?} bytes", run.stdout.trim()))
+            }
+        });
         match result {
-            Ok((n, _)) => {
+            Ok(run) => {
                 if let Some(list) = counts
                     .get_mut(task.engine)
                     .and_then(|c| c.get_mut(task.workload))
                     .and_then(|c| c.get_mut(usize::from(task.baseline)))
                 {
-                    list.push(i64::try_from(*n).unwrap_or(i64::MAX));
+                    list.push(i64::try_from(run.instructions).unwrap_or(i64::MAX));
                 }
             }
             Err(e) => failed.push(format!(
@@ -324,6 +333,7 @@ pub fn run(
         let doc = serde_json::json!({
             "kind": "fux-vt-compare bench --instructions",
             "counter": counter.name(),
+            "counter_setup": counter_setup,
             "repeats": repeats.max(1),
             "mb": mb,
             "chunk": CHUNK,
