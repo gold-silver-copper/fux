@@ -2420,18 +2420,20 @@ impl Session {
             // From the command line each says what it closed, so a script
             // or an agent knows; a key's close shows on the screen anyway.
             Command::Kill { target } => {
-                // What may go with it, said once gone: a pane's tab, if it
-                // was its last, and that tab's workspace; a tab's or a
-                // workspace's panes.
+                // What may go with it, said once gone: a tab's or a
+                // workspace's panes; and what holds it, if it was the last
+                // there: a pane's tab and that tab's workspace, a tab's
+                // workspace.
                 let mut may_go = vec![self.there(*target)?];
+                let holders = match *target {
+                    AnyRef::Pane(pane) => (self.locate(pane)).map_or([None, None], |(w, t)| {
+                        [Some(AnyRef::Tab(t)), Some(AnyRef::Workspace(w))]
+                    }),
+                    AnyRef::Tab(tab) => [self.tab_workspace(tab).ok().map(AnyRef::Workspace), None],
+                    AnyRef::Workspace(_) => [None, None],
+                };
                 match *target {
-                    AnyRef::Pane(pane) => {
-                        let place = self.locate(pane).into_iter();
-                        may_go.extend(
-                            place.flat_map(|(w, t)| [AnyRef::Tab(t), AnyRef::Workspace(w)]),
-                        );
-                        self.close_pane(pane, None);
-                    }
+                    AnyRef::Pane(pane) => self.close_pane(pane, None),
                     AnyRef::Tab(_) | AnyRef::Workspace(_) => {
                         // A tab there with no panes (moved out) has none to go.
                         let panes = self.panes_of(*target).unwrap_or_default();
@@ -2442,6 +2444,7 @@ impl Session {
                         self.after_close();
                     }
                 }
+                may_go.extend(holders.into_iter().flatten());
                 let gone: Vec<AnyRef> = (may_go.into_iter())
                     .filter(|it| self.there(*it).is_err())
                     .collect();
@@ -4395,6 +4398,28 @@ mod tests {
         assert!(split.ends_with(r"two\nlines"), "{split}");
         // A tab in a waited text is a blank, as in the screen's.
         run(&mut s, "%1 opts str 'ready\tnow' wait-text drop drop")?;
+        Ok(())
+    }
+
+    /// A kill from the command line names all it closed: a tab's
+    /// workspace, when it was the last tab, as a pane's.
+    #[test]
+    fn a_kill_names_the_workspace_its_last_tab_took() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = started(Config::default())?;
+        let cli = Origin::Cli(Caller::default());
+        let kill = |s: &mut Session, target| {
+            (s.execute(&Command::Kill { target }, &cli)).map(|reply| reply.text)
+        };
+        run(&mut s, "opts str two name new-workspace drop")?;
+        assert_eq!(
+            kill(&mut s, AnyRef::Tab("@2".parse()?))?,
+            "closed @2 %2 +2\n"
+        );
+        run(&mut s, "opts str three name new-workspace drop")?;
+        assert_eq!(
+            kill(&mut s, AnyRef::Pane(PaneId::of(3)))?,
+            "closed %3 @3 +3\n"
+        );
         Ok(())
     }
 
