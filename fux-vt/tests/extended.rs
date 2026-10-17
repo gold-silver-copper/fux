@@ -850,8 +850,9 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
         cell: Some((4, 8)),
         sixel: true,
     });
-    // 6 pixels wide and 12 high (two bands): 2 cells by 2, at row 1 col 3.
-    p.process(b"\r\n   \x1bPq#1;2;100;0;0!6~-!6~\x1b\\")?;
+    // 6 pixels wide and 12 high (two bands of square pixels): 2 cells by 2,
+    // at row 1 col 3.
+    p.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\")?;
     let shown: Vec<_> = p
         .screen()
         .pictures()
@@ -887,10 +888,67 @@ fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
         sixel: true,
     });
     // 2 cells by 2 at row 1 col 3, and a `z` after them on its first row.
-    p.process(b"\r\n   \x1bPq#1;2;100;0;0!6~-!6~\x1b\\\x1b[2;8Hz")?;
+    p.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\\x1b[2;8Hz")?;
     assert_eq!(p.screen().pictures().count(), 1);
     let copied = p.screen().window().text((1, 0), (1, 9), 100, 100)?;
     assert_eq!(copied, "       z");
+    Ok(())
+}
+
+/// A picture's size, and one of its pixels.
+type Drawn = ((u32, u32), Option<[u8; 4]>);
+
+/// The size, and the pixel at `x`, `y`, of the picture `sixel` draws.
+fn sixel_pixel(sixel: &str, (x, y): (u32, u32)) -> Result<Drawn> {
+    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    p.process(format!("\x1bP{sixel}\x1b\\").as_bytes())?;
+    let shown = p.screen().pictures().next().ok_or("no picture")?;
+    let picture = shown.picture;
+    Ok(((picture.width, picture.height), picture.pixel(x, y)))
+}
+
+/// DEC STD 070, 7.1 and 8.1.2: a pixel is as tall, to its width, as P1's
+/// macro says (2:1 by default, 4.5:1 for 2, 1:1 for 9), or as the raster
+/// attributes' Pan:Pad say, omitted ones 1; a picture's pixels are square,
+/// so a sixel of tall pixels takes that many rows, of wide ones columns.
+/// Raster attributes after a sixel or a positioning command are ignored.
+#[test]
+fn a_sixel_pixel_has_the_aspect_p1_or_the_raster_attributes_give() -> Result {
+    let size = |sixel: &str| sixel_pixel(sixel, (0, 0)).map(|(size, _)| size);
+    assert_eq!(size("q~")?, (1, 12));
+    assert_eq!(size("0;1;0q~")?, (1, 12));
+    assert_eq!(size("2q~")?, (1, 27));
+    assert_eq!(size("9q~")?, (1, 6));
+    assert_eq!(size("q\"1;1~")?, (1, 6));
+    assert_eq!(size("q\"3;1~")?, (1, 18));
+    assert_eq!(size("q\";0~")?, (1, 6));
+    assert_eq!(size("9q\"1;2~")?, (2, 6));
+    assert_eq!(size("q~\"1;1~")?, (2, 12));
+    assert_eq!(size("q$\"1;1~")?, (1, 12));
+    Ok(())
+}
+
+/// DEC STD 070, 7.2: P2 1 leaves the pixels no sixel sets as they are
+/// (clear); 0 and 2 set them to the background, colour register 0 here,
+/// over the picture and the extent the raster attributes give (8.1.2),
+/// which sixels may draw past: it is no clip.
+#[test]
+fn sixel_background_select_and_extent() -> Result {
+    let red = Some([255, 0, 0, 255]);
+    // A red pixel at 0, 1 of a picture 4 by 6.
+    let picture = "q\"1;1;4;6#1;2;100;0;0A";
+    let at = |p2: &str, x, y| sixel_pixel(&picture.replacen('q', p2, 1), (x, y));
+    assert_eq!(at("0;1q", 0, 0)?, ((4, 6), Some([0; 4])));
+    assert_eq!(at("0;1q", 3, 5)?, ((4, 6), Some([0; 4])));
+    assert_eq!(at("0;1q", 0, 1)?, ((4, 6), red));
+    for p2 in ["q", "0;0q", "0;2q"] {
+        assert_eq!(at(p2, 3, 5)?, ((4, 6), Some([0, 0, 0, 255])), "{p2}");
+        assert_eq!(at(p2, 0, 1)?, ((4, 6), red), "{p2}");
+    }
+    let blue = Some([0, 0, 255, 255]);
+    let defined = sixel_pixel("0;2q\"1;1;2;6#0;2;0;0;100#1;2;100;0;0A", (1, 0))?;
+    assert_eq!(defined, ((2, 6), blue), "register 0 as it ends");
+    assert_eq!(sixel_pixel("0;1q\"1;1;1;1!3~", (2, 5))?.0, (3, 6));
     Ok(())
 }
 

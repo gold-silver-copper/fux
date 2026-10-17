@@ -1,6 +1,7 @@
 //! Sixel graphics (DEC STD 070, the VT340's; xterm's ctlseqs, "Sixel
 //! Graphics"): the data of a `DCS P1 ; P2 ; P3 q … ST`, decoded as it
-//! comes into a picture of RGBA pixels. Pixels no sixel paints stay clear.
+//! comes into a picture of RGBA pixels, square ones. Pixels no sixel paints
+//! stay clear, or take the background, as P2 says.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -9,6 +10,9 @@ use std::sync::Arc;
 pub const MAX_SIDE: u32 = 4096;
 /// The most pixels a picture may have in all, which bounds its memory.
 const MAX_PIXELS: usize = 4096 * 2160;
+/// The pixel aspect ratio, tall to wide in hundredths, each macro parameter
+/// P1 selects (DEC STD 070, 7.1).
+const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 100];
 
 /// A picture a program drew: its size in pixels, and its pixels, RGBA, row
 /// by row from the top.
@@ -77,10 +81,20 @@ pub(crate) struct Decoder {
     pixels: Vec<u8>,
     /// The data drew past what a picture may hold: it ends with nothing.
     spoilt: bool,
+    /// A pixel's height to its width.
+    aspect: (u32, u32),
+    /// Pixels no sixel sets take the background (P2 0 or 2), else stay clear.
+    background: bool,
+    /// A sixel or a positioning command came: raster attributes are ignored.
+    begun: bool,
 }
 
 impl Decoder {
-    pub(crate) fn new() -> Box<Decoder> {
+    /// A decoder for the data of `DCS P1 ; P2 ; P3 q`. P3, the grid size,
+    /// gets the device's grid that fits it best (DEC STD 070, 7.3 and its
+    /// terminology): a screen has one, its pixel, so P3 changes nothing.
+    pub(crate) fn new(p1: u16, p2: u16) -> Box<Decoder> {
+        let tall = MACRO_ASPECT.get(usize::from(p1)).copied().unwrap_or(200);
         Box::new(Decoder {
             palette: vt340_palette(),
             colour: 0,
@@ -93,6 +107,9 @@ impl Decoder {
             height: 0,
             pixels: Vec::new(),
             spoilt: false,
+            aspect: (tall, 100),
+            background: p2 != 1,
+            begun: false,
         })
     }
 
@@ -130,6 +147,7 @@ impl Decoder {
             0x3f..=0x7e => self.sixel(byte.wrapping_sub(0x3f), repeat.unwrap_or(1).max(1)),
             _ => {}
         }
+        self.begun |= matches!(byte, b'$' | b'-' | 0x3f..=0x7e);
     }
 
     fn begin(&mut self, command: Command) {
@@ -144,7 +162,17 @@ impl Decoder {
         let command = std::mem::replace(&mut self.command, Command::None);
         let [a, b, c, d, e] = self.numbers;
         match command {
-            Command::None | Command::Raster => None,
+            Command::None => None,
+            Command::Raster => {
+                // Omitted aspect numbers are 1; the extent is the least
+                // size, not a clip (DEC STD 070, 8.1.2).
+                if !self.begun {
+                    self.aspect = (a.max(1), b.max(1));
+                    let (right, bottom) = self.scaled(c, d);
+                    self.spoilt = !self.grow(right, bottom);
+                }
+                None
+            }
             Command::Repeat => Some(a.min(MAX_SIDE)),
             Command::Colour => {
                 // A definition in no coordinate system DEC STD 070 (8.1.3)
@@ -176,8 +204,9 @@ impl Decoder {
         if bits != 0 {
             // Down to its lowest pixel painted: the highest bit set.
             let lowest = 6u32.saturating_sub(bits.leading_zeros().saturating_sub(2));
-            let bottom = self.y.saturating_add(lowest);
-            if !self.grow(right, bottom) {
+            let (left, _) = self.scaled(self.x, 0);
+            let (end, bottom) = self.scaled(right, self.y.saturating_add(lowest));
+            if !self.grow(end, bottom) {
                 self.spoilt = true;
                 return;
             }
@@ -187,15 +216,35 @@ impl Decoder {
                     continue;
                 }
                 let y = self.y.saturating_add(bit);
-                for x in self.x..right {
-                    let at = offset(x, y, self.width).unwrap_or(usize::MAX);
-                    if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
-                        crate::copy_from(pixel, &[r, g, b, 255]);
+                let (_, top) = self.scaled(0, y);
+                let (_, below) = self.scaled(0, y.saturating_add(1));
+                for y in top..below {
+                    for x in left..end {
+                        let at = offset(x, y, self.width).unwrap_or(usize::MAX);
+                        if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
+                            crate::copy_from(pixel, &[r, g, b, 255]);
+                        }
                     }
                 }
             }
         }
         self.x = right.min(MAX_SIDE);
+    }
+
+    /// Where grid position `x`, `y` is in the picture's square pixels: a
+    /// pixel taller than wide takes as many rows, one wider as many columns.
+    fn scaled(&self, x: u32, y: u32) -> (u32, u32) {
+        let (tall, wide) = self.aspect;
+        let by = |n: u32, times: u32, over: u32| {
+            let n = u64::from(n).saturating_mul(u64::from(times));
+            let n = n.checked_div(u64::from(over)).unwrap_or(0);
+            u32::try_from(n).unwrap_or(u32::MAX)
+        };
+        if tall >= wide {
+            (x, by(y, tall, wide))
+        } else {
+            (by(x, wide, tall), y)
+        }
     }
 
     /// Makes room for pixels to `right` and `bottom`, keeping those drawn;
@@ -232,6 +281,14 @@ impl Decoder {
         self.end_command();
         if self.spoilt || self.width == 0 || self.height == 0 {
             return None;
+        }
+        // The background is colour register 0, as it ends (DEC STD 070,
+        // 7.2, leaves it to the device).
+        let [r, g, b] = self.palette.first().copied().unwrap_or([0; 3]);
+        for pixel in self.pixels.as_chunks_mut::<4>().0 {
+            if self.background && pixel[3] == 0 {
+                *pixel = [r, g, b, 255];
+            }
         }
         Some(Arc::new(Picture {
             width: self.width,
@@ -429,7 +486,8 @@ mod tests {
     use super::*;
 
     fn decode(data: &[u8]) -> Option<Arc<Picture>> {
-        let mut decoder = Decoder::new();
+        // P1 9: square pixels; P2 1: pixels no sixel sets stay clear.
+        let mut decoder = Decoder::new(9, 1);
         data.iter().for_each(|b| decoder.push(*b));
         decoder.finish()
     }

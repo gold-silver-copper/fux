@@ -1340,13 +1340,15 @@ impl Parser {
                         && byte == b'q'
                         && read.as_slice() == b"$"
                         && self.params.is_empty();
-                    // Sixel: `q` with no intermediates; P2 says whether
-                    // undrawn pixels stay clear, which they always do.
+                    // Sixel: `q` with no intermediates.
                     let sixel = byte == b'q' && read.as_slice().is_empty();
                     self.state = if decrqss {
                         State::Request(Some(Bytes::default()))
                     } else if sixel {
-                        self.sixel = Some(crate::sixel::Decoder::new());
+                        self.sixel = Some(crate::sixel::Decoder::new(
+                            self.params.first(0, 0),
+                            self.params.first(1, 0),
+                        ));
                         State::Sixel
                     } else {
                         State::IgnoreString
