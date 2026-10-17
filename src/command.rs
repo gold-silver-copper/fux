@@ -150,8 +150,10 @@ wire! {
 pub struct Percent(u8);
 
 impl Percent {
+    /// Every share there is.
+    pub const SHARES: std::ops::RangeInclusive<i64> = 1..=100;
     pub fn new(n: u8) -> Option<Percent> {
-        (1..=100).contains(&n).then_some(Percent(n))
+        Self::SHARES.contains(&i64::from(n)).then_some(Percent(n))
     }
     pub fn get(self) -> u8 {
         self.0
@@ -159,7 +161,7 @@ impl Percent {
     /// Its share of `of`, at least 1.
     pub fn of(self, of: u16) -> u16 {
         let share = u32::from(of).saturating_mul(u32::from(self.0)) / 100;
-        // At most `of`, which a u16 holds.
+        // The share is at most `of`, which a u16 holds.
         u16::try_from(share).unwrap_or(of).max(1)
     }
 }

@@ -1177,10 +1177,8 @@ impl fuxth::Host for Host<'_> {
                 tell(Command::ResizePane { target: p, by })
             }
             "percent" => {
-                let n = int(&next()?)?;
-                let Some(share) = u8::try_from(n).ok().and_then(Percent::new) else {
-                    return Err(fail(Lang::Range, format!("takes 1 to 100, not {n}")));
-                };
+                let n = within(&next()?, Percent::SHARES)?;
+                let share = Percent::new(n).ok_or_else(|| fail(Lang::Range, "no share"))?;
                 now(out, Value::App(Fux::Extent(Extent::Percent(share))))
             }
             "move-border" => {
