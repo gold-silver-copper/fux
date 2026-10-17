@@ -765,9 +765,7 @@ impl Watch {
         let pieces = pane.record.printed_after(self.looked.max(self.start.from));
         let reach = texts.iter().map(|t| t.chars().count()).max().unwrap_or(0);
         // The characters of the texts waited for, case and blanks aside.
-        let wanted: Vec<Vec<char>> = (texts.iter())
-            .map(|t| folded(t.trim_start_matches('^').trim_end_matches('$')))
-            .collect();
+        let wanted: Vec<Vec<char>> = (texts.iter()).map(|t| folded(bare(t))).collect();
         let runs = pieces.flat_map(|(seq, p)| p.runs().map(move |(r, e, f)| (seq, r, e, f)));
         for (seq, whole, echo, fresh) in runs {
             // Only what it changed is news: what it printed as its row held
@@ -1365,6 +1363,34 @@ mod tests {
         let far = crate::after(began, Duration::from_secs(2));
         assert!(waiting.answer(&session, far).is_none());
         assert!(waiting.due() > Instant::now());
+        Ok(())
+    }
+
+    /// `cost$$` waits for a line ending `cost$`: the `$` printed after
+    /// `cost`, apart from it, meets it. Only the last `$` marks the end.
+    #[test]
+    fn a_text_s_own_dollar_printed_alone_meets_it() -> Result<(), String> {
+        use crate::command::{Until, Wait};
+        use std::time::{Duration, Instant};
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let id = crate::id::PaneId::of(1);
+        let pane = session.panes.get(&id).ok_or("no %1")?;
+        let wait = Wait {
+            until: vec![Until::Text("cost$$".into())],
+            timeout: None,
+            print: false,
+            after: false,
+            marks: false,
+        };
+        let (now, limit) = (Instant::now(), Duration::from_secs(60));
+        let mut waiting = super::Waiting::new(&[pane], wait, super::Follows::Wait, now, limit);
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"cost");
+        assert!(waiting.answer(&session, now).is_none());
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"$\r\n");
+        let answer = waiting.answer(&session, now).ok_or("not met")?;
+        assert!(answer.text.contains("met \"cost$$\""), "{}", answer.text);
         Ok(())
     }
 
