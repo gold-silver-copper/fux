@@ -920,19 +920,25 @@ struct Settings<'a>(Option<&'a mut Server>);
 
 impl Asks for Settings<'_> {
     fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        if let Command::Set { option, value } = &request.command {
-            return match &mut self.0 {
+        use crate::command::Reaches as R;
+        match request.command.reaches() {
+            R::Settings { option, value } => match &mut self.0 {
                 Some(server) => server.ask(request, out),
                 None => match crate::config::Config::default().set(option, value) {
                     Ok(()) => Ok(Reply::default()),
                     Err(error) => Err(Failed::new(Code::Config, error.to_string())),
                 },
-            };
+            },
+            R::Reads
+            | R::Shapes
+            | R::Streams
+            | R::Server
+            | R::Buffers { .. }
+            | R::Client { .. } => Err(Failed::new(
+                Code::NotConfig,
+                "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
+            )),
         }
-        Err(Failed::new(
-            Code::NotConfig,
-            "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
-        ))
     }
 }
 
@@ -983,42 +989,15 @@ struct Layout<'a>(&'a mut Server);
 
 impl Asks for Layout<'_> {
     fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        use Command as C;
-        let refused = match &request.command {
-            C::KillServer { .. } => Some("kill-server"),
-            C::Grant { .. } => Some("grant"),
-            C::Revoke { .. } => Some("revoke"),
-            C::Set { .. } => Some("set"),
-            C::Client { .. } => Some("a client's words"),
+        use crate::command::Reaches as R;
+        let refused = match request.command.reaches() {
+            R::Server => Some("kill-server, grant or revoke"),
+            R::Settings { .. } => Some("set"),
+            R::Client { .. } => Some("a client's words"),
             // A stream that never ends would hold the restore, and every
             // request waiting for it, for good.
-            C::Events { .. } => Some("events"),
-            C::Ls { .. }
-            | C::NewWorkspace { .. }
-            | C::NewTab { .. }
-            | C::Split { .. }
-            | C::Run { .. }
-            | C::Respawn { .. }
-            | C::Notify { .. }
-            | C::Resize { .. }
-            | C::Wait { .. }
-            | C::SendMouse { .. }
-            | C::Kill { .. }
-            | C::Signal { .. }
-            | C::Rename { .. }
-            | C::MovePane { .. }
-            | C::SwapPane { .. }
-            | C::ResizePane { .. }
-            | C::SendKeys { .. }
-            | C::DumpLayout { .. }
-            | C::Log { .. }
-            | C::ClearHistory { .. }
-            | C::CapturePane { .. }
-            | C::Reorder { .. }
-            | C::Resolve { .. }
-            | C::ListBuffers
-            | C::ShowBuffer { .. }
-            | C::PasteBuffer { .. } => None,
+            R::Streams => Some("events"),
+            R::Reads | R::Shapes | R::Buffers { .. } => None,
         };
         match refused {
             Some(word) => Err(Failed::new(

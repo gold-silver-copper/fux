@@ -383,26 +383,6 @@ pub(crate) const MAIN: &str = "main";
 /// The workspace `fux run` starts programs in unless told another.
 pub const RUN_WORKSPACE: &str = "agent";
 
-/// Whether a command leaves every client's screen as it was: it reads the
-/// state, or hands a pane's program something whose effect, if any, comes
-/// back as output.
-fn shows_nothing_new(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Ls { .. }
-            | Command::Resolve { .. }
-            | Command::ListBuffers
-            | Command::ShowBuffer { .. }
-            | Command::CapturePane { .. }
-            | Command::SendKeys { .. }
-            | Command::Signal { .. }
-            | Command::Client {
-                action: ClientAction::Capture,
-                ..
-            }
-    )
-}
-
 /// A log file, made anew: what a program writes may be secret, so it is
 /// the user's alone.
 /// A link is not followed, and a file there already is emptied and made
@@ -2066,7 +2046,7 @@ impl Session {
             .execute(command, origin)
             .unwrap_or_else(|error| failure(error, origin));
         self.ids.unwant();
-        if !shows_nothing_new(command) {
+        if !command.reaches().shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
         }
@@ -4005,6 +3985,7 @@ mod tests {
             "str %1 pane opts capture",
             "list-keys",
             "str %1 pane keys str x text send-keys",
+            "str c1 client keys str x text send-keys",
         ] {
             run(&mut s, line)?;
         }
