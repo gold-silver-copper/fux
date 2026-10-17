@@ -208,11 +208,12 @@ struct Ends {
 }
 
 impl Ends {
-    fn end(&mut self, used: i64, diverges: bool) {
-        let least = if diverges {
-            &mut self.diverged
-        } else {
-            &mut self.stopped
+    /// A way that ended as `flow` says, having used `used`.
+    fn end(&mut self, used: i64, flow: Flow) {
+        let least = match flow {
+            Flow::Diverge => &mut self.diverged,
+            Flow::Stop => &mut self.stopped,
+            Flow::Go => return,
         };
         *least = Some(least.map_or(used, |u| u.min(used)));
     }
@@ -532,7 +533,7 @@ impl<'a, A> Unit<'a, A> {
             for (to, next) in self.block(start, state, &mut |_, _| {}, &mut diverged) {
                 if forward && to <= start {
                     let used = next.outer.first().map_or(next.used, |o| o.used);
-                    diverged.end(used, true);
+                    diverged.end(used, Flow::Diverge);
                     continue;
                 }
                 let merged = match states.get(&to) {
@@ -682,7 +683,7 @@ impl<'a, A> Unit<'a, A> {
                 // own depth (not a `list` body's).
                 Ok(flow @ (Flow::Diverge | Flow::Stop)) => {
                     let used = state.outer.first().map_or(state.used, |o| o.used);
-                    diverged.end(used, matches!(flow, Flow::Diverge));
+                    diverged.end(used, flow);
                     return Vec::new();
                 }
                 Ok(Flow::Go) => {}
