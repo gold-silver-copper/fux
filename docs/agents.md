@@ -158,7 +158,10 @@ words was given too few values or the wrong kind; 2 a command used wrongly
 text has not come (or gone); 124 still busy at the time limit (with `0 timeout`, a wait for a text
 or the exit not met at once). A met wait for the exit (`wait-exit`) is 0:
 the program's own status is in its state line (`%2 exited 3`) and in
-`str exited get`, never fux's (nor `fux FILE`'s). Words before a failing one
+`str exited get`, never fux's (nor `fux FILE`'s). A run that does not
+fail exits with the status of the first answer it leaves that has one (as
+itself, its `json`, or in a list): an answer dropped (`wait drop`) or
+taken by a word gives it none. Words before a failing one
 have already acted. `fux ls` (`ls json`, with titles and states) lists everything.
 
 ## A program

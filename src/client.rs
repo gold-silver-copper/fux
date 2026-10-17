@@ -802,9 +802,9 @@ fn run_job(
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
         Err(failed) => Some((failed.to_string(), true)),
-        Ok(ended) => {
+        Ok(stack) => {
             let mut said = String::from_utf8_lossy(&out).into_owned();
-            for value in &ended.stack {
+            for value in &stack {
                 said.push_str(&value.text());
                 said.push('\n');
             }

@@ -120,7 +120,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", 1, "handle -- record", "a pane, tab or workspace, all of it"),
     word("Reading", "get", 2, "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
-    word("Reading", "json", 1, "x -- text", "x as JSON"),
+    word("Reading", "json", 1, "x -- text", "x as JSON: an answer's keeps its status"),
     word("Reading", "events", 0, "-- ", "what happens, a line each, as it happens"),
     word("Reading", "events-json", 0, "-- ", "what happens, as JSON lines"),
     word("Reading", "events-of", 1, "handle -- ", "what happens in a pane, tab or workspace"),
@@ -1085,9 +1085,12 @@ impl fuxth::Host for Host<'_> {
                     Code::Unused,
                     "converts a value: it goes after what the options make (opts capture json)",
                 )),
-                // An answer's JSON as given: of several panes, a line each.
-                Value::App(Fux::Answer(answer)) if answer.json.is_some() => {
-                    now(out, Value::str(answer.json.unwrap_or_default()))
+                // An answer's JSON as given (of several panes, a line each),
+                // still the answer, its status with it.
+                Value::App(Fux::Answer(mut answer)) if answer.json.is_some() => {
+                    answer.text = answer.json.clone().unwrap_or_default();
+                    answer.said = Said::Json;
+                    now(out, Value::App(Fux::Answer(answer)))
                 }
                 other @ (Value::Int(_)
                 | Value::Bool(_)
@@ -1610,6 +1613,7 @@ mod tests {
                 text: String::new(),
                 json: Some(json.to_owned()),
                 said: super::super::Said::Several,
+                code: None,
             }))))
             .render()
         };

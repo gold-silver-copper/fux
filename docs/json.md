@@ -120,7 +120,9 @@ wait for a text or a bell answers what met it too:
 | `text` | `text`, `line` |
 | `bell` | `notification`: its text, else `null` |
 
-`status` is the exit status. A wait for a text, a bell or the exit that
+`status` is the exit status: an answer left at the end (alone, as its
+JSON or in a list; the first of several) gives the run its status, one
+dropped or taken by a word gives none. A wait for a text, a bell or the exit that
 fails (the program exited first or was started again, 3; the pane closed,
 4; the time limit, 124) ends the
 program with that status and says why on stderr, one line, `fux: CODE:

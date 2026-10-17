@@ -680,3 +680,27 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
     assert!(stderr.starts_with("fux: usage: "), "{stderr}");
     Ok(())
 }
+
+/// A wait's own status (124 here: still busy at the limit) is its answer's:
+/// the run exits with it while the answer is left, as itself, as its JSON,
+/// in a list, or the first of several; an answer dropped takes it away.
+#[test]
+fn an_answers_status_goes_where_the_answer_goes() -> Outcome {
+    let server = Server::start("")?;
+    let ticking = "while :; do date +%s%N; sleep 0.05; done";
+    let started = server.ok(&[
+        "opts", "str", "sh", "program", "str", "-c", "arg", "str", ticking, "arg", "0", "timeout",
+        "run",
+    ])?;
+    let pane = started.split_whitespace().next().unwrap_or_default();
+    let busy = ["str", pane, "pane", "opts", "1", "timeout", "wait"];
+    let status = |before: &[&str], after: &[&str]| -> Result<i32, String> {
+        Ok(server.fux(&[before, &busy[..], after].concat())?.status)
+    };
+    assert_eq!(status(&[], &[])?, 124, "left");
+    assert_eq!(status(&[], &["json"])?, 124, "its JSON");
+    assert_eq!(status(&["list"], &["end"])?, 124, "in a list");
+    assert_eq!(status(&["str", "a"], &["str", "b"])?, 124, "of several");
+    assert_eq!(status(&[], &["drop", "str", "ok"])?, 0, "dropped");
+    Ok(())
+}

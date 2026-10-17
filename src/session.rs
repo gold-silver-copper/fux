@@ -3384,7 +3384,7 @@ pub(crate) mod testing {
         let (out, ended) = run_as(session, client, false, code);
         let ended = ended.map_err(|e| e.to_string())?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
-        for value in &ended.stack {
+        for value in &ended {
             text.push_str(&value.text());
             text.push('\n');
         }
@@ -3401,7 +3401,7 @@ pub(crate) mod testing {
         code: &str,
     ) -> Vec<String> {
         match run_as(session, client, settle, code).1 {
-            Ok(ended) => (ended.stack.iter())
+            Ok(stack) => (stack.iter())
                 .map(|value| {
                     let text = value.text();
                     format!(
@@ -3420,7 +3420,10 @@ pub(crate) mod testing {
         client: Option<ClientId>,
         settle: bool,
         code: &str,
-    ) -> (Vec<u8>, Result<crate::script::Ended, crate::script::Failed>) {
+    ) -> (
+        Vec<u8>,
+        Result<Vec<fuxth::Value<crate::script::Fux>>, crate::script::Failed>,
+    ) {
         let mut out = Vec::new();
         let tokens = match fuxth::token::source("test", code) {
             Ok(tokens) => tokens,
