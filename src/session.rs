@@ -3686,7 +3686,6 @@ pub(crate) mod testing {
 /// read alone, as a submit, not as a newline pasted with the text, and
 /// what follows each piece is told apart (`crate::classify`).
 fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
-    use Unit;
     let (mode, bracketed) = (
         p.screen().key_mode(),
         p.screen().mode(fux_vt::Mode::BracketedPaste),
