@@ -392,15 +392,6 @@ wire! {
 }
 
 impl End {
-    /// A failure of kind `code`, with its exit status.
-    pub fn failed(code: Code, message: impl Into<String>) -> End {
-        End::Failed {
-            status: code.status(),
-            code,
-            message: message.into(),
-        }
-    }
-
     /// The exit status.
     pub fn status(&self) -> u8 {
         match self {
@@ -429,10 +420,14 @@ impl From<String> for Reply {
 }
 
 impl Reply {
-    /// A failure of kind `code`, and why.
+    /// A failure of kind `code`, with its exit status, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Reply {
         Reply {
-            end: End::failed(code, message),
+            end: End::Failed {
+                status: code.status(),
+                code,
+                message: message.into(),
+            },
             ..Reply::default()
         }
     }
