@@ -20,14 +20,12 @@ impl Session {
         let changes = self.changes();
         // Whether any of it may have changed what a client shows.
         let mut shown = false;
+        // A client that only watches sends no other acts than its
+        // terminal's replies and notices: its own keyboard holds the rest
+        // (`Keyboard`), as `read_only` is what it said itself.
         for act in acts {
-            let Some(view) = self.views.get(&client) else {
+            if !self.views.contains_key(&client) {
                 break;
-            };
-            // A client that only watches is answered by its terminal, and
-            // shows notices; nothing else it sends does anything.
-            if view.read_only && !matches!(act, Act::Reply(_) | Act::Notice { .. }) {
-                continue;
             }
             shown |= self.act(client, act);
         }
