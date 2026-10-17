@@ -107,6 +107,20 @@ fn decera_and_decsera_erase_a_rectangle() -> Result {
     let erased = screen.cell(0, 0);
     assert!(erased.is_some_and(|c| c.contents() == " " && c.attributes().bold()));
     assert!(screen.cell(1, 4).is_some_and(|c| !c.has_contents()));
+    // DECERA "clearing all character attributes": each character becomes
+    // a space, which DECCARA's stream then reaches, and "any unoccupied
+    // character positions remain unoccupied".
+    let bytes = "\x1b[1;1H\x1b[1mab\x1b[m\x1b[2;4H\x1b[K\x1b[1;1;2;6$z\x1b[1;1;2;6;7$r";
+    let parser = after(bytes)?;
+    let screen = parser.screen();
+    let space = |c: &fux_vt::CellRef| c.contents() == " " && !c.attributes().bold();
+    assert!(
+        screen
+            .cell(0, 0)
+            .is_some_and(|c| space(&c) && c.attributes().inverse())
+    );
+    assert!(screen.cell(1, 2).is_some_and(|c| space(&c)));
+    assert!(screen.cell(1, 4).is_some_and(|c| !c.has_contents()));
     Ok(())
 }
 

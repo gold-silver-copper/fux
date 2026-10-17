@@ -1133,13 +1133,23 @@ impl Grid {
 
     /// DECSERA, DECSED and DECSEL: each glyph DECSCA does not protect in
     /// the columns `start` to `end` of live row `row` made a space, keeping
-    /// its attributes; empty cells stay empty (DEC STD 070, each of them). A wide glyph's second
-    /// half goes with its first, and one the span cuts is blanked whole.
-    pub fn blank_unprotected(&mut self, row: u16, (start, end): (u16, u16), version: u64) {
+    /// its attributes; empty cells stay empty (DEC STD 070, each of them).
+    /// With `all`, DECERA: every glyph, protected or not, a space in that
+    /// style, "clearing all character attributes", links too. A wide
+    /// glyph's second half goes with its first, and one the span cuts is
+    /// blanked whole.
+    pub fn erase_to_spaces(
+        &mut self,
+        row: u16,
+        (start, end): (u16, u16),
+        all: Option<u32>,
+        version: u64,
+    ) {
         let span = usize::from(start)..usize::from(end);
         self.mutate_row(row, version, end, |cells| {
             // Whether the glyph before is protected.
             let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
+            let before = before.filter(|_| all.is_none());
             let (mut kept, mut changed) = (before.is_some_and(Compact::is_protected), false);
             for cell in cells.get_mut(span).into_iter().flatten() {
                 if cell.is_wide_continuation() {
@@ -1149,15 +1159,18 @@ impl Grid {
                     }
                     continue;
                 }
-                kept = cell.is_protected();
+                kept = all.is_none() && cell.is_protected();
                 if cell.has_contents() && !kept {
-                    *cell = Compact::ascii(b' ', cell.style());
+                    *cell = Compact::ascii(b' ', all.unwrap_or(cell.style()));
                     changed = true;
                 }
             }
             repair_wide(cells);
             changed
         });
+        if all.is_some() {
+            self.set_link(row, usize::from(start)..usize::from(end), None, version);
+        }
     }
 
     /// DECCARA and DECRARA: the attributes of the columns `start` to `end`

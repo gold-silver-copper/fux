@@ -1961,7 +1961,7 @@ impl Screen {
         let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
         self.grid_mut().erase_in(display, part, |g, y, start, end| {
             if private {
-                g.blank_unprotected(y, (start, end), version);
+                g.erase_to_spaces(y, (start, end), None, version);
                 if end >= cols {
                     g.wrap(y, false, version);
                 }
@@ -2173,15 +2173,15 @@ impl Screen {
                 let style = self.pen_style() | self.protect;
                 self.each_row(lines, |g, y, v| g.fill(y, span, c, style, v));
             }
-            // DECERA: every glyph erased, the blanks in the pen's colours,
-            // as ED's.
+            // DECERA: every character a space in the pen's colours, as ED's
+            // blanks are.
             b'z' => {
                 let blank = self.blank_style();
-                self.each_row(lines, |g, y, v| g.erase(y, span.0, span.1, blank, v));
+                self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span, Some(blank), v));
             }
             // DECSERA: the glyphs DECSCA does not protect, SPA's guard being
             // no DECSCA, made spaces in their own attributes.
-            b'{' => self.each_row(lines, |g, y, v| g.blank_unprotected(y, span, v)),
+            b'{' => self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span, None, v)),
             // DECCARA and DECRARA: SGR's numbers from the fifth parameter
             // on (DECCARA's default 0 "if no valid subsequent parameter is
             // received", p. 5-174), over the rectangle, or with DECSACE's
