@@ -20,29 +20,21 @@ pub use tables::UNICODE_VERSION;
 /// host that paints cells side by side to a terminal (fux) uses it to tell
 /// where the terminal may join a cell to the one before it.
 pub fn continues_cluster(cluster: &str, c: char) -> bool {
-    // After a Prepend character (none is ASCII) the cluster decides.
-    let prepended = cluster
-        .chars()
-        .next_back()
-        .is_some_and(|last| !last.is_ascii() && Properties::of(last).kind == Break::Prepend);
-    if !prepended {
-        // Else no printable ASCII character continues a cluster: they are
-        // all Other.
-        if (' '..='~').contains(&c) {
-            return false;
-        }
-        // Nor does any character that no rule joins whatever comes before
-        // it but a Prepend (most of what is not ASCII: box drawing, CJK,
-        // letters), which needs no look at the cluster.
-        let next = Properties::of(c);
-        if matches!(
-            next.kind,
-            Break::Other | Break::Prepend | Break::Control | Break::Cr
-        ) && !next.pictographic
-            && next.conjunct != Conjunct::Consonant
-        {
-            return false;
-        }
+    // No rule joins a character of these kinds to what comes before it,
+    // but for a Prepend character: every printable ASCII character (they
+    // are all Other), and most of what is not ASCII (box drawing, CJK,
+    // letters). Unless the cluster ends in a Prepend character, that needs
+    // no look at the cluster.
+    let next = Properties::of(c);
+    if matches!(
+        next.kind,
+        Break::Other | Break::Prepend | Break::Control | Break::Cr
+    ) && !next.pictographic
+        && next.conjunct != Conjunct::Consonant
+        && (cluster.chars().next_back())
+            .is_none_or(|last| Properties::of(last).kind != Break::Prepend)
+    {
+        return false;
     }
     Cluster::of(cluster).push(c)
 }
