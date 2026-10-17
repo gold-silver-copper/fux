@@ -171,7 +171,7 @@ pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
         crate::io::cloexec_from(3)?;
         setsid()?;
         if terminal {
-            let set = crate::terminal::request(libc::TIOCSCTTY)?;
+            let set = crate::terminal::request(libc::TIOCSCTTY);
             let steal: libc::c_int = 0;
             // SAFETY: TIOCSCTTY takes an int and touches no memory.
             check(unsafe { libc::ioctl(0, set, steal) })?;
