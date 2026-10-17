@@ -788,7 +788,8 @@ impl Watch {
             let above = (screen.row_by_id(whole.row))
                 .and_then(|row| row.above())
                 .filter(fux_vt::Row::wrapped)
-                .and_then(|up| up.cells_text().chars().last());
+                .and_then(|up| up.copied(0, usize::MAX).last())
+                .and_then(|(_, text)| text.chars().last());
             let line = match intact {
                 true => Line::of(pane, &print, reach),
                 false => Line::piece(&whole, above, fresh),
@@ -938,9 +939,7 @@ impl Line {
             let mut row = Some(first);
             while let Some(r) = row {
                 let ours = r.id() == print.row;
-                let cells = r.cells().enumerate();
-                for (col, cell) in cells.filter(|(_, c)| !c.is_wide_continuation()) {
-                    let text = cell.shown();
+                for (col, text) in r.copied(0, usize::MAX) {
                     let col = u16::try_from(col).unwrap_or(u16::MAX);
                     line.push(text, ours && print.cols.0 <= col && col < print.cols.1);
                 }
@@ -1342,6 +1341,33 @@ mod tests {
         pane.output(b"$\r\n");
         let answer = waiting.answer(&session, now).ok_or("not met")?;
         assert!(answer.text.contains("met \"cost$$\""), "{}", answer.text);
+        Ok(())
+    }
+
+    /// A wide glyph that did not fit at a row's end wraps onto the next:
+    /// the blank it left there is no part of the line a wait reads, as it
+    /// is no part of a copy.
+    #[test]
+    fn a_wait_reads_a_wide_glyph_wrapped_on_without_its_blank() -> Result<(), String> {
+        use crate::command::{Until, Wait};
+        use std::time::{Duration, Instant};
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let id = crate::id::PaneId::of(1);
+        let pane = session.panes.get(&id).ok_or("no %1")?;
+        let cols = usize::from(pane.screen().size().cols());
+        let wait = Wait {
+            until: vec![Until::Text("x世".into())],
+            timeout: None,
+            print: false,
+            marks: false,
+        };
+        let (now, limit) = (Instant::now(), Duration::from_secs(60));
+        let mut waiting = super::Waiting::new(&[pane], wait, super::Follows::Wait, now, limit);
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        let row: String = std::iter::repeat_n('x', cols.saturating_sub(1)).collect();
+        pane.output(format!("{row}世\r\n").as_bytes());
+        let answer = waiting.answer(&session, now).ok_or("not met")?;
+        assert!(answer.text.contains("met \"x世\""), "{}", answer.text);
         Ok(())
     }
 
