@@ -360,6 +360,31 @@ fn blanks_brought_in_take_the_pens_colours() -> Result {
     Ok(())
 }
 
+/// DEC STD 070, Erase in Line and Erase in Display (and DECSEL, DECSED):
+/// their algorithms carry out each selective parameter in turn (revision
+/// note 12 of chapter 5, "processing of multiple selective parameters";
+/// 3.5.3.3: as many separate sequences, each with one), so `1;0` erases
+/// what 1 and then 0 erase, the whole line or display, and an unknown
+/// parameter beside them is ignored. xterm 411 reads the first alone.
+#[test]
+fn ed_and_el_carry_out_each_parameter() -> Result {
+    assert_eq!(lines(&run(1, 6, b"abcdef\x1b[1;3H\x1b[1;0K")?), [""]);
+    assert_eq!(lines(&run(1, 6, b"abcdef\x1b[1;3H\x1b[9;1K")?), ["   def"]);
+    let screen = b"abc\r\ndef\r\nghi\x1b[2;2H";
+    assert_eq!(
+        lines(&run(3, 3, &[&screen[..], b"\x1b[0;1J"].concat())?),
+        ["", "", ""]
+    );
+    assert_eq!(
+        lines(&run(3, 3, &[&screen[..], b"\x1b[1;5J"].concat())?),
+        ["", "  f", "ghi"]
+    );
+    // DECSEL alike, sparing the glyphs DECSCA protects.
+    let protected = b"a\x1b[1\"qb\x1b[0\"qcdef\x1b[1;3H\x1b[?1;0K";
+    assert_eq!(lines(&run(1, 6, protected)?), [" b"]);
+    Ok(())
+}
+
 /// The first row's text, `bytes` printed on a screen one row high.
 fn row(cols: u16, bytes: &[u8]) -> Result<String> {
     let p = run(1, cols, bytes)?;

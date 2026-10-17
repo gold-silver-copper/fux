@@ -2513,31 +2513,43 @@ impl Screen {
                     self.with_grid(|g, _, v| g.erase(row, col, end, a, v));
                 }
             }
+            // ED and EL, DECSED and DECSEL carry out each parameter in
+            // turn, as that many sequences of one would (DEC STD 070, their
+            // algorithms, chapter 5's revision note 12); unhandled if none
+            // is known.
             b'J' | b'K' => {
-                let mode = p.first(0, 0);
-                // ED 3 (`CSI 3 J`, xterm's): the scrollback goes, as `clear`
-                // asks; the screen stays.
-                if byte == b'J' && mode == 3 && !private {
-                    self.clear_history();
-                    return Ok(Dispatch::Done);
-                }
-                let Some(part) = Erase::ALL.into_iter().find(|e| e.number() == mode) else {
-                    return Ok(Dispatch::Unhandled);
-                };
-                // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
-                // DECSCA's glyphs, ED and EL SPA's.
-                if self.protected {
-                    self.erase_protected(private, byte == b'J', part);
-                } else {
-                    let a = self.blank_style();
-                    self.with_grid(|g, _, v| {
-                        g.erase_in(byte == b'J', part, |g, y, start, end| {
-                            g.erase(y, start, end, a, v);
+                let mut known = false;
+                for group in p.groups() {
+                    let mode = group.first().copied().unwrap_or(0);
+                    // ED 3 (`CSI 3 J`, xterm's): the scrollback goes, as
+                    // `clear` asks; the screen stays.
+                    if byte == b'J' && mode == 3 && !private {
+                        self.clear_history();
+                        known = true;
+                        continue;
+                    }
+                    let Some(part) = Erase::ALL.into_iter().find(|e| e.number() == mode) else {
+                        continue;
+                    };
+                    known = true;
+                    // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
+                    // DECSCA's glyphs, ED and EL SPA's.
+                    if self.protected {
+                        self.erase_protected(private, byte == b'J', part);
+                    } else {
+                        let a = self.blank_style();
+                        self.with_grid(|g, _, v| {
+                            g.erase_in(byte == b'J', part, |g, y, start, end| {
+                                g.erase(y, start, end, a, v);
+                            });
                         });
-                    });
+                    }
+                    if byte == b'J' && part == Erase::All {
+                        self.screen_erased();
+                    }
                 }
-                if byte == b'J' && part == Erase::All {
-                    self.screen_erased();
+                if !known {
+                    return Ok(Dispatch::Unhandled);
                 }
             }
             // IL and DL, ignored outside the margins, leave the cursor in
