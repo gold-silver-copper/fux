@@ -1101,7 +1101,7 @@ impl Session {
 
     /// Sends `inputs` to pane `id`'s program, a piece at a time (`units`).
     fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
-        let p = self.pane_mut(id)?;
+        let p = self.live_pane_mut(id)?;
         p.note_input();
         let units = units(p, inputs);
         Ok(p.send(units, Instant::now())?)
@@ -3788,6 +3788,18 @@ mod tests {
         assert!(run(&mut s, &line).is_err_and(|e| e.contains("name_taken")));
         assert_eq!(std::fs::read_to_string(&log)?, "kept");
         std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// A paste into a pane whose program exited is refused, as keys are.
+    #[test]
+    fn a_paste_into_an_exited_pane_is_refused() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
+        s.buffers.push_front("x".into());
+        let pasted = run(&mut s, "%2 0 paste-buffer");
+        assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
         Ok(())
     }
 
