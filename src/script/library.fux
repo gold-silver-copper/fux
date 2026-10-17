@@ -1,9 +1,9 @@
 # fux's bundled words, written in fuxth: every program may use them.
 # `explain NAME` says what each does.
 
-# pane text -- [answer] : type text into a pane, nothing pressed after it; answers as send-keys does
+# pane text -- answer : type text into a pane, nothing pressed after it; answers as send-keys does
 define type keys swap text send-keys end
-# pane name -- [answer] : press a key in a pane: Enter, C-c, Up; answers as send-keys does
+# pane name -- answer : press a key in a pane: Enter, C-c, Up; answers as send-keys does
 define press keys swap key send-keys end
 # pane text -- answer : in a shell: type a line and press Enter; answers once the shell reads again, `· done STATUS`, with the command's output
 define line keys swap text str Enter key send-keys end

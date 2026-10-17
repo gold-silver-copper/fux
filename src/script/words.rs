@@ -29,13 +29,10 @@ pub struct Word {
 
 impl Word {
     /// How many values it gives, read from its effect: each word after the
-    /// `--`, one in brackets given only sometimes.
-    pub fn gives(&self) -> std::ops::RangeInclusive<usize> {
+    /// `--`.
+    pub fn gives(&self) -> usize {
         let after = self.effect.split_once("--").map_or("", |(_, after)| after);
-        let words = after.split_whitespace();
-        let sometimes = words.clone().filter(|w| w.starts_with('[')).count();
-        let all = words.count();
-        all.saturating_sub(sometimes)..=all
+        after.split_whitespace().count()
     }
 }
 
@@ -101,10 +98,10 @@ pub const WORDS: &[Word] = &[
     word("Input", "paste", 2, "keys text -- keys", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
     word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
     word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
-    word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
+    word("Input", "send-keys", 2, "target keys -- outcome", "send to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
-    word("Input", "send-mouse", 2, "pane mouse -- [outcome]", "send a mouse event"),
-    word("Input", "signal", 2, "pane name -- [answer]", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground; answers once it exits or settles"),
+    word("Input", "send-mouse", 2, "pane mouse -- outcome", "send a mouse event"),
+    word("Input", "signal", 2, "pane name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground; answers once it exits or settles"),
     // Reading
     word("Reading", "capture", 2, "pane opts -- capture", "the screen, as the options say"),
     word("Reading", "history", 2, "opts lines -- opts", "capture: lines of history first"),
@@ -481,14 +478,6 @@ fn followed(command: Command, wait: Option<Wait>) -> Request {
         Some(wait) => Request::Then(command, Box::new(wait)),
         None => Request::Do(command),
     }
-}
-
-/// The wait an input or a signal makes, armed before it, and the answer it
-/// gives: whether it waited.
-fn acted(waits: &Waits, settle: bool) -> (Option<Wait>, Then) {
-    let then = wait(waits, true, settle);
-    let waited = then.is_some();
-    (then, Then::Outcome { waited })
 }
 
 /// A wait for what `waits` names, else for the pane to settle, said with
@@ -926,7 +915,7 @@ impl fuxth::Host for Host<'_> {
                 // With a wait's time either way: on a tab or workspace, for
                 // each of its panes.
                 let wait = Request::Wait(p, waited(&built.waits, false));
-                later(ask(wait, Then::Outcome { waited: true }))
+                later(ask(wait, Then::Outcome))
             }
             // ------------------------------------------------------- input
             "text" | "key" | "paste" | "paste-file" | "times" => {
@@ -1011,19 +1000,16 @@ impl fuxth::Host for Host<'_> {
                         action: keys,
                     };
                     // Its answer, empty, as send-keys to a pane leaves one.
-                    let answer = Then::Outcome {
-                        waited: self.settle,
-                    };
-                    return later(ask(typed, answer));
+                    return later(ask(typed, Then::Outcome));
                 }
-                let (then, answer) = acted(&built.waits, self.settle);
+                let then = wait(&built.waits, true, self.settle);
                 let target =
                     target(&to).map_err(|_| wrong("a pane, tab, workspace or client", &to))?;
                 let keys = Command::SendKeys {
                     target,
                     inputs: built.inputs,
                 };
-                later(ask(followed(keys, then), answer))
+                later(ask(followed(keys, then), Then::Outcome))
             }
             "mouse" => {
                 let action = next()?;
@@ -1057,25 +1043,23 @@ impl fuxth::Host for Host<'_> {
                 let Value::App(Fux::Mouse(m)) = &m else {
                     return Err(wrong("a mouse event (from mouse)", &m));
                 };
-                let (then, answer) = acted(&m.waits, self.settle);
+                let then = wait(&m.waits, true, self.settle);
                 let mouse = Command::SendMouse {
                     target: p,
                     mouse: m.mouse,
                     row: m.row,
                     col: m.col,
                 };
-                later(ask(followed(mouse, then), answer))
+                later(ask(followed(mouse, then), Then::Outcome))
             }
             "signal" => {
                 let p = pane(&next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
                 // From a command line: answers once the program exited or settled.
-                let (then, answer) = acted(&Waits::default(), self.settle);
-                later(ask(
-                    followed(Command::Signal { target: p, signal }, then),
-                    answer,
-                ))
+                let then = wait(&Waits::default(), true, self.settle);
+                let signal = followed(Command::Signal { target: p, signal }, then);
+                later(ask(signal, Then::Outcome))
             }
             // ----------------------------------------------------- reading
             "capture" => {
@@ -1617,7 +1601,7 @@ mod tests {
             .iter()
             .find(|w| w.name == "send-keys")
             .map(Word::gives);
-        assert_eq!(send, Some(0..=1), "an outcome only with a wait");
+        assert_eq!(send, Some(1), "an outcome, with a wait or without");
     }
 
     /// A wait and an action's wait leave how long to the server

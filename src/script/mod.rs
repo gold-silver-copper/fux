@@ -230,10 +230,8 @@ pub enum Then {
     Text,
     /// A field's value.
     Value,
-    /// A wait's outcome: its text, and JSON; nothing for no wait.
-    Outcome {
-        waited: bool,
-    },
+    /// A wait's outcome: its text, and JSON; empty for no wait.
+    Outcome,
 }
 
 /// The keys of a binding just made.
@@ -376,7 +374,8 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
 pub fn vocabulary() -> fuxth::Vocabulary {
     let mut vocabulary = fuxth::Vocabulary::default();
     for word in WORDS {
-        vocabulary.add(word.name, word.takes, word.gives());
+        let gives = word.gives();
+        vocabulary.add(word.name, word.takes, gives..=gives);
     }
     vocabulary
 }
@@ -813,8 +812,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             // object, as text that `json` gives as it is.
             None => Answer::value(text.clone(), Some(text), Said::Json),
         }],
-        Then::Outcome { waited: false } => Vec::new(),
-        Then::Outcome { waited: true } => vec![action(text, json)],
+        Then::Outcome => vec![action(text, json)],
     })
 }
 

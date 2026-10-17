@@ -397,7 +397,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{inside}"
     );
     assert!(
-        inside.ends_with("(use: PANE TEXT type, which leaves [answer])\n"),
+        inside.ends_with("(use: PANE TEXT type, which leaves answer)\n"),
         "{inside}"
     );
     // Refused before `run` starts anything.
