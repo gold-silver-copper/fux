@@ -2,7 +2,7 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::mode::{Kind, Mode, ModeStatus};
+use crate::mode::{Kind, Mode, ModeStatus, RESET_FOR_GOOD};
 use crate::{
     Error, Reply, Rgb, Screen, Size,
     screen::{Dispatch, Setting},
@@ -1441,6 +1441,7 @@ impl Parser {
                 let private = intermediates == b"?$";
                 let mode = Mode::of(n, private, &self.options);
                 let status = match mode.map(|m| (m, m.kind())) {
+                    None if !private && RESET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlyReset,
                     None | Some((_, Kind::SaveCursor)) => ModeStatus::NotRecognized,
                     Some((_, Kind::Permanent(true))) => ModeStatus::PermanentlySet,
                     Some((_, Kind::Permanent(false))) => ModeStatus::PermanentlyReset,

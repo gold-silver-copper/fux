@@ -27,6 +27,30 @@ fn cursor_after(input: &[u8]) -> Result<(u16, u16)> {
     Ok((row.saturating_add(1), col.saturating_add(1)))
 }
 
+/// ECMA-48 7.1: "some or all of the modes may have one state only", the
+/// reset state recommended as the initial one. The ANSI modes fux-vt has
+/// no use for that esctest asks after, GATM (1), SRTM (5), VEM (7), HEM
+/// (10), PUM (11), FEAM (13), FETM (14), MATM (15), TTM (16), SATM (17),
+/// TSM (18) and EBM (19, of ECMA-48's 4th edition), have the reset state
+/// only: DECRQM answers them permanently reset (4), set or not. The same
+/// numbers as DEC private modes are others; KAM (2) and SRM (12), which
+/// can be set, are not recognized (0).
+#[test]
+fn decrqm_reports_the_deprecated_ansi_modes_permanently_reset() -> Result {
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
+    for n in [1, 5, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19] {
+        let ask = format!("\x1b[{n}$p");
+        assert_eq!(replies(&mut p, ask.as_bytes())?, format!("^[[{n};4$y"));
+        p.process(format!("\x1b[{n}h").as_bytes())?;
+        assert_eq!(replies(&mut p, ask.as_bytes())?, format!("^[[{n};4$y"));
+    }
+    assert_eq!(
+        replies(&mut p, b"\x1b[2$p\x1b[12$p\x1b[?5$p")?,
+        "^[[2;0$y^[[12;0$y^[[?5;2$y"
+    );
+    Ok(())
+}
+
 /// DECSCLM (4), DECSCNM (5), DECNKM (66) and DECBKM (67) are kept as modes,
 /// set and reset, and reported by DECRQM, as xterm 411 keeps them; DECARM
 /// (8) is reported permanently reset, as xterm 411 reports it (esctest

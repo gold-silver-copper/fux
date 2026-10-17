@@ -124,6 +124,12 @@ modes! {
     }
 }
 
+/// The ANSI modes ECMA-48 defines that fux-vt keeps in their reset state
+/// for good (7.1: "some or all of the modes may have one state only"):
+/// GATM, SRTM, VEM, HEM, PUM, FEAM, FETM, MATM, TTM, SATM, TSM and EBM,
+/// which DECRQM answers permanently reset.
+pub(crate) const RESET_FOR_GOOD: [u16; 12] = [1, 5, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19];
+
 impl Mode {
     /// Whether XTSAVE saves it and XTRESTORE restores it: not 1048, an
     /// action, nor a mode set or reset for good.
