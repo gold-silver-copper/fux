@@ -218,7 +218,7 @@ fn line(
     ];
     let at = at.into_iter().filter_map(|(k, v)| Some((k, v?)));
     if json {
-        let mut all = vec![("event", Json::str(name.to_owned()))];
+        let mut all = vec![("event", Json::str(name))];
         all.extend(at.map(|(k, v)| (k, Json::str(v))));
         all.extend(fields);
         return format!("{}\n", Json::Object(all).render());

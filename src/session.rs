@@ -11,12 +11,14 @@ use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
+use crate::log::Unit;
 use crate::pane::{self, InputQueue, Pane, Process, Runs, Typed, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Follows, Waiting};
 use crate::workspace::{Fit, Seat, Tab, Workspace};
+use fux_vt::Size;
 use fuxth::Code as Lang;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -327,7 +329,7 @@ const TYPICAL: Rect = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
 /// The most rows, and columns, a client's view is kept to.
 const MOST: u16 = 4096;
 
-pub(crate) fn default_size() -> fux_vt::Size {
+pub(crate) fn default_size() -> Size {
     pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
 }
 
@@ -716,12 +718,12 @@ impl Session {
     }
     /// `target`, if it is there; else why not.
     pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
-        let there = match target {
+        match target {
             AnyRef::Pane(p) => self.pane(p).map(|_| ()),
             AnyRef::Tab(t) => self.tab(t).map(|_| ()).ok_or(Error::NoTab(t)),
             AnyRef::Workspace(w) => self.workspace(w).map(|_| ()).ok_or(Error::NoWorkspace(w)),
-        };
-        there.map(|()| target)
+        }
+        .map(|()| target)
     }
 
     // ------------------------------------------------------------- targets
@@ -770,7 +772,7 @@ impl Session {
         id: PaneId,
         (argv, env): (&[String], &[(String, String)]),
         (cwd, fresh): (&Path, &Starting),
-        size: fux_vt::Size,
+        size: Size,
     ) -> Result<Option<(Child, Option<String>)>, Error> {
         let Some(socket) = &self.launch else {
             return Ok(None);
@@ -1149,14 +1151,14 @@ impl Session {
     }
 
     /// The size a pane starts at in a new tab laid out on `fit`.
-    fn start_size(&self, fit: Fit, here: Here) -> fux_vt::Size {
+    fn start_size(&self, fit: Fit, here: Here) -> Size {
         let area = self.tab_area(fit, here);
         pane::size(area.h(), area.w())
     }
 
     /// The size a pane split from `target` along `axis` starts at: its
     /// place in the layout once split.
-    fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<fux_vt::Size, Error> {
+    fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<Size, Error> {
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
         let area = self.reference_area(tab, here);
         let mut ids = self.ids;
@@ -1188,16 +1190,15 @@ impl Session {
         axis: Axis,
         extent: Extent,
     ) -> Result<String, Error> {
-        let cells = |extent: Extent, of: u16| match extent {
-            Extent::Cells(n) => n,
-            Extent::Percent(p) => p.of(of),
-        };
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;
         let now = layout::place(&root, area)
             .rect(pane)
             .ok_or(Error::NoPane(pane))?;
-        let len = cells(extent, area.len(axis));
+        let len = match extent {
+            Extent::Cells(n) => n,
+            Extent::Percent(p) => p.of(area.len(axis)),
+        };
         let want = match axis {
             Axis::Horizontal => (len, now.h()),
             Axis::Vertical => (now.w(), len),
@@ -1276,7 +1277,7 @@ impl Session {
         &mut self,
         (name, tab_name): (Option<String>, Option<String>),
         start: (Start<'_>, &Path, &Starting),
-        (fit, size): (Fit, fux_vt::Size),
+        (fit, size): (Fit, Size),
     ) -> Result<(WsId, TabId, PaneId), Error> {
         if let Some(name) = &name {
             check_workspace_name(name, &self.workspaces)?;
@@ -1307,7 +1308,7 @@ impl Session {
         (ws, wanted): (Result<WsId, Error>, Option<&WsRef>),
         name: Option<String>,
         start: (Start<'_>, &Path, &Starting),
-        place: (Fit, fux_vt::Size),
+        place: (Fit, Size),
     ) -> Result<(WsId, TabId, PaneId), Error> {
         let ws = match (ws, wanted) {
             (Ok(ws), _) => ws,
@@ -2372,7 +2373,7 @@ impl Session {
                     }
                 }
                 p.note_input();
-                p.send(vec![(report, crate::log::Unit::Submit)], Instant::now())?;
+                p.send(vec![(report, Unit::Submit)], Instant::now())?;
                 p.mouse_held = held;
                 Ok(Reply::default())
             }
@@ -2508,10 +2509,8 @@ impl Session {
             }
             Command::Log { target, file } => {
                 self.pane(*target)?;
-                let log = match file {
-                    Some(file) => Some(emptied(open_log(&self.cwd_for(here, None).join(file))?)?),
-                    None => None,
-                };
+                let open = |f: &String| emptied(open_log(&self.cwd_for(here, None).join(f))?);
+                let log = file.as_ref().map(open).transpose()?;
                 self.pane_mut(*target)?.log = log;
                 Ok(Reply::default())
             }
@@ -3157,7 +3156,7 @@ fn new_pane(
     session: &Session,
     ids: &mut Ids,
     (start, cwd, starting): (Start<'_>, &Path, &Starting),
-    size: fux_vt::Size,
+    size: Size,
 ) -> Result<Pane, Error> {
     let config = &session.config;
     let shell = config.shell.argv();
@@ -3190,10 +3189,7 @@ fn new_pane(
         }
     };
     let id = ids.pane()?;
-    let name = cmd
-        .first()
-        .map(|c| basename(c))
-        .unwrap_or_else(|| basename(config.shell.program()));
+    let name = basename(cmd.first().map_or(config.shell.program(), String::as_str));
     let mut pane = Pane::new(id, name, runs, size, config.history_bytes)?;
     pane.record.set_budget(config.journal_bytes);
     // A program brought back by a restore waits for `respawn`.
@@ -3674,13 +3670,13 @@ pub(crate) mod testing {
 }
 
 /// `inputs` as pane `p`'s program takes them, a piece at a time
-/// (`crate::log::Unit`): text typed in a row is one piece, keys that
+/// (`Unit`): text typed in a row is one piece, keys that
 /// edit the line in a row another, and each other key, a lone Escape
 /// and a paste each their own. So in `keys str msg text str Enter key` the Enter is
 /// read alone, as a submit, not as a newline pasted with the text, and
 /// what follows each piece is told apart (`crate::classify`).
-fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, crate::log::Unit)> {
-    use crate::log::Unit;
+fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
+    use Unit;
     let (mode, bracketed) = (
         p.screen().key_mode(),
         p.screen().mode(fux_vt::Mode::BracketedPaste),
@@ -3738,17 +3734,12 @@ fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, crate::log::Unit)> {
 
 /// Adds `bytes`, an edit that is `text` typed or else keys, to the last
 /// piece if that is an edit of the same kind, else as a piece of its own.
-fn push_piece(
-    units: &mut Vec<(Vec<u8>, crate::log::Unit)>,
-    last: &mut Option<bool>,
-    bytes: &[u8],
-    text: bool,
-) {
+fn push_piece(units: &mut Vec<(Vec<u8>, Unit)>, last: &mut Option<bool>, bytes: &[u8], text: bool) {
     match units.last_mut() {
-        Some((piece, crate::log::Unit::Edit)) if *last == Some(text) => {
+        Some((piece, Unit::Edit)) if *last == Some(text) => {
             piece.extend_from_slice(bytes);
         }
-        _ => units.push((bytes.to_vec(), crate::log::Unit::Edit)),
+        _ => units.push((bytes.to_vec(), Unit::Edit)),
     }
     *last = Some(text);
 }

@@ -639,8 +639,7 @@ impl Held {
             None => {
                 let mut keys = path.clone();
                 keys.push(press);
-                let selected = 0;
-                *self = Held::Column { path, selected };
+                *self = Held::Column { path, selected: 0 };
                 let text = format!("{} {} is not bound", keymap.prefix, keys_text(&keys));
                 vec![Effect::Send(Act::Notice { text, error: true })]
             }

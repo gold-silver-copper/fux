@@ -5,7 +5,7 @@ use crate::command::{CaptureView, Source};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::{Pane, Process, Runs};
-use fux_vt::{Attributes, Color, Mode, MouseProtocolMode, Rgb};
+use fux_vt::{Attributes, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen};
 use std::time::Instant;
 
 /// A captured line's cells, each its glyph (the second cell of a wide one
@@ -71,7 +71,7 @@ pub fn pane(
         // so a run of it is not broken in two.
         let mut lead = Attributes::default();
         // Joined, the spacer a wide glyph left at the row's end, not fitting
-        // there, is no part of the line (`fux_vt::Row::ends_in_spacer`).
+        // there, is no part of the line (`Row::ends_in_spacer`).
         let spacer = usize::from(view.join && row.ends_in_spacer());
         let cells = row
             .cells()
@@ -158,8 +158,8 @@ pub fn pane(
 /// terminal's default if a quarter of the screen has it, else the colour
 /// most of the screen's cells have (a program that paints its whole
 /// screen). Read over the whole screen, whatever part is captured.
-fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
-    let mut counts: Vec<(fux_vt::Color, usize)> = Vec::new();
+fn screen_background(screen: &Screen) -> Color {
+    let mut counts: Vec<(Color, usize)> = Vec::new();
     let mut total = 0usize;
     let rows = screen.rows().skip(screen.history_len());
     for cell in rows.flat_map(|row| row.cells()) {
@@ -170,7 +170,7 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
             None => counts.push((colour, 1)),
         }
     }
-    let default = fux_vt::Color::default();
+    let default = Color::default();
     let plain = (counts.iter())
         .find(|(c, _)| *c == default)
         .map_or(0, |(_, n)| *n);
@@ -186,12 +186,12 @@ fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
 /// screen and `history` rows above it (of the main screen with `main-screen`), or
 /// the last command's output.
 fn rows_of(
-    screen: &fux_vt::Screen,
+    screen: &Screen,
     history: Option<usize>,
     view: CaptureView,
-) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
+) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     let all = 0..usize::MAX;
-    let rows: Vec<fux_vt::Row<'_>> = match view.source {
+    let rows: Vec<Row<'_>> = match view.source {
         Source::Shown => screen.rows().collect(),
         Source::Main => screen.main_rows().collect(),
         Source::Alternate => screen.alternate_rows().collect(),
@@ -208,10 +208,10 @@ fn rows_of(
 
 /// The last command's output between its marks, a range of each row's
 /// columns: while one runs, its output so far, to the cursor.
-fn last_output(screen: &fux_vt::Screen) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
+fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     let commands = screen.commands();
     let (row, col) = screen.cursor_position();
-    let cursor = (screen.window().row(row)).map(|r| fux_vt::CommandMark { row: r.id(), col });
+    let cursor = (screen.window().row(row)).map(|r| CommandMark { row: r.id(), col });
     let running = commands.output_start.zip(cursor);
     let Some((start, end)) = running.or(commands.last_output) else {
         return Vec::new();
@@ -226,11 +226,11 @@ fn last_output(screen: &fux_vt::Screen) -> Vec<(fux_vt::Row<'_>, std::ops::Range
         Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
         Some(_) => (
             screen.history_len().min(last),
-            fux_vt::CommandMark { col: 0, ..start },
+            CommandMark { col: 0, ..start },
         ),
-        None => (0, fux_vt::CommandMark { col: 0, ..start }),
+        None => (0, CommandMark { col: 0, ..start }),
     };
-    let rows: Vec<fux_vt::Row<'_>> = screen
+    let rows: Vec<Row<'_>> = screen
         .rows()
         .skip(first)
         .take(last.saturating_sub(first).saturating_add(1))
@@ -269,7 +269,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
         ("client", client.to_string()),
         (grid.rows, grid.cols),
         grid.cursor,
-        (lines, view, fux_vt::Color::default()),
+        (lines, view, Color::default()),
         Some(Vec::new()),
     )
 }
@@ -391,7 +391,7 @@ fn print(
     (key, id): (&'static str, String),
     (rows, cols): (u16, u16),
     cursor: Option<(u16, u16)>,
-    (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, fux_vt::Color),
+    (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, Color),
     state: Option<Vec<(&'static str, Json<'static>)>>,
 ) -> Read {
     // What a selection is drawn with: reverse video, or a background
@@ -537,7 +537,7 @@ mod tests {
     /// A soft-wrapped row's last cell is the spacer a wide glyph left, no
     /// part of the line, only while nothing was painted there: a blank EL
     /// erased in a colour is a cell the program painted, and shows, so a
-    /// joined capture keeps it, as a copy does (`fux_vt::Row::copied`).
+    /// joined capture keeps it, as a copy does (`Row::copied`).
     #[test]
     fn a_painted_blank_before_a_wide_glyph_wrapped_on_is_part_of_the_line()
     -> Result<(), Box<dyn std::error::Error>> {

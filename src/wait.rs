@@ -14,6 +14,7 @@
 //! though drawn over since. A match counts only if it holds text the
 //! program printed since, never only the echo of what was typed
 //! (`crate::classify`).
+use crate::after;
 use crate::classify::Echo;
 use crate::code::Code;
 use crate::command::{AnyRef, CaptureView, Source, Until, Wait};
@@ -170,7 +171,7 @@ impl Waiting {
                 .map(|p| (p.id, Look::Looking(Watch::new(p))))
                 .collect(),
             texts,
-            deadline: crate::after(now, limit),
+            deadline: after(now, limit),
             limit,
             wait,
             began: now,
@@ -185,14 +186,14 @@ impl Waiting {
         let now = Instant::now();
         let probe = (self.wait.until.iter())
             .any(Until::probes)
-            .then(|| crate::after(now, PROBE));
+            .then(|| after(now, PROBE));
         // A pane seen settled is looked at again once its hold is up.
         let held = (self.watches.iter())
             .filter_map(|(_, look)| match look {
                 Look::Looking(watch) => watch.settled_since,
                 Look::Told(_) => None,
             })
-            .map(|(since, _)| crate::after(since, HOLD).max(now))
+            .map(|(since, _)| after(since, HOLD).max(now))
             .min();
         [probe, held]
             .into_iter()
@@ -305,8 +306,7 @@ impl Wait {
                 message: format!("{id}: the pane closed"),
             },
         };
-        let body = (String::new(), Vec::new());
-        said(id, "closed".into(), Vec::new(), body, end)
+        said(id, "closed".into(), Vec::new(), Default::default(), end)
     }
 
     /// The outcome of a wait that ended so in `pane`, after an action if
@@ -378,12 +378,12 @@ impl Wait {
             }
             Told::Found(Found::Text { text, line }) => {
                 let note = format!("met {text:?}");
+                let body = shown(format!("{line}\n"), None);
                 let fields = vec![
                     ("met", Json::str("text")),
                     ("text", Json::str(text)),
-                    ("line", Json::str(line.clone())),
+                    ("line", Json::str(line)),
                 ];
-                let body = shown(format!("{line}\n"), None);
                 (state(), Some((note, fields)), body, End::Done)
             }
             Told::Found(Found::Bell(notification)) => {
@@ -701,7 +701,7 @@ impl Watch {
         }
         let since = *self.reading_since.get_or_insert(now);
         let moment = ready::SETTLE.saturating_mul(2);
-        let held = now >= crate::after(began, moment) && now >= crate::after(since, moment);
+        let held = now >= after(began, moment) && now >= after(since, moment);
         held.then_some(Found::Stopped)
     }
 
@@ -838,7 +838,7 @@ impl Watch {
         // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
         // with nothing known) waits for something new, what it waits on or
         // a change, for `MORE` at most.
-        let more = more && now < crate::after(began, MORE) && pane.revision == self.revision;
+        let more = more && now < after(began, MORE) && pane.revision == self.revision;
         let unsettled = match state {
             State::Busy => true,
             State::Waiting | State::Settled => more,
@@ -857,7 +857,7 @@ impl Watch {
             .filter(|since| since.1 == pane.revision)
             .unwrap_or((now, pane.revision));
         self.settled_since = Some(since);
-        (now >= crate::after(since.0, HOLD)).then_some(Found::Settled(state))
+        (now >= after(since.0, HOLD)).then_some(Found::Settled(state))
     }
 
     /// Whether what came since it began was more than the pane keeps, and
@@ -1041,11 +1041,8 @@ fn on_screen(pane: &Pane, text: &str) -> bool {
 /// Where the screen's lines start among the rows kept: at its top row, or
 /// at the first row of a line wrapped onto it from history.
 fn screen_top(screen: &fux_vt::Screen) -> usize {
-    let Some(top) = screen.window().row(0) else {
-        return screen.history_len();
-    };
-    screen
-        .row_index(crate::pane::line_top(top).id())
+    (screen.window().row(0))
+        .and_then(|top| screen.row_index(crate::pane::line_top(top).id()))
         .unwrap_or(screen.history_len())
 }
 

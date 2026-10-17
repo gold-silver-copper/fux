@@ -13,8 +13,7 @@ use crate::id::{ClientId, PaneId, Wanted};
 use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
-use fuxth::Code as Lang;
-use fuxth::{Done, Failure, Value};
+use fuxth::{Code as Lang, Done, Failure, Value};
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
@@ -217,8 +216,7 @@ fn fail(code: impl Into<Lang>, message: impl Into<String>) -> Failure {
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
     let library = || {
-        let mut library = help::library().into_iter();
-        library
+        (help::library().into_iter())
             .find(|(name, ..)| *name == word)
             .map(|(_, effect, ..)| effect)
     };

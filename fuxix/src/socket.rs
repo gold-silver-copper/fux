@@ -2,6 +2,7 @@
 //! socket's mode between binding it and listening on it, which std's
 //! `UnixListener::bind` does in one.
 use crate::errno::{Errno, Result, check, check_size, fit};
+use std::mem::zeroed;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -26,7 +27,7 @@ pub fn stream() -> Result<OwnedFd> {
 /// the path's NUL (107 on Linux and Android, 103 on macOS).
 pub fn max_path_len() -> usize {
     // SAFETY: an all-zero sockaddr_un is a valid, empty one.
-    let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let address: libc::sockaddr_un = unsafe { zeroed() };
     address.sun_path.len().saturating_sub(1)
 }
 
@@ -38,7 +39,7 @@ fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
         return Err(Errno::INVAL);
     }
     // SAFETY: an all-zero sockaddr_un is a valid, empty one.
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut address: libc::sockaddr_un = unsafe { zeroed() };
     if bytes.len() > max_path_len() {
         return Err(Errno::NAMETOOLONG);
     }
@@ -152,7 +153,7 @@ pub fn send_with_fd(socket: impl AsFd, bytes: &[u8], fd: impl AsFd) -> Result<us
     // SAFETY: as above.
     let length = unsafe { libc::CMSG_LEN(int_size()?) };
     // SAFETY: an all-zero msghdr is a valid, empty one.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    let mut message: libc::msghdr = unsafe { zeroed() };
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     // The header and the descriptor fit the buffer, as the SAFETY below says.
@@ -189,7 +190,7 @@ pub fn recv_with_fd(socket: impl AsFd, buffer: &mut [u8]) -> Result<(usize, Opti
         iov_len: buffer.len(),
     };
     // SAFETY: an all-zero msghdr is a valid, empty one.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    let mut message: libc::msghdr = unsafe { zeroed() };
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.0.as_mut_ptr().cast();

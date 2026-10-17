@@ -5,8 +5,7 @@
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
 use crate::act::{CopyAct, Seek};
-use crate::id::ClientId;
-use crate::id::PaneId;
+use crate::id::{ClientId, PaneId};
 use crate::session::{self, Error, Session};
 use crate::view::{Mode, Notice};
 use fux_vt::{Row, RowId, Screen};
@@ -600,8 +599,8 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
             let query = clean(&query);
             if !query.is_empty() {
                 let search = Search { query, seek };
-                copy.search = Some(search.clone());
                 jump(copy, screen, height, at, &search, &mut view.notice);
+                copy.search = Some(search);
             }
             return;
         }
@@ -697,7 +696,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
 /// `col` of `row`, or the first half of the wide glyph whose second half it
 /// is: where copy mode's cursor goes, so that what it highlights is what
 /// `y` copies.
-fn glyph_start(row: fux_vt::Row<'_>, col: u16) -> u16 {
+fn glyph_start(row: Row<'_>, col: u16) -> u16 {
     if row
         .cell(usize::from(col))
         .is_some_and(|c| c.is_wide_continuation())

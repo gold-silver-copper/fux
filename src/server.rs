@@ -1,6 +1,7 @@
 //! The server: one thread (but for fuxix's watchdog while a PTY opens on
 //! macOS), one `poll` loop over the listening socket, a signal pipe, every
 //! client and every pane's PTY.
+use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
 use crate::events::{BACKLOG, Ending, Snapshot, Subscription};
@@ -17,6 +18,7 @@ use crate::session::{Begun, Caller, Came, Dying, Origin, Outgoing, Session, Time
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
+use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::SIGCHLD;
 use std::fs::{self, File};
@@ -276,7 +278,7 @@ struct PaintClock {
 impl PaintClock {
     /// A paint was made at `now`.
     fn painted(&mut self, now: Instant) {
-        self.next = crate::after(now, PAINT);
+        self.next = after(now, PAINT);
         self.due = self.next;
     }
     /// Pane `pane` wrote, read at `now`: the echo of a keystroke into it is
@@ -287,7 +289,7 @@ impl PaintClock {
             self.echo = None;
             (self.next, self.due) = (now, now);
         } else if now < self.next {
-            self.due = crate::after(now, QUIET).min(self.next);
+            self.due = after(now, QUIET).min(self.next);
         }
     }
 }
@@ -331,9 +333,9 @@ impl TakenTerminal {
 fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
     while !out.is_empty() {
         match fuxix::io::write(&fd, out.as_slice()) {
-            Ok(0) | Err(fuxix::Errno::AGAIN) => break,
+            Ok(0) | Err(Errno::AGAIN) => break,
             Ok(n) => out.take(n),
-            Err(fuxix::Errno::INTR) => continue,
+            Err(Errno::INTR) => continue,
             Err(_) => return false,
         }
     }
@@ -671,7 +673,7 @@ impl Saved {
         }
         self.save(session);
         self.shape = shape;
-        self.at = crate::after(now, SAVE_EVERY);
+        self.at = after(now, SAVE_EVERY);
     }
 
     /// Saves the layout as it is, if it changed and no restore is under
@@ -927,7 +929,7 @@ impl Server {
         };
         let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Look)));
         let restore = (self.saved.as_ref()).filter(|s| s.restore.is_some());
-        let restore = restore.map(|_| (crate::after(Instant::now(), RESTORE_LOOK), Wake::Look));
+        let restore = restore.map(|_| (after(Instant::now(), RESTORE_LOOK), Wake::Look));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| {
@@ -1125,7 +1127,7 @@ impl Server {
             }
         }
         match fuxix::poll::poll(&mut fds, timeout) {
-            Ok(_) | Err(fuxix::Errno::INTR) => {}
+            Ok(_) | Err(Errno::INTR) => {}
             Err(error) => log!("poll: {error}"),
         }
         ready.extend(
@@ -1157,7 +1159,7 @@ impl Server {
             }
         }
         // The sockets go first: from now on a client finds no server.
-        self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
+        self.phase = Phase::Stopping(after(Instant::now(), STOP_WAIT));
         self.session.grants.clear();
         self.session.shutdown();
         // Every connection still open ends, so no command runs on what is
@@ -1300,10 +1302,7 @@ impl Server {
                 }
                 // Not a shortage of descriptors, the process's or the
                 // system's: there is room.
-                Err(e) => !matches!(
-                    fuxix::Errno::from_io_error(&e),
-                    Some(fuxix::Errno::MFILE | fuxix::Errno::NFILE)
-                ),
+                Err(e) => !matches!(Errno::from_io_error(&e), Some(Errno::MFILE | Errno::NFILE)),
             };
             match accepted {
                 Ok((stream, _)) if !room => {
@@ -1356,7 +1355,7 @@ impl Server {
                     // rests rather than being polled again at once.
                     let now = Instant::now();
                     if let Phase::Serving { resting, .. } = &mut self.phase {
-                        *resting = Some(crate::after(now, ACCEPT_REST));
+                        *resting = Some(after(now, ACCEPT_REST));
                     }
                     if self
                         .accept_logged
@@ -1505,8 +1504,8 @@ impl Server {
                         break false;
                     }
                 }
-                Err(fuxix::Errno::AGAIN) => break false,
-                Err(fuxix::Errno::INTR) => {}
+                Err(Errno::AGAIN) => break false,
+                Err(Errno::INTR) => {}
                 Err(_) => break true,
             }
         };
@@ -1753,8 +1752,8 @@ impl Server {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {
-                Err(fuxix::Errno::AGAIN) => break false,
-                Err(fuxix::Errno::INTR) => continue,
+                Err(Errno::AGAIN) => break false,
+                Err(Errno::INTR) => continue,
                 // EIO: the slave side is closed; the program is gone.
                 Ok(0) | Err(_) => break true,
                 Ok(n) => {
@@ -1808,11 +1807,8 @@ impl Server {
     }
 
     fn reap_killed(&mut self) {
-        let killed = mem::take(&mut self.killed);
-        self.killed = killed
-            .into_iter()
-            .filter_map(|l| l.finish().err())
-            .collect();
+        let killed = mem::take(&mut self.killed).into_iter();
+        self.killed = killed.filter_map(|l| l.finish().err()).collect();
     }
 
     /// Kills every closed pane's program, and waits for them, at most a

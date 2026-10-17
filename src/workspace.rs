@@ -99,12 +99,11 @@ impl Workspace {
     ) -> Self {
         let tab = Tab::new(tab, tab_name, (root, fit), clients);
         let shown = tab.seats.keys().map(|c| (*c, tab.id)).collect();
-        let (tabs, viewers) = (vec![tab], BTreeSet::new());
         Self {
             id,
             name,
-            tabs,
-            viewers,
+            tabs: vec![tab],
+            viewers: BTreeSet::new(),
             shown,
         }
     }
@@ -235,7 +234,6 @@ impl Tab {
         (root, fit): (Option<Tree>, Fit),
         clients: impl Iterator<Item = ClientId>,
     ) -> Tab {
-        let (seats, typist) = (clients.map(|c| (c, Seat::default())).collect(), None);
         let mut tab = Tab {
             id,
             name,
@@ -243,8 +241,8 @@ impl Tab {
             root,
             changed: true,
             fit,
-            seats,
-            typist,
+            seats: clients.map(|c| (c, Seat::default())).collect(),
+            typist: None,
         };
         tab.refocus();
         tab

@@ -18,6 +18,7 @@ use crate::error::{Code, Error, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::mem::take;
 
 /// Past any real stack: an unbounded depth.
 const BIG: i64 = 1 << 40;
@@ -867,7 +868,7 @@ impl<'a, A> Unit<'a, A> {
                 let mut inner = State::start(true);
                 inner.iters = state.iters.clone();
                 inner.names = state.names.clone();
-                inner.outer = std::mem::take(&mut state.outer);
+                inner.outer = take(&mut state.outer);
                 inner
                     .outer
                     .push(std::mem::replace(state, State::start(true)));
@@ -875,9 +876,9 @@ impl<'a, A> Unit<'a, A> {
             }
             Op::Gather => {
                 let mut outer = state.outer.pop().unwrap_or_else(State::unknown);
-                outer.outer = std::mem::take(&mut state.outer);
+                outer.outer = take(&mut state.outer);
                 outer.iters = state.iters.clone();
-                outer.names = std::mem::take(&mut state.names);
+                outer.names = take(&mut state.names);
                 outer.push(LIST);
                 *state = outer;
             }

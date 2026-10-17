@@ -20,8 +20,7 @@ use crate::keymap::Keymap;
 use crate::layout::Axis;
 use crate::protocol::{Asked, Context, End, Reply, Scalar};
 use crate::socket::{Choice, SocketPath};
-use fuxth::Code as Lang;
-use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value, token};
+use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
 use std::time::Duration;
 
@@ -485,7 +484,7 @@ impl Stop {
     pub fn stop(&self) {
         self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Ok(mut stream) = self.stream.lock() {
-            drop(stream.take());
+            *stream = None;
         }
     }
 
@@ -658,9 +657,7 @@ pub fn run_capped(
                 then,
             }) => {
                 let mut context = host.context.clone();
-                if client.is_some() {
-                    context.client = client;
-                }
+                context.client = client.or(context.client);
                 let reply = asks
                     .ask(&Asked { request, context }, host.out)
                     .map_err(|f| placed(machine, f))?;
@@ -855,10 +852,7 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
                 let _ = writeln!(io::stderr(), "fux: {problem}");
             }
         }
-        Local::ForceKill => {
-            let socket = server.socket()?;
-            client::kill_server(&socket).map_err(client_failed)?;
-        }
+        Local::ForceKill => client::kill_server(&server.socket()?).map_err(client_failed)?,
         Local::Open(_) => return refuse_local(what),
         Local::Status => {
             let socket = server.socket()?;

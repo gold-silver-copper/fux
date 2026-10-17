@@ -37,14 +37,13 @@
 //! default, and it is the best guess at the terminal the user will come back
 //! to. Before any terminal has answered, nothing is answered.
 use crate::decode::Reply;
-use crate::id::PaneId;
-use crate::id::{ClientId, TabId};
+use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
 use crate::view::View;
-use fux_vt::ModeStatus;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
+use fux_vt::{Graphics, ModeStatus};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -164,8 +163,8 @@ pub struct Terminal {
 impl Terminal {
     /// What it draws, as the panes it answers for are told: sixel only with
     /// a known cell size, which pictures are laid out in.
-    pub fn graphics(&self) -> fux_vt::Graphics {
-        fux_vt::Graphics {
+    pub fn graphics(&self) -> Graphics {
+        Graphics {
             cell: self.cell,
             sixel: self.sixel && self.cell.is_some(),
         }
@@ -340,15 +339,14 @@ impl Session {
     /// not say cleared; and what they are told their terminal draws, which
     /// is nothing in a tab no client shows, so a program started there draws
     /// in text, which a capture reads.
-    pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, fux_vt::Graphics) {
+    pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, Graphics) {
         let answering = (self.colour_client(tab)).and_then(|c| self.views.get(&c));
         let answering = answering.map(|v| &v.terminal);
         let shown = tab.is_some_and(|t| self.views.keys().any(|c| self.shows(*c, t)));
         (
             answering.map_or(self.last_colours, |t| t.colours),
             answering.map_or(self.last_palette, |t| t.palette),
-            (answering.filter(|_| shown))
-                .map_or_else(fux_vt::Graphics::default, Terminal::graphics),
+            (answering.filter(|_| shown)).map_or_else(Graphics::default, Terminal::graphics),
         )
     }
 

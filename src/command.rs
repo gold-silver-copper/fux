@@ -7,6 +7,7 @@ use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
 use crate::log::Unit;
 use crate::wire::wire;
+use std::path::PathBuf;
 use std::time::Duration;
 
 wire! {
@@ -361,7 +362,7 @@ wire! {
             cmd: Vec<String>,
             size: Size,
             /// Where its shell starts (default: the caller's directory).
-            cwd: Option<std::path::PathBuf>,
+            cwd: Option<PathBuf>,
             env: Env,
             /// The ids it makes, if asked for (`id`, as saved sessions have).
             ids: Wanted,
@@ -371,7 +372,7 @@ wire! {
             name: Option<String>,
             cmd: Vec<String>,
             size: Size,
-            cwd: Option<std::path::PathBuf>,
+            cwd: Option<PathBuf>,
             env: Env,
             ids: Wanted,
         },
@@ -380,7 +381,7 @@ wire! {
             target: PaneId,
             cmd: Vec<String>,
             /// Where its shell starts (default: where the split pane's is).
-            cwd: Option<std::path::PathBuf>,
+            cwd: Option<PathBuf>,
             env: Env,
             /// `cmd` is the program, started in place of a shell, as `run`
             /// starts one.
@@ -394,7 +395,7 @@ wire! {
             workspace: Option<WsRef>,
             name: Option<String>,
             size: Size,
-            cwd: Option<std::path::PathBuf>,
+            cwd: Option<PathBuf>,
             env: Env,
             argv: Vec<String>,
             /// A file everything the program writes goes to too.

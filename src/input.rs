@@ -6,7 +6,6 @@ use crate::act::Act;
 use crate::id::ClientId;
 use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
-use crate::layout::Placement;
 use crate::session::Session;
 use crate::view::Mode;
 
@@ -179,8 +178,7 @@ impl Session {
         let Some(pane) = self.focused(client).filter(|_| view.mode.is_normal()) else {
             return;
         };
-        let mut placement = Placement::default();
-        self.placement_into(view, &mut placement);
+        let placement = self.placement(view);
         let Some(rect) = placement.rect(pane) else {
             return;
         };

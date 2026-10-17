@@ -130,13 +130,9 @@ fn cloexec_each(first: i32, listed: Option<i32>) -> Result<()> {
     let listed = listed.ok_or(crate::Errno::from_raw(libc::ENOENT))?;
     for fd in first..=libc::c_int::MAX {
         match cloexec_raw(fd) {
-            Ok(()) => {}
-            Err(errno) if errno.raw() == libc::EBADF => {
-                if fd >= listed {
-                    return Ok(());
-                }
-            }
-            Err(errno) => return Err(errno),
+            Err(errno) if errno.raw() != libc::EBADF => return Err(errno),
+            Err(_) if fd >= listed => return Ok(()),
+            Ok(()) | Err(_) => {}
         }
     }
     Ok(())

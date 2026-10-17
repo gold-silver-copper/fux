@@ -15,6 +15,7 @@ use crate::protocol::{
 use crate::screens::{Effect, Screen};
 use crate::script;
 use crate::socket::{self, SocketPath};
+use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::SIGWINCH;
@@ -337,10 +338,9 @@ pub fn environment() -> Vec<(String, std::ffi::OsString)> {
 pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
     loop {
-        match read_frame(&mut stream, &mut decoder, Some(door::ANSWER)) {
-            Ok(Some(Greeting::Done(_)) | None) => return Ok(()),
-            Ok(Some(Greeting::Hello(_) | Greeting::Exit(_))) => {}
-            Err(error) => return Err(error),
+        match read_frame(&mut stream, &mut decoder, Some(door::ANSWER))? {
+            Some(Greeting::Done(_)) | None => return Ok(()),
+            Some(Greeting::Hello(_) | Greeting::Exit(_)) => {}
         }
     }
 }
@@ -843,10 +843,7 @@ pub fn attach(
         Role::Headless
     };
     let (mut stream, mut decoder, _) = connect(socket, role)?;
-    let signals = match early {
-        Some(signals) => signals,
-        None => Signals::new()?,
-    };
+    let signals = early.map_or_else(Signals::new, Ok)?;
     let size = size.unwrap_or_else(window_size);
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
@@ -950,7 +947,7 @@ fn send_with_terminal<'a>(
     let sent = loop {
         match fuxix::socket::send_with_fd(stream.output(), &bytes, &terminal) {
             Ok(n) => break n,
-            Err(fuxix::Errno::INTR) => continue,
+            Err(Errno::INTR) => continue,
             Err(errno) => return Err(failed("writing to the server")(errno)),
         }
     };
@@ -1034,7 +1031,7 @@ fn attached(
         let deadline = keyboard.as_ref().and_then(Keyboard::deadline);
         let timeout = deadline.map(|at| at.saturating_duration_since(Instant::now()));
         match fuxix::poll::poll(&mut fds, timeout) {
-            Ok(_) | Err(fuxix::Errno::INTR) => {}
+            Ok(_) | Err(Errno::INTR) => {}
             Err(e) => return Err(failed("poll")(e)),
         }
         let ready: Vec<bool> = fds.iter().map(|fd| !fd.revents().is_empty()).collect();
@@ -1065,7 +1062,7 @@ fn attached(
                         return Ok("detached: the terminal closed".into());
                     }
                     Ok(n) => acts.extend(keyboard.bytes(buffer.get(..n).unwrap_or_default(), now)),
-                    Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
+                    Err(Errno::INTR | Errno::AGAIN) => {}
                     Err(e) => return Err(failed("reading the terminal")(e)),
                 }
             }

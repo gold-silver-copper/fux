@@ -43,8 +43,7 @@ pub mod workspace;
 
 use json::Json;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-use std::io::PipeReader;
-use std::io::{Read, Write};
+use std::io::{PipeReader, Read, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -233,9 +232,9 @@ pub(crate) fn servers() -> Result<(String, String), socket::Error> {
         let path = socket.path().display().to_string();
         lines.push(format!("{name}  {path}  fux {version}\n"));
         objects.push(Json::Object(vec![
-            ("name", Json::str(name.clone())),
-            ("socket", Json::str(path.clone())),
-            ("version", Json::str(version.clone())),
+            ("name", Json::str(name)),
+            ("socket", Json::str(path)),
+            ("version", Json::str(version)),
             ("compatible", Json::Bool(protocol == protocol::PROTOCOL)),
         ]));
     }

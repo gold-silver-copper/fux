@@ -1,9 +1,9 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::bytes::ByteQueue;
 use crate::id::PaneId;
-use crate::log;
 use crate::process::{Child, Ended, Pid};
-use fux_vt::{Feature, Print, Row, RowId, Screen, Size};
+use crate::{after, classify::Echo, log, outer::Colours};
+use fux_vt::{Event, Feature, Print, Row, RowId, Screen, Size};
 use fuxix::process::Activity;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -266,7 +266,7 @@ struct Sink<'a> {
     /// encoded.
     copied: &'a mut Option<String>,
     /// What colour queries are answered with (`outer`).
-    colours: &'a crate::outer::Colours,
+    colours: &'a Colours,
 }
 
 impl Sink<'_> {
@@ -284,37 +284,37 @@ impl fux_vt::Sink for Sink<'_> {
         }
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
-    fn event(&mut self, event: fux_vt::Event<'_>) {
+    fn event(&mut self, event: Event<'_>) {
         match event {
-            fux_vt::Event::Title(title) => {
+            Event::Title(title) => {
                 if self.title.set(title) {
                     self.titled();
                 }
             }
-            fux_vt::Event::ColorQuery { number, bel } => {
+            Event::ColorQuery { number, bel } => {
                 if let Some(answer) = self.colours.answer(number, bel) {
                     fux_vt::Sink::reply(self, &answer);
                 }
             }
-            fux_vt::Event::Bell => {
+            Event::Bell => {
                 self.happened.push(log::Event::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
-            fux_vt::Event::Notification(text) => {
+            Event::Notification(text) => {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
                 self.happened.push(log::Event::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
-            fux_vt::Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
+            Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
                 let text = crate::json::unbase64(data).and_then(|d| String::from_utf8(d).ok());
                 if let Some(text) = text {
                     *self.copied = Some(text);
                 }
             }
-            fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } => {}
+            Event::IconName(_) | Event::Clipboard { .. } => {}
         }
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
@@ -456,7 +456,7 @@ pub struct Pane {
     frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan)>,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
-    pub colours: crate::outer::Colours,
+    pub colours: Colours,
     /// The program rang the bell since the session last looked
     /// (`Session::ring`).
     pub bell: bool,
@@ -642,7 +642,7 @@ impl Pane {
             input: InputQueue::default(),
             runs,
             frame: None,
-            colours: crate::outer::Colours::default(),
+            colours: Colours::default(),
             bell: false,
             copied: None,
             pace: Pace::default(),
@@ -718,7 +718,7 @@ impl Pane {
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.frame
             .as_ref()
-            .map(|(_, since, _)| crate::after(*since, FRAME_TIMEOUT))
+            .map(|(_, since, _)| after(*since, FRAME_TIMEOUT))
     }
 
     /// Reads the held frame now, ended or not.
@@ -804,14 +804,14 @@ impl Pane {
             // every run is whole (`Printed`).
             let fresh = match tell {
                 true => (prints.iter().zip(&echo))
-                    .map(|(p, e): (Print<'_>, &crate::classify::Echo)| {
-                        let echo = *e != crate::classify::Echo::Not;
+                    .map(|(p, e): (Print<'_>, &Echo)| {
+                        let echo = *e != Echo::Not;
                         held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
                     })
                     .collect(),
                 false => Vec::new(),
             };
-            if echo.iter().all(|e| *e == crate::classify::Echo::Not) {
+            if echo.iter().all(|e| *e == Echo::Not) {
                 echo = Vec::new();
             }
             // Each row printed on, once, as it reads now, if it is on the
@@ -1019,11 +1019,10 @@ impl Pane {
             let unread = !exact
                 && (self.process.child())
                     .is_some_and(|c| fuxix::io::unread(&c.master).unwrap_or(0) > 0);
-            let draining = !held
-                && unread
-                && now < *(self.pace.drained_by).get_or_insert(crate::after(now, TAKE));
+            let draining =
+                !held && unread && now < *(self.pace.drained_by).get_or_insert(after(now, TAKE));
             if held || draining {
-                self.pace.until = Some(crate::after(now, POLL));
+                self.pace.until = Some(after(now, POLL));
                 return;
             }
             self.pace.drained_by = None;
@@ -1069,7 +1068,7 @@ impl Pane {
         let Process::Reading(child) = &self.process else {
             return true;
         };
-        let drawn = self.changed_at > at || now >= crate::after(at, FLOOR);
+        let drawn = self.changed_at > at || now >= after(at, FLOOR);
         // The program asked last, after the checks that read no `/proc`.
         let taking = || crate::ready::taking(self, child, now);
         self.input.is_empty()
@@ -1129,8 +1128,8 @@ impl Pane {
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
         let _ = self.input.push(&bytes);
         let gap = if reading { TAKE } else { PACE };
-        self.pace.written = Some((now, crate::after(now, gap), escape, exact));
-        self.pace.until = Some(crate::after(now, if reading { POLL } else { PACE }));
+        self.pace.written = Some((now, after(now, gap), escape, exact));
+        self.pace.until = Some(after(now, if reading { POLL } else { PACE }));
         exact
     }
 
@@ -1630,7 +1629,7 @@ mod tests {
         let mut pane = pane(3, 30)?;
         let t0 = Instant::now();
         pane.output_at(b"\x1b[?2026hx", t0);
-        assert_eq!(pane.frame_deadline(), Some(crate::after(t0, FRAME_TIMEOUT)));
+        assert_eq!(pane.frame_deadline(), Some(after(t0, FRAME_TIMEOUT)));
         pane.release_frame();
         assert_eq!(first_row(&pane), "x");
         assert_eq!(pane.frame_deadline(), None);
