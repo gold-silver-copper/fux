@@ -1,4 +1,5 @@
 use crate::compact::{Compact, PROTECTED};
+use crate::keys::KITTY_FLAGS;
 use crate::link::Held;
 use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
@@ -2267,9 +2268,8 @@ impl Screen {
         intermediates: &[u8],
         byte: u8,
     ) -> Option<Dispatch> {
-        // Flags are a bit set below 32, but kitty tolerates larger values:
-        // they saturate rather than being refused.
-        let flags = |n: u16| u8::try_from(n).unwrap_or(u8::MAX);
+        // The flags, a bit set of the spec's five; other bits are dropped.
+        let flags = |n: u16| u8::try_from(n & u16::from(KITTY_FLAGS)).unwrap_or(0);
         match (intermediates, byte) {
             (b">", b'u') => self.grid_mut().keyboard.push(flags(p.first(0, 0))),
             (b"<", b'u') => self.grid_mut().keyboard.pop(p.first(0, 1)),
@@ -2288,7 +2288,7 @@ impl Screen {
             (b">", b'm') if p.groups().next() == Some(&[4][..]) => {
                 self.modify_other_keys = match p.first(1, 0) {
                     0 => None,
-                    level => Some(flags(level)),
+                    level => Some(u8::try_from(level).unwrap_or(u8::MAX)),
                 };
             }
             _ => return None,

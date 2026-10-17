@@ -49,8 +49,8 @@ use crate::keys::colour::Scheme;
 use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{
-    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Function, Key, KeyPress, Keystroke, Kitty,
-    Modifiers, SHIFT_BIT,
+    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Function, KITTY_FLAGS, Key, KeyPress, Keystroke,
+    Kitty, Modifiers, SHIFT_BIT,
 };
 use crate::{ModeStatus, Rgb};
 use std::borrow::Cow;
@@ -730,8 +730,8 @@ fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
             sixel: text.split(';').any(|attribute| attribute == "4"),
         }),
         b'u' => {
-            let flags = text.parse::<u32>().ok()?;
-            Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(u8::MAX)))
+            let flags = text.parse::<u32>().ok()? & u32::from(KITTY_FLAGS);
+            Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(0)))
         }
         // A scheme's report, but for its `CSI` and its `n`.
         b'n' => (Scheme::ALL.into_iter())
@@ -1447,6 +1447,8 @@ mod tests {
         for expecting in [false, true] {
             split_anywhere(stream, expecting, &expected);
         }
+        // Of the flags, only the spec's five are read.
+        assert_eq!(all(b"\x1b[?999u"), [Input::Reply(Reply::KittyFlags(7))]);
         // Colours fux does not ask for or cannot read are dropped; answers
         // it does not use reach the session, which ignores them: no keys.
         assert_eq!(

@@ -418,9 +418,14 @@ fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[=3u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 3);
-    // Flags too large for a byte saturate.
+    // Only the spec's five flags are kept ("The progressive enhancement
+    // flags": 1 to 16); other bits mean nothing.
     p.process(b"\x1b[>999u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 255);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 7);
+    p.process(b"\x1b[>32u")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 0);
+    p.process(b"\x1b[=63u")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 31);
     Ok(())
 }
 

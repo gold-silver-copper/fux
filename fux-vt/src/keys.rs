@@ -98,6 +98,11 @@ pub(crate) const CTRL_BIT: u8 = 4;
 pub(crate) const CAPS_LOCK_BIT: u8 = 64;
 pub(crate) const NUM_LOCK_BIT: u8 = 128;
 
+/// The kitty keyboard protocol's five progressive enhancement flags, 1 to
+/// 16 ("The progressive enhancement flags"): the bits of a flags number
+/// read; the rest mean nothing.
+pub(crate) const KITTY_FLAGS: u8 = 0b1_1111;
+
 impl Modifiers {
     /// As xterm's and kitty's modifier bits.
     pub(crate) fn bits(self) -> u8 {
