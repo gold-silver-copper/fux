@@ -2291,6 +2291,11 @@ impl Screen {
                     level => Some(u8::try_from(level).unwrap_or(u8::MAX)),
                 };
             }
+            // Disables it (ctlseqs, `CSI > Ps n`: "a resource value of -1",
+            // which keys read as off).
+            (b">", b'n') if p.groups().next() == Some(&[4][..]) => {
+                self.modify_other_keys = None;
+            }
             _ => return None,
         }
         Some(Dispatch::Done)

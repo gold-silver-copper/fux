@@ -495,6 +495,17 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
         assert_eq!(p.screen().modify_other_keys(), None, "{reset:?}");
         assert!(record.unhandled.is_empty(), "{reset:?}");
     }
+    // `CSI > 4 n` disables it (ctlseqs: "Disable key modifier options",
+    // the resource value -1), until set again; other resources are not
+    // modifyOtherKeys, and `CSI > n` disables modifyFunctionKeys.
+    p.process(b"\x1b[>4;2m\x1b[>4n")?;
+    assert_eq!(p.screen().modify_other_keys(), None);
+    p.process(b"\x1b[>4;1m")?;
+    assert_eq!(p.screen().modify_other_keys(), Some(1));
+    let record = run(&mut p, b"\x1b[>n\x1b[>2n")?;
+    assert_eq!(p.screen().modify_other_keys(), Some(1));
+    assert_eq!(record.unhandled, ["CSI >0n", "CSI >2n"]);
+    p.process(b"\x1b[>4n")?;
     // Other resources are not modifyOtherKeys, and not SGR either.
     let record = run(&mut p, b"\x1b[>1;2mx")?;
     assert_eq!(record.unhandled, ["CSI >1;2m"]);
