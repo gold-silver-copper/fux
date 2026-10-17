@@ -433,6 +433,42 @@ fn the_checker_says_what_and_where() {
     );
 }
 
+/// A depth written past any stack, before `pick` or `roll`: the checker
+/// keeps no kind for each value it reaches below the top's, so it checks at
+/// once, in a definition, in a call to one, and at the top level after a
+/// loop whose depth it can't bound; and it says the depth as written.
+#[test]
+fn a_depth_past_any_stack_is_checked_at_once() {
+    let started = std::time::Instant::now();
+    let far = "9223372036854775807";
+    let defined = format!("define f {far} pick end define g f end define h {far} roll end");
+    assert_eq!(code(run(&defined)), None);
+    assert_eq!(
+        code(run(&format!("{defined} 1 g"))),
+        Some("stack_underflow")
+    );
+    assert_eq!(
+        code(run(&format!("{defined} 1 h"))),
+        Some("stack_underflow")
+    );
+    let grown = format!("0 begin dup 1 add dup 5 eq until {far} pick");
+    assert_eq!(code(run(&grown)), Some("stack_underflow"));
+    let deep = "define f 100000000 pick end define g 100000000 roll end";
+    assert_eq!(code(run(deep)), None);
+    let said = run(&format!("1 {far} roll")).err().map(|e| e.to_string());
+    assert_eq!(
+        said.as_deref(),
+        Some(
+            "stack_underflow: t:1: roll: takes 9223372036854775808 values, and the stack has 1 here"
+        )
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 /// What the checker can't know it never refuses: a definition that leaves
 /// one value or two, called where two more are taken after; a loop at the
 /// top level that leaves values, then words that take them; a value that

@@ -285,10 +285,12 @@ impl State {
         Ok(self.pop(1)?.first().copied().unwrap_or(ANY))
     }
 
-    /// Takes `n` values; their kinds, the deepest first.
+    /// Takes `n` values: the kinds of those among the top values, the
+    /// deepest first. The others, the deepest `n` less that many, came from
+    /// the rest, of any kind: none is kept for them, however many.
     fn pop(&mut self, n: usize) -> Result<Vec<Kinds>, Failing> {
         let from_rest = n.saturating_sub(self.top.len());
-        let missing = i64::try_from(from_rest).unwrap_or(BIG);
+        let missing = count(from_rest);
         if self.bounded && self.hi.saturating_sub(missing) < 0 {
             let (lo, hi) = self.depth();
             return Err(Failing::Underflow {
@@ -302,8 +304,7 @@ impl State {
         self.hi = self.hi.saturating_sub(missing);
         self.settle();
         let keep = self.top.len().saturating_sub(n);
-        let mut taken = vec![ANY; from_rest];
-        taken.extend(self.top.iter().skip(keep).copied());
+        let taken = self.top.iter().skip(keep).copied().collect();
         self.top.truncate(keep);
         Ok(taken)
     }
@@ -372,7 +373,12 @@ impl State {
 }
 
 fn len(top: &[Kinds]) -> i64 {
-    i64::try_from(top.len()).unwrap_or(BIG)
+    count(top.len())
+}
+
+/// `n` as a depth: past `BIG`, unbounded.
+fn count(n: usize) -> i64 {
+    i64::try_from(n).unwrap_or(BIG)
 }
 
 /// Checks `program`: the first step that surely fails, if one does.
@@ -720,20 +726,41 @@ impl<'a, A> Unit<'a, A> {
         match op {
             Op::Push(value) => state.push(Kinds::one(Kind::of(value))),
             Op::Builtin(builtin) => return builtin_step(*builtin, state),
+            // As deep as the count says, with no kind kept for each value
+            // reached below the top's: those are of any kind, and stay in
+            // the rest, however many.
             Op::PickN(n) => {
-                let taken = state.pop(n.saturating_add(1))?;
-                let copy = taken.first().copied().unwrap_or(ANY);
+                let takes = n.saturating_add(1);
+                let taken = state.pop(takes)?;
+                let below = count(takes.saturating_sub(taken.len()));
+                let copy = if below == 0 {
+                    taken.first().copied().unwrap_or(ANY)
+                } else {
+                    state.forget(below, below);
+                    ANY
+                };
                 for kinds in taken {
                     state.push(kinds);
                 }
                 state.push(copy);
             }
             Op::RollN(n) => {
-                let taken = state.pop(n.saturating_add(1))?;
-                for kinds in taken.iter().skip(1) {
+                let takes = n.saturating_add(1);
+                let taken = state.pop(takes)?;
+                let below = count(takes.saturating_sub(taken.len()));
+                let (moved, stay) = match taken.split_first() {
+                    Some((moved, stay)) if below == 0 => (*moved, stay),
+                    Some(_) | None => {
+                        // The rest gives up the value that comes up.
+                        let rest = below.saturating_sub(1);
+                        state.forget(rest, rest);
+                        (ANY, taken.as_slice())
+                    }
+                };
+                for kinds in stay {
                     state.push(*kinds);
                 }
-                state.push(taken.first().copied().unwrap_or(ANY));
+                state.push(moved);
             }
             Op::App(id) => {
                 let (takes, gives) = self.program.vocabulary.effect(*id);
@@ -744,7 +771,6 @@ impl<'a, A> Unit<'a, A> {
                         state.push(ANY);
                     }
                 } else {
-                    let count = |n: usize| i64::try_from(n).unwrap_or(BIG);
                     state.forget(count(lo), count(hi));
                 }
             }
@@ -942,8 +968,16 @@ fn int(word: Builtin, kinds: Kinds) -> Result<(), Failing> {
 }
 
 fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
-    let taken = state.pop(builtin.takes())?;
-    let at = |i: usize| taken.get(i).copied().unwrap_or(ANY);
+    let takes = builtin.takes();
+    let taken = state.pop(takes)?;
+    // The `i`th value taken, the deepest first: those from the rest, any.
+    let below = takes.saturating_sub(taken.len());
+    let at = |i: usize| {
+        (i.checked_sub(below))
+            .and_then(|i| taken.get(i))
+            .copied()
+            .unwrap_or(ANY)
+    };
     match builtin {
         Builtin::Drop | Builtin::Print => {}
         Builtin::Fail => return Ok(Flow::Stop),
