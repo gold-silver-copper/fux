@@ -1,7 +1,7 @@
 //! A pane's journal: what happens in it, recorded as it happens, on one
 //! counter: the output fux reads, each piece numbered as the screen took
-//! it, where it came from and what it printed; each piece of input fux
-//! writes; bells, resizes and each action's start. Every question an
+//! it, and what it printed; bells, notifications, titles, shell commands'
+//! ends and resizes. Every question an
 //! agent asks (what came since its input, which came first, is this text
 //! the echo of what it typed) is answered from the record, never by
 //! comparing screens afterwards.
@@ -12,7 +12,6 @@
 //! number with [`fux_vt::Parser::tick`]. So a row's number and a log
 //! entry's are one and the same, with nothing to map.
 use std::collections::VecDeque;
-use std::time::Instant;
 
 /// A number from a pane's counter: the order things happened in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -55,16 +54,8 @@ pub enum Origin {
 /// What a log entry records.
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// A piece of output, where it came from, and what it printed.
-    Output {
-        origin: Origin,
-        bytes: Box<[u8]>,
-        printed: Option<Box<Printed>>,
-    },
-    /// A piece of input written.
-    Input { unit: Unit, bytes: Box<[u8]> },
-    /// An action's input began: what came since is what it brought.
-    Action,
+    /// A piece of output, and what it printed.
+    Output(Option<Box<Printed>>),
     /// The program rang the bell.
     Bell,
     /// The program sent a notification (OSC 9, 777): its text.
@@ -108,13 +99,12 @@ impl Printed {
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub seq: Seq,
-    pub at: Instant,
     pub event: Event,
 }
 
 /// How many bytes a pane's journal keeps by default (`journal-bytes`).
 pub const JOURNAL_BYTES: usize = 32 << 20;
-/// What an entry costs beside what it holds: its number, time and kind.
+/// What an entry costs beside what it holds: its number and kind.
 const ENTRY_COST: usize = std::mem::size_of::<Entry>();
 
 /// A pane's journal: everything that happened in it, in order, under one
@@ -142,10 +132,10 @@ impl Log {
         }
     }
 
-    /// Records `event` with number `seq`, at `at`.
-    pub fn push(&mut self, seq: Seq, at: Instant, event: Event) {
+    /// Records `event` with number `seq`.
+    pub fn push(&mut self, seq: Seq, event: Event) {
         self.bytes = self.bytes.saturating_add(held(&event));
-        self.entries.push_back(Entry { seq, at, event });
+        self.entries.push_back(Entry { seq, event });
         self.keep(self.budget);
     }
 
@@ -177,12 +167,7 @@ impl Log {
         self.after(seq).find_map(|e| match &e.event {
             Event::Bell => Some((e.seq, None)),
             Event::Notification(text) => Some((e.seq, Some(text.clone()))),
-            Event::Output { .. }
-            | Event::Input { .. }
-            | Event::Action
-            | Event::Title(_)
-            | Event::Done(_)
-            | Event::Resize(_) => None,
+            Event::Output(_) | Event::Title(_) | Event::Done(_) | Event::Resize(_) => None,
         })
     }
 
@@ -202,10 +187,7 @@ impl Log {
     /// What each piece of output after `seq` printed, oldest first.
     pub fn printed_after(&self, seq: Seq) -> impl Iterator<Item = (Seq, &Printed)> {
         self.after(seq).filter_map(|e| {
-            let Event::Output {
-                printed: Some(p), ..
-            } = &e.event
-            else {
+            let Event::Output(Some(p)) = &e.event else {
                 return None;
             };
             Some((e.seq, &**p))
@@ -216,38 +198,28 @@ impl Log {
     pub fn lost_after(&self, seq: Seq) -> bool {
         self.dropped.is_some_and(|d| d > seq)
     }
-
-    /// Every entry, for a replay, if none was let go.
-    pub fn whole(&self) -> Option<impl Iterator<Item = &Entry>> {
-        self.dropped.is_none().then(|| self.entries.iter())
-    }
 }
 
 /// The bytes an event takes.
 fn held(event: &Event) -> usize {
     let own = match event {
-        Event::Output { bytes, printed, .. } => {
-            // What it takes on the heap: what it printed, each run's echo
-            // and change, and the text an echo is of, shared by its runs,
-            // once.
-            let printed = printed.as_ref().map_or(0, |p| {
-                let echo = (p.echo.iter()).find_map(|e| match e {
-                    crate::classify::Echo::Of(text) => Some(text.len()),
-                    crate::classify::Echo::Not | crate::classify::Echo::Is => None,
-                });
-                let runs = std::mem::size_of::<crate::classify::Echo>()
-                    .saturating_mul(p.echo.capacity())
-                    .saturating_add(p.fresh.capacity().saturating_mul(16));
-                (p.prints.heap())
-                    .saturating_add(runs)
-                    .saturating_add(echo.unwrap_or(0))
-                    .saturating_add(std::mem::size_of::<Printed>())
+        // What it takes on the heap: what it printed, each run's echo and
+        // change, and the text an echo is of, shared by its runs, once.
+        Event::Output(printed) => printed.as_ref().map_or(0, |p| {
+            let echo = (p.echo.iter()).find_map(|e| match e {
+                crate::classify::Echo::Of(text) => Some(text.len()),
+                crate::classify::Echo::Not | crate::classify::Echo::Is => None,
             });
-            bytes.len().saturating_add(printed)
-        }
-        Event::Input { bytes, .. } => bytes.len(),
+            let runs = std::mem::size_of::<crate::classify::Echo>()
+                .saturating_mul(p.echo.capacity())
+                .saturating_add(p.fresh.capacity().saturating_mul(16));
+            (p.prints.heap())
+                .saturating_add(runs)
+                .saturating_add(echo.unwrap_or(0))
+                .saturating_add(std::mem::size_of::<Printed>())
+        }),
         Event::Notification(text) | Event::Title(text) => text.len(),
-        Event::Action | Event::Bell | Event::Done(_) | Event::Resize(_) => 0,
+        Event::Bell | Event::Done(_) | Event::Resize(_) => 0,
     };
     own.saturating_add(ENTRY_COST)
 }
@@ -261,23 +233,13 @@ mod tests {
     #[test]
     fn the_oldest_entries_go_first_and_are_told() {
         let mut log = Log::new(4096);
-        let now = Instant::now();
-        let origin = Origin::Output;
         for n in 1..=3u64 {
-            let bytes = vec![b'x'; 1500].into_boxed_slice();
-            let printed = None;
             log.push(
                 Seq(n),
-                now,
-                Event::Output {
-                    origin,
-                    bytes,
-                    printed,
-                },
+                Event::Title(std::iter::repeat_n('x', 1500).collect()),
             );
         }
-        log.push(Seq(4), now, Event::Bell);
-        assert!(log.whole().is_none());
+        log.push(Seq(4), Event::Bell);
         assert!(log.lost_after(Seq(0)) && !log.lost_after(Seq(1)));
         assert_eq!(log.bell_after(Seq(2)), Some((Seq(4), None)));
         assert_eq!(log.after(Seq(0)).count(), 3);

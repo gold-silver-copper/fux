@@ -302,7 +302,7 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
                 Recorded::Title(title) => What::Title(title.clone()),
                 Recorded::Done(status) => What::Done(*status),
                 Recorded::Resize(size) => What::Resized(*size),
-                Recorded::Output { .. } | Recorded::Input { .. } | Recorded::Action => continue,
+                Recorded::Output(_) => continue,
             }));
         }
         let was = old.panes.get(&pane).and_then(|w| w.ended);

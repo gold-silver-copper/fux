@@ -773,7 +773,7 @@ impl Pane {
             let mut begun = None;
             for (end, origin) in runs {
                 let run = piece.get(start..end).unwrap_or_default();
-                if let Some(taken) = self.record(run, origin, until_frame, now) {
+                if let Some(taken) = self.record(run, origin, until_frame) {
                     begun = Some(done.saturating_add(start).saturating_add(taken));
                     break;
                 }
@@ -796,7 +796,6 @@ impl Pane {
         run: &[u8],
         origin: crate::log::Origin,
         until_frame: bool,
-        now: Instant,
     ) -> Option<usize> {
         if run.is_empty() {
             return None;
@@ -876,13 +875,7 @@ impl Pane {
                 fresh,
             })
         });
-        let taken = begun.map_or(run, |t| run.get(..t).unwrap_or_default());
-        let event = crate::log::Event::Output {
-            origin,
-            bytes: taken.into(),
-            printed,
-        };
-        self.record.push(seq, now, event);
+        self.record.push(seq, crate::log::Event::Output(printed));
         // What else the piece did, after it, in the order it came; a shell
         // command's end, by the shell's marks, with the last one's status.
         let commands = self.screen().commands();
@@ -890,12 +883,15 @@ impl Pane {
         happened.extend((0..ended.min(16)).map(|_| crate::log::Event::Done(commands.last_status)));
         for event in happened {
             let seq = crate::log::Seq(self.parser.tick());
-            self.record.push(seq, now, event);
+            self.record.push(seq, event);
         }
         begun
     }
 
-    /// Gives `bytes` to the screen, as `feed` does.
+    /// Gives `bytes` to the screen, as `feed` does. Never inlined: inlined
+    /// into `record`, the parser's loop compiled there ran 0.9% more
+    /// instructions on dense, colourful output (`pane/dense-cells`).
+    #[inline(never)]
     fn parse(
         &mut self,
         bytes: &[u8],
@@ -974,8 +970,7 @@ impl Pane {
         if self.parser.resize(size).is_ok() {
             // The number the resize gave every row it kept.
             let seq = crate::log::Seq(self.screen().version());
-            self.record
-                .push(seq, Instant::now(), crate::log::Event::Resize(size));
+            self.record.push(seq, crate::log::Event::Resize(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -1007,8 +1002,6 @@ impl Pane {
     /// An action's input begins: what comes after is what it brought.
     pub fn note_input(&mut self) {
         self.since = Start::at(crate::log::Seq(self.parser.tick()), self.parser.screen());
-        self.record
-            .push(self.since.from, Instant::now(), crate::log::Event::Action);
         self.redraws = 0;
         self.before = rows_now(self.screen());
         self.before_shows = (live(self.screen()))
@@ -1165,7 +1158,6 @@ impl Pane {
         let modes = child
             .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
             .map(|t| t.modes());
-        let seq = crate::log::Seq(self.parser.tick());
         if unit == crate::log::Unit::Submit {
             self.parser.note_submit();
         }
@@ -1174,11 +1166,6 @@ impl Pane {
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
         let _ = self.input.push(&bytes);
-        let event = crate::log::Event::Input {
-            unit,
-            bytes: bytes.into(),
-        };
-        self.record.push(seq, now, event);
         let gap = if reading { TAKE } else { PACE };
         self.pace.written = Some((now, crate::after(now, gap), escape, exact));
         self.pace.until = Some(crate::after(now, if reading { POLL } else { PACE }));
@@ -1750,44 +1737,6 @@ mod tests {
             cell.underline_color(),
             fux_vt::Color::Rgb([255, 0, 0].into())
         );
-        Ok(())
-    }
-
-    /// A pane's log replays: its output and resizes, read again into a new
-    /// screen in order, make the same screen, history and all.
-    #[test]
-    fn a_panes_log_replays_its_screen() -> Result<(), Error> {
-        let mut p = pane(4, 12)?;
-        p.output(b"one\r\ntwo \x1b[1mbold\x1b[0m wraps on\x07\r\n");
-        p.resize(size(3, 8));
-        p.output(b"three\r\n\x1b]0;title\x07four");
-        let mut again =
-            fux_vt::Parser::with_options(size(4, 12), 1 << 10, OPTIONS).map_err(|source| {
-                Error::Terminal {
-                    size: size(4, 12),
-                    source,
-                }
-            })?;
-        let whole = p.record.whole();
-        assert!(whole.is_some(), "the journal let nothing go");
-        for entry in whole.into_iter().flatten() {
-            match &entry.event {
-                crate::log::Event::Output { bytes, .. } => {
-                    let _ = again.process(bytes);
-                }
-                crate::log::Event::Resize(size) => {
-                    let _ = again.resize(*size);
-                }
-                crate::log::Event::Input { .. }
-                | crate::log::Event::Action
-                | crate::log::Event::Bell
-                | crate::log::Event::Notification(_)
-                | crate::log::Event::Title(_)
-                | crate::log::Event::Done(_) => {}
-            }
-        }
-        let rows = |s: &fux_vt::Screen| s.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
-        assert_eq!(rows(again.screen()), rows(p.screen()));
         Ok(())
     }
 
