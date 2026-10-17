@@ -1367,15 +1367,9 @@ impl fuxth::Host for Host<'_> {
             "list-keys" => {
                 let text = match &self.keymap {
                     Some(keymap) => keymap.describe(),
-                    None => {
-                        let config = crate::config::default_path().filter(|p| p.exists());
-                        let keymap = match config {
-                            Some(path) => super::run_file(&path, None)
-                                .map_err(|e| fail(Code::Config, e.to_string()))?,
-                            None => crate::keymap::Keymap::default(),
-                        };
-                        keymap.describe()
-                    }
+                    None => (super::config_keymap(None))
+                        .map_err(|e| fail(Code::Config, e.to_string()))?
+                        .describe(),
                 };
                 self.show(&text)
             }

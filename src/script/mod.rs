@@ -891,13 +891,19 @@ fn started(server: &mut Server) -> Result<(crate::socket::SocketPath, bool), Fai
 /// The client's keymap, its config run on the defaults; and what was wrong
 /// with the config, if anything was.
 pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
-    let Some(path) = crate::config::default_path().filter(|p| p.exists()) else {
-        return (Keymap::default(), None);
-    };
-    match run_file(&path, Some(server)) {
+    match config_keymap(Some(server)) {
         Ok(keymap) => (keymap, None),
         // Half a config is no config: the defaults, and why.
         Err(failed) => (Keymap::default(), Some(format!("config: {failed}"))),
+    }
+}
+
+/// The keymap the config file makes (`run_file`), if there is one; else
+/// the defaults.
+fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
+    match crate::config::default_path().filter(|p| p.exists()) {
+        Some(path) => run_file(&path, server),
+        None => Ok(Keymap::default()),
     }
 }
 
