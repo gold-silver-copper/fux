@@ -7,7 +7,7 @@
 //! each time its keys are typed, the client itself its `me`.
 use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Move, Panel, Seek};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
-use crate::screens::Effect;
+use crate::screens::{Effect, HIDE};
 
 /// What a key runs: fuxth code, what the column says it does, and the
 /// group the column lists it under.
@@ -607,7 +607,7 @@ impl Held {
                 *self = Held::Column { path, selected };
                 vec![Effect::Send(Act::Show(Panel::Column(column)))]
             }
-            None => vec![Effect::Send(Act::Hide)],
+            None => vec![HIDE],
         }
     }
 
@@ -656,7 +656,7 @@ impl Held {
     ) -> Vec<Effect> {
         let press = stroke.press;
         if press.plain_key() == Some(Key::Escape) {
-            return vec![Effect::Send(Act::Hide)];
+            return vec![HIDE];
         }
         if keymap
             .bindings
@@ -667,7 +667,7 @@ impl Held {
         }
         if press == keymap.prefix {
             // The prefix, at any depth, goes to the pane.
-            return vec![Effect::Send(Act::Hide), Effect::Send(Act::Key(stroke))];
+            return vec![HIDE, Effect::Send(Act::Key(stroke))];
         }
         let count = keymap.column(&path, 0).map_or(0, |c| c.entries.len());
         let last = count.saturating_sub(1);
@@ -686,12 +686,10 @@ impl Held {
                 // A key bound without the prefix, listed after the rest.
                 Some((press, true)) => {
                     let code = keymap.root_binding(press).map(|b| b.code.clone());
-                    std::iter::once(Effect::Send(Act::Hide))
-                        .chain(code.map(Effect::Run))
-                        .collect()
+                    std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
                 }
                 Some((key, false)) => self.follow(keymap, path, key),
-                None => vec![Effect::Send(Act::Hide)],
+                None => vec![HIDE],
             };
         }
         self.follow(keymap, path, press)
@@ -705,7 +703,7 @@ impl Held {
         let plain = !press.mods.ctrl && !press.mods.alt;
         let leaves = press.key == Key::Escape || (press.key == Key::Enter && bound.is_none());
         if plain && leaves {
-            return vec![Effect::Send(Act::Hide)];
+            return vec![HIDE];
         }
         match bound {
             Some(Node::Run {
@@ -722,14 +720,11 @@ impl Held {
                 binding,
                 repeat: false,
             }) => {
-                vec![Effect::Send(Act::Hide), Effect::Run(binding.code.clone())]
+                vec![HIDE, Effect::Run(binding.code.clone())]
             }
             Some(Node::Layer(_)) | None => {
                 let text = format!("{press} is not one of this mode's keys");
-                vec![
-                    Effect::Send(Act::Hide),
-                    Effect::Send(Act::Notice { text, error: false }),
-                ]
+                vec![HIDE, Effect::Send(Act::Notice { text, error: false })]
             }
         }
     }

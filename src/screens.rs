@@ -87,6 +87,9 @@ pub enum Effect {
     Run(String),
 }
 
+/// The effect that hides the screen showing.
+pub const HIDE: Effect = Effect::Send(Act::Hide);
+
 /// The words that push a handle to `target`: `str %3 pane`.
 pub fn naming(target: AnyRef) -> String {
     format!("str {} {}", target, target.kind().name())
@@ -334,11 +337,8 @@ impl Screen {
                 }
             },
             Self::Confirm { question, about } => match confirm_act(press) {
-                Some(true) => vec![
-                    Effect::Send(Act::Hide),
-                    Effect::Run(format!("{} kill", naming(about))),
-                ],
-                Some(false) => vec![Effect::Send(Act::Hide)],
+                Some(true) => vec![HIDE, Effect::Run(format!("{} kill", naming(about)))],
+                Some(false) => vec![HIDE],
                 None => {
                     *self = Self::Confirm { question, about };
                     Vec::new()
@@ -374,13 +374,13 @@ impl Screen {
         let (moved, code) = match list_act(press) {
             None => (at, None),
             Some(ListAct::Move(moved)) => (moved.from(at, last), None),
-            Some(ListAct::Cancel) => return vec![Effect::Send(Act::Hide)],
+            Some(ListAct::Cancel) => return vec![HIDE],
             Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
             Some(ListAct::Rename) => (at, about.map(|it| Open::Rename(it).code())),
             Some(ListAct::Close) => (at, about.map(|it| Open::Confirm(it).code())),
         };
         if let Some(code) = code {
-            return vec![Effect::Send(Act::Hide), Effect::Run(code)];
+            return vec![HIDE, Effect::Run(code)];
         }
         list.selected = moved;
         *self = Self::List(list);
@@ -390,7 +390,7 @@ impl Screen {
 
     fn prompt(&mut self, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
         match act {
-            LineAct::Cancel => vec![Effect::Send(Act::Hide)],
+            LineAct::Cancel => vec![HIDE],
             LineAct::Submit => {
                 let text = prompt.line.text();
                 let code = match prompt.rename {
@@ -401,9 +401,7 @@ impl Screen {
                     )),
                     None => Some(text).filter(|t| !t.trim().is_empty()),
                 };
-                std::iter::once(Effect::Send(Act::Hide))
-                    .chain(code.map(Effect::Run))
-                    .collect()
+                std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
                 prompt.line.edit(&edit);

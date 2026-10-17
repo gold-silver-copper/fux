@@ -11,6 +11,7 @@
 //! it ([`fux_vt::Row::version`]); what fux records between pieces takes a
 //! number with [`fux_vt::Parser::tick`]. So a row's number and a log
 //! entry's are one and the same, with nothing to map.
+use crate::classify::Echo;
 use std::collections::VecDeque;
 
 /// A number from a pane's counter: the order things happened in.
@@ -77,17 +78,15 @@ pub enum Event {
 #[derive(Clone, Debug)]
 pub struct Printed {
     pub prints: fux_vt::Prints,
-    pub echo: Vec<crate::classify::Echo>,
+    pub echo: Vec<Echo>,
     pub fresh: Vec<(usize, usize)>,
 }
 
 impl Printed {
     /// Each run, what it may be the echo of, and the characters it changed.
-    pub fn runs(
-        &self,
-    ) -> impl Iterator<Item = (fux_vt::Print<'_>, &crate::classify::Echo, (usize, usize))> {
+    pub fn runs(&self) -> impl Iterator<Item = (fux_vt::Print<'_>, &Echo, (usize, usize))> {
         (self.prints.iter().enumerate()).map(|(i, print)| {
-            let echo = self.echo.get(i).unwrap_or(&crate::classify::Echo::Not);
+            let echo = self.echo.get(i).unwrap_or(&Echo::Not);
             let fresh =
                 (self.fresh.get(i).copied()).unwrap_or_else(|| (0, print.text.chars().count()));
             (print, echo, fresh)
@@ -105,7 +104,7 @@ pub struct Entry {
 /// How many bytes a pane's journal keeps by default (`journal-bytes`).
 pub const JOURNAL_BYTES: usize = 32 << 20;
 /// What an entry costs beside what it holds: its number and kind.
-const ENTRY_COST: usize = std::mem::size_of::<Entry>();
+const ENTRY_COST: usize = size_of::<Entry>();
 
 /// A pane's journal: everything that happened in it, in order, under one
 /// budget in bytes. Past it, the oldest entries go whole, and a reader
@@ -207,16 +206,16 @@ fn held(event: &Event) -> usize {
         // change, and the text an echo is of, shared by its runs, once.
         Event::Output(p) => {
             let echo = (p.echo.iter()).find_map(|e| match e {
-                crate::classify::Echo::Of(text) => Some(text.len()),
-                crate::classify::Echo::Not | crate::classify::Echo::Is => None,
+                Echo::Of(text) => Some(text.len()),
+                Echo::Not | Echo::Is => None,
             });
-            let runs = std::mem::size_of::<crate::classify::Echo>()
+            let runs = size_of::<Echo>()
                 .saturating_mul(p.echo.capacity())
                 .saturating_add(p.fresh.capacity().saturating_mul(16));
             (p.prints.heap())
                 .saturating_add(runs)
                 .saturating_add(echo.unwrap_or(0))
-                .saturating_add(std::mem::size_of::<Printed>())
+                .saturating_add(size_of::<Printed>())
         }
         Event::Notification(text) | Event::Title(text) => text.len(),
         Event::Bell | Event::Done(_) | Event::Resize(_) => 0,
