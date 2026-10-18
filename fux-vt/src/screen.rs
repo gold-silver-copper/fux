@@ -3120,16 +3120,31 @@ impl Screen {
                 let (height, width) = self.pixel_size()?;
                 Some(reply!("\x1b[4;{height};{width}t"))
             }
-            // XTSMGRAPHICS, read: 256 colour registers, and pictures as
-            // large as the screen.
-            (b"?", b'S') if self.graphics.sixel && p.first(1, 0) == 1 => match n {
-                1 => Some(reply!("\x1b[?1;0;256S")),
-                2 => {
-                    let (height, width) = self.pixel_size()?;
-                    Some(reply!("\x1b[?2;0;{width};{height}S"))
+            // XTSMGRAPHICS (ctlseqs, `CSI ? Pi ; Pa ; Pv S`), answered as
+            // xterm 411 answers it, to a request of three parameters (or of
+            // two, Pv left out, which xterm leaves unanswered): `CSI ?
+            // Pi ; Ps [; Pv] S`, Ps 0 for success with the values, 1 for an
+            // item it does not know, 2 for an action, 3 for a failure. Read,
+            // read the maximum or reset: 256 colour registers, and pictures
+            // as large as the screen, while the host shows sixel; setting
+            // either fails, as fux-vt keeps them fixed, and so does every
+            // request without sixel shown, and ReGIS's (3).
+            (b"?", b'S') if matches!(p.groups().count(), 2 | 3) => {
+                let action = p.first(1, 0);
+                let status = match (n, action) {
+                    (1..=3, 1..=4) => 3,
+                    (1..=3, _) => 2,
+                    _ => 1,
+                };
+                let read = self.graphics.sixel && matches!(action, 1 | 2 | 4);
+                match n {
+                    1 if read => Some(reply!("\x1b[?1;0;256S")),
+                    2 if read && let Some((height, width)) = self.pixel_size() => {
+                        Some(reply!("\x1b[?2;0;{width};{height}S"))
+                    }
+                    _ => Some(reply!("\x1b[?{n};{status}S")),
                 }
-                _ => None,
-            },
+            }
             (b"$", b'x' | b'z' | b'{' | b'v') => {
                 self.rectangle_area(p, byte);
                 return Some(Dispatch::Done);

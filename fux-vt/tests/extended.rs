@@ -1126,7 +1126,7 @@ fn sixel_is_ignored_without_pictures() -> Result {
     assert_eq!(p.screen().pictures().count(), 0);
     assert_eq!(lines(&p).first().map(|l| l.trim_end()), Some("abcd"));
     assert_eq!(p.screen().cursor_position(), (0, 4));
-    assert_eq!(String::from_utf8_lossy(&replies), "\x1b[?1;2c");
+    assert_eq!(String::from_utf8_lossy(&replies), "\x1b[?1;2c\x1b[?1;3S");
     Ok(())
 }
 
@@ -1154,5 +1154,15 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
     assert_eq!(replies(&mut p, b"\x1b[16t")?, "\x1b[6;18;9t");
     assert_eq!(replies(&mut p, b"\x1b[14t")?, "\x1b[4;108;90t");
     assert_eq!(replies(&mut p, b"\x1b[?1;1S")?, "\x1b[?1;0;256S");
+    // XTSMGRAPHICS's statuses (ctlseqs: 1 "error in Pi", 2 "error in Pa", 3
+    // "failure"), as xterm 411 answers them: the maximum read as the
+    // count, setting refused, ReGIS and an item or action it does not know.
+    assert_eq!(replies(&mut p, b"\x1b[?1;4;0S")?, "\x1b[?1;0;256S");
+    assert_eq!(replies(&mut p, b"\x1b[?2;1;0S")?, "\x1b[?2;0;90;108S");
+    assert_eq!(replies(&mut p, b"\x1b[?1;3;16S")?, "\x1b[?1;3S");
+    assert_eq!(replies(&mut p, b"\x1b[?3;1;0S")?, "\x1b[?3;3S");
+    assert_eq!(replies(&mut p, b"\x1b[?1;9;0S")?, "\x1b[?1;2S");
+    assert_eq!(replies(&mut p, b"\x1b[?7;1;0S")?, "\x1b[?7;1S");
+    assert_eq!(replies(&mut p, b"\x1b[?1S")?, "");
     Ok(())
 }
