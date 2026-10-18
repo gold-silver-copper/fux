@@ -1663,7 +1663,16 @@ impl Parser {
         // also begins ST, so it completes a pending OSC string or DECRQSS.
         // SUB, which aborts what is in progress, is then carried out: its
         // glyph (DEC STD 070, p. 5-132, note 2; and in a control string,
-        // decisions.md 4); a picture is dropped (PAR-11).
+        // decisions.md 4). Inside sixel SUB is a blank sixel, and CAN ends
+        // the picture unplaced (the sixel chapter, 9.1).
+        if byte == 0x1a
+            && matches!(state, State::Sixel)
+            && let Some(decoder) = &mut self.sixel
+        {
+            let screen = &mut self.screen;
+            decoder.push(b'?', &mut |bytes| screen.make_room(bytes));
+            return None;
+        }
         if matches!(byte, 0x18 | 0x1a) {
             self.state = State::Ground;
             self.sixel = None;

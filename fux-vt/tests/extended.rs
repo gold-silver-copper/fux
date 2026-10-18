@@ -1028,6 +1028,32 @@ fn sixel_background_select_and_extent() -> Result {
     Ok(())
 }
 
+/// DEC STD 070, sixel graphics, 9.1 (C0 codes): "SUB - process as if a
+/// 3/15 code (blank Sixel) was received"; "CAN - exit DCS mode processing,
+/// exit Sixel mode". So a SUB between two sixels leaves a blank one between
+/// them, in the background P2 0 sets (7.2), and shows no error character;
+/// a CAN ends the picture, which is not placed: the standard does not say
+/// it is, and CAN ends a control string "without execution" (3.5.1.2.1).
+#[test]
+fn sub_inside_sixel_is_a_blank_sixel_and_can_ends_it() -> Result {
+    let red = Some([255, 0, 0, 255]);
+    let blank = Some([0, 0, 0, 255]);
+    let picture = "q\"1;1#1;2;100;0;0~\x1a~";
+    assert_eq!(sixel_pixel(picture, (0, 0))?, ((3, 6), red));
+    assert_eq!(sixel_pixel(picture, (1, 0))?, ((3, 6), blank));
+    assert_eq!(sixel_pixel(picture, (2, 5))?, ((3, 6), red));
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~\x1a~\x1b\\x")?;
+    assert_eq!(p.screen().pictures().count(), 1);
+    let text = lines(&p).concat();
+    assert!(text.contains('x') && !text.contains('\u{2426}'), "{text:?}");
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~~\x18x")?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    assert_eq!(lines(&p).first().map(|l| l.trim_end()), Some("x"));
+    Ok(())
+}
+
 /// Without `Feature::Pictures`, sixel is ignored as any other DCS is:
 /// nothing is placed, the cells hold what was written around it, the
 /// cursor stays, and the terminal says no sixel though its host draws it.
