@@ -1365,6 +1365,17 @@ impl Screen {
         Ok(Some(if g.lr() { g.line_end() } else { end }))
     }
 
+    /// SUB (DEC STD 070, p. 5-132): the error character, a reversed
+    /// question mark (U+2426), placed at the active position as a glyph is,
+    /// in no character set: a single shift waits on for the next graphic
+    /// character.
+    pub(crate) fn substitute(&mut self) -> Result<(), Error> {
+        let single = self.charsets.single;
+        self.print('\u{2426}')?;
+        self.charsets.single = single;
+        Ok(())
+    }
+
     pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
         let c = if self.charsets.graphics() {
             self.charsets.map(raw)

@@ -454,7 +454,8 @@ fn ignored_sequences_cancel_and_recover_without_payload_leakage() -> Result {
     }
     let mut p = Parser::new(Size::new(2, 8)?, 0)?;
     p.process(b"\x1b]unfinished\x18A\x1b[12\x1aB\x1b[999999999999999999C!")?;
-    assert_eq!(lines(&p), ["AB     !", ""]);
+    // CAN shows nothing, SUB its error character (DEC STD 070, p. 5-129).
+    assert_eq!(lines(&p), ["A\u{2426}B    !", ""]);
     p.process(b"\x1b[1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30;31;32;33H\rZ")?;
     assert_eq!(cell(&p, 0, 0)?.contents(), "Z");
     Ok(())

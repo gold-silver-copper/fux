@@ -224,6 +224,15 @@ fn clusters(r: &mut Rng) -> Vec<u8> {
 
 /// The C0 controls, but HT, which ends a pending wrap where xterm keeps it
 /// (`pending-wrap`'s `tab-ends-a-pending-wrap`, settled by its test).
+/// SUB in ground and inside an escape sequence, a CSI and an OSC, which it
+/// cuts short, and CAN beside it; text before and after.
+fn substitute(r: &mut Rng) -> Vec<u8> {
+    let cut = pick(r, &["", "", "\x1b(", "\x1b[1", "\x1b[?25", "\x1b]0;x"]);
+    let control = pick(r, &["\x1a", "\x1a", "\x18"]);
+    let after = pick(r, &["a", "bc", "\x1b[2b", "\r\n"]);
+    format!("x{cut}{control}{after}").into_bytes()
+}
+
 fn controls(r: &mut Rng) -> Vec<u8> {
     pick(r, &["\r", "\n", "\r\n", "\x08", "\x0b", "\x0c", "\x07"]).into_bytes()
 }
@@ -1106,6 +1115,20 @@ pub const FAMILIES: &[Family] = &[
         },
         ratty_only: false,
         generate: invalid_utf8,
+    },
+    Family {
+        name: "substitute",
+        about: "SUB in ground and inside sequences and strings, and CAN",
+        status: Status::Decided {
+            why: "SUB displays the error character, a reversed question mark (U+2426), at the active position, in ground and in place of a sequence it aborts, as DEC STD 070's SUBSTITUTE (p. 5-132, note 2) and its C0 table (5.9.1) say and xterm does; CAN shows none. Every other engine of the panel drops SUB as CAN, outvoting fux-vt (`replay --engines all --size 1x6 'a\\x1ab'`). The standard contradicts itself in its parsing algorithm (3.5.5), which cancels with no glyph; chapter 5, the function's own page, decides (decisions.md 4). Inside a control string, which SUB ends (3.5.4.4), the glyph shows too, as in xterm",
+            by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, SUBSTITUTE",
+                test: "conformance::sub_is_displayed_as_the_error_character",
+            },
+        },
+        ratty_only: false,
+        generate: substitute,
     },
     Family {
         name: "hostile",

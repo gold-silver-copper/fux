@@ -1633,10 +1633,13 @@ impl Parser {
         Ok(())
     }
 
-    /// Execute a C0 control. BEL becomes an event when events are enabled.
+    /// Execute a C0 control. BEL becomes an event when events are enabled;
+    /// SUB displays the error character (DEC STD 070, p. 5-132).
     fn control(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
-        if byte == 7 && self.options.has(Feature::Events) {
-            sink.event(Event::Bell);
+        match byte {
+            7 if self.options.has(Feature::Events) => sink.event(Event::Bell),
+            0x1a => return self.screen.substitute(),
+            _ => {}
         }
         self.screen.control(byte)
     }
@@ -1658,9 +1661,16 @@ impl Parser {
         }
         // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence. ESC
         // also begins ST, so it completes a pending OSC string or DECRQSS.
+        // SUB, which aborts what is in progress, is then carried out: its
+        // glyph (DEC STD 070, p. 5-132, note 2; and in a control string,
+        // decisions.md 4); a picture is dropped (PAR-11).
         if matches!(byte, 0x18 | 0x1a) {
             self.state = State::Ground;
             self.sixel = None;
+            if byte == 0x1a && !matches!(state, State::Sixel) {
+                let done = self.screen.substitute();
+                self.kept(done);
+            }
             self.screen.forget_repeat();
             return None;
         }

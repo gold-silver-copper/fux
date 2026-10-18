@@ -1082,3 +1082,59 @@ fn erasing_saved_lines_on_the_alternate_screen_drops_the_main_screens() -> Resul
     }
     Ok(())
 }
+
+/// DEC STD 070, SUBSTITUTE (p. 5-132, levels 1-4): SUB "is processed by
+/// placing a reversed question mark in the display at the Active
+/// Position", as `insert_or_replace_character` places a glyph; note 2:
+/// within an escape or control sequence "the sequence in progress [is]
+/// aborted and the Substitute control function ... executed instead". The
+/// C0 table (5.9.1, p. 5-129) agrees: "The error character (reverse
+/// question mark) is displayed", where CAN displays none. U+2426 is the
+/// reversed question mark (SYMBOL FOR SUBSTITUTE FORM TWO), one column, as
+/// xterm 411 shows it (`charproc.c`, `CASE_SUB`). fux-vt shows it inside a
+/// control string too, which SUB ends (3.5.4.4), as xterm does
+/// (decisions.md 4). As a control it is no graphic character for REP.
+#[test]
+fn sub_is_displayed_as_the_error_character() -> Result {
+    let sub = "\u{2426}";
+    // In ground, inside an escape sequence, a CSI and a control string.
+    assert_eq!(lines(&run(1, 6, b"a\x1ab")?), [format!("a{sub}b")]);
+    for cut in [
+        &b"\x1b("[..],
+        b"\x1b[1",
+        b"\x1b[?25",
+        b"\x1b]0;x",
+        b"\x1bPq#1",
+        b"\x1b_x",
+    ] {
+        let bytes = [cut, b"\x1ac"].concat();
+        let p = run(1, 6, &bytes)?;
+        assert_eq!(lines(&p), [format!("{sub}c")], "{:?}", bytes.escape_ascii());
+    }
+    // CAN aborts without a glyph.
+    assert_eq!(lines(&run(1, 6, b"\x1b[1\x18c")?), ["c"]);
+    // A character cut short by SUB is U+FFFD, then SUB's glyph (Unicode
+    // 3.9's maximal subpart).
+    assert_eq!(
+        lines(&run(1, 6, b"\xe2\x82\x1a")?),
+        [format!("\u{fffd}{sub}")]
+    );
+    // It is placed as a glyph is: the cursor moves on, a pending wrap is
+    // carried out, IRM inserts it, and no character set maps it.
+    let p = run(2, 3, b"abc\x1a")?;
+    assert_eq!(lines(&p), ["abc".to_owned(), sub.to_owned()]);
+    assert_eq!(p.screen().cursor_position(), (1, 1));
+    assert_eq!(lines(&run(1, 4, b"ab\r\x1b[4h\x1a")?), [format!("{sub}ab")]);
+    assert_eq!(
+        lines(&run(1, 4, b"\x1b(0\x1aq")?),
+        [format!("{sub}\u{2500}")]
+    );
+    // A single shift waits on past it, for the next graphic character.
+    assert_eq!(
+        lines(&run(1, 4, b"\x1b*0\x1bN\x1aq")?),
+        [format!("{sub}\u{2500}")]
+    );
+    // REP after it repeats nothing.
+    assert_eq!(lines(&run(1, 6, b"X\x1a\x1b[3b")?), [format!("X{sub}")]);
+    Ok(())
+}
