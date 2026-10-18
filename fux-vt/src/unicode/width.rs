@@ -39,7 +39,13 @@ const TRANSPARENT: u16 = 1 << 13;
 /// from here.
 #[inline]
 pub fn char_width(c: char) -> Option<usize> {
-    match bits(c).checked_shr(WIDTH_SHIFT).unwrap_or(0) & 3 {
+    of_bits(bits(c))
+}
+
+/// `char_width` of the character whose bits in the table are `bits`.
+#[inline]
+pub(super) fn of_bits(bits: u16) -> Option<usize> {
+    match bits.checked_shr(WIDTH_SHIFT).unwrap_or(0) & 3 {
         3 => None,
         width => Some(usize::from(width)),
     }

@@ -84,12 +84,14 @@ enum Conjunct {
     Linker,
 }
 
-/// A character's segmentation properties.
+/// A character's properties from the generated table, all from one
+/// lookup: its segmentation, and the columns it takes alone.
 #[derive(Clone, Copy, Debug)]
-struct Properties {
+pub(crate) struct Properties {
     kind: Break,
     pictographic: bool,
     conjunct: Conjunct,
+    bits: u16,
 }
 
 /// `c`'s sixteen bits in the generated table (`tables.rs` says what each
@@ -111,7 +113,8 @@ fn bits(c: char) -> u16 {
 }
 
 impl Properties {
-    fn of(c: char) -> Self {
+    #[inline]
+    pub(crate) fn of(c: char) -> Self {
         let bits = bits(c);
         Self {
             kind: Break::of(bits),
@@ -122,7 +125,15 @@ impl Properties {
                 3 => Conjunct::Linker,
                 _ => Conjunct::None,
             },
+            bits,
         }
+    }
+
+    /// The columns the character takes alone, `None` for a control: what
+    /// [`char_width`] says.
+    #[inline]
+    pub(crate) fn width(self) -> Option<usize> {
+        width::of_bits(self.bits)
     }
 }
 
@@ -170,7 +181,13 @@ impl Cluster {
         if matches!(c, ' '..='~') {
             return Self::default();
         }
-        Self::default().after(Properties::of(c), false)
+        Self::starting(Properties::of(c))
+    }
+
+    /// A cluster that starts with a character whose properties are `next`.
+    #[inline]
+    pub(crate) fn starting(next: Properties) -> Self {
+        Self::default().after(next, false)
     }
 
     /// The state of the cluster whose text is `text`, as if its characters
@@ -187,7 +204,12 @@ impl Cluster {
     /// Whether `c` continues the cluster, rather than starting the next one.
     /// Either way the state moves on to include `c`.
     pub(crate) fn push(&mut self, c: char) -> bool {
-        let next = Properties::of(c);
+        self.push_properties(Properties::of(c))
+    }
+
+    /// `push` for a character whose properties are `next`.
+    #[inline]
+    pub(crate) fn push_properties(&mut self, next: Properties) -> bool {
         let joins = self.joins(next);
         *self = self.after(next, joins);
         joins

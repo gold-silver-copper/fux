@@ -3,7 +3,7 @@ use crate::keys::KITTY_FLAGS_KEPT;
 use crate::keys::encode::OtherKeys;
 use crate::link::Held;
 use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SET_FOR_GOOD, Switch};
-use crate::unicode::Cluster;
+use crate::unicode::{Cluster, Properties};
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
     Options, Prints, Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
@@ -126,6 +126,15 @@ impl Printed {
         Self {
             at,
             cluster: Cluster::start(c),
+            full: false,
+        }
+    }
+
+    /// `new` for a character whose properties are `properties`.
+    fn of(at: (u16, u16), properties: Properties) -> Self {
+        Self {
+            at,
+            cluster: Cluster::starting(properties),
             full: false,
         }
     }
@@ -1599,9 +1608,11 @@ impl Screen {
         } else {
             raw
         };
+        // One look in the table, for its width and its segmentation.
+        let properties = Properties::of(c);
         // A control character (C0, DEL or C1, the only ones of no width)
         // is not printed.
-        let Some(width) = crate::char_width(c).and_then(|w| u16::try_from(w).ok()) else {
+        let Some(width) = properties.width().and_then(|w| u16::try_from(w).ok()) else {
             return Ok(());
         };
         // Nor where it fits nowhere, but for a pending wrap, which xterm
@@ -1615,7 +1626,7 @@ impl Screen {
             }
             return Ok(());
         }
-        if self.extend_cluster(c) {
+        if self.extend_cluster(c, properties) {
             // What joined is printed, over its cell as it is now (PAR-13,
             // TXT-6), unless the cluster was full.
             if self.prints.is_some()
@@ -1655,7 +1666,7 @@ impl Screen {
                 // While text is being printed, what follows is segmented
                 // after the mark, as UAX #29 segments the cell's text.
                 if joined && self.last_print.is_some() {
-                    self.last_print = Some(Printed::new((row, col), c));
+                    self.last_print = Some(Printed::of((row, col), properties));
                 }
             }
             return Ok(());
@@ -1735,7 +1746,7 @@ impl Screen {
                 self.link_cells(row, next..next.saturating_add(1), false);
             }
         }
-        self.last_print = Some(Printed::new((row, col), c));
+        self.last_print = Some(Printed::of((row, col), properties));
         if changed && self.prints.is_some() {
             self.printed(
                 row,
@@ -1773,11 +1784,11 @@ impl Screen {
     /// zero-width mark joins the cell before the cursor, even after a
     /// cursor move. Whether `c` was taken: joined, or dropped
     /// because the cluster is full, which never splits it.
-    fn extend_cluster(&mut self, c: char) -> bool {
+    fn extend_cluster(&mut self, c: char, properties: Properties) -> bool {
         let g = self.grid();
         let (row, col) = (g.cursor.row(), g.next_column());
         let anchor = self.last_print.or_else(|| {
-            if crate::char_width(c) != Some(0) {
+            if properties.width() != Some(0) {
                 return None;
             }
             // The cell before the cursor, on the cursor's row: on the row
@@ -1799,6 +1810,11 @@ impl Screen {
         else {
             return false;
         };
+        // Most characters join no cluster (UAX #29): that is asked first,
+        // before the row is looked at.
+        if !cluster.push_properties(properties) {
+            return false;
+        }
         let Some(cell) = g.stored(anchor_row, anchor_col) else {
             return false;
         };
@@ -1808,7 +1824,6 @@ impl Screen {
             || next != Some(col)
             || !cell.has_contents()
             || cell.is_wide_continuation()
-            || !cluster.push(c)
         {
             return false;
         }
