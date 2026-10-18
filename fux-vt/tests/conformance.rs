@@ -1138,3 +1138,50 @@ fn sub_is_displayed_as_the_error_character() -> Result {
     assert_eq!(lines(&run(1, 6, b"X\x1a\x1b[3b")?), [format!("X{sub}")]);
     Ok(())
 }
+
+/// The Unicode Standard 17.0, 3.9, "U+FFFD Substitution of Maximal
+/// Subparts", Tables 3-8 to 3-11 (`data/utf8-substitution.txt`, their rows
+/// as data): each table's bytes print its "Output" row, a U+FFFD a column,
+/// whether they come whole (the parser's run of text), one byte a call (its
+/// state between calls) or split in two anywhere.
+#[test]
+fn utf8_tables_3_8_to_3_11_substitute_maximal_subparts() -> Result {
+    let tables = include_str!("data/utf8-substitution.txt");
+    let hex = |field: &str| -> Vec<u32> {
+        (field.split_whitespace())
+            .filter_map(|h| u32::from_str_radix(h, 16).ok())
+            .collect()
+    };
+    let mut checked = 0;
+    for line in tables.lines().filter(|l| !l.starts_with('#')) {
+        let mut fields = line.split(';');
+        let (Some(table), Some(bytes), Some(output)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(format!("a line of three fields: {line}").into());
+        };
+        let bytes: Vec<u8> = hex(bytes)
+            .into_iter()
+            .filter_map(|b| u8::try_from(b).ok())
+            .collect();
+        let want: String = hex(output).into_iter().filter_map(char::from_u32).collect();
+        let shown = |p: &Parser| lines(p).concat().trim_end().to_owned();
+        let whole = run(1, 20, &bytes)?;
+        assert_eq!(shown(&whole), want, "Table {table}, whole");
+        let mut p = Parser::new(Size::new(1, 20)?, 0)?;
+        for byte in &bytes {
+            p.process(std::slice::from_ref(byte))?;
+        }
+        assert_eq!(shown(&p), want, "Table {table}, a byte a call");
+        for at in 1..bytes.len() {
+            let (head, tail) = bytes.split_at_checked(at).ok_or("a split past the end")?;
+            let mut p = Parser::new(Size::new(1, 20)?, 0)?;
+            p.process(head)?;
+            p.process(tail)?;
+            assert_eq!(shown(&p), want, "Table {table}, split at {at}");
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 4);
+    Ok(())
+}
