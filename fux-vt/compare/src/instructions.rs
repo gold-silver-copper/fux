@@ -373,6 +373,7 @@ pub fn run(
                 "repeats": repeats.max(1),
                 "retentions": bench::Retention::ALL.map(|r| serde_json::json!({"name": r.name(), "setup": r.about()})),
                 "kitty_images": "ignored-protocol throughput: fux-vt keeps no kitty images",
+                "sixel": "ignored-protocol throughput for an engine without sixel",
             },
             "worst_noise_percent": worst * 100.0,
             "seconds": seconds,

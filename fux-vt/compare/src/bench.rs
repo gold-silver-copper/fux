@@ -749,6 +749,7 @@ pub fn run_to(
                 "cpus": cpus,
                 "repeats": RUNS,
                 "kitty_images": "ignored-protocol throughput: fux-vt keeps no kitty images",
+                "sixel": "ignored-protocol throughput for an engine without sixel",
             },
             "workloads": doc_rows,
         }));

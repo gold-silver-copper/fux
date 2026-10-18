@@ -194,7 +194,8 @@ pub const PAYLOADS: &[Payload] = &[
     },
     Payload {
         name: "sixel:frames",
-        about: "sixel-bench's shape: whole-screen 16-colour sixel frames of moving stripes",
+        about: "sixel-bench's shape: whole-screen 16-colour sixel frames of moving stripes \
+                (an engine without sixel discards them: for it, ignored-protocol throughput)",
         make: |_, size| Ok(sixel(size)),
     },
 ];
