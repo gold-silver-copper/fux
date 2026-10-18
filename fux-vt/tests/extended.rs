@@ -1229,3 +1229,25 @@ fn a_picture_is_clipped_at_the_right_margin_and_keeps_its_clip() -> Result {
     assert_eq!(shown, [(0, 10)]);
     Ok(())
 }
+
+/// DEC STD 070-9, 11.2.4: a picture past the bottom margin scrolls "if
+/// text drawn into this region would have scrolled", and what scrolls off
+/// is gone. On a screen that keeps no history (the alternate one), a
+/// picture taller than the rows below the cursor scrolls its own top off
+/// as it is placed: the rest is shown, its top cropped, above the screen.
+#[test]
+fn a_picture_whose_top_scrolled_off_shows_what_is_left() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // 4 pixels wide and 84 high (14 bands): one cell by 11, from row 3 of 6,
+    // its bottom on the last row and its top 5 rows above the screen.
+    let bands: String = std::iter::repeat_n("!4~-", 13).collect();
+    let sixel = format!("\x1b[?1049h\x1b[4;1H\x1bPq\"1;1#1;2;100;0;0{bands}!4~\x1b\\");
+    p.process(sixel.as_bytes())?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.row, s.rows)).collect();
+    assert_eq!(shown, [(-5, 11)]);
+    Ok(())
+}

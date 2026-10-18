@@ -186,8 +186,9 @@ impl Screen {
         // Pictures it now covers, wholly or not, are gone: their cells hold
         // its placeholder, not theirs.
         let placed = self.pictures.len().saturating_sub(1);
-        let top_row = |p: &Placement| self.row_of(self.top_index(p));
-        let mine = (self.pictures.back()).map(|p| (top_row(p), col, across, rows));
+        let mine = (self.pictures.back())
+            .and_then(|p| self.shown(p))
+            .map(|s| (s.row, col, across, rows));
         let gone = |p: &Placement, screen: &Screen| {
             p.alternate == alternate
                 && screen.shown(p).is_none_or(|s| {
@@ -324,21 +325,36 @@ impl Screen {
     }
 
     /// `placement` as the screen shows it, if it is whole: its top row
-    /// found by `top_index`, and the cells read of its rows changed since
-    /// it was last found whole (`threats.md` B09).
+    /// found by `top_index`, or, that row gone (scrolled off a screen or a
+    /// region that keeps no history, as a picture taller than the rows
+    /// below the cursor scrolls its own top off), its rows from its bottom
+    /// row up, those gone cropped (DEC STD 070-9, 11.2.4: what scrolls off
+    /// is gone, the rest stays); and the cells read of its rows changed
+    /// since it was last found whole (`threats.md` B09).
     fn shown<'a>(&'a self, placement: &'a Placement) -> Option<Shown<'a>> {
         let grid = self.grid();
-        let first = self.top_index(placement)?;
+        let last = usize::from(placement.rows.saturating_sub(1));
+        let first = match self.top_index(placement) {
+            Some(first) => i64::try_from(first).ok()?,
+            None => {
+                let bottom = grid.screen_index_of(placement.bottom)?;
+                i64::try_from(bottom)
+                    .ok()?
+                    .checked_sub(i64::try_from(last).ok()?)?
+            }
+        };
+        let at = |offset: usize| {
+            let index = first.checked_add(i64::try_from(offset).ok()?)?;
+            grid.row_at(usize::try_from(index).ok()?)
+        };
         let width = self.size().cols();
         let across = placement.cols.min(width.saturating_sub(placement.col));
-        let last = usize::from(placement.rows.saturating_sub(1));
-        let bottom = first.checked_add(last).and_then(|i| grid.row_at(i));
-        let since = match bottom {
+        let since = match at(last) {
             Some(row) if row.id() == placement.bottom => Some(placement.whole_at),
             Some(_) | None => None,
         };
         for offset in 0..usize::from(placement.rows) {
-            let Some(row) = first.checked_add(offset).and_then(|i| grid.row_at(i)) else {
+            let Some(row) = at(offset) else {
                 continue;
             };
             if since.is_some_and(|since| row.version() <= since) {
@@ -353,24 +369,16 @@ impl Screen {
                 return None;
             }
         }
+        let history = i64::try_from(grid.history_len()).ok()?;
         Some(Shown {
             id: placement.id,
             picture: &placement.picture,
-            row: self.row_of(Some(first)),
+            row: first.saturating_sub(history),
             col: placement.col,
             cols: across,
             rows: placement.rows,
             cell: placement.cell,
         })
-    }
-
-    /// Where the row at `index`, counted from the oldest history keeps, is
-    /// from the screen's top: negative in history, the least there is if
-    /// it is gone.
-    fn row_of(&self, index: Option<usize>) -> i64 {
-        let top = i64::try_from(self.grid().history_len()).unwrap_or(i64::MAX);
-        let index = index.and_then(|i| i64::try_from(i).ok());
-        index.map_or(i64::MIN, |i| i.saturating_sub(top))
     }
 
     /// The pixel size of the text area, for a program's `CSI 14 t`.
