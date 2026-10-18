@@ -1758,6 +1758,11 @@ const SOURCES: &[(&str, &str)] = &[
          and §5.12.1 (DECSERA); ECMA-48 SPA, EPA; ctlseqs CSI Ps \" q, CSI ? Ps J, CSI ? Ps K",
     ),
     (
+        "DECSACE, the extent",
+        "DEC STD 070 §5.12.1, Select Attribute Change Extent; VT510 DECSACE; ctlseqs \
+         CSI Ps * x",
+    ),
+    (
         "rectangle operations",
         "DEC STD 070 §5.12.1, Rectangular Area Operations; VT510 DECCRA, DECFRA, DECERA, \
          DECCARA, DECRARA, DECSACE; ctlseqs CSI … $ v, $ x, $ z, $ r, $ t, * x",
