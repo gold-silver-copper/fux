@@ -343,6 +343,9 @@ fux-vt's work counters and a counting allocator against it.
   and read as the picture is shown. Placing a picture fills its cells, at
   most about 2,300 cells a byte at a 10 by 20 cell and 7,600 at the
   smallest cell a host may give, 2 by 6.
+- **Styles** (B12): a program can't choose colours that collide in the
+  style table: its hash takes both of a style's words, keyed once a
+  process from std's random keys.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.

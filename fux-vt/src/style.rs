@@ -25,10 +25,9 @@
 //! many there are. No reader sees a style's number.
 
 use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasher, Hasher, RandomState};
 
 use crate::Attributes;
-use crate::history::SlotHasher;
 
 /// The bit of a style's number that says it is in the table.
 pub(crate) const TABLE: u32 = 1 << 27;
@@ -41,13 +40,84 @@ pub(crate) const MAX_STYLES: usize = 1 << 27;
 const FLOOR: usize = 4096;
 
 /// A grid's table of styles: their attributes by place, and each one's
-/// place by its attributes.
-#[derive(Clone, Debug, Default)]
+/// place by its attributes, found by a keyed hash ([`Keyed`]), so that a
+/// program can't choose styles that collide (`threats.md` B12). Probes per
+/// insert are expected O(1); the ceiling is the table's length, which a
+/// sweep bounds (B13).
+#[derive(Clone, Default)]
 pub(crate) struct Styles {
     table: Vec<Attributes>,
-    places: HashMap<Attributes, u32, BuildHasherDefault<SlotHasher>>,
+    places: HashMap<Attributes, u32, Keyed>,
     /// How many styles were in use when the table was last swept.
     live: usize,
+}
+
+/// The keys of the tables' hash, drawn once a process from std's random
+/// keys: a program sees neither them nor any hash. Each word hashed is
+/// folded in by one 128-bit multiply by a key (as foldhash does), rather
+/// than by SipHash's rounds, which cost the SGR path several percent.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Keyed;
+
+/// The process's keys: the seed, and the key, odd so that no word folds
+/// to nothing.
+fn keys() -> (u64, u64) {
+    static KEYS: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+    *KEYS.get_or_init(|| {
+        let random = RandomState::new();
+        (random.hash_one(0u64), random.hash_one(1u64) | 1)
+    })
+}
+
+impl BuildHasher for Keyed {
+    type Hasher = KeyedHasher;
+    fn build_hasher(&self) -> KeyedHasher {
+        let (state, key) = keys();
+        KeyedHasher { state, key }
+    }
+}
+
+/// A hash being made with the tables' keys ([`Keyed`]).
+pub(crate) struct KeyedHasher {
+    state: u64,
+    key: u64,
+}
+
+/// The halves of `x × y`, folded: every bit of both reaches each.
+fn folded(x: u64, y: u64) -> u64 {
+    let full = u128::from(x).wrapping_mul(u128::from(y));
+    let [low, high] = [full, full >> 64].map(|h| u64::try_from(h & u128::from(u64::MAX)));
+    low.unwrap_or(0) ^ high.unwrap_or(0)
+}
+
+impl Hasher for KeyedHasher {
+    fn finish(&self) -> u64 {
+        self.state
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u64(u64::from(*byte));
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.state = folded(self.state ^ n, self.key);
+    }
+    /// Both halves at once, each masked by a key, folded in one multiply.
+    fn write_u128(&mut self, n: u128) {
+        let [high, low] = [n >> 64, n].map(|h| u64::try_from(h & u128::from(u64::MAX)));
+        self.state = folded(high.unwrap_or(0) ^ self.state, low.unwrap_or(0) ^ self.key);
+    }
+}
+
+/// The table and its count, not `places`, whose order is the hasher's keys'
+/// and says nothing the table doesn't.
+impl std::fmt::Debug for Styles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Styles")
+            .field("table", &self.table)
+            .field("live", &self.live)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Styles {
@@ -164,6 +234,46 @@ impl Styles {
 mod tests {
     use super::*;
     use crate::{Blink, Color, UnderlineStyle};
+
+    /// A hasher that keeps the words it is given.
+    #[derive(Default)]
+    struct Recording(Vec<u64>);
+
+    impl std::hash::Hasher for Recording {
+        fn finish(&self) -> u64 {
+            0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            self.0.extend(bytes.iter().map(|b| u64::from(*b)));
+        }
+        fn write_u64(&mut self, n: u64) {
+            self.0.push(n);
+        }
+        fn write_u128(&mut self, n: u128) {
+            let [high, low] = [n >> 64, n].map(|h| u64::try_from(h & u128::from(u64::MAX)));
+            self.0.extend([high.unwrap_or(0), low.unwrap_or(0)]);
+        }
+    }
+
+    /// What `attributes` write to a hasher, a word at a time.
+    fn written(attributes: Attributes) -> Vec<u64> {
+        let mut hasher = Recording::default();
+        std::hash::Hash::hash(&attributes, &mut hasher);
+        hasher.0
+    }
+
+    /// Attributes write both their words, whole, to the hasher, so two that
+    /// differ write differently, and a keyed hash leaves no family a
+    /// program could choose to collide. At BASE they wrote one word, `a ^
+    /// b.rotate_left(23)` mixed, which rust-opus's family of 32,768 styles
+    /// shares (`threats.md` B12).
+    #[test]
+    fn attributes_hash_both_their_words() {
+        for (a, b) in [(direct(1), direct(2)), (direct(7), direct(200))] {
+            assert_eq!(written(a), [a.bits().0, a.bits().1]);
+            assert_ne!(written(a), written(b));
+        }
+    }
 
     /// A style no number holds: a direct colour.
     fn direct(n: u8) -> Attributes {

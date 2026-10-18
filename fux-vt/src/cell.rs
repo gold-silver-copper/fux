@@ -190,13 +190,14 @@ pub struct Attributes {
     pub(crate) flags: u16,
 }
 
-/// Hashed as `bits`, mixed so that every bit of them reaches the low bits
-/// a table picks a place by (a style table's, `style.rs`).
+/// Hashed as `bits`, both words whole, so that attributes that differ
+/// write different words: a keyed hasher then gives a program no way to
+/// choose attributes that collide (a style table's, `style.rs`;
+/// `threats.md` B12).
 impl std::hash::Hash for Attributes {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let (a, b) = self.bits();
-        let mixed = (a ^ b.rotate_left(23)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        state.write_u64(mixed.rotate_left(32));
+        state.write_u128(u128::from(a) << 64 | u128::from(b));
     }
 }
 
