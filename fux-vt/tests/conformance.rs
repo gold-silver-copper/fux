@@ -1185,3 +1185,45 @@ fn utf8_tables_3_8_to_3_11_substitute_maximal_subparts() -> Result {
     assert_eq!(checked, 4);
     Ok(())
 }
+
+/// A cluster that becomes two columns wide (VS16) takes the cell under
+/// the cursor as its second half, as a glyph printed wide would: under
+/// IRM it is inserted, what is there moving right (ECMA-48 7.2.10, INSERT:
+/// "the graphic symbol ... is inserted at the active presentation
+/// position"; the README's IRM row); the second half takes the open link
+/// (OSC 8); and a wide glyph whose first half it took keeps its second as
+/// a blank in the pen's colours, as `print` repairs a glyph it cuts.
+#[test]
+fn a_cluster_widened_is_placed_as_a_wide_glyph() -> Result {
+    let heart = "\u{2764}\u{fe0f}";
+    let cells = |p: &Parser| -> Vec<String> {
+        (0..p.screen().size().cols())
+            .filter_map(|x| p.screen().cell(0, x))
+            .map(|c| c.contents().to_owned())
+            .collect()
+    };
+    let p = run(1, 6, format!("\x1b[4hab\r{heart}").as_bytes())?;
+    assert_eq!(cells(&p), [heart, "", "a", "b", "", ""]);
+    assert!(
+        p.screen()
+            .cell(0, 1)
+            .is_some_and(|c| c.is_wide_continuation())
+    );
+    let mut p = Parser::with_options(
+        Size::new(1, 6)?,
+        0,
+        Options::new().with(Feature::Hyperlinks),
+    )?;
+    p.process(format!("\x1b]8;;u\x1b\\{heart}").as_bytes())?;
+    let row = p.screen().rows().last().ok_or("a row")?;
+    let link = |x: usize| row.link(x).map(|l| l.uri().to_owned());
+    assert_eq!(
+        (link(0), link(1)),
+        (Some("u".to_owned()), Some("u".to_owned()))
+    );
+    let p = run(1, 6, format!("x\u{4e00}\r\x1b[41m{heart}").as_bytes())?;
+    assert_eq!(cells(&p), [heart, "", "", "", "", ""]);
+    let orphan = p.screen().cell(0, 2).ok_or("cell 2")?;
+    assert_eq!(orphan.bgcolor(), Color::Idx(1));
+    Ok(())
+}

@@ -1596,44 +1596,64 @@ impl Screen {
         work!(cells, 2);
         // Within the right margin, while the cursor is not past it.
         let fits = col < g.line_end();
-        let mut widened = false;
+        let mut widen = false;
         let mut kept = !full;
         self.with_grid(|g, _, v| {
             g.mutate_line(row, v, col.saturating_add(1), |line| {
                 kept = kept && line.append(at, c);
-                if !kept {
-                    return false;
-                }
                 // Width is kept once wide; the last column has no room to widen.
-                if narrow && fits && crate::str_width(line.text(at)) >= 2 {
-                    if let Some(cell) = line.cells.get_mut(at) {
-                        cell.widen();
-                    }
-                    // The cell under the cursor becomes the second half; if
-                    // it led a wide glyph, that glyph's half is left blank.
-                    if line.cells.get(cursor).is_some_and(Compact::is_wide)
-                        && let Some(orphan) =
-                            cursor.checked_add(1).and_then(|i| line.cells.get_mut(i))
-                    {
-                        *orphan = Compact::default();
-                    }
-                    if let Some(cell) = line.cells.get_mut(cursor) {
-                        *cell = Compact::continuation();
-                    }
-                    widened = true;
-                }
-                true
+                widen = kept && narrow && fits && crate::str_width(line.text(at)) >= 2;
+                kept
             });
-            if widened {
-                g.advance_to(col.saturating_add(1));
-            }
         });
+        if widen {
+            self.widen(row, at, cursor);
+        }
         self.last_print = Some(Printed {
             at: (anchor_row, anchor_col),
             cluster,
             full: !kept,
         });
         true
+    }
+
+    /// Widens cell `at` of `row`, its cluster grown to two columns, over
+    /// the cell under the cursor, `cursor`, which becomes its second half
+    /// as a glyph's would: under IRM what is there moves right first
+    /// (ECMA-48 7.2.10); a wide glyph whose first half it was keeps its
+    /// second as the pen's blank, as `print` repairs it; and the new half
+    /// takes the open link.
+    #[cold]
+    #[inline(never)]
+    fn widen(&mut self, row: u16, at: usize, cursor: usize) {
+        if self.mode(Mode::Insert) {
+            let blank = self.blank_style();
+            self.with_grid(|g, _, v| g.edit_cells(1, true, blank, v));
+        }
+        let style = self.pen_style();
+        let end = u16::try_from(cursor).unwrap_or(u16::MAX).saturating_add(1);
+        self.with_grid(|g, _, v| {
+            g.mutate_line(row, v, end, |line| {
+                if let Some(cell) = line.cells.get_mut(at) {
+                    cell.widen();
+                }
+                // The cell under the cursor becomes the second half; if it
+                // led a wide glyph, that glyph's half is left blank.
+                if line.cells.get(cursor).is_some_and(Compact::is_wide)
+                    && let Some(orphan) = cursor.checked_add(1).and_then(|i| line.cells.get_mut(i))
+                {
+                    *orphan = Compact::blank(style);
+                }
+                if let Some(cell) = line.cells.get_mut(cursor) {
+                    *cell = Compact::continuation();
+                }
+                true
+            });
+            g.advance_to(end);
+        });
+        if self.links_seen {
+            self.link_cells(row, cursor..cursor.saturating_add(1), true);
+        }
     }
 
     /// Ends the cluster being printed: the next character starts a cell of
