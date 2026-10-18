@@ -426,6 +426,32 @@ fn seeds() -> Vec<Seed> {
             fuzz: Fuzz::Keys,
         },
         Seed {
+            name: "b24-held-escape",
+            row: "B24",
+            size: defaults,
+            prefix: Prefix::None,
+            // An ESC that ends the first 4 KiB read, held, then reads far
+            // longer than any sequence.
+            bytes: || {
+                [
+                    repeat(b"b", 4095).as_slice(),
+                    b"\x1b",
+                    &repeat(b"a", 64 << 10),
+                ]
+                .concat()
+            },
+            // Every b, Alt-a, and every other a typed.
+            reaches: |r| {
+                let keys = r
+                    .inputs
+                    .iter()
+                    .filter(|i| matches!(i, Input::Key(_)))
+                    .count();
+                ensure(keys == 4095 + (64 << 10), || format!("{keys} keys typed"))
+            },
+            fuzz: Fuzz::Keys,
+        },
+        Seed {
             name: "b25-long-csi-answer",
             row: "B25",
             size: defaults,
@@ -664,7 +690,8 @@ fn pieces(mut rest: &[u8]) -> impl Iterator<Item = &[u8]> {
 }
 
 /// Replays `seed` on its screen, every feature on and prints recorded, in
-/// 4 KiB pieces after its prefix; a key seed through the key decoder.
+/// 4 KiB pieces after its prefix; a key seed through the key decoder, in
+/// 4 KiB reads too.
 fn replay(seed: &Seed) -> Result<Replayed> {
     let (rows, cols, history) = seed.size;
     let options: Options = Feature::ALL.into_iter().collect();
@@ -685,7 +712,9 @@ fn replay(seed: &Seed) -> Result<Replayed> {
     let (before, mut events, mut inputs) = (Work::now(), Events::default(), Vec::new());
     if seed.fuzz == Fuzz::Keys {
         let mut decoder = Decoder::default();
-        decoder.bytes(&bytes, &mut inputs);
+        for piece in pieces(&bytes) {
+            decoder.bytes(piece, &mut inputs);
+        }
         decoder.timeout(&mut inputs);
     } else {
         for piece in pieces(&bytes) {
@@ -734,10 +763,17 @@ fn files(seed: &Seed) -> Vec<(PathBuf, Vec<u8>)> {
             root.join("fuzz/seeds/terminal").join(seed.name),
             terminal_input(&bytes),
         )),
-        // The keys target's first byte is the piece size: 0, whole.
+        // The keys target's first byte is the piece size (0, each read
+        // whole), its second the options (none); a byte 0xff is `ff ff`.
         Fuzz::Keys => files.push((
             root.join("fuzz/seeds/keys").join(seed.name),
-            [[0u8].as_slice(), &bytes].concat(),
+            [0u8, 0]
+                .into_iter()
+                .chain(bytes.iter().flat_map(|&b| match b {
+                    0xff => vec![0xff, 0xff],
+                    b => vec![b],
+                }))
+                .collect(),
         )),
     }
     files
