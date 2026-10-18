@@ -533,7 +533,7 @@ impl History {
 impl History {
     /// Runs every check of history, of the grid named `which`, into
     /// `report`.
-    pub(crate) fn check(&self, which: &str, report: &mut crate::Report) {
+    pub(crate) fn check(&self, which: &str, report: &mut crate::Checked) {
         report.record("history.counts", which, self.check_counts());
         report.record("history.blocks", which, self.check_blocks());
         report.record("history.flags", which, self.check_flags());
@@ -668,7 +668,7 @@ mod faults {
     }
 
     fn faulted(history: &History) -> Vec<&'static str> {
-        let mut report = crate::Report::default();
+        let mut report = crate::Checked::default();
         history.check("history", &mut report);
         report.faults().iter().map(|f| f.check).collect()
     }

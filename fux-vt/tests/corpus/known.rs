@@ -29,7 +29,7 @@ pub const KNOWN_AT_BASE: &[(&str, &str)] = &[
 
 /// The faults the checker found whose checks are not known to fail at
 /// BASE.
-pub fn unknown(report: &fux_vt::Report) -> Vec<&fux_vt::Fault> {
+pub fn unknown(report: &fux_vt::Checked) -> Vec<&fux_vt::Fault> {
     (report.faults().iter())
         .filter(|f| !KNOWN_AT_BASE.iter().any(|(check, _)| *check == f.check))
         .collect()

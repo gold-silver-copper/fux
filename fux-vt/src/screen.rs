@@ -460,10 +460,10 @@ impl Screen {
     /// Checks every invariant of the screen that its state alone shows:
     /// both grids, their history, styles and links, the row identities,
     /// the pictures and `Prints`; and which checks ran, and the faults
-    /// found ([`crate::Report`]). The work counters do not see it.
-    pub fn check(&self) -> crate::Report {
+    /// found ([`crate::Checked`]). The work counters do not see it.
+    pub fn check(&self) -> crate::Checked {
         crate::check::unseen(|| {
-            let mut report = crate::Report::default();
+            let mut report = crate::Checked::default();
             for (which, grid) in [("primary", &self.primary), ("alternate", &self.alternate)] {
                 grid.check(which, self.version, &mut report);
             }

@@ -26,13 +26,13 @@ pub struct Fault {
 /// fault it found; and each invariant it cannot check yet, with what that
 /// waits on.
 #[derive(Clone, Debug, Default)]
-pub struct Report {
+pub struct Checked {
     ran: Vec<&'static str>,
     faults: Vec<Fault>,
     waiting: Vec<(&'static str, &'static str)>,
 }
 
-impl Report {
+impl Checked {
     /// Records that `check` ran, and its fault, if it found one; `which`
     /// names the part checked (a screen), for the fault's detail.
     pub(crate) fn record(&mut self, check: &'static str, which: &str, found: Result<(), String>) {
@@ -84,7 +84,7 @@ impl Report {
     }
 }
 
-impl fmt::Display for Report {
+impl fmt::Display for Checked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} checks ran", self.ran.len())?;
         for fault in &self.faults {

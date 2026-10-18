@@ -98,7 +98,7 @@ pub use cell::{
     Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle,
 };
 #[cfg(feature = "checks")]
-pub use check::{Fault, Report};
+pub use check::{Checked, Fault};
 pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};

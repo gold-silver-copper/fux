@@ -514,8 +514,8 @@ impl Decoder {
     /// 35: an unfinished sequence held is no longer than the longest
     /// answer read, 258 bytes (B24), and a paste keeps at most its limit
     /// and the end that may begin its marker (B23).
-    pub fn check(&self) -> crate::Report {
-        let mut report = crate::Report::default();
+    pub fn check(&self) -> crate::Checked {
+        let mut report = crate::Checked::default();
         let held = DCS_LIMIT.saturating_add(2);
         let found = match &self.state {
             State::Pending { held: bytes, .. } => crate::check::ensure(bytes.len() <= held, || {

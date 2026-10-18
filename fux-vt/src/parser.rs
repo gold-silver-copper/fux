@@ -471,8 +471,8 @@ impl FrameScan {
 impl FrameScan {
     /// 5: where the scan goes on is within `held`, the frame's bytes it
     /// was given.
-    pub fn check(&self, held: &[u8]) -> crate::Report {
-        let mut report = crate::Report::default();
+    pub fn check(&self, held: &[u8]) -> crate::Checked {
+        let mut report = crate::Checked::default();
         let found = crate::check::ensure(self.from <= held.len(), || {
             format!("the scan goes on at {} of {} bytes", self.from, held.len())
         });
@@ -900,9 +900,9 @@ impl Parser {
     /// alone shows (threats.md section 6): which checks ran, and the faults
     /// found. The work counters do not see it.
     #[cfg(feature = "checks")]
-    pub fn check(&self) -> crate::Report {
+    pub fn check(&self) -> crate::Checked {
         crate::check::unseen(|| {
-            let mut report = crate::Report::default();
+            let mut report = crate::Checked::default();
             report.record("parser.osc", "", self.check_osc());
             report.record("parser.params", "", self.check_params());
             report.record("parser.sixel", "", self.check_sixel());

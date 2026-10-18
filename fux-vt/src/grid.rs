@@ -2159,7 +2159,7 @@ pub(crate) mod tests;
 impl Grid {
     /// Runs every check of the grid, its history, styles and links, the
     /// grid named `which` and its screen at `version`, into `report`.
-    pub(crate) fn check(&self, which: &str, version: u64, report: &mut crate::Report) {
+    pub(crate) fn check(&self, which: &str, version: u64, report: &mut crate::Checked) {
         report.record("grid.order", which, self.check_order());
         report.record("grid.slots", which, self.check_slots());
         report.record("grid.blank_past_used", which, self.check_blank_past_used());
@@ -2434,7 +2434,7 @@ mod faults {
 
     /// The checks that found a fault in `grid`.
     fn faulted(grid: &Grid) -> Vec<&'static str> {
-        let mut report = crate::Report::default();
+        let mut report = crate::Checked::default();
         grid.check("grid", 1, &mut report);
         report.faults().iter().map(|f| f.check).collect()
     }
