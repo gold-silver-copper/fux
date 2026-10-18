@@ -727,6 +727,12 @@ impl Grid {
             .and_then(|slot| self.meta.get(slot))
             .is_some_and(Meta::wrapped)
     }
+    /// The identity of the screen's row `row`, read without making its
+    /// `Row`: recording prints asks for it for each run.
+    #[inline]
+    pub(crate) fn live_id(&self, row: u16) -> Option<RowId> {
+        Some(self.meta.get(self.slot(row)?)?.id)
+    }
     pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
         self.slot_row(self.slot(row)?, usize::from(row))
     }

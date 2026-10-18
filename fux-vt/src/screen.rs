@@ -1284,7 +1284,7 @@ impl Screen {
     /// Notes that `text` was printed at live row `row`, column `col`, if
     /// recording.
     fn printed(&mut self, row: u16, cols: Range<u16>, text: &str) {
-        let Some(id) = self.grid().live_row(row).map(|r| r.id()) else {
+        let Some(id) = self.grid().live_id(row) else {
             return;
         };
         if let Some(prints) = &mut self.prints {
@@ -1298,7 +1298,7 @@ impl Screen {
     #[inline(never)]
     fn mark_joined(&mut self, row: u16, col: u16, blank: bool, c: char) {
         let g = self.grid();
-        let Some(id) = g.live_row(row).map(|r| r.id()) else {
+        let Some(id) = g.live_id(row) else {
             return;
         };
         let wide = g.stored(row, col).is_some_and(Compact::is_wide);
