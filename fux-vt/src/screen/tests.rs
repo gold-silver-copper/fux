@@ -327,23 +327,105 @@ fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
     Ok(())
 }
 
-/// However large their data says they are, a screen's pictures hold at
-/// most `PICTURE_BYTES` of pixels, and the one being drawn at most the
-/// largest picture's: 64 pictures of one pixel whose raster attributes
-/// claim the largest size, 4096 by 2160, and one more left unfinished.
+/// However large their data says they are, the pictures hold at most
+/// `PICTURE_BYTES` of pixels, the one being drawn included (`threats.md`
+/// B01): 64 pictures of one pixel whose raster attributes claim the
+/// largest size, 4096 by 2160, and one more left unfinished.
 #[test]
 fn pictures_hold_no_more_than_their_budget() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
     let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
     let hostile = b"\x1bP0;1q\"1;1;4096;2160#1;2;100;0;0@";
-    let largest = 4096 * 2160 * 4;
     for _ in 0..64 {
         p.process(hostile)?;
+        assert!(p.picture_bytes() <= PICTURE_BYTES, "while drawing");
         p.process(b"\x1b\\")?;
         assert!(p.screen().picture_bytes() <= PICTURE_BYTES);
     }
     assert_eq!(p.screen().pictures().count(), 2, "two of the largest fit");
     p.process(hostile)?;
-    assert!(p.picture_bytes() <= PICTURE_BYTES + largest);
+    assert!(p.picture_bytes() <= PICTURE_BYTES, "one more being drawn");
+    Ok(())
+}
+
+/// A sixel picture `width` by `height` pixels, square ones, of one red
+/// pixel and the rest clear: its pixels take `width × height × 4` bytes.
+fn picture(width: u32, height: u32) -> Vec<u8> {
+    format!("\x1bP0;1q\"1;1;{width};{height}#1;2;100;0;0@\x1b\\").into_bytes()
+}
+
+/// The numbers of the pictures the screen shows.
+fn shown(p: &crate::Parser) -> Vec<u64> {
+    p.screen().pictures().map(|s| s.id).collect()
+}
+
+/// Pictures summing to exactly the budget fit, the last of them as it is
+/// drawn beside the others; a byte more lets the oldest go (B01).
+#[test]
+fn pictures_fill_their_budget_exactly() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    // 4096 by 2048 pixels: 32 MiB, three to the budget.
+    for _ in 0..3 {
+        p.process(&picture(4096, 2048))?;
+    }
+    assert_eq!(shown(&p), [1, 2, 3], "three thirds of the budget");
+    p.process(&picture(1, 1))?;
+    assert_eq!(shown(&p), [2, 3, 4], "a byte past it");
+    Ok(())
+}
+
+/// Past the budget, pictures no longer shown go first, then the oldest
+/// (B01): one covered by text goes before an older one still shown, and
+/// so does one on the other screen.
+#[test]
+fn pictures_no_longer_shown_go_first() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    // 100 by 120 pixels: 48,000 bytes, 10 by 6 cells at 10 by 20; room for
+    // two of them.
+    p.set_picture_bytes(100_000);
+    let one = picture(100, 120);
+    p.process(b"\x1b[1;1H")?;
+    p.process(&one)?;
+    p.process(b"\x1b[1;30H")?;
+    p.process(&one)?;
+    p.process(b"\x1b[2;31Hx")?;
+    assert_eq!(shown(&p), [1], "text covers the second");
+    p.process(b"\x1b[10;1H")?;
+    p.process(&one)?;
+    assert_eq!(shown(&p), [1, 3], "the covered one went, not the older");
+    // The oldest shown, then one on the other screen, now hidden.
+    p.process(b"\x1bc\x1b[1;1H")?;
+    p.process(&one)?;
+    p.process(b"\x1b[?1049h")?;
+    p.process(&one)?;
+    p.process(b"\x1b[?1049l\x1b[10;1H")?;
+    p.process(&one)?;
+    assert_eq!(shown(&p), [4, 6], "the other screen's went");
+    p.process(b"\x1b[?1049h")?;
+    assert_eq!(shown(&p), [], "and is gone from it");
+    Ok(())
+}
+
+/// A lowered budget lets pictures go at once to fit it, and a picture
+/// being drawn that alone is past it ends with nothing.
+#[test]
+fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let one = picture(100, 120);
+    p.process(b"\x1b[1;1H")?;
+    p.process(&one)?;
+    p.process(b"\x1b[1;30H")?;
+    p.process(&one)?;
+    p.set_picture_bytes(48_000);
+    assert_eq!(shown(&p), [2], "one fits");
+    p.process(b"\x1b[10;1H\x1bP0;1q\"1;1;100;120#1~")?;
+    p.set_picture_bytes(47_999);
+    assert_eq!(shown(&p), [], "the kept one went first");
+    p.process(b"~\x1b\\")?;
+    assert_eq!(shown(&p), [], "the one being drawn is past it alone");
+    assert!(p.picture_bytes() <= 47_999);
     Ok(())
 }

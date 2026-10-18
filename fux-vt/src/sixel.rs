@@ -115,8 +115,10 @@ impl Decoder {
 
     /// Reads one byte of the data. Format effectors, SPACE and DELETE are
     /// ignored in it (DEC STD 070, 8.1 and its coding section): one inside a
-    /// command does not end it.
-    pub(crate) fn push(&mut self, byte: u8) {
+    /// command does not end it. Before the picture grows, `room` is asked
+    /// for the bytes its pixels then hold at once, the old and the new
+    /// (`threats.md` B01): false spoils it.
+    pub(crate) fn push(&mut self, byte: u8, room: &mut impl FnMut(usize) -> bool) {
         if self.spoilt || matches!(byte, 0x08..=0x0d | b' ' | 0x7f) {
             return;
         }
@@ -134,7 +136,7 @@ impl Decoder {
             }
             _ => {}
         }
-        let repeat = self.end_command();
+        let repeat = self.end_command(room);
         match byte {
             b'!' => self.begin(Command::Repeat),
             b'#' => self.begin(Command::Colour),
@@ -144,7 +146,7 @@ impl Decoder {
                 self.x = 0;
                 self.y = self.y.saturating_add(6);
             }
-            0x3f..=0x7e => self.sixel(byte.wrapping_sub(0x3f), repeat.unwrap_or(1).max(1)),
+            0x3f..=0x7e => self.sixel(byte.wrapping_sub(0x3f), repeat.unwrap_or(1).max(1), room),
             _ => {}
         }
         self.begun |= matches!(byte, b'$' | b'-' | 0x3f..=0x7e);
@@ -158,7 +160,7 @@ impl Decoder {
 
     /// Carries out the command whose numbers were read: a repeat's count is
     /// for the sixel that follows.
-    fn end_command(&mut self) -> Option<u32> {
+    fn end_command(&mut self, room: &mut impl FnMut(usize) -> bool) -> Option<u32> {
         let command = std::mem::replace(&mut self.command, Command::None);
         let [a, b, c, d, e] = self.numbers;
         match command {
@@ -177,7 +179,9 @@ impl Decoder {
                         .unwrap_or(u32::MAX)
                         .checked_div(right);
                     let bottom = bottom.min(MAX_SIDE).min(most.unwrap_or(MAX_SIDE));
-                    self.spoilt = !self.grow(right, bottom);
+                    if !self.grow(right, bottom, room) {
+                        self.spoil();
+                    }
                 }
                 None
             }
@@ -207,15 +211,15 @@ impl Decoder {
 
     /// Paints `bits`, a sixel's six pixels from the top, `count` times
     /// across, in the current colour.
-    fn sixel(&mut self, bits: u8, count: u32) {
+    fn sixel(&mut self, bits: u8, count: u32, room: &mut impl FnMut(usize) -> bool) {
         let right = self.x.saturating_add(count);
         if bits != 0 {
             // Down to its lowest pixel painted: the highest bit set.
             let lowest = 6u32.saturating_sub(bits.leading_zeros().saturating_sub(2));
             let (left, _) = self.scaled(self.x, 0);
             let (end, bottom) = self.scaled(right, self.y.saturating_add(lowest));
-            if !self.grow(end, bottom) {
-                self.spoilt = true;
+            if !self.grow(end, bottom, room) {
+                self.spoil();
                 return;
             }
             let [r, g, b] = self.palette.get(self.colour).copied().unwrap_or([0; 3]);
@@ -260,8 +264,9 @@ impl Decoder {
     }
 
     /// Makes room for pixels to `right` and `bottom`, keeping those drawn;
-    /// false if a picture may not be so large.
-    fn grow(&mut self, right: u32, bottom: u32) -> bool {
+    /// false if a picture may not be so large, or `room` has not the bytes
+    /// for the old pixels and the new at once.
+    fn grow(&mut self, right: u32, bottom: u32, room: &mut impl FnMut(usize) -> bool) -> bool {
         if right <= self.width && bottom <= self.height {
             return true;
         }
@@ -269,6 +274,9 @@ impl Decoder {
         let pixels = u64::from(width).saturating_mul(u64::from(height));
         let pixels = usize::try_from(pixels).unwrap_or(usize::MAX);
         if width > MAX_SIDE || height > MAX_SIDE || pixels > MAX_PIXELS {
+            return false;
+        }
+        if !room(self.bytes().saturating_add(pixels.saturating_mul(4))) {
             return false;
         }
         let rows = usize::try_from(self.height).unwrap_or(0);
@@ -298,14 +306,23 @@ impl Decoder {
     }
 
     /// The bytes of pixels drawn so far.
-    #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         self.pixels.capacity()
     }
 
-    /// The picture drawn, unless it is empty or ran past what one may be.
-    pub(crate) fn finish(mut self: Box<Self>) -> Option<Arc<Picture>> {
-        self.end_command();
+    /// Ends the picture with nothing, letting go of its pixels.
+    pub(crate) fn spoil(&mut self) {
+        self.spoilt = true;
+        self.pixels = Vec::new();
+    }
+
+    /// The picture drawn, unless it is empty or ran past what one may be;
+    /// `room` as for [`Self::push`], for a command the end completes.
+    pub(crate) fn finish(
+        mut self: Box<Self>,
+        room: &mut impl FnMut(usize) -> bool,
+    ) -> Option<Arc<Picture>> {
+        self.end_command(room);
         if self.spoilt || self.width == 0 || self.height == 0 {
             return None;
         }
@@ -540,8 +557,8 @@ mod tests {
     fn decode(data: &[u8]) -> Option<Arc<Picture>> {
         // P1 9: square pixels; P2 1: pixels no sixel sets stay clear.
         let mut decoder = Decoder::new(9, 1);
-        data.iter().for_each(|b| decoder.push(*b));
-        decoder.finish()
+        data.iter().for_each(|b| decoder.push(*b, &mut |_| true));
+        decoder.finish(&mut |_| true)
     }
 
     /// Colours defined and selected, sixels repeated, bands below one
@@ -683,7 +700,7 @@ mod faults {
     fn a_picture_past_what_one_may_be_is_a_fault() {
         let mut decoder = super::Decoder::new(0, 0);
         for byte in b"#1~~" {
-            decoder.push(*byte);
+            decoder.push(*byte, &mut |_| true);
         }
         assert_eq!(decoder.check(), Ok(()));
         decoder.width = super::MAX_SIDE.saturating_add(1);

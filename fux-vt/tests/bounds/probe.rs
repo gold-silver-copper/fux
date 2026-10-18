@@ -144,8 +144,8 @@ pub fn steady(setup: &Setup) -> usize {
     steady.saturating_add(transient)
 }
 
-/// The picture budget P (`threats.md` P1).
-pub const PICTURE_BYTES: usize = 64 << 20;
+/// The picture budget P (`threats.md` P1, decision 8): 96 MiB.
+pub const PICTURE_BYTES: usize = 96 << 20;
 
 /// A bound a probe holds to (`threats.md` sections 2 and 4.2): for each
 /// counter it names, the most per input byte, per call and per copy of

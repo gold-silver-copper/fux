@@ -53,22 +53,25 @@ fn b(text: &str) -> Vec<u8> {
     text.as_bytes().to_vec()
 }
 
-// B01: pictures kept, in bytes: at most P = 64 MiB a parser.
+// B01: pictures kept, in bytes: at most P = 96 MiB a parser, the one
+// being drawn and its growth included.
 pub fn b01(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let one = repeat(b"\x1bPq\"1;1;4096;2160\x1b\\", 64);
-    let bound = Bound {
-        work: &[],
-        heap: steady(&setup).saturating_add(PICTURE_BYTES),
-    };
-    fed(
-        &setup,
-        bound,
-        chunk,
-        scale.times(),
-        &repeat(&one, scale.times()),
-        |_| Ok(()),
-    )
+    let input = repeat(&one, scale.times());
+    // First with a host cell as large as the largest picture: each takes
+    // one cell, so nothing scrolls or prints, and the heap is the
+    // pictures' and little more.
+    let bound = heap(PICTURE_BYTES.saturating_add(1 << 20));
+    let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
+    probe.parser.set_host_graphics(Graphics {
+        cell: Some((4096, 2160)),
+        sixel: true,
+    });
+    probe.feed(&input)?;
+    probe.finish()?;
+    let bound = heap(steady(&setup).saturating_add(PICTURE_BYTES));
+    fed(&setup, bound, chunk, scale.times(), &input, |_| Ok(()))
 }
 
 // B02: at most 64 placements a screen.

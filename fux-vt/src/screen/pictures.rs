@@ -18,10 +18,12 @@ pub const PLACEHOLDER: &str = "\u{10EEEE}";
 /// The most pictures a screen keeps; a new one past it lets the oldest go.
 const MAX_PICTURES: usize = 64;
 
-/// The most bytes of pixels a screen's pictures hold together, however
-/// large their data says they are: a new one past it lets the oldest go.
-/// It holds the largest picture, 4096 by 2160 (`sixel::MAX_SIDE`), twice;
-/// the one being drawn takes at most that much more until it is placed.
+/// The most bytes of pixels a terminal's pictures hold together by
+/// default ([`crate::Parser::set_picture_bytes`]), however large their data
+/// says they are: those kept on either screen, the one being drawn, and its
+/// old pixels while it grows (`threats.md` B01). Past it, pictures no
+/// longer shown go first, then the oldest. It holds the largest picture,
+/// 4096 by 2160 (`sixel::MAX_SIDE`), twice.
 pub const PICTURE_BYTES: usize = 96 << 20;
 
 /// What the host's terminal draws, for the pictures a program asks about
@@ -142,18 +144,52 @@ impl Screen {
             alternate,
             id: self.picture_ids,
         });
-        // The new one is never past the bytes alone (`sixel::MAX_PIXELS`).
-        while self.pictures.len() > MAX_PICTURES || self.picture_bytes() > PICTURE_BYTES {
-            self.pictures.pop_front();
+        // Its pixels had room as it grew: only the count can be past.
+        while self.pictures.len() > MAX_PICTURES || self.over_budget(0) {
+            let Some(victim) = self.victim() else { break };
+            self.pictures.remove(victim);
         }
         Ok(())
     }
 
-    /// The bytes of pixels the screen's pictures hold.
+    /// The bytes of pixels the screen's pictures hold, on either grid.
     pub(crate) fn picture_bytes(&self) -> usize {
         (self.pictures.iter())
             .map(|p| p.picture.rgba.capacity())
             .fold(0, usize::saturating_add)
+    }
+
+    /// Whether the pictures kept and `extra` bytes more are past the budget.
+    fn over_budget(&self, extra: usize) -> bool {
+        self.picture_bytes().saturating_add(extra) > self.picture_budget
+    }
+
+    /// The picture to let go first: the oldest no longer shown (on the
+    /// other screen, covered, or its rows gone), else the oldest.
+    fn victim(&self) -> Option<usize> {
+        let hidden = (self.pictures.iter())
+            .position(|p| p.alternate != self.alternate_active || self.shown(p).is_none());
+        hidden.or_else(|| (!self.pictures.is_empty()).then_some(0))
+    }
+
+    /// Lets pictures go, [`Self::victim`] first, until `bytes` more fit in
+    /// the budget beside them; false if they don't with none kept.
+    pub(crate) fn make_room(&mut self, bytes: usize) -> bool {
+        while self.over_budget(bytes) {
+            let Some(victim) = self.victim() else {
+                return false;
+            };
+            self.pictures.remove(victim);
+        }
+        true
+    }
+
+    /// Sets the bytes the pictures may hold, the one being drawn's
+    /// `drawing` included, and lets pictures go to fit; false if `drawing`
+    /// alone is past it.
+    pub(crate) fn set_picture_bytes(&mut self, bytes: usize, drawing: usize) -> bool {
+        self.picture_budget = bytes;
+        self.make_room(drawing)
     }
 
     /// The pictures the screen shows: on the screen in use, every cell they
@@ -231,11 +267,12 @@ impl Screen {
         crate::check::ensure(rising, || "picture numbers out of order".into())
     }
 
-    /// 31: the pictures kept hold at most [`PICTURE_BYTES`].
-    pub(super) fn check_picture_bytes(&self) -> Result<(), String> {
-        let bytes = self.picture_bytes();
-        crate::check::ensure(bytes <= PICTURE_BYTES, || {
-            format!("{bytes} bytes of pictures")
+    /// 31: the pictures kept, and `drawing` bytes of the one being drawn,
+    /// hold at most the budget.
+    pub(crate) fn check_picture_bytes(&self, drawing: usize) -> Result<(), String> {
+        let bytes = self.picture_bytes().saturating_add(drawing);
+        crate::check::ensure(bytes <= self.picture_budget, || {
+            format!("{bytes} bytes of pictures, {} at most", self.picture_budget)
         })
     }
 
@@ -319,13 +356,17 @@ mod faults {
         backwards.pictures.push_back(placed(2, vec![0; 4], top));
         backwards.pictures.push_back(placed(1, vec![0; 4], top));
         assert!(backwards.check_picture_count().is_err(), "out of order");
-        let mut large = screen;
+        let mut large = screen.clone();
         large.pictures.push_back(placed(
             1,
             Vec::with_capacity(PICTURE_BYTES.saturating_add(1)),
             top,
         ));
-        assert!(large.check_picture_bytes().is_err(), "past the bytes");
+        assert!(large.check_picture_bytes(0).is_err(), "past the bytes");
+        let mut small = screen;
+        small.picture_budget = 0;
+        assert!(small.check_picture_bytes(0).is_ok());
+        assert!(small.check_picture_bytes(1).is_err(), "the drawing past it");
         Ok(())
     }
 }

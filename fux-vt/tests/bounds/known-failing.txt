@@ -1,8 +1,8 @@
 # The bound rows known to fail at BASE (9a38df95): a row and a scale a
 # line, then why, as measured. tests/bounds.rs reads it; a fix takes its
 # rows off (a row on it that passes fails the suite).
-B01 1x  pictures keep up to 96 MiB (PICTURE_BYTES) and the decoder's buffer beside: 106.9 MB live after two (SIX-1)
-B01 10x  pictures keep up to 96 MiB (PICTURE_BYTES) and the decoder's buffer beside: 106.9 MB live after two (SIX-1)
+B01 1x  each 19-byte extent zeroes and fills its 8.8 M pixels: 283 M weighted units in one 4 KiB call, past U (SIX-3)
+B01 10x  each 19-byte extent zeroes and fills its 8.8 M pixels, past U (SIX-3); and Prints, uncapped, keeps every placeholder: 130.9 MB at the peak (PAR-2)
 B02 10x  placing a picture checks every kept one through history: 38 M rows in one call, past U (SIX-7)
 B03 1x  growth copies the whole picture each time: the rightward picture paints past 4,096 a byte (SIX-2)
 B03 10x  growth copies the whole picture each time: the rightward picture paints past 4,096 a byte (SIX-2)
@@ -61,7 +61,7 @@ B44 1x  waits on a fail switch in crate::reserve and Parser::refused (SCR-10, PA
 B44 10x  waits on a fail switch in crate::reserve and Parser::refused (SCR-10, PAR-3)
 B45 1x  waits on each encoder's stated maximum (KEY-4)
 B45 10x  waits on each encoder's stated maximum (KEY-4)
-B01 100x  pictures keep up to 96 MiB (PICTURE_BYTES) and the decoder's buffer beside: 106.9 MB live after two (SIX-1)
+B01 100x  each 19-byte extent zeroes and fills its 8.8 M pixels, past U (SIX-3); and Prints, uncapped, keeps every placeholder: 130.9 MB at the peak (PAR-2)
 B02 100x  placing a picture checks every kept one through history: 38 M rows in one call, past U (SIX-7)
 B03 100x  growth copies the whole picture each time: the rightward picture paints past 4,096 a byte (SIX-2)
 B04 100x  a 360:1 aspect paints 360 rows a sixel bit: 26.5 M pixels after 22 bytes (SIX-2, P3)

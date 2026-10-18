@@ -631,8 +631,8 @@ closed! {
         /// Decode sixel graphics (`DCS P1 ; P2 ; P3 q … ST`) into pictures,
         /// read with [`Screen::pictures`], for a host that draws them: each
         /// takes the cells it covers, which hold [`crate::PLACEHOLDER`], and
-        /// a screen's pictures hold at most [`crate::PICTURE_BYTES`] of
-        /// pixels. Off, sixel is ignored, as every other DCS: nothing is
+        /// the pictures hold at most [`crate::PICTURE_BYTES`] of pixels
+        /// together ([`Parser::set_picture_bytes`]). Off, sixel is ignored, as every other DCS: nothing is
         /// decoded or kept, the cells are what the program wrote around
         /// it, and neither DA1 nor XTSMGRAPHICS says the terminal has sixel.
         Pictures,
@@ -938,16 +938,19 @@ impl Parser {
         })
     }
     /// 3: a decoder exactly while in sixel data, and its picture within
-    /// what one may be.
+    /// what one may be; 31: its pixels and the pictures kept within their
+    /// budget.
     #[cfg(feature = "checks")]
     fn check_sixel(&self) -> Result<(), String> {
         let sixel = matches!(self.state, State::Sixel);
         crate::check::ensure(sixel == self.sixel.is_some(), || {
             format!("in sixel {sixel}, with a decoder {}", self.sixel.is_some())
         })?;
-        self.sixel
-            .as_ref()
-            .map_or(Ok(()), |decoder| decoder.check())
+        let Some(decoder) = &self.sixel else {
+            return Ok(());
+        };
+        decoder.check()?;
+        self.screen.check_picture_bytes(decoder.bytes())
     }
     /// 4: a character's first bytes are fewer than its lead byte says.
     #[cfg(feature = "checks")]
@@ -965,6 +968,19 @@ impl Parser {
     #[cfg(test)]
     pub(crate) fn screen_mut(&mut self) -> &mut Screen {
         &mut self.screen
+    }
+    /// Sets the most bytes of pixels its pictures may hold together, on
+    /// either screen, the one being drawn and its growth included
+    /// ([`crate::PICTURE_BYTES`] to begin with), and lets pictures go to fit
+    /// it: those no longer shown first, then the oldest. A picture being
+    /// drawn that alone is past it ends with nothing.
+    pub fn set_picture_bytes(&mut self, bytes: usize) {
+        let drawing = self.sixel.as_ref().map_or(0, |d| d.bytes());
+        if !self.screen.set_picture_bytes(bytes, drawing)
+            && let Some(decoder) = &mut self.sixel
+        {
+            decoder.spoil();
+        }
     }
     /// The bytes of pixels its pictures hold, the one being drawn's too.
     #[cfg(test)]
@@ -1402,7 +1418,9 @@ impl Parser {
                 State::Osc { whole } => self.dispatch_osc(whole, false, sink)?,
                 State::Request(request) => self.dispatch_request(request, sink),
                 State::Sixel => {
-                    let picture = self.sixel.take().and_then(crate::sixel::Decoder::finish);
+                    let screen = &mut self.screen;
+                    let picture = (self.sixel.take())
+                        .and_then(|decoder| decoder.finish(&mut |bytes| screen.make_room(bytes)));
                     if let Some(picture) = picture {
                         self.screen.place_picture(picture)?;
                     }
@@ -1443,7 +1461,8 @@ impl Parser {
             State::IgnoreString => {}
             State::Sixel => {
                 if let Some(decoder) = &mut self.sixel {
-                    decoder.push(byte);
+                    let screen = &mut self.screen;
+                    decoder.push(byte, &mut |bytes| screen.make_room(bytes));
                 }
             }
             State::Escape(read) => match byte {

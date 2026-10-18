@@ -375,6 +375,8 @@ pub struct Screen {
     pictures: VecDeque<pictures::Placement>,
     picture_ids: u64,
     graphics: Graphics,
+    /// The most bytes the pictures may hold (`PICTURE_BYTES`).
+    picture_budget: usize,
     /// The shell's command marks (`shell`).
     commands: Commands,
     next_id: u64,
@@ -471,7 +473,7 @@ impl Screen {
             report.record("screen.structural", "", self.check_structural());
             report.record("screen.tabs", "", self.check_tabs());
             report.record("pictures.count", "", self.check_picture_count());
-            report.record("pictures.bytes", "", self.check_picture_bytes());
+            report.record("pictures.bytes", "", self.check_picture_bytes(0));
             report.record("pictures.shown", "", self.check_pictures_shown());
             if let Some(prints) = &self.prints {
                 report.record("prints.runs", "", prints.check());
@@ -598,6 +600,7 @@ impl Screen {
             pictures: VecDeque::new(),
             picture_ids: 0,
             graphics: Graphics::default(),
+            picture_budget: PICTURE_BYTES,
             commands: Commands::default(),
             next_id,
             version: 1,
