@@ -478,6 +478,12 @@ pub struct Pane {
     /// The last state report its program relayed (`OSC 133 ; S`), by where
     /// it came among the marks, and when fux read it.
     pub reported_at: Option<(u64, Instant)>,
+    /// How many times in a row its program drew on its own (a clock,
+    /// `top`), as of the commands its marks had begun and ended then: a
+    /// change a moment after the last (`ready::SETTLE`), no input written
+    /// since that one. A change after a longer quiet (`ready::REDRAWN`), or
+    /// another command, counts again from none.
+    drew_alone: (u64, u32),
     /// What happened in it, in order, and what each piece of output
     /// printed: its journal (`crate::log`), which waits read.
     pub record: log::Log,
@@ -662,6 +668,7 @@ impl Pane {
             changed_at: Instant::now(),
             written_at: None,
             reported_at: None,
+            drew_alone: (0, 0),
             record: log::Log::new(log::JOURNAL_BYTES),
             since: Start::default(),
             before: Rc::default(),
@@ -1206,9 +1213,25 @@ impl Pane {
         prune(&mut self.shown_rows, screen);
         self.shown = (screen.mark(), cursor);
         if changed {
+            let gap = now.saturating_duration_since(self.changed_at);
+            let commands = screen.commands();
+            let marks = commands.started.wrapping_add(commands.finished);
+            let n = match self.drew_alone {
+                (counted, n) if counted == marks && gap < crate::ready::REDRAWN => n,
+                _ => 0,
+            };
+            let alone = gap >= crate::ready::SETTLE
+                && self.written_at.is_none_or(|at| at <= self.changed_at);
+            self.drew_alone = (marks, n.saturating_add(u32::from(alone)));
             self.changed_at = now;
             self.revision = self.revision.wrapping_add(1);
         }
+    }
+
+    /// Whether its program redraws on its own: it drew so twice in a row
+    /// at least, lately.
+    pub fn redraws(&self) -> bool {
+        self.drew_alone.1 >= 2
     }
 
     /// How many bytes of input sent the program has not read yet.

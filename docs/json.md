@@ -108,7 +108,9 @@ line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `command_running` (`true`: a marked shell
 command runs on, one the keys went into or one that took the full
-screen), `unread` (bytes of input fux holds, not yet
+screen), `redraws` (`true`: a full-screen program that redraws by
+itself read the keys and drew after them; what it draws later may
+differ), `unread` (bytes of input fux holds, not yet
 taken by the terminal; what waits in the terminal's own buffers is not
 counted). A
 wait for a text or a bell answers what met it too:
@@ -126,7 +128,7 @@ wait for a text or a bell answers what met it too:
 JSON or in a list; the first of several) gives the run its status, one
 dropped or taken by a word gives none. A wait for a text, a bell or the exit that
 fails (the program exited first or was started again, 3; the pane closed,
-4; the time limit, 124) ends the
+4; the shell command `wait-done` waited on ended first, 5; the time limit, 124) ends the
 program with that status and says why on stderr, one line, `fux: CODE:
 MESSAGE`; its answer is printed first, as text, or as JSON when `json`
 follows it, `output` its pane's last lines (three when its program exited,
@@ -176,7 +178,7 @@ the file, line and word it came from. Its exit status is its code's: 1,
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `not_reading`, `start`, `size`, `mouse`, `signal`, `log`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
-- how a wait ends: `exited` (3), `timeout` (124), `closed` (4), `gone` (4),
+- how a wait ends: `exited` (3), `ended` (5), `timeout` (124), `closed` (4), `gone` (4),
   `lost`, `stopped` (7);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,

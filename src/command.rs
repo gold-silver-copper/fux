@@ -263,6 +263,9 @@ wire! {
         /// something else, or exits (`crate::ready`). What an action waits for
         /// when it names nothing.
         Settled,
+        /// The shell command marked running ends (its `D`): the wait lasts as
+        /// long as it runs, unless it is given a time limit.
+        Done,
     }
 }
 

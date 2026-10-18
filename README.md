@@ -60,14 +60,19 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
   0`, then the output. A `line` waits for the shell command it typed to end
   (or to take the full screen, or to wait for keys: a prompt, or a REPL
   polling its terminal as it edits a line, quiet a second); keys sent into a command that runs on
-  settle once it reads or is quiet, `%3 waiting · command running`. A relay
+  settle once it reads or is quiet, `%3 waiting · command running`. A
+  full-screen program that redraws by itself (a clock, `top`) is never
+  quiet: it settles once it read the keys and drew after them, `%3 waiting ·
+  redraws on its own` (a later capture may differ; `str TEXT wait-text`
+  waits for a text). A relay
   (`koh connect`) says what the remote program does with a state report,
   `OSC 133 ; S ; activity=reading ; nonce=N`, which stands for fux's own
   probe while no mark came after it and it came after the last input: a
   remote pager or REPL answers `reading` as a local one does. A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
   status is the exit status, while its answer is left (`drop` it, and it
-  is 0): 3 the program exited first, 4 the pane closed,
+  is 0): 3 the program exited first, 4 the pane closed, 5 the shell
+  command a `wait-done` lasted for ended first,
   7 the program reads its terminal and the waited text has not come, 124
   still busy at the time limit (`SECS timeout`, on the options or keys or
   on the pane before them, `%3 0 timeout str ls line`; the `wait-seconds`

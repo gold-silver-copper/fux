@@ -81,11 +81,23 @@ fn within(server: &Server, limit: u64, args: &[&str]) -> Result<String, String> 
     Ok(answer)
 }
 
+/// A clock on the alternate screen: a frame each 0.3 s, polling its
+/// terminal between them; a key shows, `q` quits, the terminal's modes put
+/// back (else the shell keeps them for the next command).
+const CLOCK: &str = "import os, select, termios, tty\n\
+    old = termios.tcgetattr(0); tty.setraw(0); os.write(1, b'\\x1b[?1049h'); n = 0; got = b'-'\n\
+    while got != b'q':\n\
+    \x20   n += 1\n\
+    \x20   os.write(1, b'\\x1b[H\\x1b[2Jtick %d\\r\\ngot %s' % (n, got))\n\
+    \x20   if select.select([0], [], [], 0.3)[0]: got = os.read(0, 1)\n\
+    os.write(1, b'\\x1b[?1049l'); termios.tcsetattr(0, termios.TCSADRAIN, old)\n";
+
 #[test]
 #[ignore = "needs koh: FUX_KOH=path/to/koh cargo test --test koh -- --ignored"]
 fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
     let bin = std::env::var("FUX_KOH").map_err(|_| "FUX_KOH names no koh binary")?;
-    let server = Server::start("")?;
+    // A limit short enough to wait past (`wait-done`).
+    let server = Server::start("str wait-seconds 5 set")?;
     let (local, remote) = (server.dir.join("koh-local"), server.dir.join("koh-remote"));
     std::fs::create_dir_all(&local).map_err(e)?;
     std::fs::create_dir_all(&remote).map_err(e)?;
@@ -140,6 +152,45 @@ fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
     );
     let output = server.ok(&[&p[..], &["opts", "last-output", "capture"]].concat())?;
     assert_eq!(output.lines().nth(1), Some("slow"), "{output}");
+
+    // A remote full-screen program that redraws on its own (`top`-like):
+    // its keys are answered once read and drawn after, not at the limit.
+    std::fs::write(remote.join("clock.py"), CLOCK).map_err(e)?;
+    let clock = line("python3 clock.py", 10)?;
+    assert!(clock.contains("redraws on its own"), "{clock}");
+    let x = within(&server, 5, &[&p[..], &["str", "x", "type"]].concat())?;
+    assert!(x.contains("redraws on its own"), "{x}");
+    assert!(x.contains("\ngot x"), "{x}");
+    let quit = within(&server, 5, &[&p[..], &["str", "q", "type"]].concat())?;
+    assert!(quit.contains("done 0"), "{quit}");
+
+    // A remote command that prints nothing for longer than the limit is
+    // waited for to its end: the text did not come (5).
+    within(
+        &server,
+        5,
+        &[
+            &p[..],
+            &["0", "timeout", "str", "sleep 7; (exit 6)", "line"],
+        ]
+        .concat(),
+    )?;
+    let began = Instant::now();
+    let wait = [
+        &p[..],
+        &["opts", "str", "NEVER", "wait-text", "wait-done", "wait"],
+    ]
+    .concat();
+    let ended = server.fux(&wait)?;
+    assert_eq!(ended.status, 5, "{}{}", ended.stdout, ended.stderr);
+    assert!(
+        ended
+            .stdout
+            .starts_with(&format!("{pane} reading · done 6")),
+        "{}",
+        ended.stdout
+    );
+    assert!(began.elapsed() > Duration::from_secs(5));
 
     let repl = line("python3 -i", 10)?;
     assert!(repl.contains(">>>"), "{repl}");

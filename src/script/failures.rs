@@ -102,6 +102,10 @@ const ROWS: &[Fails] = &[
     fails("type", Cli, "%1 1 timeout str state get", "fails type 1"),
     fails("type", Cli, "%1 opts str x line", "fails type 1"),
     fails("type", Cli, "%1 last-output", "fails type 1"),
+    // 0.28.1: a wait word after the action it was meant for, last, waited
+    // for nothing and printed the pane it gave; refused before anything runs.
+    fails("unused", Cli, "%1 str x type 0 timeout", "fails unused 1"),
+    fails("unused", Cli, "%1 str x line str ok wait-text", "fails unused 1"),
     fails("too_long", Cli, "define deep let x list x end deep end 0 deep", "fails too_long 1"),
     fails("div_by_zero", Cli, "1 0 div", "fails div_by_zero 1"),
     fails("overflow", Cli, "9223372036854775807 1 add", "fails overflow 1"),
@@ -132,6 +136,7 @@ const ELSEWHERE: &[(&str, &str)] = &[
     ("not_reading", "keys a program has no room to read: needs a process"),
     ("own_server", "kill-server from a pane of that server: needs FUX_PANE and a server"),
     ("closed", "a wait whose pane closed while it waited: needs time and a process"),
+    ("ended", "a wait-done whose shell command ended first: needs a shell and its marks (tests/ready.rs)"),
     ("gone", "an events stream whose target went: the server's stream"),
     ("lost", "an events stream whose reader fell behind: the server's stream"),
     ("stopped", "a wait on a program reading its terminal: needs a process"),

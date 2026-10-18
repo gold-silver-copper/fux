@@ -150,6 +150,8 @@ enum Found {
     /// The program reads its terminal; the text waited for has not come
     /// (or gone).
     Stopped,
+    /// The shell command marked running ended (`wait-done`).
+    Done,
 }
 
 impl Waiting {
@@ -166,7 +168,7 @@ impl Waiting {
         let texts = (wait.until.iter())
             .filter_map(|u| match u {
                 Until::Text(text) => Some(text.clone()),
-                Until::Gone(_) | Until::Exit | Until::Bell | Until::Settled => None,
+                Until::Gone(_) | Until::Exit | Until::Bell | Until::Settled | Until::Done => None,
             })
             .collect();
         Waiting {
@@ -198,10 +200,16 @@ impl Waiting {
             })
             .map(|(since, _)| after(since, HOLD).max(now))
             .min();
+        // Past its limit, a pane whose command it lasts for is looked at
+        // as one probed is: its end is output, which wakes the server too.
+        let deadline = match self.deadline > now {
+            true => self.deadline,
+            false => after(now, PROBE),
+        };
         [probe, held]
             .into_iter()
             .flatten()
-            .fold(self.deadline, Instant::min)
+            .fold(deadline, Instant::min)
     }
 
     /// Its answer, if it has one at `now`: in each of its panes, what it
@@ -248,7 +256,7 @@ impl Waiting {
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
                 *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
-            } else if late {
+            } else if late && !watch.lasts(pane, wait) {
                 let told = Told::TimedOut(watch.hint(pane, texts));
                 *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
             }
@@ -364,6 +372,23 @@ impl Wait {
             }
             // A text gone leaves the pane as it is.
             Told::Found(Found::Gone) => (state(), None, output(came()), End::Done),
+            // Alone, it was met; with what else it waited for, that did not
+            // come while the command ran.
+            Told::Found(Found::Done) => {
+                let rest: Vec<String> = (self.until.iter())
+                    .filter(|u| **u != Until::Done)
+                    .map(Until::describe)
+                    .collect();
+                let end = match rest.is_empty() {
+                    true => End::Done,
+                    false => {
+                        let rest = rest.join(" or ");
+                        let reason = format!("{id}: its command ended while waiting for {rest}");
+                        failed(Code::Ended, reason)
+                    }
+                };
+                (state(), None, output(came()), end)
+            }
             Told::Found(Found::Settled(state)) => {
                 let asked = self.print.then(came).unwrap_or_default();
                 (state, None, output(asked), End::Done)
@@ -432,10 +457,16 @@ impl Wait {
                     self.describe()
                 );
                 // How to wait longer, which the limit's 30s often is not.
-                let longer = format!(
+                let mut longer = format!(
                     "to wait longer, the same with SECS timeout among its options \
                      (`{id} opts … 300 timeout wait`)"
                 );
+                if pane.screen().commands().running() {
+                    longer.push_str(&format!(
+                        ", or with wait-done for as long as its shell command runs \
+                         (`{id} opts … wait-done wait`)"
+                    ));
+                }
                 let end = failed(Code::Timeout, format!("{}; {longer}", why(reason, hint)));
                 (state(), None, last(1), end)
             }
@@ -498,6 +529,11 @@ impl Wait {
             let field = ("command_running", Json::Bool(true));
             notes.push(("command running".into(), vec![field]));
         }
+        // What it draws next may differ, keys or not.
+        if state == State::Redrawing {
+            let field = ("redraws", Json::Bool(true));
+            notes.push(("redraws on its own".into(), vec![field]));
+        }
         if action && pane.revision == watch.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
         }
@@ -525,7 +561,7 @@ impl Until {
     fn shows(&self) -> bool {
         match self {
             Until::Text(_) | Until::Gone(_) => true,
-            Until::Exit | Until::Bell | Until::Settled => false,
+            Until::Exit | Until::Bell | Until::Settled | Until::Done => false,
         }
     }
 
@@ -535,7 +571,7 @@ impl Until {
     fn probes(&self) -> bool {
         match self {
             Until::Text(_) | Until::Gone(_) | Until::Settled => true,
-            Until::Exit | Until::Bell => false,
+            Until::Exit | Until::Bell | Until::Done => false,
         }
     }
 
@@ -547,6 +583,7 @@ impl Until {
             Until::Exit => "the program to exit".into(),
             Until::Bell => "a bell".into(),
             Until::Settled => "the pane to settle".into(),
+            Until::Done => "its shell command to end".into(),
         }
     }
 }
@@ -576,6 +613,16 @@ impl Watch {
             settled_since: None,
             ends: !matches!(follows, Follows::Capture(..)),
         }
+    }
+
+    /// Whether `wait` lasts in `pane` past its limit: it waits for the
+    /// shell command there to end (`wait-done`), given no time limit, and
+    /// one runs, or ended and the pane has yet to settle after.
+    fn lasts(&self, pane: &Pane, wait: &Wait) -> bool {
+        let commands = pane.screen().commands();
+        wait.timeout.is_none()
+            && wait.until.contains(&Until::Done)
+            && (commands.running() || commands.finished > self.start.finished)
     }
 
     /// What `pane`'s program is doing at `now`, as this wait sees it: a
@@ -673,6 +720,7 @@ impl Watch {
         let mut exit = None;
         let mut bell = None;
         let mut settled = None;
+        let mut done = None;
         for until in &wait.until {
             match until {
                 Until::Text(_) => {}
@@ -694,6 +742,12 @@ impl Watch {
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
                 Until::Settled => settled = self.settled(pane, (began, now), (fresh, more)),
                 Until::Bell => bell = self.bell.clone(),
+                // Ended, and the pane settled after: the shell at its prompt.
+                Until::Done if pane.screen().commands().finished > self.start.finished => {
+                    let settled = self.settled(pane, (began, now), (fresh, false));
+                    done = settled.map(|_| Found::Done);
+                }
+                Until::Done => {}
             }
         }
         // Of a text, a bell and a text gone, the first to come; in one
@@ -706,7 +760,10 @@ impl Watch {
             .into_iter()
             .flatten()
             .min_by_key(|(_, at)| *at);
-        let found = first.map(|(found, _)| found).or(exit).or(settled);
+        let found = (first.map(|(found, _)| found))
+            .or(exit)
+            .or(done)
+            .or(settled);
         if found.is_some() {
             return found;
         }
@@ -870,7 +927,7 @@ impl Watch {
             && now < after(pane.changed_at, ready::QUIET);
         let unsettled = match state {
             State::Busy => true,
-            State::Waiting | State::Settled => more,
+            State::Waiting | State::Redrawing | State::Settled => more,
             // An exit settles at once.
             State::Exited(_) => return Some(Found::Settled(state)),
             State::Reading => blank,
