@@ -178,7 +178,7 @@ fn pictures(s: &fux_vt::Screen) -> Vec<Shown> {
                 p.col,
                 p.cols,
                 p.rows,
-                (p.picture.width, p.picture.height),
+                (p.picture.width(), p.picture.height()),
             )
         })
         .collect()

@@ -914,7 +914,7 @@ fn sixel_pixel(sixel: &str, (x, y): (u32, u32)) -> Result<Drawn> {
     p.process(format!("\x1bP{sixel}\x1b\\").as_bytes())?;
     let shown = p.screen().pictures().next().ok_or("no picture")?;
     let picture = shown.picture;
-    Ok(((picture.width, picture.height), picture.pixel(x, y)))
+    Ok(((picture.width(), picture.height()), picture.pixel(x, y)))
 }
 
 /// DEC STD 070, 7.1 and 8.1.2: a pixel is as tall, to its width, as P1's

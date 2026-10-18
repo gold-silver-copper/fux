@@ -334,6 +334,9 @@ fux-vt's work counters and a counting allocator against it.
   picture being drawn and its growth included. Past it, pictures no longer
   shown go first (covered, scrolled away, or on the other screen), then the
   oldest.
+- **A host's picture** (B07): `sixel::Picture::new` checks the size
+  against the pixels, each side at most 4096, so `sixel::encode` works on
+  the pixels a picture has.
 
 ## Verification
 

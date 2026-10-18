@@ -101,7 +101,10 @@ impl Screen {
                 .unwrap_or(u16::MAX)
                 .max(1)
         };
-        let (cols, rows) = (cells(picture.width, cell.0), cells(picture.height, cell.1));
+        let (cols, rows) = (
+            cells(picture.width(), cell.0),
+            cells(picture.height(), cell.1),
+        );
         let col = self.grid().cursor.col();
         let width = self.size().cols();
         let across = cols.min(width.saturating_sub(col));
@@ -155,7 +158,7 @@ impl Screen {
     /// The bytes of pixels the screen's pictures hold, on either grid.
     pub(crate) fn picture_bytes(&self) -> usize {
         (self.pictures.iter())
-            .map(|p| p.picture.rgba.capacity())
+            .map(|p| p.picture.bytes())
             .fold(0, usize::saturating_add)
     }
 
@@ -324,13 +327,12 @@ mod faults {
     use super::*;
     use crate::Size;
 
-    fn placed(id: u64, rgba: Vec<u8>, top: RowId) -> Placement {
-        Placement {
-            picture: Arc::new(Picture {
-                width: 1,
-                height: 1,
-                rgba,
-            }),
+    /// A placement of one pixel, its bytes in room for `room`.
+    fn placed(id: u64, room: usize, top: RowId) -> Option<Placement> {
+        let mut rgba = Vec::with_capacity(room);
+        rgba.extend([0; 4]);
+        Some(Placement {
+            picture: Arc::new(Picture::new(1, 1, rgba)?),
             top,
             col: 0,
             cols: 1,
@@ -338,7 +340,7 @@ mod faults {
             cell: CELL,
             alternate: false,
             id,
-        }
+        })
     }
 
     #[test]
@@ -349,19 +351,17 @@ mod faults {
         assert!(screen.check_picture_count().is_ok());
         let mut many = screen.clone();
         for id in 0..65 {
-            many.pictures.push_back(placed(id, vec![0; 4], top));
+            many.pictures.extend(placed(id, 4, top));
         }
         assert!(many.check_picture_count().is_err(), "65 pictures");
         let mut backwards = screen.clone();
-        backwards.pictures.push_back(placed(2, vec![0; 4], top));
-        backwards.pictures.push_back(placed(1, vec![0; 4], top));
+        backwards.pictures.extend(placed(2, 4, top));
+        backwards.pictures.extend(placed(1, 4, top));
         assert!(backwards.check_picture_count().is_err(), "out of order");
         let mut large = screen.clone();
-        large.pictures.push_back(placed(
-            1,
-            Vec::with_capacity(PICTURE_BYTES.saturating_add(1)),
-            top,
-        ));
+        large
+            .pictures
+            .extend(placed(1, PICTURE_BYTES.saturating_add(1), top));
         assert!(large.check_picture_bytes(0).is_err(), "past the bytes");
         let mut small = screen;
         small.picture_budget = 0;

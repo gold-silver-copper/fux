@@ -80,8 +80,16 @@ fn ensure(holds: bool, what: impl FnOnce() -> String) -> std::result::Result<(),
 /// The widest picture shown, and the tallest.
 fn shown(r: &Replayed) -> (u32, u32, usize) {
     let pictures: Vec<_> = r.parser.screen().pictures().collect();
-    let width = pictures.iter().map(|p| p.picture.width).max().unwrap_or(0);
-    let height = pictures.iter().map(|p| p.picture.height).max().unwrap_or(0);
+    let width = pictures
+        .iter()
+        .map(|p| p.picture.width())
+        .max()
+        .unwrap_or(0);
+    let height = pictures
+        .iter()
+        .map(|p| p.picture.height())
+        .max()
+        .unwrap_or(0);
     (width, height, pictures.len())
 }
 

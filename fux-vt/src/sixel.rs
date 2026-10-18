@@ -15,18 +15,38 @@ const MAX_PIXELS: usize = 4096 * 2160;
 const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 100];
 
 /// A picture a program drew: its size in pixels, and its pixels, RGBA, row
-/// by row from the top.
+/// by row from the top, four bytes each (red, green, blue and alpha, 0
+/// clear), exactly as many as its size says.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Picture {
-    /// Its width in pixels.
-    pub width: u32,
-    /// Its height in pixels.
-    pub height: u32,
-    /// Its pixels, four bytes each: red, green, blue and alpha, 0 clear.
-    pub rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
 }
 
 impl Picture {
+    /// A picture `width` by `height` of the pixels `rgba`, if they are
+    /// exactly that many and each side is at most [`MAX_SIDE`]
+    /// (`threats.md` B07).
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Option<Self> {
+        fits_rgba(width, height, rgba.len()).then_some(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+    /// Its width in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    /// Its height in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    /// The bytes its pixels take.
+    pub(crate) fn bytes(&self) -> usize {
+        self.rgba.capacity()
+    }
     /// The RGBA of the pixel at `x`, `y`, if it is in the picture.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width {
@@ -36,6 +56,15 @@ impl Picture {
         let bytes = self.rgba.get(at..at.checked_add(4)?)?;
         bytes.try_into().ok()
     }
+}
+
+/// Whether `len` bytes are the pixels of a picture `width` by `height`,
+/// each side at most [`MAX_SIDE`].
+fn fits_rgba(width: u32, height: u32, len: usize) -> bool {
+    let bytes = (u64::from(width).checked_mul(u64::from(height)))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok());
+    !(width > MAX_SIDE || height > MAX_SIDE) && bytes == Some(len)
 }
 
 /// The colour cube a picture of more than 256 colours is drawn in: 6
@@ -564,16 +593,10 @@ mod tests {
     /// Colours defined and selected, sixels repeated, bands below one
     /// another; and the picture encoded back decodes to itself.
     #[test]
-    fn sixels_decode_and_encode_back() {
+    fn sixels_decode_and_encode_back() -> Result<(), String> {
         // Red 2 wide by 6 high, then a band below of one blue column 3 high.
         let data = b"#1;2;100;0;0#2;2;0;0;100#1!2~-#2F";
-        let picture = decode(data).unwrap_or_else(|| {
-            Arc::new(Picture {
-                width: 0,
-                height: 0,
-                rgba: vec![],
-            })
-        });
+        let picture = decode(data).ok_or("no picture")?;
         assert_eq!((picture.width, picture.height), (2, 9));
         assert_eq!(picture.pixel(1, 5), Some([255, 0, 0, 255]));
         assert_eq!(picture.pixel(0, 8), Some([0, 0, 255, 255]));
@@ -589,13 +612,14 @@ mod tests {
             .and_then(|b| b.strip_suffix(b"\x1b\\"))
             .unwrap_or_default();
         assert_eq!(decode(body).as_deref(), Some(&*picture));
+        Ok(())
     }
 
     /// A picture of more than 256 colours is drawn in a cube of 6 reds, 7
     /// greens and 6 blues: each channel to its nearest step below, which
     /// the colour definitions give in percent.
     #[test]
-    fn many_colours_are_drawn_in_the_cube() {
+    fn many_colours_are_drawn_in_the_cube() -> Result<(), String> {
         let mut rgba = Vec::new();
         for c in [[0, 0, 0], [255, 255, 255], [128, 128, 128], [200, 100, 50]] {
             rgba.extend(c);
@@ -605,11 +629,7 @@ mod tests {
             let [low, high, ..] = i.to_le_bytes();
             rgba.extend([low, high.saturating_mul(128), 7, 255]);
         }
-        let picture = Picture {
-            width: 300,
-            height: 1,
-            rgba,
-        };
+        let picture = Picture::new(300, 1, rgba).ok_or("not 300 pixels")?;
         let mut encoded = Vec::new();
         encode(&picture, (0, 0, 300, 1), &mut encoded);
         let body = encoded
@@ -626,6 +646,23 @@ mod tests {
         // 200 is red's step 4 (204, 80%); 100 green's 2 (85, 33%: 84); 50
         // blue's 1 (51, 20%).
         assert_eq!(pixel(3), Some([204, 84, 51, 255]));
+        Ok(())
+    }
+
+    /// A picture is made only of exactly as many pixels as its size says,
+    /// each side at most `MAX_SIDE` (`threats.md` B07).
+    #[test]
+    fn a_picture_is_made_of_exactly_its_pixels() {
+        let pixels = |n: usize| vec![0u8; n];
+        assert!(Picture::new(3, 2, pixels(23)).is_none(), "a byte short");
+        assert!(Picture::new(3, 2, pixels(24)).is_some(), "exact");
+        assert!(Picture::new(3, 2, pixels(25)).is_none(), "a byte over");
+        assert!(Picture::new(4096, 1, pixels(4096 * 4)).is_some());
+        assert!(Picture::new(4097, 1, pixels(4097 * 4)).is_none());
+        assert!(Picture::new(1, 4096, pixels(4096 * 4)).is_some());
+        assert!(Picture::new(1, 4097, pixels(4097 * 4)).is_none());
+        assert!(Picture::new(u32::MAX, u32::MAX, vec![]).is_none());
+        assert!(Picture::new(0, 0, vec![]).is_some(), "empty");
     }
 
     /// The colour at the picture's top left, of `data`.

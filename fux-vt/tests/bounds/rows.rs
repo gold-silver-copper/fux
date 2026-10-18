@@ -233,9 +233,41 @@ pub fn b06(scale: Scale, chunk: usize) -> Found {
     probe.finish()
 }
 
-// B07: `Picture::new` checks its size against its pixels.
-pub fn b07(_: Scale, _: usize) -> Found {
-    waits("Picture::new (SIX-5): a picture built with sides past its pixels is not checked")
+// B07: `Picture::new` checks its size against its pixels, so `encode`'s
+// work is at most the crop's pixels within the picture.
+pub fn b07(scale: Scale, _: usize) -> Found {
+    let made = |w: u32, h: u32, len: usize| Picture::new(w, h, vec![0; len]).is_some();
+    let checks = [
+        (
+            made(u32::MAX, u32::MAX, 0),
+            false,
+            "u32::MAX square, no pixels",
+        ),
+        (made(5, 3, 59), false, "w × h × 4 − 1"),
+        (made(5, 3, 60), true, "w × h × 4"),
+        (made(5, 3, 61), false, "w × h × 4 + 1"),
+        (made(4096, 1, 4096 * 4), true, "4096 wide"),
+        (made(4097, 1, 4097 * 4), false, "4097 wide"),
+        (made(1, 4096, 4096 * 4), true, "4096 tall"),
+        (made(1, 4097, 4097 * 4), false, "4097 tall"),
+    ];
+    for (made, want, what) in checks {
+        if made != want {
+            return Err(format!("{what}: made {made}"));
+        }
+    }
+    // The largest crop over a small picture encodes in a bounded time.
+    let picture = Picture::new(4, 4, vec![255; 64]).ok_or("4 by 4")?;
+    let start = Instant::now();
+    let mut out = Vec::new();
+    for _ in 0..scale.times() {
+        out.clear();
+        fux_vt::sixel::encode(&picture, (0, 0, u32::MAX, u32::MAX), &mut out);
+    }
+    let took = start.elapsed();
+    (took.as_secs() < 1 && !out.is_empty())
+        .then_some(())
+        .ok_or(format!("{took:?} to encode a 4 by 4 picture"))
 }
 
 // B08: `encode`: at most 12 bytes a crop pixel and 6 a colour a band,
@@ -249,11 +281,7 @@ pub fn b08(scale: Scale, _: usize) -> Found {
             rgba.extend([grey, grey, grey, 255]);
         }
     }
-    let picture = Picture {
-        width,
-        height,
-        rgba,
-    };
+    let picture = Picture::new(width, height, rgba).ok_or("2000 by 1000")?;
     let pixels = u64::from(width).saturating_mul(u64::from(height));
     let bands = u64::from(height.div_ceil(6));
     let most = pixels
