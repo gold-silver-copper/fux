@@ -426,9 +426,14 @@ fn row(cols: u16, bytes: &[u8]) -> Result<String> {
 /// LS3 (`ESC o`) invoke them into GL until another shift, SI or SO among
 /// them; SS2 (`ESC N`) and SS3 (`ESC O`) invoke G2 or G3 for the next
 /// graphic character alone. DECSC saves them with G0 and G1, and RIS
-/// designates ASCII again.
+/// designates ASCII again. A single shift is no state DECSC saves (DEC STD
+/// 070, DECSC: the designations and the sets in GL and GR; ECMA-35, 9.4: it
+/// applies to the next graphic character only), so DECRC neither brings a
+/// spent one back nor takes a pending one away.
 #[test]
 fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
+    assert_eq!(row(6, b"\x1b*0\x1bN\x1b7q\x1b8q")?, "q");
+    assert_eq!(row(6, b"\x1b*0\x1b7\x1bN\x1b8q")?, "\u{2500}");
     assert_eq!(row(6, b"\x1b*0\x1bnqq\x0fq")?, "\u{2500}\u{2500}q");
     assert_eq!(row(6, b"\x1b+0\x1boxx\x0ex")?, "\u{2502}\u{2502}x");
     assert_eq!(row(6, b"\x1b*0\x1bNqq")?, "\u{2500}q");

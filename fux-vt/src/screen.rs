@@ -1946,7 +1946,12 @@ impl Screen {
         g.set_col(g.cursor.col().clamp(columns.first(), columns.last()));
         self.attributes = saved.attributes;
         self.pen_changed();
-        self.charsets = saved.charsets;
+        // A single shift is no state DECSC saves (DEC STD 070, DECSC and
+        // DECRC; ECMA-35, 9.4): the one pending stays, spent or not.
+        self.charsets = Charsets {
+            single: self.charsets.single,
+            ..saved.charsets
+        };
         self.protect = saved.protect;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
