@@ -1644,6 +1644,15 @@ impl Parser {
         self.screen.control(byte)
     }
 
+    /// BEL inside a string that rings it (sixel): as in text. Out of line,
+    /// off the path of the string's data.
+    #[cold]
+    #[inline(never)]
+    fn bell(&mut self, sink: &mut impl Sink) {
+        let done = self.control(0x07, sink);
+        self.kept(done);
+    }
+
     /// Reads one byte; whether it ended a sequence that began or ended a
     /// frame. What it carries out that is refused room is counted
     /// (`kept`), and loses only what it was for.
@@ -1746,6 +1755,11 @@ impl Parser {
             }
             State::IgnoreString => return None,
             State::Sixel => {
+                // BEL rings as in text (DEC STD 070, sixel graphics, 9.1).
+                if byte == 0x07 {
+                    self.bell(sink);
+                    return None;
+                }
                 if let Some(decoder) = &mut self.sixel {
                     let screen = &mut self.screen;
                     decoder.push(byte, &mut |bytes| screen.make_room(bytes));

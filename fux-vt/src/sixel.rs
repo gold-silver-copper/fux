@@ -237,7 +237,11 @@ impl Decoder {
     /// is asked for the bytes they then hold at once, the old and the new
     /// (`threats.md` B01): false keeps them as they are.
     pub(crate) fn push(&mut self, byte: u8, room: &mut impl FnMut(usize) -> bool) {
-        if matches!(byte, 0x08..=0x0d | b' ' | 0x7f) {
+        // C0 controls, space and DEL change nothing: 0x08 to 0x0d have "no
+        // effect", and the rest "are ignored" (DEC STD 070, sixel graphics,
+        // 9.1), BEL ringing as in text (the parser's) and CAN, SUB and ESC
+        // the parser's too.
+        if byte < 0x20 || matches!(byte, b' ' | 0x7f) {
             return;
         }
         match byte {

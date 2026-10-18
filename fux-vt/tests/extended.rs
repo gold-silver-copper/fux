@@ -1054,6 +1054,42 @@ fn sub_inside_sixel_is_a_blank_sixel_and_can_ends_it() -> Result {
     Ok(())
 }
 
+/// DEC STD 070, sixel graphics, 9.1 (C0 codes): "BEL - same action as in
+/// text mode"; "All other C0 Codes are ignored", as 0/8 to 0/13 "have no
+/// effect". So a control between a repeat's introducer and its count, or
+/// a colour's numbers, leaves the command whole, and BEL rings.
+#[test]
+fn c0_controls_inside_sixel_are_ignored_and_bel_rings() -> Result {
+    let red = Some([255, 0, 0, 255]);
+    // A repeat of 3 with ENQ and SO inside it: three sixels wide.
+    assert_eq!(
+        sixel_pixel("q\"1;1#1;2;100;0;0!\x053\x0e~", (2, 0))?,
+        ((3, 6), red)
+    );
+    // A colour with ACK between its numbers: register 1 is red still.
+    assert_eq!(
+        sixel_pixel("q\"1;1#1;2;100\x06;0;0~", (0, 0))?,
+        ((1, 6), red)
+    );
+    struct Bells(usize);
+    impl fux_vt::Sink for Bells {
+        fn reply(&mut self, _: &[u8]) {}
+        fn event(&mut self, event: fux_vt::Event<'_>) {
+            if matches!(event, fux_vt::Event::Bell) {
+                self.0 += 1;
+            }
+        }
+    }
+    let options = PICTURES.with(fux_vt::Feature::Events);
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, options)?;
+    let mut bells = Bells(0);
+    p.process_with(b"\x1bPq#1;2;100;0;0~\x07~\x1b\\", &mut bells)?;
+    assert_eq!(bells.0, 1);
+    let shown = p.screen().pictures().next().ok_or("no picture")?;
+    assert_eq!(shown.picture.width(), 2);
+    Ok(())
+}
+
 /// Without `Feature::Pictures`, sixel is ignored as any other DCS is:
 /// nothing is placed, the cells hold what was written around it, the
 /// cursor stays, and the terminal says no sixel though its host draws it.
