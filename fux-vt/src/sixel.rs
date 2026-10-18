@@ -1,26 +1,35 @@
 //! Sixel graphics (DEC STD 070, the VT340's; xterm's ctlseqs, "Sixel
 //! Graphics"): the data of a `DCS P1 ; P2 ; P3 q … ST`, decoded as it
-//! comes into a picture of RGBA pixels, square ones. Pixels no sixel paints
-//! stay clear, or take the background, as P2 says.
+//! comes into a picture of RGBA pixels, one kept for each position of the
+//! sixel grid, and shown as square ones at the grid's aspect. Pixels no
+//! sixel paints stay clear, or take the background, as P2 says.
 
 use std::io::Write;
 use std::sync::Arc;
 
-/// The most pixels across or down a picture may have: a 4K screen's.
+/// The most pixels across or down a picture may show, and keep: a 4K
+/// screen's.
 pub const MAX_SIDE: u32 = 4096;
-/// The most pixels a picture may have in all, which bounds its memory.
+/// The most pixels a picture may keep in all, one a position of its grid,
+/// which bounds its memory.
 const MAX_PIXELS: usize = 4096 * 2160;
 /// The pixel aspect ratio, tall to wide in hundredths, each macro parameter
 /// P1 selects (DEC STD 070, 7.1).
 const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 100];
 
-/// A picture a program drew: its size in pixels, and its pixels, RGBA, row
-/// by row from the top, four bytes each (red, green, blue and alpha, 0
-/// clear), exactly as many as its size says.
-#[derive(Debug, PartialEq, Eq)]
+/// A picture a program drew: its size as shown, in square pixels, and the
+/// pixels of its grid, RGBA, row by row from the top, four bytes each
+/// (red, green, blue and alpha, 0 clear), each shown over as many square
+/// pixels as the grid's aspect makes it.
+#[derive(Debug)]
 pub struct Picture {
     width: u32,
     height: u32,
+    /// The grid's columns and rows, a pixel kept each.
+    across: u32,
+    down: u32,
+    /// A grid position's height to its width.
+    aspect: (u32, u32),
     rgba: Vec<u8>,
 }
 
@@ -32,6 +41,9 @@ impl Picture {
         fits_rgba(width, height, rgba.len()).then_some(Self {
             width,
             height,
+            across: width,
+            down: height,
+            aspect: (1, 1),
             rgba,
         })
     }
@@ -49,14 +61,30 @@ impl Picture {
     }
     /// The RGBA of the pixel at `x`, `y`, if it is in the picture.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
-        if x >= self.width {
+        if x >= self.width || y >= self.height {
             return None;
         }
-        let at = offset(x, y, self.width)?;
+        let (x, y) = grid_of(self.aspect, x, y);
+        if x >= self.across || y >= self.down {
+            return None;
+        }
+        let at = offset(x, y, self.across)?;
         let bytes = self.rgba.get(at..at.checked_add(4)?)?;
         bytes.try_into().ok()
     }
 }
+
+/// Two pictures are alike when they show alike: the same size, and the
+/// same pixels.
+impl PartialEq for Picture {
+    fn eq(&self, other: &Self) -> bool {
+        (self.width, self.height) == (other.width, other.height)
+            && (0..self.height)
+                .all(|y| (0..self.width).all(|x| self.pixel(x, y) == other.pixel(x, y)))
+    }
+}
+
+impl Eq for Picture {}
 
 /// Whether `len` bytes are the pixels of a picture `width` by `height`,
 /// each side at most [`MAX_SIDE`].
@@ -65,6 +93,37 @@ fn fits_rgba(width: u32, height: u32, len: usize) -> bool {
         .and_then(|pixels| pixels.checked_mul(4))
         .and_then(|bytes| usize::try_from(bytes).ok());
     !(width > MAX_SIDE || height > MAX_SIDE) && bytes == Some(len)
+}
+
+/// Where grid position `x`, `y` shows in square pixels, at `aspect`: a
+/// position taller than wide takes as many rows, one wider as many columns.
+fn shown_at((tall, wide): (u32, u32), x: u32, y: u32) -> (u32, u32) {
+    let by = |n: u32, times: u32, over: u32| {
+        let n = u64::from(n).saturating_mul(u64::from(times));
+        let n = n.checked_div(u64::from(over)).unwrap_or(0);
+        u32::try_from(n).unwrap_or(u32::MAX)
+    };
+    if tall >= wide {
+        (x, by(y, tall, wide))
+    } else {
+        (by(x, wide, tall), y)
+    }
+}
+
+/// The grid position square pixel `x`, `y` shows, at `aspect`: the last
+/// whose square pixels begin at or before it.
+fn grid_of((tall, wide): (u32, u32), x: u32, y: u32) -> (u32, u32) {
+    // The last g with g × over ÷ by at or before n: ⌈(n + 1) × by ÷ over⌉ − 1.
+    let back = |n: u32, by: u32, over: u32| {
+        let n = u64::from(n).saturating_add(1).saturating_mul(u64::from(by));
+        let g = n.div_ceil(u64::from(over.max(1))).saturating_sub(1);
+        u32::try_from(g).unwrap_or(u32::MAX)
+    };
+    if tall >= wide {
+        (x, back(y, wide, tall))
+    } else {
+        (back(x, tall, wide), y)
+    }
 }
 
 /// The colour cube a picture of more than 256 colours is drawn in: 6
@@ -76,6 +135,26 @@ const CUBE: (usize, usize, usize) = (6, 7, 6);
 fn offset(x: u32, y: u32, width: u32) -> Option<usize> {
     let at = u64::from(y).checked_mul(u64::from(width))?;
     usize::try_from(at.checked_add(u64::from(x))?.checked_mul(4)?).ok()
+}
+
+/// A side's room as a picture grows to `needed`: `now` if that holds it,
+/// else twice `now`, or `needed` if more, but never past `most`
+/// (`threats.md` B03).
+fn next_side(now: u32, needed: u32, most: u32) -> u32 {
+    if needed <= now {
+        return now;
+    }
+    let doubled = now.saturating_mul(2).max(needed);
+    if doubled > most { most } else { doubled }
+}
+
+/// The most rows (or columns) a picture may keep beside `other` columns
+/// (or rows): within [`MAX_PIXELS`] and [`MAX_SIDE`].
+fn most_beside(other: u32) -> u32 {
+    let most = MAX_PIXELS
+        .checked_div(usize::try_from(other.max(1)).unwrap_or(usize::MAX))
+        .unwrap_or(0);
+    u32::try_from(most).unwrap_or(u32::MAX).min(MAX_SIDE)
 }
 
 /// Where the decoder is in its data: a run of digits after `!`, `#` or
@@ -101,16 +180,17 @@ pub(crate) struct Decoder {
     /// The numbers of the command being read, at most five.
     numbers: [u32; 5],
     count: usize,
-    /// Where the next sixel goes: its column, and the top of its band.
+    /// Where the next sixel goes, in grid positions: its column, and the
+    /// top of its band.
     x: u32,
     y: u32,
-    /// The size drawn so far, and the pixels, `width` across.
-    width: u32,
-    height: u32,
+    /// The grid's size drawn so far, and the room its pixels have: `room`
+    /// columns by rows, `pixels` holding them, `room.0` across.
+    across: u32,
+    down: u32,
+    room: (u32, u32),
     pixels: Vec<u8>,
-    /// The data drew past what a picture may hold: it ends with nothing.
-    spoilt: bool,
-    /// A pixel's height to its width.
+    /// A grid position's height to its width.
     aspect: (u32, u32),
     /// Pixels no sixel sets take the background (P2 0 or 2), else stay clear.
     background: bool,
@@ -132,10 +212,10 @@ impl Decoder {
             count: 0,
             x: 0,
             y: 0,
-            width: 0,
-            height: 0,
+            across: 0,
+            down: 0,
+            room: (0, 0),
             pixels: Vec::new(),
-            spoilt: false,
             aspect: (tall, 100),
             background: p2 != 1,
             begun: false,
@@ -144,11 +224,11 @@ impl Decoder {
 
     /// Reads one byte of the data. Format effectors, SPACE and DELETE are
     /// ignored in it (DEC STD 070, 8.1 and its coding section): one inside a
-    /// command does not end it. Before the picture grows, `room` is asked
-    /// for the bytes its pixels then hold at once, the old and the new
-    /// (`threats.md` B01): false spoils it.
+    /// command does not end it. Before the picture's pixels grow, `room`
+    /// is asked for the bytes they then hold at once, the old and the new
+    /// (`threats.md` B01): false keeps them as they are.
     pub(crate) fn push(&mut self, byte: u8, room: &mut impl FnMut(usize) -> bool) {
-        if self.spoilt || matches!(byte, 0x08..=0x0d | b' ' | 0x7f) {
+        if matches!(byte, 0x08..=0x0d | b' ' | 0x7f) {
             return;
         }
         match byte {
@@ -195,22 +275,14 @@ impl Decoder {
         match command {
             Command::None => None,
             Command::Raster => {
-                // Omitted aspect numbers are 1; the extent is the least
-                // size, not a clip, and "does not limit the number of
-                // pixels a device may image" (DEC STD 070, 8.1.2): past
-                // what a picture may hold, it is cut to that, and only
-                // data drawn spoils a picture.
+                // Omitted aspect numbers are 1; the extent, in grid
+                // positions, is the least size, not a clip, and "does not
+                // limit the number of pixels a device may image" (DEC STD
+                // 070, 8.1.2): past what a picture may keep, it is cut to
+                // that.
                 if !self.begun {
                     self.aspect = (a.max(1), b.max(1));
-                    let (right, bottom) = self.scaled(c, d);
-                    let right = right.min(MAX_SIDE);
-                    let most = u32::try_from(MAX_PIXELS)
-                        .unwrap_or(u32::MAX)
-                        .checked_div(right);
-                    let bottom = bottom.min(MAX_SIDE).min(most.unwrap_or(MAX_SIDE));
-                    if !self.grow(right, bottom, room) {
-                        self.spoil();
-                    }
+                    self.grow(c, d, room);
                 }
                 None
             }
@@ -239,90 +311,90 @@ impl Decoder {
     }
 
     /// Paints `bits`, a sixel's six pixels from the top, `count` times
-    /// across, in the current colour.
+    /// across, in the current colour: a run along each row a bit sets, of
+    /// the positions the picture may keep (DEC STD 070, 11.2.2: sixels
+    /// past its edge "are not printed").
     fn sixel(&mut self, bits: u8, count: u32, room: &mut impl FnMut(usize) -> bool) {
         let right = self.x.saturating_add(count);
-        if bits != 0 {
-            // Down to its lowest pixel painted: the highest bit set.
-            let lowest = 6u32.saturating_sub(bits.leading_zeros().saturating_sub(2));
-            let (left, _) = self.scaled(self.x, 0);
-            let (end, bottom) = self.scaled(right, self.y.saturating_add(lowest));
-            if !self.grow(end, bottom, room) {
-                self.spoil();
-                return;
-            }
+        // Down to its lowest pixel painted: the highest bit set.
+        let lowest = 6u32.saturating_sub(bits.leading_zeros().saturating_sub(2));
+        let (most, bottom) = self.kept(right, self.y.saturating_add(lowest));
+        // Some of it is kept: the grid grows for it.
+        if bits != 0 && self.x < most && self.y < bottom {
+            let (across, down) = self.grow(right, bottom, room);
             let [r, g, b] = self.palette.get(self.colour).copied().unwrap_or([0; 3]);
+            let (left, end) = (self.x.min(across), right.min(across));
+            let run = usize::try_from(end.saturating_sub(left)).unwrap_or(0);
             for bit in 0..6u32 {
-                if bits & (1 << bit) == 0 {
+                let y = self.y.saturating_add(bit);
+                if bits & (1 << bit) == 0 || y >= down {
                     continue;
                 }
-                let y = self.y.saturating_add(bit);
-                let (_, top) = self.scaled(0, y);
-                let (_, below) = self.scaled(0, y.saturating_add(1));
-                #[cfg(feature = "checks")]
-                let area = u64::from(below.saturating_sub(top))
-                    .saturating_mul(u64::from(end.saturating_sub(left)));
-                work!(pixels, area);
-                for y in top..below {
-                    for x in left..end {
-                        let at = offset(x, y, self.width).unwrap_or(usize::MAX);
-                        if let Some(pixel) = self.pixels.get_mut(at..at.saturating_add(4)) {
-                            crate::copy_from(pixel, &[r, g, b, 255]);
-                        }
-                    }
+                work!(pixels, run);
+                let at = offset(left, y, self.room.0).unwrap_or(usize::MAX);
+                let span = at.saturating_add(run.saturating_mul(4));
+                if let Some(row) = self.pixels.get_mut(at..span) {
+                    row.as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .for_each(|pixel| *pixel = [r, g, b, 255]);
                 }
             }
         }
         self.x = right.min(MAX_SIDE);
     }
 
-    /// Where grid position `x`, `y` is in the picture's square pixels: a
-    /// pixel taller than wide takes as many rows, one wider as many columns.
-    fn scaled(&self, x: u32, y: u32) -> (u32, u32) {
-        let (tall, wide) = self.aspect;
-        let by = |n: u32, times: u32, over: u32| {
-            let n = u64::from(n).saturating_mul(u64::from(times));
-            let n = n.checked_div(u64::from(over)).unwrap_or(0);
-            u32::try_from(n).unwrap_or(u32::MAX)
-        };
-        if tall >= wide {
-            (x, by(y, tall, wide))
-        } else {
-            (by(x, wide, tall), y)
+    /// Grows the grid to `right` columns and `bottom` rows, cut to what a
+    /// picture may keep, and makes room for its pixels, keeping those
+    /// drawn: each side doubling, within its limits (`threats.md` B03).
+    /// It stays as it is when `room` hasn't the bytes for the old pixels
+    /// and the new at once, or the memory isn't there. Its size after.
+    fn grow(
+        &mut self,
+        right: u32,
+        bottom: u32,
+        room: &mut impl FnMut(usize) -> bool,
+    ) -> (u32, u32) {
+        let (right, bottom) = self.kept(right, bottom);
+        if !self.needs_growth(right, bottom) {
+            (self.across, self.down) = (right, bottom);
+            return (right, bottom);
         }
-    }
-
-    /// Makes room for pixels to `right` and `bottom`, keeping those drawn;
-    /// false if a picture may not be so large, or `room` has not the bytes
-    /// for the old pixels and the new at once.
-    fn grow(&mut self, right: u32, bottom: u32, room: &mut impl FnMut(usize) -> bool) -> bool {
-        if right <= self.width && bottom <= self.height {
-            return true;
-        }
-        let (width, height) = (right.max(self.width), bottom.max(self.height));
-        let pixels = u64::from(width).saturating_mul(u64::from(height));
-        let pixels = usize::try_from(pixels).unwrap_or(usize::MAX);
-        if width > MAX_SIDE || height > MAX_SIDE || pixels > MAX_PIXELS {
-            return false;
-        }
-        if !room(self.bytes().saturating_add(pixels.saturating_mul(4))) {
-            return false;
-        }
-        let rows = usize::try_from(self.height).unwrap_or(0);
-        // The new buffer zeroed, and the old one copied into it.
-        work!(
-            pixels,
-            pixels.saturating_add(
-                usize::try_from(self.width)
-                    .unwrap_or(0)
-                    .saturating_mul(rows)
-            )
+        let (cols, rows) = (
+            next_side(self.room.0, right, MAX_SIDE),
+            next_side(self.room.1, bottom, MAX_SIDE),
         );
-        let mut grown = vec![0u8; pixels.saturating_mul(4)];
-        let old = usize::try_from(self.width).unwrap_or(0).saturating_mul(4);
-        let new = usize::try_from(width).unwrap_or(0).saturating_mul(4);
-        for row in 0..rows {
-            let (from, to) = (row.saturating_mul(old), row.saturating_mul(new));
+        // Both doubled may be past the pixels: then each in turn as far as
+        // fits beside the other, else neither.
+        let tries = [
+            (cols, rows),
+            (cols, rows.min(most_beside(cols)).max(bottom)),
+            (cols.min(most_beside(rows)).max(right), rows),
+            (right, bottom),
+        ];
+        let mut tries = tries.into_iter().filter(|&(c, r)| {
+            usize::try_from(u64::from(c).saturating_mul(u64::from(r)))
+                .is_ok_and(|pixels| pixels <= MAX_PIXELS)
+        });
+        let Some((cols, rows)) = tries.find(|&(c, r)| self.room_for(c, r, room)) else {
+            return (self.across, self.down);
+        };
+        let pixels = usize::try_from(u64::from(cols).saturating_mul(u64::from(rows))).unwrap_or(0);
+        let mut grown = Vec::new();
+        if grown.try_reserve_exact(pixels.saturating_mul(4)).is_err() {
+            return (self.across, self.down);
+        }
+        grown.resize(pixels.saturating_mul(4), 0);
+        // The new pixels zeroed, and the old ones copied into them.
+        let (old, new) = (
+            usize::try_from(self.across).unwrap_or(0).saturating_mul(4),
+            usize::try_from(cols).unwrap_or(0).saturating_mul(4),
+        );
+        let drawn = usize::try_from(self.down).unwrap_or(0);
+        work!(pixels, pixels.saturating_add(drawn.saturating_mul(old) / 4));
+        let stride = usize::try_from(self.room.0).unwrap_or(0).saturating_mul(4);
+        for row in 0..drawn {
+            let (from, to) = (row.saturating_mul(stride), row.saturating_mul(new));
             let source = self.pixels.get(from..from.saturating_add(old));
             if let (Some(source), Some(target)) =
                 (source, grown.get_mut(to..to.saturating_add(old)))
@@ -330,8 +402,35 @@ impl Decoder {
                 crate::copy_from(target, source);
             }
         }
-        (self.width, self.height, self.pixels) = (width, height, grown);
-        true
+        (self.room, self.pixels) = ((cols, rows), grown);
+        (self.across, self.down) = (right, bottom);
+        (right, bottom)
+    }
+
+    /// The grid's size grown to `right` columns and `bottom` rows, as much
+    /// of it as a picture may keep: each side, and the pixels in all, the
+    /// rows taken first, as a band paints nothing without its rows.
+    fn kept(&self, right: u32, bottom: u32) -> (u32, u32) {
+        let bottom = bottom.min(most_beside(self.across)).max(self.down);
+        (right.min(most_beside(bottom)).max(self.across), bottom)
+    }
+
+    /// Whether a grid of `right` columns and `bottom` rows needs more room
+    /// than its pixels have.
+    fn needs_growth(&self, right: u32, bottom: u32) -> bool {
+        right > self.room.0 || bottom > self.room.1
+    }
+
+    /// Whether `room` has the bytes for pixels `cols` by `rows` beside
+    /// those held now.
+    fn room_for(&self, cols: u32, rows: u32, room: &mut impl FnMut(usize) -> bool) -> bool {
+        let bytes = u64::from(cols)
+            .saturating_mul(u64::from(rows))
+            .saturating_mul(4);
+        room(
+            self.bytes()
+                .saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX)),
+        )
     }
 
     /// The bytes of pixels drawn so far.
@@ -339,59 +438,92 @@ impl Decoder {
         self.pixels.capacity()
     }
 
-    /// Ends the picture with nothing, letting go of its pixels.
-    pub(crate) fn spoil(&mut self) {
-        self.spoilt = true;
-        self.pixels = Vec::new();
+    /// Lets go of the pixels drawn so far: the picture begins again.
+    pub(crate) fn clear(&mut self) {
+        (self.across, self.down, self.room, self.pixels) = (0, 0, (0, 0), Vec::new());
     }
 
-    /// The picture drawn, unless it is empty or ran past what one may be;
-    /// `room` as for [`Self::push`], for a command the end completes.
+    /// The picture drawn, unless it is empty; `room` as for [`Self::push`],
+    /// for a command the end completes, and for its pixels cut to its size
+    /// beside those held, without which it ends with nothing.
     pub(crate) fn finish(
         mut self: Box<Self>,
         room: &mut impl FnMut(usize) -> bool,
     ) -> Option<Arc<Picture>> {
         self.end_command(room);
-        if self.spoilt || self.width == 0 || self.height == 0 {
+        if self.across == 0 || self.down == 0 {
             return None;
         }
+        let rgba = if self.room == (self.across, self.down) {
+            std::mem::take(&mut self.pixels)
+        } else {
+            self.exact(room)?
+        };
         // The background is colour register 0, as it ends (DEC STD 070,
         // 7.2, leaves it to the device).
-        let [r, g, b] = self.palette.first().copied().unwrap_or([0; 3]);
+        let mut rgba = rgba;
         if self.background {
-            work!(pixels, self.pixels.len() / 4);
-            for pixel in self.pixels.as_chunks_mut::<4>().0 {
+            let [r, g, b] = self.palette.first().copied().unwrap_or([0; 3]);
+            work!(pixels, rgba.len() / 4);
+            for pixel in rgba.as_chunks_mut::<4>().0 {
                 if pixel[3] == 0 {
                     *pixel = [r, g, b, 255];
                 }
             }
         }
+        let (width, height) = shown_at(self.aspect, self.across, self.down);
         Some(Arc::new(Picture {
-            width: self.width,
-            height: self.height,
-            rgba: std::mem::take(&mut self.pixels),
+            width: width.min(MAX_SIDE),
+            height: height.min(MAX_SIDE),
+            across: self.across,
+            down: self.down,
+            aspect: self.aspect,
+            rgba,
         }))
+    }
+
+    /// The pixels drawn, a copy just their size, if `room` has the bytes.
+    fn exact(&self, room: &mut impl FnMut(usize) -> bool) -> Option<Vec<u8>> {
+        if !self.room_for(self.across, self.down, room) {
+            return None;
+        }
+        let (row, stride) = (
+            usize::try_from(self.across).ok()?.checked_mul(4)?,
+            usize::try_from(self.room.0).ok()?.checked_mul(4)?,
+        );
+        let rows = usize::try_from(self.down).ok()?;
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(row.checked_mul(rows)?).ok()?;
+        work!(pixels, row.saturating_mul(rows) / 4);
+        for y in 0..rows {
+            let from = y.checked_mul(stride)?;
+            rgba.extend_from_slice(self.pixels.get(from..from.checked_add(row)?)?);
+        }
+        Some(rgba)
     }
 }
 
 /// The decoder's part of the invariant checker (threats.md section 6).
 #[cfg(feature = "checks")]
 impl Decoder {
-    /// 31: the picture being drawn is no larger than a picture may be, its
-    /// pixels exactly its size.
+    /// 31: the picture being drawn is no larger than a picture may keep,
+    /// within the room its pixels have, exactly that many.
     pub(crate) fn check(&self) -> Result<(), String> {
-        let pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
-        let bytes = pixels.saturating_mul(4);
+        let (cols, rows) = self.room;
+        let pixels = u64::from(cols).saturating_mul(u64::from(rows));
         crate::check::ensure(
-            self.width <= MAX_SIDE
-                && self.height <= MAX_SIDE
+            self.across <= cols
+                && self.down <= rows
+                && cols <= MAX_SIDE
+                && rows <= MAX_SIDE
                 && usize::try_from(pixels).is_ok_and(|p| p <= MAX_PIXELS)
-                && u64::try_from(self.pixels.len()).is_ok_and(|len| len == bytes),
+                && u64::try_from(self.pixels.len())
+                    .is_ok_and(|len| len == pixels.saturating_mul(4)),
             || {
                 format!(
-                    "a {}x{} picture of {} bytes being drawn",
-                    self.width,
-                    self.height,
+                    "a {}x{} picture in room for {cols}x{rows}, of {} bytes, being drawn",
+                    self.across,
+                    self.down,
                     self.pixels.len()
                 )
             },
@@ -722,11 +854,60 @@ mod tests {
         }
     }
 
-    /// Data that would draw past what a picture may hold makes none.
+    /// Data that would draw past what a picture may keep is cut to it, as
+    /// sixels past the right margin "are not printed" (DEC STD 070, 11.2.2):
+    /// 4096 pixels a side, and 4096 by 2160 of the grid in all.
     #[test]
-    fn a_picture_too_large_is_dropped() {
-        assert!(decode(b"!4096~!4096~").is_none());
-        assert!(decode(b"").is_none());
+    fn a_picture_past_its_limits_is_clipped() {
+        let size = |data: &[u8]| decode(data).map(|p| (p.width(), p.height()));
+        assert_eq!(size(b"!4096~!4096~"), Some((4096, 6)));
+        assert_eq!(size(b"#1;2;100;0;0!4097~"), Some((4096, 6)));
+        let mut tall = b"!4096~".to_vec();
+        tall.extend(std::iter::repeat_n(b'-', 400));
+        tall.extend(b"!4096~");
+        // Rows 0 to 2159 kept: 2,160 is the most beside 4,096 columns.
+        assert_eq!(size(&tall), Some((4096, 6)), "the band past 2,160 rows");
+        let mut narrow = b"~".to_vec();
+        narrow.extend(std::iter::repeat_n(b'-', 400));
+        narrow.extend(b"!4096~");
+        // A band 2,406 rows down beside one column: then at most 3,677 columns.
+        let most = u32::try_from(4096 * 2160 / 2406).unwrap_or(0);
+        assert_eq!(size(&narrow), Some((most, 2406)));
+        assert_eq!(size(b""), None);
+    }
+
+    /// A picture grows each side by doubling within what a picture may
+    /// keep (`threats.md` B03): a legal 2,049 by 4,096 one gets room for no
+    /// more than `MAX_PIXELS`, never 4,096 by 4,096.
+    #[test]
+    fn growth_stays_within_what_a_picture_may_keep() {
+        let mut decoder = Decoder::new(9, 1);
+        for byte in b"\"1;1;2049;4096" {
+            decoder.push(*byte, &mut |_| true);
+        }
+        decoder.push(b'~', &mut |_| true);
+        assert_eq!((decoder.across, decoder.down), (2049, 4096));
+        assert!(decoder.bytes() <= MAX_PIXELS * 4, "{}", decoder.bytes());
+        let picture = decoder.finish(&mut |_| true);
+        assert_eq!(picture.map(|p| (p.width(), p.height())), Some((2049, 4096)));
+    }
+
+    /// The grid is kept at its own resolution and shown at its aspect: at
+    /// 2:1 each sixel row shows as two, so six rows of 4,096 sixels keep
+    /// 4,096 by 6 pixels and show 4,096 by 12 (P3).
+    #[test]
+    fn a_grid_is_kept_at_its_resolution_and_shown_at_its_aspect() {
+        let mut decoder = Decoder::new(0, 1);
+        for byte in b"#1;2;100;0;0!4096~" {
+            decoder.push(*byte, &mut |_| true);
+        }
+        assert_eq!(decoder.bytes(), 4096 * 6 * 4);
+        let picture = decoder.finish(&mut |_| true);
+        let picture = picture.as_deref();
+        assert_eq!(picture.map(|p| (p.width(), p.height())), Some((4096, 12)));
+        let red = Some([255, 0, 0, 255]);
+        assert_eq!(picture.and_then(|p| p.pixel(4095, 11)), red);
+        assert_eq!(picture.and_then(|p| p.pixel(0, 12)), None);
     }
 }
 
@@ -740,7 +921,7 @@ mod faults {
             decoder.push(*byte, &mut |_| true);
         }
         assert_eq!(decoder.check(), Ok(()));
-        decoder.width = super::MAX_SIDE.saturating_add(1);
+        decoder.across = super::MAX_SIDE.saturating_add(1);
         assert!(decoder.check().is_err());
     }
 }

@@ -973,13 +973,13 @@ impl Parser {
     /// either screen, the one being drawn and its growth included
     /// ([`crate::PICTURE_BYTES`] to begin with), and lets pictures go to fit
     /// it: those no longer shown first, then the oldest. A picture being
-    /// drawn that alone is past it ends with nothing.
+    /// drawn that alone is past it lets go of what it drew.
     pub fn set_picture_bytes(&mut self, bytes: usize) {
         let drawing = self.sixel.as_ref().map_or(0, |d| d.bytes());
         if !self.screen.set_picture_bytes(bytes, drawing)
             && let Some(decoder) = &mut self.sixel
         {
-            decoder.spoil();
+            decoder.clear();
         }
     }
     /// The bytes of pixels its pictures hold, the one being drawn's too.

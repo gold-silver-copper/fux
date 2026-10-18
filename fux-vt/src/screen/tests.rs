@@ -409,7 +409,7 @@ fn pictures_no_longer_shown_go_first() -> Result<(), Error> {
 }
 
 /// A lowered budget lets pictures go at once to fit it, and a picture
-/// being drawn that alone is past it ends with nothing.
+/// being drawn that alone is past it lets go of what it drew.
 #[test]
 fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -424,8 +424,8 @@ fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
     p.process(b"\x1b[10;1H\x1bP0;1q\"1;1;100;120#1~")?;
     p.set_picture_bytes(47_999);
     assert_eq!(shown(&p), [], "the kept one went first");
-    p.process(b"~\x1b\\")?;
-    assert_eq!(shown(&p), [], "the one being drawn is past it alone");
-    assert!(p.picture_bytes() <= 47_999);
+    assert!(p.picture_bytes() <= 47_999, "the one being drawn let go");
+    p.process(b"\x1b\\")?;
+    assert_eq!(shown(&p), [], "with nothing drawn");
     Ok(())
 }
