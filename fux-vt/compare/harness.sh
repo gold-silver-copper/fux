@@ -259,6 +259,7 @@ fuzz_extras=(
   "fuxth_run fuzz/fuxth.dict"
   "fuxth_pause fuzz/fuxth.dict"
   "terminal fux-vt/fuzz/terminal.dict"
+  "deep fux-vt/fuzz/terminal.dict"
   "oracle fux-vt/fuzz/terminal.dict"
 )
 

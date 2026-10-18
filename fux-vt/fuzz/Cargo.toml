@@ -32,6 +32,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "deep"
+path = "fuzz_targets/deep.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "graphemes"
 path = "fuzz_targets/graphemes.rs"
 test = false

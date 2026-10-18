@@ -14,10 +14,13 @@ cargo +nightly fuzz run cells --fuzz-dir fux-vt/fuzz -- -max_total_time=120 -use
 cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz fux-vt/fuzz/corpus/keys -- -max_total_time=120
 ```
 
+`deep` runs as `terminal` does, with `-max_len=65536 -timeout=60`.
+
 `fux-vt/compare/run.sh fuzz [MINUTES]` runs every target of the repository
-in turn, these four included, and minimizes any crash. CI
-(`.github/workflows/fuzz.yml`) replays the `terminal` and `keys` corpora
-nightly and runs the other two for a minute each.
+in turn, these five included, and minimizes any crash. CI
+(`.github/workflows/fuzz.yml`) explores each of them nightly for five
+minutes, a job each, from its corpus, its frozen seeds and what earlier
+nights found, which the Actions cache keeps between nights.
 
 Under AddressSanitizer on macOS a run passes 1 GiB of RSS within a minute,
 so RSS is capped at 4 GiB and single allocations at 1 GiB instead.
@@ -28,7 +31,8 @@ table lookups) that edge coverage misses.
 
 | Target | Input | Checked against |
 | --- | --- | --- |
-| `terminal` | Raw bytes: a header, then operations (below) | Whole, byte-at-a-time and chunked processing agree; invariants and row versions after every step |
+| `terminal` | Raw bytes: a header, then operations (below) | The fast target: whole, byte-at-a-time and chunked processing agree, fux-vt's invariant checker and row versions after every operation |
+| `deep` | Raw bytes: six header bytes, then operations (`fuzz_targets/deep.rs` lists them) | Large state: up to 511 by 511 cells, 8 MiB of history, every `Feature`, sixel drawn in a host cell the input chooses, up to 1 MiB of output a run in 4 KiB reads by `process_until_stop`, each call within the frozen ceiling of work (`threats.md` 4.4); every host call (resize, history budgets, prints, palette, nonces, pictures listed and encoded within `encode`'s bound, the picture budget, windows); a byte-at-a-time copy with row versions checked after every byte while it holds at most 2,048 rows; the checker after every operation |
 | `graphemes` | Structured (`arbitrary`): lines of characters from `tests/corpus/graphemes.rs` or any scalar value, SGR between them, piece sizes, a width to reflow to | Every row holds the cells `tests/corpus/models.rs` makes of its line (UAX #29 by unicode-segmentation, widths by unicode-width), the cursor after the last; again after reflowing narrower and back |
 | `cells` | Structured: a run's length and edits of every kind to `Cells` | The plain list of cells in `tests/corpus/models.rs`; the text budget; exact copies |
 | `keys` | One byte choosing a piece size (0 for the stream whole), then a terminal's input bytes, into `keys::decode::Decoder`, the Escape deadline passing only at the end | The same inputs whole, in pieces and byte by byte; no paste longer than `PASTE_LIMIT` chars (the limit counts bytes, and invalid UTF-8 becomes U+FFFD) |
@@ -65,14 +69,18 @@ given again after each stop, as fux's pane reads, with each frame's end
 found by `FrameScan` where the parser ends it. Prints are recorded, and
 held within their caps. All three must agree on every cell,
 style, wrap, cursor, history row, reply, event and mode. After each step:
-row identities are unique, wide glyphs whole, clusters and row text within
-their bounds, rows copy into `Cells` unchanged, cursor and margins on the
-screen, windows clipped and marks read-only. Row versions are checked
-after every byte of the byte-at-a-time copy, against a hash of each row.
+fux-vt's invariant checker (`Parser::check`), row identities unique, wide
+glyphs whole, clusters and row text within their bounds, rows copy into
+`Cells` unchanged, windows clipped and marks read-only; and every row
+whose cells, wrap or prompt mark the operation changed has a newer version.
+The `deep` target checks versions after every byte.
 
-`terminal.dict` (also used by `diff/fuzz`'s `oracle`) holds tokens
-mutation rarely assembles: cluster material (joiners, selectors, emoji,
-flags, tags, Indic, Hangul, Prepend) and fux-vt's sequences.
+`terminal.dict` (also used by `deep` and `diff/fuzz`'s `oracle`) holds
+tokens mutation rarely assembles: cluster material (joiners, selectors,
+emoji, flags, tags, Indic, Hangul, Prepend), fux-vt's sequences, sixel's
+(its introducer, raster attributes, colours, repeats, bands, CAN and SUB),
+and what the safety reproducers send (frames, reports, requests, OSC 4,
+52, 9, 777 and 99, RIS, DECSTR, REP's largest count, DECCRA, DECALN).
 
 ## Corpus
 
