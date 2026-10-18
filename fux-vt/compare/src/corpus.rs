@@ -136,7 +136,102 @@ const HELIX_UNICODE_AT: &[Exception] = &[
 ];
 
 /// nvim-unicode's clusters, from its start: the cells and the styles they move.
+/// neovim pushes the kitty keyboard flags 1 and 2 (report event types)
+/// and reads them back; fux-vt keeps only the flags it honours, not 2, as
+/// the kitty spec's "Detection of support" asks (KEY-22, 84fd3fc3), where
+/// Ghostty, alacritty and wezterm, which send release events, keep it.
+const KITTY_FLAGS_KEPT: &str = "fux-vt keeps only the kitty flags it honours, 1 and not report event types (2), as the kitty spec's detection of support asks (KEY-22); Ghostty, alacritty and wezterm keep 2";
+
+const NVIM_DIAGNOSTICS_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_DIFF_AT: &[Exception] = &[Exception {
+    steps: (1, 8),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_HELP_AT: &[Exception] = &[Exception {
+    steps: (1, 7),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_INSERT_AT: &[Exception] = &[Exception {
+    steps: (1, 13),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_NETRW_AT: &[Exception] = &[Exception {
+    steps: (1, 8),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_RESIZE_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SCROLL_AT: &[Exception] = &[Exception {
+    steps: (1, 10),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SEARCH_AT: &[Exception] = &[Exception {
+    steps: (1, 10),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SMALL_AT: &[Exception] = &[Exception {
+    steps: (1, 8),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SPLIT_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_TABS_AT: &[Exception] = &[Exception {
+    steps: (1, 7),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_TERMINAL_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_VISUAL_AT: &[Exception] = &[Exception {
+    steps: (1, 18),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_WIDE_AT: &[Exception] = &[Exception {
+    steps: (1, 6),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
 const NVIM_UNICODE_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 12),
+        field: "kitty keyboard flags",
+        reason: KITTY_FLAGS_KEPT,
+    },
     Exception {
         steps: (1, 11),
         field: "cell (*) text",
@@ -308,10 +403,43 @@ pub const REPLY_CHANGES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// The replies that came with XTGETTCAP's answer and XTQMODKEYS's.
+const XTGETTCAP_AND_XTQMODKEYS: &str = "XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded";
+
 /// The recordings whose replies changed in a way no reply as recorded can
 /// say (a reply given now to a query once left unanswered), and why. One
 /// that agrees again fails.
 pub const REPLIES_DIFFER: &[(&str, &str)] = &[
+    ("fish", XTGETTCAP_AND_XTQMODKEYS),
+    ("fish-complete", XTGETTCAP_AND_XTQMODKEYS),
+    ("fish-history", XTGETTCAP_AND_XTQMODKEYS),
+    ("fish-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("lazygit", XTGETTCAP_AND_XTQMODKEYS),
+    ("lazygit-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("lazygit-stage", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-diagnostics", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-diff", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-help", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-insert", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-netrw", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-resize", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-scroll", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-search", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-split", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-tabs", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-terminal", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-unicode", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-visual", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-wide", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-diff", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-help", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-insert", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-resize", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-terminal", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-unicode", XTGETTCAP_AND_XTQMODKEYS),
     (
         "zellij",
         "zellij asks OSC 4 for each of its 256 colours; fux's panes answer them now (Feature::Palette, src/pane.rs), where they answered none when it was recorded",
@@ -446,21 +574,21 @@ pub const STATUSES: &[(&str, &[Exception])] = &[
     ("nnn", AGREE),
     ("nnn-detail", AGREE),
     ("npm-install", AGREE),
-    ("nvim-diagnostics", AGREE),
-    ("nvim-diff", AGREE),
-    ("nvim-help", AGREE),
-    ("nvim-insert", AGREE),
-    ("nvim-netrw", AGREE),
-    ("nvim-resize", AGREE),
-    ("nvim-scroll", AGREE),
-    ("nvim-search", AGREE),
-    ("nvim-small", AGREE),
-    ("nvim-split", AGREE),
-    ("nvim-tabs", AGREE),
-    ("nvim-terminal", AGREE),
+    ("nvim-diagnostics", NVIM_DIAGNOSTICS_AT),
+    ("nvim-diff", NVIM_DIFF_AT),
+    ("nvim-help", NVIM_HELP_AT),
+    ("nvim-insert", NVIM_INSERT_AT),
+    ("nvim-netrw", NVIM_NETRW_AT),
+    ("nvim-resize", NVIM_RESIZE_AT),
+    ("nvim-scroll", NVIM_SCROLL_AT),
+    ("nvim-search", NVIM_SEARCH_AT),
+    ("nvim-small", NVIM_SMALL_AT),
+    ("nvim-split", NVIM_SPLIT_AT),
+    ("nvim-tabs", NVIM_TABS_AT),
+    ("nvim-terminal", NVIM_TERMINAL_AT),
     ("nvim-unicode", NVIM_UNICODE_AT),
-    ("nvim-visual", AGREE),
-    ("nvim-wide", AGREE),
+    ("nvim-visual", NVIM_VISUAL_AT),
+    ("nvim-wide", NVIM_WIDE_AT),
     ("pico", AGREE),
     ("ranger", AGREE),
     ("tig", AGREE),
