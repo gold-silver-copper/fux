@@ -523,7 +523,12 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             if replace && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
-            self.compact(true);
+            // Compacted, the text is what the cells hold, end to end: if
+            // that leaves no room either, compacting would copy it all for
+            // nothing (threats.md B31).
+            if self.live_long().saturating_add(text.len()) <= limit {
+                self.compact(true);
+            }
         }
         let long = &mut self.text.long;
         let (Ok(start), Ok(len)) = (u32::try_from(long.len()), u8::try_from(text.len())) else {
@@ -576,6 +581,15 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             short.extend_from_slice(text);
             *slot = cell.with_spilled(start, len);
         }
+    }
+
+    /// The bytes of long text the cells hold: what `compact(true)` keeps.
+    fn live_long(&self) -> usize {
+        work!(cells, self.cells.len());
+        (self.cells.iter())
+            .filter_map(|cell| cell.as_ref().spilled(true))
+            .map(|range| range.len())
+            .fold(0, usize::saturating_add)
     }
 
     /// Keeps only the text of long clusters (`long`), or of short ones,
