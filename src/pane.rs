@@ -1045,9 +1045,7 @@ impl Pane {
             // Output the program wrote before now came before this piece:
             // it is read first (unless it pours on for a while), so that
             // nothing it printed is told as following the piece.
-            let unread = !exact
-                && (self.process.child())
-                    .is_some_and(|c| fuxix::io::unread(&c.master).unwrap_or(0) > 0);
+            let unread = !exact && (self.process.child()).is_some_and(|c| c.master.output_unread());
             let draining =
                 !held && unread && now < *(self.pace.drained_by).get_or_insert(after(now, TAKE));
             if held || draining {
@@ -1121,7 +1119,7 @@ impl Pane {
         let taking = || crate::ready::taking(self, child, now);
         self.input.is_empty()
             && drawn
-            && fuxix::io::unread(&child.master).unwrap_or(0) == 0
+            && !child.master.output_unread()
             && match taking() {
                 Some(Activity::Reading) => true,
                 Some(Activity::Idle) => !escape,

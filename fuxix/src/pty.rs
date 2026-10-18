@@ -4,7 +4,8 @@
 //! not get wrong: the [`Master`] is close-on-exec and nonblocking, and the
 //! [`Slave`] is given up to [`Slave::spawn`], which starts a program on it
 //! as the leader of a session of its own with the PTY as its controlling
-//! terminal, and leaves the parent without it.
+//! terminal, and leaves the parent without it (but on macOS, where the
+//! master holds it too: [`Master`]).
 use crate::errno::{Errno, check};
 use crate::process::Pid;
 use crate::terminal::{self, Size};
@@ -40,8 +41,22 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 /// the PTY open, and nonblocking, so a read or write that would wait fails
 /// with `AGAIN` instead. Read and write it with [`crate::io`], and wait for
 /// it with [`crate::poll`]. It keeps its slave's path.
+///
+/// On macOS it keeps the slave open too, for as long as it lives. There the
+/// last close of a slave throws away the output not yet read from the
+/// master (xnu's `ttylclose`: at once if the closing descriptor is
+/// nonblocking, else once 60 ticks pass), and the master reads nothing
+/// more once no slave is open (`ptcread`). The last close would otherwise
+/// be anyone's: this process's copies as it starts a program that has
+/// already printed and exited, or a probe that opens the slave only to
+/// ask (`O_NONBLOCK`), which also wakes the program blocked reading it
+/// (every open there calls `ttymodem`, which wakes the terminal's
+/// readers). Held, the slave is closed last with the master, after its
+/// output was read, and asked what it holds with no open
+/// ([`Master::keys_unread`]). Its end is told by the program's exit, not
+/// by the master's hangup, which never comes while the slave is held.
 #[derive(Debug)]
-pub struct Master(OwnedFd, PathBuf);
+pub struct Master(OwnedFd, PathBuf, #[cfg(target_os = "macos")] OwnedFd);
 
 /// A PTY's slave, not yet given to the program that runs on it
 /// ([`Slave::spawn`]). It is close-on-exec, and not this process's
@@ -54,6 +69,37 @@ impl Master {
     /// terminal.
     pub fn slave_path(&self) -> &Path {
         &self.1
+    }
+
+    /// Whether output its program wrote waits to be read from it, as a
+    /// poll that does not wait says. Not `FIONREAD`: on Linux a write to
+    /// the slave reaches the master's count only once a kernel worker has
+    /// moved it on (`flush_to_ldisc`), which a poll or a read waits for and
+    /// `FIONREAD` does not (just after a write it said 0 nearly every time);
+    /// on macOS `FIONREAD` on a master counts the keys its program has yet
+    /// to read instead (xnu's `ttnread`).
+    pub fn output_unread(&self) -> bool {
+        let mut fds = [crate::poll::PollFd::new(&self.0, crate::poll::Events::IN)];
+        let polled = crate::poll::poll(&mut fds, Some(std::time::Duration::ZERO));
+        polled.is_ok_and(|n| n > 0)
+            && (fds.iter()).any(|fd| fd.revents().intersects(crate::poll::Events::IN))
+    }
+
+    /// Whether keys wait in the terminal for its program to read: blocked
+    /// in a read still, it has yet to be woken (a busy machine) to read
+    /// them. Where the slave is not held, it is opened only to ask, so
+    /// that its program's end still closes it.
+    pub fn keys_unread(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        let unread = crate::io::unread(&self.2);
+        #[cfg(not(target_os = "macos"))]
+        let unread = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+            .open(&self.1)
+            .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
+            .and_then(crate::io::unread);
+        unread.is_ok_and(|n| n > 0)
     }
 }
 
@@ -181,7 +227,19 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
         .map_err(at("opening the PTY slave"))?;
     terminal::set_window_size(&master, size).map_err(at("TIOCSWINSZ"))?;
     crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
-    Ok((Master(master, name), Slave(OwnedFd::from(slave))))
+    let slave = OwnedFd::from(slave);
+    #[cfg(target_os = "macos")]
+    let master = Master(
+        master,
+        name,
+        slave
+            .try_clone()
+            .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
+            .map_err(at("holding the PTY slave"))?,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let master = Master(master, name);
+    Ok((master, Slave(slave)))
 }
 
 /// A new PTY master, granted.

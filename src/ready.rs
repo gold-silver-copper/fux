@@ -20,7 +20,6 @@ use crate::pane::{Pane, Process};
 use crate::process::{Child, Ended, told};
 use fux_vt::Reported;
 use fuxix::process::Activity;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// How long a program reading its terminal must leave the screen as it is:
@@ -86,13 +85,12 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     };
     // Keys not yet written, or output written that fux has not read: at
     // work still.
-    if !pane.input_written() || fuxix::io::unread(&child.master).unwrap_or(0) > 0 {
+    if !pane.input_written() || child.master.output_unread() {
         return State::Busy;
     }
     // Quiet since the screen last changed and input last went in.
     let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
     let quiet = now.saturating_duration_since(since);
-    let tty = child.master.slave_path();
     // The command the input typed still runs and does not read: at work
     // until it ends or asks. One that took the full screen since it began
     // (an editor, a pager, polling there) is not at work; one whose output
@@ -107,7 +105,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     // A line editor reading a line takes pastes (bracketed paste on, as
     // Python's REPL turns it on while it reads): a program polling its
     // terminal then waits for keys, not a pause that watches for them.
-    let editing = || screen.mode(fux_vt::Mode::BracketedPaste) && !keys_unread(tty);
+    let editing = || screen.mode(fux_vt::Mode::BracketedPaste) && !child.master.keys_unread();
     // One that draws on its own as it polls its terminal (`top`, the
     // command typed or not), or on the full screen however it waits (macOS
     // says only idle): not a build printing as it goes, nor a pause that
@@ -117,10 +115,10 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
             && pane.redraws()
             && pane.written_at.is_none_or(|at| pane.changed_at > at)
             && quiet >= SETTLE
-            && !keys_unread(tty)
+            && !child.master.keys_unread()
     };
     match reported(pane).unwrap_or_else(|| activity(pane, child, now)) {
-        Activity::Reading if quiet >= SETTLE && !keys_unread(tty) => State::Reading,
+        Activity::Reading if quiet >= SETTLE && !child.master.keys_unread() => State::Reading,
         // A program that redraws on its own (a clock, `top`) is never
         // quiet: it took the keys once it read them all and the
         // frame it drew after them is done, however it waits between
@@ -137,7 +135,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
         Activity::Polling | Activity::Waiting if quiet >= QUIET => State::Waiting,
         // Every thread waits, on what macOS will not say (a sleep or a
         // read): settled once quiet as long as where nothing is known.
-        Activity::Idle if quiet >= GUESS && !keys_unread(tty) => State::Settled,
+        Activity::Idle if quiet >= GUESS && !child.master.keys_unread() => State::Settled,
         Activity::Unknown if quiet >= GUESS => State::Settled,
         Activity::Reading
         | Activity::Polling
@@ -187,20 +185,5 @@ fn reported(pane: &Pane) -> Option<Activity> {
 /// (`activity`); `None` while keys wait in its terminal unread.
 pub fn taking(pane: &Pane, child: &Child, now: Instant) -> Option<Activity> {
     let activity = activity(pane, child, now);
-    (!keys_unread(child.master.slave_path())).then_some(activity)
-}
-
-/// Whether keys wait in the terminal for its program to read: blocked in a
-/// read still, it has yet to be woken (a busy machine) to read them. The
-/// terminal is opened only to ask, so that its program's end still closes
-/// it.
-fn keys_unread(tty: &Path) -> bool {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(fuxix::file::NOCTTY | fuxix::file::NONBLOCK)
-        .open(tty)
-        .ok()
-        .and_then(|terminal| fuxix::io::unread(&terminal).ok())
-        .is_some_and(|n| n > 0)
+    (!child.master.keys_unread()).then_some(activity)
 }
