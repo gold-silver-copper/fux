@@ -682,12 +682,20 @@ fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
             }
             let take = need.min(bytes.len());
             let text = bytes.get(..take).unwrap_or_default();
-            return Some(
-                match str::from_utf8(text).ok().and_then(|s| s.chars().next()) {
+            // Ill-formed, it is one U+FFFD for its maximal subpart (Unicode
+            // 3.9, "U+FFFD Substitution of Maximal Subparts"), which is
+            // what std's `error_len` measures; cut short at the deadline,
+            // one for what came.
+            return Some(match str::from_utf8(text) {
+                Ok(s) => match s.chars().next() {
                     Some(c) => (take, KeyPress::plain(Key::Char(c))),
                     None => (1, KeyPress::plain(Key::Char('\u{fffd}'))),
                 },
-            );
+                Err(e) => {
+                    let subpart = e.error_len().unwrap_or(take).max(1);
+                    (subpart, KeyPress::plain(Key::Char('\u{fffd}')))
+                }
+            });
         }
     };
     Some((1, KeyPress::new(key, mods)))
@@ -1318,6 +1326,39 @@ mod tests {
 
     fn name_press(name: &str) -> Option<KeyPress> {
         name.parse().ok()
+    }
+
+    /// Typed ill-formed UTF-8 is one U+FFFD a maximal subpart, as the
+    /// Unicode Standard 17.0, 3.9's Tables 3-8 to 3-11 give it, whole or
+    /// split anywhere: each table's bytes type its "Output" row.
+    #[test]
+    fn ill_formed_utf8_is_one_replacement_a_maximal_subpart() {
+        let fffd = '\u{fffd}';
+        let tables: [(&[u8], &[char]); 4] = [
+            (
+                b"\xc0\xaf\xe0\x80\xbf\xf0\x81\x82\x41",
+                &[fffd, fffd, fffd, fffd, fffd, fffd, fffd, fffd, 'A'],
+            ),
+            (
+                b"\xed\xa0\x80\xed\xbf\xbf\xed\xaf\x41",
+                &[fffd, fffd, fffd, fffd, fffd, fffd, fffd, fffd, 'A'],
+            ),
+            (
+                b"\xf4\x91\x92\x93\xff\x41\x80\xbf\x42",
+                &[fffd, fffd, fffd, fffd, fffd, 'A', fffd, fffd, 'B'],
+            ),
+            (
+                b"\xe1\x80\xe2\xf0\x91\x92\xf1\xbf\x41",
+                &[fffd, fffd, fffd, fffd, 'A'],
+            ),
+        ];
+        for (bytes, output) in tables {
+            let expected: Vec<Input> = (output.iter())
+                .map(|&c| Input::Key(KeyPress::plain(Key::Char(c)).into()))
+                .collect();
+            assert_eq!(all(bytes), expected, "{bytes:x?}");
+            split_anywhere(bytes, false, &expected);
+        }
     }
 
     /// xterm's modifyOtherKeys form names a key by the code `CSI code ;
