@@ -358,6 +358,11 @@ fux-vt's work counters and a counting allocator against it.
   records, blocks and maps included, and at most half as much again
   while its storage grows; a lowered budget keeps the newest rows that
   fit, in storage made for it.
+- **A resize** (B37) builds the new screens and history before it lets
+  the old go, so while it runs it needs up to history's memory again and
+  the new screens' (about 12 MiB more at 50 by 200 with 8 MiB of
+  history), and reads, copies and clears each cell about three times; a
+  refused one changes nothing.
 - **`Cells`** (B39) holds at most 64 Mi cells, as a screen does:
   `Cells::new` and `Cells::resize` refuse more with `Error::Capacity`,
   and so does a lack of memory, the cells left as they were.

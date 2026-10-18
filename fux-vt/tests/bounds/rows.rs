@@ -1282,7 +1282,9 @@ pub fn b37(scale: Scale, chunk: usize) -> Found {
     probe.feed(&rows)?;
     let history = probe.parser.screen().history_len();
     let cells = history.saturating_mul(200).saturating_add(setup.cells());
-    let most = u64::try_from(cells.saturating_add(history).saturating_mul(2)).unwrap_or(u64::MAX);
+    // Reflow copies each cell out, pushes it into the new grid and clears
+    // its row: 3 a cell, and a row read and kept a row (decision 11).
+    let most = u64::try_from(cells.saturating_add(history).saturating_mul(3)).unwrap_or(u64::MAX);
     let per_call: &'static [(&'static str, u64, u64, u64)] =
         Box::leak(Box::new([("rows", 0, most, 0), ("cells", 0, most, 0)]));
     probe.restart(
