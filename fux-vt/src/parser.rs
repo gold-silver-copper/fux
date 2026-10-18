@@ -210,8 +210,6 @@ const fn lead(first: u8) -> Option<(usize, u8, u8)> {
 /// flagged is the first that is not printable. Its one caller checks the
 /// first byte; without that, the count would be off, not a panic.
 fn printable(bytes: &[u8]) -> usize {
-    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
-    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
     if !bytes.get(1).is_some_and(|b| (0x20..=0x7e).contains(b)) {
         return 1;
     }
@@ -242,18 +240,60 @@ fn printable(bytes: &[u8]) -> usize {
 /// its top bit clear; a borrow runs only into the bytes after it, so the
 /// first byte flagged is the first ESC.
 fn esc_in(bytes: &[u8]) -> Option<usize> {
-    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
-    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+    first_flagged(bytes, |x| zeros(x ^ ONES.wrapping_mul(0x1b)), |b| b == 0x1b)
+}
+
+/// Where the first ESC, CAN or SUB in `bytes` is, a word at a time as
+/// `esc_in` finds an ESC: where an ignored string may end.
+fn string_end(bytes: &[u8]) -> Option<usize> {
+    let flag = |x: u64| {
+        zeros(x ^ ONES.wrapping_mul(0x1b))
+            | zeros(x ^ ONES.wrapping_mul(0x18))
+            | zeros(x ^ ONES.wrapping_mul(0x1a))
+    };
+    first_flagged(bytes, flag, |b| matches!(b, 0x18 | 0x1a | 0x1b))
+}
+
+/// Where the first C0 control or DEL in `bytes` is, a word at a time: a
+/// byte below 0x20 borrows when 0x20 is taken from it (as in `printable`),
+/// and DEL is a zero byte once XORed with DEL.
+fn control_in(bytes: &[u8]) -> Option<usize> {
+    let flag = |x: u64| {
+        (x.wrapping_sub(ONES.wrapping_mul(0x20)) & !x & TOPS) | zeros(x ^ ONES.wrapping_mul(0x7f))
+    };
+    first_flagged(bytes, flag, |b| b < 0x20 || b == 0x7f)
+}
+
+/// Every byte of a word 0x01.
+const ONES: u64 = u64::from_le_bytes([0x01; 8]);
+/// Every byte's top bit.
+const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+
+/// The top bit of each zero byte of `x`, and perhaps of bytes after one: a
+/// zero byte alone borrows when 1 is taken from it with its top bit clear,
+/// and a borrow runs only into the bytes after it.
+const fn zeros(x: u64) -> u64 {
+    x.wrapping_sub(ONES) & !x & TOPS
+}
+
+/// Where the first byte of `bytes` is that `flag` flags in its word (the
+/// top bit of the byte, exact for the first one flagged), eight bytes at a
+/// time, then the rest by `byte`.
+#[inline(always)]
+fn first_flagged(
+    bytes: &[u8],
+    flag: impl Fn(u64) -> u64,
+    byte: impl Fn(u8) -> bool,
+) -> Option<usize> {
     let (words, tail) = bytes.as_chunks::<8>();
     for (i, word) in words.iter().enumerate() {
-        let x = u64::from_le_bytes(*word) ^ ONES.wrapping_mul(0x1b);
-        let zero = x.wrapping_sub(ONES) & !x & TOPS;
-        if zero != 0 {
-            let first = usize::try_from(zero.trailing_zeros() / 8).ok()?;
+        let flagged = flag(u64::from_le_bytes(*word));
+        if flagged != 0 {
+            let first = usize::try_from(flagged.trailing_zeros() / 8).ok()?;
             return i.checked_mul(8)?.checked_add(first);
         }
     }
-    let at = tail.iter().position(|&b| b == 0x1b)?;
+    let at = tail.iter().position(|&b| byte(b))?;
     words.len().checked_mul(8)?.checked_add(at)
 }
 
@@ -1301,7 +1341,11 @@ impl Parser {
             true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
             false => u64::MAX,
         };
-        let mut remaining = bytes;
+        // A string the last call left open goes on at once.
+        let mut remaining = match matches!(self.state, State::Osc { .. } | State::IgnoreString) {
+            true => self.string(bytes),
+            false => bytes,
+        };
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
             // A refusal costs what was refused, and the rest is read
@@ -1453,8 +1497,16 @@ impl Parser {
                     let taken = self.osc_string(bytes.get(next..).unwrap_or_default());
                     return (next.saturating_add(taken), None);
                 }
-                // The other strings, which `byte` begins.
-                b'P' | b'X' | b'^' | b'_' if first => break,
+                // SOS, PM and APC, dropped up to what may end them.
+                b'X' | b'^' | b'_' if first => {
+                    self.state = State::IgnoreString;
+                    let rest = self.string(bytes.get(next..).unwrap_or_default());
+                    return (bytes.len().saturating_sub(rest.len()), None);
+                }
+                b'P' if first => {
+                    let taken = self.dcs(bytes.get(next..).unwrap_or_default());
+                    return (next.saturating_add(taken), None);
+                }
                 0x30..=0x7e => {
                     self.state = State::Ground;
                     let framed = self.escape_dispatch(read.as_slice(), byte, sink);
@@ -1468,6 +1520,64 @@ impl Parser {
         }
         self.state = State::Escape(read);
         (at, None)
+    }
+    /// The string a DCS whose final byte is `byte`, its intermediates
+    /// `read`, begins: a DECRQSS, a sixel picture, or one that is dropped
+    /// (an XTGETTCAP, answered at its end). Out of line, as it is seldom
+    /// sent.
+    #[inline(never)]
+    fn dcs_string(&mut self, read: Intermediates, byte: u8) -> State {
+        // DECRQSS: `$ q` with no parameters; XTGETTCAP, `+ q`.
+        let request = |marker: &[u8]| {
+            self.options.has(Feature::SettingReports)
+                && byte == b'q'
+                && read.as_slice() == marker
+                && self.params.is_empty()
+        };
+        let (decrqss, termcap) = (request(b"$"), request(b"+"));
+        // Sixel: `q` with no intermediates.
+        let sixel =
+            self.options.has(Feature::Pictures) && byte == b'q' && read.as_slice().is_empty();
+        if decrqss {
+            State::Request(Some(Bytes::default()))
+        } else if termcap {
+            self.termcap = true;
+            State::IgnoreString
+        } else if sixel {
+            self.sixel = Some(crate::sixel::Decoder::new(
+                self.params.first(0, 0),
+                self.params.first(1, 0),
+            ));
+            State::Sixel
+        } else {
+            State::IgnoreString
+        }
+    }
+    /// Begins a DCS and reads the bytes `bytes` begins with up to its
+    /// final byte, as `byte` reads them; then, if its string is one that
+    /// is dropped, the string up to what may end it at once, as `string`
+    /// takes it. It stops before a CAN, SUB or ESC, which `byte` reads.
+    /// Says how many bytes it took. Out of line, as DCS is seldom sent.
+    #[inline(never)]
+    fn dcs(&mut self, bytes: &[u8]) -> usize {
+        self.params.clear();
+        self.state = State::Dcs(Phase::Entry);
+        for (at, &byte) in bytes.iter().enumerate() {
+            let State::Dcs(phase) = self.state else {
+                let rest = bytes.get(at..).unwrap_or_default();
+                return bytes.len().saturating_sub(self.string(rest).len());
+            };
+            if matches!(byte, 0x18 | 0x1a | 0x1b) {
+                return at;
+            }
+            self.state = match phase.next(byte, &mut self.params) {
+                Next::Phase(next) => State::Dcs(next),
+                Next::Ignore => State::IgnoreString,
+                Next::Control => State::Dcs(phase),
+                Next::Final(read) => self.dcs_string(read, byte),
+            };
+        }
+        bytes.len()
     }
     /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
     fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
@@ -1529,24 +1639,29 @@ impl Parser {
         });
         (at, None)
     }
-    /// Begins an OSC string and takes its bytes `bytes` begins with, up to
-    /// the BEL, CAN, SUB or ESC that ends it, at once rather than each
-    /// through `byte`, keeping what `byte` would keep of them; how many it
-    /// took. Out of line: inlined into `sequence`, it cost each OSC more.
-    #[inline(never)]
+    /// Begins an OSC string and takes its bytes `bytes` begins with, as
+    /// `osc_more` takes them; how many it took.
+    #[inline]
     fn osc_string(&mut self, bytes: &[u8]) -> usize {
         self.osc.clear();
-        // The byte past the limit marks the string overflowed.
+        self.osc_more(bytes, true)
+    }
+    /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
+    /// CAN, SUB or ESC that ends it, at once rather than each through
+    /// `byte`, keeping what `byte` would keep of them, the string `whole`
+    /// so far or not; how many it took. Out of line: inlined into
+    /// `sequence`, it cost each OSC more.
+    #[inline(never)]
+    fn osc_more(&mut self, bytes: &[u8], whole: bool) -> usize {
+        // The byte past the limit marks the string overflowed, and one
+        // that is not whole holds as many as the limit already.
         let room = self.osc_limit.saturating_add(1);
         let mut length = 0;
         // Each run up to a control is copied whole, with the control if
         // the string holds it; a payload with none is one copy.
         loop {
             let rest = bytes.get(length..).unwrap_or_default();
-            let run = rest
-                .iter()
-                .position(|&byte| byte < 0x20 || byte == 0x7f)
-                .unwrap_or(rest.len());
+            let run = control_in(rest).unwrap_or(rest.len());
             let control = rest.get(run).copied();
             let ends = matches!(control, Some(0x07 | 0x18 | 0x1a | 0x1b) | None);
             let held = control.is_some_and(in_command_string);
@@ -1562,10 +1677,31 @@ impl Parser {
             length = length.saturating_add(1);
         }
         self.state = State::Osc {
-            whole: self.osc.len() <= self.osc_limit,
+            whole: whole && self.osc.len() <= self.osc_limit,
         };
         self.osc.truncate(self.osc_limit);
         length
+    }
+    /// The bytes `bytes` begins with that go on a string, taken at once
+    /// rather than each through `byte`, as it would take them: an OSC's
+    /// as `osc_more` takes them, and an ignored string's up to the ESC,
+    /// CAN or SUB that may end it; the rest of `bytes`.
+    #[inline(never)]
+    fn string<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        let taken = match self.state {
+            State::Osc { whole } => self.osc_more(bytes, whole),
+            State::IgnoreString => string_end(bytes).unwrap_or(bytes.len()),
+            State::Ground
+            | State::Utf8(_)
+            | State::Escape(_)
+            | State::EscapeIgnore
+            | State::Csi(_)
+            | State::CsiIgnore
+            | State::Dcs(_)
+            | State::Sixel
+            | State::Request(_) => 0,
+        };
+        bytes.get(taken..).unwrap_or_default()
     }
 
     /// Room in the OSC buffer for `more` bytes: grown by doubling, as a
@@ -1859,34 +1995,7 @@ impl Parser {
                 Next::Phase(phase) => self.state = State::Dcs(phase),
                 Next::Ignore => self.state = State::IgnoreString,
                 Next::Control => {}
-                Next::Final(read) => {
-                    // DECRQSS: `$ q` with no parameters; XTGETTCAP, `+ q`.
-                    let request = |marker: &[u8]| {
-                        self.options.has(Feature::SettingReports)
-                            && byte == b'q'
-                            && read.as_slice() == marker
-                            && self.params.is_empty()
-                    };
-                    let (decrqss, termcap) = (request(b"$"), request(b"+"));
-                    // Sixel: `q` with no intermediates.
-                    let sixel = self.options.has(Feature::Pictures)
-                        && byte == b'q'
-                        && read.as_slice().is_empty();
-                    self.state = if decrqss {
-                        State::Request(Some(Bytes::default()))
-                    } else if termcap {
-                        self.termcap = true;
-                        State::IgnoreString
-                    } else if sixel {
-                        self.sixel = Some(crate::sixel::Decoder::new(
-                            self.params.first(0, 0),
-                            self.params.first(1, 0),
-                        ));
-                        State::Sixel
-                    } else {
-                        State::IgnoreString
-                    };
-                }
+                Next::Final(read) => self.state = self.dcs_string(read, byte),
             },
         }
         // A sequence or string ended, REP's included: there is no character

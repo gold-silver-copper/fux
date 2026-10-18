@@ -124,7 +124,7 @@ fn csi(r: &mut Rng, out: &mut Vec<u8>) {
 fn sequences(r: &mut Rng, fragments: usize, long: bool) -> Vec<u8> {
     let mut out = Vec::new();
     for _ in 0..fragments {
-        match r.below(22) {
+        match r.below(23) {
             0..=6 => csi(r, &mut out),
             7 | 8 => {
                 out.push(0x1b);
@@ -221,6 +221,36 @@ fn sequences(r: &mut Rng, fragments: usize, long: bool) -> Vec<u8> {
                     r.pick(&[&b"\x07"[..], b"\x1b\\", b"\x18"])
                         .unwrap_or_default(),
                 );
+            }
+            // A string of every kind, of any length, its data any bytes
+            // but mostly printable, ended or not: taken in bulk where it
+            // begins, and where a call goes on inside it.
+            21 => {
+                out.extend_from_slice(
+                    r.pick(&[
+                        &b"\x1b_"[..],
+                        b"\x1bX",
+                        b"\x1b^",
+                        b"\x1bP1;2|",
+                        b"\x1bP+q",
+                        b"\x1bP$q",
+                        b"\x1bP0;1q",
+                        b"\x1b]2;",
+                        b"\x1b]8;;",
+                    ])
+                    .unwrap_or_default(),
+                );
+                for _ in 0..r.below(if long { 3000 } else { 60 }) {
+                    out.push(match r.below(40) {
+                        0 => r.byte_in(0, 0x1f),
+                        1 => 0x7f,
+                        2 => r.byte_in(0x80, 0xff),
+                        _ => r.byte_in(0x20, 0x7e),
+                    });
+                }
+                if r.chance(80) {
+                    out.extend_from_slice(r.pick(&[&b"\x1b\\"[..], b"\x07"]).unwrap_or_default());
+                }
             }
             _ => {
                 out.extend_from_slice(b"\x1b[");
@@ -648,6 +678,27 @@ fn esc_in_finds_the_first_esc() {
             assert_eq!(esc_in(&bytes), Some(at), "{len} {at}");
         }
         assert_eq!(esc_in(&vec![0x1a; len]), None);
+    }
+}
+
+/// The word scans for strings, `control_in` and `string_end`, find the
+/// byte a byte-at-a-time scan finds, at every place in and past a word,
+/// among bytes of every kind.
+#[test]
+fn the_string_scans_find_what_a_byte_at_a_time_finds() {
+    let mut r = Rng(7);
+    for _ in 0..20_000 {
+        let bytes: Vec<u8> = (0..r.below(40))
+            .map(|_| match r.below(6) {
+                0 => r.byte_in(0, 0x1f),
+                1 => 0x7f,
+                _ => r.byte_in(0, 0xff),
+            })
+            .collect();
+        let control = bytes.iter().position(|&b| b < 0x20 || b == 0x7f);
+        let end = bytes.iter().position(|&b| matches!(b, 0x18 | 0x1a | 0x1b));
+        assert_eq!(control_in(&bytes), control, "{bytes:?}");
+        assert_eq!(string_end(&bytes), end, "{bytes:?}");
     }
 }
 
