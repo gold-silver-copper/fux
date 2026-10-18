@@ -350,6 +350,9 @@ fux-vt's work counters and a counting allocator against it.
   need (twice its cells' styles) count in `history_bytes`, so the oldest
   history rows go as it grows, and when they all have, the styles no cell
   shows go.
+- **`Prints`** (B10) keeps at most 4 bytes of text a screen cell (16 KiB
+  at least) and 4,096 runs between takes. Past that, or after a resize,
+  it records nothing more and says so (`Prints::lost`).
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.

@@ -517,3 +517,72 @@ fn a_host_cell_is_at_least_a_sixel_band() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// `Prints` keeps text printed and drawn over within one feed up to its
+/// cap, 16 KiB on a small screen, and past it records nothing more and
+/// says so (`threats.md` B10); a take begins again.
+#[test]
+fn prints_keep_text_drawn_over_up_to_their_cap() -> Result<(), Error> {
+    let cap = 16 << 10;
+    for (bytes, lost) in [(cap - 1, false), (cap, false), (cap + 1, true)] {
+        let mut p = crate::Parser::new(Size::of(2, 10), 0)?;
+        p.record_prints(true);
+        // Runs of up to 8 bytes, each drawn over by the next, a and b in
+        // turn: 2,048 runs at most, within theirs.
+        let (mut left, mut a) = (bytes, true);
+        while left > 0 {
+            let n = left.min(8);
+            let c = if a { 'a' } else { 'b' };
+            let run: String = std::iter::repeat_n(c, n).chain(['\r']).collect();
+            p.process(run.as_bytes())?;
+            (left, a) = (left - n, !a);
+        }
+        let prints = p.take_prints();
+        assert_eq!(prints.lost(), lost, "{bytes} bytes");
+        let kept: usize = prints.iter().map(|r| r.text.len()).sum();
+        assert_eq!(kept, bytes.min(cap), "{bytes} bytes");
+        assert!(prints.heap() <= cap + crate::PRINT_RUNS * 32);
+        p.process(b"c")?;
+        let next = p.take_prints();
+        assert!(!next.lost(), "a take begins again");
+        assert_eq!(next.iter().map(|r| r.text).collect::<String>(), "c");
+    }
+    Ok(())
+}
+
+/// `Prints` keeps 4,096 runs; the 4,097th is lost. On 50 by 200 its text
+/// may be 4 bytes a cell, 40,000 (`threats.md` B10).
+#[test]
+fn prints_keep_at_most_their_runs() -> Result<(), Error> {
+    for (runs, lost) in [(4095, false), (4096, false), (4097, true)] {
+        let mut p = crate::Parser::new(Size::of(50, 200), 0)?;
+        p.record_prints(true);
+        // A run on each of two rows in turn: none joins the one before.
+        for i in 0..runs {
+            let (row, c) = (1 + i % 2, if i / 2 % 2 == 0 { 'x' } else { 'y' });
+            p.process(format!("\x1b[{row};1H{c}").as_bytes())?;
+        }
+        let prints = p.take_prints();
+        assert_eq!(prints.lost(), lost, "{runs} runs");
+        assert_eq!(prints.iter().count(), runs.min(4096));
+    }
+    let mut p = crate::Parser::new(Size::of(50, 200), 0)?;
+    p.record_prints(true);
+    assert_eq!(p.take_prints().cap(), 40_000);
+    Ok(())
+}
+
+/// A resize with prints untaken loses them: their rows and columns are
+/// the old size's. With none, nothing is lost.
+#[test]
+fn a_resize_loses_prints_untaken() -> Result<(), Error> {
+    let mut p = crate::Parser::new(Size::of(4, 10), 0)?;
+    p.record_prints(true);
+    p.resize(Size::of(4, 12))?;
+    p.process(b"a")?;
+    assert!(!p.take_prints().lost(), "nothing untaken");
+    p.process(b"b")?;
+    p.resize(Size::of(4, 10))?;
+    assert!(p.take_prints().lost());
+    Ok(())
+}

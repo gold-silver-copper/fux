@@ -402,10 +402,30 @@ impl<'a> Row<'a> {
 /// drawn over, its texts end to end. A row moved within the screen, its
 /// text as it was (lines deleted or put in above it, a region scrolled),
 /// is a run with no text and no columns: the topmost of those moved.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// It keeps at most [`Prints::cap`] bytes of text, 4 a screen cell and
+/// 16 KiB at least, and [`PRINT_RUNS`] runs, between takes (`threats.md`
+/// B10). Past either, and after a resize, it records nothing more and says
+/// so ([`Prints::lost`]): a host then takes everything as changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prints {
     runs: Vec<(RowId, Range<u16>, Range<usize>)>,
     text: String,
+    cap: usize,
+    lost: bool,
+}
+
+/// The most runs [`Prints`] keeps between takes.
+pub const PRINT_RUNS: usize = 1 << 12;
+
+/// The fewest bytes of text [`Prints`] keeps between takes, however small
+/// the screen.
+const PRINT_TEXT_FLOOR: usize = 16 << 10;
+
+impl Default for Prints {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 /// A run of [`Prints`]: the row it was printed on, the columns it took,
@@ -421,6 +441,56 @@ pub struct Print<'a> {
 }
 
 impl Prints {
+    /// What a screen of `cells` cells records into: nothing yet.
+    pub(crate) fn new(cells: usize) -> Self {
+        Self {
+            runs: Vec::new(),
+            text: String::new(),
+            cap: text_cap(cells),
+            lost: false,
+        }
+    }
+    /// The most bytes of text it keeps.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+    /// Whether some of what was printed is not in it: past its cap, or
+    /// printed before a resize. What it holds is still what it says.
+    pub fn lost(&self) -> bool {
+        self.lost
+    }
+    /// Says that some of what was printed is not in it.
+    pub(crate) fn lose(&mut self) {
+        self.lost = true;
+    }
+    /// Whether `text` more bytes, or another run, are past its caps.
+    fn over_cap(&self, text: usize) -> bool {
+        self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
+    }
+    /// Makes room for `text` more bytes and a run: each room doubling, as
+    /// a `Vec`'s does, but never past the caps; false if they are past.
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self, text: usize) -> bool {
+        if self.over_cap(text) {
+            return false;
+        }
+        let needed = self.text.len().saturating_add(text);
+        if needed > self.text.capacity() {
+            let room = (self.text.capacity().saturating_mul(2))
+                .max(needed)
+                .max(256)
+                .min(self.cap);
+            self.text
+                .reserve_exact(room.saturating_sub(self.text.len()));
+        }
+        if self.runs.len() == self.runs.capacity() {
+            let room = self.runs.capacity().saturating_mul(2).clamp(16, PRINT_RUNS);
+            self.runs
+                .reserve_exact(room.saturating_sub(self.runs.len()));
+        }
+        true
+    }
     /// The runs, in the order printed.
     pub fn iter(&self) -> impl Iterator<Item = Print<'_>> {
         self.runs.iter().map(|(row, cols, text)| Print {
@@ -444,10 +514,20 @@ impl Prints {
         self.runs.is_empty()
     }
     /// Adds `text` printed at `cols` of `row`: to the last run if it goes
-    /// on where that left off, on its row.
+    /// on where that left off, on its row. Past its caps, nothing more is
+    /// added, and it is lost; its room grows by doubling, never past them.
     pub(crate) fn push(&mut self, row: RowId, cols: Range<u16>, text: &str) {
-        work!(prints, text.len());
+        // Its room is within its caps: while it lasts, nothing is past them.
         let start = self.text.len();
+        // Written as `String` and `Vec` test their room, which then needn't
+        // be tested again.
+        let fits = text.len() <= self.text.capacity().wrapping_sub(start)
+            && self.runs.len() != self.runs.capacity();
+        if self.lost || !fits && !self.grow(text.len()) {
+            self.lost = true;
+            return;
+        }
+        work!(prints, text.len());
         self.text.push_str(text);
         let end = self.text.len();
         match self.runs.last_mut() {
@@ -460,9 +540,34 @@ impl Prints {
     }
 }
 
+/// The most bytes of text [`Prints`] keeps for a screen of `cells` cells:
+/// 4 a cell, and [`PRINT_TEXT_FLOOR`] at least.
+fn text_cap(cells: usize) -> usize {
+    let four = cells.saturating_mul(4);
+    if four > PRINT_TEXT_FLOOR {
+        four
+    } else {
+        PRINT_TEXT_FLOOR
+    }
+}
+
 /// `Prints`' part of the invariant checker (threats.md section 6).
 #[cfg(feature = "checks")]
 impl Prints {
+    /// 33: within its caps, its room too.
+    pub(crate) fn check_cap(&self) -> Result<(), String> {
+        check::ensure(
+            self.text.capacity() <= self.cap && self.runs.capacity() <= PRINT_RUNS,
+            || {
+                format!(
+                    "room for {} bytes of text of {} and {} runs",
+                    self.text.capacity(),
+                    self.cap,
+                    self.runs.capacity()
+                )
+            },
+        )
+    }
     /// 34: each run's text lies inside the text, the runs end to end in
     /// the order printed, and each run's columns are in order.
     pub(crate) fn check(&self) -> Result<(), String> {

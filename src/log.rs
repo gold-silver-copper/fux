@@ -192,6 +192,13 @@ impl Log {
         })
     }
 
+    /// Whether a piece of output after `seq` printed more than it records
+    /// (`fux_vt::Prints::lost`): past its cap, what else it printed is in
+    /// no entry.
+    pub fn prints_lost_after(&self, seq: Seq) -> bool {
+        self.printed_after(seq).any(|(_, p)| p.prints.lost())
+    }
+
     /// Whether something that came after `seq` was let go.
     pub fn lost_after(&self, seq: Seq) -> bool {
         self.dropped.is_some_and(|d| d > seq)

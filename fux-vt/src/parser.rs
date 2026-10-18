@@ -1820,11 +1820,12 @@ mod faults {
             "pictures.bytes",
             "pictures.shown",
             "prints.runs",
+            "prints.cap",
         ];
         assert_eq!(report.ran(), every.as_slice(), "{report}");
         assert!(report.is_clean(), "{report}");
         let waiting: Vec<&str> = report.waiting().iter().map(|(check, _)| *check).collect();
-        assert!(waiting.contains(&"parser.refused") && waiting.contains(&"prints.cap"));
+        assert!(waiting.contains(&"parser.refused"));
         Ok(())
     }
 

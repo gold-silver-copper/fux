@@ -36,6 +36,10 @@ const CUT: &str = "… earlier lines not kept (past history-bytes)\n";
 /// Said first instead when more came than fux keeps for a wait.
 const MORE_THAN_KEPT: &str =
     "… more came than the pane's journal keeps (journal-bytes): text may have passed unseen\n";
+/// Said first instead when a piece of output printed more than fux
+/// records of one (`fux_vt::Prints::lost`).
+const PRINTS_LOST: &str = "… a piece of output printed more than fux records of one (4 bytes \
+     a screen cell, 4,096 runs): text may have passed unseen\n";
 
 /// How long a bare `wait` on a pane that may go on alone waits for
 /// something new before it answers the pane as it is: longer than the
@@ -108,6 +112,8 @@ struct Watch {
     before: Before,
     /// Pieces of output it had not read yet were let go.
     missed: bool,
+    /// A piece of output printed more than it records (`Prints::lost`).
+    lost: bool,
     /// The first text found: which, its line, and when it came.
     found: Option<(String, String, Seq)>,
     /// The text printed on each row, runs that go on from each other
@@ -681,6 +687,7 @@ impl Watch {
             before: pane.before.clone(),
 
             missed: false,
+            lost: false,
             found: None,
             stream: HashMap::new(),
             appeared: HashMap::new(),
@@ -766,6 +773,12 @@ impl Watch {
                  (journal-bytes): the text may have come unseen",
             );
         }
+        if self.lost {
+            return Some(
+                "a piece of output printed more than fux records of one (4 bytes a screen \
+                 cell, 4,096 runs): the text may have come unseen",
+            );
+        }
         self.echo_skipped.then_some(
             "the text was only in the echo of what was typed, which a wait never takes; \
              wait for text only the output has, or read the screen with `PANE capture`",
@@ -783,8 +796,20 @@ impl Watch {
     ) -> Option<Found> {
         // Any wait's answer reads the journal: past its budget, it says so.
         self.missed |= pane.record.lost_after(self.looked);
+        self.lost |= pane.record.prints_lost_after(self.looked);
         if !texts.is_empty() && self.found.is_none() {
             self.read_prints(pane, texts, action);
+        }
+        // What a piece printed past what it records may be on a row of the
+        // screen that changed since the wait began.
+        if self.lost && self.found.is_none() {
+            let window = pane.screen().window();
+            let changed: String = (0..pane.screen().size().rows())
+                .filter_map(|y| window.row(y))
+                .filter(|row| row.version() > self.start.from.0)
+                .map(|row| format!("{}\n", row.cells_text().trim_end()))
+                .collect();
+            self.found = first_line(&changed, texts).map(|(t, l)| (t, l, pane.record.last()));
         }
         // What came since the last look: the pieces that printed a text
         // waited to go, and the first bell.
@@ -1035,10 +1060,11 @@ impl Watch {
     /// Whether what came since it began was more than the pane keeps, and
     /// the notice that says so: some was let go before the wait read it.
     fn cut(&self, pane: &Pane) -> Option<&'static str> {
-        match (self.missed, pane.cut()) {
-            (true, _) => Some(MORE_THAN_KEPT),
-            (false, true) => Some(CUT),
-            (false, false) => None,
+        match (self.missed, self.lost, pane.cut()) {
+            (true, _, _) => Some(MORE_THAN_KEPT),
+            (false, true, _) => Some(PRINTS_LOST),
+            (false, false, true) => Some(CUT),
+            (false, false, false) => None,
         }
     }
 }
@@ -1201,6 +1227,15 @@ fn lines_from(pane: &Pane, from: usize) -> String {
     };
     let (text, _) = crate::capture::pane(pane, Some(kept.saturating_sub(from)), view, false, false);
     if text == "\n" { String::new() } else { text }
+}
+
+/// The first of `texts` that a line of `lines` holds, and that line.
+fn first_line(lines: &str, texts: &[String]) -> Option<(String, String)> {
+    lines.lines().find_map(|line| {
+        (texts.iter())
+            .find(|t| found_in(line, t) > 0)
+            .map(|t| (t.clone(), line.to_owned()))
+    })
 }
 
 /// Whether the screen's lines show `text`, as `found_in` finds it.
@@ -1483,6 +1518,58 @@ mod tests {
         let far = crate::after(began, Duration::from_secs(2));
         assert!(waiting.answer(&session, far).is_none());
         assert!(waiting.due() > Instant::now());
+        Ok(())
+    }
+
+    /// A text printed and drawn over in one piece is still met, from the
+    /// piece's record; past the record's cap (`fux_vt::Prints::lost`), a
+    /// text printed after what it keeps is met on the line it changed, and
+    /// the answer says the record was cut.
+    #[test]
+    fn a_text_printed_past_the_record_s_cap_is_met_on_its_line() -> Result<(), String> {
+        use crate::command::{Until, Wait};
+        use std::time::{Duration, Instant};
+        let (now, limit) = (Instant::now(), Duration::from_secs(60));
+        let id = crate::id::PaneId::of(1);
+        let waiting = |session: &crate::session::Session, text: &str| {
+            let wait = Wait {
+                until: vec![Until::Text(text.into())],
+                timeout: None,
+                print: false,
+                marks: false,
+            };
+            let pane = session.panes.get(&id).ok_or("no %1")?;
+            Ok::<_, String>(super::Waiting::new(
+                &[pane],
+                wait,
+                super::Follows::Wait,
+                now,
+                limit,
+            ))
+        };
+        // Drawn over, below the cap: kept.
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let mut wait = waiting(&session, "SECRET")?;
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"SECRET\rxxxxxx\r\n");
+        let answer = wait.answer(&session, now).ok_or("not met 1")?;
+        assert!(answer.text.contains("met \"SECRET\""), "{}", answer.text);
+        // Kept before the cap, then 65,535 copies of `x`, past it: met.
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let mut wait = waiting(&session, "SECRET")?;
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"SECRET\rxxxxxx\x1b[65535b\r\n");
+        let answer = wait.answer(&session, now).ok_or("not met 2")?;
+        assert!(answer.text.contains("met \"SECRET\""), "{}", answer.text);
+        // Printed after the cap (16 KiB on this screen): not in the record,
+        // but on a line it changed.
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let mut wait = waiting(&session, "LATE")?;
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"x\x1b[20000b\r\n\x1b[2J\x1b[HLATE\r\n");
+        assert!(pane.record.prints_lost_after(crate::log::Seq(0)));
+        let answer = wait.answer(&session, now).ok_or("not met 3")?;
+        assert!(answer.text.contains("met \"LATE\""), "{}", answer.text);
         Ok(())
     }
 

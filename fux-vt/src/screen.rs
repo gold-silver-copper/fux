@@ -477,9 +477,9 @@ impl Screen {
             report.record("pictures.shown", "", self.check_pictures_shown());
             if let Some(prints) = &self.prints {
                 report.record("prints.runs", "", prints.check());
+                report.record("prints.cap", "", prints.check_cap());
             }
             report.wait("grid.pending_wrap", "P11: the tag of which setter set it");
-            report.wait("prints.cap", "B10: the Prints cap and lost()");
             report.wait("styles.memo", "P22: the DECCARA memo");
             report.wait("grid.uniform", "P19: uniform rows");
             report
@@ -1034,11 +1034,15 @@ impl Screen {
     }
     /// Records what is printed from now on, or stops and forgets it.
     pub(crate) fn record_prints(&mut self, on: bool) {
-        self.prints = on.then(Prints::default);
+        let cells = self.size().cells();
+        self.prints = on.then(|| Prints::new(cells));
     }
     /// What was printed since the last call, while recording.
     pub(crate) fn take_prints(&mut self) -> Prints {
-        self.prints.as_mut().map(mem::take).unwrap_or_default()
+        let cells = self.size().cells();
+        (self.prints.as_mut())
+            .map(|prints| mem::replace(prints, Prints::new(cells)))
+            .unwrap_or_default()
     }
     /// The number of the last change to a row of the primary screen's
     /// history that has since been let go past its budget: 0 if none was.
@@ -1130,6 +1134,10 @@ impl Screen {
         self.next_id = next;
         self.version = version;
         self.structural = version;
+        // What was printed before it is on rows and columns that changed.
+        if let Some(prints) = self.prints.as_mut().filter(|p| !p.is_empty()) {
+            prints.lose();
+        }
         Ok(())
     }
 
@@ -3161,6 +3169,11 @@ mod faults {
         shows("prints.runs", |s| {
             if let Some(prints) = &mut s.prints {
                 prints.text.push('x');
+            }
+        })?;
+        shows("prints.cap", |s| {
+            if let Some(prints) = &mut s.prints {
+                prints.text.reserve(prints.cap().saturating_add(1));
             }
         })?;
         Ok(())

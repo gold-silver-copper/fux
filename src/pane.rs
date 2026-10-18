@@ -819,7 +819,9 @@ impl Pane {
             // A line drawn again as it read is no news, as far as the
             // first `REDRAWS` bytes after an input tell: past them (a flood)
             // every run is, and the rows it printed on are not read.
-            let tell = self.redraws < REDRAWS;
+            // Nor one that printed more than it records: what it changed
+            // is unknown (`Prints::lost`).
+            let tell = self.redraws < REDRAWS && !prints.lost();
             self.redraws = self.redraws.saturating_add(run.len());
             let held = |p: &Print<'_>| {
                 tell.then(|| (self.seen.get(&p.row)).or(self.before.get(&p.row).map(|b| &b.0)))
