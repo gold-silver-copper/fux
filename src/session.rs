@@ -212,7 +212,9 @@ pub enum Error {
     // A name that cannot be given.
     NameTaken(String),
     /// A tab name given before: those tabs, then their panes.
-    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
+    /// A tab has the name: those tabs and their panes, and whether a
+    /// restore brought one of them back.
+    TabNameTaken(String, Vec<TabId>, Vec<PaneId>, bool),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
     /// Any other failure, made in one place and told apart by its code
@@ -277,14 +279,24 @@ impl std::fmt::Display for Error {
             Self::NoRows => f.write_str("the pane has no rows"),
             Self::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Self::TabNameTaken(name, tabs, panes) => {
+            Self::TabNameTaken(name, tabs, panes, restored) => {
                 let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))
                     .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
                 let ids = joined(ids, " ");
                 let kills = joined(tabs, " tab kill`, `fux str ");
+                // The surprise of a server that brought back what an earlier
+                // one on its socket had, which was killed or crashed.
+                let restored = match restored {
+                    true => {
+                        ", brought back from the last server on this socket, which did not \
+                         stop cleanly (killed or crashed; fux saves a server's layout in \
+                         $XDG_STATE_HOME/fux for that): its program waits for `respawn`"
+                    }
+                    false => "",
+                };
                 write!(
                     f,
-                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
+                    "a tab is named {name:?} already ({ids}){restored}; close it (`fux str {kills} tab kill`) or choose another name"
                 )
             }
             Self::NameReadAsTarget(name) => write!(
@@ -921,7 +933,8 @@ impl Session {
         if self.workspaces.iter().any(|w| w.name == name) {
             return Err(Error::NameTaken(name.to_owned()));
         }
-        no_tab_named(&self.workspaces, name, except)
+        let paused = |p: &PaneId| self.panes.get(p).is_some_and(Pane::paused);
+        no_tab_named(&self.workspaces, name, except, paused)
     }
 
     /// Gives tab `id` the name `name`, checked. It takes it from each other
@@ -3274,15 +3287,17 @@ fn check_workspace_name<'a>(
         return Err(Error::NameTaken(name.to_owned()));
     }
     // A tab's name too: the workspace's would hide it from `str NAME tab`.
-    no_tab_named(others, name, None)
+    no_tab_named(others, name, None, |_| false)
 }
 
 /// That no tab of `workspaces` but `except` was given the name `name`; else
-/// why not, with those tabs and their panes.
+/// why not, with those tabs and their panes, and whether one is `paused`
+/// (a restore brought it back).
 fn no_tab_named<'a>(
     workspaces: impl IntoIterator<Item = &'a Workspace>,
     name: &str,
     except: Option<TabId>,
+    paused: impl Fn(&PaneId) -> bool,
 ) -> Result<(), Error> {
     let tabs: Vec<&Tab> = (workspaces.into_iter())
         .flat_map(Workspace::tabs)
@@ -3295,7 +3310,10 @@ fn no_tab_named<'a>(
     // program is not started. The tabs, then their panes.
     let panes = (tabs.iter()).flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
     let tabs = tabs.iter().map(|t| t.id).collect();
-    Err(Error::TabNameTaken(name.to_owned(), tabs, panes.collect()))
+    let panes: Vec<PaneId> = panes.collect();
+    // One a restore brought back: the surprise is said.
+    let restored = panes.iter().any(paused);
+    Err(Error::TabNameTaken(name.to_owned(), tabs, panes, restored))
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -4007,7 +4025,7 @@ mod tests {
         assert_eq!(
             quiet(output(&mut s, "str %2 pane capture json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[0,16],"lines":["a       b \"q\" 界"],"wrap_pending":false,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
                 "\n"
             )
         );
@@ -4342,10 +4360,10 @@ mod tests {
         Ok(())
     }
 
-    /// A capture's cursor is where it is among the lines printed: none
-    /// while hidden, on a row trimmed away, outside the columns taken, or
-    /// on the screen not captured; past the columns cut and the rows
-    /// joined.
+    /// A capture's cursor is where it is among the lines printed, past
+    /// them on a blank row trimmed away: none while hidden, outside the
+    /// columns taken, or on the screen not captured; past the columns cut
+    /// and the rows joined, unless `wrapped`.
     #[test]
     fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
@@ -4365,19 +4383,19 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b[?25l");
         assert_eq!(cursor(&mut s, "")?, "null", "hidden");
         s.output(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
-        assert_eq!(cursor(&mut s, "")?, "null", "on a blank row trimmed");
+        assert_eq!(cursor(&mut s, "")?, "[2,0]", "on a blank row trimmed");
         s.output(
             PaneId::of(1),
             &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
         );
-        assert_eq!(cursor(&mut s, "")?, "[2,2]");
-        assert_eq!(cursor(&mut s, "joined")?, "[1,2]");
+        assert_eq!(cursor(&mut s, "")?, "[1,2]");
+        assert_eq!(cursor(&mut s, "wrapped")?, "[2,2]");
         s.output(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
         assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
         assert_eq!(cursor(&mut s, "main-screen")?, "null");
         s.output(PaneId::of(1), b"\x1b[?1049l");
         assert_eq!(cursor(&mut s, "alt-screen")?, "null");
-        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
+        assert_eq!(cursor(&mut s, "main-screen")?, "[1,2]");
         // What is highlighted is marked in JSON's lines too.
         s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
         let json = output(&mut s, "%1 marks capture json")?;
@@ -4387,6 +4405,15 @@ mod tests {
             inverted.as_ref().is_err_and(|e| e.starts_with("range: ")),
             "{inverted:?}"
         );
+        // A glyph in the last column leaves the cursor on it, the wrap
+        // pending: said so.
+        s.output(PaneId::of(1), &[b"\r\n".as_slice(), &[b'D'; 40]].concat());
+        assert_eq!(cursor(&mut s, "wrapped")?, "[3,39]");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""wrap_pending":true"#), "{json}");
+        s.output(PaneId::of(1), b"\r");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""wrap_pending":false"#), "{json}");
         Ok(())
     }
 

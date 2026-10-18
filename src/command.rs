@@ -231,8 +231,9 @@ wire! {
         /// Every row as it is, blank rows at the end and all, rather than
         /// trimmed.
         pub full: bool,
-        /// Soft-wrapped rows joined into the lines they wrap.
-        pub join: bool,
+        /// Each row a line, as the screen wraps them, rather than
+        /// soft-wrapped rows joined into the lines they wrap.
+        pub wrapped: bool,
         /// Colours and attributes, as SGR escapes, or with `json` as runs.
         pub styles: bool,
         /// Which screen it reads.

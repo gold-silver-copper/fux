@@ -1117,6 +1117,12 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         [line] if line.contains(char::is_whitespace) => token::source("command line", line)?,
         // Help as other programs give it, and older notes say: `help agents`,
         // `help json`, `help WORD`.
+        [help, agents, topic] if help == "help" && agents == "agents" => {
+            token::arguments(&["str", topic, "help-agents-on"])
+        }
+        [agents, topic] if agents == "help-agents" => {
+            token::arguments(&["str", topic, "help-agents-on"])
+        }
         [help, topic] if help == "help" => match topic.as_str() {
             "agents" => token::arguments(&["help-agents"]),
             "json" => token::arguments(&["help-json"]),

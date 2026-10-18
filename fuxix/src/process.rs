@@ -890,7 +890,7 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &Path) -> Option<bool> {
 /// What one process of the group does, by its main thread and its others,
 /// if anything (not one ended, or waiting for a child): busy while one
 /// runs, or the main one sleeps on a timer, or (parked, waiting for the
-/// others) another does while none reads; not known while its system call
+/// others) another does, while none waits on the terminal; not known while its system call
 /// cannot be read; reading while it (or, the main one parked, another)
 /// waits for the terminal and none of the others can go on alone, on a
 /// timer or polling: else polling, as it may draw again on its own; else
@@ -946,10 +946,12 @@ fn process_activity(pid: Pid, tty: &Path) -> Option<Activity> {
         Thread::Polls => Activity::Polling,
         Thread::Reads if polling || asleep => Activity::Polling,
         Thread::Reads => Activity::Reading,
-        Thread::Sleeps | Thread::Parked if reading && (polling || asleep) => Activity::Polling,
-        Thread::Sleeps | Thread::Parked if reading => Activity::Reading,
+        Thread::Sleeps | Thread::Parked if reading && !polling && !asleep => Activity::Reading,
+        // A thread that waits on the terminal, with or without a limit,
+        // while another (or the main one) sleeps on a timer: a program's
+        // input thread beside its frame loop (rig's, a game's): it polls.
+        Thread::Sleeps | Thread::Parked if reading || polling => Activity::Polling,
         Thread::Sleeps | Thread::Parked if asleep => Activity::Busy,
-        Thread::Sleeps | Thread::Parked if polling => Activity::Polling,
         Thread::Sleeps | Thread::Parked => Activity::Waiting,
     })
 }

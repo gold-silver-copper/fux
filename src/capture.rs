@@ -4,7 +4,7 @@
 use crate::command::{CaptureView, Source};
 use crate::id::ClientId;
 use crate::json::Json;
-use crate::pane::{Pane, Process, Runs};
+use crate::pane::{Pane, Runs};
 use fux_vt::{Attributes, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen};
 use std::time::Instant;
 
@@ -30,7 +30,7 @@ pub fn pane(
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
     };
     let mut lines: Vec<Cells<'_>> = Vec::new();
-    // A soft-wrapped row goes on in the next, joined with `joined`.
+    // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
     let read = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
@@ -55,7 +55,7 @@ pub fn pane(
             if !*wrapped {
                 *line = line.saturating_add(1);
             }
-            *wrapped = view.join && row.wrapped();
+            *wrapped = !view.wrapped && row.wrapped();
             Some(*line)
         })
         .collect();
@@ -64,7 +64,7 @@ pub fn pane(
         .map(|(_, line)| *line)
         .collect();
     let taken = |i: &usize| {
-        in_rows(i) || (view.join && line_of.get(*i).is_some_and(|line| touched.contains(line)))
+        in_rows(i) || (!view.wrapped && line_of.get(*i).is_some_and(|line| touched.contains(line)))
     };
     for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| taken(i)) {
         // A wide glyph's second cell is drawn as its first: the same style,
@@ -72,7 +72,7 @@ pub fn pane(
         let mut lead = Attributes::default();
         // Joined, the spacer a wide glyph left at the row's end, not fitting
         // there, is no part of the line (`Row::ends_in_spacer`).
-        let spacer = usize::from(view.join && row.ends_in_spacer());
+        let spacer = usize::from(!view.wrapped && row.ends_in_spacer());
         let cells = row
             .cells()
             .take(row.len().saturating_sub(spacer))
@@ -139,19 +139,73 @@ pub fn pane(
                 lines.push(cells);
             }
         }
-        wraps = view.join && row.wrapped();
+        wraps = !view.wrapped && row.wrapped();
     }
     let (rows, cols) = screen.size().into();
     let cursor =
         cursor.and_then(|(row, col)| Some((u16::try_from(row).ok()?, u16::try_from(col).ok()?)));
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
+    // A glyph went into the last column: the next one goes on the next
+    // line, though the cursor shows on this one's last cell.
+    let pending = cursor.is_some() && screen.pending_wrap();
     print(
         ("pane", pane.id.to_string()),
         (rows, cols),
-        cursor,
+        (cursor, Some(pending)),
         (lines, view, screen_background(screen)),
         state,
     )
+}
+
+/// A run of highlighted cells on the screen shown, as a selection is
+/// drawn (reverse video, or a background other than the screen's own):
+/// its row and first column, from 0 as a mouse event counts them, its
+/// width in cells, and its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lit {
+    pub row: u16,
+    pub col: u16,
+    pub len: u16,
+    pub text: String,
+}
+
+/// The highlighted runs of the screen shown, row by row.
+pub fn highlights(screen: &Screen) -> Vec<Lit> {
+    let base = screen_background(screen);
+    let window = screen.window();
+    let mut lit = Vec::new();
+    for y in 0..window.rows() {
+        let Some(row) = window.row(y) else {
+            continue;
+        };
+        let mut run: Option<Lit> = None;
+        for (x, cell) in row.cells().enumerate() {
+            let a = cell.attributes();
+            let on = a.inverse() || a.background() != base;
+            let glyph = if cell.is_wide_continuation() {
+                ""
+            } else {
+                cell.shown()
+            };
+            match (&mut run, on) {
+                (Some(r), true) => {
+                    r.len = r.len.saturating_add(1);
+                    r.text.push_str(glyph);
+                }
+                (None, true) => {
+                    run = Some(Lit {
+                        row: y,
+                        col: u16::try_from(x).unwrap_or(u16::MAX),
+                        len: 1,
+                        text: glyph.to_owned(),
+                    });
+                }
+                (_, false) => lit.extend(run.take()),
+            }
+        }
+        lit.extend(run);
+    }
+    lit
 }
 
 /// The screen's own background, against which a highlight shows: the
@@ -268,7 +322,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
     print(
         ("client", client.to_string()),
         (grid.rows, grid.cols),
-        grid.cursor,
+        (grid.cursor, None),
         (lines, view, Color::default()),
         Some(Vec::new()),
     )
@@ -299,14 +353,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
         None => (Json::Null, Json::Null),
     };
-    // A program a restore brought back, waiting for `respawn`.
-    let paused = match pane.process {
-        Process::Absent => match pane.runs {
-            Runs::Program(_) => true,
-            Runs::Shell => false,
-        },
-        Process::Reading(_) | Process::HungUp(_) | Process::Exited(_) => false,
-    };
+    let paused = pane.paused();
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
         // reading, waiting, busy, exited 0, …: whether to look now.
@@ -343,10 +390,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
         ("revision", Json::int(pane.revision)),
-        (
-            "command_running",
-            Json::Bool(commands.running() && pane.process.exit_status().is_none()),
-        ),
+        ("command_running", Json::Bool(pane.command_running())),
         (
             "last_status",
             commands.last_status.map_or(Json::Null, Json::int),
@@ -392,7 +436,7 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
 fn print(
     (key, id): (&'static str, String),
     (rows, cols): (u16, u16),
-    cursor: Option<(u16, u16)>,
+    (cursor, pending): (Option<(u16, u16)>, Option<bool>),
     (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, Color),
     state: Option<Vec<(&'static str, Json<'static>)>>,
 ) -> Read {
@@ -430,8 +474,8 @@ fn print(
     out.push('\n');
     let json = state.map(|state| {
         trim(&mut lines, false);
-        // On a row trimmed away, the cursor is on none printed.
-        let cursor = cursor.filter(|(row, _)| usize::from(*row) < lines.len());
+        // On a blank row trimmed away, it is still where it is: past the
+        // lines printed.
         let cursor = cursor.map_or(Json::Null, |(y, x)| {
             Json::Array(vec![Json::int(y), Json::int(x)])
         });
@@ -445,6 +489,7 @@ fn print(
                 Json::Array(lines.iter().map(|l| Json::str(text(l, false))).collect()),
             ),
         ];
+        fields.extend(pending.map(|p| ("wrap_pending", Json::Bool(p))));
         if view.styles {
             fields.push(("styles", Json::Array(lines.iter().map(runs).collect())));
         }
@@ -543,10 +588,7 @@ mod tests {
     #[test]
     fn a_painted_blank_before_a_wide_glyph_wrapped_on_is_part_of_the_line()
     -> Result<(), Box<dyn std::error::Error>> {
-        let join = CaptureView {
-            join: true,
-            ..CaptureView::default()
-        };
+        let join = CaptureView::default();
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
             let size = fux_vt::Size::new(3, 5)?;
             let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
@@ -571,7 +613,6 @@ mod tests {
     fn columns_cut_short_of_the_spacer_keep_their_last_cell()
     -> Result<(), Box<dyn std::error::Error>> {
         let view = CaptureView {
-            join: true,
             cols: Some((0, 2)),
             ..CaptureView::default()
         };

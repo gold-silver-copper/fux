@@ -4,10 +4,12 @@ import re
 
 
 def unwrap(text, width):
-    """Logical lines again: a row filled to the width goes on in the next."""
+    """Logical lines again: a row filled exactly to the width goes on in the
+    next (a terminal that cuts rows at its width; fux's capture joins them
+    already, its lines longer)."""
     out = []
     for row in text.split("\n"):
-        if out and len(out[-1][-1]) >= width:
+        if out and len(out[-1][-1]) == width:
             out[-1].append(row)
         else:
             out.append([row])

@@ -140,14 +140,14 @@ pub const WORDS: &[Word] = &[
     word("Reading", "capture", "subject -- capture", "the screen, as the words on the pane say"),
     word("Reading", "history", "x lines -- x", "capture: lines of history first"),
     word("Reading", "all-history", "x -- x", "capture: all the history first"),
-    word("Reading", "joined", "x -- x", "capture: wrapped rows joined into their lines"),
+    word("Reading", "wrapped", "x -- x", "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed"),
     word("Reading", "full", "x -- x", "capture: every row and cell, untrimmed"),
     word("Reading", "styles", "x -- x", "capture: colours and attributes"),
     word("Reading", "marks", "x -- x", "highlighted text as ⟦this⟧: in a capture, or the screen a wait prints"),
     word("Reading", "main-screen", "x -- x", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", "x -- x", "capture: the full screen a program drew last"),
     word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
-    word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0; joined, each line they touch whole"),
+    word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)"),
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
@@ -234,7 +234,8 @@ pub const WORDS: &[Word] = &[
     word("Config", "key-names", "--", "the names keys go by"),
     // Help
     word("Help", "help", "--", "the words, under their headings"),
-    word("Help", "help-agents", "--", "how to drive programs from a script or an agent"),
+    word("Help", "help-agents", "--", "how to drive programs from a script or an agent: the first screen, enough for most work"),
+    word("Help", "help-agents-on", "word --", "one topic of that guide at length (answers start keys waits read echo status programs shells sizes servers more), or all of it"),
     word("Help", "help-json", "--", "what json gives"),
     word("Help", "explain", "word --", "one word at length"),
     word("Help", "check", "file --", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),
@@ -517,7 +518,7 @@ fn modify(
         "horizontal" => built.axis = Some(Axis::Horizontal),
         "vertical" => built.axis = Some(Axis::Vertical),
         "kill-first" => built.kill = true,
-        "joined" => built.view.join = true,
+        "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
         "styles" => built.view.styles = true,
         "marks" => waits.marks = true,
@@ -1484,7 +1485,18 @@ impl fuxth::Host for Host<'_> {
             "key-names" => self.show(&format!("{}\n", crate::keys::all_names().join(" "))),
             // -------------------------------------------------------- help
             "help" => self.show(&help::overview()),
-            "help-agents" => self.show(help::AGENTS),
+            "help-agents" => self.show(help::agents_first()),
+            "help-agents-on" => {
+                let topic = string(&next()?)?;
+                let text = help::agents_topic(&topic).ok_or_else(|| {
+                    let topics = help::agents_topics().join(" ");
+                    fail(
+                        Code::BadValue,
+                        format!("no topic {topic:?}: {topics}, or all"),
+                    )
+                })?;
+                self.show(&text)
+            }
             "help-json" => self.show(help::JSON),
             "explain" => {
                 let word = string(&next()?)?;
