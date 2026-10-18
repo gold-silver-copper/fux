@@ -2643,7 +2643,7 @@ impl Screen {
     /// one-based and relative to the margins in origin mode, clamped to the
     /// screen (to the margins in origin mode), with absent or 0 meaning
     /// its whole extent; one whose top is below its bottom, or left past
-    /// its right, sums nothing.
+    /// its right, has no reply.
     pub(crate) fn rectangle_checksum(&self, p: &Parameters) -> Option<Reply> {
         let g = self.grid();
         let mut sum = 0u16;

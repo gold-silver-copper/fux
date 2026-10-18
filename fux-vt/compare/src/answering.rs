@@ -221,6 +221,7 @@ impl Answering {
                             let screen = self.engine.snapshot(0)?;
                             let origin = screen.origin || (!self.reads_origin && self.origin_set);
                             match checksum(&screen, &params).filter(|_| !origin) {
+                                Some(reply) if reply.is_empty() => {}
                                 Some(reply) => {
                                     self.told = self.told.saturating_add(1);
                                     out.extend_from_slice(reply.as_bytes());
@@ -315,8 +316,9 @@ fn cell_sum(cell: &Cell) -> u16 {
 /// Pi ! ~ xxxx ST`, the cells' sum in 16 bits, negated, as four upper-case
 /// hex digits. The page is ignored; the coordinates are one-based, clamped
 /// to the screen, absent or 0 meaning its whole extent; a rectangle whose
-/// top is below its bottom, or left past its right, sums nothing. `None` in
-/// origin mode: see the module documentation.
+/// top is below its bottom, or left past its right, is ignored, as DEC STD
+/// 070's DECRQCRA has it: no reply, empty. `None` in origin mode: see the
+/// module documentation.
 pub fn checksum(screen: &Snapshot, params: &[u16]) -> Option<String> {
     if screen.origin {
         return None;
@@ -330,20 +332,15 @@ pub fn checksum(screen: &Snapshot, params: &[u16]) -> Option<String> {
     };
     let (top, left) = (at(2, 0, last_row), at(3, 0, last_col));
     let (bottom, right) = (at(4, last_row, last_row), at(5, last_col, last_col));
+    if top > bottom || left > right {
+        return Some(String::new());
+    }
     let mut sum = 0u16;
     let rows = usize::from(bottom.saturating_sub(top)).saturating_add(1);
     let cols = usize::from(right.saturating_sub(left)).saturating_add(1);
-    for line in screen
-        .screen
-        .iter()
-        .skip(usize::from(top))
-        .take(rows)
-        .filter(|_| top <= bottom)
-    {
+    for line in screen.screen.iter().skip(usize::from(top)).take(rows) {
         for cell in line.cells.iter().skip(usize::from(left)).take(cols) {
-            if left <= right {
-                sum = sum.wrapping_add(cell_sum(cell));
-            }
+            sum = sum.wrapping_add(cell_sum(cell));
         }
     }
     Some(format!(
