@@ -447,14 +447,7 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
              to wait for something first: PANE … wait, then PANE capture"
                 .to_owned()
         }
-        _ => {
-            let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == *option));
-            let on: Vec<&str> = (help::OPTIONS.iter())
-                .map(|(word, ..)| *word)
-                .filter(takes)
-                .collect();
-            format!("{option} goes on {}", on.join(", "))
-        }
+        _ => format!("{option} goes on {}", takers(option)),
     };
     Err(fail(Lang::Unused, format!("takes no {option}: {instead}")))
 }
@@ -732,32 +725,35 @@ pub fn hint(word: &str) -> Option<String> {
     Some(format!("it is text: {}", used.replace("{}", word)))
 }
 
+/// The words that take `option`, listed.
+fn takers(option: &str) -> String {
+    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
+    let on: Vec<&str> = help::OPTIONS
+        .iter()
+        .map(|(w, ..)| *w)
+        .filter(takes)
+        .collect();
+    crate::words::listed(&on, "or")
+}
+
 /// What a request's word left at a program's end is told: how to end it.
 pub fn unacted(word: &str) -> Option<String> {
     let spec = WORDS
         .iter()
         .find(|w| w.name == word && w.effect.starts_with("x "))?;
-    Some(match spec.group {
-        "Waiting" => "a wait nothing acts on: end it with wait (`%2 str T wait-text wait`), \
-            or put it before the word it waits after (`%2 str T wait-text str y text send-keys`)"
-            .to_owned(),
-        "Input" if word != "mouse" => "keys nothing sends: end them with send-keys \
-            (`%2 str y text str Enter key send-keys`)"
-            .to_owned(),
-        _ => {
-            let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == word));
-            let on: Vec<&str> = help::OPTIONS
-                .iter()
-                .map(|(w, ..)| *w)
-                .filter(takes)
-                .collect();
-            format!(
-                "{word} goes before {}, which takes it: on opts for run, new-tab and new-workspace \
-                 (`opts str DIR cwd new-tab`), on the pane for the rest (`%2 all-history capture`)",
-                crate::words::listed(&on, "or")
-            )
+    let end = match spec.group {
+        "Waiting" => {
+            "`%2 str T wait-text wait`, or before the word it waits after: \
+                      `%2 str T wait-text str y text send-keys`"
         }
-    })
+        "Input" => "`%2 str y text str Enter key send-keys`",
+        "Reading" => "`%2 all-history capture`",
+        _ => "on opts for run, new-tab and new-workspace: `opts str DIR cwd new-tab`",
+    };
+    let takers = takers(word);
+    Some(format!(
+        "nothing acts on it: {word} goes before {takers}, which do: {end}"
+    ))
 }
 
 /// The most input one send-keys sends: a request holds it whole.
