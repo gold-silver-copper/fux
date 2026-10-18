@@ -674,7 +674,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
     fux_blank.set(false);
     let ha: Vec<_> = fux.history.iter().rev().collect();
     let hb: Vec<_> = other.history.iter().rev().collect();
-    if ha.len() > hb.len() {
+    if ha.len() != hb.len() {
         field(
             "history rows kept".into(),
             Field::History,
@@ -929,6 +929,19 @@ mod tests {
             fields(&full, &short),
             [("row 0 cells read".to_owned(), Field::Size)]
         );
+    }
+
+    /// A subject that kept fewer history rows than the other differs, as
+    /// one that kept more does: its loss of its oldest rows is seen.
+    #[test]
+    fn history_kept_short_differs_both_ways() {
+        let mut short = row(&[None]);
+        short.history = vec![("b".into(), false)];
+        let mut long = short.clone();
+        long.history = vec![("a".into(), false), ("b".into(), false)];
+        let kept = [("history rows kept".to_owned(), Field::History)];
+        assert_eq!(fields(&short, &long), kept);
+        assert_eq!(fields(&long, &short), kept);
     }
 
     #[test]

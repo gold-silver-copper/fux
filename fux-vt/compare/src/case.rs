@@ -424,7 +424,8 @@ impl Running {
 
     /// The subject's snapshot and each engine's verdict beside it. The
     /// subject is asked for the case's rows of history (fux-vt gives all it
-    /// keeps, whatever is asked), the engines for as many as it gave.
+    /// keeps, whatever is asked), the engines for the case's or as many as
+    /// it gave, the more: a subject that lost rows it should keep differs.
     fn compare(&mut self) -> Result<(Snapshot, Vec<Verdict>), String> {
         let subject = engine::name(self.subject);
         let history = self.history;
@@ -433,7 +434,7 @@ impl Running {
         let mut kept = Vec::with_capacity(self.engines.len());
         for (index, mut engine) in std::mem::take(&mut self.engines) {
             engine::kind(index).ok_or("no such engine")?;
-            match guarded(|| engine.snapshot(fux.history.len())) {
+            match guarded(|| engine.snapshot(history.max(fux.history.len()))) {
                 Ok(snapshot) => {
                     verdicts.push(verdict(self.subject, &fux, index, snapshot));
                     kept.push((index, engine));

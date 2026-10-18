@@ -294,9 +294,13 @@ Normalized away:
   terminal.
 - **An empty title on the engine's side is not compared.** Some engines
   clear the title on RIS.
-- **Only the history rows fux-vt keeps are compared.** Engines keep far
-  more than a case can fill. Cases that resize give fux-vt 10000 rows,
-  since a screen that grows pulls rows back from history.
+- **The history rows a case asks for are compared, or all fux-vt keeps,
+  the more.** Engines keep far more than a case can fill. fux-vt's budget
+  is in bytes: it gets the case's rows at 24 bytes and 8 a cell, and 64
+  KiB beside them for its maps and styles, so a subject keeping fewer
+  rows than the others differs on "history rows kept", as one keeping
+  more does. Cases that resize give fux-vt 10000 rows, since a screen
+  that grows pulls rows back from history.
 - **Random cases settle the cursor before each resize.** They send `CSI ? 7
   h`, CR, `.`, CR (`--newline-before-resize` in a replay), because engines
   choose differently whether a pending wrap survives a reflow, where the

@@ -75,11 +75,18 @@ fn cell(c: &CellRef<'_>) -> Cell {
     Cell::new(text, width, style)
 }
 
+/// The bytes of history's budget beside its rows, with any history.
+const HISTORY_ROOM: usize = 1 << 16;
+
 pub fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
     let size = crate::vt_size(setup.rows, setup.cols)?;
-    // Bytes for `setup.history` full rows: 24 a row, 8 a cell.
+    // Bytes for `setup.history` full rows, 24 a row and 8 a cell, and,
+    // with any history, room beside them for what else history's budget
+    // holds (its maps' buckets, the style table past the screen's share):
+    // so fux-vt keeps at least the case's rows, and a row lost is seen.
     let row = usize::from(setup.cols).saturating_mul(8).saturating_add(24);
-    let history = setup.history.saturating_mul(row);
+    let room = if setup.history == 0 { 0 } else { HISTORY_ROOM };
+    let history = setup.history.saturating_mul(row).saturating_add(room);
     let parser = Parser::with_options(size, history, options(setup.reflow))
         .map_err(|e| format!("fux-vt: {e}"))?;
     Ok(Box::new(Vt {
