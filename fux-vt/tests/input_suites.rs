@@ -203,7 +203,7 @@ fn kitty_keys() -> Result {
 fn xterm_keys() -> Result {
     let counts = encoder_suite("xterm", include_str!("data/keys/xterm-keys.txt"))?;
     // Agree, differ as recorded, not applicable.
-    assert_eq!(counts, (2230, 82, 112));
+    assert_eq!(counts, (2312, 0, 112));
     Ok(())
 }
 

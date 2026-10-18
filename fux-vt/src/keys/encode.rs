@@ -475,17 +475,18 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 /// - any other modifiers apply: Ctrl-1, Ctrl-Alt-Space, Shift-Enter,
 ///   Ctrl-Tab; Backspace's never.
 ///
-/// At level 2 every modifier applies, but Ctrl alone on Backspace and Shift
-/// alone on a character other than Space, which types its text. xterm sends
-/// Shift-1 as `!` too, but Shift-a as `CSI 27 ; 2 ; 65 ~`: fux's one
-/// departure, as it cannot tell Shift from Caps Lock on a letter, which the
-/// client's terminal sends as text either way. Level 3 is 2, and an
-/// unmodified ordinary key is `CSI 27 ; 1 ; code ~` too (ctlseqs: "space
-/// sends CSI 2 7 ; 1 ; 3 2 ~"). There a capital letter shows its Shift,
-/// but a symbol does not (`!` is Shift-1 on one layout, a key of its own
-/// on another): unless the terminal reported Shift (kitty), it is sent
-/// as unmodified, `CSI 27 ; 1 ; 33 ~`, where xterm, which knows the
-/// keyboard, sends Shift with it.
+/// At level 2 every modifier applies, but Ctrl alone on Backspace, and
+/// Shift alone on a character Ctrl makes no control of (`!`, `)`, `+`),
+/// which types its text, as real xterm 411 sends them
+/// (tests/data/keys/xterm-keys.txt): Shift-a is `CSI 27 ; 2 ; 65 ~`,
+/// Shift-2 `CSI 27 ; 2 ; 64 ~`, Shift-1 `!`. Shift-Tab is `CSI Z`. Level
+/// 3 is 2, Ctrl-Backspace and every shifted character escaped too, and an
+/// unmodified ordinary key is `CSI 27 ; 1 ; code ~` (ctlseqs: "space sends
+/// CSI 2 7 ; 1 ; 3 2 ~"). A capital letter shows its Shift, but a symbol
+/// does not (`@` is Shift-2 on one layout, a key of its own on another):
+/// unless the terminal reported Shift (kitty), it is sent without Shift
+/// (at level 3 `CSI 27 ; 1 ; 64 ~`), where xterm, which knows the keyboard,
+/// sends Shift with it.
 ///
 /// The code is the key's character, Shift applied (Ctrl-Shift-a is 65), as
 /// xterm sends the keysym; Backspace's is 127, or 8 with Ctrl, which the
@@ -582,10 +583,19 @@ fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
             return false;
         }
         OtherKeys::All | OtherKeys::Unmodified => {
+            // Every modifier; at level 2 Shift alone on a character types
+            // its text unless the character is one Ctrl makes a control of
+            // (`@` to DEL, capitals among them) or Space, which real xterm
+            // 411 sends as `CSI 27 ; 2 ; code ~`, the shifted character's
+            // code. Level 3 sends every key so, and Ctrl alone on
+            // Backspace too (tests/data/keys/xterm-keys.txt).
+            let unmodified = level == OtherKeys::Unmodified;
             return match sym {
-                Sym::BackSpace => state != Modifiers::CTRL,
+                Sym::BackSpace => state != Modifiers::CTRL || unmodified,
                 Sym::Control(_) => true,
-                Sym::Char(c) => state != Modifiers::SHIFT || c == ' ',
+                Sym::Char(c) => {
+                    unmodified || state != Modifiers::SHIFT || c == ' ' || sym.control_input()
+                }
             };
         }
     }
@@ -672,6 +682,9 @@ fn legacy(press: KeyPress, application: bool, backarrow: bool, out: &mut Vec<u8>
             Control::Enter | Control::Tab | Control::Escape => out.push(control.code()),
         },
         Form::Unnumbered(_) => return,
+        // Ctrl-? is DEL by xterm's own translation, which Alt passes by:
+        // Ctrl-Alt-? is ESC `?` (tests/data/keys/xterm-keys.txt).
+        Form::Text('?') if ctrl && alt => out.push(b'?'),
         Form::Text(c) if ctrl && c.is_ascii() => out.push(control_byte(c).unwrap_or(c as u8)),
         Form::Text(c) => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
     }
@@ -986,7 +999,7 @@ mod tests {
             ("C-M-BSpace", "\x1b[27;7;8~"),
             ("C-BSpace", "\x08"),
             ("a", "a"),
-            ("A", "A"),
+            ("A", "\x1b[27;2;65~"),
             ("!", "!"),
             ("Enter", "\r"),
             ("Escape", "\x1b"),
@@ -1022,7 +1035,7 @@ mod tests {
             ("BSpace", "\x1b[27;1;127~"),
             ("C-a", "\x1b[27;5;97~"),
             ("M-x", "\x1b[27;3;120~"),
-            ("A", "A"),
+            ("A", "\x1b[27;2;65~"),
             ("Up", "\x1b[A"),
             ("F5", "\x1b[15~"),
         ] {
@@ -1175,6 +1188,10 @@ mod tests {
         Ok(())
     }
 
+    fn c_is_capital(key: Key) -> bool {
+        matches!(key, Key::Char(c) if c.is_ascii_uppercase())
+    }
+
     #[test]
     fn legacy_keys_follow_xterm() {
         let application = APPLICATION;
@@ -1325,8 +1342,12 @@ mod tests {
                     let mut bytes = Vec::new();
                     key_bytes(KeyPress { key, mods }.into(), mode, &mut bytes);
                     assert!(!bytes.is_empty(), "{key:?} {mods:?} {mode:?}");
+                    // A capital is Shift with its letter, which modifyOtherKeys
+                    // 2 sends as an escape, as xterm does.
+                    let shifted = c_is_capital(key) && mode == ALL_MODIFIERS;
                     if let Key::Char(c) = key
                         && mods.is_empty()
+                        && !shifted
                         && !matches!(mode, KeyMode::Kitty { report, .. } if report != Report::Disambiguated)
                     {
                         let mut buffer = [0u8; 4];

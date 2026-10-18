@@ -379,7 +379,7 @@ xterm 411 M slash	legacy	M-/ code=47 mods=2	\e/	agree
 xterm 411 CS slash	legacy	C-? code=47 mods=5	\x7f	agree
 xterm 411 CM slash	legacy	C-M-/ code=47 mods=6	\e\x1f	agree
 xterm 411 MS slash	legacy	M-? code=47 mods=3	\e?	agree
-xterm 411 CMS slash	legacy	C-M-? code=47 mods=7	\e?	differs: xterm makes Ctrl-? DEL by its own translation, which Alt passes by: with Alt, ESC and ?; fux sends ESC DEL; fux: \e\x7f
+xterm 411 CMS slash	legacy	C-M-? code=47 mods=7	\e?	agree
 xterm 411 - space	legacy	Space code=32 mods=0	 	agree
 xterm 411 S space	legacy	Space code=32 mods=1	 	agree
 xterm 411 C space	legacy	C-Space code=32 mods=4	\x00	agree
@@ -1245,7 +1245,7 @@ xterm 411 CM F12	legacy mok=1	C-M-F12 mods=6	none	na: the X server's keymap make
 xterm 411 MS F12	legacy mok=1	M-S-F12 mods=3	\e[24;4~	agree
 xterm 411 CMS F12	legacy mok=1	C-M-S-F12 mods=7	\e[24;8~	agree
 xterm 411 - a	legacy mok=2	a code=97 mods=0	a	agree
-xterm 411 S a	legacy mok=2	A code=97 mods=1	\e[27;2;65~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: A
+xterm 411 S a	legacy mok=2	A code=97 mods=1	\e[27;2;65~	agree
 xterm 411 C a	legacy mok=2	C-a code=97 mods=4	\e[27;5;97~	agree
 xterm 411 M a	legacy mok=2	M-a code=97 mods=2	\e[27;3;97~	agree
 xterm 411 CS a	legacy mok=2	C-A code=97 mods=5	\e[27;6;65~	agree
@@ -1253,7 +1253,7 @@ xterm 411 CM a	legacy mok=2	C-M-a code=97 mods=6	\e[27;7;97~	agree
 xterm 411 MS a	legacy mok=2	M-A code=97 mods=3	\e[27;4;65~	agree
 xterm 411 CMS a	legacy mok=2	C-M-A code=97 mods=7	\e[27;8;65~	agree
 xterm 411 - b	legacy mok=2	b code=98 mods=0	b	agree
-xterm 411 S b	legacy mok=2	B code=98 mods=1	\e[27;2;66~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: B
+xterm 411 S b	legacy mok=2	B code=98 mods=1	\e[27;2;66~	agree
 xterm 411 C b	legacy mok=2	C-b code=98 mods=4	\e[27;5;98~	agree
 xterm 411 M b	legacy mok=2	M-b code=98 mods=2	\e[27;3;98~	agree
 xterm 411 CS b	legacy mok=2	C-B code=98 mods=5	\e[27;6;66~	agree
@@ -1261,7 +1261,7 @@ xterm 411 CM b	legacy mok=2	C-M-b code=98 mods=6	\e[27;7;98~	agree
 xterm 411 MS b	legacy mok=2	M-B code=98 mods=3	\e[27;4;66~	agree
 xterm 411 CMS b	legacy mok=2	C-M-B code=98 mods=7	\e[27;8;66~	agree
 xterm 411 - c	legacy mok=2	c code=99 mods=0	c	agree
-xterm 411 S c	legacy mok=2	C code=99 mods=1	\e[27;2;67~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: C
+xterm 411 S c	legacy mok=2	C code=99 mods=1	\e[27;2;67~	agree
 xterm 411 C c	legacy mok=2	C-c code=99 mods=4	\e[27;5;99~	agree
 xterm 411 M c	legacy mok=2	M-c code=99 mods=2	\e[27;3;99~	agree
 xterm 411 CS c	legacy mok=2	C-C code=99 mods=5	\e[27;6;67~	agree
@@ -1269,7 +1269,7 @@ xterm 411 CM c	legacy mok=2	C-M-c code=99 mods=6	\e[27;7;99~	agree
 xterm 411 MS c	legacy mok=2	M-C code=99 mods=3	\e[27;4;67~	agree
 xterm 411 CMS c	legacy mok=2	C-M-C code=99 mods=7	\e[27;8;67~	agree
 xterm 411 - d	legacy mok=2	d code=100 mods=0	d	agree
-xterm 411 S d	legacy mok=2	D code=100 mods=1	\e[27;2;68~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: D
+xterm 411 S d	legacy mok=2	D code=100 mods=1	\e[27;2;68~	agree
 xterm 411 C d	legacy mok=2	C-d code=100 mods=4	\e[27;5;100~	agree
 xterm 411 M d	legacy mok=2	M-d code=100 mods=2	\e[27;3;100~	agree
 xterm 411 CS d	legacy mok=2	C-D code=100 mods=5	\e[27;6;68~	agree
@@ -1277,7 +1277,7 @@ xterm 411 CM d	legacy mok=2	C-M-d code=100 mods=6	\e[27;7;100~	agree
 xterm 411 MS d	legacy mok=2	M-D code=100 mods=3	\e[27;4;68~	agree
 xterm 411 CMS d	legacy mok=2	C-M-D code=100 mods=7	\e[27;8;68~	agree
 xterm 411 - e	legacy mok=2	e code=101 mods=0	e	agree
-xterm 411 S e	legacy mok=2	E code=101 mods=1	\e[27;2;69~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: E
+xterm 411 S e	legacy mok=2	E code=101 mods=1	\e[27;2;69~	agree
 xterm 411 C e	legacy mok=2	C-e code=101 mods=4	\e[27;5;101~	agree
 xterm 411 M e	legacy mok=2	M-e code=101 mods=2	\e[27;3;101~	agree
 xterm 411 CS e	legacy mok=2	C-E code=101 mods=5	\e[27;6;69~	agree
@@ -1285,7 +1285,7 @@ xterm 411 CM e	legacy mok=2	C-M-e code=101 mods=6	\e[27;7;101~	agree
 xterm 411 MS e	legacy mok=2	M-E code=101 mods=3	\e[27;4;69~	agree
 xterm 411 CMS e	legacy mok=2	C-M-E code=101 mods=7	\e[27;8;69~	agree
 xterm 411 - f	legacy mok=2	f code=102 mods=0	f	agree
-xterm 411 S f	legacy mok=2	F code=102 mods=1	\e[27;2;70~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: F
+xterm 411 S f	legacy mok=2	F code=102 mods=1	\e[27;2;70~	agree
 xterm 411 C f	legacy mok=2	C-f code=102 mods=4	\e[27;5;102~	agree
 xterm 411 M f	legacy mok=2	M-f code=102 mods=2	\e[27;3;102~	agree
 xterm 411 CS f	legacy mok=2	C-F code=102 mods=5	\e[27;6;70~	agree
@@ -1293,7 +1293,7 @@ xterm 411 CM f	legacy mok=2	C-M-f code=102 mods=6	\e[27;7;102~	agree
 xterm 411 MS f	legacy mok=2	M-F code=102 mods=3	\e[27;4;70~	agree
 xterm 411 CMS f	legacy mok=2	C-M-F code=102 mods=7	\e[27;8;70~	agree
 xterm 411 - g	legacy mok=2	g code=103 mods=0	g	agree
-xterm 411 S g	legacy mok=2	G code=103 mods=1	\e[27;2;71~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: G
+xterm 411 S g	legacy mok=2	G code=103 mods=1	\e[27;2;71~	agree
 xterm 411 C g	legacy mok=2	C-g code=103 mods=4	\e[27;5;103~	agree
 xterm 411 M g	legacy mok=2	M-g code=103 mods=2	\e[27;3;103~	agree
 xterm 411 CS g	legacy mok=2	C-G code=103 mods=5	\e[27;6;71~	agree
@@ -1301,7 +1301,7 @@ xterm 411 CM g	legacy mok=2	C-M-g code=103 mods=6	\e[27;7;103~	agree
 xterm 411 MS g	legacy mok=2	M-G code=103 mods=3	\e[27;4;71~	agree
 xterm 411 CMS g	legacy mok=2	C-M-G code=103 mods=7	\e[27;8;71~	agree
 xterm 411 - h	legacy mok=2	h code=104 mods=0	h	agree
-xterm 411 S h	legacy mok=2	H code=104 mods=1	\e[27;2;72~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: H
+xterm 411 S h	legacy mok=2	H code=104 mods=1	\e[27;2;72~	agree
 xterm 411 C h	legacy mok=2	C-h code=104 mods=4	\e[27;5;104~	agree
 xterm 411 M h	legacy mok=2	M-h code=104 mods=2	\e[27;3;104~	agree
 xterm 411 CS h	legacy mok=2	C-H code=104 mods=5	\e[27;6;72~	agree
@@ -1309,7 +1309,7 @@ xterm 411 CM h	legacy mok=2	C-M-h code=104 mods=6	\e[27;7;104~	agree
 xterm 411 MS h	legacy mok=2	M-H code=104 mods=3	\e[27;4;72~	agree
 xterm 411 CMS h	legacy mok=2	C-M-H code=104 mods=7	\e[27;8;72~	agree
 xterm 411 - i	legacy mok=2	i code=105 mods=0	i	agree
-xterm 411 S i	legacy mok=2	I code=105 mods=1	\e[27;2;73~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: I
+xterm 411 S i	legacy mok=2	I code=105 mods=1	\e[27;2;73~	agree
 xterm 411 C i	legacy mok=2	C-i code=105 mods=4	\e[27;5;105~	agree
 xterm 411 M i	legacy mok=2	M-i code=105 mods=2	\e[27;3;105~	agree
 xterm 411 CS i	legacy mok=2	C-I code=105 mods=5	\e[27;6;73~	agree
@@ -1317,7 +1317,7 @@ xterm 411 CM i	legacy mok=2	C-M-i code=105 mods=6	\e[27;7;105~	agree
 xterm 411 MS i	legacy mok=2	M-I code=105 mods=3	\e[27;4;73~	agree
 xterm 411 CMS i	legacy mok=2	C-M-I code=105 mods=7	\e[27;8;73~	agree
 xterm 411 - j	legacy mok=2	j code=106 mods=0	j	agree
-xterm 411 S j	legacy mok=2	J code=106 mods=1	\e[27;2;74~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: J
+xterm 411 S j	legacy mok=2	J code=106 mods=1	\e[27;2;74~	agree
 xterm 411 C j	legacy mok=2	C-j code=106 mods=4	\e[27;5;106~	agree
 xterm 411 M j	legacy mok=2	M-j code=106 mods=2	\e[27;3;106~	agree
 xterm 411 CS j	legacy mok=2	C-J code=106 mods=5	\e[27;6;74~	agree
@@ -1325,7 +1325,7 @@ xterm 411 CM j	legacy mok=2	C-M-j code=106 mods=6	\e[27;7;106~	agree
 xterm 411 MS j	legacy mok=2	M-J code=106 mods=3	\e[27;4;74~	agree
 xterm 411 CMS j	legacy mok=2	C-M-J code=106 mods=7	\e[27;8;74~	agree
 xterm 411 - k	legacy mok=2	k code=107 mods=0	k	agree
-xterm 411 S k	legacy mok=2	K code=107 mods=1	\e[27;2;75~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: K
+xterm 411 S k	legacy mok=2	K code=107 mods=1	\e[27;2;75~	agree
 xterm 411 C k	legacy mok=2	C-k code=107 mods=4	\e[27;5;107~	agree
 xterm 411 M k	legacy mok=2	M-k code=107 mods=2	\e[27;3;107~	agree
 xterm 411 CS k	legacy mok=2	C-K code=107 mods=5	\e[27;6;75~	agree
@@ -1333,7 +1333,7 @@ xterm 411 CM k	legacy mok=2	C-M-k code=107 mods=6	\e[27;7;107~	agree
 xterm 411 MS k	legacy mok=2	M-K code=107 mods=3	\e[27;4;75~	agree
 xterm 411 CMS k	legacy mok=2	C-M-K code=107 mods=7	\e[27;8;75~	agree
 xterm 411 - l	legacy mok=2	l code=108 mods=0	l	agree
-xterm 411 S l	legacy mok=2	L code=108 mods=1	\e[27;2;76~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: L
+xterm 411 S l	legacy mok=2	L code=108 mods=1	\e[27;2;76~	agree
 xterm 411 C l	legacy mok=2	C-l code=108 mods=4	\e[27;5;108~	agree
 xterm 411 M l	legacy mok=2	M-l code=108 mods=2	\e[27;3;108~	agree
 xterm 411 CS l	legacy mok=2	C-L code=108 mods=5	\e[27;6;76~	agree
@@ -1341,7 +1341,7 @@ xterm 411 CM l	legacy mok=2	C-M-l code=108 mods=6	\e[27;7;108~	agree
 xterm 411 MS l	legacy mok=2	M-L code=108 mods=3	\e[27;4;76~	agree
 xterm 411 CMS l	legacy mok=2	C-M-L code=108 mods=7	\e[27;8;76~	agree
 xterm 411 - m	legacy mok=2	m code=109 mods=0	m	agree
-xterm 411 S m	legacy mok=2	M code=109 mods=1	\e[27;2;77~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: M
+xterm 411 S m	legacy mok=2	M code=109 mods=1	\e[27;2;77~	agree
 xterm 411 C m	legacy mok=2	C-m code=109 mods=4	\e[27;5;109~	agree
 xterm 411 M m	legacy mok=2	M-m code=109 mods=2	\e[27;3;109~	agree
 xterm 411 CS m	legacy mok=2	C-M code=109 mods=5	\e[27;6;77~	agree
@@ -1349,7 +1349,7 @@ xterm 411 CM m	legacy mok=2	C-M-m code=109 mods=6	\e[27;7;109~	agree
 xterm 411 MS m	legacy mok=2	M-M code=109 mods=3	\e[27;4;77~	agree
 xterm 411 CMS m	legacy mok=2	C-M-M code=109 mods=7	\e[27;8;77~	agree
 xterm 411 - n	legacy mok=2	n code=110 mods=0	n	agree
-xterm 411 S n	legacy mok=2	N code=110 mods=1	\e[27;2;78~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: N
+xterm 411 S n	legacy mok=2	N code=110 mods=1	\e[27;2;78~	agree
 xterm 411 C n	legacy mok=2	C-n code=110 mods=4	\e[27;5;110~	agree
 xterm 411 M n	legacy mok=2	M-n code=110 mods=2	\e[27;3;110~	agree
 xterm 411 CS n	legacy mok=2	C-N code=110 mods=5	\e[27;6;78~	agree
@@ -1357,7 +1357,7 @@ xterm 411 CM n	legacy mok=2	C-M-n code=110 mods=6	\e[27;7;110~	agree
 xterm 411 MS n	legacy mok=2	M-N code=110 mods=3	\e[27;4;78~	agree
 xterm 411 CMS n	legacy mok=2	C-M-N code=110 mods=7	\e[27;8;78~	agree
 xterm 411 - o	legacy mok=2	o code=111 mods=0	o	agree
-xterm 411 S o	legacy mok=2	O code=111 mods=1	\e[27;2;79~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: O
+xterm 411 S o	legacy mok=2	O code=111 mods=1	\e[27;2;79~	agree
 xterm 411 C o	legacy mok=2	C-o code=111 mods=4	\e[27;5;111~	agree
 xterm 411 M o	legacy mok=2	M-o code=111 mods=2	\e[27;3;111~	agree
 xterm 411 CS o	legacy mok=2	C-O code=111 mods=5	\e[27;6;79~	agree
@@ -1365,7 +1365,7 @@ xterm 411 CM o	legacy mok=2	C-M-o code=111 mods=6	\e[27;7;111~	agree
 xterm 411 MS o	legacy mok=2	M-O code=111 mods=3	\e[27;4;79~	agree
 xterm 411 CMS o	legacy mok=2	C-M-O code=111 mods=7	\e[27;8;79~	agree
 xterm 411 - p	legacy mok=2	p code=112 mods=0	p	agree
-xterm 411 S p	legacy mok=2	P code=112 mods=1	\e[27;2;80~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: P
+xterm 411 S p	legacy mok=2	P code=112 mods=1	\e[27;2;80~	agree
 xterm 411 C p	legacy mok=2	C-p code=112 mods=4	\e[27;5;112~	agree
 xterm 411 M p	legacy mok=2	M-p code=112 mods=2	\e[27;3;112~	agree
 xterm 411 CS p	legacy mok=2	C-P code=112 mods=5	\e[27;6;80~	agree
@@ -1373,7 +1373,7 @@ xterm 411 CM p	legacy mok=2	C-M-p code=112 mods=6	\e[27;7;112~	agree
 xterm 411 MS p	legacy mok=2	M-P code=112 mods=3	\e[27;4;80~	agree
 xterm 411 CMS p	legacy mok=2	C-M-P code=112 mods=7	\e[27;8;80~	agree
 xterm 411 - q	legacy mok=2	q code=113 mods=0	q	agree
-xterm 411 S q	legacy mok=2	Q code=113 mods=1	\e[27;2;81~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: Q
+xterm 411 S q	legacy mok=2	Q code=113 mods=1	\e[27;2;81~	agree
 xterm 411 C q	legacy mok=2	C-q code=113 mods=4	\e[27;5;113~	agree
 xterm 411 M q	legacy mok=2	M-q code=113 mods=2	\e[27;3;113~	agree
 xterm 411 CS q	legacy mok=2	C-Q code=113 mods=5	\e[27;6;81~	agree
@@ -1381,7 +1381,7 @@ xterm 411 CM q	legacy mok=2	C-M-q code=113 mods=6	\e[27;7;113~	agree
 xterm 411 MS q	legacy mok=2	M-Q code=113 mods=3	\e[27;4;81~	agree
 xterm 411 CMS q	legacy mok=2	C-M-Q code=113 mods=7	\e[27;8;81~	agree
 xterm 411 - r	legacy mok=2	r code=114 mods=0	r	agree
-xterm 411 S r	legacy mok=2	R code=114 mods=1	\e[27;2;82~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: R
+xterm 411 S r	legacy mok=2	R code=114 mods=1	\e[27;2;82~	agree
 xterm 411 C r	legacy mok=2	C-r code=114 mods=4	\e[27;5;114~	agree
 xterm 411 M r	legacy mok=2	M-r code=114 mods=2	\e[27;3;114~	agree
 xterm 411 CS r	legacy mok=2	C-R code=114 mods=5	\e[27;6;82~	agree
@@ -1389,7 +1389,7 @@ xterm 411 CM r	legacy mok=2	C-M-r code=114 mods=6	\e[27;7;114~	agree
 xterm 411 MS r	legacy mok=2	M-R code=114 mods=3	\e[27;4;82~	agree
 xterm 411 CMS r	legacy mok=2	C-M-R code=114 mods=7	\e[27;8;82~	agree
 xterm 411 - s	legacy mok=2	s code=115 mods=0	s	agree
-xterm 411 S s	legacy mok=2	S code=115 mods=1	\e[27;2;83~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: S
+xterm 411 S s	legacy mok=2	S code=115 mods=1	\e[27;2;83~	agree
 xterm 411 C s	legacy mok=2	C-s code=115 mods=4	\e[27;5;115~	agree
 xterm 411 M s	legacy mok=2	M-s code=115 mods=2	\e[27;3;115~	agree
 xterm 411 CS s	legacy mok=2	C-S code=115 mods=5	\e[27;6;83~	agree
@@ -1397,7 +1397,7 @@ xterm 411 CM s	legacy mok=2	C-M-s code=115 mods=6	\e[27;7;115~	agree
 xterm 411 MS s	legacy mok=2	M-S code=115 mods=3	\e[27;4;83~	agree
 xterm 411 CMS s	legacy mok=2	C-M-S code=115 mods=7	\e[27;8;83~	agree
 xterm 411 - t	legacy mok=2	t code=116 mods=0	t	agree
-xterm 411 S t	legacy mok=2	T code=116 mods=1	\e[27;2;84~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: T
+xterm 411 S t	legacy mok=2	T code=116 mods=1	\e[27;2;84~	agree
 xterm 411 C t	legacy mok=2	C-t code=116 mods=4	\e[27;5;116~	agree
 xterm 411 M t	legacy mok=2	M-t code=116 mods=2	\e[27;3;116~	agree
 xterm 411 CS t	legacy mok=2	C-T code=116 mods=5	\e[27;6;84~	agree
@@ -1405,7 +1405,7 @@ xterm 411 CM t	legacy mok=2	C-M-t code=116 mods=6	\e[27;7;116~	agree
 xterm 411 MS t	legacy mok=2	M-T code=116 mods=3	\e[27;4;84~	agree
 xterm 411 CMS t	legacy mok=2	C-M-T code=116 mods=7	\e[27;8;84~	agree
 xterm 411 - u	legacy mok=2	u code=117 mods=0	u	agree
-xterm 411 S u	legacy mok=2	U code=117 mods=1	\e[27;2;85~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: U
+xterm 411 S u	legacy mok=2	U code=117 mods=1	\e[27;2;85~	agree
 xterm 411 C u	legacy mok=2	C-u code=117 mods=4	\e[27;5;117~	agree
 xterm 411 M u	legacy mok=2	M-u code=117 mods=2	\e[27;3;117~	agree
 xterm 411 CS u	legacy mok=2	C-U code=117 mods=5	\e[27;6;85~	agree
@@ -1413,7 +1413,7 @@ xterm 411 CM u	legacy mok=2	C-M-u code=117 mods=6	\e[27;7;117~	agree
 xterm 411 MS u	legacy mok=2	M-U code=117 mods=3	\e[27;4;85~	agree
 xterm 411 CMS u	legacy mok=2	C-M-U code=117 mods=7	\e[27;8;85~	agree
 xterm 411 - v	legacy mok=2	v code=118 mods=0	v	agree
-xterm 411 S v	legacy mok=2	V code=118 mods=1	\e[27;2;86~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: V
+xterm 411 S v	legacy mok=2	V code=118 mods=1	\e[27;2;86~	agree
 xterm 411 C v	legacy mok=2	C-v code=118 mods=4	\e[27;5;118~	agree
 xterm 411 M v	legacy mok=2	M-v code=118 mods=2	\e[27;3;118~	agree
 xterm 411 CS v	legacy mok=2	C-V code=118 mods=5	\e[27;6;86~	agree
@@ -1421,7 +1421,7 @@ xterm 411 CM v	legacy mok=2	C-M-v code=118 mods=6	\e[27;7;118~	agree
 xterm 411 MS v	legacy mok=2	M-V code=118 mods=3	\e[27;4;86~	agree
 xterm 411 CMS v	legacy mok=2	C-M-V code=118 mods=7	\e[27;8;86~	agree
 xterm 411 - w	legacy mok=2	w code=119 mods=0	w	agree
-xterm 411 S w	legacy mok=2	W code=119 mods=1	\e[27;2;87~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: W
+xterm 411 S w	legacy mok=2	W code=119 mods=1	\e[27;2;87~	agree
 xterm 411 C w	legacy mok=2	C-w code=119 mods=4	\e[27;5;119~	agree
 xterm 411 M w	legacy mok=2	M-w code=119 mods=2	\e[27;3;119~	agree
 xterm 411 CS w	legacy mok=2	C-W code=119 mods=5	\e[27;6;87~	agree
@@ -1429,7 +1429,7 @@ xterm 411 CM w	legacy mok=2	C-M-w code=119 mods=6	\e[27;7;119~	agree
 xterm 411 MS w	legacy mok=2	M-W code=119 mods=3	\e[27;4;87~	agree
 xterm 411 CMS w	legacy mok=2	C-M-W code=119 mods=7	\e[27;8;87~	agree
 xterm 411 - x	legacy mok=2	x code=120 mods=0	x	agree
-xterm 411 S x	legacy mok=2	X code=120 mods=1	\e[27;2;88~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: X
+xterm 411 S x	legacy mok=2	X code=120 mods=1	\e[27;2;88~	agree
 xterm 411 C x	legacy mok=2	C-x code=120 mods=4	\e[27;5;120~	agree
 xterm 411 M x	legacy mok=2	M-x code=120 mods=2	\e[27;3;120~	agree
 xterm 411 CS x	legacy mok=2	C-X code=120 mods=5	\e[27;6;88~	agree
@@ -1437,7 +1437,7 @@ xterm 411 CM x	legacy mok=2	C-M-x code=120 mods=6	\e[27;7;120~	agree
 xterm 411 MS x	legacy mok=2	M-X code=120 mods=3	\e[27;4;88~	agree
 xterm 411 CMS x	legacy mok=2	C-M-X code=120 mods=7	\e[27;8;88~	agree
 xterm 411 - y	legacy mok=2	y code=121 mods=0	y	agree
-xterm 411 S y	legacy mok=2	Y code=121 mods=1	\e[27;2;89~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: Y
+xterm 411 S y	legacy mok=2	Y code=121 mods=1	\e[27;2;89~	agree
 xterm 411 C y	legacy mok=2	C-y code=121 mods=4	\e[27;5;121~	agree
 xterm 411 M y	legacy mok=2	M-y code=121 mods=2	\e[27;3;121~	agree
 xterm 411 CS y	legacy mok=2	C-Y code=121 mods=5	\e[27;6;89~	agree
@@ -1445,7 +1445,7 @@ xterm 411 CM y	legacy mok=2	C-M-y code=121 mods=6	\e[27;7;121~	agree
 xterm 411 MS y	legacy mok=2	M-Y code=121 mods=3	\e[27;4;89~	agree
 xterm 411 CMS y	legacy mok=2	C-M-Y code=121 mods=7	\e[27;8;89~	agree
 xterm 411 - z	legacy mok=2	z code=122 mods=0	z	agree
-xterm 411 S z	legacy mok=2	Z code=122 mods=1	\e[27;2;90~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: Z
+xterm 411 S z	legacy mok=2	Z code=122 mods=1	\e[27;2;90~	agree
 xterm 411 C z	legacy mok=2	C-z code=122 mods=4	\e[27;5;122~	agree
 xterm 411 M z	legacy mok=2	M-z code=122 mods=2	\e[27;3;122~	agree
 xterm 411 CS z	legacy mok=2	C-Z code=122 mods=5	\e[27;6;90~	agree
@@ -1469,7 +1469,7 @@ xterm 411 CM 1	legacy mok=2	C-M-1 code=49 mods=6	\e[27;7;49~	agree
 xterm 411 MS 1	legacy mok=2	M-! code=49 mods=3	\e[27;4;33~	agree
 xterm 411 CMS 1	legacy mok=2	C-M-! code=49 mods=7	\e[27;8;33~	agree
 xterm 411 - 2	legacy mok=2	2 code=50 mods=0	2	agree
-xterm 411 S 2	legacy mok=2	@ code=50 mods=1	\e[27;2;64~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: @
+xterm 411 S 2	legacy mok=2	@ code=50 mods=1	\e[27;2;64~	agree
 xterm 411 C 2	legacy mok=2	C-2 code=50 mods=4	\e[27;5;50~	agree
 xterm 411 M 2	legacy mok=2	M-2 code=50 mods=2	\e[27;3;50~	agree
 xterm 411 CS 2	legacy mok=2	C-@ code=50 mods=5	\e[27;6;64~	agree
@@ -1501,7 +1501,7 @@ xterm 411 CM 5	legacy mok=2	C-M-5 code=53 mods=6	\e[27;7;53~	agree
 xterm 411 MS 5	legacy mok=2	M-% code=53 mods=3	\e[27;4;37~	agree
 xterm 411 CMS 5	legacy mok=2	C-M-% code=53 mods=7	\e[27;8;37~	agree
 xterm 411 - 6	legacy mok=2	6 code=54 mods=0	6	agree
-xterm 411 S 6	legacy mok=2	^ code=54 mods=1	\e[27;2;94~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: ^
+xterm 411 S 6	legacy mok=2	^ code=54 mods=1	\e[27;2;94~	agree
 xterm 411 C 6	legacy mok=2	C-6 code=54 mods=4	\e[27;5;54~	agree
 xterm 411 M 6	legacy mok=2	M-6 code=54 mods=2	\e[27;3;54~	agree
 xterm 411 CS 6	legacy mok=2	C-^ code=54 mods=5	\e[27;6;94~	agree
@@ -1533,7 +1533,7 @@ xterm 411 CM 9	legacy mok=2	C-M-9 code=57 mods=6	\e[27;7;57~	agree
 xterm 411 MS 9	legacy mok=2	M-( code=57 mods=3	\e[27;4;40~	agree
 xterm 411 CMS 9	legacy mok=2	C-M-( code=57 mods=7	\e[27;8;40~	agree
 xterm 411 - grave	legacy mok=2	` code=96 mods=0	`	agree
-xterm 411 S grave	legacy mok=2	~ code=96 mods=1	\e[27;2;126~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: ~
+xterm 411 S grave	legacy mok=2	~ code=96 mods=1	\e[27;2;126~	agree
 xterm 411 C grave	legacy mok=2	C-` code=96 mods=4	\e[27;5;96~	agree
 xterm 411 M grave	legacy mok=2	M-` code=96 mods=2	\e[27;3;96~	agree
 xterm 411 CS grave	legacy mok=2	C-~ code=96 mods=5	\e[27;6;126~	agree
@@ -1541,7 +1541,7 @@ xterm 411 CM grave	legacy mok=2	C-M-` code=96 mods=6	\e[27;7;96~	agree
 xterm 411 MS grave	legacy mok=2	M-~ code=96 mods=3	\e[27;4;126~	agree
 xterm 411 CMS grave	legacy mok=2	C-M-~ code=96 mods=7	\e[27;8;126~	agree
 xterm 411 - minus	legacy mok=2	- code=45 mods=0	-	agree
-xterm 411 S minus	legacy mok=2	_ code=45 mods=1	\e[27;2;95~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: _
+xterm 411 S minus	legacy mok=2	_ code=45 mods=1	\e[27;2;95~	agree
 xterm 411 C minus	legacy mok=2	C-- code=45 mods=4	\e[27;5;45~	agree
 xterm 411 M minus	legacy mok=2	M-- code=45 mods=2	\e[27;3;45~	agree
 xterm 411 CS minus	legacy mok=2	C-_ code=45 mods=5	\e[27;6;95~	agree
@@ -1557,7 +1557,7 @@ xterm 411 CM equal	legacy mok=2	C-M-= code=61 mods=6	\e[27;7;61~	agree
 xterm 411 MS equal	legacy mok=2	M-+ code=61 mods=3	\e[27;4;43~	agree
 xterm 411 CMS equal	legacy mok=2	C-M-+ code=61 mods=7	\e[27;8;43~	agree
 xterm 411 - bracketleft	legacy mok=2	[ code=91 mods=0	[	agree
-xterm 411 S bracketleft	legacy mok=2	{ code=91 mods=1	\e[27;2;123~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: {
+xterm 411 S bracketleft	legacy mok=2	{ code=91 mods=1	\e[27;2;123~	agree
 xterm 411 C bracketleft	legacy mok=2	C-[ code=91 mods=4	\e[27;5;91~	agree
 xterm 411 M bracketleft	legacy mok=2	M-[ code=91 mods=2	\e[27;3;91~	agree
 xterm 411 CS bracketleft	legacy mok=2	C-{ code=91 mods=5	\e[27;6;123~	agree
@@ -1565,7 +1565,7 @@ xterm 411 CM bracketleft	legacy mok=2	C-M-[ code=91 mods=6	\e[27;7;91~	agree
 xterm 411 MS bracketleft	legacy mok=2	M-{ code=91 mods=3	\e[27;4;123~	agree
 xterm 411 CMS bracketleft	legacy mok=2	C-M-{ code=91 mods=7	\e[27;8;123~	agree
 xterm 411 - bracketright	legacy mok=2	] code=93 mods=0	]	agree
-xterm 411 S bracketright	legacy mok=2	} code=93 mods=1	\e[27;2;125~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: }
+xterm 411 S bracketright	legacy mok=2	} code=93 mods=1	\e[27;2;125~	agree
 xterm 411 C bracketright	legacy mok=2	C-] code=93 mods=4	\e[27;5;93~	agree
 xterm 411 M bracketright	legacy mok=2	M-] code=93 mods=2	\e[27;3;93~	agree
 xterm 411 CS bracketright	legacy mok=2	C-} code=93 mods=5	\e[27;6;125~	agree
@@ -1573,7 +1573,7 @@ xterm 411 CM bracketright	legacy mok=2	C-M-] code=93 mods=6	\e[27;7;93~	agree
 xterm 411 MS bracketright	legacy mok=2	M-} code=93 mods=3	\e[27;4;125~	agree
 xterm 411 CMS bracketright	legacy mok=2	C-M-} code=93 mods=7	\e[27;8;125~	agree
 xterm 411 - backslash	legacy mok=2	\ code=92 mods=0	\\	agree
-xterm 411 S backslash	legacy mok=2	| code=92 mods=1	\e[27;2;124~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: |
+xterm 411 S backslash	legacy mok=2	| code=92 mods=1	\e[27;2;124~	agree
 xterm 411 C backslash	legacy mok=2	C-\ code=92 mods=4	\e[27;5;92~	agree
 xterm 411 M backslash	legacy mok=2	M-\ code=92 mods=2	\e[27;3;92~	agree
 xterm 411 CS backslash	legacy mok=2	C-| code=92 mods=5	\e[27;6;124~	agree
@@ -1837,7 +1837,7 @@ xterm 411 CM F12	legacy mok=2	C-M-F12 mods=6	none	na: the X server's keymap make
 xterm 411 MS F12	legacy mok=2	M-S-F12 mods=3	\e[24;4~	agree
 xterm 411 CMS F12	legacy mok=2	C-M-S-F12 mods=7	\e[24;8~	agree
 xterm 411 - a	legacy mok=3	a code=97 mods=0	\e[27;1;97~	agree
-xterm 411 S a	legacy mok=3	A code=97 mods=1	\e[27;2;65~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: A
+xterm 411 S a	legacy mok=3	A code=97 mods=1	\e[27;2;65~	agree
 xterm 411 C a	legacy mok=3	C-a code=97 mods=4	\e[27;5;97~	agree
 xterm 411 M a	legacy mok=3	M-a code=97 mods=2	\e[27;3;97~	agree
 xterm 411 CS a	legacy mok=3	C-A code=97 mods=5	\e[27;6;65~	agree
@@ -1845,7 +1845,7 @@ xterm 411 CM a	legacy mok=3	C-M-a code=97 mods=6	\e[27;7;97~	agree
 xterm 411 MS a	legacy mok=3	M-A code=97 mods=3	\e[27;4;65~	agree
 xterm 411 CMS a	legacy mok=3	C-M-A code=97 mods=7	\e[27;8;65~	agree
 xterm 411 - b	legacy mok=3	b code=98 mods=0	\e[27;1;98~	agree
-xterm 411 S b	legacy mok=3	B code=98 mods=1	\e[27;2;66~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: B
+xterm 411 S b	legacy mok=3	B code=98 mods=1	\e[27;2;66~	agree
 xterm 411 C b	legacy mok=3	C-b code=98 mods=4	\e[27;5;98~	agree
 xterm 411 M b	legacy mok=3	M-b code=98 mods=2	\e[27;3;98~	agree
 xterm 411 CS b	legacy mok=3	C-B code=98 mods=5	\e[27;6;66~	agree
@@ -1853,7 +1853,7 @@ xterm 411 CM b	legacy mok=3	C-M-b code=98 mods=6	\e[27;7;98~	agree
 xterm 411 MS b	legacy mok=3	M-B code=98 mods=3	\e[27;4;66~	agree
 xterm 411 CMS b	legacy mok=3	C-M-B code=98 mods=7	\e[27;8;66~	agree
 xterm 411 - c	legacy mok=3	c code=99 mods=0	\e[27;1;99~	agree
-xterm 411 S c	legacy mok=3	C code=99 mods=1	\e[27;2;67~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: C
+xterm 411 S c	legacy mok=3	C code=99 mods=1	\e[27;2;67~	agree
 xterm 411 C c	legacy mok=3	C-c code=99 mods=4	\e[27;5;99~	agree
 xterm 411 M c	legacy mok=3	M-c code=99 mods=2	\e[27;3;99~	agree
 xterm 411 CS c	legacy mok=3	C-C code=99 mods=5	\e[27;6;67~	agree
@@ -1861,7 +1861,7 @@ xterm 411 CM c	legacy mok=3	C-M-c code=99 mods=6	\e[27;7;99~	agree
 xterm 411 MS c	legacy mok=3	M-C code=99 mods=3	\e[27;4;67~	agree
 xterm 411 CMS c	legacy mok=3	C-M-C code=99 mods=7	\e[27;8;67~	agree
 xterm 411 - d	legacy mok=3	d code=100 mods=0	\e[27;1;100~	agree
-xterm 411 S d	legacy mok=3	D code=100 mods=1	\e[27;2;68~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: D
+xterm 411 S d	legacy mok=3	D code=100 mods=1	\e[27;2;68~	agree
 xterm 411 C d	legacy mok=3	C-d code=100 mods=4	\e[27;5;100~	agree
 xterm 411 M d	legacy mok=3	M-d code=100 mods=2	\e[27;3;100~	agree
 xterm 411 CS d	legacy mok=3	C-D code=100 mods=5	\e[27;6;68~	agree
@@ -1869,7 +1869,7 @@ xterm 411 CM d	legacy mok=3	C-M-d code=100 mods=6	\e[27;7;100~	agree
 xterm 411 MS d	legacy mok=3	M-D code=100 mods=3	\e[27;4;68~	agree
 xterm 411 CMS d	legacy mok=3	C-M-D code=100 mods=7	\e[27;8;68~	agree
 xterm 411 - e	legacy mok=3	e code=101 mods=0	\e[27;1;101~	agree
-xterm 411 S e	legacy mok=3	E code=101 mods=1	\e[27;2;69~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: E
+xterm 411 S e	legacy mok=3	E code=101 mods=1	\e[27;2;69~	agree
 xterm 411 C e	legacy mok=3	C-e code=101 mods=4	\e[27;5;101~	agree
 xterm 411 M e	legacy mok=3	M-e code=101 mods=2	\e[27;3;101~	agree
 xterm 411 CS e	legacy mok=3	C-E code=101 mods=5	\e[27;6;69~	agree
@@ -1877,7 +1877,7 @@ xterm 411 CM e	legacy mok=3	C-M-e code=101 mods=6	\e[27;7;101~	agree
 xterm 411 MS e	legacy mok=3	M-E code=101 mods=3	\e[27;4;69~	agree
 xterm 411 CMS e	legacy mok=3	C-M-E code=101 mods=7	\e[27;8;69~	agree
 xterm 411 - f	legacy mok=3	f code=102 mods=0	\e[27;1;102~	agree
-xterm 411 S f	legacy mok=3	F code=102 mods=1	\e[27;2;70~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: F
+xterm 411 S f	legacy mok=3	F code=102 mods=1	\e[27;2;70~	agree
 xterm 411 C f	legacy mok=3	C-f code=102 mods=4	\e[27;5;102~	agree
 xterm 411 M f	legacy mok=3	M-f code=102 mods=2	\e[27;3;102~	agree
 xterm 411 CS f	legacy mok=3	C-F code=102 mods=5	\e[27;6;70~	agree
@@ -1885,7 +1885,7 @@ xterm 411 CM f	legacy mok=3	C-M-f code=102 mods=6	\e[27;7;102~	agree
 xterm 411 MS f	legacy mok=3	M-F code=102 mods=3	\e[27;4;70~	agree
 xterm 411 CMS f	legacy mok=3	C-M-F code=102 mods=7	\e[27;8;70~	agree
 xterm 411 - g	legacy mok=3	g code=103 mods=0	\e[27;1;103~	agree
-xterm 411 S g	legacy mok=3	G code=103 mods=1	\e[27;2;71~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: G
+xterm 411 S g	legacy mok=3	G code=103 mods=1	\e[27;2;71~	agree
 xterm 411 C g	legacy mok=3	C-g code=103 mods=4	\e[27;5;103~	agree
 xterm 411 M g	legacy mok=3	M-g code=103 mods=2	\e[27;3;103~	agree
 xterm 411 CS g	legacy mok=3	C-G code=103 mods=5	\e[27;6;71~	agree
@@ -1893,7 +1893,7 @@ xterm 411 CM g	legacy mok=3	C-M-g code=103 mods=6	\e[27;7;103~	agree
 xterm 411 MS g	legacy mok=3	M-G code=103 mods=3	\e[27;4;71~	agree
 xterm 411 CMS g	legacy mok=3	C-M-G code=103 mods=7	\e[27;8;71~	agree
 xterm 411 - h	legacy mok=3	h code=104 mods=0	\e[27;1;104~	agree
-xterm 411 S h	legacy mok=3	H code=104 mods=1	\e[27;2;72~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: H
+xterm 411 S h	legacy mok=3	H code=104 mods=1	\e[27;2;72~	agree
 xterm 411 C h	legacy mok=3	C-h code=104 mods=4	\e[27;5;104~	agree
 xterm 411 M h	legacy mok=3	M-h code=104 mods=2	\e[27;3;104~	agree
 xterm 411 CS h	legacy mok=3	C-H code=104 mods=5	\e[27;6;72~	agree
@@ -1901,7 +1901,7 @@ xterm 411 CM h	legacy mok=3	C-M-h code=104 mods=6	\e[27;7;104~	agree
 xterm 411 MS h	legacy mok=3	M-H code=104 mods=3	\e[27;4;72~	agree
 xterm 411 CMS h	legacy mok=3	C-M-H code=104 mods=7	\e[27;8;72~	agree
 xterm 411 - i	legacy mok=3	i code=105 mods=0	\e[27;1;105~	agree
-xterm 411 S i	legacy mok=3	I code=105 mods=1	\e[27;2;73~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: I
+xterm 411 S i	legacy mok=3	I code=105 mods=1	\e[27;2;73~	agree
 xterm 411 C i	legacy mok=3	C-i code=105 mods=4	\e[27;5;105~	agree
 xterm 411 M i	legacy mok=3	M-i code=105 mods=2	\e[27;3;105~	agree
 xterm 411 CS i	legacy mok=3	C-I code=105 mods=5	\e[27;6;73~	agree
@@ -1909,7 +1909,7 @@ xterm 411 CM i	legacy mok=3	C-M-i code=105 mods=6	\e[27;7;105~	agree
 xterm 411 MS i	legacy mok=3	M-I code=105 mods=3	\e[27;4;73~	agree
 xterm 411 CMS i	legacy mok=3	C-M-I code=105 mods=7	\e[27;8;73~	agree
 xterm 411 - j	legacy mok=3	j code=106 mods=0	\e[27;1;106~	agree
-xterm 411 S j	legacy mok=3	J code=106 mods=1	\e[27;2;74~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: J
+xterm 411 S j	legacy mok=3	J code=106 mods=1	\e[27;2;74~	agree
 xterm 411 C j	legacy mok=3	C-j code=106 mods=4	\e[27;5;106~	agree
 xterm 411 M j	legacy mok=3	M-j code=106 mods=2	\e[27;3;106~	agree
 xterm 411 CS j	legacy mok=3	C-J code=106 mods=5	\e[27;6;74~	agree
@@ -1917,7 +1917,7 @@ xterm 411 CM j	legacy mok=3	C-M-j code=106 mods=6	\e[27;7;106~	agree
 xterm 411 MS j	legacy mok=3	M-J code=106 mods=3	\e[27;4;74~	agree
 xterm 411 CMS j	legacy mok=3	C-M-J code=106 mods=7	\e[27;8;74~	agree
 xterm 411 - k	legacy mok=3	k code=107 mods=0	\e[27;1;107~	agree
-xterm 411 S k	legacy mok=3	K code=107 mods=1	\e[27;2;75~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: K
+xterm 411 S k	legacy mok=3	K code=107 mods=1	\e[27;2;75~	agree
 xterm 411 C k	legacy mok=3	C-k code=107 mods=4	\e[27;5;107~	agree
 xterm 411 M k	legacy mok=3	M-k code=107 mods=2	\e[27;3;107~	agree
 xterm 411 CS k	legacy mok=3	C-K code=107 mods=5	\e[27;6;75~	agree
@@ -1925,7 +1925,7 @@ xterm 411 CM k	legacy mok=3	C-M-k code=107 mods=6	\e[27;7;107~	agree
 xterm 411 MS k	legacy mok=3	M-K code=107 mods=3	\e[27;4;75~	agree
 xterm 411 CMS k	legacy mok=3	C-M-K code=107 mods=7	\e[27;8;75~	agree
 xterm 411 - l	legacy mok=3	l code=108 mods=0	\e[27;1;108~	agree
-xterm 411 S l	legacy mok=3	L code=108 mods=1	\e[27;2;76~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: L
+xterm 411 S l	legacy mok=3	L code=108 mods=1	\e[27;2;76~	agree
 xterm 411 C l	legacy mok=3	C-l code=108 mods=4	\e[27;5;108~	agree
 xterm 411 M l	legacy mok=3	M-l code=108 mods=2	\e[27;3;108~	agree
 xterm 411 CS l	legacy mok=3	C-L code=108 mods=5	\e[27;6;76~	agree
@@ -1933,7 +1933,7 @@ xterm 411 CM l	legacy mok=3	C-M-l code=108 mods=6	\e[27;7;108~	agree
 xterm 411 MS l	legacy mok=3	M-L code=108 mods=3	\e[27;4;76~	agree
 xterm 411 CMS l	legacy mok=3	C-M-L code=108 mods=7	\e[27;8;76~	agree
 xterm 411 - m	legacy mok=3	m code=109 mods=0	\e[27;1;109~	agree
-xterm 411 S m	legacy mok=3	M code=109 mods=1	\e[27;2;77~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: M
+xterm 411 S m	legacy mok=3	M code=109 mods=1	\e[27;2;77~	agree
 xterm 411 C m	legacy mok=3	C-m code=109 mods=4	\e[27;5;109~	agree
 xterm 411 M m	legacy mok=3	M-m code=109 mods=2	\e[27;3;109~	agree
 xterm 411 CS m	legacy mok=3	C-M code=109 mods=5	\e[27;6;77~	agree
@@ -1941,7 +1941,7 @@ xterm 411 CM m	legacy mok=3	C-M-m code=109 mods=6	\e[27;7;109~	agree
 xterm 411 MS m	legacy mok=3	M-M code=109 mods=3	\e[27;4;77~	agree
 xterm 411 CMS m	legacy mok=3	C-M-M code=109 mods=7	\e[27;8;77~	agree
 xterm 411 - n	legacy mok=3	n code=110 mods=0	\e[27;1;110~	agree
-xterm 411 S n	legacy mok=3	N code=110 mods=1	\e[27;2;78~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: N
+xterm 411 S n	legacy mok=3	N code=110 mods=1	\e[27;2;78~	agree
 xterm 411 C n	legacy mok=3	C-n code=110 mods=4	\e[27;5;110~	agree
 xterm 411 M n	legacy mok=3	M-n code=110 mods=2	\e[27;3;110~	agree
 xterm 411 CS n	legacy mok=3	C-N code=110 mods=5	\e[27;6;78~	agree
@@ -1949,7 +1949,7 @@ xterm 411 CM n	legacy mok=3	C-M-n code=110 mods=6	\e[27;7;110~	agree
 xterm 411 MS n	legacy mok=3	M-N code=110 mods=3	\e[27;4;78~	agree
 xterm 411 CMS n	legacy mok=3	C-M-N code=110 mods=7	\e[27;8;78~	agree
 xterm 411 - o	legacy mok=3	o code=111 mods=0	\e[27;1;111~	agree
-xterm 411 S o	legacy mok=3	O code=111 mods=1	\e[27;2;79~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: O
+xterm 411 S o	legacy mok=3	O code=111 mods=1	\e[27;2;79~	agree
 xterm 411 C o	legacy mok=3	C-o code=111 mods=4	\e[27;5;111~	agree
 xterm 411 M o	legacy mok=3	M-o code=111 mods=2	\e[27;3;111~	agree
 xterm 411 CS o	legacy mok=3	C-O code=111 mods=5	\e[27;6;79~	agree
@@ -1957,7 +1957,7 @@ xterm 411 CM o	legacy mok=3	C-M-o code=111 mods=6	\e[27;7;111~	agree
 xterm 411 MS o	legacy mok=3	M-O code=111 mods=3	\e[27;4;79~	agree
 xterm 411 CMS o	legacy mok=3	C-M-O code=111 mods=7	\e[27;8;79~	agree
 xterm 411 - p	legacy mok=3	p code=112 mods=0	\e[27;1;112~	agree
-xterm 411 S p	legacy mok=3	P code=112 mods=1	\e[27;2;80~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: P
+xterm 411 S p	legacy mok=3	P code=112 mods=1	\e[27;2;80~	agree
 xterm 411 C p	legacy mok=3	C-p code=112 mods=4	\e[27;5;112~	agree
 xterm 411 M p	legacy mok=3	M-p code=112 mods=2	\e[27;3;112~	agree
 xterm 411 CS p	legacy mok=3	C-P code=112 mods=5	\e[27;6;80~	agree
@@ -1965,7 +1965,7 @@ xterm 411 CM p	legacy mok=3	C-M-p code=112 mods=6	\e[27;7;112~	agree
 xterm 411 MS p	legacy mok=3	M-P code=112 mods=3	\e[27;4;80~	agree
 xterm 411 CMS p	legacy mok=3	C-M-P code=112 mods=7	\e[27;8;80~	agree
 xterm 411 - q	legacy mok=3	q code=113 mods=0	\e[27;1;113~	agree
-xterm 411 S q	legacy mok=3	Q code=113 mods=1	\e[27;2;81~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: Q
+xterm 411 S q	legacy mok=3	Q code=113 mods=1	\e[27;2;81~	agree
 xterm 411 C q	legacy mok=3	C-q code=113 mods=4	\e[27;5;113~	agree
 xterm 411 M q	legacy mok=3	M-q code=113 mods=2	\e[27;3;113~	agree
 xterm 411 CS q	legacy mok=3	C-Q code=113 mods=5	\e[27;6;81~	agree
@@ -1973,7 +1973,7 @@ xterm 411 CM q	legacy mok=3	C-M-q code=113 mods=6	\e[27;7;113~	agree
 xterm 411 MS q	legacy mok=3	M-Q code=113 mods=3	\e[27;4;81~	agree
 xterm 411 CMS q	legacy mok=3	C-M-Q code=113 mods=7	\e[27;8;81~	agree
 xterm 411 - r	legacy mok=3	r code=114 mods=0	\e[27;1;114~	agree
-xterm 411 S r	legacy mok=3	R code=114 mods=1	\e[27;2;82~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: R
+xterm 411 S r	legacy mok=3	R code=114 mods=1	\e[27;2;82~	agree
 xterm 411 C r	legacy mok=3	C-r code=114 mods=4	\e[27;5;114~	agree
 xterm 411 M r	legacy mok=3	M-r code=114 mods=2	\e[27;3;114~	agree
 xterm 411 CS r	legacy mok=3	C-R code=114 mods=5	\e[27;6;82~	agree
@@ -1981,7 +1981,7 @@ xterm 411 CM r	legacy mok=3	C-M-r code=114 mods=6	\e[27;7;114~	agree
 xterm 411 MS r	legacy mok=3	M-R code=114 mods=3	\e[27;4;82~	agree
 xterm 411 CMS r	legacy mok=3	C-M-R code=114 mods=7	\e[27;8;82~	agree
 xterm 411 - s	legacy mok=3	s code=115 mods=0	\e[27;1;115~	agree
-xterm 411 S s	legacy mok=3	S code=115 mods=1	\e[27;2;83~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: S
+xterm 411 S s	legacy mok=3	S code=115 mods=1	\e[27;2;83~	agree
 xterm 411 C s	legacy mok=3	C-s code=115 mods=4	\e[27;5;115~	agree
 xterm 411 M s	legacy mok=3	M-s code=115 mods=2	\e[27;3;115~	agree
 xterm 411 CS s	legacy mok=3	C-S code=115 mods=5	\e[27;6;83~	agree
@@ -1989,7 +1989,7 @@ xterm 411 CM s	legacy mok=3	C-M-s code=115 mods=6	\e[27;7;115~	agree
 xterm 411 MS s	legacy mok=3	M-S code=115 mods=3	\e[27;4;83~	agree
 xterm 411 CMS s	legacy mok=3	C-M-S code=115 mods=7	\e[27;8;83~	agree
 xterm 411 - t	legacy mok=3	t code=116 mods=0	\e[27;1;116~	agree
-xterm 411 S t	legacy mok=3	T code=116 mods=1	\e[27;2;84~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: T
+xterm 411 S t	legacy mok=3	T code=116 mods=1	\e[27;2;84~	agree
 xterm 411 C t	legacy mok=3	C-t code=116 mods=4	\e[27;5;116~	agree
 xterm 411 M t	legacy mok=3	M-t code=116 mods=2	\e[27;3;116~	agree
 xterm 411 CS t	legacy mok=3	C-T code=116 mods=5	\e[27;6;84~	agree
@@ -1997,7 +1997,7 @@ xterm 411 CM t	legacy mok=3	C-M-t code=116 mods=6	\e[27;7;116~	agree
 xterm 411 MS t	legacy mok=3	M-T code=116 mods=3	\e[27;4;84~	agree
 xterm 411 CMS t	legacy mok=3	C-M-T code=116 mods=7	\e[27;8;84~	agree
 xterm 411 - u	legacy mok=3	u code=117 mods=0	\e[27;1;117~	agree
-xterm 411 S u	legacy mok=3	U code=117 mods=1	\e[27;2;85~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: U
+xterm 411 S u	legacy mok=3	U code=117 mods=1	\e[27;2;85~	agree
 xterm 411 C u	legacy mok=3	C-u code=117 mods=4	\e[27;5;117~	agree
 xterm 411 M u	legacy mok=3	M-u code=117 mods=2	\e[27;3;117~	agree
 xterm 411 CS u	legacy mok=3	C-U code=117 mods=5	\e[27;6;85~	agree
@@ -2005,7 +2005,7 @@ xterm 411 CM u	legacy mok=3	C-M-u code=117 mods=6	\e[27;7;117~	agree
 xterm 411 MS u	legacy mok=3	M-U code=117 mods=3	\e[27;4;85~	agree
 xterm 411 CMS u	legacy mok=3	C-M-U code=117 mods=7	\e[27;8;85~	agree
 xterm 411 - v	legacy mok=3	v code=118 mods=0	\e[27;1;118~	agree
-xterm 411 S v	legacy mok=3	V code=118 mods=1	\e[27;2;86~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: V
+xterm 411 S v	legacy mok=3	V code=118 mods=1	\e[27;2;86~	agree
 xterm 411 C v	legacy mok=3	C-v code=118 mods=4	\e[27;5;118~	agree
 xterm 411 M v	legacy mok=3	M-v code=118 mods=2	\e[27;3;118~	agree
 xterm 411 CS v	legacy mok=3	C-V code=118 mods=5	\e[27;6;86~	agree
@@ -2013,7 +2013,7 @@ xterm 411 CM v	legacy mok=3	C-M-v code=118 mods=6	\e[27;7;118~	agree
 xterm 411 MS v	legacy mok=3	M-V code=118 mods=3	\e[27;4;86~	agree
 xterm 411 CMS v	legacy mok=3	C-M-V code=118 mods=7	\e[27;8;86~	agree
 xterm 411 - w	legacy mok=3	w code=119 mods=0	\e[27;1;119~	agree
-xterm 411 S w	legacy mok=3	W code=119 mods=1	\e[27;2;87~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: W
+xterm 411 S w	legacy mok=3	W code=119 mods=1	\e[27;2;87~	agree
 xterm 411 C w	legacy mok=3	C-w code=119 mods=4	\e[27;5;119~	agree
 xterm 411 M w	legacy mok=3	M-w code=119 mods=2	\e[27;3;119~	agree
 xterm 411 CS w	legacy mok=3	C-W code=119 mods=5	\e[27;6;87~	agree
@@ -2021,7 +2021,7 @@ xterm 411 CM w	legacy mok=3	C-M-w code=119 mods=6	\e[27;7;119~	agree
 xterm 411 MS w	legacy mok=3	M-W code=119 mods=3	\e[27;4;87~	agree
 xterm 411 CMS w	legacy mok=3	C-M-W code=119 mods=7	\e[27;8;87~	agree
 xterm 411 - x	legacy mok=3	x code=120 mods=0	\e[27;1;120~	agree
-xterm 411 S x	legacy mok=3	X code=120 mods=1	\e[27;2;88~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: X
+xterm 411 S x	legacy mok=3	X code=120 mods=1	\e[27;2;88~	agree
 xterm 411 C x	legacy mok=3	C-x code=120 mods=4	\e[27;5;120~	agree
 xterm 411 M x	legacy mok=3	M-x code=120 mods=2	\e[27;3;120~	agree
 xterm 411 CS x	legacy mok=3	C-X code=120 mods=5	\e[27;6;88~	agree
@@ -2029,7 +2029,7 @@ xterm 411 CM x	legacy mok=3	C-M-x code=120 mods=6	\e[27;7;120~	agree
 xterm 411 MS x	legacy mok=3	M-X code=120 mods=3	\e[27;4;88~	agree
 xterm 411 CMS x	legacy mok=3	C-M-X code=120 mods=7	\e[27;8;88~	agree
 xterm 411 - y	legacy mok=3	y code=121 mods=0	\e[27;1;121~	agree
-xterm 411 S y	legacy mok=3	Y code=121 mods=1	\e[27;2;89~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: Y
+xterm 411 S y	legacy mok=3	Y code=121 mods=1	\e[27;2;89~	agree
 xterm 411 C y	legacy mok=3	C-y code=121 mods=4	\e[27;5;121~	agree
 xterm 411 M y	legacy mok=3	M-y code=121 mods=2	\e[27;3;121~	agree
 xterm 411 CS y	legacy mok=3	C-Y code=121 mods=5	\e[27;6;89~	agree
@@ -2037,7 +2037,7 @@ xterm 411 CM y	legacy mok=3	C-M-y code=121 mods=6	\e[27;7;121~	agree
 xterm 411 MS y	legacy mok=3	M-Y code=121 mods=3	\e[27;4;89~	agree
 xterm 411 CMS y	legacy mok=3	C-M-Y code=121 mods=7	\e[27;8;89~	agree
 xterm 411 - z	legacy mok=3	z code=122 mods=0	\e[27;1;122~	agree
-xterm 411 S z	legacy mok=3	Z code=122 mods=1	\e[27;2;90~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: Z
+xterm 411 S z	legacy mok=3	Z code=122 mods=1	\e[27;2;90~	agree
 xterm 411 C z	legacy mok=3	C-z code=122 mods=4	\e[27;5;122~	agree
 xterm 411 M z	legacy mok=3	M-z code=122 mods=2	\e[27;3;122~	agree
 xterm 411 CS z	legacy mok=3	C-Z code=122 mods=5	\e[27;6;90~	agree
@@ -2045,7 +2045,7 @@ xterm 411 CM z	legacy mok=3	C-M-z code=122 mods=6	\e[27;7;122~	agree
 xterm 411 MS z	legacy mok=3	M-Z code=122 mods=3	\e[27;4;90~	agree
 xterm 411 CMS z	legacy mok=3	C-M-Z code=122 mods=7	\e[27;8;90~	agree
 xterm 411 - 0	legacy mok=3	0 code=48 mods=0	\e[27;1;48~	agree
-xterm 411 S 0	legacy mok=3	) code=48 mods=1	\e[27;2;41~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: )
+xterm 411 S 0	legacy mok=3	) code=48 mods=1	\e[27;2;41~	agree
 xterm 411 C 0	legacy mok=3	C-0 code=48 mods=4	\e[27;5;48~	agree
 xterm 411 M 0	legacy mok=3	M-0 code=48 mods=2	\e[27;3;48~	agree
 xterm 411 CS 0	legacy mok=3	C-) code=48 mods=5	\e[27;6;41~	agree
@@ -2053,7 +2053,7 @@ xterm 411 CM 0	legacy mok=3	C-M-0 code=48 mods=6	\e[27;7;48~	agree
 xterm 411 MS 0	legacy mok=3	M-) code=48 mods=3	\e[27;4;41~	agree
 xterm 411 CMS 0	legacy mok=3	C-M-) code=48 mods=7	\e[27;8;41~	agree
 xterm 411 - 1	legacy mok=3	1 code=49 mods=0	\e[27;1;49~	agree
-xterm 411 S 1	legacy mok=3	! code=49 mods=1	\e[27;2;33~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: !
+xterm 411 S 1	legacy mok=3	! code=49 mods=1	\e[27;2;33~	agree
 xterm 411 C 1	legacy mok=3	C-1 code=49 mods=4	\e[27;5;49~	agree
 xterm 411 M 1	legacy mok=3	M-1 code=49 mods=2	\e[27;3;49~	agree
 xterm 411 CS 1	legacy mok=3	C-! code=49 mods=5	\e[27;6;33~	agree
@@ -2061,7 +2061,7 @@ xterm 411 CM 1	legacy mok=3	C-M-1 code=49 mods=6	\e[27;7;49~	agree
 xterm 411 MS 1	legacy mok=3	M-! code=49 mods=3	\e[27;4;33~	agree
 xterm 411 CMS 1	legacy mok=3	C-M-! code=49 mods=7	\e[27;8;33~	agree
 xterm 411 - 2	legacy mok=3	2 code=50 mods=0	\e[27;1;50~	agree
-xterm 411 S 2	legacy mok=3	@ code=50 mods=1	\e[27;2;64~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: @
+xterm 411 S 2	legacy mok=3	@ code=50 mods=1	\e[27;2;64~	agree
 xterm 411 C 2	legacy mok=3	C-2 code=50 mods=4	\e[27;5;50~	agree
 xterm 411 M 2	legacy mok=3	M-2 code=50 mods=2	\e[27;3;50~	agree
 xterm 411 CS 2	legacy mok=3	C-@ code=50 mods=5	\e[27;6;64~	agree
@@ -2069,7 +2069,7 @@ xterm 411 CM 2	legacy mok=3	C-M-2 code=50 mods=6	\e[27;7;50~	agree
 xterm 411 MS 2	legacy mok=3	M-@ code=50 mods=3	\e[27;4;64~	agree
 xterm 411 CMS 2	legacy mok=3	C-M-@ code=50 mods=7	\e[27;8;64~	agree
 xterm 411 - 3	legacy mok=3	3 code=51 mods=0	\e[27;1;51~	agree
-xterm 411 S 3	legacy mok=3	# code=51 mods=1	\e[27;2;35~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: #
+xterm 411 S 3	legacy mok=3	# code=51 mods=1	\e[27;2;35~	agree
 xterm 411 C 3	legacy mok=3	C-3 code=51 mods=4	\e[27;5;51~	agree
 xterm 411 M 3	legacy mok=3	M-3 code=51 mods=2	\e[27;3;51~	agree
 xterm 411 CS 3	legacy mok=3	C-# code=51 mods=5	\e[27;6;35~	agree
@@ -2077,7 +2077,7 @@ xterm 411 CM 3	legacy mok=3	C-M-3 code=51 mods=6	\e[27;7;51~	agree
 xterm 411 MS 3	legacy mok=3	M-# code=51 mods=3	\e[27;4;35~	agree
 xterm 411 CMS 3	legacy mok=3	C-M-# code=51 mods=7	\e[27;8;35~	agree
 xterm 411 - 4	legacy mok=3	4 code=52 mods=0	\e[27;1;52~	agree
-xterm 411 S 4	legacy mok=3	$ code=52 mods=1	\e[27;2;36~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: $
+xterm 411 S 4	legacy mok=3	$ code=52 mods=1	\e[27;2;36~	agree
 xterm 411 C 4	legacy mok=3	C-4 code=52 mods=4	\e[27;5;52~	agree
 xterm 411 M 4	legacy mok=3	M-4 code=52 mods=2	\e[27;3;52~	agree
 xterm 411 CS 4	legacy mok=3	C-$ code=52 mods=5	\e[27;6;36~	agree
@@ -2085,7 +2085,7 @@ xterm 411 CM 4	legacy mok=3	C-M-4 code=52 mods=6	\e[27;7;52~	agree
 xterm 411 MS 4	legacy mok=3	M-$ code=52 mods=3	\e[27;4;36~	agree
 xterm 411 CMS 4	legacy mok=3	C-M-$ code=52 mods=7	\e[27;8;36~	agree
 xterm 411 - 5	legacy mok=3	5 code=53 mods=0	\e[27;1;53~	agree
-xterm 411 S 5	legacy mok=3	% code=53 mods=1	\e[27;2;37~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: %
+xterm 411 S 5	legacy mok=3	% code=53 mods=1	\e[27;2;37~	agree
 xterm 411 C 5	legacy mok=3	C-5 code=53 mods=4	\e[27;5;53~	agree
 xterm 411 M 5	legacy mok=3	M-5 code=53 mods=2	\e[27;3;53~	agree
 xterm 411 CS 5	legacy mok=3	C-% code=53 mods=5	\e[27;6;37~	agree
@@ -2093,7 +2093,7 @@ xterm 411 CM 5	legacy mok=3	C-M-5 code=53 mods=6	\e[27;7;53~	agree
 xterm 411 MS 5	legacy mok=3	M-% code=53 mods=3	\e[27;4;37~	agree
 xterm 411 CMS 5	legacy mok=3	C-M-% code=53 mods=7	\e[27;8;37~	agree
 xterm 411 - 6	legacy mok=3	6 code=54 mods=0	\e[27;1;54~	agree
-xterm 411 S 6	legacy mok=3	^ code=54 mods=1	\e[27;2;94~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: ^
+xterm 411 S 6	legacy mok=3	^ code=54 mods=1	\e[27;2;94~	agree
 xterm 411 C 6	legacy mok=3	C-6 code=54 mods=4	\e[27;5;54~	agree
 xterm 411 M 6	legacy mok=3	M-6 code=54 mods=2	\e[27;3;54~	agree
 xterm 411 CS 6	legacy mok=3	C-^ code=54 mods=5	\e[27;6;94~	agree
@@ -2101,7 +2101,7 @@ xterm 411 CM 6	legacy mok=3	C-M-6 code=54 mods=6	\e[27;7;54~	agree
 xterm 411 MS 6	legacy mok=3	M-^ code=54 mods=3	\e[27;4;94~	agree
 xterm 411 CMS 6	legacy mok=3	C-M-^ code=54 mods=7	\e[27;8;94~	agree
 xterm 411 - 7	legacy mok=3	7 code=55 mods=0	\e[27;1;55~	agree
-xterm 411 S 7	legacy mok=3	& code=55 mods=1	\e[27;2;38~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: &
+xterm 411 S 7	legacy mok=3	& code=55 mods=1	\e[27;2;38~	agree
 xterm 411 C 7	legacy mok=3	C-7 code=55 mods=4	\e[27;5;55~	agree
 xterm 411 M 7	legacy mok=3	M-7 code=55 mods=2	\e[27;3;55~	agree
 xterm 411 CS 7	legacy mok=3	C-& code=55 mods=5	\e[27;6;38~	agree
@@ -2109,7 +2109,7 @@ xterm 411 CM 7	legacy mok=3	C-M-7 code=55 mods=6	\e[27;7;55~	agree
 xterm 411 MS 7	legacy mok=3	M-& code=55 mods=3	\e[27;4;38~	agree
 xterm 411 CMS 7	legacy mok=3	C-M-& code=55 mods=7	\e[27;8;38~	agree
 xterm 411 - 8	legacy mok=3	8 code=56 mods=0	\e[27;1;56~	agree
-xterm 411 S 8	legacy mok=3	* code=56 mods=1	\e[27;2;42~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: *
+xterm 411 S 8	legacy mok=3	* code=56 mods=1	\e[27;2;42~	agree
 xterm 411 C 8	legacy mok=3	C-8 code=56 mods=4	\e[27;5;56~	agree
 xterm 411 M 8	legacy mok=3	M-8 code=56 mods=2	\e[27;3;56~	agree
 xterm 411 CS 8	legacy mok=3	C-* code=56 mods=5	\e[27;6;42~	agree
@@ -2117,7 +2117,7 @@ xterm 411 CM 8	legacy mok=3	C-M-8 code=56 mods=6	\e[27;7;56~	agree
 xterm 411 MS 8	legacy mok=3	M-* code=56 mods=3	\e[27;4;42~	agree
 xterm 411 CMS 8	legacy mok=3	C-M-* code=56 mods=7	\e[27;8;42~	agree
 xterm 411 - 9	legacy mok=3	9 code=57 mods=0	\e[27;1;57~	agree
-xterm 411 S 9	legacy mok=3	( code=57 mods=1	\e[27;2;40~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: (
+xterm 411 S 9	legacy mok=3	( code=57 mods=1	\e[27;2;40~	agree
 xterm 411 C 9	legacy mok=3	C-9 code=57 mods=4	\e[27;5;57~	agree
 xterm 411 M 9	legacy mok=3	M-9 code=57 mods=2	\e[27;3;57~	agree
 xterm 411 CS 9	legacy mok=3	C-( code=57 mods=5	\e[27;6;40~	agree
@@ -2125,7 +2125,7 @@ xterm 411 CM 9	legacy mok=3	C-M-9 code=57 mods=6	\e[27;7;57~	agree
 xterm 411 MS 9	legacy mok=3	M-( code=57 mods=3	\e[27;4;40~	agree
 xterm 411 CMS 9	legacy mok=3	C-M-( code=57 mods=7	\e[27;8;40~	agree
 xterm 411 - grave	legacy mok=3	` code=96 mods=0	\e[27;1;96~	agree
-xterm 411 S grave	legacy mok=3	~ code=96 mods=1	\e[27;2;126~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: ~
+xterm 411 S grave	legacy mok=3	~ code=96 mods=1	\e[27;2;126~	agree
 xterm 411 C grave	legacy mok=3	C-` code=96 mods=4	\e[27;5;96~	agree
 xterm 411 M grave	legacy mok=3	M-` code=96 mods=2	\e[27;3;96~	agree
 xterm 411 CS grave	legacy mok=3	C-~ code=96 mods=5	\e[27;6;126~	agree
@@ -2133,7 +2133,7 @@ xterm 411 CM grave	legacy mok=3	C-M-` code=96 mods=6	\e[27;7;96~	agree
 xterm 411 MS grave	legacy mok=3	M-~ code=96 mods=3	\e[27;4;126~	agree
 xterm 411 CMS grave	legacy mok=3	C-M-~ code=96 mods=7	\e[27;8;126~	agree
 xterm 411 - minus	legacy mok=3	- code=45 mods=0	\e[27;1;45~	agree
-xterm 411 S minus	legacy mok=3	_ code=45 mods=1	\e[27;2;95~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: _
+xterm 411 S minus	legacy mok=3	_ code=45 mods=1	\e[27;2;95~	agree
 xterm 411 C minus	legacy mok=3	C-- code=45 mods=4	\e[27;5;45~	agree
 xterm 411 M minus	legacy mok=3	M-- code=45 mods=2	\e[27;3;45~	agree
 xterm 411 CS minus	legacy mok=3	C-_ code=45 mods=5	\e[27;6;95~	agree
@@ -2141,7 +2141,7 @@ xterm 411 CM minus	legacy mok=3	C-M-- code=45 mods=6	\e[27;7;45~	agree
 xterm 411 MS minus	legacy mok=3	M-_ code=45 mods=3	\e[27;4;95~	agree
 xterm 411 CMS minus	legacy mok=3	C-M-_ code=45 mods=7	\e[27;8;95~	agree
 xterm 411 - equal	legacy mok=3	= code=61 mods=0	\e[27;1;61~	agree
-xterm 411 S equal	legacy mok=3	+ code=61 mods=1	\e[27;2;43~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: +
+xterm 411 S equal	legacy mok=3	+ code=61 mods=1	\e[27;2;43~	agree
 xterm 411 C equal	legacy mok=3	C-= code=61 mods=4	\e[27;5;61~	agree
 xterm 411 M equal	legacy mok=3	M-= code=61 mods=2	\e[27;3;61~	agree
 xterm 411 CS equal	legacy mok=3	C-+ code=61 mods=5	\e[27;6;43~	agree
@@ -2149,7 +2149,7 @@ xterm 411 CM equal	legacy mok=3	C-M-= code=61 mods=6	\e[27;7;61~	agree
 xterm 411 MS equal	legacy mok=3	M-+ code=61 mods=3	\e[27;4;43~	agree
 xterm 411 CMS equal	legacy mok=3	C-M-+ code=61 mods=7	\e[27;8;43~	agree
 xterm 411 - bracketleft	legacy mok=3	[ code=91 mods=0	\e[27;1;91~	agree
-xterm 411 S bracketleft	legacy mok=3	{ code=91 mods=1	\e[27;2;123~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: {
+xterm 411 S bracketleft	legacy mok=3	{ code=91 mods=1	\e[27;2;123~	agree
 xterm 411 C bracketleft	legacy mok=3	C-[ code=91 mods=4	\e[27;5;91~	agree
 xterm 411 M bracketleft	legacy mok=3	M-[ code=91 mods=2	\e[27;3;91~	agree
 xterm 411 CS bracketleft	legacy mok=3	C-{ code=91 mods=5	\e[27;6;123~	agree
@@ -2157,7 +2157,7 @@ xterm 411 CM bracketleft	legacy mok=3	C-M-[ code=91 mods=6	\e[27;7;91~	agree
 xterm 411 MS bracketleft	legacy mok=3	M-{ code=91 mods=3	\e[27;4;123~	agree
 xterm 411 CMS bracketleft	legacy mok=3	C-M-{ code=91 mods=7	\e[27;8;123~	agree
 xterm 411 - bracketright	legacy mok=3	] code=93 mods=0	\e[27;1;93~	agree
-xterm 411 S bracketright	legacy mok=3	} code=93 mods=1	\e[27;2;125~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: }
+xterm 411 S bracketright	legacy mok=3	} code=93 mods=1	\e[27;2;125~	agree
 xterm 411 C bracketright	legacy mok=3	C-] code=93 mods=4	\e[27;5;93~	agree
 xterm 411 M bracketright	legacy mok=3	M-] code=93 mods=2	\e[27;3;93~	agree
 xterm 411 CS bracketright	legacy mok=3	C-} code=93 mods=5	\e[27;6;125~	agree
@@ -2165,7 +2165,7 @@ xterm 411 CM bracketright	legacy mok=3	C-M-] code=93 mods=6	\e[27;7;93~	agree
 xterm 411 MS bracketright	legacy mok=3	M-} code=93 mods=3	\e[27;4;125~	agree
 xterm 411 CMS bracketright	legacy mok=3	C-M-} code=93 mods=7	\e[27;8;125~	agree
 xterm 411 - backslash	legacy mok=3	\ code=92 mods=0	\e[27;1;92~	agree
-xterm 411 S backslash	legacy mok=3	| code=92 mods=1	\e[27;2;124~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: |
+xterm 411 S backslash	legacy mok=3	| code=92 mods=1	\e[27;2;124~	agree
 xterm 411 C backslash	legacy mok=3	C-\ code=92 mods=4	\e[27;5;92~	agree
 xterm 411 M backslash	legacy mok=3	M-\ code=92 mods=2	\e[27;3;92~	agree
 xterm 411 CS backslash	legacy mok=3	C-| code=92 mods=5	\e[27;6;124~	agree
@@ -2173,7 +2173,7 @@ xterm 411 CM backslash	legacy mok=3	C-M-\ code=92 mods=6	\e[27;7;92~	agree
 xterm 411 MS backslash	legacy mok=3	M-| code=92 mods=3	\e[27;4;124~	agree
 xterm 411 CMS backslash	legacy mok=3	C-M-| code=92 mods=7	\e[27;8;124~	agree
 xterm 411 - semicolon	legacy mok=3	; code=59 mods=0	\e[27;1;59~	agree
-xterm 411 S semicolon	legacy mok=3	: code=59 mods=1	\e[27;2;58~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: :
+xterm 411 S semicolon	legacy mok=3	: code=59 mods=1	\e[27;2;58~	agree
 xterm 411 C semicolon	legacy mok=3	C-; code=59 mods=4	\e[27;5;59~	agree
 xterm 411 M semicolon	legacy mok=3	M-; code=59 mods=2	\e[27;3;59~	agree
 xterm 411 CS semicolon	legacy mok=3	C-: code=59 mods=5	\e[27;6;58~	agree
@@ -2181,7 +2181,7 @@ xterm 411 CM semicolon	legacy mok=3	C-M-; code=59 mods=6	\e[27;7;59~	agree
 xterm 411 MS semicolon	legacy mok=3	M-: code=59 mods=3	\e[27;4;58~	agree
 xterm 411 CMS semicolon	legacy mok=3	C-M-: code=59 mods=7	\e[27;8;58~	agree
 xterm 411 - apostrophe	legacy mok=3	' code=39 mods=0	\e[27;1;39~	agree
-xterm 411 S apostrophe	legacy mok=3	" code=39 mods=1	\e[27;2;34~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: "
+xterm 411 S apostrophe	legacy mok=3	" code=39 mods=1	\e[27;2;34~	agree
 xterm 411 C apostrophe	legacy mok=3	C-' code=39 mods=4	\e[27;5;39~	agree
 xterm 411 M apostrophe	legacy mok=3	M-' code=39 mods=2	\e[27;3;39~	agree
 xterm 411 CS apostrophe	legacy mok=3	C-" code=39 mods=5	\e[27;6;34~	agree
@@ -2189,7 +2189,7 @@ xterm 411 CM apostrophe	legacy mok=3	C-M-' code=39 mods=6	\e[27;7;39~	agree
 xterm 411 MS apostrophe	legacy mok=3	M-" code=39 mods=3	\e[27;4;34~	agree
 xterm 411 CMS apostrophe	legacy mok=3	C-M-" code=39 mods=7	\e[27;8;34~	agree
 xterm 411 - comma	legacy mok=3	, code=44 mods=0	\e[27;1;44~	agree
-xterm 411 S comma	legacy mok=3	< code=44 mods=1	\e[27;2;60~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: <
+xterm 411 S comma	legacy mok=3	< code=44 mods=1	\e[27;2;60~	agree
 xterm 411 C comma	legacy mok=3	C-, code=44 mods=4	\e[27;5;44~	agree
 xterm 411 M comma	legacy mok=3	M-, code=44 mods=2	\e[27;3;44~	agree
 xterm 411 CS comma	legacy mok=3	C-< code=44 mods=5	\e[27;6;60~	agree
@@ -2197,7 +2197,7 @@ xterm 411 CM comma	legacy mok=3	C-M-, code=44 mods=6	\e[27;7;44~	agree
 xterm 411 MS comma	legacy mok=3	M-< code=44 mods=3	\e[27;4;60~	agree
 xterm 411 CMS comma	legacy mok=3	C-M-< code=44 mods=7	\e[27;8;60~	agree
 xterm 411 - period	legacy mok=3	. code=46 mods=0	\e[27;1;46~	agree
-xterm 411 S period	legacy mok=3	> code=46 mods=1	\e[27;2;62~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: >
+xterm 411 S period	legacy mok=3	> code=46 mods=1	\e[27;2;62~	agree
 xterm 411 C period	legacy mok=3	C-. code=46 mods=4	\e[27;5;46~	agree
 xterm 411 M period	legacy mok=3	M-. code=46 mods=2	\e[27;3;46~	agree
 xterm 411 CS period	legacy mok=3	C-> code=46 mods=5	\e[27;6;62~	agree
@@ -2205,7 +2205,7 @@ xterm 411 CM period	legacy mok=3	C-M-. code=46 mods=6	\e[27;7;46~	agree
 xterm 411 MS period	legacy mok=3	M-> code=46 mods=3	\e[27;4;62~	agree
 xterm 411 CMS period	legacy mok=3	C-M-> code=46 mods=7	\e[27;8;62~	agree
 xterm 411 - slash	legacy mok=3	/ code=47 mods=0	\e[27;1;47~	agree
-xterm 411 S slash	legacy mok=3	? code=47 mods=1	\e[27;2;63~	differs: xterm at levels 2 and 3 sends Shift with a character as CSI 27 ; 2 ; code ~, the shifted character's code, punctuation too; fux sends its text; fux: ?
+xterm 411 S slash	legacy mok=3	? code=47 mods=1	\e[27;2;63~	agree
 xterm 411 C slash	legacy mok=3	C-/ code=47 mods=4	\e[27;5;47~	agree
 xterm 411 M slash	legacy mok=3	M-/ code=47 mods=2	\e[27;3;47~	agree
 xterm 411 CS slash	legacy mok=3	C-? code=47 mods=5	\e[27;6;63~	agree
@@ -2246,7 +2246,7 @@ xterm 411 MS Escape	legacy mok=3	M-S-Escape code=27 mods=3	\e[27;4;27~	agree
 xterm 411 CMS Escape	legacy mok=3	C-M-S-Escape code=27 mods=7	\e[27;8;27~	agree
 xterm 411 - BackSpace	legacy mok=3	BSpace code=127 mods=0	\e[27;1;127~	agree
 xterm 411 S BackSpace	legacy mok=3	S-BSpace code=127 mods=1	\e[27;2;127~	agree
-xterm 411 C BackSpace	legacy mok=3	C-BSpace code=127 mods=4	\e[27;5;8~	differs: xterm at level 3 sends Ctrl-Backspace modified, as every key; fux sends BS; fux: \x08
+xterm 411 C BackSpace	legacy mok=3	C-BSpace code=127 mods=4	\e[27;5;8~	agree
 xterm 411 M BackSpace	legacy mok=3	M-BSpace code=127 mods=2	\e[27;3;127~	agree
 xterm 411 CS BackSpace	legacy mok=3	C-S-BSpace code=127 mods=5	\e[27;6;8~	agree
 xterm 411 CM BackSpace	legacy mok=3	C-M-BSpace code=127 mods=6	\e[27;7;8~	agree
