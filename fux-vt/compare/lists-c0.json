@@ -3728,7 +3728,7 @@
       "citation": "Following this, all subsequent cells that are painted are hyperlinks to this target.",
       "feature": "family links",
       "section": "OSC 8 hyperlinks (references/modern/osc8_hyperlinks.md) (Egmont Koblinger's specification, as fetched), The escape sequence",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:a-prompt-mark-starts-a-fresh-line": {
       "applicability": "applies",
@@ -3760,7 +3760,7 @@
       "citation": "Following this, all subsequent cells that are painted are hyperlinks to this target.",
       "feature": "family links",
       "section": "OSC 8 hyperlinks (references/modern/osc8_hyperlinks.md) (Egmont Koblinger's specification, as fetched), The escape sequence",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:an-empty-id-is-no-id": {
       "applicability": "applies",
@@ -3812,11 +3812,11 @@
     },
     "cases:cursor-report-while-wrap-pending": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.35",
-      "citation": "DSR is used either to report the status of the sending device or to request a status report from the receiving device, depending on the parameter values: 0   ready, no malfunction detected 1   busy, another DSR must be requested later 2   busy, another DSR will be sent later 3   some malfunction detected, another DSR must be requested later 4   some malfunction detected, another DSR will be sent later 5   a DSR is requested 6 a report of the active presentation position or of the active data position in the form of ACTIVE POSITION REPORT (CPR) is requested DSR with parameter value 0, 1, 2, 3 or 4 may be sent either unsolicited or as a response to a request such as a DSR with a parameter value 5 or MESSAGE WAITING (MW).",
+      "authority": "dec070-CPR",
+      "citation": "The parameter values indicate the Active Line and Active Column values at the time the DSR control is received by the terminal.",
       "feature": "family reports",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.35 DSR - DEVICE STATUS REPORT",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-53, Cursor Position Report CPR; with Appendix D.6.1",
+      "verdict": "agrees"
     },
     "cases:cuu-while-wrap-pending": {
       "applicability": "applies",
@@ -3840,7 +3840,7 @@
       "citation": "ESC ( 0 designates the DEC Special Graphic set as G0; SO and SI invoke G1 and G0",
       "feature": "family charset",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 3 and 5, Designate character sets (SCS) and DEC Special Graphics",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:decrc-restores-no-link": {
       "applicability": "applies",
@@ -3852,19 +3852,19 @@
     },
     "cases:decstbm-homes-to-the-origin": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "dec070-DECSTBM",
+      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
       "feature": "family scroll",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "verdict": "agrees"
     },
     "cases:decstbm-ignores-an-invalid-region": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "dec070-DECSTBM",
+      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
       "feature": "family scroll",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "verdict": "agrees"
     },
     "cases:decstr-ends-synchronized-output": {
       "applicability": "applies",
@@ -3896,7 +3896,7 @@
       "citation": "Auto Wrap Mode: Auto Wrap Off (NVM if present); read as the terminal's setting, which is on",
       "feature": "family reset",
       "section": "DEC STD 070 (DEC STD 070 (1991), Soft Terminal Reset (DECSTR)), DEC STD 070 (1991), Soft Terminal Reset (DECSTR)",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "cases:dl-moves-to-column-zero": {
       "applicability": "applies",
@@ -3980,11 +3980,11 @@
     },
     "cases:insert-mode": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ecma48-7.2.10",
+      "citation": "INSERT: The graphic symbol of a graphic character or of a control function, for which a graphical representation is required, is inserted at the active presentation position.",
       "feature": "family insert-mode",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "ECMA-48 (5th edition, June 1991), 7.2.10 IRM - INSERTION REPLACEMENT MODE",
+      "verdict": "agrees"
     },
     "cases:invalid-utf8-prints-a-replacement": {
       "applicability": "applies",
@@ -4000,7 +4000,7 @@
       "citation": "the terminal maintains a stack of flags: CSI > flags u pushes, CSI < number u pops, CSI = flags ; mode u sets",
       "feature": "family kitty",
       "section": "kitty keyboard protocol (references/modern/kitty_keyboard_protocol.html) (as fetched), Progressive enhancement: pushing, popping and setting flags",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:l-starts-a-fresh-line": {
       "applicability": "applies",
@@ -4028,27 +4028,27 @@
     },
     "cases:mode-1047-and-1048": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-1049",
+      "citation": "Use Alternate Screen Buffer, xterm. This may be disabled by the titeInhibit resource. ... Ps = 1 0 4 8 ⇒ Save cursor as in DECSC, xterm.",
       "feature": "family alternate",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 7, 1 0 4 7, 1 0 4 8 and 1 0 4 9",
+      "verdict": "agrees"
     },
     "cases:mode-1049-keeps-the-cursor": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-1049",
+      "citation": "Use Alternate Screen Buffer, xterm. This may be disabled by the titeInhibit resource. ... Ps = 1 0 4 8 ⇒ Save cursor as in DECSC, xterm.",
       "feature": "family alternate",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 7, 1 0 4 7, 1 0 4 8 and 1 0 4 9",
+      "verdict": "agrees"
     },
     "cases:mode-47-keeps-the-cursor": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-1049",
+      "citation": "Use Alternate Screen Buffer, xterm. This may be disabled by the titeInhibit resource. ... Ps = 1 0 4 8 ⇒ Save cursor as in DECSC, xterm.",
       "feature": "family alternate",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 7, 1 0 4 7, 1 0 4 8 and 1 0 4 9",
+      "verdict": "agrees"
     },
     "cases:no-wrap-is-left-pending-with-autowrap-off": {
       "applicability": "applies",
@@ -4128,15 +4128,15 @@
       "citation": "parameters of a selected colour are separated by colons",
       "feature": "family sgr-colon",
       "section": "ITU-T T.416 (1993), 13.1.8, colour parameters (and kitty's underline styles, references/modern/kitty_underlines.html)",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:sgr-colon-underline-off": {
       "applicability": "applies",
-      "authority": "t416",
-      "citation": "parameters of a selected colour are separated by colons",
+      "authority": "kitty-underlines",
+      "citation": "<ESC>[4:0m  # no underline",
       "feature": "family sgr-colon",
-      "section": "ITU-T T.416 (1993), 13.1.8, colour parameters (and kitty's underline styles, references/modern/kitty_underlines.html)",
-      "verdict": "open"
+      "section": "kitty colored and styled underlines (references/modern/kitty_underlines.html) (as fetched), Colored and styled underlines",
+      "verdict": "agrees"
     },
     "cases:sgr-colour-cut-short": {
       "applicability": "applies",
@@ -4176,7 +4176,7 @@
       "citation": "ESC ( 0 designates the DEC Special Graphic set as G0; SO and SI invoke G1 and G0",
       "feature": "family charset",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 3 and 5, Designate character sets (SCS) and DEC Special Graphics",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:ss3-shifts-g3-for-one-character": {
       "applicability": "applies",
@@ -4216,7 +4216,7 @@
       "citation": "Following this, all subsequent cells that are painted are hyperlinks to this target.",
       "feature": "family links",
       "section": "OSC 8 hyperlinks (references/modern/osc8_hyperlinks.md) (Egmont Koblinger's specification, as fetched), The escape sequence",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:title": {
       "applicability": "applies",
@@ -4224,7 +4224,7 @@
       "citation": "Ps = 0 ⇒ Change Icon Name and Window Title to Pt.",
       "feature": "family titles",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 0, 1 and 2",
-      "verdict": "open"
+      "verdict": "agrees"
     },
     "cases:two-links-without-an-id-to-one-uri-are-two": {
       "applicability": "applies",
@@ -4232,15 +4232,15 @@
       "citation": "Following this, all subsequent cells that are painted are hyperlinks to this target.",
       "feature": "family links",
       "section": "OSC 8 hyperlinks (references/modern/osc8_hyperlinks.md) (Egmont Koblinger's specification, as fetched), The escape sequence",
-      "verdict": "open"
+      "verdict": "allows"
     },
     "cases:vpa-honours-origin-mode": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "dec070-DECOM",
+      "citation": "A conforming device shall allow addressing of the display area to be performed relative to either the display origin (coordinate 1,1) [reset state = absolute] or the origin of the scrolling region",
       "feature": "family origin",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-31, Set/Reset Origin Mode DECOM",
+      "verdict": "agrees"
     },
     "cases:wide-glyph-wrapping-at-four-columns": {
       "applicability": "applies",
@@ -4364,43 +4364,43 @@
     },
     "corpus:claude": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-osc0",
+      "citation": "Ps = 0 ⇒ Change Icon Name and Window Title to Pt.",
       "feature": "program claude",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 0, 1 and 2",
+      "verdict": "departs"
     },
     "corpus:claude-ghostty": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-osc0",
+      "citation": "Ps = 0 ⇒ Change Icon Name and Window Title to Pt.",
       "feature": "program claude",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 0, 1 and 2",
+      "verdict": "departs"
     },
     "corpus:claude-main": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-osc0",
+      "citation": "Ps = 0 ⇒ Change Icon Name and Window Title to Pt.",
       "feature": "program claude",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 0, 1 and 2",
+      "verdict": "departs"
     },
     "corpus:claude-resize": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-osc0",
+      "citation": "Ps = 0 ⇒ Change Icon Name and Window Title to Pt.",
       "feature": "program claude",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 0, 1 and 2",
+      "verdict": "departs"
     },
     "corpus:claude-small": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-osc0",
+      "citation": "Ps = 0 ⇒ Change Icon Name and Window Title to Pt.",
       "feature": "program claude",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 0, 1 and 2",
+      "verdict": "departs"
     },
     "corpus:delta-diff": {
       "applicability": "applies",
@@ -4636,11 +4636,11 @@
     },
     "corpus:helix-unicode": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "mode2027",
+      "citation": "If the VT mode [2027] is not set, then the behavior is as undefined as if this specification was not implemented at all ... ZWJ emoji are required to be displayed as a single image with a width of 2 grid cells",
       "feature": "program helix",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "Grapheme cluster processing, mode 2027 (references/modern/mode_2027_grapheme_clusters.tex) (as fetched), Semantics: Grapheme Cluster, Emoji, Variation Selector 16",
+      "verdict": "allows"
     },
     "corpus:htop": {
       "applicability": "applies",
@@ -4716,11 +4716,11 @@
     },
     "corpus:less-small": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "mode2027",
+      "citation": "If the VT mode [2027] is not set, then the behavior is as undefined as if this specification was not implemented at all ... ZWJ emoji are required to be displayed as a single image with a width of 2 grid cells",
       "feature": "program less",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "Grapheme cluster processing, mode 2027 (references/modern/mode_2027_grapheme_clusters.tex) (as fetched), Semantics: Grapheme Cluster, Emoji, Variation Selector 16",
+      "verdict": "allows"
     },
     "corpus:man": {
       "applicability": "applies",
@@ -4788,11 +4788,11 @@
     },
     "corpus:micro-small": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "mode2027",
+      "citation": "If the VT mode [2027] is not set, then the behavior is as undefined as if this specification was not implemented at all ... ZWJ emoji are required to be displayed as a single image with a width of 2 grid cells",
       "feature": "program micro",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "Grapheme cluster processing, mode 2027 (references/modern/mode_2027_grapheme_clusters.tex) (as fetched), Semantics: Grapheme Cluster, Emoji, Variation Selector 16",
+      "verdict": "allows"
     },
     "corpus:micro-split": {
       "applicability": "applies",
@@ -4932,11 +4932,11 @@
     },
     "corpus:nvim-unicode": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "mode2027",
+      "citation": "If the VT mode [2027] is not set, then the behavior is as undefined as if this specification was not implemented at all ... ZWJ emoji are required to be displayed as a single image with a width of 2 grid cells",
       "feature": "program nvim",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "Grapheme cluster processing, mode 2027 (references/modern/mode_2027_grapheme_clusters.tex) (as fetched), Semantics: Grapheme Cluster, Emoji, Variation Selector 16",
+      "verdict": "allows"
     },
     "corpus:nvim-visual": {
       "applicability": "applies",
@@ -5012,11 +5012,11 @@
     },
     "corpus:tmux-resize": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "xterm411-adjustsavedcursor",
+      "citation": "if (screen->whichBuf) { SavedCursor *sc = &screen->sc[0]; if (adjust > 0) { ... sc->row += adjust; } }",
       "feature": "program tmux",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "xterm 411 source (xterm-411 tarball: charproc.c v1.2133 2026/08/22, cursor.c v1.101 2026/04/07) (patch #411), cursor.c AdjustSavedCursor, called from screen.c ScreenResize",
+      "verdict": "agrees"
     },
     "corpus:tmux-small": {
       "applicability": "applies",
@@ -5100,11 +5100,11 @@
     },
     "corpus:vim-unicode": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "mode2027",
+      "citation": "If the VT mode [2027] is not set, then the behavior is as undefined as if this specification was not implemented at all ... ZWJ emoji are required to be displayed as a single image with a width of 2 grid cells",
       "feature": "program vim",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "Grapheme cluster processing, mode 2027 (references/modern/mode_2027_grapheme_clusters.tex) (as fetched), Semantics: Grapheme Cluster, Emoji, Variation Selector 16",
+      "verdict": "allows"
     },
     "corpus:zellij": {
       "applicability": "applies",
@@ -5148,11 +5148,11 @@
     },
     "corpus:zsh-resize": {
       "applicability": "applies",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-xterm411",
+      "citation": "as xterm 411 does it (replays in families.rs)",
       "feature": "program zsh",
-      "section": " (), ",
-      "verdict": "open"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), xterm 411's behaviour, where ctlseqs is silent",
+      "verdict": "agrees"
     },
     "corpus:zsh-small": {
       "applicability": "applies",
@@ -5163,7 +5163,7 @@
       "verdict": "agrees"
     },
     "esctest:APCTests.test_APC_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "ecma48-8.3.2",
       "citation": "APC is used as the opening delimiter of a control string for application program use.",
       "feature": "8-bit controls",
@@ -5204,10 +5204,10 @@
     },
     "esctest:BSTests.test_BS_CursorStartsInDoWrapPosition": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.5",
-      "citation": "BS causes the active data position to be moved one character position in the data component in the direction opposite to that of the implicit movement.",
+      "authority": "dec070-LCF",
+      "citation": "The Last Column Flag should also be reset by executing any control which potentially changes the Active Position from the end-of-line position. These controls include the following: ... BACK_SPACE",
       "feature": "BS",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.5 BS - BACKSPACE",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), appendix D.6.1, Auto Wrap Mode (Last Column Flag), p. D-13/D-14",
       "verdict": "agrees"
     },
     "esctest:BSTests.test_BS_InitialReverseWraparound": {
@@ -5260,10 +5260,10 @@
     },
     "esctest:BSTests.test_BS_ReverseWrapWithLeftRight": {
       "applicability": "applies",
-      "authority": "ctlseqs-45",
-      "citation": "Reverse-wraparound mode (XTREVWRAP), xterm.",
+      "authority": "ctlseqs-1045",
+      "citation": "Extended Reverse-wraparound mode (XTREVWRAP2), xterm.",
       "feature": "reverse wrap (one choice)",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 5",
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 1 0 4 5",
       "verdict": "agrees"
     },
     "esctest:BSTests.test_BS_ReversewrapFromLeftEdgeToRightMargin": {
@@ -5276,10 +5276,10 @@
     },
     "esctest:BSTests.test_BS_StopsAtLeftMargin": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.5",
-      "citation": "BS causes the active data position to be moved one character position in the data component in the direction opposite to that of the implicit movement.",
+      "authority": "dec070-BS",
+      "citation": "If the Active Position is at or inside the Left Margin and within the Scroll Area, it will not move beyond the Left Margin.",
       "feature": "BS",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.5 BS - BACKSPACE",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-63, Back Space BS",
       "verdict": "agrees"
     },
     "esctest:BSTests.test_BS_StopsAtOrigin": {
@@ -5476,10 +5476,10 @@
     },
     "esctest:CPLTests.test_CPL_StopsAtTopMarginInScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "xterm411-CPL",
+      "citation": "CursorUp(screen, count < 1 ? 1 : count); CarriageReturn(xw);",
       "feature": "CPL",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "section": "xterm 411 source (xterm-411 tarball: charproc.c v1.2133 2026/08/22, cursor.c v1.101 2026/04/07) (patch #411), cursor.c CursorPrevLine (ctlseqs: \"CSI Ps F Cursor Preceding Line Ps Times (default = 1) (CPL).\")",
       "verdict": "agrees"
     },
     "esctest:CRTests.test_CR_Basic": {
@@ -5572,10 +5572,10 @@
     },
     "esctest:CUBTests.test_CUB_StopsAtLeftMarginInScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-CUB",
+      "citation": "If the Active Position is at or inside the Left Margin when the CUB control is executed, and an attempt is made to move the Active Position beyond the Left Margin, the control will be executed until the Active Position reaches the Left Margin.",
       "feature": "CUB",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-47, Cursor Backward CUB",
       "verdict": "agrees"
     },
     "esctest:CUDTests.test_CUD_DefaultParam": {
@@ -5740,10 +5740,10 @@
     },
     "esctest:CUUTests.test_CUU_StopsAtTopMarginInScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-CUU",
+      "citation": "If the Active Position is at or below the Top Margin when the CUU control is executed, and an attempt is made to move the Active Position above the Top Margin, the control will be executed until the Active Position reaches the Top Margin.",
       "feature": "CUU",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-41, Cursor Up CUU",
       "verdict": "agrees"
     },
     "esctest:ChangeColorTests.test_ChangeColor_CIELab": {
@@ -5792,7 +5792,7 @@
       "citation": "Change Color Number c to the color specified by spec.",
       "feature": "OSC 4",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 4 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeColorTests.test_ChangeColor_Hash3": {
       "applicability": "applies",
@@ -5800,7 +5800,7 @@
       "citation": "Change Color Number c to the color specified by spec.",
       "feature": "OSC 4",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 4 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeColorTests.test_ChangeColor_Hash6": {
       "applicability": "applies",
@@ -5816,7 +5816,7 @@
       "citation": "Change Color Number c to the color specified by spec.",
       "feature": "OSC 4",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 4 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeColorTests.test_ChangeColor_Multiple": {
       "applicability": "applies",
@@ -5832,7 +5832,7 @@
       "citation": "Change Color Number c to the color specified by spec.",
       "feature": "OSC 4",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 4 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeColorTests.test_ChangeColor_RGBI": {
       "applicability": "applies",
@@ -5856,7 +5856,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_CIELuv": {
       "applicability": "applies",
@@ -5864,7 +5864,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_CIEXYZ": {
       "applicability": "applies",
@@ -5872,7 +5872,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_CIEuvY": {
       "applicability": "applies",
@@ -5880,7 +5880,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_CIExyY": {
       "applicability": "applies",
@@ -5896,7 +5896,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "OSC 10-19",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_Hash3": {
       "applicability": "applies",
@@ -5904,7 +5904,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "OSC 10-19",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_Hash6": {
       "applicability": "applies",
@@ -5920,7 +5920,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "OSC 10-19",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_Multiple": {
       "applicability": "applies",
@@ -5944,7 +5944,7 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "rgbi: intensities",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeDynamicColorTests.test_ChangeDynamicColor_TekHVC": {
       "applicability": "applies",
@@ -5952,36 +5952,36 @@
       "citation": "Ps = 1 0 ⇒ Change VT100 text foreground color to Pt.",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 to 1 9",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_CIELab": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
       "verdict": "agrees"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_CIELuv": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
       "verdict": "agrees"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_CIEXYZ": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
       "verdict": "agrees"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_CIEuvY": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
       "verdict": "agrees"
@@ -5996,19 +5996,19 @@
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_Hash12": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "OSC 5",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_Hash3": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "OSC 5",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_Hash6": {
       "applicability": "applies",
@@ -6020,11 +6020,11 @@
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_Hash9": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "OSC 5",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_Multiple": {
       "applicability": "applies",
@@ -6040,7 +6040,7 @@
       "citation": "Change Special Color Number c to the color specified by spec.",
       "feature": "OSC 5",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_RGB": {
       "applicability": "applies",
@@ -6052,16 +6052,16 @@
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_RGBI": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "rgbi: intensities",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
       "verdict": "agrees"
     },
     "esctest:ChangeSpecialColorTests.test_ChangeSpecialColor_TekHVC": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc5",
-      "citation": "Change Special Color Number c to the color specified by spec.",
+      "authority": "ctlseqs-osc5-via-osc4",
+      "citation": "The special colors can also be set by adding the maximum number of colors (e.g., 88 or 256) to these codes in an OSC 4 control",
       "feature": "XParseColor colour spaces",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 ; c ; spec",
       "verdict": "agrees"
@@ -6072,7 +6072,7 @@
       "citation": "The DA2 control requests or reports the identification code of the specific product",
       "feature": "DA2",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Attributes (Secondary) DA2",
-      "verdict": "open"
+      "verdict": "allows"
     },
     "esctest:DA2Tests.test_DA2_NoParameter": {
       "applicability": "applies",
@@ -6080,7 +6080,7 @@
       "citation": "The DA2 control requests or reports the identification code of the specific product",
       "feature": "DA2",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Attributes (Secondary) DA2",
-      "verdict": "open"
+      "verdict": "allows"
     },
     "esctest:DATests.test_DA_0": {
       "applicability": "applies",
@@ -6088,7 +6088,7 @@
       "citation": "Use the primary Device Attributes (DA) control to request or report the implemented architectural conformance level and extensions.",
       "feature": "DA",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Attributes (Primary) DA",
-      "verdict": "open"
+      "verdict": "allows"
     },
     "esctest:DATests.test_DA_NoParameter": {
       "applicability": "applies",
@@ -6096,7 +6096,7 @@
       "citation": "Use the primary Device Attributes (DA) control to request or report the implemented architectural conformance level and extensions.",
       "feature": "DA",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Attributes (Primary) DA",
-      "verdict": "open"
+      "verdict": "allows"
     },
     "esctest:DCHTests.test_DCH_DefaultParam": {
       "applicability": "applies",
@@ -6156,10 +6156,10 @@
     },
     "esctest:DECALNTests.test_DECALN_ClearsMargins": {
       "applicability": "applies",
-      "authority": "dec070-DECALN",
-      "citation": "The DECALN control is used to fill the physical display with a screen alignment pattern which is implementation defined.",
+      "authority": "xterm411-DECALN",
+      "citation": "DEC STD 070 (see pages D-19 to D-20) does not mention left/right margins. The section is dated March 1985, not updated for the VT420 (introduced in 1990). ... resetMargins(xw);",
       "feature": "DECALN",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), appendix D.8, Screen Alignment DECALN (p. D-19)",
+      "section": "xterm 411 source (xterm-411 tarball: charproc.c v1.2133 2026/08/22, cursor.c v1.101 2026/04/07) (patch #411), charproc.c doparsing(), case CASE_DECALN",
       "verdict": "agrees"
     },
     "esctest:DECALNTests.test_DECALN_FillsScreen": {
@@ -6356,34 +6356,34 @@
     },
     "esctest:DECDSRTests.test_DECDSR_DECCKSR": {
       "applicability": "applies",
-      "authority": "dec070-DSR",
-      "citation": "The DSR request, with selective parameter, causes the terminal to respond with a corresponding DSR control using a parameter from the table to indicate its current functional status.",
+      "authority": "dec070-DECCKSR",
+      "citation": "DECCKSR is issued in response to a Request Checksum of Rectangular Area (DECRQCRA) or a Device Status Report (DSR) with a parameter value of ?63 indicating a request for a checksum of the macro definitions.",
       "feature": "DSR (DEC private)",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Status Report DSR",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-181/5-182, Memory Checksum DSR and Checksum Report DECCKSR",
       "verdict": "agrees"
     },
     "esctest:DECDSRTests.test_DECDSR_DECMSR": {
       "applicability": "applies",
-      "authority": "dec070-DSR",
-      "citation": "The DSR request, with selective parameter, causes the terminal to respond with a corresponding DSR control using a parameter from the table to indicate its current functional status.",
+      "authority": "dec070-DECMSR",
+      "citation": "The numeric parameter specifies the number of bytes available for macro definitions divided by 16 (rounded down).",
       "feature": "DSR (DEC private)",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Status Report DSR",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-185, Macro Space Report DECMSR",
       "verdict": "agrees"
     },
     "esctest:DECDSRTests.test_DECDSR_DECXCPR": {
       "applicability": "applies",
-      "authority": "dec070-DSR",
-      "citation": "The DSR request, with selective parameter, causes the terminal to respond with a corresponding DSR control using a parameter from the table to indicate its current functional status.",
+      "authority": "dec070-DECXCPR",
+      "citation": "Report Format: CSI ? Pl ; Pc ; Pp R ... default Pl, Pc, Pp: 1",
       "feature": "DSR (DEC private)",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Status Report DSR",
-      "verdict": "agrees"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-55, Extended Cursor Position Report DECXCPR",
+      "verdict": "allows"
     },
     "esctest:DECDSRTests.test_DECDSR_DSRDECLocatorStatus": {
       "applicability": "applies",
-      "authority": "dec070-DSR",
-      "citation": "The DSR request, with selective parameter, causes the terminal to respond with a corresponding DSR control using a parameter from the table to indicate its current functional status.",
+      "authority": "dec070-DSR-locator",
+      "citation": "?55 Request locator status (command from host); ?53 No locator; ?50 Locator ready; ?58 Locator busy; ?56 Host requests identity of device on locator port; ?57;0 \"Unknown Locator\" response; ?57;1 Device is Digital Corporate Mouse; ?57;2 Device is Digital Corporate Tablet",
       "feature": "DSR (DEC private)",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Status Report DSR",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (Locator chapter EL-00070-13)), Locator Extension p. 15, Device Status Report (Locator Status)",
       "verdict": "agrees"
     },
     "esctest:DECDSRTests.test_DECDSR_DSRDataIntegrity": {
@@ -6396,10 +6396,10 @@
     },
     "esctest:DECDSRTests.test_DECDSR_DSRKeyboard": {
       "applicability": "applies",
-      "authority": "dec070-DSR",
-      "citation": "The DSR request, with selective parameter, causes the terminal to respond with a corresponding DSR control using a parameter from the table to indicate its current functional status.",
+      "authority": "ctlseqs-dsr-keyboard",
+      "citation": "Ps = 2 6 → Report Keyboard status. The response is CSI ? 2 7 ; 1 ; 0 ; 0 n (North American). The last two parameters apply to VT300 & up (keyboard ready) and VT400 & up (LK01) respectively.",
       "feature": "DSR (DEC private)",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Status Report DSR",
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Ps n, Device Status Report (DEC-specific), Ps = 2 6",
       "verdict": "agrees"
     },
     "esctest:DECDSRTests.test_DECDSR_DSRMultipleSessionStatus": {
@@ -6412,10 +6412,10 @@
     },
     "esctest:DECDSRTests.test_DECDSR_DSRPrinterPort": {
       "applicability": "applies",
-      "authority": "dec070-DSR",
-      "citation": "The DSR request, with selective parameter, causes the terminal to respond with a corresponding DSR control using a parameter from the table to indicate its current functional status.",
+      "authority": "dec070-DSR-printer",
+      "citation": "13 The printer is not connected to the terminal. The Data Set Ready signal at the printer port has not been on since the last power-up or reset (RIS).",
       "feature": "DSR (DEC private)",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Status Report DSR",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (ch. 7, EL-00070-07)), ch. 7 Printer Port Extension, Device Status Report (printer), p. 7-33",
       "verdict": "agrees"
     },
     "esctest:DECDSRTests.test_DECDSR_DSRUDKLocked": {
@@ -6428,10 +6428,10 @@
     },
     "esctest:DECDSRTests.test_DECDSR_LocatorType": {
       "applicability": "applies",
-      "authority": "dec070-DSR",
-      "citation": "The DSR request, with selective parameter, causes the terminal to respond with a corresponding DSR control using a parameter from the table to indicate its current functional status.",
+      "authority": "dec070-DSR-locator",
+      "citation": "?55 Request locator status (command from host); ?53 No locator; ?50 Locator ready; ?58 Locator busy; ?56 Host requests identity of device on locator port; ?57;0 \"Unknown Locator\" response; ?57;1 Device is Digital Corporate Mouse; ?57;2 Device is Digital Corporate Tablet",
       "feature": "DSR (DEC private)",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Device Status Report DSR",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (Locator chapter EL-00070-13)), Locator Extension p. 15, Device Status Report (Locator Status)",
       "verdict": "agrees"
     },
     "esctest:DECERATests.test_DECERA_basic": {
@@ -6643,7 +6643,7 @@
       "verdict": "agrees"
     },
     "esctest:DECIDTests.test_DECID_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "ctlseqs-decid",
       "citation": "Return Terminal ID (DECID is 0x9a). Obsolete form of CSI c (DA).",
       "feature": "8-bit controls",
@@ -6660,10 +6660,10 @@
     },
     "esctest:DECRCTests.test_SaveRestoreCursor_AltVsMain": {
       "applicability": "applies",
-      "authority": "dec070-DECSC",
-      "citation": "the DECSC control provides a means of storing the values of the Active Position, the Current Rendition, Origin Mode, the currently designated G0, G1, G2, and G3 sets",
+      "authority": "xterm411-CursorSave",
+      "citation": "CursorSave2(xw, &screen->sc[screen->whichBuf]); ... CursorRestoreFlags(xw, &screen->sc[screen->whichBuf], DECSC_FLAGS);",
       "feature": "DECSC and DECRC",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-187, Save Cursor DECSC, and 5-189, Restore Cursor DECRC",
+      "section": "xterm 411 source (xterm-411 tarball: charproc.c v1.2133 2026/08/22, cursor.c v1.101 2026/04/07) (patch #411), cursor.c CursorSave / CursorRestore",
       "verdict": "agrees"
     },
     "esctest:DECRCTests.test_SaveRestoreCursor_Basic": {
@@ -6880,7 +6880,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECARM": {
       "applicability": "applies",
@@ -6896,7 +6896,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECAWM": {
       "applicability": "applies",
@@ -6920,7 +6920,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECCKM": {
       "applicability": "applies",
@@ -6936,7 +6936,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECCRTSM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -6944,7 +6944,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECESKM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -6952,7 +6952,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECHCCM": {
       "applicability": "applies",
@@ -6960,7 +6960,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECHDPXM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -6968,7 +6968,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECHEBM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -6976,7 +6976,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECHEM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -6984,7 +6984,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECKBUM": {
       "applicability": "applies",
@@ -7016,7 +7016,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECNAKB": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -7024,7 +7024,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECNCSM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -7032,7 +7032,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECNKM": {
       "applicability": "applies",
@@ -7048,7 +7048,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECNULM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -7056,7 +7056,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECOM": {
       "applicability": "applies",
@@ -7072,7 +7072,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECPCCM": {
       "applicability": "applies",
@@ -7088,7 +7088,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECPFF": {
       "applicability": "applies",
@@ -7096,7 +7096,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECRLCM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -7104,7 +7104,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECRLM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
@@ -7112,7 +7112,7 @@
       "citation": "The terminal responds with a Report Mode control sequence (DECRPM) which specifies the state of the mode as follows: (0) Unknown (mode is not recognized by terminal); (1) Set; (2) Reset; (3) Set and cannot be changed; or (4) Reset and cannot be changed. All ANSI standard modes defined in X3.64-1979 are reported as either Set or Reset.",
       "feature": "DECRQM",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-193, Request Mode DECRQM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECRQMTests.test_DECRQM_DEC_DECSCLM": {
       "applicability": "applies",
@@ -7232,15 +7232,15 @@
       "citation": "Request Selection or Setting is sent to the terminal to determine the selection or setting of a single device feature",
       "feature": "DECRQSS",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-196, Request Selection or Setting DECRQSS",
-      "verdict": "agrees"
+      "verdict": "departs"
     },
     "esctest:DECRQSSTests.test_DECRQSS_DECSNLS": {
       "applicability": "applies",
-      "authority": "dec070-DECRQSS",
-      "citation": "Request Selection or Setting is sent to the terminal to determine the selection or setting of a single device feature",
+      "authority": "dec070-DECSNLS",
+      "citation": "DECSNLS is a \"User Preference Feature\" intended for terminal management use. It should not be modified by application software except in response to a user request.",
       "feature": "DECRQSS",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-196, Request Selection or Setting DECRQSS",
-      "verdict": "agrees"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-89, Select Number of Lines per Screen DECSNLS",
+      "verdict": "allows"
     },
     "esctest:DECRQSSTests.test_DECRQSS_DECSSDT": {
       "applicability": "applies",
@@ -7268,11 +7268,11 @@
     },
     "esctest:DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM": {
       "applicability": "applies",
-      "authority": "dec070-DECSCL",
-      "citation": "The Select Conformance Level (DECSCL) control selects a terminal operating mode that provides interface compatibility defined by a conformance level of the architecture.",
+      "authority": "dec070-TSI",
+      "citation": "All TSI controls operate at Levels 2, 3 and 4. Level 3 defines TSI as an implicit extension at Level 2.",
       "feature": "DECSCL",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Select Conformance Level DECSCL",
-      "verdict": "agrees"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5.13.2, Terminal State Interrogation (p. 5-191); ch. 4 Implicit Extensions",
+      "verdict": "departs"
     },
     "esctest:DECSCLTests.test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM": {
       "applicability": "applies",
@@ -7280,14 +7280,14 @@
       "citation": "The Select Conformance Level (DECSCL) control selects a terminal operating mode that provides interface compatibility defined by a conformance level of the architecture.",
       "feature": "DECSCL",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Select Conformance Level DECSCL",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECSCLTests.test_DECSCL_Level5_SupportsDECNCSM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
-      "authority": "dec070-DECSCL",
-      "citation": "The Select Conformance Level (DECSCL) control selects a terminal operating mode that provides interface compatibility defined by a conformance level of the architecture.",
+      "authority": "ctlseqs-decscl",
+      "citation": "Pl = 6 5 → level 5, e.g., VT500.",
       "feature": "DECSCL",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Select Conformance Level DECSCL",
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Pl ; Pc \" p, Set conformance level (DECSCL)",
       "verdict": "agrees"
     },
     "esctest:DECSCLTests.test_DECSCL_RISOnChange": {
@@ -7296,7 +7296,7 @@
       "citation": "The Select Conformance Level (DECSCL) control selects a terminal operating mode that provides interface compatibility defined by a conformance level of the architecture.",
       "feature": "DECSCL",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Select Conformance Level DECSCL",
-      "verdict": "agrees"
+      "verdict": "departs"
     },
     "esctest:DECSCLTests.test_DSCSCL_Level2Supports7BitControls": {
       "applicability": "applies",
@@ -7624,7 +7624,7 @@
       "citation": "Allow 80 ⇒ 132 mode, xterm.",
       "feature": "DECCOLM (132 columns)",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 0",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECSETTests.test_DECSET_DECAWM": {
       "applicability": "applies",
@@ -7680,7 +7680,7 @@
       "citation": "A conforming device may provide as an extension the capability of selecting 80-column [reset state = eighty] or 132-column [set state = one_thirty_two] display format.",
       "feature": "DECCOLM (132 columns)",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-71, Set/Reset Column Mode DECCOLM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:DECSETTests.test_DECSET_DECLRMM": {
       "applicability": "applies",
@@ -7700,18 +7700,18 @@
     },
     "esctest:DECSETTests.test_DECSET_DECLRMM_ModeResetByDECSTR": {
       "applicability": "applies",
-      "authority": "dec070-DECLRMM",
-      "citation": "Change the state of Left Right Margin Mode between Not Available (reset) and Available (set).",
+      "authority": "dec070-DECSTR",
+      "citation": "When the DECSTR control is received, the following state information in the terminal shall be reset as indicated below. This list defines the Soft Terminal Reset state.",
       "feature": "DECLRMM",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-29, Set/Reset Left Right Margin Mode DECLRMM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), ch. 4, Soft Terminal Reset DECSTR",
       "verdict": "agrees"
     },
     "esctest:DECSETTests.test_DECSET_DECNCSM": {
       "applicability": "skipped: esctest does not run it here (VT level 5, above --max-vt-level=4)",
-      "authority": "open",
-      "citation": "",
+      "authority": "ctlseqs-95",
+      "citation": "Do not clear screen when DECCOLM is set/reset (DECNCSM), VT510 and up.",
       "feature": "DECNCSM",
-      "section": " (), ",
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h / CSI ? Pm l, Ps = 9 5",
       "verdict": "agrees"
     },
     "esctest:DECSETTests.test_DECSET_DECOM": {
@@ -7788,10 +7788,10 @@
     },
     "esctest:DECSETTests.test_DECSET_ReverseWraparound_Multi": {
       "applicability": "applies",
-      "authority": "ctlseqs-45",
-      "citation": "Reverse-wraparound mode (XTREVWRAP), xterm.",
+      "authority": "xterm411-CursorBack",
+      "citation": "int rev = (((xw->flags & WRAP_MASK) == WRAP_MASK) != 0); ... if ((rev || rev2) && screen->do_wrap) { --count; }",
       "feature": "reverse wrap (one choice)",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 5",
+      "section": "xterm 411 source (xterm-411 tarball: charproc.c v1.2133 2026/08/22, cursor.c v1.101 2026/04/07) (patch #411), cursor.c CursorBack()",
       "verdict": "agrees"
     },
     "esctest:DECSETTests.test_DECSET_ReverseWraparound_RequiresDECAWM": {
@@ -7812,10 +7812,10 @@
     },
     "esctest:DECSETTiteInhibitTests.test_SaveRestoreCursor_AltVsMain": {
       "applicability": "applies",
-      "authority": "ctlseqs-1049",
-      "citation": "Use Alternate Screen Buffer, xterm. This may be disabled by the titeInhibit resource. ... Ps = 1 0 4 8 ⇒ Save cursor as in DECSC, xterm.",
+      "authority": "xterm411-CursorSave",
+      "citation": "CursorSave2(xw, &screen->sc[screen->whichBuf]); ... CursorRestoreFlags(xw, &screen->sc[screen->whichBuf], DECSC_FLAGS);",
       "feature": "alternate screen",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 7, 1 0 4 7, 1 0 4 8 and 1 0 4 9",
+      "section": "xterm 411 source (xterm-411 tarball: charproc.c v1.2133 2026/08/22, cursor.c v1.101 2026/04/07) (patch #411), cursor.c CursorSave / CursorRestore",
       "verdict": "agrees"
     },
     "esctest:DECSETTiteInhibitTests.test_SaveRestoreCursor_Basic": {
@@ -7836,10 +7836,10 @@
     },
     "esctest:DECSETTiteInhibitTests.test_SaveRestoreCursor_MoveToHomeWhenNotSaved": {
       "applicability": "applies",
-      "authority": "ctlseqs-1049",
-      "citation": "Use Alternate Screen Buffer, xterm. This may be disabled by the titeInhibit resource. ... Ps = 1 0 4 8 ⇒ Save cursor as in DECSC, xterm.",
+      "authority": "dec070-DECSC",
+      "citation": "the DECSC control provides a means of storing the values of the Active Position, the Current Rendition, Origin Mode, the currently designated G0, G1, G2, and G3 sets",
       "feature": "alternate screen",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 7, 1 0 4 7, 1 0 4 8 and 1 0 4 9",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-187, Save Cursor DECSC, and 5-189, Restore Cursor DECRC",
       "verdict": "agrees"
     },
     "esctest:DECSETTiteInhibitTests.test_SaveRestoreCursor_Protection": {
@@ -7852,18 +7852,18 @@
     },
     "esctest:DECSETTiteInhibitTests.test_SaveRestoreCursor_Reset": {
       "applicability": "applies",
-      "authority": "ctlseqs-1049",
-      "citation": "Use Alternate Screen Buffer, xterm. This may be disabled by the titeInhibit resource. ... Ps = 1 0 4 8 ⇒ Save cursor as in DECSC, xterm.",
+      "authority": "dec070-DECSC",
+      "citation": "the DECSC control provides a means of storing the values of the Active Position, the Current Rendition, Origin Mode, the currently designated G0, G1, G2, and G3 sets",
       "feature": "alternate screen",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 7, 1 0 4 7, 1 0 4 8 and 1 0 4 9",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-187, Save Cursor DECSC, and 5-189, Restore Cursor DECRC",
       "verdict": "agrees"
     },
     "esctest:DECSETTiteInhibitTests.test_SaveRestoreCursor_ResetsOriginMode": {
       "applicability": "applies",
-      "authority": "ctlseqs-1049",
-      "citation": "Use Alternate Screen Buffer, xterm. This may be disabled by the titeInhibit resource. ... Ps = 1 0 4 8 ⇒ Save cursor as in DECSC, xterm.",
+      "authority": "dec070-DECSC",
+      "citation": "the DECSC control provides a means of storing the values of the Active Position, the Current Rendition, Origin Mode, the currently designated G0, G1, G2, and G3 sets",
       "feature": "alternate screen",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 7, 1 0 4 7, 1 0 4 8 and 1 0 4 9",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-187, Save Cursor DECSC, and 5-189, Restore Cursor DECRC",
       "verdict": "agrees"
     },
     "esctest:DECSETTiteInhibitTests.test_SaveRestoreCursor_ReverseWrapNotAffected": {
@@ -8036,10 +8036,10 @@
     },
     "esctest:DECSTRTests.test_DECSTR_ReverseWraparound": {
       "applicability": "applies",
-      "authority": "ctlseqs-45",
-      "citation": "Reverse-wraparound mode (XTREVWRAP), xterm.",
+      "authority": "xterm411-DECSTR",
+      "citation": "} else { /* DECSTR */ bitcpy(&xw->flags, xw->initflags, WRAPAROUND | REVERSEWRAP | REVERSEWRAP2);",
       "feature": "reverse wrap (one choice)",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI ? Pm h, Ps = 4 5",
+      "section": "xterm 411 source (xterm-411 tarball: charproc.c v1.2133 2026/08/22, cursor.c v1.101 2026/04/07) (patch #411), charproc.c ReallyReset(), the DECSTR branch",
       "verdict": "agrees"
     },
     "esctest:DECSTRTests.test_DECSTR_STBM": {
@@ -8052,10 +8052,10 @@
     },
     "esctest:DLTests.test_DL_ClearOutLeftRightAndTopBottomScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSLRM",
-      "citation": "The DECSLRM control sets the values of the Left and Right Margins of the scrolling region.",
+      "authority": "dec070-DL",
+      "citation": "Only that portion of the display between the top, bottom, left, and right margins is affected. DL is ignored if the active position is outside the scroll area.",
       "feature": "DL",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-27, Set Left and Right Margins DECSLRM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-148, Delete Line DL",
       "verdict": "agrees"
     },
     "esctest:DLTests.test_DL_DefaultParam": {
@@ -8116,10 +8116,10 @@
     },
     "esctest:DLTests.test_DL_OutsideLeftRightScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSLRM",
-      "citation": "The DECSLRM control sets the values of the Left and Right Margins of the scrolling region.",
+      "authority": "dec070-DL",
+      "citation": "Only that portion of the display between the top, bottom, left, and right margins is affected. DL is ignored if the active position is outside the scroll area.",
       "feature": "DL",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-27, Set Left and Right Margins DECSLRM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-148, Delete Line DL",
       "verdict": "agrees"
     },
     "esctest:DLTests.test_DL_OutsideScrollRegion": {
@@ -8156,10 +8156,10 @@
     },
     "esctest:ECHTests.test_ECH_OutsideScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-ECH",
+      "citation": "The extent of the display affected by execution of this control is limited to the Active Line. ... This control is not affected by the margins.",
       "feature": "ECH",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-152, Erase Character ECH",
       "verdict": "agrees"
     },
     "esctest:ECHTests.test_ECH_doesNotRespectDECPRotection": {
@@ -8316,51 +8316,51 @@
     },
     "esctest:FFTests.test_FF_Basic": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.51",
-      "citation": "FF causes the active presentation position to be moved to the corresponding character position of the line at the page home position of the next form or page in the presentation component.",
+      "authority": "dec070-FF",
+      "citation": "The FF control moves the Active Position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "FF",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.51 FF - FORM FEED",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-62, Form Feed FF",
+      "verdict": "agrees"
     },
     "esctest:FFTests.test_FF_MovesDoesNotScrollOutsideLeftRight": {
       "applicability": "applies",
-      "authority": "dec070-DECSLRM",
-      "citation": "The DECSLRM control sets the values of the Left and Right Margins of the scrolling region.",
+      "authority": "dec070-margins",
+      "citation": "All scrolling, both vertical and horizontal, is limited to this area.",
       "feature": "FF",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-27, Set Left and Right Margins DECSLRM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5.4.3, Margins And Scrolling (pp. 5-23, 5-24)",
+      "verdict": "agrees"
     },
     "esctest:FFTests.test_FF_Scrolls": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.51",
-      "citation": "FF causes the active presentation position to be moved to the corresponding character position of the line at the page home position of the next form or page in the presentation component.",
+      "authority": "dec070-FF",
+      "citation": "The FF control moves the Active Position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "FF",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.51 FF - FORM FEED",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-62, Form Feed FF",
+      "verdict": "agrees"
     },
     "esctest:FFTests.test_FF_ScrollsInTopBottomRegionStartingAbove": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-FF",
+      "citation": "The FF control moves the Active Position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "FF",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-62, Form Feed FF",
+      "verdict": "agrees"
     },
     "esctest:FFTests.test_FF_ScrollsInTopBottomRegionStartingWithin": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-FF",
+      "citation": "The FF control moves the Active Position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "FF",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-62, Form Feed FF",
+      "verdict": "agrees"
     },
     "esctest:FFTests.test_FF_StopsAtBottomLineWhenBegunBelowScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-FF",
+      "citation": "The FF control moves the Active Position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "FF",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-62, Form Feed FF",
+      "verdict": "agrees"
     },
     "esctest:HPATests.test_HPA_DefaultParams": {
       "applicability": "applies",
@@ -8427,7 +8427,7 @@
       "verdict": "agrees"
     },
     "esctest:HTSTests.test_HTS_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "ecma48-8.3.62",
       "citation": "HTS causes a character tabulation stop to be set at the active presentation position in the presentation component.",
       "feature": "8-bit controls",
@@ -8572,10 +8572,10 @@
     },
     "esctest:ILTests.test_IL_RespectsScrollRegion_Over": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-IL",
+      "citation": "Only that portion of the display between the top, bottom, left, and right margins is affected. IL is ignored if the Active Position is outside the Scroll Area.",
       "feature": "IL",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-146, Insert Line IL",
       "verdict": "agrees"
     },
     "esctest:ILTests.test_IL_ScrollsOffBottom": {
@@ -8587,7 +8587,7 @@
       "verdict": "agrees"
     },
     "esctest:INDTests.test_IND_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "dec070-IND",
       "citation": "The IND control moves the Active position downward in the display by one line.",
       "feature": "8-bit controls",
@@ -8660,10 +8660,10 @@
     },
     "esctest:LFTests.test_LF_Scrolls": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.74",
-      "citation": "If the DEVICE COMPONENT SELECT MODE (DCSM) is set to PRESENTATION, LF causes the active presentation position to be moved to the corresponding character position of the following line in the presentation component.",
+      "authority": "dec070-LF",
+      "citation": "The LF control moves the Active Position downward in the display by one line. If the Active Position is already at the Bottom Margin the display will scroll upward by one line.",
       "feature": "LF",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.74 LF - LINE FEED",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-59, Line Feed LF",
       "verdict": "agrees"
     },
     "esctest:LFTests.test_LF_ScrollsInTopBottomRegionStartingAbove": {
@@ -8676,10 +8676,10 @@
     },
     "esctest:LFTests.test_LF_ScrollsInTopBottomRegionStartingWithin": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-LF",
+      "citation": "The LF control moves the Active Position downward in the display by one line. If the Active Position is already at the Bottom Margin the display will scroll upward by one line.",
       "feature": "LF",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-59, Line Feed LF",
       "verdict": "agrees"
     },
     "esctest:LFTests.test_LF_StopsAtBottomLineWhenBegunBelowScrollRegion": {
@@ -8696,10 +8696,10 @@
       "citation": "Manipulate Selection Data. These controls may be disabled using the allowWindowOps resource.",
       "feature": "OSC 52",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 5 2",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:NELTests.test_NEL_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "ecma48-8.3.86",
       "citation": "If the DEVICE COMPONENT SELECT MODE (DCSM) is set to PRESENTATION, NEL causes the active presentation position to be moved to the line home position of the following line in the presentation component.",
       "feature": "8-bit controls",
@@ -8748,14 +8748,14 @@
     },
     "esctest:NELTests.test_NEL_StopsAtBottomLineWhenBegunBelowScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-NEL",
+      "citation": "If the Active Position is before the left margin, or outside the top and bottom margins, it will move to the first column of the next line, but not beyond the last line on the page.",
       "feature": "NEL",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-64, Next Line NEL",
       "verdict": "agrees"
     },
     "esctest:PMTests.test_PM_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "ecma48-8.3.94",
       "citation": "PM is used as the opening delimiter of a control string for privacy message use.",
       "feature": "8-bit controls",
@@ -8840,14 +8840,14 @@
       "citation": "A conforming device may provide as an extension the capability of selecting 80-column [reset state = eighty] or 132-column [set state = one_thirty_two] display format.",
       "feature": "DECCOLM (132 columns)",
       "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-71, Set/Reset Column Mode DECCOLM",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:RISTests.test_RIS_ResetDECOM": {
       "applicability": "applies",
-      "authority": "dec070-DECOM",
-      "citation": "A conforming device shall allow addressing of the display area to be performed relative to either the display origin (coordinate 1,1) [reset state = absolute] or the origin of the scrolling region",
+      "authority": "dec070-RIS",
+      "citation": "When this control is received all state in the terminal is set to their default values. ... TOP_MARGIN:= 1; BOTTOM_MARGIN:= MAX_NUM_LINES; ... ORIGIN_MODE:= ABSOLUTE;",
       "feature": "RIS",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-31, Set/Reset Origin Mode DECOM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (Appendix D, Documented Exceptions)), D.2, Reset To Initial State RIS",
       "verdict": "agrees"
     },
     "esctest:RISTests.test_RIS_ResetTabs": {
@@ -8860,14 +8860,14 @@
     },
     "esctest:RISTests.test_RIS_ResetTitleMode": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.105",
-      "citation": "RIS causes a device to be reset to its initial state, i.e. the state it has after it is made operational.",
+      "authority": "ctlseqs-smtitle",
+      "citation": "This xterm control sets one or more features of the title modes (XTSMTITLE), xterm.",
       "feature": "RIS",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.105 RIS - RESET TO INITIAL STATE",
-      "verdict": "agrees"
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI > Pm t",
+      "verdict": "allows"
     },
     "esctest:RITests.test_RI_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "ecma48-8.3.104",
       "citation": "If the DEVICE COMPONENT SELECT MODE (DCSM) is set to PRESENTATION, RI causes the active presentation position to be moved in the presentation component to the corresponding character position of the preceding line.",
       "feature": "8-bit controls",
@@ -8948,11 +8948,11 @@
     },
     "esctest:ResetSpecialColorTests.test_ResetSpecialColor_Dynamic": {
       "applicability": "applies",
-      "authority": "ctlseqs-osc105",
-      "citation": "Reset Special Color Number c.",
-      "feature": "OSC 105",
-      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 0 5 ; c",
-      "verdict": "agrees"
+      "authority": "ctlseqs-osc110",
+      "citation": "The dynamic colors can also be reset to their default (resource) values: Ps = 1 1 0 → Reset VT100 text foreground color.",
+      "feature": "OSC 10-19",
+      "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), OSC Ps ; Pt, Ps = 1 1 0 to 1 1 9",
+      "verdict": "allows"
     },
     "esctest:ResetSpecialColorTests.test_ResetSpecialColor_Multiple": {
       "applicability": "applies",
@@ -8987,7 +8987,7 @@
       "verdict": "agrees"
     },
     "esctest:S8C1TTests.test_S8C1T_CSI": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "dec070-S8C1T",
       "citation": "Cause the device to generate C1 controls in 8 bits (S8C1T); S7C1T: \"Cause the device to generate C1 controls in 7-bits as two character ESC Fe sequences.\"",
       "feature": "8-bit controls",
@@ -8995,7 +8995,7 @@
       "verdict": "agrees"
     },
     "esctest:S8C1TTests.test_S8C1T_DCS": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "dec070-S8C1T",
       "citation": "Cause the device to generate C1 controls in 8 bits (S8C1T); S7C1T: \"Cause the device to generate C1 controls in 7-bits as two character ESC Fe sequences.\"",
       "feature": "8-bit controls",
@@ -9003,7 +9003,7 @@
       "verdict": "agrees"
     },
     "esctest:S8C1TTests.test_S8C1T_SPA_EPA": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "dec070-S8C1T",
       "citation": "Cause the device to generate C1 controls in 8 bits (S8C1T); S7C1T: \"Cause the device to generate C1 controls in 7-bits as two character ESC Fe sequences.\"",
       "feature": "8-bit controls",
@@ -9132,10 +9132,10 @@
     },
     "esctest:SDTests.test_SD_OutsideLeftRightScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSLRM",
-      "citation": "The DECSLRM control sets the values of the Left and Right Margins of the scrolling region.",
+      "authority": "dec070-margins",
+      "citation": "All scrolling, both vertical and horizontal, is limited to this area.",
       "feature": "SD",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-27, Set Left and Right Margins DECSLRM",
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5.4.3, Margins And Scrolling (pp. 5-23, 5-24)",
       "verdict": "agrees"
     },
     "esctest:SDTests.test_SD_OutsideTopBottomScrollRegion": {
@@ -9200,7 +9200,7 @@
       "citation": "This xterm control sets one or more features of the title modes (XTSMTITLE), xterm.",
       "feature": "XTSMTITLE",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI > Pm t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:SMTitleTests.test_SMTitle_SetHexQueryUTF8": {
       "applicability": "applies",
@@ -9208,7 +9208,7 @@
       "citation": "This xterm control sets one or more features of the title modes (XTSMTITLE), xterm.",
       "feature": "XTSMTITLE",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI > Pm t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:SMTitleTests.test_SMTitle_SetUTF8QueryHex": {
       "applicability": "applies",
@@ -9216,7 +9216,7 @@
       "citation": "This xterm control sets one or more features of the title modes (XTSMTITLE), xterm.",
       "feature": "XTSMTITLE",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI > Pm t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:SMTitleTests.test_SMTitle_SetUTF8QueryUTF8": {
       "applicability": "applies",
@@ -9224,10 +9224,10 @@
       "citation": "This xterm control sets one or more features of the title modes (XTSMTITLE), xterm.",
       "feature": "XTSMTITLE",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI > Pm t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:SOSTests.test_SOS_8bit": {
-      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are part of a character (ECMA-48 5.3); esctest needs xterm's disableWideChars for it",
+      "applicability": "n/a: the test sends C1 controls as single 8-bit bytes, which in UTF-8, as every engine here reads its input, are UTF-8 continuation bytes, not controls (ctlseqs, Control Bytes, Characters, and Sequences); esctest needs xterm's disableWideChars for it",
       "authority": "ecma48-8.3.128",
       "citation": "SOS is used as the opening delimiter of a control string.",
       "feature": "8-bit controls",
@@ -9412,51 +9412,51 @@
     },
     "esctest:VTTests.test_VT_Basic": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.161",
-      "citation": "VT causes the active presentation position to be moved in the presentation component to the corresponding character position on the line at which the following line tabulation stop is set.",
+      "authority": "dec070-VT",
+      "citation": "The VT control moves the Active position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "VT",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.161 VT - LINE TABULATION",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-61, Vertical Tab VT",
+      "verdict": "agrees"
     },
     "esctest:VTTests.test_VT_MovesDoesNotScrollOutsideLeftRight": {
       "applicability": "applies",
-      "authority": "dec070-DECSLRM",
-      "citation": "The DECSLRM control sets the values of the Left and Right Margins of the scrolling region.",
+      "authority": "dec070-margins",
+      "citation": "All scrolling, both vertical and horizontal, is limited to this area.",
       "feature": "VT",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-27, Set Left and Right Margins DECSLRM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5.4.3, Margins And Scrolling (pp. 5-23, 5-24)",
+      "verdict": "agrees"
     },
     "esctest:VTTests.test_VT_Scrolls": {
       "applicability": "applies",
-      "authority": "ecma48-8.3.161",
-      "citation": "VT causes the active presentation position to be moved in the presentation component to the corresponding character position on the line at which the following line tabulation stop is set.",
+      "authority": "dec070-VT",
+      "citation": "The VT control moves the Active position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "VT",
-      "section": "ECMA-48 (5th edition, June 1991), 8.3.161 VT - LINE TABULATION",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-61, Vertical Tab VT",
+      "verdict": "agrees"
     },
     "esctest:VTTests.test_VT_ScrollsInTopBottomRegionStartingAbove": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-VT",
+      "citation": "The VT control moves the Active position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "VT",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-61, Vertical Tab VT",
+      "verdict": "agrees"
     },
     "esctest:VTTests.test_VT_ScrollsInTopBottomRegionStartingWithin": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-VT",
+      "citation": "The VT control moves the Active position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "VT",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-61, Vertical Tab VT",
+      "verdict": "agrees"
     },
     "esctest:VTTests.test_VT_StopsAtBottomLineWhenBegunBelowScrollRegion": {
       "applicability": "applies",
-      "authority": "dec070-DECSTBM",
-      "citation": "The DECSTBM control sets the values of the Top and Bottom Margins of the scrolling region.",
+      "authority": "dec070-VT",
+      "citation": "The VT control moves the Active position downward in the display by one line. If the Active position is already at the Bottom Margin the display will scroll upward by one line. ... This control is identical in function to the Line Feed (LF) control.",
       "feature": "VT",
-      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-25, Set Top and Bottom Margins DECSTBM",
-      "verdict": "open"
+      "section": "DEC STD 070, Video Systems Reference Manual (the 1991 compilation in references/dec (chapter 5 dated 29-Jun-1990)), 5-61, Vertical Tab VT",
+      "verdict": "agrees"
     },
     "esctest:XtermSaveTests.test_XtermSave_SaveResetState": {
       "applicability": "applies",
@@ -9480,7 +9480,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_Fullscreen": {
       "applicability": "applies",
@@ -9488,7 +9488,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_IconifyDeiconfiy": {
       "applicability": "applies",
@@ -9512,7 +9512,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_MaximizeWindow_Vertically": {
       "applicability": "applies",
@@ -9544,7 +9544,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopIconAndWindow": {
       "applicability": "applies",
@@ -9552,7 +9552,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopWindow": {
       "applicability": "applies",
@@ -9560,7 +9560,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_PushIconThenWindowThenPopBoth": {
       "applicability": "applies",
@@ -9568,7 +9568,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_PushIcon_PopIcon": {
       "applicability": "applies",
@@ -9576,7 +9576,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_PushMultiplePopMultiple_Icon": {
       "applicability": "applies",
@@ -9584,7 +9584,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_PushMultiplePopMultiple_Window": {
       "applicability": "applies",
@@ -9592,7 +9592,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_PushWindow_PopWindow": {
       "applicability": "applies",
@@ -9600,7 +9600,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ReportIconLabel": {
       "applicability": "applies",
@@ -9608,7 +9608,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ReportWindowLabel": {
       "applicability": "applies",
@@ -9616,7 +9616,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizeChars_BothParameters": {
       "applicability": "applies",
@@ -9624,7 +9624,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizeChars_DefaultHeight": {
       "applicability": "applies",
@@ -9632,7 +9632,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizeChars_DefaultWidth": {
       "applicability": "applies",
@@ -9640,7 +9640,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizeChars_ZeroHeight": {
       "applicability": "applies",
@@ -9648,7 +9648,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizeChars_ZeroWidth": {
       "applicability": "applies",
@@ -9656,7 +9656,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizePixels_BothParameters": {
       "applicability": "applies",
@@ -9664,7 +9664,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizePixels_OmittedHeight": {
       "applicability": "applies",
@@ -9672,7 +9672,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizePixels_OmittedWidth": {
       "applicability": "applies",
@@ -9680,7 +9680,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizePixels_ZeroHeight": {
       "applicability": "applies",
@@ -9688,7 +9688,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     },
     "esctest:XtermWinopsTests.test_XtermWinops_ResizePixels_ZeroWidth": {
       "applicability": "applies",
@@ -9696,7 +9696,7 @@
       "citation": "Window manipulation (XTWINOPS), dtterm, extended by xterm. These controls may be disabled using the allowWindowOps resource.",
       "feature": "XTWINOPS",
       "section": "XTerm Control Sequences (ctlseqs) (for XTerm patch #411 (2026/08/23)), CSI Ps ; Ps ; Ps t",
-      "verdict": "agrees"
+      "verdict": "allows"
     }
   },
   "transparency-known": {
