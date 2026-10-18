@@ -1606,24 +1606,33 @@ impl Parser {
                     self.dispatch_osc(whole, true, sink)?;
                     self.state = State::Ground;
                 }
-                _ if !whole || !in_command_string(byte) => {}
-                _ if self.osc.len() < self.osc_limit => self.osc.push(byte),
+                // A string's data leaves it a string: it returns at once.
+                _ if !whole || !in_command_string(byte) => return Ok(None),
+                _ if self.osc.len() < self.osc_limit => {
+                    self.osc.push(byte);
+                    return Ok(None);
+                }
                 // What came first stays: a prompt mark, and an OSC 8 too
                 // long to keep, which closes the link, are told by it.
-                _ => self.state = State::Osc { whole: false },
+                _ => {
+                    self.state = State::Osc { whole: false };
+                    return Ok(None);
+                }
             },
             // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
             // 8.3.143): the byte 0x9c, 8-bit ST, is part of a character
             // there, as in `\u{271c}` (e2 9c 9c).
             State::Request(request) => {
                 self.state = State::Request(request.and_then(|r| r.push(byte)));
+                return Ok(None);
             }
-            State::IgnoreString => {}
+            State::IgnoreString => return Ok(None),
             State::Sixel => {
                 if let Some(decoder) = &mut self.sixel {
                     let screen = &mut self.screen;
                     decoder.push(byte, &mut |bytes| screen.make_room(bytes));
                 }
+                return Ok(None);
             }
             State::Escape(read) => match byte {
                 0x00..=0x1f => self.control(byte, sink)?,
