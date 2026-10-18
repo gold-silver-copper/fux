@@ -355,6 +355,12 @@ fux-vt's work counters and a counting allocator against it.
   it records nothing more and says so (`Prints::lost`).
 - **Finding a frame's end** (B19): `FrameScan::end` reads each byte once,
   however the frame comes split, a sequence left unfinished included.
+- **A cluster** (B30, B31) keeps at most `CLUSTER_CAPACITY` (128) bytes,
+  and a row's text at most 32 bytes a column and 128 (long clusters) and
+  17 a column (short); joining a character reads its cluster again, at
+  most 256 text bytes a byte, and a character a full row can't take
+  costs no copy of its text. The longest RGI emoji sequence is 35 bytes;
+  the corpus's longest cluster, 14 (a ZWJ flag, in helix-unicode).
 - **A glyph** (B32) takes at most 2 columns: U+17D8, the one character
   unicode-width makes 3 wide, takes 1, as in xterm 411 and glibc
   (`char_width`, `str_width`, which fux's painter uses too).
