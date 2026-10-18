@@ -306,10 +306,16 @@ fn read_one(d: &Map<String, Value>, out: &mut Results) {
                     .flatten()
                     .filter_map(Value::as_str)
                     .collect();
-                let outcome = if failures.is_empty() {
-                    Outcome::Pass
-                } else {
+                let unavailable = r
+                    .get("unavailable")
+                    .and_then(Value::as_array)
+                    .is_some_and(|u| !u.is_empty());
+                let outcome = if !failures.is_empty() {
                     Outcome::Fail(failures.join("; "))
+                } else if unavailable {
+                    Outcome::Unavailable
+                } else {
+                    Outcome::Pass
                 };
                 checks
                     .entry(subject.clone())
@@ -340,11 +346,16 @@ fn read_one(d: &Map<String, Value>, out: &mut Results) {
                 let Some(id) = r.get("recording").and_then(Value::as_str) else {
                     continue;
                 };
-                let agrees = match d.get("subject") {
-                    Some(_) => r.get("subject").and_then(|s| s.get("agrees")),
-                    None => r.get("agrees"),
+                let mine = match d.get("subject") {
+                    Some(_) => r.get("subject"),
+                    None => Some(r),
                 };
-                let outcome = match agrees.and_then(Value::as_bool) {
+                let unavailable = mine
+                    .and_then(|m| m.get("unavailable"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let outcome = match mine.and_then(|m| m.get("agrees")).and_then(Value::as_bool) {
+                    _ if unavailable => Outcome::Unavailable,
                     Some(true) => Outcome::Pass,
                     Some(false) => Outcome::Fail("departs from xterm and the panel".into()),
                     None => Outcome::Unavailable,

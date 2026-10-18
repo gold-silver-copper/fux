@@ -711,8 +711,9 @@ fn named_cases(args: &Args, subject: usize) -> Result<Vec<NamedCase>, String> {
 }
 
 /// A named case's result for `--json` (the conformance ledger reads it):
-/// where `subject` fails it as `case::judged` judges every subject, and
-/// whether xterm, if it ran, sees the subject's screen as its own.
+/// where `subject` fails it as `case::judged` judges every subject, the
+/// fields it could not be judged on (unavailable), and whether xterm, if
+/// it ran, sees the subject's screen as its own.
 fn case_result(
     named: (&str, &str, usize),
     subject: usize,
@@ -720,6 +721,13 @@ fn case_result(
 ) -> Result<serde_json::Value, String> {
     let (name, family, index) = named;
     let failures = case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)?;
+    // The fields the subject cannot tell where the judge would have
+    // failed it: unavailable, so the case is no pass (`case::reread`).
+    let reread = case::reread(&outcome.fux, &outcome.verdicts);
+    let unavailable: Vec<String> = case::judged(index, name, subject, &outcome.fux, &reread)?
+        .into_iter()
+        .filter(|f| !failures.contains(f))
+        .collect();
     let xterm = engine::find("xterm").and_then(|x| {
         outcome
             .verdicts
@@ -731,6 +739,7 @@ fn case_result(
         "case": name,
         "family": family,
         "failures": failures,
+        "unavailable": unavailable,
         "xterm_agrees": xterm,
     }))
 }

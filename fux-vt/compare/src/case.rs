@@ -290,6 +290,25 @@ pub fn verdict(subject: usize, base: &Snapshot, engine: usize, snapshot: Snapsho
     }
 }
 
+/// `verdicts` compared again without the subject's mask: each engine's on
+/// every field it can tell, the subject's `base` read as it is. A field the
+/// subject cannot tell then differs wherever an engine shows it, so the
+/// judgement of these verdicts, less that of `verdicts`, is what the
+/// subject could not be judged on: coverage unavailable, not a pass.
+pub fn reread(base: &Snapshot, verdicts: &[Verdict]) -> Vec<Verdict> {
+    verdicts
+        .iter()
+        .map(|v| {
+            let can = engine::kind(v.engine).map_or(engine::Can::ALL, |k| k.can);
+            Verdict {
+                engine: v.engine,
+                differences: snapshot::differences(&base.masked(&can), &v.snapshot.masked(&can)),
+                snapshot: v.snapshot.clone(),
+            }
+        })
+        .collect()
+}
+
 /// The same step judged with another subject: `to`, an engine of
 /// `verdicts`, takes the place of `from`, the subject whose snapshot is
 /// `base`, which joins the panel where `to` was. None if `to` gave no
@@ -1023,6 +1042,26 @@ mod tests {
         );
         let other = verdict(text(&["abc"], 5, (0, 3), true));
         assert_eq!(judged(resize, saved, &[other])?.len(), 2);
+        Ok(())
+    }
+
+    /// libvterm cannot tell dim: judged as the subject, a dim cell Ghostty
+    /// shows is compared with no one, so it agrees, by abstaining. Read
+    /// again without its mask, it differs there: coverage unavailable, not
+    /// a pass (at the parent such a point counted as agreeing).
+    #[test]
+    fn a_field_the_subject_cannot_tell_is_unavailable_not_a_pass() -> Result<(), String> {
+        let libvterm = engine::find("libvterm").ok_or("no libvterm")?;
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let mut dim = text(&["a"], 1, (0, 1), false);
+        if let Some(cell) = dim.screen.first_mut().and_then(|l| l.cells.first_mut()) {
+            cell.style.dim = true;
+        }
+        let base = text(&["a"], 1, (0, 1), false);
+        let verdicts = vec![super::verdict(libvterm, &base, ghostty, dim)];
+        assert_eq!(outvoted_on(&verdicts), Vec::<String>::new());
+        let again = super::reread(&base, &verdicts);
+        assert_eq!(outvoted_on(&again), ["cell (0,0) dim"]);
         Ok(())
     }
 

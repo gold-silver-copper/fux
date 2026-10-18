@@ -1017,7 +1017,10 @@ fn run_subject(
             points.iter().map(|p| Some(p.subject.as_slice())).collect();
         let fux: Vec<Option<&[(String, Field)]>> =
             points.iter().map(|p| p.fux.as_deref()).collect();
-        let judged = [Judged::of(&points, &mine), Judged::of(&points, &fux)];
+        let judged = [
+            Judged::of(&points, &mine, true),
+            Judged::of(&points, &fux, false),
+        ];
         for (score, j) in scores.iter_mut().zip(&judged) {
             score.add(j, points.len());
         }
@@ -1031,6 +1034,11 @@ fn run_subject(
             points.len()
         );
         match &me.first {
+            None if me.points_unavailable > 0 => println!(
+                "unavail. {label}: {} points on fields {name} cannot tell   {}",
+                me.points_unavailable,
+                marks(&outcome)
+            ),
             None => println!("agrees   {label}   {}", marks(&outcome)),
             Some((step, keys)) => {
                 println!(
@@ -1077,8 +1085,14 @@ fn run_subject(
     let seconds = started.elapsed().as_secs_f64();
     let [mine, fux] = &scores;
     println!(
-        "{name}: {} recordings agree, {} differ; {} of {} points agree ({seconds:.1}s)",
-        mine.agree, mine.differ, mine.points_agree, mine.points
+        "{name}: {} recordings agree, {} differ, {} unavailable; {} of {} points agree, {} \
+         unavailable ({seconds:.1}s)",
+        mine.agree,
+        mine.differ,
+        mine.unavailable,
+        mine.points_agree,
+        mine.points,
+        mine.points_unavailable
     );
     println!(
         "fux-vt, judged on the same screens with {name} voting in its place: {} recordings \
@@ -1121,8 +1135,10 @@ fn run_subject(
             "recordings": recordings.len(),
             "agree": mine.agree,
             "differ": mine.differ,
+            "unavailable": mine.unavailable,
             "points": mine.points,
             "points_agree": mine.points_agree,
+            "points_unavailable": mine.points_unavailable,
             "fux-vt": {
                 "agree": fux.agree,
                 "differ": fux.differ,
@@ -1150,6 +1166,9 @@ fn run_subject(
 struct Point {
     step: usize,
     subject: Vec<(String, Field)>,
+    /// The fields the subject cannot tell where the judge would have
+    /// failed it (`case::reread`): unavailable, so the point is no pass.
+    unavailable: Vec<String>,
     fux: Option<Vec<(String, Field)>>,
 }
 
@@ -1171,30 +1190,49 @@ fn judge_both(
             return false;
         }
         let subject = failing_fields(verdicts);
+        let unavailable = failures(&case::reread(base, verdicts))
+            .into_iter()
+            .filter(|key| !subject.iter().any(|(k, _)| k == key))
+            .collect();
         let fux = case::rejudge(case.subject, base, verdicts, FUX_VT)
             .map(|(_, theirs)| failing_fields(&theirs));
         let fails = !subject.is_empty();
-        points.borrow_mut().push(Point { step, subject, fux });
+        points.borrow_mut().push(Point {
+            step,
+            subject,
+            unavailable,
+            fux,
+        });
         fails
     })?;
     Ok((points.into_inner(), outcome))
 }
 
-/// How one subject did on one recording: the points it agrees at, and
-/// where it first fails and on what (none if it never does).
+/// How one subject did on one recording: the points it agrees at, those
+/// it could not be judged at (a field it cannot tell, where the judge would
+/// have decided: `Point::unavailable`), and where it first fails and on
+/// what (none if it never does). Every subject is judged at the same
+/// points, on the same fields: one it cannot tell is unavailable there,
+/// never a pass.
 struct Judged {
     points_agree: usize,
+    points_unavailable: usize,
     first: Option<(usize, Vec<String>)>,
 }
 
 impl Judged {
     /// From each point's failures for this subject (none: it abstained,
-    /// which counts as failing).
-    fn of(points: &[Point], failed: &[Option<&[(String, Field)]>]) -> Judged {
+    /// which counts as failing), and, for the subject (`unavailable`),
+    /// the fields it could not be judged on.
+    fn of(points: &[Point], failed: &[Option<&[(String, Field)]>], unavailable: bool) -> Judged {
         let mut points_agree = 0usize;
+        let mut points_unavailable = 0usize;
         let mut first = None;
         for (point, failed) in points.iter().zip(failed) {
             match failed {
+                Some([]) if unavailable && !point.unavailable.is_empty() => {
+                    points_unavailable = points_unavailable.saturating_add(1);
+                }
                 Some([]) => points_agree = points_agree.saturating_add(1),
                 Some(keys) if first.is_none() => {
                     first = Some((point.step, keys.iter().map(|(k, _)| k.clone()).collect()));
@@ -1205,14 +1243,22 @@ impl Judged {
         }
         Judged {
             points_agree,
+            points_unavailable,
             first,
         }
     }
 
+    /// Whether it agreed at every point, none of them unavailable.
+    fn agrees(&self) -> bool {
+        self.first.is_none() && self.points_unavailable == 0
+    }
+
     fn json(&self, recording: &Recording) -> serde_json::Value {
         serde_json::json!({
-            "agrees": self.first.is_none(),
+            "agrees": self.agrees(),
+            "unavailable": self.first.is_none() && self.points_unavailable > 0,
             "points_agree": self.points_agree,
+            "points_unavailable": self.points_unavailable,
             "first": self.first.as_ref().map(|(step, keys)| serde_json::json!({
                 "at": place(recording, Some(*step)),
                 "fails_on": keys,
@@ -1226,19 +1272,27 @@ impl Judged {
 struct Score {
     agree: usize,
     differ: usize,
+    /// Recordings it never failed, at a point where it could not be judged.
+    unavailable: usize,
     points: usize,
     points_agree: usize,
+    points_unavailable: usize,
 }
 
 impl Score {
     fn add(&mut self, judged: &Judged, points: usize) {
-        if judged.first.is_none() {
+        if judged.agrees() {
             self.agree = self.agree.saturating_add(1);
+        } else if judged.first.is_none() {
+            self.unavailable = self.unavailable.saturating_add(1);
         } else {
             self.differ = self.differ.saturating_add(1);
         }
         self.points = self.points.saturating_add(points);
         self.points_agree = self.points_agree.saturating_add(judged.points_agree);
+        self.points_unavailable = self
+            .points_unavailable
+            .saturating_add(judged.points_unavailable);
     }
 }
 
@@ -1357,6 +1411,29 @@ fn listed(keys: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Every subject is judged at the same points: one where it fails
+    /// nothing but could not be judged on a field is unavailable, neither
+    /// a pass nor a failure, and a recording with such a point does not
+    /// agree. fux-vt's side, judged on what it tells, is unaffected.
+    #[test]
+    fn a_point_the_subject_cannot_be_judged_at_is_no_pass() {
+        let point = |step, unavailable: &[&str]| super::Point {
+            step,
+            subject: Vec::new(),
+            unavailable: unavailable.iter().map(|u| (*u).to_owned()).collect(),
+            fux: Some(Vec::new()),
+        };
+        let points = [point(1, &[]), point(2, &["cell (0,0) dim"]), point(3, &[])];
+        let none: &[(String, crate::snapshot::Field)] = &[];
+        let failed = [Some(none), Some(none), Some(none)];
+        let subject = super::Judged::of(&points, &failed, true);
+        assert_eq!((subject.points_agree, subject.points_unavailable), (2, 1));
+        assert!(!subject.agrees() && subject.first.is_none());
+        let fux = super::Judged::of(&points, &failed, false);
+        assert_eq!((fux.points_agree, fux.points_unavailable), (3, 0));
+        assert!(fux.agrees());
+    }
+
     /// xterm, which decides, abstaining for a limit of its adapter's (SGR
     /// 58) leaves the vote to judge, as the module says; abstaining for
     /// anything else (a print that never came) leaves the recording
