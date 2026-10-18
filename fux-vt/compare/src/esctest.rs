@@ -3,23 +3,35 @@
 //! writes to its terminal and reads the terminal's reports back, the cells
 //! by DECRQCRA rectangle checksums, the cursor by DSR, modes by DECRQM.
 //!
-//! esctest runs on a PTY, one Python process for each area (a test class,
-//! one file of `esctest/tests/`), in order within it as esctest runs them,
-//! so every area starts on a fresh terminal. The terminal is a fux-vt
-//! parser set up as fux's panes are (`fux::pane::OPTIONS`) with the
-//! reports fux-vt keeps off in panes that esctest needs (see [`options`]):
-//! it reads what esctest writes, and its replies are written back. Each
-//! read esctest makes waits `--timeout` for its reply, so a report fux-vt
-//! does not give fails that test alone; an area that runs past `--limit`
-//! is stopped, and its unfinished tests fail.
+//! esctest runs on a PTY, one Python process for each test, on a terminal
+//! made for that test alone: every terminal, fux-vt, the engines, a fux
+//! pane and xterm, is isolated the same way, so no test starts from what an
+//! earlier one left, whatever the terminal's resets do (esctest's own reset
+//! before each test still runs). The tests are reported by area (a test
+//! class, one file of `esctest/tests/`). The terminal is a fux-vt parser
+//! set up as fux's panes are (`fux::pane::OPTIONS`) with the reports
+//! fux-vt keeps off in panes that esctest needs (see [`options`]): it reads
+//! what esctest writes, and its replies are written back. Each read esctest
+//! makes waits `--timeout` for its reply, so a report fux-vt does not give
+//! fails that test alone.
+//!
+//! Every terminal is scored on one denominator, the tests esctest runs
+//! (those it skips by its options are skipped for all). A result is a pass,
+//! a failure (the terminal's: an assertion, a report not given, or the
+//! engine's own error), or unavailable ([`Limit`]): adapter-limited, where
+//! the harness cannot read the cells, or infrastructure, where its run gave
+//! no result (stopped past `--limit`), which is no failure of the terminal
+//! but fails the run. A pass or a failure in which the harness answered a
+//! report for an engine ([`crate::answering`]) is adapter-observed, not
+//! native.
 //!
 //! With `--in-fux`, each area also runs in a pane of a real fux server of
 //! its own (its own socket and directory), with a client attached on a
 //! PTY, whose terminal is a fux-vt parser that answers what fux asks of
 //! it. The results are set beside the direct run's: a test passing in
 //! one and failing in the other points at fux, its pane replies or its
-//! painting. Tests that read cells cannot run there: fux's panes do not
-//! answer DECRQCRA, so they are not counted.
+//! painting. Tests that read cells are unavailable there: fux's panes do
+//! not answer DECRQCRA.
 //!
 //! With `--xterm`, each area also runs in a real xterm under Xvfb, the
 //! reference: what xterm passes and fux-vt fails is what fux-vt lacks.
@@ -41,7 +53,7 @@ use crate::engine::{ENGINES, Setup};
 use crate::escape;
 use fuxix::poll::{Events, PollFd};
 use fuxix::process::{Pid, Signal};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -91,9 +103,9 @@ Results are checked against esctest-expected.txt: exit 1 on a failure not
 listed there, or a test listed that passes. --in-fux also runs every area in
 a pane of a real fux server (building fux), --xterm in a real xterm under Xvfb,
 and each lists where it differs from fux-vt alone. --timeout is esctest's: how
-long a read waits for its reply (default 1); --limit how long an area may run
-(default 120). --logs keeps esctest's logs (AREA.log, AREA.fux.log,
-AREA.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
+long a read waits for its reply (default 1); --limit how long a test may run
+(default 60). Every test runs on a terminal made for it alone. --logs keeps
+esctest's logs (TEST.log, TEST.NAME.log, TEST.fux.log, TEST.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
 (without its queries) as a run.sh replay. --show prints each failure's message.
 --json writes every result, as fux-vt/compare's README says. --terminal runs
 against another engine in this process (ghostty) instead of fux-vt, checked
@@ -149,18 +161,20 @@ impl Subject {
 
     /// The engine set up as esctest's terminal: Ghostty's core told its
     /// size ([`crate::engines::ghostty::answering`]), any other as the
-    /// comparisons make it.
-    fn engine(i: usize) -> Result<Box<dyn crate::engine::Engine>, String> {
+    /// comparisons make it; and whether its origin mode can be read.
+    fn engine(i: usize) -> Result<(Box<dyn crate::engine::Engine>, bool), String> {
         let kind = ENGINES.get(i).ok_or("no such engine")?;
-        if kind.name == "ghostty" {
-            return crate::engines::ghostty::answering(ROWS, COLS);
-        }
-        (kind.make)(&Setup {
-            rows: ROWS,
-            cols: COLS,
-            history: 10_000,
-            reflow: false,
-        })
+        let engine = if kind.name == "ghostty" {
+            crate::engines::ghostty::answering(ROWS, COLS)?
+        } else {
+            (kind.make)(&Setup {
+                rows: ROWS,
+                cols: COLS,
+                history: 10_000,
+                reflow: false,
+            })?
+        };
+        Ok((engine, kind.can.origin))
     }
 }
 
@@ -198,7 +212,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
         xterm: false,
         jobs: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
         timeout: 1.0,
-        limit: Duration::from_secs(120),
+        limit: Duration::from_secs(60),
         expected: PathBuf::new(),
         json: None,
         logs: None,
@@ -330,6 +344,16 @@ struct Area {
     tests: Vec<String>,
 }
 
+impl Area {
+    /// What its files are named by: its one test's name, or its own.
+    fn stem(&self) -> &str {
+        match self.tests.as_slice() {
+            [test] => test,
+            _ => &self.name,
+        }
+    }
+}
+
 fn areas(python: &Path, suite: &Path, filter: Option<&str>) -> Result<Vec<Area>, String> {
     let mut command = Command::new(python);
     command.arg("-c").arg(LIST).current_dir(suite);
@@ -374,8 +398,33 @@ enum Outcome {
     /// It failed, with what esctest said.
     Fail(String),
     /// Not run: it needs a VT level above the one chosen, or esctest does
-    /// not try it in xterm.
+    /// not try it in xterm. esctest decides it from its options alone, so
+    /// every terminal skips the same tests.
     Skip(String),
+    /// Run, with no result that says anything of the terminal: neither a
+    /// pass nor a failure, but coverage that is unavailable, with why.
+    Unavailable(Limit, String),
+}
+
+/// Why a test's result is unavailable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Limit {
+    /// The harness cannot read its cells: a DECRQCRA in origin mode, which
+    /// [`Answering`] cannot answer from a snapshot (adapter-limited), or one
+    /// in a fux pane, which does not answer DECRQCRA.
+    Unreadable,
+    /// The harness's run gave no result: stopped at `--limit`, or esctest
+    /// logged none.
+    Infrastructure,
+}
+
+impl Limit {
+    fn name(self) -> &'static str {
+        match self {
+            Limit::Unreadable => "adapter-limited",
+            Limit::Infrastructure => "infrastructure",
+        }
+    }
 }
 
 impl Outcome {
@@ -500,7 +549,7 @@ fn outcomes(log: &str) -> BTreeMap<String, Outcome> {
             if message.starts_with("esctypes.InternalError: Should have failed") {
                 Outcome::Pass { beyond_xterm: true }
             } else if message.is_empty() {
-                Outcome::Fail("no result in esctest's log".into())
+                Outcome::Unavailable(Limit::Infrastructure, "no result in esctest's log".into())
             } else {
                 Outcome::Fail(message)
             }
@@ -664,19 +713,26 @@ fn pump(
     }
 }
 
-/// What running an area gave: esctest's log, and whether it was stopped.
+/// What running a test gave: esctest's log, and whether it was stopped;
+/// how many reports the harness answered for the engine ([`Answering::told`])
+/// and left unanswered as unreadable ([`Answering::unreadable`]); and the
+/// engine's own failure, if it failed (an error or a panic of its own).
+#[derive(Default)]
 struct Ran {
     log: String,
     stopped: bool,
+    told: usize,
+    unreadable: usize,
+    failed: Option<String>,
 }
 
-/// Runs `area` against `subject` directly: fux-vt (its log `AREA.log`), or
-/// an engine (`AREA.NAME.log`). Only the terminal under test keeps each
-/// test's bytes, for `--replays`.
+/// Runs `area` (one test, [`isolated`]) against `subject` directly, made
+/// afresh: fux-vt (its log `TEST.log`), or an engine (`TEST.NAME.log`).
+/// Only the terminal under test keeps each test's bytes, for `--replays`.
 fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Result<Ran, String> {
     let log = match subject {
-        Subject::FuxVt => scratch.join(format!("{}.log", area.name)),
-        Subject::Engine(_) => scratch.join(format!("{}.{}.log", area.name, subject.name())),
+        Subject::FuxVt => scratch.join(format!("{}.log", area.stem())),
+        Subject::Engine(_) => scratch.join(format!("{}.{}.log", area.stem(), subject.name())),
     };
     let cases = if subject == job.request.terminal {
         job.cases_dir(scratch, area)?
@@ -691,31 +747,50 @@ fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Resul
         &log,
         cases.as_deref(),
     );
-    let mut answer: Box<Answer<'_>> = match subject {
+    let deadline = deadline(job.request.limit);
+    let mut ran = Ran::default();
+    let finished = match subject {
         Subject::FuxVt => {
             let mut parser =
                 fux_vt::Parser::with_options(crate::vt_size(ROWS, COLS)?, 8 << 20, options())
                     .map_err(|e| format!("fux-vt: {e}"))?;
-            Box::new(move |bytes| {
+            let mut answer = |bytes: &[u8]| {
                 Ok(parse(&mut parser, bytes, |s: &mut Replies| {
                     std::mem::take(&mut s.0)
                 }))
-            })
+            };
+            let (mut master, mut child) = launch(&argv, ROWS, COLS, &[])?;
+            let finished = pump(&mut master, &mut answer, deadline, || false);
+            stop(&mut child);
+            finished?
         }
         Subject::Engine(i) => {
-            let mut terminal = Answering::new(Subject::engine(i)?);
-            Box::new(move |bytes| terminal.take(bytes))
+            let (engine, reads_origin) = Subject::engine(i)?;
+            let mut terminal = Answering::new(engine, reads_origin);
+            // An engine that fails (an error, or a panic of its own) fails
+            // the test, and answers nothing more.
+            let mut failed = None;
+            let mut answer = |bytes: &[u8]| {
+                if failed.is_some() {
+                    return Ok(Vec::new());
+                }
+                Ok(terminal.take(bytes).unwrap_or_else(|why| {
+                    failed = Some(why);
+                    Vec::new()
+                }))
+            };
+            let (mut master, mut child) = launch(&argv, ROWS, COLS, &[])?;
+            let finished = pump(&mut master, &mut answer, deadline, || false);
+            stop(&mut child);
+            ran.told = terminal.told;
+            ran.unreadable = terminal.unreadable;
+            ran.failed = failed;
+            finished?
         }
     };
-    let (mut master, mut child) = launch(&argv, ROWS, COLS, &[])?;
-    let deadline = deadline(job.request.limit);
-    let finished = pump(&mut master, &mut *answer, deadline, || false);
-    stop(&mut child);
-    let finished = finished?;
-    Ok(Ran {
-        log: std::fs::read_to_string(&log).unwrap_or_default(),
-        stopped: !finished,
-    })
+    ran.log = std::fs::read_to_string(&log).unwrap_or_default();
+    ran.stopped = !finished;
+    Ok(ran)
 }
 
 fn deadline(limit: Duration) -> Instant {
@@ -813,7 +888,7 @@ fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
 /// Runs `area` in a pane of a fux server of its own, with a client
 /// attached on a PTY one row taller than esctest's terminal, for fux's bar.
 fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran, String> {
-    let log = scratch.join(format!("{}.fux.log", area.name));
+    let log = scratch.join(format!("{}.fux.log", area.stem()));
     let argv = esctest_argv(job.python, job.suite, area, job.request.timeout, &log, None);
     let server = server(fux, &argv)?;
     let rows = ROWS.saturating_add(1);
@@ -852,6 +927,7 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
     Ok(Ran {
         log: std::fs::read_to_string(&log).unwrap_or_default(),
         stopped: !finished,
+        ..Ran::default()
     })
 }
 
@@ -874,48 +950,97 @@ impl Job<'_> {
     }
 }
 
-/// Each test of `area`, from its run.
-fn results(area: &Area, ran: &Ran, limit: Duration) -> Tests {
+/// Whether `message` is a read of cells by DECRQCRA that timed out.
+fn checksum_timed_out(message: &str) -> bool {
+    message.contains("Timeout waiting to read") && message.contains("GetChecksumOfRect")
+}
+
+/// Each test of `area`, from its run, at `place`; and whether the harness
+/// answered a report for the engine in it (adapter-observed).
+fn results(area: &Area, ran: &Ran, limit: Duration, place: Place) -> (Tests, bool) {
     let found = outcomes(&ran.log);
-    area.tests
+    let tests = area
+        .tests
         .iter()
         .map(|name| {
-            let outcome = found.get(name).cloned().unwrap_or_else(|| {
-                Outcome::Fail(if ran.stopped {
-                    format!("no result: the area was stopped after {}s", limit.as_secs())
-                } else {
-                    "no result: esctest did not run it".into()
-                })
-            });
+            let outcome = match (found.get(name).cloned(), &ran.failed) {
+                (_, Some(why)) => Outcome::Fail(format!("the engine failed: {why}")),
+                (Some(Outcome::Fail(m)), None) if ran.unreadable > 0 && checksum_timed_out(&m) => {
+                    Outcome::Unavailable(
+                        Limit::Unreadable,
+                        "reads cells by DECRQCRA in origin mode, where the engine's margins \
+                         cannot be read"
+                            .into(),
+                    )
+                }
+                (Some(Outcome::Fail(m)), None) if place == Place::Fux && checksum_timed_out(&m) => {
+                    Outcome::Unavailable(
+                        Limit::Unreadable,
+                        "reads cells by DECRQCRA, which fux's panes do not answer".into(),
+                    )
+                }
+                (Some(outcome), None) => outcome,
+                (None, None) => Outcome::Unavailable(
+                    Limit::Infrastructure,
+                    if ran.stopped {
+                        format!("no result: stopped after {}s", limit.as_secs())
+                    } else {
+                        "no result: esctest did not run it".into()
+                    },
+                ),
+            };
             (name.clone(), outcome)
+        })
+        .collect();
+    (tests, ran.told > 0)
+}
+
+/// Each test of `areas` as an area of its own, in order: every test runs on
+/// a terminal made for it alone, so none starts from what an earlier one
+/// left, whatever the terminal's resets do (esctest's own still run).
+fn isolated(areas: &[Area]) -> Vec<Area> {
+    areas
+        .iter()
+        .flat_map(|area| {
+            area.tests.iter().map(|test| Area {
+                name: area.name.clone(),
+                tests: vec![test.clone()],
+            })
         })
         .collect()
 }
 
-/// An area's results, or why it could not run.
-type AreaResult = Result<Tests, String>;
+/// What a place's run gave: each area's results, in the areas' order, and
+/// the tests in which the harness answered a report for the engine.
+struct Runs {
+    results: Vec<Tests>,
+    observed: BTreeSet<String>,
+}
 
-/// Runs every area, `jobs` at a time, with `run`; each area's results, in
-/// the areas' order.
+/// A test's results, or why it could not run.
+type UnitResult = Result<(Tests, bool), String>;
+
+/// Runs every test of `areas` on its own ([`isolated`]), `jobs` at a time,
+/// with `run`, at `place`.
 fn run_all(
     areas: &[Area],
     jobs: usize,
     limit: Duration,
+    place: Place,
     run: &(dyn Fn(&Area) -> Result<Ran, String> + Sync),
-) -> Result<Vec<Tests>, String> {
-    // The largest first, so that the last to finish is small.
-    let mut order: Vec<usize> = (0..areas.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(areas.get(i).map_or(0, |a| a.tests.len())));
+) -> Result<Runs, String> {
+    let units = isolated(areas);
     let next = AtomicUsize::new(0);
-    let done: Mutex<BTreeMap<usize, AreaResult>> = Mutex::new(BTreeMap::new());
+    let done: Mutex<BTreeMap<usize, UnitResult>> = Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
-        for _ in 0..jobs.min(areas.len()) {
+        for _ in 0..jobs.min(units.len()) {
             scope.spawn(|| {
-                while let Some(&i) = order.get(next.fetch_add(1, Ordering::SeqCst)) {
-                    let Some(area) = areas.get(i) else {
+                loop {
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(unit) = units.get(i) else {
                         break;
                     };
-                    let result = run(area).map(|ran| results(area, &ran, limit));
+                    let result = run(unit).map(|ran| results(unit, &ran, limit, place));
                     if let Ok(mut done) = done.lock() {
                         done.insert(i, result);
                     }
@@ -923,14 +1048,28 @@ fn run_all(
             });
         }
     });
-    let done = done.into_inner().map_err(|_| "a run panicked")?;
-    (0..areas.len())
-        .map(|i| {
-            done.get(&i)
-                .cloned()
-                .unwrap_or(Err("an area did not run".into()))
-        })
-        .collect()
+    let mut done = done.into_inner().map_err(|_| "a run panicked")?;
+    let mut runs = Runs {
+        results: Vec::new(),
+        observed: BTreeSet::new(),
+    };
+    let mut i = 0usize;
+    for area in areas {
+        let mut tests = Tests::new();
+        for _ in &area.tests {
+            let (unit, observed) = done
+                .remove(&i)
+                .unwrap_or(Err("a test did not run".into()))?;
+            if observed {
+                runs.observed
+                    .extend(unit.iter().map(|(name, _)| name.clone()));
+            }
+            tests.extend(unit);
+            i = i.saturating_add(1);
+        }
+        runs.results.push(tests);
+    }
+    Ok(runs)
 }
 
 /// Where a listed failure applies.
@@ -1033,7 +1172,15 @@ fn mismatches(
             Outcome::Pass { .. } if listed => {
                 out.push(format!("{name}: passes, but is listed: remove it"));
             }
-            Outcome::Pass { .. } | Outcome::Fail(_) | Outcome::Skip(_) => {}
+            // The harness gave no result: not the terminal's failure, but
+            // the run is not whole.
+            Outcome::Unavailable(Limit::Infrastructure, why) => {
+                out.push(format!("{name}: no result ({why}): the run is not whole"));
+            }
+            Outcome::Pass { .. }
+            | Outcome::Fail(_)
+            | Outcome::Skip(_)
+            | Outcome::Unavailable(Limit::Unreadable, _) => {}
         }
     }
     out
@@ -1046,6 +1193,9 @@ struct Tally {
     beyond_xterm: usize,
     failed: usize,
     skipped: usize,
+    /// Run, with no result: adapter-limited, and the harness's own.
+    unreadable: usize,
+    infrastructure: usize,
 }
 
 impl Tally {
@@ -1061,13 +1211,27 @@ impl Tally {
                 }
                 Outcome::Fail(_) => t.failed = t.failed.saturating_add(1),
                 Outcome::Skip(_) => t.skipped = t.skipped.saturating_add(1),
+                Outcome::Unavailable(Limit::Unreadable, _) => {
+                    t.unreadable = t.unreadable.saturating_add(1);
+                }
+                Outcome::Unavailable(Limit::Infrastructure, _) => {
+                    t.infrastructure = t.infrastructure.saturating_add(1);
+                }
             }
         }
         t
     }
+    /// The tests run: every test esctest does not skip, whatever came of
+    /// it, so that every terminal has one denominator.
+    fn run(self) -> usize {
+        self.passed
+            .saturating_add(self.failed)
+            .saturating_add(self.unreadable)
+            .saturating_add(self.infrastructure)
+    }
     /// The share of the tests run that passed, in percent.
     fn rate(self) -> f64 {
-        let run = self.passed.saturating_add(self.failed);
+        let run = self.run();
         if run == 0 {
             return 0.0;
         }
@@ -1081,19 +1245,38 @@ impl Tally {
             "passed_beyond_xterm": self.beyond_xterm,
             "failed": self.failed,
             "skipped": self.skipped,
+            "unavailable": {
+                "adapter_limited": self.unreadable,
+                "infrastructure": self.infrastructure,
+            },
+            "run": self.run(),
             "pass_rate": (self.rate() * 10.0).round() / 10.0,
         })
     }
 }
 
-/// A test's result, with the reason the list gives for its failure.
-fn outcome_json(outcome: &Outcome, listed: Option<&Listed>) -> serde_json::Value {
+/// A test's result, with the reason the list gives for its failure: a
+/// pass or a failure is the terminal's own (`native`), or `adapter-observed`
+/// where the harness answered a report for it in the test; a failure is
+/// the engine's; an unavailable result is `adapter-limited` or
+/// `infrastructure`.
+fn outcome_json(outcome: &Outcome, listed: Option<&Listed>, observed: bool) -> serde_json::Value {
+    let basis = if observed {
+        "adapter-observed"
+    } else {
+        "native"
+    };
     let mut value = match outcome {
         Outcome::Pass { beyond_xterm } => {
-            serde_json::json!({"outcome": "pass", "beyond_xterm": beyond_xterm})
+            serde_json::json!({"outcome": "pass", "beyond_xterm": beyond_xterm, "basis": basis})
         }
-        Outcome::Fail(message) => serde_json::json!({"outcome": "fail", "message": message}),
+        Outcome::Fail(message) => serde_json::json!({
+            "outcome": "fail", "class": "engine", "basis": basis, "message": message,
+        }),
         Outcome::Skip(why) => serde_json::json!({"outcome": "skip", "message": why}),
+        Outcome::Unavailable(limit, why) => {
+            serde_json::json!({"outcome": "unavailable", "class": limit.name(), "message": why})
+        }
     };
     if let (Some(listed), Some(object)) = (listed, value.as_object_mut()) {
         object.insert("listed".into(), serde_json::json!(listed.reason));
@@ -1117,7 +1300,7 @@ fn replay(scratch: &Path, name: &str) -> Option<String> {
 /// few areas a line so that it fits a screen.
 fn table(areas: &[Area], runs: &[(&str, &[Tests])]) -> String {
     let cell = |t: Tally| {
-        let run = t.passed.saturating_add(t.failed);
+        let run = t.run();
         let skipped = if t.skipped > 0 {
             format!("+{}", t.skipped)
         } else {
@@ -1157,7 +1340,7 @@ fn table(areas: &[Area], runs: &[(&str, &[Tests])]) -> String {
             total,
             "{}/{} ({:.1}%) +{}  ",
             tally.passed,
-            tally.passed.saturating_add(tally.failed),
+            tally.run(),
             tally.rate(),
             tally.skipped
         );
@@ -1254,6 +1437,8 @@ struct Column {
     label: String,
     key: String,
     results: Vec<Tests>,
+    /// The tests in which the harness answered a report for the engine.
+    observed: BTreeSet<String>,
     time: Duration,
 }
 
@@ -1264,47 +1449,11 @@ impl Column {
     fn tally(&self) -> Tally {
         Tally::of(self.results.iter().flatten().map(|(_, o)| o))
     }
-}
-
-/// In a fux pane, a test that reads cells waits for a DECRQCRA reply the
-/// pane never gives: fux's panes leave rectangle checksums off (see
-/// [`options`]). It says nothing of fux, so it is not counted.
-fn unanswered_checksum(outcome: Outcome) -> Outcome {
-    match outcome {
-        Outcome::Fail(message)
-            if message.contains("Timeout waiting to read")
-                && message.contains("GetChecksumOfRect") =>
-        {
-            Outcome::Skip("reads cells by DECRQCRA, which fux's panes do not answer".into())
-        }
-        other @ (Outcome::Pass { .. } | Outcome::Fail(_) | Outcome::Skip(_)) => other,
-    }
-}
-
-/// For an engine answering as [`crate::answering`] says, a test that reads
-/// cells in origin mode waits for a DECRQCRA reply that is never given:
-/// there the rectangle is relative to the margins, which the engine's
-/// snapshot does not give. Its cells cannot be read, so it is not counted.
-fn unread_checksum(outcome: Outcome, name: &str) -> Outcome {
-    match outcome {
-        Outcome::Fail(message)
-            if message.contains("Timeout waiting to read")
-                && message.contains("GetChecksumOfRect") =>
-        {
-            Outcome::Skip(format!(
-                "cannot read: reads cells by DECRQCRA in origin mode, where {name}'s margins \
-                 cannot be read"
-            ))
-        }
-        other @ (Outcome::Pass { .. } | Outcome::Fail(_) | Outcome::Skip(_)) => other,
-    }
-}
-
-/// Each outcome of `results`, as `f` reads it again.
-fn reread(results: &mut [Tests], f: impl Fn(Outcome) -> Outcome) {
-    for (_, outcome) in results.iter_mut().flatten() {
-        let taken = std::mem::replace(outcome, Outcome::Skip(String::new()));
-        *outcome = f(taken);
+    /// The passes and failures that are adapter-observed.
+    fn counted_observed(&self) -> usize {
+        (self.results.iter().flatten())
+            .filter(|(name, o)| (o.passed() || o.failed()) && self.observed.contains(name))
+            .count()
     }
 }
 
@@ -1320,6 +1469,7 @@ fn say(outcome: &Outcome) -> String {
         Outcome::Pass { .. } => "passes".to_owned(),
         Outcome::Fail(m) => format!("fails ({})", m.lines().next().unwrap_or_default()),
         Outcome::Skip(_) => "skipped".to_owned(),
+        Outcome::Unavailable(limit, _) => format!("unavailable ({})", limit.name()),
     }
 }
 
@@ -1402,10 +1552,11 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     let mut columns = Vec::new();
     for place in places {
         let at = Instant::now();
-        let mut results = run_all(
+        let runs = run_all(
             &areas,
             request.jobs,
             request.limit,
+            place,
             &|area| match (place, &fux) {
                 (Place::Fux, Some(fux)) => in_fux(&job, fux, area, &scratch),
                 (Place::Xterm, _) => in_xterm(&job, area, &scratch),
@@ -1413,18 +1564,12 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
                 (Place::Fux, None) => direct(&job, terminal, area, &scratch),
             },
         )?;
-        match place {
-            Place::Fux => reread(&mut results, unanswered_checksum),
-            Place::Direct(subject @ Subject::Engine(_)) => {
-                reread(&mut results, |o| unread_checksum(o, subject.name()));
-            }
-            Place::Direct(Subject::FuxVt) | Place::Xterm => {}
-        }
         columns.push(Column {
             place,
             label: place.label(terminal),
             key: place.key(terminal),
-            results,
+            results: runs.results,
+            observed: runs.observed,
             time: at.elapsed(),
         });
     }
@@ -1482,7 +1627,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         if let Some(object) = json.as_object_mut() {
             object.insert(
                 column.key.clone(),
-                run_json(&areas, &column.results, column.time, list_of(column.place)),
+                run_json(&areas, column, list_of(column.place)),
             );
         }
     }
@@ -1561,12 +1706,16 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         let t = column.tally();
         let _ = write!(
             summary,
-            "{} {} {} of {} pass ({:.1}%), {} skipped, in {:.1}s",
+            "{} {} {} of {} pass ({:.1}%), {} unavailable ({} adapter-limited), {} \
+             adapter-observed, {} skipped, in {:.1}s",
             if i == 0 { "" } else { ";" },
             column.label,
             t.passed,
-            t.passed.saturating_add(t.failed),
+            t.run(),
             t.rate(),
+            t.unreadable.saturating_add(t.infrastructure),
+            t.unreadable,
+            column.counted_observed(),
             t.skipped,
             column.time.as_secs_f64()
         );
@@ -1642,7 +1791,7 @@ impl Comparison {
             test: name.to_owned(),
             failure: match outcome {
                 Outcome::Fail(m) => m.lines().next().unwrap_or_default().to_owned(),
-                Outcome::Pass { .. } | Outcome::Skip(_) => String::new(),
+                Outcome::Pass { .. } | Outcome::Skip(_) | Outcome::Unavailable(..) => String::new(),
             },
             reason: list
                 .get(name)
@@ -1656,9 +1805,12 @@ impl Comparison {
                 first.push(only(name, &y, b_list));
             } else if x.failed() && y.passed() {
                 second.push(only(name, x, a_list));
-            } else if matches!(x, Outcome::Skip(_)) != matches!(y, Outcome::Skip(_)) {
+            } else if (x.passed() || x.failed()) != (y.passed() || y.failed()) {
                 let what = |o: &Outcome| match o {
                     Outcome::Skip(why) => format!("skipped: {why}"),
+                    Outcome::Unavailable(limit, why) => {
+                        format!("unavailable ({}): {why}", limit.name())
+                    }
                     Outcome::Pass { .. } | Outcome::Fail(_) => say(o),
                 };
                 one_ran.push((name.clone(), [what(x), what(&y)]));
@@ -1677,7 +1829,7 @@ impl Comparison {
     fn text(&self) -> String {
         let [a, b] = self.names;
         let rate = |t: Tally| {
-            let run = t.passed.saturating_add(t.failed);
+            let run = t.run();
             format!("{:>3}/{:<3} {:>5.1}%", t.passed, run, t.rate())
         };
         let mut out = format!(
@@ -1941,7 +2093,7 @@ fn source(reason: &str) -> Option<&'static str> {
 /// and the scrolls never move, so it reads back characters that are no
 /// longer there.
 fn in_xterm(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
-    let log = scratch.join(format!("{}.xterm.log", area.name));
+    let log = scratch.join(format!("{}.xterm.log", area.stem()));
     let argv = esctest_argv(job.python, job.suite, area, job.request.timeout, &log, None);
     let display = crate::engines::xterm::display()?;
     let resources = [
@@ -1985,17 +2137,14 @@ fn in_xterm(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
     Ok(Ran {
         log: std::fs::read_to_string(&log).unwrap_or_default(),
         stopped: !finished,
+        ..Ran::default()
     })
 }
 
 /// A place's results: the tally, the time, each area's tally and each
 /// test's result.
-fn run_json(
-    areas: &[Area],
-    results: &[Tests],
-    time: Duration,
-    list: &BTreeMap<String, Listed>,
-) -> serde_json::Value {
+fn run_json(areas: &[Area], column: &Column, list: &BTreeMap<String, Listed>) -> serde_json::Value {
+    let (results, time) = (&column.results, column.time);
     let mut by_area = serde_json::Map::new();
     let mut tests = serde_json::Map::new();
     for (area, results) in areas.iter().zip(results) {
@@ -2004,7 +2153,11 @@ fn run_json(
             Tally::of(results.iter().map(|(_, o)| o)).json(),
         );
         for (name, outcome) in results {
-            tests.insert(name.clone(), outcome_json(outcome, list.get(name)));
+            let observed = column.observed.contains(name);
+            tests.insert(
+                name.clone(),
+                outcome_json(outcome, list.get(name), observed),
+            );
         }
     }
     let mut total = Tally::of(results.iter().flatten().map(|(_, o)| o)).json();
@@ -2012,6 +2165,10 @@ fn run_json(
         object.insert(
             "seconds".into(),
             serde_json::json!((time.as_secs_f64() * 10.0).round() / 10.0),
+        );
+        object.insert(
+            "adapter_observed".into(),
+            serde_json::json!(column.counted_observed()),
         );
         object.insert("areas".into(), serde_json::Value::Object(by_area));
         object.insert("tests".into(), serde_json::Value::Object(tests));
@@ -2170,6 +2327,7 @@ a
                     .zip(results)
                     .collect(),
             ],
+            observed: std::collections::BTreeSet::new(),
             time: std::time::Duration::ZERO,
         };
         let a = column(vec![pass.clone(), fail.clone(), skip, pass.clone()]);
@@ -2252,6 +2410,89 @@ a
         let fux = super::mismatches(&results, &list, true);
         assert_eq!(fux.len(), 2, "{fux:?}");
         assert!(fux.iter().any(|m| m.starts_with("A.t3: fails")));
+        Ok(())
+    }
+
+    /// Each test runs alone, and comes back in its area, in order.
+    #[test]
+    fn every_test_runs_alone() {
+        let areas = vec![
+            super::Area {
+                name: "A".into(),
+                tests: vec!["A.t1".into(), "A.t2".into()],
+            },
+            super::Area {
+                name: "B".into(),
+                tests: vec!["B.t1".into()],
+            },
+        ];
+        let units = super::isolated(&areas);
+        let names: Vec<(&str, &str)> = units.iter().map(|u| (u.name.as_str(), u.stem())).collect();
+        assert_eq!(names, [("A", "A.t1"), ("A", "A.t2"), ("B", "B.t1")]);
+    }
+
+    /// A run's results, classified: a timeout reading cells the adapter
+    /// could not answer is adapter-limited; one the engine's own failure
+    /// caused is the engine's; a test with no result is infrastructure's,
+    /// and a mismatch, but not a failure; every one but the skipped is in
+    /// the denominator.
+    #[test]
+    fn results_are_classified() -> Result<(), String> {
+        use super::{Limit, Place, Ran, Subject};
+        let area = super::Area {
+            name: "A".into(),
+            tests: vec!["A.t1".into(), "A.t2".into(), "A.t3".into()],
+        };
+        let log = "Run test: A.t1\nPassed.\n\nRun test: A.t2\n*** TEST A.t2 FAILED:\n\
+                   Traceback (most recent call last):\n  File \"a.py\", line 1, in test_t2\n    \
+                   f()\n  File \"escutil.py\", line 1, in GetChecksumOfRect\n    g()\n\
+                   esctypes.InternalError: Timeout waiting to read.\n\n";
+        let limit = std::time::Duration::from_secs(60);
+        let place = Place::Direct(Subject::FuxVt);
+        let ran = Ran {
+            log: log.into(),
+            stopped: true,
+            told: 1,
+            unreadable: 1,
+            failed: None,
+        };
+        let (tests, observed) = super::results(&area, &ran, limit, place);
+        assert!(observed);
+        let outcomes: Vec<&Outcome> = tests.iter().map(|(_, o)| o).collect();
+        let [first, second, third] = outcomes.as_slice() else {
+            return Err(format!("{outcomes:?}"));
+        };
+        assert!(matches!(first, Outcome::Pass { .. }));
+        assert!(matches!(second, Outcome::Unavailable(Limit::Unreadable, _)));
+        assert!(matches!(
+            third,
+            Outcome::Unavailable(Limit::Infrastructure, _)
+        ));
+        let tally = super::Tally::of(outcomes.iter().copied());
+        assert_eq!((tally.passed, tally.failed, tally.run()), (1, 0, 3));
+        let list = super::expected("")?;
+        let found = super::mismatches(&tests, &list, false);
+        let [found] = found.as_slice() else {
+            return Err(format!("{found:?}"));
+        };
+        assert!(found.starts_with("A.t3: no result"));
+        // Without an unanswered read, the timeout is the engine's failure.
+        let ran = Ran {
+            unreadable: 0,
+            ..ran
+        };
+        let (tests, _) = super::results(&area, &ran, limit, place);
+        assert!(matches!(tests.get(1), Some((_, Outcome::Fail(_)))));
+        let ran = Ran {
+            failed: Some("panicked".into()),
+            ..ran
+        };
+        let (tests, _) = super::results(&area, &ran, limit, place);
+        assert!(
+            tests
+                .iter()
+                .all(|(_, o)| matches!(o, Outcome::Fail(m) if m.contains("panicked")))
+        );
         Ok(())
     }
 }

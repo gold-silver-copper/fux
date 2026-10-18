@@ -168,7 +168,7 @@ impl Engine for Vt {
         })
     }
 
-    fn replies(&self) -> Vec<u8> {
-        self.heard.replies.clone()
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(self.heard.replies.clone())
     }
 }

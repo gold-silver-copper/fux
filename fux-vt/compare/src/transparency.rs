@@ -1185,7 +1185,7 @@ impl Client {
     /// replies to the client.
     fn take(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.terminal.process(bytes)?;
-        let replies = self.terminal.replies();
+        let replies = self.terminal.replies()?;
         if let Some(new) = replies.get(self.answered..)
             && !new.is_empty()
         {

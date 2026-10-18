@@ -430,7 +430,7 @@ impl Engine for Alacritty {
         self.read(history_rows)
     }
 
-    fn replies(&self) -> Vec<u8> {
-        self.heard.borrow().replies.clone()
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(self.heard.borrow().replies.clone())
     }
 }

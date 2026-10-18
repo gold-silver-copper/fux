@@ -521,18 +521,31 @@ fux-vt/compare/run.sh esctest --terminal ghostty # Ghostty's core under test
 fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt beside it, test by test
 ```
 
-- **Directly** (`src/esctest.rs`): each area (a test class) is one esctest
-  process on a 25×80 PTY. Its terminal is a fux-vt parser set up as fux's
-  panes are, plus rectangle checksums and DECXCPR (`ExtendedReplies`),
-  which panes leave off. Areas start on a fresh terminal and run in
-  parallel, up to `--jobs` (one per CPU by default). A read waits
-  `--timeout` (1 s) for its reply, so a missing report fails only that
-  test. An area past `--limit` (120 s) is stopped, and its unfinished tests
-  fail.
+- **Directly** (`src/esctest.rs`): each test is one esctest process on a
+  25×80 PTY, on a terminal made for it alone: every terminal (fux-vt, an
+  engine, a fux pane, xterm) is isolated the same way, so no test starts
+  from what an earlier one left (esctest's own reset before each test still
+  runs). Its terminal is a fux-vt parser set up as fux's panes are, plus
+  rectangle checksums and DECXCPR (`ExtendedReplies`), which panes leave
+  off. Tests run in parallel, up to `--jobs` (one per CPU by default), and
+  are reported by area (a test class). A read waits `--timeout` (1 s) for
+  its reply, so a missing report fails only that test. A test past
+  `--limit` (60 s) is stopped.
 - **Options passed to esctest:** `--expected-terminal=xterm` (fux-vt
   follows xterm), `--max-vt-level=4` (a VT420, xterm's default and the
-  level with DECRQCRA), and no `--options` (UTF-8, no window operations, like
-  a default xterm). VT520 tests are skipped.
+  level with DECRQCRA), `--xterm-reverse-wrap=383` (reverse wraparound as
+  xterm has it since patch 383), and no `--options` (UTF-8, no window
+  operations, like a default xterm). VT520 tests are skipped. esctest2 is
+  pinned at 2798f121, and a checkout at another commit is refused.
+- **One denominator:** every terminal is scored over the tests esctest
+  runs (it skips the same ones for all). Each result is a pass; a failure
+  (the terminal's: an assertion, a report it did not give, or the engine's
+  own error); or unavailable, neither: *adapter-limited*, where the
+  harness cannot read the cells, or *infrastructure*, where its run gave no
+  result (a test stopped at `--limit`), which fails the run without
+  counting against the terminal. A pass or a failure is *native*, or
+  *adapter-observed* where the harness answered a report for the engine
+  in that test (below).
 - **The list**, `esctest-expected.txt`: every failing test with its reason,
   one of `departure`, `spec`, `not-implemented`, `xterm-too` or `bug` (the
   file's header defines them). The run fails on an unlisted failure and on
@@ -540,20 +553,29 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
   `[fux]` fails only in a pane, and `[direct]` only directly.
 - **In fux** (`--in-fux`): builds fux and runs each area in the only pane
   of a fux server of its own (under `fux-esctest-*` in `$TMPDIR` if it is
-  short, else `~/.cache/fux`; never the user's), with a client on a 26×80 PTY. Panes don't answer DECRQCRA, so
-  tests that read cells are skipped. A test that passes in one place and
-  fails in the other is printed, and points at fux.
+  short, else `~/.cache/fux`; never the user's), with a client on a 26×80
+  PTY. The pane runs esctest as the server's `SHELL`: `fux __serve` takes
+  no config, and a client's `config.fux` reaches only panes made after the
+  first. Panes don't answer DECRQCRA, so tests that read cells are
+  unavailable. A test that passes in one place and fails in the other is
+  printed, and points at fux.
 - **In xterm** (`--xterm`): each area also runs in a real xterm under Xvfb,
-  set up as esctest's README says, with DECRQCRA allowed and empty cells
-  counted as spaces. What passes there and fails in fux-vt is what fux-vt
-  lacks.
+  set up as esctest's README says, with DECRQCRA allowed and
+  `checksumExtension: 26` (empty cells counted as spaces, no attributes,
+  each cell's own character: without bit 4, xterm 411 sums a per-cell copy
+  that DCH, ICH and the scrolls never move, `screen.c:3209`). What passes
+  there and fails in fux-vt is what fux-vt lacks.
 - **Another engine** (`--terminal NAME`, any engine in this process): the
   engine is the terminal (`src/answering.rs`), and its replies go back in
   order. No engine but fux-vt answers DECRQCRA, so it is answered from the
-  engine's snapshot with xterm's checksum. In origin mode, where the
-  rectangle is relative to margins no snapshot gives, the test is skipped.
-  Ghostty is given its size as Ghostty's app gives it. The results are
-  checked against `esctest-expected-NAME.txt`.
+  engine's snapshot with xterm's checksum; the size report esctest asks
+  before every test (`CSI 18 t`) is answered from the snapshot too where the
+  engine gives none (libvterm, avt, vt100). Either makes the test
+  adapter-observed. In origin mode, where the rectangle is relative to
+  margins no snapshot gives, the test is adapter-limited; for an engine
+  whose origin mode cannot be read (vt100), from the program's DECSET 6 to
+  its DECRST 6, DECSTR or RIS. Ghostty is given its size as Ghostty's app
+  gives it. The results are checked against `esctest-expected-NAME.txt`.
 - **Beside** (`--beside NAME`, fux-vt or an engine): runs another terminal
   too, checked against its own list, and compares the two: each area's
   pass rate, and the tests one passes and the other fails, each with its
@@ -562,15 +584,19 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
 
 `--json FILE` writes, for the scoreboard:
 
-- the run: `suite`, `expected_terminal`, `max_vt_level`, `timeout`,
+- the run: `suite`, `suite_commit`, `expected_terminal`, `max_vt_level`, `timeout`,
   `filter`, `tests`, and `terminal` with `--terminal`;
 - a column per place:
   - `direct`, plus `in_fux` and `xterm` with those flags, and one named for
     the `--beside` terminal (`fux_vt`);
   - each with `passed`, `passed_beyond_xterm`, `failed`, `skipped`,
-    `pass_rate` (passed over passed and failed), `seconds`, per-area
-    counts in `areas`, and each test's `outcome`, `message` and `listed`
-    reason in `tests`;
+    `unavailable` (`adapter_limited`, `infrastructure`), `run` (the
+    denominator: all but the skipped), `pass_rate` (passed over run),
+    `adapter_observed`, `seconds`, per-area counts in `areas`, and each
+    test's `outcome` (`pass`, `fail`, `skip`, `unavailable`), its `basis`
+    (`native` or `adapter-observed`), its `class` (`engine` for a failure,
+    `adapter-limited` or `infrastructure` for an unavailable result),
+    `message` and `listed` reason in `tests`;
 - `differences_in_fux` and `differences_xterm`;
 - with `--beside`, `comparison`: `terminals`, `total`, `areas`,
   `passes_only_in` (each with `test`, `kind`, `feature`, `source`,

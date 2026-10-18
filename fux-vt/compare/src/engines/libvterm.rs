@@ -294,8 +294,8 @@ impl Engine for Libvterm {
         })
     }
 
-    fn replies(&self) -> Vec<u8> {
-        self.term.replies().to_vec()
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(self.term.replies().to_vec())
     }
 }
 

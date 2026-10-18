@@ -41,9 +41,9 @@ pub trait Engine {
 
     /// Every reply the terminal has written back so far, in order: what a
     /// terminal sends up its pty for its program to read. Empty for an
-    /// engine that answers nothing, or whose answers are not taken here.
-    fn replies(&self) -> Vec<u8> {
-        Vec::new()
+    /// engine that answers nothing.
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(Vec::new())
     }
 
     /// The rows of history it holds now, if it can tell (`footprint`

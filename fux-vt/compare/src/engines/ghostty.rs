@@ -273,8 +273,8 @@ impl Engine for Ghostty {
         self.read(history_rows)
     }
 
-    fn replies(&self) -> Vec<u8> {
-        self.replies.borrow().clone()
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(self.replies.borrow().clone())
     }
 
     /// Its palette, foreground and background as OSC 4, 10 and 11 left
