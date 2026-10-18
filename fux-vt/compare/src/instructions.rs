@@ -15,10 +15,9 @@
 //! Only the engines in this process are counted: an engine behind a
 //! process of its own does its work in that process, which the count does
 //! not see.
-use crate::bench::{self, CHUNK, COLS, Load, ROWS, WORKLOADS};
+use crate::bench::{self, CHUNK, COLS, Load, ROWS};
 use crate::count::Counter;
 use crate::engine::{ENGINES, Kind, SUBJECT, Setup};
-use crate::rng::Rng;
 use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -27,48 +26,9 @@ use std::time::Instant;
 /// The hidden subcommand a child runs: `CHILD ENGINE WORKLOAD MB [baseline]`.
 pub const CHILD: &str = "--instructions-child";
 
-/// The named workload, `mb` MiB of it, alone: a synthetic one, `corpus`
-/// (every recording in turn) or `corpus:NAME`, as `bench` makes them.
+/// The named workload, `mb` MiB of it, alone, as `bench` makes it.
 fn load(name: &str, mb: usize) -> Result<Load, String> {
-    let total = mb.saturating_mul(1 << 20);
-    if let Some((_, about, make)) = WORKLOADS.iter().find(|(n, _, _)| *n == name) {
-        return Ok(Load {
-            name: name.to_owned(),
-            about: (*about).to_owned(),
-            rows: ROWS,
-            cols: COLS,
-            bytes: make(&mut Rng::new(1), total),
-        });
-    }
-    let recordings = crate::corpus::recordings(&[])?;
-    if name == "corpus" {
-        let first = recordings.first().ok_or("the corpus is empty")?;
-        let all: Vec<u8> = recordings.iter().flat_map(|r| r.bytes()).collect();
-        return Ok(Load {
-            name: name.to_owned(),
-            about: format!(
-                "every recording in turn, {} bytes recorded, at {}x{}",
-                all.len(),
-                first.rows,
-                first.cols
-            ),
-            rows: first.rows,
-            cols: first.cols,
-            bytes: bench::repeated(&all, total),
-        });
-    }
-    let one = name
-        .strip_prefix("corpus:")
-        .and_then(|n| recordings.iter().find(|r| r.name == n))
-        .ok_or(format!("no workload {name:?}"))?;
-    let bytes = one.bytes();
-    Ok(Load {
-        name: name.to_owned(),
-        about: format!("{}, {} bytes recorded", one.version, bytes.len()),
-        rows: one.rows,
-        cols: one.cols,
-        bytes: bench::repeated(&bytes, total),
-    })
+    bench::load(name, mb.saturating_mul(1 << 20))
 }
 
 fn kind(name: &str) -> Result<&'static Kind, String> {
@@ -153,15 +113,7 @@ pub fn run(
         .map(|k| k.name)
         .collect();
     let kinds: Vec<&Kind> = kinds.into_iter().filter(|k| k.in_process).collect();
-    let workloads: Vec<String> = if names.is_empty() {
-        WORKLOADS
-            .iter()
-            .map(|(n, _, _)| (*n).to_owned())
-            .chain(std::iter::once("corpus".to_owned()))
-            .collect()
-    } else {
-        names.to_vec()
-    };
+    let workloads = bench::chosen(names)?;
     // Each workload made once here, to check its name and give its size.
     let loads: Vec<(usize, String)> = workloads
         .iter()

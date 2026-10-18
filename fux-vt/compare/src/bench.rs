@@ -11,6 +11,11 @@
 //! were recorded at, over and over to make up the same amount, and all of
 //! them in turn (`corpus`, which a run without names includes; `bench
 //! corpus` gives every recording alone too).
+//!
+//! The census's speed payloads (vtebench's, kitty's, avt's, foot's, `y\r\n`,
+//! `y\n` and sixel frames, [`census`]) are workloads too, each alone at
+//! 50x200 (`bench census` names them all). Workloads are made one at a time,
+//! and the timer encloses the feed alone: never a snapshot.
 use crate::engine::{ENGINES, Kind, SUBJECT, Setup};
 use crate::rng::Rng;
 use std::fmt::Write;
@@ -219,41 +224,140 @@ pub fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
     out
 }
 
-/// The corpus's workloads: every recording alone, and all of them in
-/// turn, each `total` bytes or a little more. Each alone runs at the size
-/// it was recorded at, without its resizes; all of them in turn run at the
-/// first's size (40x120, as most are).
-fn corpus_loads(total: usize) -> Result<Vec<Load>, String> {
-    let recordings = crate::corpus::recordings(&[])?;
-    let mut each = Vec::new();
-    let mut all = Vec::new();
-    for r in &recordings {
-        let bytes = r.bytes();
-        all.extend_from_slice(&bytes);
-        each.push(Load {
-            name: format!("corpus:{}", r.name),
-            about: format!("{}, {} bytes recorded", r.version, bytes.len()),
-            rows: r.rows,
-            cols: r.cols,
-            bytes: repeated(&bytes, total),
-        });
-    }
-    let together = recordings.first().map(|first| Load {
-        name: "corpus".into(),
-        about: format!(
-            "every recording in turn, {} bytes recorded, at {}x{}",
-            all.len(),
-            first.rows,
-            first.cols
-        ),
-        rows: first.rows,
-        cols: first.cols,
-        bytes: repeated(&all, total),
-    });
-    Ok(together.into_iter().chain(each).collect())
+/// The census's speed payloads, made as `fux-bench` makes its `vt/`
+/// workloads of them: one file both crates compile.
+#[path = "../../../bench/src/census.rs"]
+pub mod census;
+
+/// Where the census's vendored payload data is.
+fn payloads() -> std::path::PathBuf {
+    census::data(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
-/// The best of [`RUNS`] times to feed `bytes` to a fresh engine.
+/// Every workload's name and what it is, without making any: the
+/// synthetic ones, the census's payloads, `corpus` (every recording in
+/// turn) and `corpus:NAME` (one recording alone).
+pub fn names() -> Result<Vec<(String, String)>, String> {
+    let mut out: Vec<(String, String)> = WORKLOADS
+        .iter()
+        .map(|(name, about, _)| ((*name).to_owned(), (*about).to_owned()))
+        .collect();
+    out.extend(census::PAYLOADS.iter().map(|p| {
+        (
+            p.name.to_owned(),
+            format!("{}, at {}x{}", p.about, census::ROWS, census::COLS),
+        )
+    }));
+    let recordings = crate::corpus::recordings(&[])?;
+    if let Some(first) = recordings.first() {
+        out.push((
+            "corpus".into(),
+            format!("every recording in turn, at {}x{}", first.rows, first.cols),
+        ));
+    }
+    out.extend(recordings.iter().map(|r| {
+        (
+            format!("corpus:{}", r.name),
+            format!("{}, recorded", r.version),
+        )
+    }));
+    Ok(out)
+}
+
+/// The named workload, `total` bytes of it or a little more, alone: a
+/// synthetic one at 50x200, a census payload at its size, `corpus`
+/// (every recording in turn, at the first's size, 40x120 as most are,
+/// without resizes) or `corpus:NAME` (one recording at its size, without
+/// its resizes).
+pub fn load(name: &str, total: usize) -> Result<Load, String> {
+    if let Some((_, about, make)) = WORKLOADS.iter().find(|(n, _, _)| *n == name) {
+        return Ok(Load {
+            name: name.to_owned(),
+            about: (*about).to_owned(),
+            rows: ROWS,
+            cols: COLS,
+            bytes: make(&mut Rng::new(1), total),
+        });
+    }
+    if let Some(bytes) = census::make(name, &payloads(), total) {
+        return Ok(Load {
+            name: name.to_owned(),
+            about: census::PAYLOADS
+                .iter()
+                .find(|p| p.name == name)
+                .map_or_else(String::new, |p| {
+                    format!("{} (the census fed {} MiB)", p.about, census::SIZE >> 20)
+                }),
+            rows: census::ROWS,
+            cols: census::COLS,
+            bytes: bytes?,
+        });
+    }
+    let recordings = crate::corpus::recordings(&[])?;
+    if name == "corpus" {
+        let first = recordings.first().ok_or("the corpus is empty")?;
+        let all: Vec<u8> = recordings.iter().flat_map(|r| r.bytes()).collect();
+        return Ok(Load {
+            name: name.to_owned(),
+            about: format!(
+                "every recording in turn, {} bytes recorded, at {}x{}",
+                all.len(),
+                first.rows,
+                first.cols
+            ),
+            rows: first.rows,
+            cols: first.cols,
+            bytes: repeated(&all, total),
+        });
+    }
+    let one = name
+        .strip_prefix("corpus:")
+        .and_then(|n| recordings.iter().find(|r| r.name == n))
+        .ok_or(format!("no workload {name:?}"))?;
+    let bytes = one.bytes();
+    Ok(Load {
+        name: name.to_owned(),
+        about: format!("{}, {} bytes recorded", one.version, bytes.len()),
+        rows: one.rows,
+        cols: one.cols,
+        bytes: repeated(&bytes, total),
+    })
+}
+
+/// The workloads `names` asks for, by name: with none, the synthetic ones
+/// and the corpus all together; `corpus` names every recording, all
+/// together and each alone; `census` every census payload.
+pub fn chosen(names: &[String]) -> Result<Vec<String>, String> {
+    let every = self::names()?;
+    let picks = |n: &str, name: &str| {
+        n == name
+            || (n == "corpus" && name.starts_with("corpus"))
+            || (n == "census" && census::PAYLOADS.iter().any(|p| p.name == name))
+    };
+    for n in names {
+        if !every.iter().any(|(name, _)| picks(n, name)) {
+            let known: Vec<&str> = every.iter().map(|(name, _)| name.as_str()).collect();
+            return Err(format!(
+                "no workload {n:?}; there are: census corpus {}",
+                known.join(" ")
+            ));
+        }
+    }
+    Ok(every
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            if names.is_empty() {
+                WORKLOADS.iter().any(|(n, _, _)| n == name) || name == "corpus"
+            } else {
+                names.iter().any(|n| picks(n, name))
+            }
+        })
+        .collect())
+}
+
+/// The best of [`RUNS`] times to feed `bytes` to a fresh engine: the timer
+/// encloses the feed alone, never a read of the screen.
 fn time(kind: &Kind, load: &Load) -> Result<Duration, String> {
     let setup = Setup {
         rows: load.rows,
@@ -275,48 +379,11 @@ fn time(kind: &Kind, load: &Load) -> Result<Duration, String> {
     Ok(best)
 }
 
-/// Times fux-vt and `engines` on the named workloads, each `mb` MiB, and
-/// prints MB/s as a table. With none named: the synthetic workloads and
-/// the corpus all together; `corpus` names every corpus workload, each
-/// recording alone too.
+/// Times fux-vt and `engines` on the named workloads (see [`chosen`]),
+/// each `mb` MiB, made one at a time, and prints MB/s as a table.
 pub fn run(engines: &[usize], names: &[String], mb: usize) -> Result<bool, String> {
     let bytes = mb.saturating_mul(1 << 20);
-    let synthetic = WORKLOADS.iter().map(|(name, about, make)| Load {
-        name: (*name).to_owned(),
-        about: (*about).to_owned(),
-        rows: ROWS,
-        cols: COLS,
-        bytes: make(&mut Rng::new(1), bytes),
-    });
-    let mut every: Vec<Load> = synthetic.collect();
-    every.extend(corpus_loads(bytes)?);
-    let known = every
-        .iter()
-        .map(|l| l.name.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    for n in names {
-        if !every
-            .iter()
-            .any(|l| &l.name == n || (n == "corpus" && l.name.starts_with("corpus")))
-        {
-            return Err(format!("no workload {n:?}; there are: {known}"));
-        }
-    }
-    let chosen: Vec<&Load> = every
-        .iter()
-        .filter(|l| {
-            if names.is_empty() {
-                // By default the corpus all together, so a run stays a few
-                // minutes; `corpus` adds each recording alone.
-                !l.name.starts_with("corpus:")
-            } else {
-                names
-                    .iter()
-                    .any(|n| *n == l.name || (n == "corpus" && l.name.starts_with("corpus")))
-            }
-        })
-        .collect();
+    let chosen = chosen(names)?;
     let kinds: Vec<&Kind> = std::iter::once(&SUBJECT)
         .chain(engines.iter().filter_map(|&i| ENGINES.get(i)))
         .collect();
@@ -329,11 +396,14 @@ pub fn run(engines: &[usize], names: &[String], mb: usize) -> Result<bool, Strin
         print!(" {:>10}", format!("{}{mark}", kind.name));
     }
     println!();
-    for load in &chosen {
-        let name = &load.name;
+    let mut abouts = Vec::new();
+    for name in &chosen {
+        // Made one at a time, and dropped after: all of them at once took
+        // gigabytes.
+        let load = load(name, bytes)?;
         print!("{name:<22}");
         for kind in &kinds {
-            let cell = match time(kind, load) {
+            let cell = match time(kind, &load) {
                 Ok(took) => {
                     let mbs = (load.bytes.len() as f64) / took.as_secs_f64().max(1e-9) / 1e6;
                     format!("{mbs:.1}")
@@ -346,10 +416,11 @@ pub fn run(engines: &[usize], names: &[String], mb: usize) -> Result<bool, Strin
             print!(" {cell:>10}");
         }
         println!();
+        abouts.push((load.name, load.about));
     }
     println!();
-    for load in &chosen {
-        println!("{:<22} {}", load.name, load.about);
+    for (name, about) in &abouts {
+        println!("{name:<22} {about}");
     }
     Ok(true)
 }
