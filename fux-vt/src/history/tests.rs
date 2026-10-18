@@ -130,3 +130,50 @@ fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// Block numbers are 16 bits and wrap (`BLOCKS`, HAR-37): a long-lived
+/// pane makes 65,536 blocks in about 268 M cells. Numbered from just below
+/// the wrap, rows of a block each read back as they came across it, while
+/// the oldest go past the budget, and the bytes counted stay those held.
+#[test]
+fn block_numbers_wrap() -> Result<(), Error> {
+    let budget = 256 << 10;
+    let mut history = History::new(budget);
+    history.first_block = u16::MAX - 3;
+    history.newest_block = u16::MAX - 3;
+    let mut expected = std::collections::VecDeque::new();
+    for id in 0..200u64 {
+        // Each row more than half a block: a block of its own.
+        let len = (BLOCK / 2).saturating_add(usize::try_from(id % 7).unwrap_or(0));
+        let first = b'a'.wrapping_add(u8::try_from(id % 26).unwrap_or(0));
+        let cells = row(len, first, 0);
+        let width = u16::try_from(len).unwrap_or(u16::MAX);
+        history.push(arriving(id, &cells, width))?;
+        expected.push_back((
+            id,
+            id.wrapping_mul(3),
+            id % 2 == 1,
+            id.is_multiple_of(3),
+            width,
+            cells,
+        ));
+        history.trim();
+        while expected.len() > history.len() {
+            expected.pop_front();
+        }
+        assert_eq!(
+            found(&history),
+            Vec::from(expected.clone()),
+            "after row {id}"
+        );
+        assert_eq!(history.bytes(), history.heap());
+        assert!(history.bytes() <= budget);
+    }
+    assert!(
+        history.first_block < 1000,
+        "never wrapped: {}",
+        history.first_block
+    );
+    assert!(history.len() > 1);
+    Ok(())
+}
