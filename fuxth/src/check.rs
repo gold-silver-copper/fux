@@ -197,9 +197,10 @@ enum Failing {
         hi: i64,
         inside: bool,
     },
-    /// Its values can't be the kinds it takes; and, for one that came
-    /// through other words first, the step that made it.
+    /// Its values can't be the kinds it takes.
     Type(String),
+    /// So, of a value that came through other words first: the step that
+    /// made it.
     Made(String, usize),
     /// A call, which every way through what it calls fails: how it is
     /// given, and the first step there that fails.
@@ -1006,13 +1007,13 @@ impl<'a, A> Unit<'a, A> {
                 return None;
             }
             at = at.saturating_sub(1);
-            let (takes, gives) = match self.code.ops.get(at)? {
-                Op::Push(_) if depth == 0 => return None,
-                Op::Push(_) => (0, 1),
-                Op::App(id) => {
-                    let word = self.words().word(*id)?;
-                    (word.takes.len(), word.gives.len())
+            let word = match self.code.ops.get(at)? {
+                // A value written: it was not made by a word.
+                Op::Push(_) => {
+                    depth = depth.checked_sub(1)?;
+                    continue;
                 }
+                Op::App(id) => self.words().word(*id)?,
                 Op::Builtin(_)
                 | Op::PickN(_)
                 | Op::RollN(_)
@@ -1028,17 +1029,12 @@ impl<'a, A> Unit<'a, A> {
                 | Op::EachStart
                 | Op::EachNext(_) => return None,
             };
-            let Some(out) = gives
-                .checked_sub(1)
-                .and_then(|last| last.checked_sub(depth))
-            else {
+            let (takes, gives) = (word.takes.len(), word.gives.len());
+            // A value below what the word gives is from before it.
+            let Some(out) = gives.checked_sub(1).and_then(|l| l.checked_sub(depth)) else {
                 depth = depth.saturating_sub(gives).saturating_add(takes);
                 continue;
             };
-            let Op::App(id) = self.code.ops.get(at)? else {
-                return None;
-            };
-            let word = self.words().word(*id)?;
             match word.gives.get(out)? {
                 (Some(_), map) if !through(map, wants).may_be(wants) => return None,
                 (Some(from), _) => {
