@@ -3267,15 +3267,17 @@ mod faults {
 }
 
 /// What IL, DL, SU or SD of `count` lines of `region` spends (`budget`):
-/// each row it brings in, its cells blanked and coloured, and the region's
-/// slots it moves. A line feed spends nothing: a byte each, it does at
-/// most a row's work.
+/// each row it brings in, its cells blanked and coloured, and the slots it
+/// turns: the region's once, whatever the count (`Order::rotate`), and the
+/// screen's once more if the region crosses the ring's end. A line feed
+/// spends nothing: a byte each, it does at most a row's work.
 fn spend_scroll(region: Span, count: u16, size: Size) {
     let rows = usize::from(count.min(region.len()));
     let cells = rows
         .saturating_mul(usize::from(size.cols()))
         .saturating_mul(2);
-    let slots = rows.saturating_mul(usize::from(region.len()));
+    let turned = usize::from(region.len()).saturating_add(usize::from(size.rows()));
+    let slots = rows.min(1).saturating_mul(turned);
     crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
     crate::budget::spend(crate::budget::units(slots), crate::budget::weight::slots);
 }

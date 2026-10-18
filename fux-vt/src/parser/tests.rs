@@ -639,3 +639,26 @@ fn esc_in_finds_the_first_esc() {
         assert_eq!(esc_in(&vec![0x1a; len]), None);
     }
 }
+
+/// A scroll of many rows inside a region spends what it does: the region's
+/// slots turned once, not once a row (SCR-8), and the rows brought in. At
+/// 4,095 rows of one column, 100 IL 4095s are 8,190 cells and 8,190 slots
+/// each, about 20 M twentieths of a unit in all, far under the budget, so
+/// the call takes them without a stop; charged a slot a row a row, each
+/// was 16.8 M slots, and the second stopped it.
+#[test]
+fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
+    let mut parser = Parser::new(Size::of(4095, 1), 0)?;
+    let bytes: Vec<u8> = std::iter::repeat_n(&b"\x1b[4095L"[..], 100)
+        .flatten()
+        .copied()
+        .collect();
+    let start = crate::budget::spent();
+    assert_eq!(
+        parser.process_until_stop(&bytes, &mut Log::default())?,
+        None
+    );
+    let spent = crate::budget::spent().saturating_sub(start);
+    assert!(spent <= 100 * (8_190 * 5 + 8_190 * 20), "{spent}");
+    Ok(())
+}
