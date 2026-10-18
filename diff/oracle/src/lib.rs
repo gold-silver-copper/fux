@@ -43,7 +43,7 @@ mod rng;
 pub use case::{Case, Count, Difference, Step, check};
 pub use side::{base, work};
 
-use model::{Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State, Stop};
+use model::{Call, Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State, Stop};
 
 /// One side: a parser of one fux-vt, read into the model.
 pub trait Side: Clone {
@@ -62,6 +62,9 @@ pub trait Side: Clone {
     ) -> Result<Option<(usize, Stop)>, Error>;
     /// `Parser::resize`.
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error>;
+    /// A host's call, and what it gave back, as text: a tick's count, the
+    /// prints taken.
+    fn host(&mut self, call: Call) -> String;
     /// Everything about the screen but its rows.
     fn state(&self) -> State;
     /// How many rows the screen retains: its history and its live rows.

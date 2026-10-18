@@ -53,7 +53,7 @@ fn with_bytes(case: &Case, i: usize, bytes: &[u8]) -> Case {
     if let Some(step) = c.steps.get_mut(i) {
         match step {
             Step::Output(b) | Step::Frame(b) => *b = bytes.to_vec(),
-            Step::Resize(..) | Step::Copy(_) => {}
+            Step::Resize(..) | Step::Copy(_) | Step::Host(_) => {}
         }
     }
     c
@@ -147,7 +147,7 @@ fn shrink_by(case: &Case, first: &Difference, until: Instant, check: Check<'_>) 
         for i in 0..best.steps.len() {
             let bytes = match best.steps.get(i) {
                 Some(Step::Output(b) | Step::Frame(b)) => b.clone(),
-                Some(Step::Resize(..) | Step::Copy(_)) | None => continue,
+                Some(Step::Resize(..) | Step::Copy(_) | Step::Host(_)) | None => continue,
             };
             let reduced = reduce(
                 &bytes,

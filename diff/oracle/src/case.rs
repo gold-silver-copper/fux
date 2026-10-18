@@ -1,7 +1,7 @@
 //! A case: a parser's size, history and options, and the steps both sides
 //! take, each followed by a reading of everything (`observe`). Also how a
 //! case is written down to replay (`Case::to_text`) and read back.
-use crate::model::{Error, Heard, IDENTITIES, Selection, Setup, Stop};
+use crate::model::{Call, Error, Heard, IDENTITIES, Selection, Setup, Stop};
 use crate::observe::{self, Readers};
 use crate::{Side, base, work};
 use std::fmt;
@@ -18,6 +18,8 @@ pub enum Step {
     Resize(u16, u16),
     /// A window read and a copy made from it.
     Copy(Selection),
+    /// A host's call, and what it gave back.
+    Host(Call),
 }
 
 /// A case.
@@ -200,7 +202,7 @@ impl Case {
         safe(self.rows, self.cols)
             && self.steps.iter().all(|step| match step {
                 Step::Resize(rows, cols) => safe(*rows, *cols),
-                Step::Output(_) | Step::Frame(_) | Step::Copy(_) => true,
+                Step::Output(_) | Step::Frame(_) | Step::Copy(_) | Step::Host(_) => true,
             })
     }
 
@@ -210,7 +212,7 @@ impl Case {
             .iter()
             .map(|step| match step {
                 Step::Output(b) | Step::Frame(b) => b.len(),
-                Step::Resize(..) | Step::Copy(_) => 0,
+                Step::Resize(..) | Step::Copy(_) | Step::Host(_) => 0,
             })
             .sum()
     }
@@ -310,6 +312,14 @@ fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
                     &b.copy(selection, true),
                 )?;
             }
+            Step::Host(call) => {
+                same(
+                    at,
+                    "what the host's call gave",
+                    &a.host(*call),
+                    &b.host(*call),
+                )?;
+            }
         }
         count.steps = count.steps.saturating_add(1);
         observe::compare(at, &mut a, &mut b, &mut readers, &mut count)?;
@@ -376,6 +386,7 @@ impl Case {
                     "copy {} {} {} {} {} {} {}\n",
                     s.offset, s.from.0, s.from.1, s.to.0, s.to.1, s.max_cells, s.max_bytes
                 )),
+                Step::Host(call) => out.push_str(&format!("host {}\n", call.to_text())),
             }
         }
         out
@@ -430,6 +441,9 @@ impl Case {
                         max_bytes: get(6)?,
                     }));
                 }
+                "host" => case.steps.push(Step::Host(
+                    Call::from_text(rest).ok_or(at(format!("no host call {rest:?}")))?,
+                )),
                 "" => {}
                 other => return Err(at(format!("no step {other:?}"))),
             }
@@ -527,6 +541,54 @@ mod tests {
             a.starts_with('…') && a.ends_with("xa\"") && b.ends_with("xb\""),
             "{a}"
         );
+    }
+
+    /// What this pass changes is seen (HAR-32): two terminals whose sixel
+    /// pictures differ only in the last band, whose palettes differ, or
+    /// whose screens not in use differ, read as different states; and the
+    /// host's calls are steps a case can hold and replay.
+    #[test]
+    fn pictures_colours_and_the_other_screen_are_seen() -> Result<(), String> {
+        let mut setup = Setup::pane();
+        setup.pictures = true;
+        let state = |output: &[u8]| -> Result<crate::model::State, String> {
+            let mut t = work::Terminal::new(10, 20, 0, &setup).map_err(|e| e.0)?;
+            t.host(Call::Graphics(2, 6));
+            t.process(output, &mut Vec::new()).map_err(|e| e.0)?;
+            Ok(t.state())
+        };
+        // Two bands of red; the second band's sixels differ.
+        let one = state(b"\x1bP9;1q#1;2;100;0;0!8~-!8~\x1b\\")?;
+        let two = state(b"\x1bP9;1q#1;2;100;0;0!8~-!8N\x1b\\")?;
+        assert_eq!(one.pictures.len(), 1);
+        assert_ne!(one.pictures, two.pictures, "a picture's last band unseen");
+        let colour = state(b"\x1b]4;1;rgb:12/34/56\x07")?;
+        assert_ne!(
+            colour.palette,
+            state(b"")?.palette,
+            "a palette entry unseen"
+        );
+        let inactive = state(b"\x1b[?1049hon the alternate\x1b[?1049l")?;
+        assert_ne!(
+            inactive.inactive,
+            state(b"\x1b[?1049h\x1b[?1049l")?.inactive
+        );
+        let case = Case {
+            rows: 3,
+            cols: 7,
+            history_bytes: 64,
+            setup: Setup::pane(),
+            steps: vec![
+                Step::Host(Call::Record(true)),
+                Step::Output(b"printed".to_vec()),
+                Step::Host(Call::Prints),
+                Step::Host(Call::HistoryBytes(1024)),
+                Step::Host(Call::Tick),
+            ],
+        };
+        assert_eq!(Case::from_text(&case.to_text())?, case);
+        run::<work::Terminal, work::Terminal>(&case).map_err(|d| d.to_string())?;
+        Ok(())
     }
 
     #[test]

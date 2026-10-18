@@ -18,13 +18,15 @@
 //!   1,100 columns or more (`n` picks), or to 65,535 by 65,535.
 //! - `fe` and eight bytes: a window (offset, rows, columns), two corners
 //!   and the copy's cell and byte limits.
+//! - `fa k n`: a host's call, `k` naming which (`model::Call`), `n` its
+//!   argument.
 //! - `fd n` and n bytes: output through `process_until_stop`.
 //! - `fc n` and n bytes: a character of fux-vt's grapheme table for each,
 //!   so clusters of every kind come often.
 //! - Any other byte `b`: the next `b + 1` bytes as output.
 #![no_main]
 use fux_vt_oracle::graphemes::CHARACTERS;
-use fux_vt_oracle::model::{IDENTITIES, Selection, Setup};
+use fux_vt_oracle::model::{Call, IDENTITIES, Selection, Setup};
 use fux_vt_oracle::{Case, Step, check};
 use libfuzzer_sys::fuzz_target;
 
@@ -125,6 +127,24 @@ fn case(data: &[u8]) -> Option<Case> {
                     } else {
                         cells.saturating_mul(4)
                     },
+                }));
+            }
+            0xfa => {
+                let (&[which, n], rest) = input.split_first_chunk::<2>()?;
+                input = rest;
+                let side = |n: u8| u16::from(n % 20).saturating_add(1);
+                case.steps.push(Step::Host(match which % 9 {
+                    0 => {
+                        Call::HistoryBytes(HISTORIES.get(usize::from(n % 10)).copied().unwrap_or(0))
+                    }
+                    1 => Call::ClearHistory,
+                    2 => Call::Tick,
+                    3 => Call::Palette(n),
+                    4 => Call::Graphics(side(n), side(n / 20)),
+                    5 => Call::Nonce(n.is_multiple_of(2)),
+                    6 => Call::Submit,
+                    7 => Call::Record(!n.is_multiple_of(4)),
+                    _ => Call::Prints,
                 }));
             }
             0xfd | 0xfc => {
