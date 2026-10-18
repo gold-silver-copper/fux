@@ -37,7 +37,7 @@ Most steps have one of these shapes (UPPER = what you fill in):
   fux %2 opts READ capture              read once settled: 100 history, marks, …; then json
   fux %2 str FIELD get                  one value: state, exited, pid, …
 
-  fux opts str 'htop -d 5' command run  start htop
+  fux opts str 'htop -d 5' command run  start htop: %2 waiting · redraws on its own
   fux %2 str Load await                 wait until it shows Load
   fux ls                                what there is
 

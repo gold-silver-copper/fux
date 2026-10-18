@@ -108,7 +108,9 @@ line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `command_running` (`true`: a marked shell
 command runs on, one the keys went into or one that took the full
-screen), `unread` (bytes of input fux holds, not yet
+screen), `redraws` (`true`: a full-screen program that redraws by
+itself read the keys and drew after them; what it draws later may
+differ), `unread` (bytes of input fux holds, not yet
 taken by the terminal; what waits in the terminal's own buffers is not
 counted). A
 wait for a text or a bell answers what met it too:

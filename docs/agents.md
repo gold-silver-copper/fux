@@ -34,7 +34,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
-%2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0)
+%2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0); `· redraws on its own` (a clock, `top`): it read your keys and drew after them, a later capture may differ, `str TEXT wait-text` waits for a text
 %2 busy · 12 bytes unread      still running, printing or asleep on a timer (a sleep loop) at the time limit (status 124); unread: input fux holds yet
 %2 exited 3                    the program ended; what it printed since your input follows
 ```
@@ -226,12 +226,19 @@ Only the action whose input began a marked command waits for it to end:
 `line` (or keys ending in Enter at a prompt), and a bare `wait` after it.
 Keys sent into a command that runs on (a pager, an editor, a REPL, a
 prompt, local or remote), and a `capture`, settle as with any program:
-once it reads, or is quiet a second. A pane that settles while a marked
+once it reads, or is quiet a second. One that redraws by itself (a clock,
+`top`: it drew alone twice in a row, frames at most 2s apart), polling its
+terminal between frames or on the alternate screen, is never quiet: it
+settles once it read every key and the frame it drew after them is done,
+`%2 waiting · redraws on its own`, and the `line` that typed it once it
+drew so. That frame is the first after your keys,
+which is mostly their answer, but what it draws later may differ: wait
+for the text you need with `str TEXT wait-text`. A pane that settles while a marked
 command runs on says so: `%2 waiting · command running`. A command `line` typed
 that waits for keys answers so too: one reading its terminal (`read`, a
 pager), and one polling it with a time limit as it edits a line (bracketed
 paste on, as Python's REPL has it), once quiet a second, every key read. One
-polling it otherwise (a pause that watches for keys), or blocked elsewhere
+polling it otherwise (a pause that watches for keys, drawing nothing on its own), or blocked elsewhere
 (a download, a pipe), is waited for to its end: `· done STATUS`. A command `line` typed
 that takes the full screen after it began (`less`, `vim`, an ssh session's
 too) answers once it reads or is quiet, its screen shown. One that a

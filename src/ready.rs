@@ -31,6 +31,10 @@ pub const SETTLE: Duration = Duration::from_millis(50);
 pub const QUIET: Duration = Duration::from_secs(1);
 /// How long a quiet screen is taken as settled where nothing else is known.
 pub const GUESS: Duration = Duration::from_millis(300);
+/// How long a program that redraws on its own may leave the screen as it
+/// is between frames and still be taken to: longer than `QUIET`, so that a
+/// frame each second (a select timed so) counts.
+pub const REDRAWN: Duration = Duration::from_secs(2);
 
 /// What a pane's program is doing, as an agent is told.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +48,10 @@ pub enum State {
     Waiting,
     /// The system does not say; the screen has been quiet a while.
     Settled,
+    /// A full-screen program that redraws on its own (a clock, `top`) and
+    /// is never quiet: it read every key and drew after them. What it
+    /// draws next may differ, keys or not.
+    Redrawing,
     /// It runs, sleeps, prints, or has not read the keys sent yet.
     Busy,
     /// It ended so.
@@ -57,7 +65,7 @@ impl State {
     pub fn word(self) -> String {
         match self {
             Self::Reading => "reading".into(),
-            Self::Waiting => "waiting".into(),
+            Self::Waiting | Self::Redrawing => "waiting".into(),
             Self::Settled => "settled".into(),
             Self::Busy => "busy".into(),
             Self::Absent => "empty".into(),
@@ -100,8 +108,25 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     // Python's REPL turns it on while it reads): a program polling its
     // terminal then waits for keys, not a pause that watches for them.
     let editing = || screen.mode(fux_vt::Mode::BracketedPaste) && !keys_unread(tty);
+    // One that draws on its own as it polls its terminal (`top`, the
+    // command typed or not), or on the full screen however it waits (macOS
+    // says only idle): not a build printing as it goes, nor a pause that
+    // watches for keys and draws nothing.
+    let redraws = |activity| {
+        (activity == Activity::Polling || (!command && screen.mode(fux_vt::Mode::AlternateScreen)))
+            && pane.redraws()
+            && pane.written_at.is_none_or(|at| pane.changed_at > at)
+            && quiet >= SETTLE
+            && !keys_unread(tty)
+    };
     match reported(pane).unwrap_or_else(|| activity(pane, child, now)) {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty) => State::Reading,
+        // A program that redraws on its own (a clock, `top`) is never
+        // quiet: it took the keys once it read them all and the
+        // frame it drew after them is done, however it waits between
+        // frames. A key's frame follows its read at once, together with
+        // a frame due then.
+        activity if redraws(activity) => State::Redrawing,
         // Blocked elsewhere (a download, a pipe): the command is at work.
         Activity::Waiting if command => State::Busy,
         // Polling its terminal, editing a line (Python's REPL): it waits for

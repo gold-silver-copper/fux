@@ -498,6 +498,11 @@ impl Wait {
             let field = ("command_running", Json::Bool(true));
             notes.push(("command running".into(), vec![field]));
         }
+        // What it draws next may differ, keys or not.
+        if state == State::Redrawing {
+            let field = ("redraws", Json::Bool(true));
+            notes.push(("redraws on its own".into(), vec![field]));
+        }
         if action && pane.revision == watch.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
         }
@@ -870,7 +875,7 @@ impl Watch {
             && now < after(pane.changed_at, ready::QUIET);
         let unsettled = match state {
             State::Busy => true,
-            State::Waiting | State::Settled => more,
+            State::Waiting | State::Redrawing | State::Settled => more,
             // An exit settles at once.
             State::Exited(_) => return Some(Found::Settled(state)),
             State::Reading => blank,

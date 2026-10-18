@@ -477,3 +477,51 @@ fn a_program_that_drops_its_terminal_is_judged_by_itself() -> Outcome {
     assert_eq!(state, "waiting");
     Ok(())
 }
+
+/// A full-screen program that redraws on its own (a clock, `top`: raw, on
+/// the alternate screen, polling its terminal between frames) is never
+/// quiet: once it drew on its own a few times, an action on it answers
+/// once its keys are read and the frame drawn after them is done, and says
+/// it redraws on its own, not at its time limit.
+#[test]
+fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
+    let server = Server::start("")?;
+    let clock = "import os, select, sys, tty\n\
+                 tty.setraw(0); os.write(1, b'\\x1b[?1049h'); n = 0; got = b'-'\n\
+                 while got != b'q':\n\
+                 \x20   n += 1\n\
+                 \x20   os.write(1, b'\\x1b[H\\x1b[2Jtick %d\\r\\ngot %s' % (n, got))\n\
+                 \x20   if select.select([0], [], [], 0.2)[0]: got = os.read(0, 1)\n\
+                 os.write(1, b'\\x1b[?1049l')\n";
+    let began = std::time::Instant::now();
+    let answer = server.ok(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", clock, "arg", "run",
+    ])?;
+    assert!(began.elapsed() < PATIENCE, "{answer}");
+    let pane = answer
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let first = answer.lines().next().unwrap_or_default();
+    assert_eq!(
+        first,
+        format!("{pane} waiting · redraws on its own"),
+        "{answer}"
+    );
+    let p = ["str", pane.as_str(), "pane"];
+    let began = std::time::Instant::now();
+    let answer = server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(3),
+        "{answer}"
+    );
+    assert!(
+        answer.starts_with(&format!("{pane} waiting · redraws on its own\n")),
+        "{answer}"
+    );
+    assert!(answer.contains("\ngot x"), "{answer}");
+    let answer = server.ok(&[&p[..], &["str", "q", "type"]].concat())?;
+    assert!(answer.starts_with(&format!("{pane} exited 0")), "{answer}");
+    Ok(())
+}
