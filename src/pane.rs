@@ -1480,14 +1480,14 @@ pub fn holds_at(row: &Cells, print: &Print<'_>) -> bool {
 /// those from the first that differs from what stood in its cell to the
 /// last; of other output, all of it (its row may have been erased since).
 pub fn changed(row: &Cells, print: &Print<'_>, echo: bool) -> (usize, usize) {
-    let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
-    let text: Vec<char> = print.text.chars().collect();
     if !echo {
         return match holds_at(row, print) {
             true => (0, 0),
-            false => (0, text.len()),
+            false => (0, print.text.chars().count()),
         };
     }
+    let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
+    let text: Vec<char> = print.text.chars().collect();
     let same = |i: &usize| text.get(*i) == there.get(*i);
     let first = (0..text.len()).find(|i| !same(i));
     let last = (0..text.len()).rev().find(|i| !same(i));
