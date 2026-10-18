@@ -1,0 +1,3 @@
+# Recorded terminal output and fuzz seeds are bytes, not text to tidy.
+bench/payloads/** -whitespace
+fux-vt/tests/seeds/** binary
