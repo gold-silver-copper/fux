@@ -77,6 +77,19 @@ fn ensure(holds: bool, what: impl FnOnce() -> String) -> std::result::Result<(),
     if holds { Ok(()) } else { Err(what()) }
 }
 
+/// `Ok` if the screen's text holds `text`.
+fn text_shows(r: &Replayed, text: &str) -> std::result::Result<(), String> {
+    let shown: String = r
+        .parser
+        .screen()
+        .main_rows()
+        .map(|row| row.cells_text())
+        .collect();
+    ensure(shown.contains(text), || {
+        format!("{text:?} not on the screen")
+    })
+}
+
 /// The widest picture shown, and the tallest.
 fn shown(r: &Replayed) -> (u32, u32, usize) {
     let pictures: Vec<_> = r.parser.screen().pictures().collect();
@@ -172,6 +185,26 @@ fn seeds() -> Vec<Seed> {
                     format!("{width}x{height}")
                 })
             },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b04-sixel-sub",
+            row: "B04",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || b"\x1bPq#1;2;100;0;0~\x1a~\x1b\\X".to_vec(),
+            // A SUB inside sixel read, and the text after the picture.
+            reaches: |r| text_shows(r, "X"),
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b04-sixel-can",
+            row: "B04",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || b"\x1bPq#1;2;100;0;0~\x18X".to_vec(),
+            // A CAN inside sixel read, and the text after it.
+            reaches: |r| text_shows(r, "X"),
             fuzz: Fuzz::Terminal,
         },
         Seed {
@@ -343,7 +376,7 @@ fn seeds() -> Vec<Seed> {
                     || "no frame begun".into(),
                 )
             },
-            fuzz: Fuzz::None,
+            fuzz: Fuzz::Terminal,
         },
         Seed {
             name: "b20-long-osc",
@@ -358,6 +391,21 @@ fn seeds() -> Vec<Seed> {
             },
             // Past the payload limit: read to its end, no event.
             reaches: |r| ensure(r.events == 0, || format!("{} events", r.events)),
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b21-long-apc",
+            row: "B21",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                let mut out = b"\x1b_".to_vec();
+                out.extend(repeat(b"a", 64 << 10));
+                out.extend(b"\x1b\\X");
+                out
+            },
+            // An APC over many reads, held nowhere, and the text after it.
+            reaches: |r| text_shows(r, "X"),
             fuzz: Fuzz::Terminal,
         },
         Seed {

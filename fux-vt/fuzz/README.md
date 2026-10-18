@@ -50,7 +50,8 @@ columns and h mod 16 history rows, and their high bits turn options on:
 
 Then operations:
 
-- `ff r c`: resize (resizing to the same size must change no mark);
+- `ff r c`: resize (resizing to the same size must change no mark),
+  after setting history's budget to (r >> 4) × 64 bytes if r ≥ 0x10;
 - `fe` and eight bytes: a window (offset, height, width), two copy
   endpoints and a cell budget (the byte budget is four times it); the
   endpoints may be invalid, and a copy must respect its budget;
@@ -59,7 +60,10 @@ Then operations:
 - any other byte `k`: the next k + 1 bytes as terminal output.
 
 Each piece of output is processed whole, a byte at a time, and in chunks
-of 2 to 17 bytes the output chooses; all three must agree on every cell,
+of 2 to 17 bytes the output chooses, the chunks by `process_until_stop`
+given again after each stop, as fux's pane reads, with each frame's end
+found by `FrameScan` where the parser ends it. Prints are recorded, and
+held within their caps. All three must agree on every cell,
 style, wrap, cursor, history row, reply, event and mode. After each step:
 row identities are unique, wide glyphs whole, clusters and row text within
 their bounds, rows copy into `Cells` unchanged, cursor and margins on the

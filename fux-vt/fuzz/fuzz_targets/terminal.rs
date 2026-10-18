@@ -1,7 +1,7 @@
 #![no_main]
 use fux_vt::{
     Color, Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, Rgb, RowId, Sink, Size,
-    Unhandled,
+    Stop, Unhandled,
 };
 use libfuzzer_sys::fuzz_target;
 #[path = "../../tests/corpus/graphemes.rs"]
@@ -151,6 +151,56 @@ fn rows(p: &Parser) -> Vec<(RowId, u64, bool, u64)> {
     rows
 }
 
+/// What `Prints` kept since the last take is within its caps: 4 bytes a
+/// screen cell of text (16 KiB at least) and 4,096 runs (threats.md B10).
+fn prints_bounded(p: &mut Parser) {
+    let cells = usize::from(p.screen().size().rows()) * usize::from(p.screen().size().cols());
+    let prints = p.take_prints();
+    let text: usize = prints.iter().map(|print| print.text.len()).sum();
+    assert!(text <= (4 * cells).max(16 << 10), "{text} bytes of prints");
+    assert!(prints.iter().count() <= 4096);
+}
+
+/// Feeds `piece` to `p` by `process_until_stop`, given again from each
+/// stop, as fux's pane does; at each frame begun, `FrameScan` must find
+/// the frame's end where the parser then ends it, if it ends in `piece`
+/// (threats.md B19, PAR-1's agreement).
+fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record) {
+    let (mut left, mut frame) = (piece, None::<(Option<usize>, usize)>);
+    while !left.is_empty() {
+        let stop = p.process_until_stop(left, sink);
+        assert!(stop.is_ok());
+        let Ok(Some((taken, why))) = stop else {
+            // The rest was read: a frame begun in it doesn't end there.
+            if let Some((end, _)) = frame {
+                assert_eq!(end, None, "a frame scan ended where the parser did not");
+            }
+            return;
+        };
+        assert!(taken > 0 && taken <= left.len());
+        left = left.get(taken..).unwrap_or_default();
+        if let Some((end, read)) = &mut frame {
+            *read += taken;
+            if why == Stop::Ended {
+                assert_eq!(
+                    *end,
+                    Some(*read),
+                    "the parser ended a frame the scan did not"
+                );
+                frame = None;
+            }
+        } else if why == Stop::Begun {
+            frame = Some((p.frame_scan().end(left), 0));
+        }
+    }
+    if let Some((end, read)) = frame {
+        assert!(
+            end.is_none_or(|end| end > read),
+            "the scan ended the frame early"
+        );
+    }
+}
+
 /// A row whose cells or wrap flag changed has a newer version: a change is
 /// never missed.
 fn versions_follow(before: &[(RowId, u64, bool, u64)], after: &Parser) {
@@ -195,6 +245,8 @@ fuzz_target!(|data: &[u8]| {
     let Ok(mut whole) = Parser::with_options(size, usize::from(history % 16) * 64, options) else {
         return;
     };
+    // What a program prints is recorded, as fux records it.
+    whole.record_prints(true);
     let mut split = whole.clone();
     // A third copy is fed each piece of output cut at sizes from 2 to 17,
     // chosen by the output itself: runs of text and clusters then break at
@@ -211,6 +263,13 @@ fuzz_target!(|data: &[u8]| {
                 input = input.get(2..).unwrap_or_default();
                 let size = Size::new(1 + u16::from(r % 16), 1 + u16::from(c % 24));
                 let size = size.expect("one at least");
+                // r's high bits, when set, give history a new budget first.
+                if r >= 0x10 {
+                    let bytes = usize::from(r >> 4) * 64;
+                    for p in [&mut whole, &mut split, &mut chunked] {
+                        p.set_history_bytes(bytes);
+                    }
+                }
                 // Resizing to the size it has changes nothing, not even marks.
                 let unchanged = whole.screen().size() == size;
                 let mark = whole.screen().mark();
@@ -297,7 +356,7 @@ fuzz_target!(|data: &[u8]| {
                     let size = cut % 16 + 2;
                     cut = cut.rotate_right(4) ^ size;
                     let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
-                    assert!(chunked.process_with(piece, &mut c).is_ok());
+                    until_stops(&mut chunked, piece, &mut c);
                     rest = tail;
                 }
                 assert_eq!(a, c);
@@ -307,5 +366,8 @@ fuzz_target!(|data: &[u8]| {
         invariants::check(&whole);
         invariants::same_feed(&whole, &split);
         invariants::same_feed(&whole, &chunked);
+        for p in [&mut whole, &mut split, &mut chunked] {
+            prints_bounded(p);
+        }
     }
 });
