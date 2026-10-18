@@ -1654,9 +1654,12 @@ impl Screen {
         let Some(per_row) = usize::from(line).checked_div(width).filter(|n| *n > 0) else {
             return Ok(());
         };
-        // History holds fewer rows than bytes.
+        // The rows of copies history can keep: each is 24 bytes and 8 a cell,
+        // so at least 32, and no more than a grid may have (threats.md
+        // B33: history's bytes read as rows never clamped).
+        let kept = (g.history_bytes() / 32).min(crate::grid::MAX_ROWS);
         let lines = usize::from(g.size().rows())
-            .saturating_add(g.history_bytes())
+            .saturating_add(kept)
             .saturating_add(1);
         let full = lines.saturating_mul(per_row);
         let asked = usize::from(count);
@@ -1664,10 +1667,8 @@ impl Screen {
         if let Some(beyond) = count.checked_sub(full) {
             count = full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0));
         }
-        // A copy skipped is a unit, as one printed is: a path that printed
-        // every copy would show (threats.md B34). Every copy is spent from
-        // the call's budget here; printing counts the ones made.
-        work!(cells, asked.saturating_sub(count));
+        // The copies skipped cost nothing (threats.md B33); printing counts
+        // the ones made. Every copy is spent from the call's budget here.
         crate::budget::spend(crate::budget::units(asked), crate::budget::weight::cells);
         if let Ok(byte) = u8::try_from(c)
             && (0x20..=0x7e).contains(&byte)
@@ -1682,6 +1683,12 @@ impl Screen {
         } else {
             for _ in 0..count {
                 self.print(c)?;
+                // A glyph that joins its own cluster, once the cluster is
+                // full, drops every copy after: they change nothing, and are
+                // skipped (threats.md B34a).
+                if self.last_print.is_some_and(|p| p.full) {
+                    break;
+                }
             }
         }
         Ok(())

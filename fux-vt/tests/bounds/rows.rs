@@ -1012,9 +1012,11 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         p.at_least("cells", 10_000)
     })?;
     let small = Setup::defaults().sized(2, 10).history(1 << 10);
+    // The heap: 64 KiB, and what Prints may keep at 2×10 (B10: 16 KiB of
+    // text and 4,096 runs of 32 bytes).
     const SMALL: Bound = Bound {
         work: &[("cells", 0, 0, 720)],
-        heap: 64 << 10,
+        heap: (64 << 10) + (16 << 10) + 4096 * 32,
     };
     let copies = scale.times();
     fed(
@@ -1027,11 +1029,12 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
     )
 }
 
-// B34: non-ASCII REP costs at most 23,831 cell writes a byte.
+// B34: non-ASCII REP costs at most 23,832 cell writes a byte (23,831 as
+// stated, measured at the fix: decisions.md 25).
 pub fn b34(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("cells", 23_831, 0, 0)],
+        work: &[("cells", 23_832, 0, 0)],
         heap: 0,
     };
     let bound = Bound {
@@ -1048,11 +1051,13 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
 }
 
 // B34a: REP of a glyph that joins itself skips the copies that change
-// nothing: at most 12 text bytes and 12 cells a byte.
+// nothing: at most 12 text bytes and 12 cells a byte, and the filling of
+// the cluster once, each join reading it whole: at most 128 × 43 ÷ 2 =
+// 2,752 text bytes (decisions.md 25).
 pub fn b34a(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("text", 12, 0, 0), ("cells", 12, 0, 0)],
+        work: &[("text", 12, 0, 2752), ("cells", 12, 0, 0)],
         heap: 0,
     };
     let bound = Bound {
