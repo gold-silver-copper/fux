@@ -135,6 +135,14 @@ impl Properties {
     pub(crate) fn width(self) -> Option<usize> {
         width::of_bits(self.bits)
     }
+
+    /// Whether the cluster width rule looks at the character, before or
+    /// after it: text with none such takes its characters' columns summed
+    /// (`str_width`).
+    #[inline]
+    pub(crate) fn in_context(self) -> bool {
+        self.bits & width::CONTEXT != 0
+    }
 }
 
 /// How far an emoji ZWJ sequence has come (GB11: `ExtPict Extend* ZWJ ×

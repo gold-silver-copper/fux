@@ -33,6 +33,12 @@ const MODIFIER_BASE: u16 = 1 << 12;
 /// Its bit for a Default_Ignorable combining mark, which interrupts no
 /// ligature.
 const TRANSPARENT: u16 = 1 << 13;
+/// Its bit for a character the cluster rule's arms look at, before or
+/// after it: a variation selector, ZWJ, the keycap, a regional indicator,
+/// an emoji modifier, a tag, Kirat Rai's vowel signs, the Khmer coeng, or
+/// a line feed after a carriage return. Text with none of them takes its
+/// characters' columns summed.
+pub(super) const CONTEXT: u16 = 1 << 14;
 
 /// The columns `c` takes alone as fux-vt prints it, `None` for a control.
 /// A host that lays out what fux-vt holds (fux's painter) takes its widths
@@ -58,35 +64,16 @@ pub fn str_width(text: &str) -> usize {
     // its characters' columns, as each cluster of it does.
     let mut sum = 0usize;
     for c in text.chars() {
-        if in_context(c) {
+        let bits = bits(c);
+        if bits & CONTEXT != 0 {
             return by_clusters(text);
         }
         sum = sum.saturating_add(match c {
             '\n' | '\r' => 1,
-            _ => char_width(c).unwrap_or(1),
+            _ => of_bits(bits).unwrap_or(1),
         });
     }
     sum
-}
-
-/// Whether `c` is one the cluster rule's arms look at, before or after
-/// it: a variation selector, ZWJ, the keycap, a regional indicator, an
-/// emoji modifier, a tag, Kirat Rai's vowel signs, the Khmer coeng, or a
-/// line feed after a carriage return.
-#[inline]
-fn in_context(c: char) -> bool {
-    matches!(
-        c,
-        '\n'
-            | '\u{17d2}'
-            | '\u{200d}'
-            | '\u{20e3}'
-            | '\u{fe00}'..='\u{fe0f}'
-            | '\u{16d63}'..='\u{16d6a}'
-            | '\u{1f1e6}'..='\u{1f1ff}'
-            | '\u{1f3fb}'..='\u{1f3ff}'
-            | '\u{e0020}'..='\u{e007f}'
-    )
 }
 
 /// `str_width` by each cluster, for text holding a character the rule's

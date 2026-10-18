@@ -111,32 +111,55 @@ pub enum MouseProtocolEncoding {
     Sgr,
 }
 
-/// The cell printed last, the state of its grapheme cluster, and whether
-/// the cluster is full: once a character of it is dropped, so is every one
-/// after, so a cell always holds a start of its cluster.
+/// The cell printed last, the state of its grapheme cluster, and what a
+/// join knows of its text.
 #[derive(Clone, Copy, Debug)]
 struct Printed {
     at: (u16, u16),
     cluster: Cluster,
-    full: bool,
+    kept: Kept,
+}
+
+/// What a join knows of the text of the cell printed last, so that it asks
+/// whether the text has grown wide without reading it; and whether the
+/// cluster is full. One byte, which keeps `Printed` in the bytes it took
+/// with a flag for the full cluster alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// The character just printed there, alone.
+    Alone,
+    /// Text whose characters' columns sum to 1, none of them one the
+    /// cluster width rule looks at, so `str_width` says 1 of it.
+    One,
+    /// Text whose width only `str_width` says.
+    Unknown,
+    /// The cluster is full: once a character of it is dropped, so is every
+    /// one after, so a cell always holds a start of its cluster.
+    Full,
 }
 
 impl Printed {
+    /// The cell `at`, which holds the ASCII character just printed.
     fn new(at: (u16, u16), c: char) -> Self {
         Self {
             at,
             cluster: Cluster::start(c),
-            full: false,
+            kept: Kept::Alone,
         }
     }
 
-    /// `new` for a character whose properties are `properties`.
+    /// The cell `at`, which holds alone the character just printed, whose
+    /// properties are `properties`.
     fn of(at: (u16, u16), properties: Properties) -> Self {
         Self {
             at,
             cluster: Cluster::starting(properties),
-            full: false,
+            kept: Kept::Alone,
         }
+    }
+
+    fn full(self) -> bool {
+        self.kept == Kept::Full
     }
 }
 
@@ -1630,9 +1653,8 @@ impl Screen {
             // What joined is printed, over its cell as it is now (PAR-13,
             // TXT-6), unless the cluster was full.
             if self.prints.is_some()
-                && let Some(Printed {
-                    at, full: false, ..
-                }) = self.last_print
+                && let Some(Printed { at, kept, .. }) = self.last_print
+                && kept != Kept::Full
             {
                 self.mark_joined(at.0, at.1, false, c);
             }
@@ -1666,7 +1688,10 @@ impl Screen {
                 // While text is being printed, what follows is segmented
                 // after the mark, as UAX #29 segments the cell's text.
                 if joined && self.last_print.is_some() {
-                    self.last_print = Some(Printed::of((row, col), properties));
+                    self.last_print = Some(Printed {
+                        kept: Kept::Unknown,
+                        ..Printed::of((row, col), properties)
+                    });
                 }
             }
             return Ok(());
@@ -1785,36 +1810,47 @@ impl Screen {
     /// cursor move. Whether `c` was taken: joined, or dropped
     /// because the cluster is full, which never splits it.
     fn extend_cluster(&mut self, c: char, properties: Properties) -> bool {
-        let g = self.grid();
-        let (row, col) = (g.cursor.row(), g.next_column());
-        let anchor = self.last_print.or_else(|| {
-            if properties.width() != Some(0) {
-                return None;
-            }
-            // The cell before the cursor, on the cursor's row: on the row
-            // above, it fails the row check below.
-            let at = self.before_cursor()?;
-            // Its cluster's state, from its text.
-            let cluster = Cluster::of(g.cell(at.0, at.1)?.contents());
-            Some(Printed {
-                at,
-                cluster,
-                full: false,
-            })
-        });
-        let Some(Printed {
-            at: (anchor_row, anchor_col),
-            mut cluster,
-            full,
-        }) = anchor
-        else {
-            return false;
+        let anchor = match self.last_print {
+            Some(printed) => printed,
+            None if properties.width() == Some(0) => match self.mark_anchor() {
+                Some(printed) => printed,
+                None => return false,
+            },
+            None => return false,
         };
         // Most characters join no cluster (UAX #29): that is asked first,
         // before the row is looked at.
+        let mut cluster = anchor.cluster;
         if !cluster.push_properties(properties) {
             return false;
         }
+        self.join(c, properties, Printed { cluster, ..anchor })
+    }
+
+    /// What a mark joins with nothing printed last: the cell before the
+    /// cursor, on the cursor's row (on the row above, it fails `join`'s
+    /// row check), with its cluster's state from its text.
+    fn mark_anchor(&self) -> Option<Printed> {
+        let at = self.before_cursor()?;
+        let cluster = Cluster::of(self.grid().cell(at.0, at.1)?.contents());
+        Some(Printed {
+            at,
+            cluster,
+            kept: Kept::Unknown,
+        })
+    }
+
+    /// `extend_cluster` once `c` continues the cluster of `anchor`, whose
+    /// state is already past `c`: joins it, if the cursor is just past
+    /// the anchor's cell on its row.
+    fn join(&mut self, c: char, properties: Properties, anchor: Printed) -> bool {
+        let g = self.grid();
+        let (row, col) = (g.cursor.row(), g.next_column());
+        let Printed {
+            at: (anchor_row, anchor_col),
+            cluster,
+            kept: known,
+        } = anchor;
         let Some(cell) = g.stored(anchor_row, anchor_col) else {
             return false;
         };
@@ -1832,23 +1868,50 @@ impl Screen {
         work!(cells, 2);
         // Within the right margin, while the cursor is not past it.
         let fits = col < g.line_end();
+        // Whether the text is narrow, summed, before `c`: a character
+        // printed alone in a narrow cell takes one column.
+        let one = match known {
+            Kept::Alone => {
+                narrow
+                    && cell.first().is_some_and(|first| {
+                        first.is_ascii() || !Properties::of(first).in_context()
+                    })
+            }
+            Kept::One => true,
+            Kept::Unknown | Kept::Full => false,
+        };
+        // And after: summed still if `c` too is none the rule looks at.
+        let summed = one && !properties.in_context();
+        let still_one = summed && properties.width() == Some(0);
         let mut widen = false;
-        let mut kept = !full;
+        let mut kept = known != Kept::Full;
         self.with_grid(|g, _, v| {
             g.mutate_line(row, v, col.saturating_add(1), |line| {
                 kept = kept && line.append(at, c);
                 // Width is kept once wide; the last column has no room to widen.
-                widen = kept && narrow && fits && crate::str_width(line.text(at)) >= 2;
+                widen = kept
+                    && narrow
+                    && fits
+                    && if summed {
+                        !still_one
+                    } else {
+                        crate::str_width(line.text(at)) >= 2
+                    };
                 kept
             });
         });
         if widen {
             self.widen(row, at, cursor);
         }
+        let known = match (kept, still_one) {
+            (false, _) => Kept::Full,
+            (true, true) => Kept::One,
+            (true, false) => Kept::Unknown,
+        };
         self.last_print = Some(Printed {
             at: (anchor_row, anchor_col),
             cluster,
-            full: !kept,
+            kept: known,
         });
         true
     }
@@ -1961,7 +2024,7 @@ impl Screen {
                 // A glyph that joins its own cluster, once the cluster is
                 // full, drops every copy after: they change nothing, and are
                 // skipped (threats.md B34a).
-                if self.last_print.is_some_and(|p| p.full) {
+                if self.last_print.is_some_and(Printed::full) {
                     break;
                 }
             }

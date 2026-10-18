@@ -328,3 +328,30 @@ fn a_cluster_started_with_ascii_is_as_the_table_starts_it() {
         );
     }
 }
+
+/// The table's bit for the characters the cluster width rule looks at
+/// (`width::CONTEXT`) is set on exactly those its arms name: a line feed,
+/// the Khmer coeng, ZWJ, the keycap, the variation selectors, Kirat Rai's
+/// vowel signs, the regional indicators, the emoji modifiers and the tags.
+#[test]
+fn the_width_rule_looks_at_the_characters_its_arms_name() {
+    for c in (0..=0x10_ffffu32).filter_map(char::from_u32) {
+        let named = matches!(
+            c,
+            '\n' | '\u{17d2}'
+                | '\u{200d}'
+                | '\u{20e3}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{16d63}'..='\u{16d6a}'
+                | '\u{1f1e6}'..='\u{1f1ff}'
+                | '\u{1f3fb}'..='\u{1f3ff}'
+                | '\u{e0020}'..='\u{e007f}'
+        );
+        assert_eq!(
+            Properties::of(c).in_context(),
+            named,
+            "{:04X}",
+            u32::from(c)
+        );
+    }
+}

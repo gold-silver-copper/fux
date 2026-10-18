@@ -226,6 +226,11 @@ impl Compact {
             .and_then(|s| str::from_utf8(s).ok())
             .unwrap_or("")
     }
+    /// The first character of the inline text; none for a spilled cell.
+    #[inline]
+    pub(crate) fn first(&self) -> Option<char> {
+        self.inline().chars().next()
+    }
     /// Where a spilled cell's text is in its row's text, and how long it
     /// is.
     #[inline]

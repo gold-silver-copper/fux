@@ -83,6 +83,23 @@ const MODIFIER_BASE: u16 = 1 << 12;
 /// Bit 13: a combining mark (Mn, Mc, Me) that is Default_Ignorable: it
 /// interrupts no ligature in unicode-width's string rule.
 const LIGATURE_TRANSPARENT: u16 = 1 << 13;
+/// Bit 14: a character the cluster width rule looks at, before or after
+/// it (`src/unicode/width.rs`): a line feed, the Khmer coeng, ZWJ, the
+/// keycap, a variation selector, Kirat Rai's vowel signs, a regional
+/// indicator, an emoji modifier, a tag. Text with none of them takes its
+/// characters' columns summed.
+const CONTEXT: u16 = 1 << 14;
+const IN_CONTEXT: [std::ops::RangeInclusive<usize>; 9] = [
+    0x0a..=0x0a,
+    0x17d2..=0x17d2,
+    0x200d..=0x200d,
+    0x20e3..=0x20e3,
+    0xfe00..=0xfe0f,
+    0x16d63..=0x16d6a,
+    0x1f1e6..=0x1f1ff,
+    0x1f3fb..=0x1f3ff,
+    0xe0020..=0xe007f,
+];
 
 const CODE_POINTS: usize = 0x11_0000;
 
@@ -183,6 +200,12 @@ fn main() -> Result<()> {
             for code in range.filter(|&c| marks[c]) {
                 properties[code] |= LIGATURE_TRANSPARENT;
             }
+        }
+    }
+
+    for range in IN_CONTEXT {
+        for p in &mut properties[range] {
+            *p |= CONTEXT;
         }
     }
 
@@ -441,7 +464,8 @@ fn tables(properties: &[u16], version: &str) -> Result<String> {
          //! bits 7-8 the columns it takes alone (3: a control), bit 9 emoji\n\
          //! presentation, bits 10 and 11 an emoji and a text presentation\n\
          //! sequence starting with it, bit 12 Emoji_Modifier_Base, bit 13 a\n\
-         //! combining mark that is Default_Ignorable.\n\
+         //! combining mark that is Default_Ignorable, bit 14 a character the\n\
+         //! cluster width rule looks at.\n\
          //! `BLOCK` holds the block each run of `1 << SHIFT` code points uses;\n\
          //! `PROPERTIES` holds the distinct blocks.\n"
     )?;
