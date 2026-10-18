@@ -463,10 +463,8 @@ needs = []
 [[check]]
 name = "ci-rio-sixel"
 schedule = "ci"
-command = "rio's sixel pairs, compared as decoded RGBA"
+command = "cargo test -p fux-vt --test sixel_pairs (rio's three pairs, vendored in fux-vt/tests/data/rio-sixel)"
 needs = []
-wired = false
-why = "not vendored yet"
 
 [[check]]
 name = "ci-vt-houdini"
