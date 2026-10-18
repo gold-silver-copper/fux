@@ -444,6 +444,35 @@ fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
     Ok(())
 }
 
+/// DEC Supplemental Graphics (DEC STD 070, 5.8.1: required at levels 2 to
+/// 4): SCS designates it with `% 5`, and with `<`, the user-preferred
+/// supplemental set, which is DEC Supplemental (SCS; 3.6.3). At level 2,
+/// G2 and G3 hold it at power-up and after a soft reset (DEC STD 070,
+/// 3.6.4.2: "the DEC Supplemental graphics set in G2 and G3"), so SS2 and
+/// LS2 reach it with no designation, where xterm has ASCII there. Its characters are the DEC Multinational set's right
+/// half (the VT330 and VT340 manual, Figure 2-5): Latin-1's 0x80 above,
+/// but ¤ at 0x28, Œ at 0x57, Ÿ at 0x5d, œ at 0x77 and ÿ at 0x7d, and the
+/// positions it leaves empty (0x24, 0x26, 0x2c to 0x2f, 0x34, 0x38, 0x3e,
+/// 0x50, 0x5e, 0x70 and 0x7e) show U+2426, the reversed question mark.
+#[test]
+fn dec_supplemental_graphics_is_in_g2_and_g3_at_level_2() -> Result {
+    assert_eq!(row(6, b"\x1bNA")?, "\u{c1}");
+    assert_eq!(row(6, b"\x1bOa\x1bnbc")?, "\u{e1}\u{e2}\u{e3}");
+    assert_eq!(row(6, b"\x1b*B\x1bNA")?, "A");
+    assert_eq!(row(6, b"\x1b*B\x1b*<\x1bNA")?, "\u{c1}");
+    assert_eq!(row(6, b"\x1b*B\x1b[!p\x1bNA")?, "\u{c1}");
+    assert_eq!(row(6, b"\x1b*B\x1bc\x1bNA")?, "\u{c1}");
+    assert_eq!(row(4, b"\x1b)%5\x0e\x21\x7e\x0f!")?, "\u{a1}\u{2426}!");
+    let all = b"\x1b(%5\x28\x57\x5d\x77\x7d\x5f\x24\x50\x2c\x2f";
+    assert_eq!(
+        row(12, all)?,
+        "\u{a4}\u{152}\u{178}\u{153}\u{ff}\u{df}\u{2426}\u{2426}\u{2426}\u{2426}"
+    );
+    // Other sets are ASCII, % 6 (Portuguese) among them.
+    assert_eq!(row(4, b"\x1b(%6a")?, "a");
+    Ok(())
+}
+
 /// SCS (VT520 manual, Table 5-13 and 5-14; ECMA-35): `ESC ( 0` designates
 /// DEC Special Graphics as G0, `ESC ) 0` as G1, `ESC ( B` ASCII; SO puts
 /// G1 in GL and SI G0. `TERM=xterm-256color` draws boxes with them

@@ -514,12 +514,36 @@ fn charset_g2_g3(r: &mut Rng) -> Vec<u8> {
     if r.chance(50) {
         return charset(r);
     }
-    pick(
-        r,
-        &[
-            "\x1b*0", "\x1b*B", "\x1b+0", "\x1b+B", "\x1bn", "\x1bo", "\x1bN", "\x1bO",
-        ],
-    )
+    // A shift comes after its set is designated: the set a set holds
+    // before any designation is `charset-supplemental`'s.
+    let set = pick(r, &["0", "B"]);
+    match r.below(3) {
+        0 => format!("\x1b{}{set}", pick(r, &["*", "+"])),
+        1 => format!("\x1b*{set}{}", pick(r, &["\x1bn", "\x1bN"])),
+        _ => format!("\x1b+{set}{}", pick(r, &["\x1bo", "\x1bO"])),
+    }
+    .into_bytes()
+}
+
+/// G2 and G3 as level 2 starts them, DEC Supplemental, shifted in with no
+/// designation; designated so by `% 5` and `<`; and the set's characters.
+fn charset_supplemental(r: &mut Rng) -> Vec<u8> {
+    match r.below(3) {
+        0 => pick(
+            r,
+            &[
+                "\x1bn",
+                "\x1bo",
+                "\x1bN",
+                "\x1bO",
+                "\x0f",
+                "\x1b)%5\x0e",
+                "\x1b*<",
+            ],
+        ),
+        1 => pick(r, &["!", "(", "W", "]", "_", "w", "}", "~", "$", "A"]),
+        _ => pick(r, &["\x1b[!p", "\x1bc", "\x1b*B"]),
+    }
     .into_bytes()
 }
 
@@ -1013,6 +1037,20 @@ pub const FAMILIES: &[Family] = &[
         },
         ratty_only: false,
         generate: charset_g2_g3,
+    },
+    Family {
+        name: "charset-supplemental",
+        about: "DEC Supplemental Graphics: G2 and G3 as level 2 starts and resets them, `% 5` and `<`, and its characters",
+        status: Status::Decided {
+            why: "at level 2, G2 and G3 hold DEC Supplemental at power-up and soft reset (DEC STD 070, 3.6.4.2), so SS2 and LS2 reach it with no designation, as fux-vt does; xterm and every other engine have ASCII there (`replay --engines all --size 1x6 '\\eNA'`), and xterm in UTF-8 maps none of the set's characters but the positions it leaves empty, which it shows as fux-vt does (`replay --engines xterm --size 1x6 '\\e)%5\\x0e\\x21\\x7e\\x0f'`). The test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, 3.6.4.2",
+                test: "conformance::dec_supplemental_graphics_is_in_g2_and_g3_at_level_2",
+            },
+        },
+        ratty_only: false,
+        generate: charset_supplemental,
     },
     Family {
         name: "repeat",

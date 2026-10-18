@@ -101,17 +101,22 @@ impl Printed {
 }
 
 /// The character sets a program designates and shifts between (ECMA-35;
-/// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 to G3, each ASCII or
-/// DEC Special Graphics, the one in GL, and the one a single shift invokes
-/// for the next character. The national sets are not kept: a set other
-/// than Special Graphics is ASCII, as xterm reads one in UTF-8. Four
-/// bytes, aligned as a `u32`, which `ascii` reads once a run: three bytes
-/// among the screen's other bytes made the printing paths count up to
-/// 0.3% more instructions as those changed (bench-commit).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 to G3, each ASCII, DEC
+/// Special Graphics or DEC Supplemental Graphics, the one in GL, and the
+/// one a single shift invokes for the next character. The national sets
+/// are not kept: another set is ASCII, as xterm reads one in UTF-8. At
+/// level 2, G2 and G3 are DEC Supplemental at power-up and soft reset (DEC
+/// STD 070, 3.6.4.2), G0 and G1 ASCII. Four bytes, aligned as a `u32`,
+/// which `ascii` reads once a run: three bytes among the screen's other
+/// bytes made the printing paths count up to 0.3% more instructions as
+/// those changed (bench-commit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(4))]
 pub(crate) struct Charsets {
-    /// Which sets are DEC Special Graphics, a bit each (`Set::bit`).
+    /// Which sets are not ASCII, a bit each (`Set::bit`), in the low four
+    /// bits; which of those are DEC Supplemental rather than DEC Special
+    /// Graphics, in the high four. So whether GL's set is ASCII, which
+    /// `ascii` asks, is one test.
     graphics: u8,
     /// The set in GL: G0 after SI, G1 after SO, G2 after LS2, G3 after LS3.
     gl: Set,
@@ -135,6 +140,29 @@ impl Set {
     }
 }
 
+/// What SCS designates a set as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Designated {
+    Ascii,
+    /// DEC Special Graphics (`0`).
+    Graphics,
+    /// DEC Supplemental Graphics (`% 5`), and the user-preferred
+    /// supplemental set (`<`), which is DEC Supplemental (DEC STD 070,
+    /// SCS and 3.6.3).
+    Supplemental,
+}
+
+impl Default for Charsets {
+    fn default() -> Self {
+        let supplemental = Set::G2.bit() | Set::G3.bit();
+        Self {
+            graphics: supplemental | supplemental << 4,
+            gl: Set::G0,
+            single: None,
+        }
+    }
+}
+
 impl Charsets {
     /// Whether text takes more than printing as it is: a single shift
     /// waits, or the set in GL is DEC Special Graphics. `ascii` asks once
@@ -146,15 +174,52 @@ impl Charsets {
     /// which it spends, or else the set in GL.
     fn map(&mut self, raw: char) -> char {
         let set = self.single.take().unwrap_or(self.gl);
-        if self.graphics & set.bit() != 0 {
-            special_graphics(raw)
-        } else {
+        if self.graphics & set.bit() == 0 {
             raw
+        } else if self.graphics & set.bit() << 4 != 0 {
+            supplemental(raw)
+        } else {
+            special_graphics(raw)
         }
     }
-    /// SCS: `set` designated DEC Special Graphics, or else ASCII.
-    fn designate(&mut self, set: Set, graphics: bool) {
-        self.graphics = (self.graphics & !set.bit()) | if graphics { set.bit() } else { 0 };
+    /// SCS: `set` designated as `kind`.
+    fn designate(&mut self, set: Set, kind: Designated) {
+        let bits = match kind {
+            Designated::Ascii => 0,
+            Designated::Graphics => set.bit(),
+            Designated::Supplemental => set.bit() | set.bit() << 4,
+        };
+        self.graphics = (self.graphics & !(set.bit() | set.bit() << 4)) | bits;
+    }
+}
+
+/// The DEC Supplemental Graphics character for `c`, 0x21 to 0x7e (the VT330
+/// and VT340 manual's DEC Multinational set, Figure 2-5, its right half;
+/// DEC STD 070 leaves the set to DEC STD 169): Latin-1's character 0x80
+/// above, but for ¤ at 0x28, Œ at 0x57, Ÿ at 0x5d, œ at 0x77 and ÿ at
+/// 0x7d, and the positions the set leaves empty, which show U+2426, the
+/// reversed question mark DEC terminals and xterm show for a character
+/// they have none for (xterm's `map_DEC_Supp_Graphic`, which maps 0x5f to
+/// `_` where the manual has ß, and this follows the manual).
+fn supplemental(c: char) -> char {
+    match c {
+        '\x24'
+        | '\x26'
+        | '\x2c'..='\x2f'
+        | '\x34'
+        | '\x38'
+        | '\x3e'
+        | '\x50'
+        | '\x5e'
+        | '\x70'
+        | '\x7e' => '\u{2426}',
+        '\x28' => '\u{a4}',
+        '\x57' => '\u{152}',
+        '\x5d' => '\u{178}',
+        '\x77' => '\u{153}',
+        '\x7d' => '\u{ff}',
+        '\x21'..='\x7d' => char::from_u32(u32::from(c) | 0x80).unwrap_or(c),
+        _ => c,
     }
 }
 
@@ -1989,13 +2054,19 @@ impl Screen {
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
         // SCS: ESC ( F designates G0, ESC ) F G1, ESC * F G2 and ESC + F
-        // G3; F `0` is DEC Special Graphics, and any other set is ASCII
-        // here.
+        // G3; F `0` is DEC Special Graphics, `% 5` and `<` (the
+        // user-preferred supplemental set) DEC Supplemental, and any other
+        // set is ASCII here (DEC STD 070, SCS).
+        let kind = match (intermediates.get(1), byte) {
+            (None, b'0') => Designated::Graphics,
+            (None, b'<') | (Some(b'%'), b'5') => Designated::Supplemental,
+            _ => Designated::Ascii,
+        };
         match intermediates {
-            b"(" => self.charsets.designate(Set::G0, byte == b'0'),
-            b")" => self.charsets.designate(Set::G1, byte == b'0'),
-            b"*" => self.charsets.designate(Set::G2, byte == b'0'),
-            b"+" => self.charsets.designate(Set::G3, byte == b'0'),
+            [b'('] | [b'(', _] => self.charsets.designate(Set::G0, kind),
+            [b')'] | [b')', _] => self.charsets.designate(Set::G1, kind),
+            [b'*'] | [b'*', _] => self.charsets.designate(Set::G2, kind),
+            [b'+'] | [b'+', _] => self.charsets.designate(Set::G3, kind),
             b"#" if byte == b'8' => {
                 self.alignment();
                 return Ok(true);
