@@ -85,7 +85,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     };
     // Keys not yet written, or output written that fux has not read: at
     // work still.
-    if !pane.input_written() || fuxix::io::unread(&child.master).unwrap_or(0) > 0 {
+    if !pane.input_written() || child.master.output_unread() {
         return State::Busy;
     }
     // Quiet since the screen last changed and input last went in.

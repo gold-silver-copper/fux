@@ -24,8 +24,8 @@ pub fn write(fd: impl AsFd, bytes: &[u8]) -> Result<usize> {
     check_size(count)
 }
 
-/// How many bytes wait to be read from `fd` (FIONREAD): output a program
-/// wrote to its terminal that its reader has not read yet.
+/// How many bytes wait to be read from `fd` (FIONREAD). On a PTY's master
+/// that is not its output everywhere: [`crate::pty::Master::output_unread`].
 pub fn unread(fd: impl AsFd) -> Result<usize> {
     let mut count: libc::c_int = 0;
     // SAFETY: FIONREAD writes one c_int, and `count` is one.

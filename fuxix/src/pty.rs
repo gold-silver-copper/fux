@@ -71,6 +71,21 @@ impl Master {
         &self.1
     }
 
+    /// Whether output its program wrote waits to be read from it. Asked
+    /// with `TIOCOUTQ` on macOS, where `FIONREAD` on a master counts the
+    /// keys its program has yet to read instead (xnu's `ttnread`), and with
+    /// `FIONREAD` elsewhere.
+    pub fn output_unread(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        let request = libc::TIOCOUTQ;
+        #[cfg(not(target_os = "macos"))]
+        let request = libc::FIONREAD;
+        let mut count: libc::c_int = 0;
+        // SAFETY: both requests write one c_int, and `count` is one.
+        let asked = check(unsafe { libc::ioctl(self.0.as_raw_fd(), request, &mut count) });
+        asked.is_ok() && count > 0
+    }
+
     /// Whether keys wait in the terminal for its program to read: blocked
     /// in a read still, it has yet to be woken (a busy machine) to read
     /// them. Where the slave is not held, it is opened only to ask, so
