@@ -70,14 +70,14 @@ impl Authority {
         let (file, function) = test
             .split_once("::")
             .ok_or_else(|| format!("{test}: not file::function"))?;
-        let manifest = format!("{}/../Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        let manifest = fux_vt_dir().join("Cargo.toml");
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let out = std::process::Command::new(cargo)
             .args([
                 "test",
                 "--quiet",
                 "--manifest-path",
-                &manifest,
+                &manifest.to_string_lossy(),
                 "--test",
                 file,
             ])
@@ -105,14 +105,26 @@ impl std::fmt::Display for Authority {
     }
 }
 
+/// fux-vt's directory: found up from the crate this file is built in,
+/// fux-vt-compare (`fux-vt/compare`) or the oracle (`diff/oracle`), which
+/// takes this file by its path, as the repository's `fux-vt` beside them.
+fn fux_vt_dir() -> std::path::PathBuf {
+    let built = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    built
+        .ancestors()
+        .map(|dir| dir.join("fux-vt"))
+        .find(|dir| dir.join("tests").is_dir())
+        .unwrap_or_else(|| built.join(".."))
+}
+
 /// Whether fux-vt's test `test` (`file::function`) exists and its doc
 /// comment, its lines joined, cites `section`.
 fn cited(section: &str, test: &str) -> Result<(), String> {
     let (file, function) = test
         .split_once("::")
         .ok_or_else(|| format!("{test}: not file::function"))?;
-    let path = format!("{}/../tests/{file}.rs", env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let path = fux_vt_dir().join("tests").join(format!("{file}.rs"));
+    let source = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let lines: Vec<&str> = source.lines().collect();
     let at = lines
         .iter()
