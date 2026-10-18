@@ -14,7 +14,7 @@ use libghostty_vt::{Terminal, TerminalOptions, focus, key as gkey, mouse as gmou
 
 /// Differences decided in fux-vt's favour or recorded as a choice, and the
 /// source that decides each.
-const VERDICTS: &[(&str, &str)] = &[
+pub const VERDICTS: &[(&str, &str)] = &[
     (
         "utf8-button",
         "UTF-8 mouse mode (1005), a button code of 96 or more: ctlseqs says \"Cb will be UTF-8 \

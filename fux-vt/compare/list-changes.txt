@@ -1,0 +1,9 @@
+# Every change to a judged list since checkpoint 0's freeze
+# (lists-c0.json), one line each: `LIST ID CITATION`. LIST and ID are as
+# `fux-vt-compare lists` names them; CITATION is the change's source: the
+# section and its quote, xterm's behaviour with its replay, or the commit
+# whose test now passes. `lists --against lists-c0.json` fails on a change
+# with no line here, and on a line whose entry did not change. An esctest
+# test added to a list also says which engines pass it (--esctest DIR
+# names them from esctest's JSON) and why neither a standard nor xterm
+# decides it.

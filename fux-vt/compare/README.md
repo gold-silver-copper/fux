@@ -715,6 +715,29 @@ footprint beyond the same engine's empty screen, over the rows it holds.
 `--json FILE` writes every measure; `--jobs N` sets how many children run
 at once.
 
+## The lists and the list-diff report
+
+Every list a comparison judges by is also data: `fux-vt-compare lists
+--json FILE` writes them as one JSON, each a map from an entry's id to
+the entry with its `citation` (the reason, section or quote it rests on):
+
+| List | From |
+| --- | --- |
+| `esctest-expected`, `esctest-expected-NAME` | `esctest-expected*.txt`: scope, kind, reason |
+| `corpus-statuses` | `corpus::STATUSES` |
+| `transparency-known` | `transparency::KNOWN`, by name |
+| `families` | `families::FAMILIES`: status, `by`, authority, reason |
+| `cases`, `expected-fields` | `cases::CASES` and `cases::EXPECTED` |
+| `encoder-verdicts` | `encoders::VERDICTS` |
+
+`run.sh quick` writes them to `lists.json`. Checkpoint 0 freezes them as
+`lists-c0.json`; from then on `fux-vt-compare lists --against
+lists-c0.json [--esctest DIR]` prints, as Markdown for the PR, every
+entry added, removed or changed beside its line in `list-changes.txt`
+(`LIST ID CITATION`), and fails on a change with no line there or a line
+with no change. For a test added to an esctest list it names the engines
+whose esctest JSON in `DIR` has it passing.
+
 ## The scoreboard
 
 `run.sh scoreboard` gathers the last results in `target/harness` into
@@ -779,6 +802,8 @@ The axes:
 | `src/instructions.rs`, `src/count.rs` | `bench --instructions`, counting a child's instructions as `bench/src/count.rs` does |
 | `src/footprint.rs`, `src/memory.rs` | `footprint`, and the process's memory as the system and malloc count it |
 | `src/scoreboard.rs` | `scoreboard` |
+| `src/lists.rs` | `lists`: every judged list as JSON, and the list-diff report |
+| `list-changes.txt` | each change to a judged list since checkpoint 0, with its citation |
 | `esctest-expected.txt`, `esctest-expected-ghostty.txt` | the esctest tests fux-vt and Ghostty's core fail, each with its reason |
 | `corpus/` | the recordings, their keys, `record.sh`, the man pages they show, and `INVENTORY.md` |
 | `scoreboard/` | the kept scoreboard and its history |

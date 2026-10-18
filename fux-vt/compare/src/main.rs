@@ -21,6 +21,7 @@ mod families;
 mod footprint;
 mod instructions;
 mod inventory;
+mod lists;
 mod memory;
 mod record;
 mod rng;
@@ -64,6 +65,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [FILTER] (esctest --help: the rest)
+       fux-vt-compare lists [--json FILE] [--against FROZEN] [--esctest DIR]
        fux-vt-compare scoreboard DIR [--keep KEPT COMMIT DATE]
        fux-vt-compare engines
        fux-vt-compare --list
@@ -1155,6 +1157,18 @@ fn main() -> ExitCode {
             Ok(false) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("fux-vt-compare scoreboard: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    if let Some((first, rest)) = argv.split_first()
+        && first == "lists"
+    {
+        return match lists::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare lists: {e}");
                 ExitCode::from(2)
             }
         };

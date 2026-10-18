@@ -1153,6 +1153,23 @@ fn expected(text: &str) -> Result<BTreeMap<String, Listed>, String> {
     Ok(out)
 }
 
+/// An expected list's lines, for `lists`: each test with its scope
+/// (`both`, `direct` or `fux`), its kind and the reason after it.
+pub fn listed(path: &Path) -> Result<Vec<(String, &'static str, String, String)>, String> {
+    Ok(read_list(path)?
+        .into_iter()
+        .map(|(name, l)| {
+            let scope = match l.scope {
+                Scope::Both => "both",
+                Scope::Direct => "direct",
+                Scope::Fux => "fux",
+            };
+            let (kind, why) = l.reason.split_once(':').unwrap_or((&l.reason, ""));
+            (name, scope, kind.to_owned(), why.trim().to_owned())
+        })
+        .collect())
+}
+
 /// Whether `listed` says the test fails in a run `in_fux` or not.
 fn listed_fails(listed: Option<&Listed>, in_fux: bool) -> bool {
     match listed.map(|l| l.scope) {

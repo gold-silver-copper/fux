@@ -400,6 +400,8 @@ impl Through {
 /// shows it too), so that no paint can make the two sides agree. Only the
 /// differences `covers` takes are expected; any other still fails.
 pub struct Known {
+    /// Its name, which `lists` keys it by.
+    pub name: &'static str,
     pub recordings: Recordings,
     pub engines: &'static [&'static str],
     pub why: &'static str,
@@ -427,6 +429,7 @@ impl Recordings {
 /// The differences recorded.
 pub const KNOWN: &[Known] = &[
     Known {
+        name: "blank-foreground",
         recordings: Recordings::Every,
         engines: &["ghostty", "alacritty"],
         why: "a cell erased while a foreground is set (ECH, EL, ED, ICH, DCH, IL, DL, a \
@@ -441,6 +444,7 @@ pub const KNOWN: &[Known] = &[
         covers: blank_foreground,
     },
     Known {
+        name: "delta-wrap-marker",
         recordings: Recordings::Only(&["delta-diff"]),
         engines: &["alacritty", "avt", "wezterm"],
         why: "delta draws its wrap marker in the last column, then sends EL 0 with the wrap \
@@ -450,6 +454,7 @@ pub const KNOWN: &[Known] = &[
         covers: erased_at_the_last_column,
     },
     Known {
+        name: "prompt-marks",
         recordings: Recordings::Every,
         engines: &["ghostty"],
         why: "a shell's prompt marks (OSC 133: fish sends them) mark its rows in the pane, \

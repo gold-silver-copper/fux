@@ -59,6 +59,20 @@ command = "fux-vt-compare encoders"
 needs = ["Zig 0.16 and Ghostty (run.sh)"]
 
 [[check]]
+name = "lists"
+schedule = "quick"
+command = "fux-vt-compare lists --json lists.json"
+needs = []
+
+[[check]]
+name = "lists-diff"
+schedule = "release"
+command = "fux-vt-compare lists --against fux-vt/compare/lists-c0.json --esctest DIR (citations: fux-vt/compare/list-changes.txt)"
+needs = ["lists-c0.json, checkpoint 0's lists"]
+wired = false
+why = "checkpoint 0 has not frozen its lists: commit `fux-vt-compare lists --json fux-vt/compare/lists-c0.json` at BASE, then move this check to quick and run it there"
+
+[[check]]
 name = "oracle"
 schedule = "quick"
 command = "diff/oracle.sh REF --threads N"
