@@ -61,9 +61,12 @@ prints `null` (`string` makes it the text).
 {"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…}
 ```
 
-`cursor` is where it is among `lines`: `null` while hidden, or on no line
-printed (a blank row trimmed, outside `rows` or `cols`, the screen not
-captured). With `marks`, each line holds its marks as text does. With the
+`lines` join a line wrapped at the pane's width whole, unless `wrapped`
+(each screen row a line). `cursor` is where it is among `lines`, past them
+on a blank row trimmed away: `null` while hidden, outside `rows` or
+`cols`, or on the screen not captured. `wrap_pending` (after `lines`):
+a glyph went into the last column, autowrap on, and the next goes on the
+next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
 plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"inverse":true,
 "hidden":true,"dim":true,"italic":true,"strikeout":true,"underline":true,
@@ -108,9 +111,15 @@ line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `command_running` (`true`: a marked shell
 command runs on, one the keys went into or one that took the full
-screen), `redraws` (`true`: a full-screen program that redraws by
+screen; never once the pane's program exited), `redraws` (`true`: a full-screen program that redraws by
 itself read the keys and drew after them; what it draws later may
-differ), `unread` (bytes of input fux holds, not yet
+differ), `wait_with` (`"wait-exit"` or `"wait-done"`: a pane `waiting`
+that is no full-screen program, maybe at work, and the wait word that
+waits for its end), `cursor` (`[ROW,COL]` after keys or a mouse event,
+when text shows right of the cursor on its row), `highlight` (after keys
+or a mouse event: up to three runs they highlighted anew, each
+`{"row","col","len","text"}`, row and column from 0 as a mouse event counts
+them), `unread` (bytes of input fux holds, not yet
 taken by the terminal; what waits in the terminal's own buffers is not
 counted). A
 wait for a text or a bell answers what met it too:

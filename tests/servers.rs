@@ -362,7 +362,8 @@ fn a_revoke_ends_an_idle_connection_through_it() -> Outcome {
 
 /// A server killed outright comes back on its socket with the panes it
 /// had, their ids, splits and sizes: a program waits for `respawn`, which
-/// starts it again. `force-kill-server` forgets it.
+/// starts it again; a `run` taking its tab's name is told where that came
+/// from. `force-kill-server` forgets it.
 #[test]
 fn a_crashed_server_comes_back() -> Outcome {
     let server = Server::start("")?;
@@ -446,6 +447,13 @@ fn a_crashed_server_comes_back() -> Outcome {
     );
     let paused = ["str", app, "pane", "str", "paused", "get"];
     assert_eq!(server.ok(&paused)?, "true\n");
+    // Its name is taken by what came back, which the refusal says.
+    let taken = server.fux(&["opts", "str", "app", "name", "str", "cat", "command", "run"])?;
+    assert!(
+        taken.stderr.starts_with("fux: name_taken: ") && taken.stderr.contains("brought back"),
+        "{}",
+        taken.stderr
+    );
     server.ok(&["str", app, "pane", "str", "up", "wait-text", "respawn"])?;
     assert_eq!(server.ok(&paused)?, "false\n");
     server.ok(&["force-kill-server"])?;

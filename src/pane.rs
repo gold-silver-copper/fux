@@ -1080,6 +1080,25 @@ impl Pane {
         self.classes.typed()
     }
 
+    /// Whether its program is one a restore brought back, waiting for
+    /// `respawn`.
+    pub fn paused(&self) -> bool {
+        match self.process {
+            Process::Absent => match self.runs {
+                Runs::Program(_) => true,
+                Runs::Shell => false,
+            },
+            Process::Reading(_) | Process::HungUp(_) | Process::Exited(_) => false,
+        }
+    }
+
+    /// Whether a shell command runs, as the marks say: never once the
+    /// pane's program ended, which ended it too (a relay's remote shell
+    /// gone with the relay, its last command never marked done).
+    pub fn command_running(&self) -> bool {
+        self.screen().commands().running() && self.process.exit_status().is_none()
+    }
+
     /// Whether the pane's shell, marked by fux, is at its prompt, reading
     /// its command line, as its marks say.
     fn at_prompt(&self) -> bool {

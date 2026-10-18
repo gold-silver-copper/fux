@@ -194,7 +194,8 @@ fn started(server: &Server, code: &str) -> Result<(String, String), String> {
 /// alone: `waiting`, never 7. Nor is a program whose main thread reads its
 /// terminal while another thread, or a child, sleeps on a timer: what that
 /// one prints next is waited for. A main thread waiting for another that
-/// sleeps is asleep: busy. Nor, with what it may not be traced, is one
+/// sleeps is asleep: busy. One asleep on a timer while another thread
+/// polls the terminal (a frame loop and its input thread) polls: `waiting`. Nor, with what it may not be traced, is one
 /// still printing.
 #[test]
 fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
@@ -263,6 +264,17 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
              subprocess.run(['sh', '-c', 'cat; :'])\n",
             "reading",
             7,
+        ),
+        // An input thread polling an epoll set that holds the terminal,
+        // beside a frame loop asleep on a timer (rig's TUI, a game).
+        (
+            "import select, threading, time\n\
+             e = select.epoll(); e.register(0, select.EPOLLIN)\n\
+             def keys():\n    while True: e.poll(0.1)\n\
+             threading.Thread(target=keys, daemon=True).start()\n\
+             print('ready', flush=True)\nwhile True: time.sleep(0.05)\n",
+            "waiting",
+            124,
         ),
     ];
     for (code, state, status) in programs {
@@ -360,7 +372,9 @@ fn a_timed_read_that_returned_is_not_timed_after() -> Outcome {
 
 /// A pane `waiting` is answered as it is: a capture settles at once, as an
 /// action does; a bare `wait` waits for something new, and at its limit
-/// answers the state with status 0, as only a busy pane fails (124).
+/// answers the state with status 0, as only a busy pane fails (124). Not
+/// a full-screen program, it is said to be at work maybe, `wait-exit`
+/// waiting for its end.
 #[test]
 fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
     if !PROBED {
@@ -374,10 +388,12 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
     let began = std::time::Instant::now();
     let capture = server.fux(&["str", &pane, "pane", "5", "timeout", "capture"])?;
     assert_eq!(capture.status, 0, "{}{}", capture.stdout, capture.stderr);
+    // Not a full-screen program: it may be at work, to end alone, which
+    // `wait-exit` waits for.
+    let note =
+        format!("{pane} waiting · may be at work: `{pane} wait-exit wait` waits for its end\n");
     assert!(
-        capture
-            .stdout
-            .starts_with(&format!("{pane} waiting\nPOLLING")),
+        capture.stdout.starts_with(&format!("{note}POLLING")),
         "{}",
         capture.stdout
     );

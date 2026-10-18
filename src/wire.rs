@@ -501,12 +501,12 @@ mod tests {
     }
 
     /// A capture's view goes field by field in the order they are declared
-    /// (full, join, styles, source, marks, rows, cols): the bytes pin it.
+    /// (full, wrapped, styles, source, marks, rows, cols): the bytes pin it.
     #[test]
     fn a_capture_view_keeps_its_bytes() {
         let view = CaptureView {
             full: true,
-            join: false,
+            wrapped: false,
             rows: Some((1, 2)),
             cols: None,
             styles: true,

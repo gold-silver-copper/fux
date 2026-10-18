@@ -134,6 +134,9 @@ struct Watch {
     /// It waits for a command the input began (a `line`'s) to end, not
     /// only for quiet: any wait but a capture's.
     ends: bool,
+    /// The screen's highlighted runs as an action's wait began: a run its
+    /// input highlighted anew (a selection moved) is said.
+    lit: Vec<crate::capture::Lit>,
 }
 
 /// What a wait found.
@@ -461,7 +464,7 @@ impl Wait {
                     "to wait longer, the same with SECS timeout among its options \
                      (`{id} 300 timeout wait`)"
                 );
-                if pane.screen().commands().running() {
+                if pane.command_running() {
                     longer.push_str(&format!(
                         ", or with wait-done for as long as its shell command runs \
                          (`{id} wait-done wait`)"
@@ -475,6 +478,12 @@ impl Wait {
         // What met it, or with nothing met, what waits on while it is busy.
         match met {
             Some(met) => notes.push(met),
+            // A marked shell command: as long as it runs (a `line` at its
+            // limit, a build quiet for minutes).
+            None if state == State::Busy && pane.command_running() => {
+                let note = format!("`{id} wait-done wait` waits for its command to end");
+                notes.push((note, Vec::new()));
+            }
             None if state == State::Busy => {
                 notes.push((format!("`{id} wait` waits on"), Vec::new()));
             }
@@ -525,7 +534,8 @@ impl Wait {
         }
         // A marked command runs on, though the pane settled: one the keys
         // went into, or one that took the full screen. (Busy, it waits on.)
-        if commands.running() && state != State::Busy {
+        let running = pane.command_running();
+        if running && state != State::Busy {
             let field = ("command_running", Json::Bool(true));
             notes.push(("command running".into(), vec![field]));
         }
@@ -533,6 +543,67 @@ impl Wait {
         if state == State::Redrawing {
             let field = ("redraws", Json::Bool(true));
             notes.push(("redraws on its own".into(), vec![field]));
+        }
+        // Not a full-screen program, nor a line editor reading (bracketed
+        // paste on, as Python's REPL has it), and it waits on something
+        // else (the network: `koh exec`, a download): it may well be at
+        // work still, to end on its own, which it is waited for so.
+        let waiting = matches!(state, State::Waiting | State::Redrawing);
+        let screen = pane.screen();
+        let keys = [fux_vt::Mode::AlternateScreen, fux_vt::Mode::BracketedPaste];
+        if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
+            let word = if running { "wait-done" } else { "wait-exit" };
+            let id = pane.id;
+            notes.push((
+                format!("may be at work: `{id} {word} wait` waits for its end"),
+                vec![("wait_with", Json::str(word))],
+            ));
+        }
+        // What an action's keys moved, which plain text does not show: the
+        // cursor, where text goes on right of it (a line editor's after
+        // Left or Home, an editor's), not at the end of what was typed;
+        // and a selection drawn in reverse video or a background of its
+        // own, newly highlighted. A few runs at most: more is a screen
+        // drawn anew, shown whole.
+        if action && pane.process.exit_status().is_none() {
+            let screen = pane.screen();
+            let (row, col) = screen.cursor_position();
+            if screen.mode(fux_vt::Mode::ShowCursor) && text_after(screen, row, col) {
+                let at = Json::Array(vec![Json::int(row), Json::int(col)]);
+                notes.push((format!("cursor {row},{col}"), vec![("cursor", at)]));
+            }
+            let lit: Vec<_> = (crate::capture::highlights(screen).into_iter())
+                .filter(|l| {
+                    !watch
+                        .lit
+                        .iter()
+                        .any(|b| (b.row, b.col, b.len) == (l.row, l.col, l.len))
+                })
+                .collect();
+            if !lit.is_empty() && lit.len() <= 3 {
+                let said: Vec<String> = (lit.iter())
+                    .map(|l| {
+                        let end = l.col.saturating_add(l.len).saturating_sub(1);
+                        format!("{},{}-{end} {:?}", l.row, l.col, l.text.trim())
+                    })
+                    .collect();
+                let field = Json::Array(
+                    (lit.into_iter())
+                        .map(|l| {
+                            Json::Object(vec![
+                                ("row", Json::int(l.row)),
+                                ("col", Json::int(l.col)),
+                                ("len", Json::int(l.len)),
+                                ("text", Json::str(l.text)),
+                            ])
+                        })
+                        .collect(),
+                );
+                notes.push((
+                    format!("highlight {}", said.join(", ")),
+                    vec![("highlight", field)],
+                ));
+            }
         }
         if action && pane.revision == watch.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
@@ -554,6 +625,16 @@ impl Wait {
             .collect::<Vec<_>>()
             .join(" or ")
     }
+}
+
+/// Whether the screen shows text right of the cursor at `row`, `col`, on
+/// its row: the cursor is within a line, not at its end.
+fn text_after(screen: &fux_vt::Screen, row: u16, col: u16) -> bool {
+    (screen.window().row(row)).is_some_and(|r| {
+        r.cells()
+            .skip(usize::from(col).saturating_add(1))
+            .any(|c| !c.shown().trim().is_empty())
+    })
 }
 
 impl Until {
@@ -612,6 +693,10 @@ impl Watch {
             reading_since: None,
             settled_since: None,
             ends: !matches!(follows, Follows::Capture(..)),
+            lit: match follows {
+                Follows::Action => crate::capture::highlights(pane.screen()),
+                Follows::Wait | Follows::Started | Follows::Capture(..) => Vec::new(),
+            },
         }
     }
 
@@ -1111,7 +1196,6 @@ fn normal_marked(text: &str, marked: &[bool]) -> (String, Vec<bool>) {
 fn lines_from(pane: &Pane, from: usize) -> String {
     let kept = pane.screen().history_len();
     let view = CaptureView {
-        join: true,
         rows: (u16::try_from(from.saturating_sub(kept)).ok()).map(|top| (top, u16::MAX)),
         ..CaptureView::default()
     };
@@ -1241,7 +1325,6 @@ fn control_echo(text: &str) -> Option<&str> {
 /// last full screen first.
 fn text(pane: &Pane, marks: bool, alt: bool) -> String {
     let view = |alt| CaptureView {
-        join: true,
         marks,
         source: if alt {
             Source::Alternate

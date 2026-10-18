@@ -6,6 +6,34 @@ use crate::script::{LIBRARY, WORDS};
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
+/// The guide's first screen (`help-agents`): all before its first topic.
+pub fn agents_first() -> &'static str {
+    AGENTS
+        .split_once("\n## ")
+        .map_or(AGENTS, |(first, _)| first)
+}
+
+/// One topic of the guide (`help-agents-on`), its section headed `## TOPIC:`,
+/// or `all` of it; `None` if it has none so named.
+pub fn agents_topic(topic: &str) -> Option<String> {
+    if topic == "all" {
+        return Some(AGENTS.to_owned());
+    }
+    let heading = format!("\n## {topic}:");
+    let (_, rest) = AGENTS.split_once(&heading)?;
+    let section = rest
+        .split_once("\n## ")
+        .map_or(rest, |(section, _)| section);
+    Some(format!("##{}{section}", heading.trim_start_matches("\n##")))
+}
+
+/// The guide's topics, as `help-agents-on` takes them.
+pub fn agents_topics() -> Vec<&'static str> {
+    (AGENTS.split("\n## ").skip(1))
+        .filter_map(|section| section.split_once(':').map(|(topic, _)| topic))
+        .collect()
+}
+
 /// What `json` gives, word by word (`help-json`).
 pub const JSON: &str = include_str!("../docs/json.md");
 
@@ -25,7 +53,7 @@ word runs. What is left at the end is printed, a value a line. An action
 answers once its pane settles (30s at most, as a wait waits: the server's
 `wait-seconds`; `SECS timeout` changes it, `0 timeout` answers at once). A
 failure prints `fux: CODE: MESSAGE` on stderr, with how the word is used
-(one of fux's own); the exit statuses: `fux help-agents`, under Status.
+(one of fux's own); the exit statuses: `fux help agents status`.
 Each `fux` is a fresh program.
 
 Most steps have one of these shapes (UPPER = what you fill in, [] if you
@@ -195,7 +223,7 @@ pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     ("respawn", "kill-first env command program arg", true),
     (
         "capture",
-        "history all-history joined full styles marks main-screen alt-screen last-output \
+        "history all-history wrapped full styles marks main-screen alt-screen last-output \
          rows cols timeout",
         false,
     ),
@@ -226,6 +254,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 kill-first respawn",
         "wait" => "fux %3 wait",
+        "help-agents-on" => "fux str waits help-agents-on",
         "wait-text" => "fux %3 str ready wait-text 30 timeout wait",
         "wait-done" => "fux %3 str 'build ok' wait-text wait-done wait",
         "timeout" => "fux %3 0 timeout str 'make' line",
@@ -236,7 +265,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "mouse" | "send-mouse" => "fux %3 str click 2 10 mouse send-mouse",
         "capture" | "history" => "fux %3 100 history capture",
         "all-history" => "fux %3 all-history capture",
-        "joined" => "fux %3 joined 0 2 rows capture",
+        "wrapped" => "fux %3 wrapped 0 2 rows capture",
         "full" => "fux %3 full capture",
         "styles" => "fux %3 styles capture",
         "main-screen" => "fux %3 main-screen capture",

@@ -64,7 +64,12 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
   full-screen program that redraws by itself (a clock, `top`) is never
   quiet: it settles once it read the keys and drew after them, `%3 waiting ·
   redraws on its own` (a later capture may differ; `str TEXT wait-text`
-  waits for a text). A relay
+  waits for a text). A pane `waiting` that is no full-screen program (a
+  build over `koh exec`, a download) says it may be at work, and names
+  `%3 wait-exit wait` (`wait-done` for a marked command) to wait for its end. After keys, the state line names what plain text
+  hides: a selection they highlighted anew (`· highlight 6,16-25
+  "1761.5"`), and the cursor when text goes on right of it (`· cursor
+  3,7`). A relay
   (`koh connect`) says what the remote program does with a state report,
   `OSC 133 ; S ; activity=reading ; nonce=N`, which stands for fux's own
   probe while no mark came after it and it came after the last input: a
@@ -110,7 +115,8 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
 `fux help` lists every word with what it takes and leaves (`x secs -- x`);
 `fux help WORD` (`fux str WORD explain`) says one at length, with
 its options and an example;
-`fux help-agents` is the recipe for scripts and agents
+`fux help-agents` is the recipe for scripts and agents, its first screen
+enough for most work and `fux help agents TOPIC` the rest
 ([docs/agents.md](docs/agents.md)), and `fux help-json` what `json` gives
 ([docs/json.md](docs/json.md)).
 
@@ -122,7 +128,7 @@ no pane yet: they start from `opts`, empty options.
 ```sh
 fux opts str web name 120 40 size str './app --verbose' command run
 fux %3 str ready wait-text 30 timeout wait
-fux %3 200 history joined capture
+fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys
 ```
 
@@ -273,7 +279,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
 | `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
-| `pane … capture` | the pane's text, trimmed; `N history`, `all-history`, `joined`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
+| `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
 | `ls`, `X info`, `X str FIELD get` | everything; one pane, tab or workspace; one field of its JSON, as a number, boolean or text |
 | `events`, `X events-of` (and `-json`) | what happens, a line each as it happens: made, closed, moved, renamed; a program's exit, respawn, title, size, bells, notifications; a shell command's end |
 | `X kill`, `X str NAME rename`, `X str TEXT notify` | close (without asking), rename, a notice on the clients showing it |

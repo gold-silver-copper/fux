@@ -723,10 +723,15 @@ fn keys_into_a_marked_command_settle_once_quiet() -> Outcome {
         server.ok(&typed(pane, "hang", &hanging))?;
         let began = std::time::Instant::now();
         let typed = server.ok(&["str", pane, "pane", "str", "x", "type"])?;
-        assert!(
-            head(&typed).ends_with(" waiting · command running"),
-            "{typed}"
-        );
+        // On the main screen (ssh's), it may be at work, to end alone.
+        let state = match pane == full {
+            true => " waiting · command running".to_owned(),
+            false => format!(
+                " waiting · command running · may be at work: `{} wait-done wait` waits for its end",
+                id(&typed)
+            ),
+        };
+        assert!(head(&typed).ends_with(&state), "{typed}");
         assert!(began.elapsed() < PATIENCE, "{typed}");
         std::fs::write(&fifo, "back\n").map_err(e)?;
         let ended = server.ok(&["str", pane, "pane", "wait"])?;
@@ -1269,7 +1274,7 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
         "split",
     ])?);
     server.ok(&["str", &new, "pane", "str", "split-2", "wait-text", "wait"])?;
-    let screen = server.ok(&["str", &new, "pane", "joined", "capture"])?;
+    let screen = server.ok(&["str", &new, "pane", "capture"])?;
     assert!(body(&screen).contains(&sub_arg), "{screen}");
     // A program just started has drawn nothing: its text goes only once it
     // has come.
@@ -1609,7 +1614,7 @@ fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
 
 /// What the agents' rechecks found: Ctrl-C ends a command, with fewer
 /// command ends than lines; a command still at work at the limit answers
-/// `busy`; a command typed while another runs answers for its own end;
+/// `busy`, naming `wait-done`; a command typed while another runs answers for its own end;
 /// `clear` starts a command's output again; a split or resize that would
 /// hide a pane is refused; a short typed line is its echo only as a word
 /// of its own.
@@ -1620,7 +1625,11 @@ fn the_rechecks_hold() -> Outcome {
     // Elsewhere than Linux, quiet, it is taken as settled.
     let at_work = server.fux(&typed("sh", "sleep 30", &["1", "timeout"]))?;
     let (status, state) = match PROBED {
-        true => (124, asleep("%2")),
+        // A marked command at work: `wait-done` waits as long as it runs.
+        true => (
+            124,
+            "busy · `%2 wait-done wait` waits for its command to end".to_owned(),
+        ),
         false => (0, format!("{ASLEEP} · command running")),
     };
     assert_eq!(at_work.status, status, "{}", at_work.stderr);
@@ -1843,15 +1852,27 @@ fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
     Ok(())
 }
 
-/// Joined, a row range takes each line it touches whole; a column range
+/// A row range takes each line it touches whole; a column range
 /// cuts a wide glyph to a blank, and reaches the last column.
 #[test]
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
     let long = "echo aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc; echo next; exec cat";
     let pane = id(&server.ok(&run(&["20", "6", "size"], &["sh", "-c", long]))?);
-    let line = server.ok(&["str", &pane, "pane", "1", "1", "rows", "joined", "capture"])?;
+    let line = server.ok(&["str", &pane, "pane", "1", "1", "rows", "capture"])?;
     assert_eq!(body(&line), "aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\n");
+    // A plain capture joins a wrapped line as `wait` and `run` print it, a
+    // path or a word whole; `wrapped` keeps the screen's rows.
+    let plain = server.ok(&["str", &pane, "pane", "capture"])?;
+    assert!(
+        plain.contains("aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\nnext"),
+        "{plain}"
+    );
+    let rows = server.ok(&["str", &pane, "pane", "wrapped", "capture"])?;
+    assert!(
+        rows.contains("aaaaaaaaaaaaaaaaaaaa\nBBBBBBBBBBBBBBBBBBBB\ncc\n"),
+        "{rows}"
+    );
     // A column range cuts a wide glyph to a blank, a column a cell.
     let wide = id(&server.ok(&run(
         &["20", "6", "size"],
@@ -1866,9 +1887,9 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     assert_eq!(cut("2", "4")?, " BC\n");
     assert_eq!(cut("0", "1")?, "A\n");
     assert_eq!(cut("19", "19")?, "Z\n");
-    // The cursor, on the empty row after the last line, is on none printed.
+    // The cursor, on the empty row after the last line, is past the lines.
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
-    assert!(json.contains(r#""cursor":null,"#), "{json}");
+    assert!(json.contains(r#""cursor":[2,0],"#), "{json}");
     Ok(())
 }
 
@@ -2807,7 +2828,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         &["full"],
         &["alt-screen"],
         &["last-output"],
-        &["joined"],
+        &["wrapped"],
         &["0", "5", "rows"],
     ] {
         let refused = server.fux(&[&opts[..], unused, &cat, &["run"]].concat())?;
@@ -4341,5 +4362,51 @@ fn a_met_wait_answers_the_whole_wrapped_line() -> Outcome {
     ];
     let out = server.ok(&keys)?;
     assert!(out.contains("LANE=TAIL"), "{out}");
+    Ok(())
+}
+
+/// What plain text hides is said on an action's state line: a selection
+/// its keys highlighted anew (reverse video), where, and the cursor when
+/// text goes on right of it. A highlight that stays, or a cursor at the
+/// end of its line, is not said again.
+#[test]
+fn an_answer_says_what_its_keys_highlighted_and_where_the_cursor_is() -> Outcome {
+    let server = Server::start("")?;
+    let code = "import sys\nfor l in sys.stdin:\n\
+                \x20   if l.startswith('h'): print('\\x1b[7mSEL\\x1b[m rest', flush=True)\n\
+                \x20   else: sys.stdout.write('abcdef\\x1b[3D'); sys.stdout.flush()\n";
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", code]))?);
+    let lit = server.ok(&typed(&pane, "h", &[]))?;
+    assert_eq!(
+        head(&lit),
+        format!("{pane} reading · highlight 1,0-2 \"SEL\""),
+        "{lit}"
+    );
+    let moved = server.ok(&typed(&pane, "c", &[]))?;
+    assert_eq!(
+        head(&moved),
+        format!("{pane} reading · cursor 3,3"),
+        "{moved}"
+    );
+    let again = server.ok(&typed(&pane, "x", &[]))?;
+    assert_eq!(
+        head(&again),
+        format!("{pane} reading · cursor 4,3"),
+        "{again}"
+    );
+    Ok(())
+}
+
+/// A program that exited ended the command its marks said ran: its pane
+/// says `exited`, never a command running too.
+#[test]
+fn an_exited_program_runs_no_command() -> Outcome {
+    let server = Server::start("")?;
+    let marked = "printf '\\033]133;A\\007$ \\033]133;C\\007'; sleep 0.3; echo bye";
+    let pane = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", marked]))?);
+    let ended = server.ok(&["str", &pane, "pane", "wait"])?;
+    assert_eq!(head(&ended), format!("{pane} exited 0"), "{ended}");
+    let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
+    assert!(json.contains(r#""command_running":false"#), "{json}");
     Ok(())
 }
