@@ -50,7 +50,6 @@ dependencies = [
  "fuxix",
  "fuxth",
  "signal-hook",
- "unicode-width",
 ]
 
 [[package]]

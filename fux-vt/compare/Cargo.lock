@@ -603,7 +603,6 @@ dependencies = [
  "fuxix",
  "fuxth",
  "signal-hook 0.4.5",
- "unicode-width 0.2.2",
 ]
 
 [[package]]
