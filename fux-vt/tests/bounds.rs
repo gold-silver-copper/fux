@@ -4,22 +4,26 @@
 //! and its memory by a counting allocator, independent of fux-vt's own
 //! figures.
 //!
-//! The allocator is `peak_alloc`'s, this binary's `#[global_allocator]`: it
-//! keeps the live bytes and their peak, which a probe resets, and counts a
-//! `realloc` as its new block next to the old until the old is freed, so a
-//! growth's transient shows. fux-vt has no `unsafe` of its own for it. Its
-//! counts are the process's, so probes run one at a time (`one_at_a_time`).
+//! The allocator is `fux-vt-peak`'s, this binary's `#[global_allocator]`:
+//! it keeps the live bytes and their peak, which a probe resets, for each
+//! thread apart, so the test harness's own threads (a "running for over 60
+//! seconds" message, a finished test's report) never count in a probe's.
+//! It counts a `realloc` as its new block next to the old until the old is
+//! freed, so a growth's transient shows. fux-vt has no `unsafe` of its own
+//! for it. Probes still run one at a time (`one_at_a_time`), each holding
+//! what its row allows, so that the binary's memory stays one probe's.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use peak_alloc::PeakAlloc;
+use fux_vt_peak::ThreadPeak;
 
 #[global_allocator]
-static ALLOCATOR: PeakAlloc = PeakAlloc;
+static ALLOCATOR: ThreadPeak = ThreadPeak;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Held by each probe while it runs: the allocator counts the process.
+/// Held by each probe while it runs, so that one probe holds memory at a
+/// time.
 static ONE: Mutex<()> = Mutex::new(());
 
 /// Waits for the other probes, and holds them off until dropped.
@@ -37,36 +41,44 @@ impl Heap {
     /// Begins measuring: the bytes live now are the base, and the peak
     /// starts again from them.
     fn begin() -> Self {
-        ALLOCATOR.reset_peak_usage();
+        ALLOCATOR.reset_peak();
         Self {
-            base: ALLOCATOR.current_usage(),
+            base: ALLOCATOR.live(),
         }
     }
     /// The bytes live now beyond the base.
     fn live(&self) -> usize {
-        ALLOCATOR.current_usage().saturating_sub(self.base)
+        ALLOCATOR.live().saturating_sub(self.base)
     }
     /// The most bytes live beyond the base at once since `begin`.
     fn peak(&self) -> usize {
-        ALLOCATOR.peak_usage().saturating_sub(self.base)
+        ALLOCATOR.peak().saturating_sub(self.base)
     }
 }
 
 const MIB: usize = 1 << 20;
 
-/// What the test harness's own threads may allocate or free while a probe
-/// measures: the counts are the process's.
+/// What a probe's own thread may allocate besides what it measures, as the
+/// test harness's code on it does.
 const SLACK: usize = 64 << 10;
 
 /// What the bounds tests rely on the allocator for (`threats.md` 3.5): it
-/// counts what is live, a reset peak starts again from what is live, and a
-/// growth by `realloc` counts the old block and the new while both live.
+/// counts what is live, a reset peak starts again from what is live, a
+/// growth by `realloc` counts the old block and the new while both live,
+/// and what another thread holds meanwhile is not the probe's.
 #[test]
 fn the_allocator_counts_live_bytes_a_reset_peak_and_a_growth_transient() -> Result {
     let _one = one_at_a_time();
     let heap = Heap::begin();
     let block = std::hint::black_box(vec![1u8; MIB]);
     assert!(heap.live() >= MIB - SLACK, "{} bytes live", heap.live());
+    let other = std::thread::spawn(|| std::hint::black_box(vec![1u8; 4 * MIB]).len());
+    assert_eq!(other.join().ok(), Some(4 * MIB));
+    assert!(
+        heap.peak() < MIB + SLACK,
+        "another thread's 4 MiB counted: a peak of {}",
+        heap.peak()
+    );
     drop(block);
     assert!(
         heap.live() < SLACK,

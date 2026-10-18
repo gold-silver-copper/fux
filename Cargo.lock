@@ -28,10 +28,14 @@ dependencies = [
 name = "fux-vt"
 version = "0.10.0"
 dependencies = [
- "peak_alloc",
+ "fux-vt-peak",
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "fux-vt-peak"
+version = "0.0.0"
 
 [[package]]
 name = "fuxix"
@@ -49,12 +53,6 @@ name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
-
-[[package]]
-name = "peak_alloc"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccc90935a8dd139fdf341762773687a1e361d3f54b396a55d9dd1f7001e484bb"
 
 [[package]]
 name = "seccompiler"
