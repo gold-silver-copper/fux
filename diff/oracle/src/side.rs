@@ -12,12 +12,24 @@
 /// One side: `side!(work, fux_vt, "work")` expands to `pub mod work`,
 /// which reads the crate `fux_vt` into the model (`model::State`, its
 /// cells, rows, events and errors) through fux-vt's public API, with
-/// `NAME` `"work"` naming the side in a report.
+/// `NAME` `"work"` naming the side in a report. With `checked` after the
+/// name, `side!(work, fux_vt, "work", checked)`, its `Side::faults` are
+/// what `Parser::check` finds, but for the checks known to fail at BASE
+/// (`fux-vt/tests/corpus/known.rs`): the side's fux-vt has the checker.
 macro_rules! side {
+    (@faults checked, $terminal:expr) => {{
+        let report = $terminal.parser.check();
+        let unknown = crate::known::unknown(&report);
+        (!unknown.is_empty()).then(|| report.to_string())
+    }};
+    (@faults, $terminal:expr) => {{
+        let _ = $terminal;
+        None
+    }};
     (
         $module:ident,
         $vt:ident,
-        $name:literal $(,)?
+        $name:literal $(, $checked:ident)? $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -212,6 +224,10 @@ macro_rules! side {
 
             impl crate::Side for Terminal {
                 const NAME: &'static str = $name;
+
+                fn faults(&self) -> Option<String> {
+                    side!(@faults $($checked)?, self)
+                }
 
                 fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error> {
                     // A size of none is no `Size`: refused as such.
@@ -655,7 +671,7 @@ macro_rules! side {
     };
 }
 
-side!(work, fux_vt, "work");
+side!(work, fux_vt, "work", checked);
 side!(base, base_vt, "base");
 
 /// The commit's error for a size of no rows or no columns, as read.

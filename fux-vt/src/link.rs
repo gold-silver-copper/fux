@@ -395,6 +395,60 @@ impl Links {
     }
 }
 
+/// The links' part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl RowLinks {
+    /// 24: the runs lie inside a row `width` wide, each of a cell or more,
+    /// left to right and apart, with links within the spec's limits.
+    pub(crate) fn check(&self, width: usize) -> Result<(), String> {
+        let mut end = 0u16;
+        for run in &self.0 {
+            crate::check::ensure(
+                end <= run.start && run.start < run.end && usize::from(run.end) <= width,
+                || {
+                    format!(
+                        "run {}..{} after {end}, in {width} cells",
+                        run.start, run.end
+                    )
+                },
+            )?;
+            end = run.end;
+            let id = run.link.id.as_deref().map_or(0, str::len);
+            crate::check::ensure(run.link.uri.len() <= URI_LIMIT && id <= ID_LIMIT, || {
+                format!("a link of {} and {id} bytes", run.link.uri.len())
+            })?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "checks")]
+impl Links {
+    /// 23 and 24: what the links held cost is at most the bound, and at
+    /// least what the links `rows` have cost, each link once; each with an
+    /// `id` is found by it.
+    pub(crate) fn check<'a>(&self, rows: impl Iterator<Item = &'a RowLinks>) -> Result<(), String> {
+        let mut costs = HashMap::new();
+        for links in rows {
+            for link in links.links() {
+                costs.insert(link.key, link.cost());
+                if let Some(id) = &link.id {
+                    let found = self.find(&link.uri, id).map(|l| l.key);
+                    crate::check::ensure(found == Some(link.key), || {
+                        format!("link {} with an id is not found by it", link.key)
+                    })?;
+                }
+            }
+        }
+        let live = costs
+            .values()
+            .fold(0, |sum: usize, cost| sum.saturating_add(*cost));
+        crate::check::ensure(live <= self.held && self.held <= LINK_BYTES, || {
+            format!("{} bytes of links held, the rows' cost {live}", self.held)
+        })
+    }
+}
+
 /// What the open link is in one grid.
 #[derive(Clone, Debug, Default)]
 pub(crate) enum Held {
@@ -467,5 +521,47 @@ mod tests {
         assert_eq!(parse(";http://é".as_bytes()), None);
         assert_eq!(parse(b";http://a\x07b"), None);
         assert_eq!(parse(b"id=\x01;http://a"), None);
+    }
+}
+
+/// The links' checks, each shown links with their one fault (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    fn link(key: u64, id: Option<&str>) -> Hyperlink {
+        Hyperlink {
+            key,
+            uri: Arc::from("http://a"),
+            id: id.map(Arc::from),
+        }
+    }
+
+    #[test]
+    fn runs_out_of_order_or_past_the_row_are_faults() {
+        let mut row = RowLinks::default();
+        assert!(row.set(0..2, Some(&link(1, None))));
+        assert!(row.set(3..4, Some(&link(2, None))));
+        assert_eq!(row.check(4), Ok(()));
+        assert!(row.check(3).is_err(), "past the row");
+        row.0.reverse();
+        assert!(row.check(4).is_err(), "out of order");
+    }
+
+    #[test]
+    fn links_held_for_less_than_the_rows_cost_or_lost_ids_are_faults() {
+        let mut links = Links::default();
+        let opened = link(1, Some("i"));
+        let Some(held) = links.insert(&opened) else {
+            return;
+        };
+        let mut row = RowLinks::default();
+        assert!(row.set(0..1, Some(&held)));
+        assert_eq!(links.check([&row].into_iter()), Ok(()));
+        links.held = 0;
+        assert!(links.check([&row].into_iter()).is_err(), "held too little");
+        links.held = held.cost();
+        links.ids.clear();
+        assert!(links.check([&row].into_iter()).is_err(), "an id not found");
     }
 }

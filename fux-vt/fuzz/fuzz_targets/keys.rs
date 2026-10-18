@@ -9,6 +9,17 @@ use fux_vt::keys::mouse::{MouseAction, mouse_bytes};
 use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
+#[cfg(feature = "checks")]
+#[path = "../../tests/corpus/known.rs"]
+mod known;
+
+/// Fails on a fault the decoder's checker finds, but those known to fail
+/// at BASE.
+#[cfg(feature = "checks")]
+fn checked(decoder: &Decoder) {
+    let report = decoder.check();
+    assert!(known::unknown(&report).is_empty(), "{report}");
+}
 
 /// `bytes` in pieces of `size`, the last one maybe shorter.
 fn pieces(mut rest: &[u8], size: NonZeroUsize) -> impl Iterator<Item = &[u8]> {
@@ -28,10 +39,14 @@ fn decode(stream: &[u8], size: usize) -> Vec<Input> {
         Some(size) => {
             for piece in pieces(stream, size) {
                 decoder.bytes(piece, &mut out);
+                #[cfg(feature = "checks")]
+                checked(&decoder);
             }
         }
         None => decoder.bytes(stream, &mut out),
     }
+    #[cfg(feature = "checks")]
+    checked(&decoder);
     decoder.timeout(&mut out);
     out
 }

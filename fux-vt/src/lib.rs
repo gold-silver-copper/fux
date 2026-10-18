@@ -72,6 +72,8 @@ macro_rules! work {
 
 pub mod bytes;
 mod cell;
+#[cfg(feature = "checks")]
+mod check;
 mod compact;
 mod geometry;
 mod grid;
@@ -95,6 +97,8 @@ use std::{fmt, ops::Range};
 pub use cell::{
     Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle,
 };
+#[cfg(feature = "checks")]
+pub use check::{Fault, Report};
 pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};
@@ -453,6 +457,28 @@ impl Prints {
             }
             _ => self.runs.push((row, cols, start..end)),
         }
+    }
+}
+
+/// `Prints`' part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Prints {
+    /// 34: each run's text lies inside the text, the runs end to end in
+    /// the order printed, and each run's columns are in order.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let mut end = 0;
+        for (row, cols, text) in &self.runs {
+            check::ensure(text.start == end && text.start <= text.end, || {
+                format!("a run of row {row:?} has text {text:?} after {end}")
+            })?;
+            check::ensure(cols.start <= cols.end, || {
+                format!("a run of row {row:?} has columns {cols:?}")
+            })?;
+            end = text.end;
+        }
+        check::ensure(end == self.text.len(), || {
+            format!("the runs end at {end} in {} bytes of text", self.text.len())
+        })
     }
 }
 

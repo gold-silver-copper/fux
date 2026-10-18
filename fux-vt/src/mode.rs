@@ -8,13 +8,15 @@ use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 /// [default soft] => kind, ... }` (`if Feature` and the marks optional) to
 /// that enum, `Mode::of(n, private, options)` (the mode SM and RM, or with
 /// `private` DECSET and DECRST, name by `n`; with `if Feature` only while
-/// `options` have that feature), `Mode::kind` (each one's kind),
+/// `options` have that feature), `Mode::kind` (each one's kind), `Mode::ALL`
+/// (every mode, in the order declared),
 /// `Modes::DEFAULT` (the modes marked `default`) and `Modes::SOFT_RESET`
 /// (those marked `soft`), and checks at compile time that every mode is a
 /// bit of a `Modes` (a `u32`). A row `Autowrap (true, 7) [default soft] =>
 /// Kind::Flag,` makes the variant `Autowrap`, the arm `(true, 7) =>
 /// Some(Self::Autowrap)` of `of`, the arm `Self::Autowrap => Kind::Flag`
-/// of `kind`, and `| Mode::Autowrap.bit()` in both constants' bits.
+/// of `kind`, `Mode::Autowrap` in `Mode::ALL`, and `| Mode::Autowrap.bit()`
+/// in both constants' bits.
 macro_rules! modes {
     ($(#[$doc:meta])* pub enum Mode {
         $(
@@ -29,6 +31,9 @@ macro_rules! modes {
         }
 
         impl Mode {
+            /// Every mode, in the order declared.
+            pub const ALL: [Self; [$(Self::$variant),*].len()] = [$(Self::$variant),*];
+
             /// The mode SM and RM (`private` false: IRM and LNM alone) or
             /// DECSET and DECRST name by `n`, with `options`: without
             /// theirs, 2031 and 2048 are not recognized.

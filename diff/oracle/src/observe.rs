@@ -126,6 +126,25 @@ pub fn compare<A: Side, B: Side>(
     readers: &mut Readers,
     count: &mut Count,
 ) -> Result<(), Difference> {
+    // A side the invariant checker finds wrong differs from any other.
+    for (name, faults) in [(A::NAME, a.faults()), (B::NAME, b.faults())] {
+        if let Some(faults) = faults {
+            return Err(Difference {
+                step,
+                what: format!("{name}'s invariants"),
+                base: if name == "base" {
+                    faults.clone()
+                } else {
+                    "clean".into()
+                },
+                work: if name == "work" {
+                    faults
+                } else {
+                    "clean".into()
+                },
+            });
+        }
+    }
     let (sa, sb) = (a.state(), b.state());
     same(step, "the screen's state", &sa, &sb)?;
     rows(step, a, b, readers, count)?;

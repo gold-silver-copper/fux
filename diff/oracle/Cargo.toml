@@ -18,8 +18,9 @@ doc = false
 bench = false
 
 [dependencies]
-# The code under test: the working tree's fux-vt.
-fux-vt = { path = "../../fux-vt" }
+# The code under test: the working tree's fux-vt, with its invariant
+# checker (`checks`), which every step is checked with.
+fux-vt = { path = "../../fux-vt", features = ["checks"] }
 # What it must behave as: fux-vt at a commit. diff/oracle.sh pins it for
 # each run (the latest master unless told another) and puts this file and
 # Cargo.lock back after; CI pins it to the commit under test. The rev here

@@ -364,6 +364,42 @@ impl Text {
     }
 }
 
+/// The text's part of the invariant checker (threats.md section 6, 13).
+#[cfg(feature = "checks")]
+impl Text {
+    /// Whether the text of a row of `width` cells, `cells` those kept, is
+    /// within its limits, and each cell's text is whole where its locator
+    /// says, of at most [`CLUSTER_CAPACITY`] bytes.
+    pub(crate) fn check(&self, cells: &[Compact], width: usize) -> Result<(), String> {
+        let (long, short) = (Self::long_limit(width), Self::short_limit(width));
+        crate::check::ensure(
+            self.long.len() <= long && self.short.len() <= short.saturating_add(CLUSTER_CAPACITY),
+            || {
+                format!(
+                    "{} long and {} short bytes, limits {long} and {short}",
+                    self.long.len(),
+                    self.short.len()
+                )
+            },
+        )?;
+        for (i, cell) in cells.iter().enumerate() {
+            let Some((start, len)) = cell.locator() else {
+                continue;
+            };
+            let held = if len > SHORT { &self.long } else { &self.short };
+            let text = start
+                .checked_add(len)
+                .and_then(|end| held.get(start..end))
+                .and_then(|bytes| str::from_utf8(bytes).ok());
+            crate::check::ensure(
+                text.is_some_and(|t| !t.is_empty() && t.len() <= CLUSTER_CAPACITY),
+                || format!("column {i}: text at {start} of {len} bytes is not there"),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl AsRef<Compact> for Compact {
     fn as_ref(&self) -> &Compact {
         self

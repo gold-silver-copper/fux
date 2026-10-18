@@ -528,5 +528,173 @@ impl History {
     }
 }
 
+/// History's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl History {
+    /// Runs every check of history, of the grid named `which`, into
+    /// `report`.
+    pub(crate) fn check(&self, which: &str, report: &mut crate::Report) {
+        report.record("history.counts", which, self.check_counts());
+        report.record("history.blocks", which, self.check_blocks());
+        report.record("history.flags", which, self.check_flags());
+        report.record("history.budget", which, self.check_budget());
+        report.record("history.capacities", which, self.check_capacities());
+    }
+
+    /// 17: the cells and text counted are those the rows keep.
+    fn check_counts(&self) -> Result<(), String> {
+        let cells = self
+            .rows
+            .iter()
+            .map(Kept::len)
+            .fold(0, usize::saturating_add);
+        let text = self
+            .texts
+            .values()
+            .map(Text::bytes)
+            .fold(0, usize::saturating_add);
+        crate::check::ensure(cells == self.cells && text == self.text, || {
+            format!(
+                "{} cells and {} bytes of text counted, {cells} and {text} kept",
+                self.cells, self.text
+            )
+        })
+    }
+
+    /// 10 and 18: each row's cells are in a block held, within it, and no
+    /// more than its width.
+    fn check_blocks(&self) -> Result<(), String> {
+        for (i, kept) in self.rows.iter().enumerate() {
+            crate::check::ensure(kept.len() <= usize::from(kept.width()), || {
+                format!("row {i} keeps {} cells of {}", kept.len(), kept.width())
+            })?;
+            if kept.len() == 0 {
+                continue;
+            }
+            let block = self.block(kept.block());
+            let fits =
+                Self::cells_of(kept).is_some_and(|c| block.is_some_and(|b| c.end <= b.len()));
+            crate::check::ensure(fits, || {
+                format!("row {i}'s cells are not in block {}", kept.block())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// 19: a row's text and link flags say whether the maps have it.
+    fn check_flags(&self) -> Result<(), String> {
+        let (mut texts, mut linked) = (0usize, 0usize);
+        for (i, kept) in self.rows.iter().enumerate() {
+            let number = self.number(i).unwrap_or(u64::MAX);
+            let (text, links) = (kept.flags() & TEXT != 0, kept.flags() & LINKED != 0);
+            crate::check::ensure(
+                text == self.texts.contains_key(&number)
+                    && links == self.linked.contains_key(&number),
+                || format!("row {i}'s flags {:#x} disagree with the maps", kept.flags()),
+            )?;
+            texts = texts.saturating_add(usize::from(text));
+            linked = linked.saturating_add(usize::from(links));
+        }
+        crate::check::ensure(
+            texts == self.texts.len() && linked == self.linked.len(),
+            || {
+                format!(
+                    "{} texts and {} links kept for {texts} and {linked} rows",
+                    self.texts.len(),
+                    self.linked.len()
+                )
+            },
+        )
+    }
+
+    /// 21: within the budget, and the most rows and cells a grid holds.
+    fn check_budget(&self) -> Result<(), String> {
+        crate::check::ensure(
+            self.bytes() <= self.budget && self.rows.len() <= MAX_ROWS && self.cells <= MAX_CELLS,
+            || {
+                format!(
+                    "{} bytes of {}, {} rows, {} cells",
+                    self.bytes(),
+                    self.budget,
+                    self.rows.len(),
+                    self.cells
+                )
+            },
+        )
+    }
+
+    /// 21: the ring and the maps hold at most twice what they keep, and 64
+    /// more (threats.md B17).
+    fn check_capacities(&self) -> Result<(), String> {
+        let most = |len: usize| len.saturating_mul(2).saturating_add(64);
+        for (name, capacity, len) in [
+            ("ring", self.rows.capacity(), self.rows.len()),
+            ("texts", self.texts.capacity(), self.texts.len()),
+            ("links", self.linked.capacity(), self.linked.len()),
+        ] {
+            crate::check::ensure(capacity <= most(len), || {
+                format!("the {name} holds room for {capacity}, keeping {len}")
+            })?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+/// History's checks, each shown a history with its one fault (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    /// A history of rows, a few cells each, one with text.
+    fn history() -> History {
+        let mut history = History::new(1 << 12);
+        let cells = [Compact::ascii(b'x', 0); 3];
+        for id in 0..6u64 {
+            let row = Arriving {
+                id: RowId(id),
+                version: 1,
+                wrapped: false,
+                prompt: false,
+                cells: &cells,
+                width: 4,
+            };
+            assert!(history.push(row).is_ok());
+            history.trim();
+        }
+        history
+    }
+
+    fn faulted(history: &History) -> Vec<&'static str> {
+        let mut report = crate::Report::default();
+        history.check("history", &mut report);
+        report.faults().iter().map(|f| f.check).collect()
+    }
+
+    fn shows(check: &str, fault: impl FnOnce(&mut History)) {
+        let mut history = history();
+        assert_eq!(faulted(&history), Vec::<&str>::new());
+        fault(&mut history);
+        let found = faulted(&history);
+        assert!(found.contains(&check), "{check}: {found:?}");
+    }
+
+    #[test]
+    fn each_check_names_its_fault() {
+        shows("history.counts", |h| h.cells = h.cells.saturating_add(1));
+        shows("history.blocks", |h| {
+            if let Some(kept) = h.rows.back_mut() {
+                kept.place = (kept.place & !0xffff) | 0x7fff;
+            }
+        });
+        shows("history.flags", |h| {
+            if let Some(kept) = h.rows.back_mut() {
+                kept.set(TEXT, true);
+            }
+        });
+        shows("history.budget", |h| h.budget = 0);
+        shows("history.capacities", |h| h.rows.reserve(1000));
+    }
+}

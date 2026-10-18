@@ -32,6 +32,10 @@ pub mod families;
 /// and fuzz targets draw them.
 #[path = "../../../fux-vt/tests/corpus/graphemes.rs"]
 pub mod graphemes;
+/// The checks of fux-vt's invariant checker known to fail at BASE, which
+/// the working tree's side leaves out of its faults, as fux-vt's tests do.
+#[path = "../../../fux-vt/tests/corpus/known.rs"]
+mod known;
 /// fux-vt-compare's seeded source of choices, which the families draw from.
 #[path = "../../../fux-vt/compare/src/rng.rs"]
 mod rng;
@@ -74,4 +78,10 @@ pub trait Side: Clone {
     fn lookups(&mut self, offsets: &[usize]) -> Vec<Lookup>;
     /// A window and a copy from it; each cell of it too, if `cells`.
     fn copy(&self, selection: &Selection, cells: bool) -> Seen;
+    /// What fux-vt's invariant checker (`Parser::check`, its `checks`
+    /// feature) finds wrong with this side, if it has the checker: the
+    /// working tree's side has.
+    fn faults(&self) -> Option<String> {
+        None
+    }
 }

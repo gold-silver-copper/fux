@@ -328,6 +328,31 @@ impl Decoder {
     }
 }
 
+/// The decoder's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Decoder {
+    /// 31: the picture being drawn is no larger than a picture may be, its
+    /// pixels exactly its size.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
+        let bytes = pixels.saturating_mul(4);
+        crate::check::ensure(
+            self.width <= MAX_SIDE
+                && self.height <= MAX_SIDE
+                && usize::try_from(pixels).is_ok_and(|p| p <= MAX_PIXELS)
+                && u64::try_from(self.pixels.len()).is_ok_and(|len| len == bytes),
+            || {
+                format!(
+                    "a {}x{} picture of {} bytes being drawn",
+                    self.width,
+                    self.height,
+                    self.pixels.len()
+                )
+            },
+        )
+    }
+}
+
 /// A sixel colour's share, 0 to 100, as a byte.
 fn percent(n: u32) -> u8 {
     let scaled = n.saturating_mul(255) / 100;
@@ -648,5 +673,20 @@ mod tests {
     fn a_picture_too_large_is_dropped() {
         assert!(decode(b"!4096~!4096~").is_none());
         assert!(decode(b"").is_none());
+    }
+}
+
+/// The decoder's check, shown a picture past what one may be (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    #[test]
+    fn a_picture_past_what_one_may_be_is_a_fault() {
+        let mut decoder = super::Decoder::new(0, 0);
+        for byte in b"#1~~" {
+            decoder.push(*byte);
+        }
+        assert_eq!(decoder.check(), Ok(()));
+        decoder.width = super::MAX_SIDE.saturating_add(1);
+        assert!(decoder.check().is_err());
     }
 }

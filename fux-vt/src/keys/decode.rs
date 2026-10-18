@@ -508,6 +508,43 @@ impl Decoder {
     }
 }
 
+/// The key decoder's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Decoder {
+    /// 35: an unfinished sequence held is no longer than the longest
+    /// answer read, 258 bytes (B24), and a paste keeps at most its limit
+    /// and the end that may begin its marker (B23).
+    pub fn check(&self) -> crate::Report {
+        let mut report = crate::Report::default();
+        let held = DCS_LIMIT.saturating_add(2);
+        let found = match &self.state {
+            State::Pending { held: bytes, .. } => crate::check::ensure(bytes.len() <= held, || {
+                format!(
+                    "{} bytes of a sequence held, {held} at most (B24)",
+                    bytes.len()
+                )
+            }),
+            State::Idle | State::Dropping { .. } | State::Paste { .. } => Ok(()),
+        };
+        report.record("keys.held", "", found);
+        let room = self.paste_limit.saturating_add(PASTE_END.len());
+        let found = match &self.state {
+            State::Paste {
+                pasted: Pasted::Text(text) | Pasted::TooLong(text),
+                ..
+            } => crate::check::ensure(text.capacity() <= room, || {
+                format!(
+                    "room for {} bytes of paste, {room} at most (B23)",
+                    text.capacity()
+                )
+            }),
+            State::Idle | State::Pending { .. } | State::Dropping { .. } => Ok(()),
+        };
+        report.record("keys.paste", "", found);
+        report
+    }
+}
+
 fn press(key: Key, mods: Modifiers) -> Option<Input> {
     Some(Input::Key(KeyPress::new(key, mods).into()))
 }
@@ -1862,5 +1899,28 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// The key decoder's checks, each shown a decoder with its one fault
+/// (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    #[test]
+    fn a_long_sequence_held_or_a_paste_with_room_past_its_limit_are_faults() {
+        let mut decoder = Decoder::default();
+        assert!(decoder.check().is_clean());
+        decoder.state = State::Pending {
+            held: vec![b'1'; DCS_LIMIT.saturating_add(3)],
+            since: None,
+        };
+        assert!(decoder.check().faults_of("keys.held").next().is_some());
+        decoder.state = State::Paste {
+            pasted: Pasted::Text(Vec::with_capacity(PASTE_LIMIT.saturating_mul(2))),
+            since: None,
+        };
+        assert!(decoder.check().faults_of("keys.paste").next().is_some());
     }
 }

@@ -129,6 +129,37 @@ impl Styles {
     }
 }
 
+/// The table's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Styles {
+    /// 15 and 16: each style is found at its place, no other, and the
+    /// table holds at most [`MAX_STYLES`].
+    pub(crate) fn check(&self) -> Result<(), String> {
+        crate::check::ensure(
+            self.places.len() == self.table.len() && self.table.len() <= MAX_STYLES,
+            || {
+                format!(
+                    "{} places for {} styles",
+                    self.places.len(),
+                    self.table.len()
+                )
+            },
+        )?;
+        for (place, attributes) in self.table.iter().enumerate() {
+            let found = self
+                .places
+                .get(attributes)
+                .and_then(|p| usize::try_from(*p).ok());
+            crate::check::ensure(found == Some(place), || {
+                format!("style {place} is found at {found:?}")
+            })?;
+        }
+        crate::check::ensure(self.live <= self.table.len(), || {
+            format!("{} styles live of {}", self.live, self.table.len())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +291,28 @@ mod tests {
         let used = vec![true; styles.len()];
         styles.retain(&used);
         assert!(!styles.wants_sweep(0));
+    }
+}
+
+/// The table's check, shown a table with its one fault (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+    use crate::Color;
+
+    #[test]
+    fn a_style_found_at_another_place_is_a_fault() {
+        let mut styles = Styles::default();
+        for n in 0..4u8 {
+            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
+            assert!(styles.insert(attributes).is_some());
+        }
+        assert_eq!(styles.check(), Ok(()));
+        if let Some(place) = styles.places.values_mut().next() {
+            *place = place.wrapping_add(1) % 4;
+        }
+        assert!(styles.check().is_err());
+        styles.places.clear();
+        assert!(styles.check().is_err());
     }
 }

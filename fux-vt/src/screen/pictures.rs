@@ -213,6 +213,60 @@ impl Screen {
     }
 }
 
+/// The pictures' part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Screen {
+    /// 30: at most [`MAX_PICTURES`] on each screen, their numbers rising.
+    pub(super) fn check_picture_count(&self) -> Result<(), String> {
+        for alternate in [false, true] {
+            let on = self
+                .pictures
+                .iter()
+                .filter(|p| p.alternate == alternate)
+                .count();
+            crate::check::ensure(on <= MAX_PICTURES, || format!("{on} pictures on a screen"))?;
+        }
+        let rising =
+            (self.pictures.iter().zip(self.pictures.iter().skip(1))).all(|(a, b)| a.id < b.id);
+        crate::check::ensure(rising, || "picture numbers out of order".into())
+    }
+
+    /// 31: the pictures kept hold at most [`PICTURE_BYTES`].
+    pub(super) fn check_picture_bytes(&self) -> Result<(), String> {
+        let bytes = self.picture_bytes();
+        crate::check::ensure(bytes <= PICTURE_BYTES, || {
+            format!("{bytes} bytes of pictures")
+        })
+    }
+
+    /// 32: each picture shown has its rows, every cell it covers there
+    /// holding the placeholder, on the screen in use.
+    pub(super) fn check_pictures_shown(&self) -> Result<(), String> {
+        let grid = self.grid();
+        for shown in self.pictures() {
+            let top = i64::try_from(grid.history_len())
+                .unwrap_or(i64::MAX)
+                .saturating_add(shown.row);
+            let across = shown.cols.min(self.size().cols().saturating_sub(shown.col));
+            for offset in 0..i64::from(shown.rows) {
+                let row = usize::try_from(top.saturating_add(offset))
+                    .ok()
+                    .and_then(|i| grid.row_at(i));
+                let whole = row.is_some_and(|row| {
+                    (shown.col..shown.col.saturating_add(across)).all(|c| {
+                        row.cell(usize::from(c))
+                            .is_some_and(|cell| cell.contents() == PLACEHOLDER)
+                    })
+                });
+                crate::check::ensure(whole, || {
+                    format!("picture {} shown without its cells", shown.id)
+                })?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Whether two areas of cells, each its top row, first column, columns and
 /// rows, share a cell.
 fn overlaps(
@@ -225,4 +279,53 @@ fn overlaps(
     );
     let (right, ri) = (col.saturating_add(cols), c.saturating_add(cs));
     row < e && r < end && col < ri && c < right
+}
+
+/// The pictures' checks, each shown pictures with their one fault (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+    use crate::Size;
+
+    fn placed(id: u64, rgba: Vec<u8>, top: RowId) -> Placement {
+        Placement {
+            picture: Arc::new(Picture {
+                width: 1,
+                height: 1,
+                rgba,
+            }),
+            top,
+            col: 0,
+            cols: 1,
+            rows: 1,
+            cell: CELL,
+            alternate: false,
+            id,
+        }
+    }
+
+    #[test]
+    fn too_many_pictures_out_of_order_or_too_large_are_faults() -> Result<(), Error> {
+        let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
+        let screen = Screen::new(size, 0)?;
+        let top = screen.primary.live_row(0).map_or(RowId(0), |r| r.id());
+        assert!(screen.check_picture_count().is_ok());
+        let mut many = screen.clone();
+        for id in 0..65 {
+            many.pictures.push_back(placed(id, vec![0; 4], top));
+        }
+        assert!(many.check_picture_count().is_err(), "65 pictures");
+        let mut backwards = screen.clone();
+        backwards.pictures.push_back(placed(2, vec![0; 4], top));
+        backwards.pictures.push_back(placed(1, vec![0; 4], top));
+        assert!(backwards.check_picture_count().is_err(), "out of order");
+        let mut large = screen;
+        large.pictures.push_back(placed(
+            1,
+            Vec::with_capacity(PICTURE_BYTES.saturating_add(1)),
+            top,
+        ));
+        assert!(large.check_picture_bytes().is_err(), "past the bytes");
+        Ok(())
+    }
 }

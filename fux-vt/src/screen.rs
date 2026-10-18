@@ -454,6 +454,90 @@ pub struct Screen {
     submitted: Option<CommandMark>,
 }
 
+/// The screen's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Screen {
+    /// Checks every invariant of the screen that its state alone shows:
+    /// both grids, their history, styles and links, the row identities,
+    /// the pictures and `Prints`; and which checks ran, and the faults
+    /// found ([`crate::Report`]). The work counters do not see it.
+    pub fn check(&self) -> crate::Report {
+        crate::check::unseen(|| {
+            let mut report = crate::Report::default();
+            for (which, grid) in [("primary", &self.primary), ("alternate", &self.alternate)] {
+                grid.check(which, self.version, &mut report);
+            }
+            report.record("screen.ids", "", self.check_ids());
+            report.record("screen.structural", "", self.check_structural());
+            report.record("screen.tabs", "", self.check_tabs());
+            report.record("pictures.count", "", self.check_picture_count());
+            report.record("pictures.bytes", "", self.check_picture_bytes());
+            report.record("pictures.shown", "", self.check_pictures_shown());
+            if let Some(prints) = &self.prints {
+                report.record("prints.runs", "", prints.check());
+            }
+            report.wait("grid.pending_wrap", "P11: the tag of which setter set it");
+            report.wait("prints.cap", "B10: the Prints cap and lost()");
+            report.wait("styles.memo", "P22: the DECCARA memo");
+            report.wait("grid.uniform", "P19: uniform rows");
+            report
+        })
+    }
+
+    /// 20a: no row identity is two rows', in history or on either screen,
+    /// and each of the shown screen's rows, and history's oldest and
+    /// newest, is found by its identity where it is.
+    fn check_ids(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for grid in [&self.primary, &self.alternate] {
+            for row in Rows::of(grid) {
+                crate::check::ensure(seen.insert(row.id()), || {
+                    format!("row {:?} is held twice", row.id())
+                })?;
+            }
+        }
+        let grid = self.grid();
+        let history = grid.history_len();
+        let mut places: Vec<usize> = (history..grid.retained_len()).collect();
+        places.extend(
+            [0, history.saturating_sub(1)]
+                .into_iter()
+                .filter(|i| *i < history),
+        );
+        for index in places {
+            let Some(row) = grid.row_at(index) else {
+                return Err(format!("no row {index}"));
+            };
+            crate::check::ensure(grid.index_of(row.id()) == Some(index), || {
+                format!(
+                    "row {:?} at {index} is found at {:?}",
+                    row.id(),
+                    grid.index_of(row.id())
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// 20: a structural change is no later than the screen's version.
+    fn check_structural(&self) -> Result<(), String> {
+        crate::check::ensure(self.structural <= self.version, || {
+            format!(
+                "structural {} past version {}",
+                self.structural, self.version
+            )
+        })
+    }
+
+    /// 36: tab stops are kept for no more columns than a grid has.
+    fn check_tabs(&self) -> Result<(), String> {
+        let kept = self.terminal.tabs.stops.len();
+        crate::check::ensure(kept <= usize::from(u16::MAX).saturating_add(1), || {
+            format!("tab stops kept for {kept} columns")
+        })
+    }
+}
+
 mod pictures;
 mod shell;
 pub use pictures::{Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
@@ -3029,5 +3113,53 @@ impl Screen {
             groups.next();
         }
         colour_of(&values)
+    }
+}
+
+/// The screen's checks, each shown a screen with its one fault (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    fn screen() -> Result<Screen, Error> {
+        let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
+        let mut screen = Screen::new(size, 1 << 12)?;
+        screen.record_prints(true);
+        screen.ascii(b"hello")?;
+        Ok(screen)
+    }
+
+    fn shows(check: &str, fault: impl FnOnce(&mut Screen)) -> Result<(), Error> {
+        let mut screen = screen()?;
+        assert!(screen.check().is_clean(), "{}", screen.check());
+        fault(&mut screen);
+        let report = screen.check();
+        assert!(
+            report.faults_of(check).next().is_some(),
+            "{check}: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_check_names_its_fault() -> Result<(), Error> {
+        shows("screen.ids", |s| {
+            let id = s.primary.live_row(0).map(|r| r.id());
+            if let Some(id) = id {
+                s.alternate.give_id(0, id);
+            }
+        })?;
+        shows("screen.structural", |s| {
+            s.structural = s.version.saturating_add(1)
+        })?;
+        shows("screen.tabs", |s| {
+            s.terminal.tabs.stops = vec![false; 70_000]
+        })?;
+        shows("prints.runs", |s| {
+            if let Some(prints) = &mut s.prints {
+                prints.text.push('x');
+            }
+        })?;
+        Ok(())
     }
 }

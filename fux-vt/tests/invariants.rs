@@ -6,6 +6,9 @@ mod pieces;
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
+#[cfg(feature = "checks")]
+#[path = "corpus/known.rs"]
+mod known;
 use fux_vt::{Feature, Identity, Mode, Options, Parser, Sink, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -118,7 +121,7 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
                         whole.resize(Size::new(rows, cols)?)?;
                         split.resize(Size::new(rows, cols)?)?;
                     }
-                    invariants::equal(&whole, &split);
+                    invariants::same_feed(&whole, &split);
                     invariants::check(&whole);
                 }
             }

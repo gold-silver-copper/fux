@@ -1835,7 +1835,7 @@ impl Grid {
     }
     /// Whether every slot's cells from `used` to its width are blank, as
     /// recycling relies on; an unmade grid's are all blank.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "checks"))]
     pub fn blank_past_used(&self) -> bool {
         self.unmade
             || (0..self.meta.len()).all(|slot| {
@@ -2151,3 +2151,368 @@ pub(crate) fn repair_wide(cells: &mut [Compact]) {
 mod reflow;
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The grid's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Grid {
+    /// Runs every check of the grid, its history, styles and links, the
+    /// grid named `which` and its screen at `version`, into `report`.
+    pub(crate) fn check(&self, which: &str, version: u64, report: &mut crate::Report) {
+        report.record("grid.order", which, self.check_order());
+        report.record("grid.slots", which, self.check_slots());
+        report.record("grid.blank_past_used", which, self.check_blank_past_used());
+        report.record("grid.wide_pairs", which, self.check_wide_pairs());
+        report.record("grid.glyphs", which, self.check_glyphs());
+        report.record("grid.text", which, self.check_text());
+        report.record("grid.style_numbers", which, self.check_style_numbers());
+        report.record("grid.recent", which, self.check_recent());
+        report.record("styles.table", which, self.styles.check());
+        report.record("grid.versions", which, self.check_versions(version));
+        report.record("grid.cursor", which, self.check_cursor());
+        report.record("grid.margins", which, self.check_margins());
+        report.record("grid.keyboard", which, self.check_keyboard());
+        report.record("links.runs", which, self.check_link_runs());
+        report.record("links.held", which, self.check_links_held());
+        self.history.check(which, report);
+    }
+
+    /// Every row of the grid, screen and history, as the checker reads it:
+    /// its cells kept, its width, its text and its links. History's are
+    /// read without the work counters seeing them.
+    fn checked_rows(
+        &self,
+    ) -> impl Iterator<Item = (&[Compact], usize, &Text, Option<&RowLinks>)> + '_ {
+        let history = (0..self.history.len()).filter_map(|i| {
+            let found = self.history.get(i)?;
+            let width = usize::from(found.kept.width());
+            Some((found.cells, width, found.text, found.links))
+        });
+        let cols = usize::from(self.size.cols());
+        let screen = (self.order.iter()).filter_map(move |&slot| {
+            let links = self.linked.get(slot).filter(|l| !l.is_empty());
+            Some((self.slice(slot), cols, self.texts.get(slot)?, links))
+        });
+        history.chain(screen)
+    }
+
+    /// 7: the order is a permutation of the slots, one a row.
+    fn check_order(&self) -> Result<(), String> {
+        let rows = usize::from(self.size.rows());
+        crate::check::ensure(self.order.len() == rows, || {
+            format!("{} rows ordered, {rows} rows", self.order.len())
+        })?;
+        crate::check::ensure(self.order.top < rows.max(1), || {
+            format!("the order's top {} past {rows} rows", self.order.top)
+        })?;
+        let mut seen = vec![false; self.meta.len()];
+        for &slot in &self.order.slots {
+            match seen.get_mut(slot) {
+                Some(seen) if !*seen => *seen = true,
+                Some(_) => return Err(format!("slot {slot} ordered twice")),
+                None => return Err(format!("slot {slot} past {} slots", self.meta.len())),
+            }
+        }
+        crate::check::ensure(seen.iter().all(|s| *s), || "a slot no row has".into())
+    }
+
+    /// 8 and 10: one record, text and links a slot; the screen's cells, a
+    /// row of the grid's width a slot, once made.
+    fn check_slots(&self) -> Result<(), String> {
+        let slots = self.meta.len();
+        crate::check::ensure(
+            self.texts.len() == slots && self.linked.len() == slots,
+            || {
+                format!(
+                    "{slots} slots, {} texts, {} links",
+                    self.texts.len(),
+                    self.linked.len()
+                )
+            },
+        )?;
+        let cells = if self.unmade {
+            0
+        } else {
+            slots.saturating_mul(usize::from(self.size.cols()))
+        };
+        crate::check::ensure(self.cells.len() == cells, || {
+            format!("{} cells for {slots} slots", self.cells.len())
+        })
+    }
+
+    /// 9: every cell past a slot's `used` mark is blank.
+    fn check_blank_past_used(&self) -> Result<(), String> {
+        crate::check::ensure(self.blank_past_used(), || {
+            "a cell past a row's used mark is not blank".into()
+        })
+    }
+
+    /// 11: a wide glyph's halves are side by side, on the screen and in
+    /// history.
+    fn check_wide_pairs(&self) -> Result<(), String> {
+        for (row, (cells, width, _, _)) in self.checked_rows().enumerate() {
+            let cell = |i: usize| cells.get(i).copied().unwrap_or(BLANK);
+            for i in 0..width {
+                let here = cell(i);
+                let paired = if here.is_wide() {
+                    i.checked_add(1)
+                        .filter(|j| *j < width)
+                        .is_some_and(|j| cell(j).is_wide_continuation())
+                } else if here.is_wide_continuation() {
+                    i.checked_sub(1).is_some_and(|j| cell(j).is_wide())
+                } else {
+                    true
+                };
+                if !paired {
+                    return Err(format!("row {row}, column {i}: half a wide glyph"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 12: no character of a cell is wider than 2 columns.
+    fn check_glyphs(&self) -> Result<(), String> {
+        use unicode_width::UnicodeWidthChar;
+        for (row, (cells, _, text, _)) in self.checked_rows().enumerate() {
+            for (i, cell) in cells.iter().enumerate() {
+                if let Some(c) = text
+                    .of(cell)
+                    .chars()
+                    .find(|c| c.width().is_some_and(|w| w > 2))
+                {
+                    return Err(format!("row {row}, column {i}: {c:?} is wider than 2"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 13: each row's text within its limits, and every cell's text where
+    /// its locator says.
+    fn check_text(&self) -> Result<(), String> {
+        for (row, (cells, width, text, _)) in self.checked_rows().enumerate() {
+            text.check(cells, width)
+                .map_err(|e| format!("row {row}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// 14: every style of the table a cell has, on the screen and in
+    /// history, is in the grid's table.
+    fn check_style_numbers(&self) -> Result<(), String> {
+        let len = self.styles.len();
+        for (row, (cells, _, _, _)) in self.checked_rows().enumerate() {
+            for (i, cell) in cells.iter().enumerate() {
+                if Styles::place(cell.style()).is_some_and(|place| place >= len) {
+                    return Err(format!(
+                        "row {row}, column {i}: style {:#x} past {len} styles",
+                        cell.style()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The styles found lately are the table's, with their attributes.
+    fn check_recent(&self) -> Result<(), String> {
+        for (at, &(attributes, style)) in self.recent.iter().enumerate() {
+            if attributes == Attributes::default() {
+                continue;
+            }
+            crate::check::ensure(
+                self.styles.get(style) == attributes.with_guard(false),
+                || format!("style {style:#x} found lately at {at} has other attributes"),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 20: every row's version is at most the screen's, `version`.
+    fn check_versions(&self, version: u64) -> Result<(), String> {
+        let screen = self.meta.iter().map(|m| m.version);
+        let history =
+            (0..self.history.len()).filter_map(|i| self.history.kept(i).map(|k| k.version));
+        match history.chain(screen).find(|v| *v > version) {
+            Some(v) => Err(format!("a row's version {v} past the screen's {version}")),
+            None => Ok(()),
+        }
+    }
+
+    /// 25: the cursor and the saved cursor are on the grid.
+    fn check_cursor(&self) -> Result<(), String> {
+        let (rows, cols) = (self.size.rows(), self.size.cols());
+        for (name, cursor) in [("cursor", self.cursor), ("saved cursor", self.saved.cursor)] {
+            crate::check::ensure(cursor.row < rows && cursor.col < cols, || {
+                format!("{name} at {:?} off {rows}x{cols}", cursor.at())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// 26: the margins are inside the grid, each the whole of it or two
+    /// lines or columns apart at least, and `lr` says whether the left and
+    /// right ones are narrower than the grid.
+    fn check_margins(&self) -> Result<(), String> {
+        let (rows, cols) = (self.size.rows(), self.size.cols());
+        let inside = |span: Span, n: u16| span.first() <= span.last() && span.last() < n;
+        crate::check::ensure(
+            inside(self.lines, rows) && inside(self.columns, cols),
+            || {
+                format!(
+                    "margins {:?} {:?} off {rows}x{cols}",
+                    self.lines, self.columns
+                )
+            },
+        )?;
+        let set = |span: Span, whole: Span| span == whole || span.first() < span.last();
+        crate::check::ensure(
+            set(self.lines, self.size.lines()) && set(self.columns, self.size.columns()),
+            || {
+                format!(
+                    "margins {:?} {:?} one line or column",
+                    self.lines, self.columns
+                )
+            },
+        )?;
+        crate::check::ensure(self.lr == (self.columns != self.size.columns()), || {
+            format!("lr {} with columns {:?}", self.lr, self.columns)
+        })
+    }
+
+    /// 36: the kitty keyboard stack holds at most its limit.
+    fn check_keyboard(&self) -> Result<(), String> {
+        crate::check::ensure(self.keyboard.0.len() <= KEYBOARD_STACK_LIMIT, || {
+            format!("{} kitty keyboard flags held", self.keyboard.0.len())
+        })
+    }
+
+    /// 24: each row's link runs inside its width, in order and apart.
+    fn check_link_runs(&self) -> Result<(), String> {
+        for (row, (_, width, _, links)) in self.checked_rows().enumerate() {
+            if let Some(links) = links {
+                links.check(width).map_err(|e| format!("row {row}: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 23 and 24: what the links held cost covers the links the rows have,
+    /// within the bound, and each with an `id` is found by it.
+    fn check_links_held(&self) -> Result<(), String> {
+        let links = self.checked_rows().filter_map(|(_, _, _, links)| links);
+        self.links.check(links)
+    }
+}
+
+/// The grid's checks, each shown a grid with its one fault (HAR-26): a
+/// check that stops checking fails here.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    /// A grid of 3 rows of 4, with a few rows of history.
+    fn grid() -> Result<Grid, Error> {
+        let size = Size::new(3, 4).map_err(|_| Error::Capacity)?;
+        let mut next = 1;
+        let mut grid = Grid::new(size, 1 << 12, &mut next, 1)?;
+        for _ in 0..5 {
+            let _ = grid.write_ascii(0, 0, b"ab", 0, 1);
+            grid.scroll(
+                size.lines(),
+                1,
+                Scroll::Up { history: true },
+                0,
+                &mut next,
+                1,
+            )?;
+        }
+        Ok(grid)
+    }
+
+    /// The checks that found a fault in `grid`.
+    fn faulted(grid: &Grid) -> Vec<&'static str> {
+        let mut report = crate::Report::default();
+        grid.check("grid", 1, &mut report);
+        report.faults().iter().map(|f| f.check).collect()
+    }
+
+    /// Whether `grid` is clean, and `fault` makes it fail `check` alone.
+    fn shows(check: &str, fault: impl FnOnce(&mut Grid)) -> Result<(), Error> {
+        let mut grid = grid()?;
+        assert_eq!(faulted(&grid), Vec::<&str>::new());
+        fault(&mut grid);
+        let found = faulted(&grid);
+        assert!(found.contains(&check), "{check}: {found:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn each_check_names_its_fault() -> Result<(), Error> {
+        shows("grid.order", |g| {
+            if let [first, second, ..] = g.order.slots.as_mut_slice() {
+                *first = *second;
+            }
+        })?;
+        shows("grid.slots", |g| {
+            g.texts.pop();
+        })?;
+        shows("grid.blank_past_used", |g| {
+            if let Some(cell) = g.cells.get_mut(1) {
+                *cell = Compact::ascii(b'x', 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 0);
+        })?;
+        shows("grid.wide_pairs", |g| {
+            if let Some(cell) = g.cells.get_mut(0) {
+                *cell = Compact::glyph('一', 2, 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.glyphs", |g| {
+            if let Some(cell) = g.cells.get_mut(0) {
+                *cell = Compact::glyph('\u{17d8}', 1, 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.text", |g| {
+            let long = "e\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
+            g.mutate_line(0, 1, 1, |line| line.set(0, Compact::glyph('e', 1, 0), long));
+            if let Some(&slot) = g.order.get(0)
+                && let Some(text) = g.texts.get_mut(slot)
+            {
+                *text = Text::default();
+            }
+        })?;
+        shows("grid.style_numbers", |g| {
+            if let Some(cell) = g.cells.get_mut(0) {
+                cell.set_style(crate::style::TABLE | 5);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.recent", |g| {
+            let bold = Attributes::default().with_bold(true);
+            if let Some(slot) = g.recent.get_mut(0) {
+                *slot = (bold, crate::style::TABLE | 3);
+            }
+        })?;
+        shows("grid.versions", |g| {
+            g.meta.iter_mut().for_each(|m| m.version = 2);
+        })?;
+        shows("grid.cursor", |g| g.cursor.row = 3)?;
+        shows("grid.margins", |g| g.lr = true)?;
+        shows("grid.keyboard", |g| g.keyboard.0.extend([1; 33]))?;
+        Ok(())
+    }
+}
+
+/// What a fault test needs of a grid it breaks on purpose.
+#[cfg(all(test, feature = "checks"))]
+impl Grid {
+    /// Gives live row `row` identity `id`, another row's maybe.
+    pub(crate) fn give_id(&mut self, row: u16, id: RowId) {
+        if let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) {
+            m.id = id;
+        }
+    }
+}

@@ -11,6 +11,12 @@ license = "MIT"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+# fux-vt's invariant checker and work counters, which the targets assert
+# after every operation.
+default = ["checks"]
+checks = ["fux-vt/checks"]
+
 [dependencies]
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 fux-vt = { path = ".." }

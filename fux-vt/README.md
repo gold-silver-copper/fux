@@ -330,6 +330,15 @@ their places. A stale mark forces a refresh; it never hides an update.
   `tests/versions.rs` checks identities and versions. Expected values come
   from the references or xterm, never from fux-vt, and each test cites its
   source.
+- **The `checks` feature**, off by default and for tests, fuzzing and
+  mutation runs only: `Work`, deterministic counters of the work fux-vt
+  does (cells written, rows walked, bytes scanned and the rest), which the
+  bounds suite (`tests/bounds.rs`) holds to each bound's constant per
+  input byte; and `Parser::check`, one invariant checker over the parser,
+  both screens, their history, styles, links, pictures and prints, which
+  says which checks ran and what each found. The invariant tests, the
+  oracle (`diff/`) and the fuzz targets call it after every operation.
+  Without the feature none of it is built.
 - **Fuzzing**: three targets in
   [`fuzz/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/fuzz/README.md),
   their corpora replayed nightly in CI.

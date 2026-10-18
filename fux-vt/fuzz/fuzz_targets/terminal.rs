@@ -8,6 +8,9 @@ use libfuzzer_sys::fuzz_target;
 mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
 mod invariants;
+#[cfg(feature = "checks")]
+#[path = "../../tests/corpus/known.rs"]
+mod known;
 
 /// Records replies and events so whole and byte-at-a-time processing can be
 /// compared; every event payload must respect the OSC bound.
@@ -302,7 +305,7 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         invariants::check(&whole);
-        invariants::equal(&whole, &split);
-        invariants::equal(&whole, &chunked);
+        invariants::same_feed(&whole, &split);
+        invariants::same_feed(&whole, &chunked);
     }
 });

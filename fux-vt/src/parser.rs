@@ -466,6 +466,21 @@ impl FrameScan {
     }
 }
 
+/// The frame scan's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl FrameScan {
+    /// 5: where the scan goes on is within `held`, the frame's bytes it
+    /// was given.
+    pub fn check(&self, held: &[u8]) -> crate::Report {
+        let mut report = crate::Report::default();
+        let found = crate::check::ensure(self.from <= held.len(), || {
+            format!("the scan goes on at {} of {} bytes", self.from, held.len())
+        });
+        report.record("frame_scan.from", "", found);
+        report
+    }
+}
+
 /// What a byte makes of a CSI or DCS in a [`Phase`].
 enum Next {
     /// It goes on, in this phase.
@@ -879,6 +894,71 @@ impl Parser {
             state: State::Ground,
             params: Parameters::default(),
             sixel: None,
+        })
+    }
+    /// Checks every invariant of the parser and its screen that the state
+    /// alone shows (threats.md section 6): which checks ran, and the faults
+    /// found. The work counters do not see it.
+    #[cfg(feature = "checks")]
+    pub fn check(&self) -> crate::Report {
+        crate::check::unseen(|| {
+            let mut report = crate::Report::default();
+            report.record("parser.osc", "", self.check_osc());
+            report.record("parser.params", "", self.check_params());
+            report.record("parser.sixel", "", self.check_sixel());
+            report.record("parser.utf8", "", self.check_utf8());
+            report.wait("parser.refused", "B44: Parser::refused");
+            report.merge(self.screen.check());
+            report
+        })
+    }
+    /// 1: the OSC payload held is within its limit, one byte past it
+    /// inside an OSC string, in room for no more than that.
+    #[cfg(feature = "checks")]
+    fn check_osc(&self) -> Result<(), String> {
+        let inside = matches!(self.state, State::Osc { .. });
+        let most = self.osc_limit.saturating_add(usize::from(inside));
+        crate::check::ensure(self.osc.len() <= most, || {
+            format!("{} OSC bytes held, {most} at most", self.osc.len())
+        })?;
+        let room = OSC_PAYLOAD_LIMIT.saturating_add(1);
+        crate::check::ensure(self.osc.capacity() <= room, || {
+            format!(
+                "room for {} OSC bytes, {room} at most (B20)",
+                self.osc.capacity()
+            )
+        })
+    }
+    /// 2: one parameter at least, and no more than are kept.
+    #[cfg(feature = "checks")]
+    fn check_params(&self) -> Result<(), String> {
+        let len = self.params.len;
+        crate::check::ensure((1..=self.params.values.len()).contains(&len), || {
+            format!("{len} parameters")
+        })
+    }
+    /// 3: a decoder exactly while in sixel data, and its picture within
+    /// what one may be.
+    #[cfg(feature = "checks")]
+    fn check_sixel(&self) -> Result<(), String> {
+        let sixel = matches!(self.state, State::Sixel);
+        crate::check::ensure(sixel == self.sixel.is_some(), || {
+            format!("in sixel {sixel}, with a decoder {}", self.sixel.is_some())
+        })?;
+        self.sixel
+            .as_ref()
+            .map_or(Ok(()), |decoder| decoder.check())
+    }
+    /// 4: a character's first bytes are fewer than its lead byte says.
+    #[cfg(feature = "checks")]
+    fn check_utf8(&self) -> Result<(), String> {
+        let State::Utf8(read) = self.state else {
+            return Ok(());
+        };
+        let [first, ..] = read.bytes;
+        let need = lead(first).map_or(0, |(need, _, _)| need);
+        crate::check::ensure(read.len >= 1 && usize::from(read.len) < need, || {
+            format!("{} bytes of a character of {need}", read.len)
         })
     }
     /// The screen, for a test to reach into.
@@ -1623,6 +1703,119 @@ impl Parser {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+/// The parser's checks, each shown a parser with its one fault (HAR-26),
+/// and the whole checker's report of what ran.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    fn parser() -> Result<Parser, Error> {
+        let options = Feature::ALL.into_iter().collect();
+        let size = Size::new(4, 8).map_err(|_| Error::Capacity)?;
+        Parser::with_options(size, 1 << 12, options)
+    }
+
+    fn shows(check: &str, fault: impl FnOnce(&mut Parser)) -> Result<(), Error> {
+        let mut parser = parser()?;
+        assert!(parser.check().is_clean(), "{}", parser.check());
+        fault(&mut parser);
+        let report = parser.check();
+        assert!(
+            report.faults_of(check).next().is_some(),
+            "{check}: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_check_names_its_fault() -> Result<(), Error> {
+        shows("parser.osc", |p| {
+            p.osc = vec![b'x'; OSC_PAYLOAD_LIMIT.saturating_add(2)]
+        })?;
+        shows("parser.params", |p| p.params.len = 0)?;
+        shows("parser.sixel", |p| p.state = State::Sixel)?;
+        shows("parser.utf8", |p| {
+            p.state = State::Utf8(Bytes {
+                bytes: [0xc3, 0xa9, 0, 0],
+                len: 2,
+            });
+        })?;
+        Ok(())
+    }
+
+    /// Every check of the checker runs on a parser, and is named in its
+    /// report: one dropped from `check` would not be.
+    #[test]
+    fn every_check_is_reported() -> Result<(), Error> {
+        let mut parser = parser()?;
+        parser.record_prints(true);
+        parser.process(b"hello\r\n\x1bPq#1~~\x1b\\")?;
+        let report = parser.check();
+        let every = [
+            "parser.osc",
+            "parser.params",
+            "parser.sixel",
+            "parser.utf8",
+            "grid.order",
+            "grid.slots",
+            "grid.blank_past_used",
+            "grid.wide_pairs",
+            "grid.glyphs",
+            "grid.text",
+            "grid.style_numbers",
+            "grid.recent",
+            "styles.table",
+            "grid.versions",
+            "grid.cursor",
+            "grid.margins",
+            "grid.keyboard",
+            "links.runs",
+            "links.held",
+            "history.counts",
+            "history.blocks",
+            "history.flags",
+            "history.budget",
+            "history.capacities",
+            "screen.ids",
+            "screen.structural",
+            "screen.tabs",
+            "pictures.count",
+            "pictures.bytes",
+            "pictures.shown",
+            "prints.runs",
+        ];
+        assert_eq!(report.ran(), every.as_slice(), "{report}");
+        assert!(report.is_clean(), "{report}");
+        let waiting: Vec<&str> = report.waiting().iter().map(|(check, _)| *check).collect();
+        assert!(waiting.contains(&"parser.refused") && waiting.contains(&"prints.cap"));
+        Ok(())
+    }
+
+    /// The checker does no work the counters see.
+    #[test]
+    fn the_checker_is_no_work() -> Result<(), Error> {
+        let mut parser = parser()?;
+        parser.process(b"hello\r\nworld")?;
+        let before = crate::Work::now();
+        let report = parser.check();
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(crate::Work::now(), before);
+        Ok(())
+    }
+
+    /// The frame scan goes on within what it was given.
+    #[test]
+    fn a_frame_scan_past_its_bytes_is_a_fault() -> Result<(), Error> {
+        let parser = parser()?;
+        let mut scan = parser.frame_scan();
+        assert_eq!(scan.end(b"\x1b[1"), None);
+        assert!(scan.check(b"\x1b[1").is_clean());
+        scan.from = 99;
+        assert!(!scan.check(b"\x1b[1").is_clean());
         Ok(())
     }
 }
