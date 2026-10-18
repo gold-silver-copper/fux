@@ -66,6 +66,10 @@ pub enum Timer {
     Frame(PaneId),
     /// A pane's paced input goes on (`Pane::pace_due`).
     Pace(PaneId),
+    /// A pane's output, waiting since the parser did all the work one call
+    /// may, is read on (`Pane::read_unread`): due at once, after the
+    /// server's other work of this turn.
+    Unread(PaneId),
 }
 
 /// Where a command comes from, which says what it acts on when it names no
@@ -1829,7 +1833,8 @@ impl Session {
             let typed = pane.input.due_at().map(|at| (at, Timer::Type(pane.id)));
             let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
             let paced = pane.pace_due().map(|at| (at, Timer::Pace(pane.id)));
-            typed.into_iter().chain(frame).chain(paced)
+            let unread = (pane.has_unread()).then(|| (Instant::now(), Timer::Unread(pane.id)));
+            typed.into_iter().chain(frame).chain(paced).chain(unread)
         })
     }
 
@@ -1840,6 +1845,7 @@ impl Session {
                 .into_iter()
                 .for_each(|p| p.input.type_now()),
             Timer::Frame(id) => self.read_with(id, Pane::release_frame),
+            Timer::Unread(id) => self.read_with(id, Pane::read_unread),
             Timer::Pace(id) => (self.panes.get_mut(&id))
                 .into_iter()
                 .for_each(|p| p.release_paced(Instant::now())),

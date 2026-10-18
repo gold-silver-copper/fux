@@ -667,8 +667,8 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
     let mut held = Vec::with_capacity(n.saturating_add(2));
     held.extend_from_slice(b"\x1b[");
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
-    let begun = probe.host(0, |p| p.process_until_frame(b"\x1b[?2026h", &mut Sinkless))?;
-    if !matches!(begun, Ok(Some((_, fux_vt::Frame::Begun)))) {
+    let begun = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut Sinkless))?;
+    if !matches!(begun, Ok(Some((_, fux_vt::Stop::Begun)))) {
         return Err(format!("no frame begun: {begun:?}"));
     }
     let mut scan = probe.parser.frame_scan();

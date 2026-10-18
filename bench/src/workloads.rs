@@ -431,6 +431,10 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         pane.resize(fux::pane::size(load.rows, load.cols));
         for piece in pieces(&load.bytes, PANE_PIECE) {
             pane.output(black_box(piece));
+            // What a call's budget left is read on the pane's next turns.
+            while pane.has_unread() {
+                pane.read_unread();
+            }
         }
     }
     black_box(pane.screen().cursor_position());
@@ -463,6 +467,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     for r in recordings.iter().take(8) {
         for (_, output) in &r.steps {
             s.output(pane, output);
+            unread(&mut s);
         }
     }
     s.hold_copies();
@@ -569,6 +574,7 @@ fn paint(
                         for &id in &panes {
                             s.output(id, piece);
                         }
+                        unread(&mut s);
                     }
                     units = units.saturating_add(read.len());
                     s.hold_copies();
@@ -786,6 +792,7 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
             for piece in pieces(read, PANE_PIECE) {
                 s.output(pane, piece);
             }
+            unread(&mut s);
             units = units.saturating_add(read.len());
             if baseline {
                 continue;
@@ -855,6 +862,24 @@ fn compile(baseline: bool, compiles: usize) -> Result<Done, String> {
         frames: 0,
         painted: 0,
     })
+}
+
+/// Reads what every pane's output left waiting at its call's budget
+/// (`Pane::read_unread`), as the server's next turns do, until none waits.
+fn unread(s: &mut fux::session::Session) {
+    loop {
+        let waiting: Vec<_> = (s.timers())
+            .filter_map(|(_, timer)| {
+                matches!(timer, fux::session::Timer::Unread(_)).then_some(timer)
+            })
+            .collect();
+        if waiting.is_empty() {
+            return;
+        }
+        for timer in waiting {
+            s.fire(timer);
+        }
+    }
 }
 
 #[cfg(test)]

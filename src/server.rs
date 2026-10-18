@@ -1121,7 +1121,12 @@ impl Server {
         }
         for (id, pane) in &self.session.panes {
             if let Process::Reading(child) = &pane.process {
-                let mut flags = PollFlags::IN;
+                // Output waiting to be read (`Pane::has_unread`) is read
+                // first: until it is, no more is taken from the program.
+                let mut flags = match pane.has_unread() {
+                    true => PollFlags::HUP,
+                    false => PollFlags::IN,
+                };
                 if !pane.input.is_empty() {
                     flags |= PollFlags::OUT;
                 }
@@ -1749,8 +1754,14 @@ impl Server {
             if total >= PANE_READ {
                 break false;
             }
-            let Some(Process::Reading(child)) = self.session.panes.get(&id).map(|p| &p.process)
-            else {
+            let Some(pane) = self.session.panes.get(&id) else {
+                return;
+            };
+            // Output already waits: it is read before any more is taken.
+            if pane.has_unread() {
+                break false;
+            }
+            let Process::Reading(child) = &pane.process else {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {

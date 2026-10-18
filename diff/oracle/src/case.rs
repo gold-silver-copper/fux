@@ -1,7 +1,7 @@
 //! A case: a parser's size, history and options, and the steps both sides
 //! take, each followed by a reading of everything (`observe`). Also how a
 //! case is written down to replay (`Case::to_text`) and read back.
-use crate::model::{Error, Heard, IDENTITIES, Selection, Setup};
+use crate::model::{Error, Heard, IDENTITIES, Selection, Setup, Stop};
 use crate::observe::{self, Readers};
 use crate::{Side, base, work};
 use std::fmt;
@@ -11,8 +11,8 @@ use std::fmt;
 pub enum Step {
     /// Output, in one call of `process_with`.
     Output(Vec<u8>),
-    /// Output through `process_until_frame`, called again after each frame
-    /// it stops at, until the bytes are used up.
+    /// Output through `process_until_stop`, called again after each stop
+    /// (a frame's start or end, or the budget), until the bytes are used up.
     Frame(Vec<u8>),
     /// A resize.
     Resize(u16, u16),
@@ -235,18 +235,18 @@ fn make<A: Side, B: Side>(case: &Case) -> Result<Option<(A, B)>, Difference> {
     }
 }
 
-/// `process_until_frame` over all of `bytes`, called again after each
-/// frame begins or ends: what each call returned.
+/// `process_until_stop` over all of `bytes`, called again after each
+/// stop: what each call returned.
 fn frames<S: Side>(
     s: &mut S,
     bytes: &[u8],
     heard: &mut Vec<Heard>,
-) -> Vec<Result<Option<(usize, bool)>, Error>> {
+) -> Vec<Result<Option<(usize, Stop)>, Error>> {
     let mut results = Vec::new();
     let mut rest = bytes;
     // At most a call a byte, and one more.
     for _ in 0..=bytes.len() {
-        let result = s.process_until_frame(rest, heard);
+        let result = s.process_until_stop(rest, heard);
         let taken = result.as_ref().ok().copied().flatten().map(|(n, _)| n);
         results.push(result);
         match taken.and_then(|n| rest.get(n..)) {
@@ -291,8 +291,8 @@ fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
                 let (mut ha, mut hb) = (Vec::new(), Vec::new());
                 let ra = frames(&mut a, bytes, &mut ha);
                 let rb = frames(&mut b, bytes, &mut hb);
-                same_list(at, "process_until_frame's results", &ra, &rb)?;
-                same_list(at, "what process_until_frame gave the host", &ha, &hb)?;
+                same_list(at, "process_until_stop's results", &ra, &rb)?;
+                same_list(at, "what process_until_stop gave the host", &ha, &hb)?;
                 count.bytes = count
                     .bytes
                     .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));

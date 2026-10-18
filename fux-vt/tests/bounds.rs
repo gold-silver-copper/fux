@@ -242,3 +242,91 @@ bound!("B42", b42_1x, b42_10x, b42_100x);
 bound!("B43", b43_1x, b43_10x, b43_100x);
 bound!("B44", b44_1x, b44_10x, b44_100x);
 bound!("B45", b45_1x, b45_10x, b45_100x);
+
+/// The per-call work budget (`threats.md` P24, decision 6): at fux's
+/// largest pane, 4095×4096, each class of screen-wide function stops a
+/// call at the budget, no call does more than the ceiling U, and the
+/// screen after every call equals that of one call given it all.
+mod budget {
+    use fux_vt::{Parser, Size, Stop, Work};
+
+    use super::{Result, one_at_a_time};
+
+    /// A host that hears nothing.
+    struct Deaf;
+    impl fux_vt::Sink for Deaf {}
+
+    /// The screen filled with `X`, then `each` 24 times: each one moves or
+    /// fills millions of cells, a few bytes apiece.
+    fn input(each: &str) -> Vec<u8> {
+        let mut input = b"\x1b[88;1;1;4095;4096$x".to_vec();
+        for _ in 0..24 {
+            input.extend_from_slice(each.as_bytes());
+        }
+        input
+    }
+
+    /// Feeds `input` whole to one parser, and to another by
+    /// `process_until_stop`, given the rest again after each stop: each
+    /// call under U, the budget stopping some, and the two screens alike.
+    fn budgeted(each: &str) -> Result {
+        let _one = one_at_a_time();
+        let input = input(each);
+        let size = Size::new(4095, 4096)?;
+        let mut whole = Parser::new(size, 0)?;
+        whole.process(&input)?;
+        let mut parser = Parser::new(size, 0)?;
+        let (mut rest, mut stops) = (&input[..], 0u32);
+        while !rest.is_empty() {
+            let before = Work::now();
+            let stop = parser.process_until_stop(rest, &mut Deaf)?;
+            let done = Work::now().since(before);
+            assert!(
+                done.cost() <= Work::CEILING,
+                "{each:?}: a call did {} units, past U: {done:?}",
+                done.cost() / 20
+            );
+            match stop {
+                None => break,
+                Some((taken, Stop::Budget)) if taken > 0 => {
+                    stops = stops.saturating_add(1);
+                    rest = rest.get(taken..).unwrap_or_default();
+                }
+                Some(other) => return Err(format!("{each:?}: stopped as {other:?}").into()),
+            }
+        }
+        assert!(stops >= 2, "{each:?}: {stops} stops");
+        let (a, b) = (whole.screen(), parser.screen());
+        assert_eq!(a.cursor_position(), b.cursor_position(), "{each:?}");
+        assert!(
+            a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
+            "{each:?}: the screens differ"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn column_edits_stop_at_the_budget() -> Result {
+        for each in ["\x1b[9'}", "\x1b[9'~", "\x1b[9 @", "\x1b[9 A"] {
+            budgeted(each)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rectangle_copies_stop_at_the_budget() -> Result {
+        budgeted("\x1b[1;1;4095;4090;1;1;7;1$v")
+    }
+
+    #[test]
+    fn rectangle_fills_and_erases_stop_at_the_budget() -> Result {
+        for each in [
+            "\x1b[89;1;2;4095;4096$x",
+            "\x1b[1;2;4095;4096$z",
+            "\x1b[1;2;4095;4096${",
+        ] {
+            budgeted(each)?;
+        }
+        Ok(())
+    }
+}

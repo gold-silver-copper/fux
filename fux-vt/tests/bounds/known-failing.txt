@@ -1,9 +1,6 @@
 # The bound rows known to fail at BASE (9a38df95): a row and a scale a
 # line, then why, as measured. tests/bounds.rs reads it; a fix takes its
 # rows off (a row on it that passes fails the suite).
-B01 1x  placing a picture finds each kept one's rows by a scan of history: 15 M to 89 M rows in one 4 KiB call, past U (SIX-7)
-B01 10x  placing a picture finds each kept one's rows by a scan of history: 15 M to 89 M rows in one 4 KiB call, past U (SIX-7)
-B02 10x  placing a picture checks every kept one through history: 38 M rows in one call, past U (SIX-7)
 B05 1x  placing a picture finds each kept one's rows by a scan of history: 15 M to 89 M rows in one 4 KiB call, past U (SIX-7)
 B05 10x  placing a picture finds each kept one's rows by a scan of history: 15 M to 89 M rows in one 4 KiB call, past U (SIX-7)
 B09 1x  pictures() finds each placement's row by a scan of history: 2.1 G rows in a call (SIX-7, SCR-34)
@@ -46,8 +43,6 @@ B44 1x  waits on a fail switch in crate::reserve and Parser::refused (SCR-10, PA
 B44 10x  waits on a fail switch in crate::reserve and Parser::refused (SCR-10, PAR-3)
 B45 1x  waits on each encoder's stated maximum (KEY-4)
 B45 10x  waits on each encoder's stated maximum (KEY-4)
-B01 100x  placing a picture finds each kept one's rows by a scan of history: 15 M to 89 M rows in one 4 KiB call, past U (SIX-7)
-B02 100x  placing a picture checks every kept one through history: 38 M rows in one call, past U (SIX-7)
 B05 100x  placing a picture finds each kept one's rows by a scan of history: 15 M to 89 M rows in one 4 KiB call, past U (SIX-7)
 B09 100x  pictures() finds each placement's row by a scan of history: 2.1 G rows in a call (SIX-7, SCR-34)
 B11 100x  the ring and maps keep their room as the style table trims history, uncounted: 8.1 MB at the peak, past the formula's 7.06 MB (SCR-6, SCR-14)

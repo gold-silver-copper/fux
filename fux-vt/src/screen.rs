@@ -414,7 +414,7 @@ pub struct Screen {
     /// them only then. Set at DECSCA 1 and SPA; RIS clears it.
     protected: bool,
     /// How many times synchronized output has been set, for
-    /// `Parser::process_until_frame`.
+    /// `Parser::process_until_stop`.
     frames_begun: u64,
     /// What RIS starts again.
     terminal: Terminal,
@@ -1660,15 +1660,16 @@ impl Screen {
             .saturating_add(g.history_bytes())
             .saturating_add(1);
         let full = lines.saturating_mul(per_row);
-        let mut count = usize::from(count);
-        #[cfg(feature = "checks")]
-        let asked = count;
+        let asked = usize::from(count);
+        let mut count = asked;
         if let Some(beyond) = count.checked_sub(full) {
             count = full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0));
         }
         // A copy skipped is a unit, as one printed is: a path that printed
-        // every copy would show (threats.md B34).
+        // every copy would show (threats.md B34). Every copy is spent from
+        // the call's budget here; printing counts the ones made.
         work!(cells, asked.saturating_sub(count));
+        crate::budget::spend(crate::budget::units(asked), crate::budget::weight::cells);
         if let Ok(byte) = u8::try_from(c)
             && (0x20..=0x7e).contains(&byte)
         {
@@ -2080,6 +2081,10 @@ impl Screen {
     fn shift_columns(&mut self, from: u16, count: u16, right: bool) {
         let blank = self.blank_style();
         self.with_grid(|g, _, version| {
+            // Every line of the region, a row each (`budget`): ICH and DCH,
+            // a row's edit, spend nothing.
+            let cells = usize::from(g.lines.len()).saturating_mul(usize::from(g.size().cols()));
+            crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
             for y in g.lines.first()..=g.lines.last() {
                 g.edit_row(y, from, count, right, blank, version);
             }
@@ -2164,7 +2169,7 @@ impl Screen {
         for y in 0..g.size().rows() {
             let filled = !g.live_row(y).is_some_and(|r| r.has_links())
                 && g.live_cells(y).iter().all(|c| c.is_ascii(b'E', plain));
-            work!(cells, cols);
+            spend!(cells, cols);
             if !filled {
                 // Erased whole first: its long clusters' text and its links
                 // go, as an erase takes them.
@@ -2283,7 +2288,7 @@ impl Screen {
         let g = self.grid();
         let mut sum = 0u16;
         if let Some((lines, columns)) = self.rectangle(p, 2) {
-            work!(
+            spend!(
                 cells,
                 usize::from(lines.len()).saturating_mul(usize::from(columns.len()))
             );
@@ -2329,6 +2334,14 @@ impl Screen {
         };
         self.break_cluster();
         let span = (columns.first(), columns.end());
+        // A fill or an erase of each row's span, its wide glyphs' halves
+        // erased first: twice the rectangle's cells (`budget`). DECCRA's
+        // copy spends as it goes.
+        if byte != b'v' {
+            let cells = usize::from(lines.len()).saturating_mul(usize::from(columns.len()));
+            let cells = cells.saturating_mul(2);
+            crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
+        }
         match byte {
             // DECFRA: Pch from 32 to 126 is that character in GL's set,
             // 160 to 255 in GR's, Latin-1; another is ignored. The cells
@@ -2844,6 +2857,7 @@ impl Screen {
                         b'M' => Scroll::Up { history: false },
                         _ => Scroll::Down,
                     };
+                    spend_scroll(region, n, self.size());
                     self.scroll(region, n, direction)?;
                 }
             }
@@ -2853,6 +2867,7 @@ impl Screen {
                     b'S' => Scroll::Up { history: true },
                     _ => Scroll::Down,
                 };
+                spend_scroll(lines, n, self.size());
                 self.scroll(lines, n, direction)?;
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
@@ -3228,4 +3243,18 @@ mod faults {
         })?;
         Ok(())
     }
+}
+
+/// What IL, DL, SU or SD of `count` lines of `region` spends (`budget`):
+/// each row it brings in, its cells blanked and coloured, and the region's
+/// slots it moves. A line feed spends nothing: a byte each, it does at
+/// most a row's work.
+fn spend_scroll(region: Span, count: u16, size: Size) {
+    let rows = usize::from(count.min(region.len()));
+    let cells = rows
+        .saturating_mul(usize::from(size.cols()))
+        .saturating_mul(2);
+    let slots = rows.saturating_mul(usize::from(region.len()));
+    crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
+    crate::budget::spend(crate::budget::units(slots), crate::budget::weight::slots);
 }

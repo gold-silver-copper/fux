@@ -4,8 +4,8 @@
 //! stay fux's policy: no events and the original reply set.
 
 use fux_vt::{
-    Attributes, CellRef, Cells, Color, Event, Feature, Frame, Mode, OSC_PAYLOAD_LIMIT, Options,
-    Parser, Sink, Size,
+    Attributes, CellRef, Cells, Color, Event, Feature, Mode, OSC_PAYLOAD_LIMIT, Options, Parser,
+    Sink, Size, Stop,
 };
 #[path = "corpus/pieces.rs"]
 mod pieces;
@@ -282,43 +282,43 @@ fn synchronized_output_is_tracked_and_ended() -> Result {
     Ok(())
 }
 
-/// `Parser::process_until_frame` stops right after the sequence that sets
+/// `Parser::process_until_stop` stops right after the sequence that sets
 /// synchronized output, wherever it is: alone, beside other modes, or split
 /// across calls; and reads everything when none does.
 #[test]
-fn process_until_frame_stops_after_the_sequence_that_sets_2026() -> Result {
+fn process_until_stop_stops_after_the_sequence_that_sets_2026() -> Result {
     let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
-    let begun = |n| Some((n, Frame::Begun));
+    let begun = |n| Some((n, Stop::Begun));
     assert_eq!(
-        p.process_until_frame(b"ab\x1b[?2026hcd", &mut sink)?,
+        p.process_until_stop(b"ab\x1b[?2026hcd", &mut sink)?,
         begun(10)
     );
     p.process(b"\x1b[?2026l")?;
     assert_eq!(
-        p.process_until_frame(b"\x1b[?25;2026h!", &mut sink)?,
+        p.process_until_stop(b"\x1b[?25;2026h!", &mut sink)?,
         begun(11)
     );
     p.process(b"\x1b[?2026l")?;
-    assert_eq!(p.process_until_frame(b"x\x1b[?20", &mut sink)?, None);
-    assert_eq!(p.process_until_frame(b"26hy", &mut sink)?, begun(3));
+    assert_eq!(p.process_until_stop(b"x\x1b[?20", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"26hy", &mut sink)?, begun(3));
     // Set again while set: each set begins a frame.
-    assert_eq!(p.process_until_frame(b"\x1b[?2026h", &mut sink)?, begun(8));
+    assert_eq!(p.process_until_stop(b"\x1b[?2026h", &mut sink)?, begun(8));
     p.process(b"\x1b[?2026l")?;
-    assert_eq!(p.process_until_frame(b"plain text\r\n", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"plain text\r\n", &mut sink)?, None);
     Ok(())
 }
 
-/// `Parser::process_until_frame` stops right after whatever resets
+/// `Parser::process_until_stop` stops right after whatever resets
 /// synchronized output while it is set (ESU, beside other modes or split
 /// across calls; XTRESTORE of it saved reset; DECSTR; RIS), so a host that
 /// reads output as it comes knows the frame is whole; a reset while it is
 /// not set ends nothing.
 #[test]
-fn process_until_frame_stops_after_the_sequence_that_ends_a_frame() -> Result {
+fn process_until_stop_stops_after_the_sequence_that_ends_a_frame() -> Result {
     let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
-    let ended = |n| Some((n, Frame::Ended));
+    let ended = |n| Some((n, Stop::Ended));
     p.process(b"\x1b[?2026s")?;
     for (end, what) in [
         (&b"\x1b[?2026lz"[..], "ESU"),
@@ -330,35 +330,35 @@ fn process_until_frame_stops_after_the_sequence_that_ends_a_frame() -> Result {
         p.process(b"\x1b[?2026h")?;
         let taken = end.len().saturating_sub(1);
         assert_eq!(
-            p.process_until_frame(end, &mut sink)?,
+            p.process_until_stop(end, &mut sink)?,
             ended(taken),
             "{what}"
         );
     }
     p.process(b"\x1b[?2026h")?;
-    assert_eq!(p.process_until_frame(b"ab\x1b[?20", &mut sink)?, None);
-    assert_eq!(p.process_until_frame(b"26l", &mut sink)?, ended(3));
-    assert_eq!(p.process_until_frame(b"\x1b[?2026l\x1bc", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"ab\x1b[?20", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"26l", &mut sink)?, ended(3));
+    assert_eq!(p.process_until_stop(b"\x1b[?2026l\x1bc", &mut sink)?, None);
     Ok(())
 }
 
 /// A frame begun by XTRESTORE (`CSI ? 2026 r`, the mode saved set) stops
-/// `process_until_frame` right after it, as one begun by BSU does; and an
+/// `process_until_stop` right after it, as one begun by BSU does; and an
 /// `h` read afterwards, inside a string or not, stops nothing.
 #[test]
-fn process_until_frame_stops_after_an_xtrestore_that_begins_a_frame() -> Result {
+fn process_until_stop_stops_after_an_xtrestore_that_begins_a_frame() -> Result {
     let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
     p.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
     assert_eq!(
-        p.process_until_frame(b"\x1b[?2026r\x1b]2;hello\x07", &mut sink)?,
-        Some((8, Frame::Begun))
+        p.process_until_stop(b"\x1b[?2026r\x1b]2;hello\x07", &mut sink)?,
+        Some((8, Stop::Begun))
     );
     assert!(p.screen().mode(Mode::SynchronizedOutput));
     // An `h` in a string, or printed, after the frame's sequence is read.
     p.process(b"\x1b[?2026l")?;
     assert_eq!(
-        p.process_until_frame(b"\x1b[?1h\x1b]2;hhh\x07hh\x1bh", &mut sink)?,
+        p.process_until_stop(b"\x1b[?1h\x1b]2;hhh\x07hh\x1bh", &mut sink)?,
         None
     );
     Ok(())

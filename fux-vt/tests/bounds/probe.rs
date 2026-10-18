@@ -214,20 +214,31 @@ impl Probe {
         (self.fed, self.parsed, self.calls, self.work) = (0, 0, 0, Work::ZERO);
     }
 
-    /// Feeds `bytes`, `chunk` at a time, checking after each call that it
-    /// stayed under the ceiling, and that the work so far and the heap are
-    /// within the bound.
+    /// Feeds `bytes`, `chunk` at a time, as fux does: each piece by
+    /// `process_until_stop`, given again from where a call stopped until
+    /// none of it is left, each call its own. It checks after each call
+    /// that it stayed under the ceiling, and that the work so far and the
+    /// heap are within the bound.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), String> {
         for piece in pieces(bytes, self.chunk) {
-            let before = Work::now();
-            self.parser
-                .process_with(piece, &mut self.replies)
-                .map_err(|e| format!("a call failed: {e}"))?;
-            let done = Work::now().since(before);
-            self.parsed = self
-                .parsed
-                .saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
-            self.add(done, piece.len())?;
+            let mut rest = piece;
+            while !rest.is_empty() {
+                let before = Work::now();
+                let stop = self
+                    .parser
+                    .process_until_stop(rest, &mut self.replies)
+                    .map_err(|e| format!("a call failed: {e}"))?;
+                let done = Work::now().since(before);
+                let taken = stop.map_or(rest.len(), |(taken, _)| taken);
+                if taken == 0 {
+                    return Err(format!("a call stopped before any byte: {stop:?}"));
+                }
+                self.parsed = self
+                    .parsed
+                    .saturating_add(u64::try_from(taken).unwrap_or(u64::MAX));
+                self.add(done, taken)?;
+                rest = rest.get(taken..).unwrap_or_default();
+            }
         }
         Ok(())
     }

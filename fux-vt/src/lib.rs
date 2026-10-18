@@ -62,14 +62,31 @@ macro_rules! reply {
 /// Counts `n` units of work of the kind `counter` names (threats.md 4.1),
 /// with the `checks` feature; without it, nothing at all, so a build without
 /// it carries no trace of the count: `work!(cells, n)` expands to
-/// `#[cfg(feature = "checks")] crate::work::add(|w| w.cells(crate::work::units(n)));`.
+/// `#[cfg(feature = "checks")] crate::work::add(|w| w.cells(crate::budget::units(n)));`.
 macro_rules! work {
     ($counter:ident, $n:expr) => {
         #[cfg(feature = "checks")]
-        $crate::work::add(|w| w.$counter($crate::work::units($n)));
+        $crate::work::add(|w| w.$counter($crate::budget::units($n)));
     };
 }
 
+/// Counts `n` units of work of the kind `counter` names, as `work!` does,
+/// and spends them from the call's budget too (`budget`, threats.md P24),
+/// with or without the `checks` feature: for the work one sequence can
+/// multiply. `spend!(cells, n)` expands to
+/// `{ let n = crate::budget::units(n); crate::budget::spend(n,
+/// crate::budget::weight::cells); #[cfg(feature = "checks")]
+/// crate::work::add(|w| w.cells(n)); }`.
+macro_rules! spend {
+    ($counter:ident, $n:expr) => {{
+        let n = $crate::budget::units($n);
+        $crate::budget::spend(n, $crate::budget::weight::$counter);
+        #[cfg(feature = "checks")]
+        $crate::work::add(|w| w.$counter(n));
+    }};
+}
+
+mod budget;
 pub mod bytes;
 mod cell;
 #[cfg(feature = "checks")]
@@ -103,7 +120,7 @@ pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};
 pub use parser::{
-    Event, Feature, Frame, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink,
+    Event, Feature, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Stop,
     Unhandled,
 };
 pub use screen::{

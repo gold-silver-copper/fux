@@ -172,7 +172,7 @@ compared by number); `process` and `process_with_replies`, which are
 - **Random cases** from fux-vt-compare's families
   (`fux-vt/compare/src/families.rs`, included by path, so a new family is
   drawn here too) at random sizes, histories and options, with resizes,
-  `process_until_frame`, copies, and output cut anywhere.
+  `process_until_stop`, copies, and output cut anywhere.
 - **Resize streams:** history full, a resize every few lines, wide glyphs,
   clusters, links and prompt marks, with reflow and without.
 - **The limits:** OSC strings, links, clusters, parameters and sizes at and

@@ -9,6 +9,15 @@
 use std::fmt::{self, Write};
 
 /// A colour.
+/// Why `Parser::process_until_stop` stopped: a frame began or ended, or
+/// the call spent its work budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    Begun,
+    Ended,
+    Budget,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Color {
     Default,

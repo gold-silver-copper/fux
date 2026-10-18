@@ -338,7 +338,7 @@ enum Phase {
 }
 
 /// Where a frame drawn in synchronized output ends, read from the bytes
-/// a host holds after its BSU ([`Parser::process_until_frame`]) as the
+/// a host holds after its BSU ([`Parser::process_until_stop`]) as the
 /// parser will read them, nothing carried out. ESC begins a sequence
 /// anywhere, in a string too, so only what follows each ESC is read: as
 /// `Parser::byte` reads an escape sequence or a CSI (`Phase::next`, the
@@ -792,11 +792,11 @@ impl FromIterator<Feature> for Options {
     }
 }
 
-/// What a sequence did to a frame drawn in synchronized output
-/// ([`Mode::SynchronizedOutput`]), for [`Parser::process_until_frame`] to
-/// stop after.
+/// Why [`Parser::process_until_stop`] stopped before the end of its bytes:
+/// a sequence began or ended a frame drawn in synchronized output
+/// ([`Mode::SynchronizedOutput`]), or the call spent its work budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Frame {
+pub enum Stop {
     /// It set the mode (BSU, `CSI ? 2026 h`, or XTRESTORE of it saved
     /// set), even while it was set: a frame begins.
     Begun,
@@ -804,6 +804,14 @@ pub enum Frame {
     /// 2026 l`, beside other modes too), XTRESTORE of it saved reset,
     /// DECSTR and RIS do. A resize ends it too, which the host makes.
     Ended,
+    /// The call did as much work as one call may (threats.md P24: half of
+    /// the 50 M weighted units a 4 KiB call may do, so that what crossed it
+    /// fits in the rest). Nothing is lost: the parser stopped between two
+    /// bytes, and goes on from the next byte when it is given it. A host
+    /// that reads many programs on one thread gives it later, after the
+    /// others had their turn; one that has nothing else to do may give it
+    /// at once.
+    Budget,
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
@@ -952,6 +960,14 @@ pub struct Parser {
     params: Parameters,
     /// The picture sixel data is drawing, in `State::Sixel`.
     sixel: Option<Box<crate::sixel::Decoder>>,
+    /// The work `process_until_stop` spent since it last stopped at the
+    /// budget ([`Stop::Budget`]), over as many calls as that took: so a
+    /// host that cuts its reads small still stops at the budget.
+    spent: u64,
+    /// Where this thread's spending (`budget::spent`) reaches the budget,
+    /// in the call of `process_until_stop` under way; `u64::MAX` in one of
+    /// `process_with`, which does not stop.
+    end: u64,
 }
 #[cfg(test)]
 mod tests;
@@ -983,6 +999,8 @@ impl Parser {
             state: State::Ground,
             params: Parameters::default(),
             sixel: None,
+            spent: 0,
+            end: u64::MAX,
         })
     }
     /// Checks every invariant of the parser and its screen that the state
@@ -1192,22 +1210,36 @@ impl Parser {
     }
     /// Process output as [`Parser::process_with`] does, but stop right after
     /// a sequence that begins or ends a frame drawn in synchronized output
-    /// ([`Frame`]), and say how many bytes that took and which it did;
-    /// `None` if no sequence did, and every byte was processed. Found
-    /// exactly as the parser reads it: split across calls, or beside other
-    /// modes in one sequence. A host that holds a program's frames holds
-    /// the rest from a [`Frame::Begun`] on, unread, until
-    /// [`Parser::frame_scan`] finds its end; one that reads output as it
-    /// comes learns from a [`Frame::Ended`] that the frame is whole.
-    pub fn process_until_frame(
+    /// ([`Stop::Begun`], [`Stop::Ended`]), or at the byte where the call has
+    /// spent its work budget ([`Stop::Budget`]), and say how
+    /// many bytes that took and why it stopped; `None` if it did not, and
+    /// every byte was processed. A frame's start or end is found exactly
+    /// as the parser reads it: split across calls, or beside other modes in
+    /// one sequence. A host that holds a program's frames holds the rest
+    /// from a [`Stop::Begun`] on, unread, until [`Parser::frame_scan`]
+    /// finds its end; one that reads output as it comes learns from a
+    /// [`Stop::Ended`] that the frame is whole. After a [`Stop::Budget`],
+    /// the rest is given again, in a later call.
+    ///
+    /// The budget is half the 50 M weighted units one 4 KiB call may do
+    /// (threats.md 4.4, P24), spent by the work a few bytes can multiply: a
+    /// rectangle or a column edit, a scroll, REP, a search of history. It
+    /// runs over calls, from one budget stop to the next, so it stops a
+    /// host that cuts its reads small as well; a host stopped this way
+    /// has had at most that much work done since the last stop, plus
+    /// what the sequence that crossed it did.
+    ///
+    /// [`Parser::process_with`] is this call given the rest again until
+    /// none is left: its work has no ceiling but the bytes it is given.
+    pub fn process_until_stop(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Frame)>, Error> {
+    ) -> Result<Option<(usize, Stop)>, Error> {
         self.run::<true>(bytes, sink)
     }
-    /// A [`FrameScan`] for the frame [`Parser::process_until_frame`] just
-    /// stopped at the start of ([`Frame::Begun`]).
+    /// A [`FrameScan`] for the frame [`Parser::process_until_stop`] just
+    /// stopped at the start of ([`Stop::Begun`]).
     pub fn frame_scan(&self) -> FrameScan {
         FrameScan {
             from: 0,
@@ -1217,19 +1249,26 @@ impl Parser {
             saved: self.screen.saved_mode(Mode::SynchronizedOutput),
         }
     }
-    /// Processes `bytes`, stopping after a frame begins or ends if
-    /// `UNTIL_FRAME`; how many bytes it took if it stopped, and which. A
-    /// constant, so that `process_with`, which does not stop, compiles
-    /// without the check for one.
-    fn run<const UNTIL_FRAME: bool>(
+    /// Processes `bytes`, stopping after a frame begins or ends, or once
+    /// [`crate::budget::LIMIT`] is spent since the last budget stop, if
+    /// `UNTIL_STOP`; how many
+    /// bytes it took if it stopped, and why. A constant, so that
+    /// `process_with`, which does not stop, compiles without the checks for
+    /// a stop.
+    fn run<const UNTIL_STOP: bool>(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Frame)>, Error> {
+    ) -> Result<Option<(usize, Stop)>, Error> {
         if bytes.is_empty() {
             return Ok(None);
         }
         self.screen.begin();
+        let start = crate::budget::spent();
+        self.end = match UNTIL_STOP {
+            true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
+            false => u64::MAX,
+        };
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
@@ -1254,21 +1293,44 @@ impl Parser {
             } else if ground && byte == 0x1b {
                 let (length, framed) = self.sequence(remaining, sink)?;
                 remaining = remaining.get(length..).unwrap_or_default();
-                framed
+                framed.or_else(|| self.over::<UNTIL_STOP>())
             } else {
                 remaining = tail;
-                self.byte(byte, sink)?
+                self.byte(byte, sink)?.or_else(|| self.over::<UNTIL_STOP>())
             };
             // A sequence that began or ended a frame ends whatever was
-            // taken: stop right after it.
-            if UNTIL_FRAME && let Some(frame) = framed {
+            // taken, and so does one that spent the budget (`over`): stop
+            // right after it.
+            if UNTIL_STOP && let Some(stop) = framed {
+                self.spend_since(start, stop);
                 let taken = bytes.len().saturating_sub(remaining.len());
                 work!(bytes, taken);
-                return Ok(Some((taken, frame)));
+                return Ok(Some((taken, stop)));
             }
+        }
+        if UNTIL_STOP {
+            self.spend_since(start, Stop::Ended);
         }
         work!(bytes, bytes.len());
         Ok(None)
+    }
+    /// Keeps what was spent since `start`, in a call that stopped as `stop`
+    /// says (or ended, as for a frame's end): all of it, until a stop at the
+    /// budget begins the next budget.
+    fn spend_since(&mut self, start: u64, stop: Stop) {
+        self.end = u64::MAX;
+        self.spent = match stop {
+            Stop::Budget => 0,
+            Stop::Begun | Stop::Ended => {
+                (self.spent).saturating_add(crate::budget::spent().saturating_sub(start))
+            }
+        };
+    }
+    /// [`Stop::Budget`] if the call under way stops at its budget
+    /// (`UNTIL_STOP`) and spent it.
+    #[inline]
+    fn over<const UNTIL_STOP: bool>(&self) -> Option<Stop> {
+        (UNTIL_STOP && crate::budget::spent() >= self.end).then_some(Stop::Budget)
     }
     /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
     /// at once rather than byte by byte, and says how many
@@ -1296,7 +1358,7 @@ impl Parser {
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<(usize, Option<Frame>), Error> {
+    ) -> Result<(usize, Option<Stop>), Error> {
         if bytes.get(1) == Some(&b'[') {
             return self.csi_sequence(bytes, sink);
         }
@@ -1337,7 +1399,7 @@ impl Parser {
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<(usize, Option<Frame>), Error> {
+    ) -> Result<(usize, Option<Stop>), Error> {
         self.params.clear();
         // The parameter being read and how many there are, kept here
         // rather than in `params` until the sequence ends or this does: one
@@ -1495,7 +1557,7 @@ impl Parser {
 
     /// Reads one byte; whether it ended a sequence that began or ended a
     /// frame.
-    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<Option<Frame>, Error> {
+    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<Option<Stop>, Error> {
         let state = self.state;
         if matches!(state, State::Ground) {
             return self.ground(byte, sink).map(|()| None);
@@ -1651,7 +1713,7 @@ impl Parser {
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<Option<Frame>, Error> {
+    ) -> Result<Option<Stop>, Error> {
         let framing = self.screen.mode(Mode::SynchronizedOutput);
         // DECID, the VT100's request for its identity, which the VT220
         // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
@@ -1666,19 +1728,19 @@ impl Parser {
             });
         }
         let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
-        Ok(ended.then_some(Frame::Ended))
+        Ok(ended.then_some(Stop::Ended))
     }
 
     /// Carries out the CSI sequence whose final byte is `byte`, its
     /// parameters collected; whether it began a frame (set synchronized
     /// output) or ended one (reset it while set), for
-    /// `Parser::process_until_frame` to stop after.
+    /// `Parser::process_until_stop` to stop after.
     fn csi_dispatch(
         &mut self,
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<Option<Frame>, Error> {
+    ) -> Result<Option<Stop>, Error> {
         let (begun, framing) = (
             self.screen.frames_begun(),
             self.screen.mode(Mode::SynchronizedOutput),
@@ -1687,10 +1749,10 @@ impl Parser {
             .screen
             .csi(&self.params, intermediates, byte, &self.options)?;
         let framed = if self.screen.frames_begun() != begun {
-            Some(Frame::Begun)
+            Some(Stop::Begun)
         } else {
             let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
-            ended.then_some(Frame::Ended)
+            ended.then_some(Stop::Ended)
         };
         match dispatch {
             Dispatch::Done => {}

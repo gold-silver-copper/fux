@@ -17,7 +17,7 @@
 //!   1,100 columns or more (`n` picks), or to 65,535 by 65,535.
 //! - `fe` and eight bytes: a window (offset, rows, columns), two corners
 //!   and the copy's cell and byte limits.
-//! - `fd n` and n bytes: output through `process_until_frame`.
+//! - `fd n` and n bytes: output through `process_until_stop`.
 //! - `fc n` and n bytes: a character of fux-vt's grapheme table for each,
 //!   so clusters of every kind come often.
 //! - Any other byte `b`: the next `b + 1` bytes as output.

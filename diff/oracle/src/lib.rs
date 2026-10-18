@@ -43,7 +43,7 @@ mod rng;
 pub use case::{Case, Count, Difference, Step, check};
 pub use side::{base, work};
 
-use model::{Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State};
+use model::{Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State, Stop};
 
 /// One side: a parser of one fux-vt, read into the model.
 pub trait Side: Clone {
@@ -53,13 +53,13 @@ pub trait Side: Clone {
     fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error>;
     /// `Parser::process_with`, with what it gave the host.
     fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error>;
-    /// `Parser::process_until_frame`: how many bytes it took if it
-    /// stopped, and whether a frame began there (else one ended).
-    fn process_until_frame(
+    /// `Parser::process_until_stop`: how many bytes it took if it
+    /// stopped, and why: a frame began or ended, or the budget was spent.
+    fn process_until_stop(
         &mut self,
         bytes: &[u8],
         heard: &mut Vec<Heard>,
-    ) -> Result<Option<(usize, bool)>, Error>;
+    ) -> Result<Option<(usize, Stop)>, Error>;
     /// `Parser::resize`.
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error>;
     /// Everything about the screen but its rows.

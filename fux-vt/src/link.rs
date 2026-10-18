@@ -325,11 +325,9 @@ impl Links {
         }
         // Each run, each history row's share, each `id` and the sort's
         // steps, ⌈log2 runs⌉ × runs ÷ 16 (threats.md B16).
-        #[cfg(feature = "checks")]
         let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
-        #[cfg(feature = "checks")]
         let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
-        work!(
+        spend!(
             links,
             seen.len()
                 .saturating_add(len)

@@ -248,23 +248,31 @@ impl Sink for Log {
 }
 
 /// `Parser::run` with every byte through `byte`, the general path every
-/// fast path keeps.
+/// fast path keeps, the budget's stops included.
 fn scalar(
     parser: &mut Parser,
     bytes: &[u8],
-    until_frame: bool,
+    until_stop: bool,
     sink: &mut impl Sink,
-) -> Result<Option<(usize, Frame)>, Error> {
+) -> Result<Option<(usize, Stop)>, Error> {
     if bytes.is_empty() {
         return Ok(None);
     }
     parser.screen.begin();
+    let start = crate::budget::spent();
+    parser.end = match until_stop {
+        true => start.saturating_add(crate::budget::LIMIT.saturating_sub(parser.spent)),
+        false => u64::MAX,
+    };
     for (i, &byte) in bytes.iter().enumerate() {
-        if let Some(frame) = parser.byte(byte, sink)?
-            && until_frame
-        {
-            return Ok(Some((i.saturating_add(1), frame)));
+        let framed = parser.byte(byte, sink)?.or_else(|| parser.over::<true>());
+        if until_stop && let Some(stop) = framed {
+            parser.spend_since(start, stop);
+            return Ok(Some((i.saturating_add(1), stop)));
         }
+    }
+    if until_stop {
+        parser.spend_since(start, Stop::Ended);
     }
     Ok(None)
 }
@@ -284,7 +292,7 @@ fn options(r: &mut Rng) -> Options {
 /// escape sequences read in a loop of their own) does exactly what the
 /// general path, every byte through `byte`, does: random bytes, mostly
 /// escape sequences of every shape, in random pieces, at random sizes and
-/// options, through `process_with` and `process_until_frame`; after every
+/// options, through `process_with` and `process_until_stop`; after every
 /// piece the two parsers' whole state, as `Debug` shows it, everything
 /// their sinks were given, and what each call returned are the same.
 #[test]
@@ -349,7 +357,7 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
             loop {
                 let (got, want) = if until_frame {
                     (
-                        fast.process_until_frame(piece_left, &mut a),
+                        fast.process_until_stop(piece_left, &mut a),
                         scalar(&mut slow, piece_left, true, &mut b),
                     )
                 } else {
@@ -539,8 +547,8 @@ fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
 /// bytes after a BSU, most escape sequences, with RM of several modes,
 /// RIS and DECSTR among them, and XTSAVE holding the mode either way,
 /// held a random piece more at a time and carried out a byte at a time;
-/// and `process_until_frame`, reading them in random pieces as they come,
-/// says `Frame::Ended` there.
+/// and `process_until_stop`, reading them in random pieces as they come,
+/// says `Stop::Ended` there.
 #[test]
 fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
     for case in 0..3000 {
@@ -550,8 +558,8 @@ fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
             parser.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
         }
         assert_eq!(
-            parser.process_until_frame(b"\x1b[?2026h", &mut Log::default()),
-            Ok(Some((8, Frame::Begun)))
+            parser.process_until_stop(b"\x1b[?2026h", &mut Log::default()),
+            Ok(Some((8, Stop::Begun)))
         );
         let fragments = r.below(40).saturating_add(1);
         let mut input = sequences(&mut r, fragments, false);
@@ -570,7 +578,7 @@ fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
                 .min(input.len());
             found = scan.end(input.get(..held).unwrap_or_default());
         }
-        // Read as it comes, in random pieces: where `process_until_frame`
+        // Read as it comes, in random pieces: where `process_until_stop`
         // first says the frame ended.
         let (mut streamed, mut read, mut told) = (parser.clone(), 0usize, None);
         while told.is_none() && read < input.len() {
@@ -579,10 +587,10 @@ fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
             let mut at = read;
             while let Some(rest) = input.get(at..end)
                 && let Some((taken, frame)) =
-                    streamed.process_until_frame(rest, &mut Log::default())?
+                    streamed.process_until_stop(rest, &mut Log::default())?
             {
                 at = at.saturating_add(taken);
-                if frame == Frame::Ended {
+                if frame == Stop::Ended {
                     told = Some(at);
                     break;
                 }

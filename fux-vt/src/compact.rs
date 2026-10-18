@@ -341,7 +341,7 @@ impl Text {
     }
     /// A copy, in no more memory than it needs: what history keeps.
     pub(crate) fn exact(&self) -> Text {
-        work!(text, self.bytes());
+        spend!(text, self.bytes());
         Text {
             long: self.long.as_slice().to_vec(),
             short: self.short.as_slice().to_vec(),
@@ -587,7 +587,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             &mut self.text.short
         };
         let old = std::mem::take(store);
-        work!(text, old.len());
+        spend!(text, old.len());
         for cell in self.cells.iter_mut().map(AsMut::as_mut) {
             let Some(range) = cell.spilled(long) else {
                 continue;

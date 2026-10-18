@@ -34,7 +34,7 @@ macro_rules! side {
         pub mod $module {
             use crate::model::{
                 self, Blink, Cell, Color, Error, Heard, Lookup, Marked, Row, Seen, Setup, State,
-                Style, Underline,
+                Stop, Style, Underline,
             };
             use $vt as vt;
 
@@ -247,18 +247,18 @@ macro_rules! side {
                         .map_err(error)
                 }
 
-                fn process_until_frame(
+                fn process_until_stop(
                     &mut self,
                     bytes: &[u8],
                     heard: &mut Vec<Heard>,
-                ) -> Result<Option<(usize, bool)>, Error> {
-                    let frame = self.parser.process_until_frame(bytes, &mut Sink(heard));
-                    let begun = |frame| match frame {
-                        vt::Frame::Begun => true,
-                        vt::Frame::Ended => false,
+                ) -> Result<Option<(usize, Stop)>, Error> {
+                    let stop = self.parser.process_until_stop(bytes, &mut Sink(heard));
+                    let why = |stop| match stop {
+                        vt::Stop::Begun => Stop::Begun,
+                        vt::Stop::Ended => Stop::Ended,
+                        vt::Stop::Budget => Stop::Budget,
                     };
-                    frame
-                        .map(|f| f.map(|(taken, frame)| (taken, begun(frame))))
+                    stop.map(|s| s.map(|(taken, stop)| (taken, why(stop))))
                         .map_err(error)
                 }
 

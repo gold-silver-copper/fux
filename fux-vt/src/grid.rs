@@ -204,7 +204,7 @@ impl Order {
     /// Puts `slot` under the last row.
     fn push_back(&mut self, slot: usize) {
         if self.top != 0 {
-            work!(slots, self.slots.len());
+            spend!(slots, self.slots.len());
             if let Some(slots) = self.slots.get_mut(..) {
                 slots.rotate_left(self.top);
             }
@@ -397,7 +397,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
-        work!(cells, size);
+        spend!(cells, size);
         reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
@@ -511,10 +511,10 @@ impl Grid {
     ) {
         let slot = self.meta.len();
         let cols = usize::from(self.size.cols());
-        work!(rows, 1);
+        spend!(rows, 1);
         // An unmade grid's rows are blank, and have no cells to put.
         if !self.unmade {
-            work!(cells, cols);
+            spend!(cells, cols);
             let start = self.cells.len();
             self.cells
                 .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
@@ -620,7 +620,7 @@ impl Grid {
         self.history.position(id).or_else(|| {
             let row = (self.order.iter())
                 .position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id));
-            work!(
+            spend!(
                 rows,
                 row.map_or(self.order.len(), |row| row.saturating_add(1))
             );
@@ -897,9 +897,8 @@ impl Grid {
     #[inline(never)]
     pub(crate) fn sweep(&mut self) {
         // Every cell is read twice: to mark its style, then to renumber it.
-        #[cfg(feature = "checks")]
         let cells = self.cells.len().saturating_add(self.history.kept_cells());
-        work!(styles, cells.saturating_mul(2));
+        spend!(styles, cells.saturating_mul(2));
         let mut used = vec![false; self.styles.len()];
         let mut mark = |cell: &Compact| {
             if let Some(mark) = Styles::place(cell.style()).and_then(|i| used.get_mut(i)) {
@@ -1113,6 +1112,12 @@ impl Grid {
         self.cursor.pending_wrap = false;
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
         if display {
+            // ED spends the screen's cells (`budget`); EL, a row's at
+            // most, nothing.
+            crate::budget::spend(
+                crate::budget::units(self.size.cells()),
+                crate::budget::weight::cells,
+            );
             for y in 0..self.size.rows() {
                 let whole = match part {
                     Erase::Below => y > row,
@@ -1242,8 +1247,8 @@ impl Grid {
                 let cells = self.live_cells(y).get(span.clone()).unwrap_or_default();
                 let mut cells = cells.to_vec();
                 // Each cell read, then written; and the row's text cloned.
-                work!(cells, cells.len().saturating_mul(2));
-                work!(text, text.map_or(0, Text::bytes));
+                spend!(cells, cells.len().saturating_mul(2));
+                spend!(text, text.map_or(0, Text::bytes));
                 // The half of a glyph the source's edge cuts.
                 if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
                     *cut = cut.blanked();
@@ -1451,7 +1456,7 @@ impl Grid {
         }
         let left = usize::from(self.columns.first());
         let end = usize::from(self.columns.end());
-        work!(cells, usize::from(height).saturating_mul(2));
+        spend!(cells, usize::from(height).saturating_mul(2));
         for y in top..=bottom {
             self.mutate_row(y, version, 0, |cells| {
                 let mut changed = false;
@@ -1499,7 +1504,7 @@ impl Grid {
             .get(span.clone())
             .unwrap_or_default()
             .to_vec();
-        work!(cells, cells.len().saturating_mul(2));
+        spend!(cells, cells.len().saturating_mul(2));
         let text = self.texts.get(source).map(Text::exact).unwrap_or_default();
         let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let mut changed = false;
@@ -1539,7 +1544,7 @@ impl Grid {
     fn blank_span(&mut self, row: u16, span: Range<usize>, blank: u32, version: u64) {
         let cell = Compact::blank(blank);
         let end = u16::try_from(span.end).unwrap_or(u16::MAX);
-        work!(cells, span.len());
+        spend!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
             let Some(run) = cells.get_mut(span.clone()) else {
                 return false;

@@ -59,11 +59,6 @@ pub(crate) fn add(count: impl FnOnce(&mut Work)) {
     WORK.with_borrow_mut(count);
 }
 
-/// `n` as units, the most there are if it does not fit.
-pub(crate) fn units(n: impl TryInto<u64>) -> u64 {
-    n.try_into().unwrap_or(u64::MAX)
-}
-
 impl Work {
     /// No work.
     pub const ZERO: Self = Self {
@@ -146,21 +141,24 @@ impl Work {
     /// Each counter's weight, in twentieths of a unit, so that every
     /// weight is whole: threats.md 4.4's frozen weights (P23), in ns per
     /// unit for this machine, times 20.
-    pub const WEIGHTS: [(&'static str, u64); 13] = [
-        ("bytes", 20),
-        ("scanned", 10),
-        ("cells", 5),
-        ("slots", 20),
-        ("rows", 100),
-        ("text", 1),
-        ("pixels", 5),
-        ("styles", 10),
-        ("inserts", 600),
-        ("lookups", 300),
-        ("links", 100),
-        ("prints", 2),
-        ("keys", 20),
-    ];
+    pub const WEIGHTS: [(&'static str, u64); 13] = {
+        use crate::budget::weight::*;
+        [
+            ("bytes", bytes),
+            ("scanned", scanned),
+            ("cells", cells),
+            ("slots", slots),
+            ("rows", rows),
+            ("text", text),
+            ("pixels", pixels),
+            ("styles", styles),
+            ("inserts", inserts),
+            ("lookups", lookups),
+            ("links", links),
+            ("prints", prints),
+            ("keys", keys),
+        ]
+    };
 
     /// The weighted work W (threats.md 4.4): each counter times its weight,
     /// summed, in twentieths of a unit; at most [`Work::CEILING`] a call.

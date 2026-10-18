@@ -316,13 +316,13 @@ impl History {
     /// Where the row with identity `id` is, oldest first.
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
         let at = self.rows.iter().position(|kept| kept.id == id);
-        work!(rows, at.map_or(self.rows.len(), |at| at.saturating_add(1)));
+        spend!(rows, at.map_or(self.rows.len(), |at| at.saturating_add(1)));
         at
     }
     /// The links of each row that has any, with its index, oldest first.
     pub(crate) fn links(&self) -> impl Iterator<Item = (usize, &RowLinks)> {
         // The link sweep walks every row for those with links.
-        work!(links, self.rows.len());
+        spend!(links, self.rows.len());
         let linked = self.rows.iter().enumerate();
         linked
             .filter(|(_, kept)| kept.flags() & LINKED != 0)
