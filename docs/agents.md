@@ -211,6 +211,26 @@ command never ends: `line` answers `reading` with no `done`, and
 `command_running` stays true; made readonly later, they keep fux's marks.
 `str shell-marks str off set` turns marks off for shells started after.
 
+A shell's marks carry a nonce, so output (`cat file`) cannot pass for
+them. A program you run in it on purpose that marks commands of its own
+(a remote shell's, relayed by `koh connect` or ssh; a nested multiplexer)
+is given another nonce in `FUX_MARK_NONCE`; its OSC 133 marks with
+`;nonce=$FUX_MARK_NONCE` among their options (`ESC ] 133 ; D ; 1 ; nonce=N
+BEL`) count while the command that started it runs: `line` typed into it
+answers `· done STATUS`, `last-output` reads its command's output, and when
+it exits the shell's own end ends that command. Its marks without the
+nonce, or before it ran, count for nothing. A program `run` in a pane of
+its own needs no nonce: its marks always count.
+
+A command that a full-screen program marks itself (its `C` came on the
+alternate screen, as a remote shell's relayed do) is waited for like a
+shell's, though the program waits on the network meanwhile: `line` answers
+once it ends, `· done STATUS`, or `busy` at the time limit. So a remote
+command that waits for input or takes the full screen (`sudo`, `vim`
+through koh) answers `busy` at the limit: wait for its prompt with
+`wait-text`, or use `0 timeout`. A full-screen program a local shell's
+command runs (an editor) is not waited for so.
+
 ## Sizes
 
 A tab no client shows is laid out on its `size` (an option of `run`,

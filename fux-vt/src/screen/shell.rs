@@ -6,6 +6,10 @@
 //! (`Parser::note_submit`), else after the line of the prompt it was
 //! typed at. A host reads them to know when a command typed into a shell is done, its
 //! status, and its output ([`Screen::commands`], [`Commands::last_output`]).
+//! Given nonces (`Parser::require_mark_nonce`), a mark counts only with the
+//! shell's, or with the nested one while the shell's command runs: then the
+//! program that command started (a remote shell's marks, relayed) says what
+//! runs within it, until the shell marks again.
 
 use super::Screen;
 use crate::RowId;
@@ -32,6 +36,10 @@ pub struct Commands {
     /// Where the running command's output began (`C`); `None` once it
     /// ended (`D`), and before any began.
     pub output_start: Option<Mark>,
+    /// The running command's output began on the alternate screen: the
+    /// full-screen program there marks commands of its own (a remote
+    /// shell's), rather than being a command the shell ran.
+    pub full_screen: bool,
     /// The shell drew a prompt (`A`) and has started no command since
     /// (`C`): it is reading its command line.
     pub prompt: bool,
@@ -68,6 +76,7 @@ impl Screen {
                     true => submitted.or_else(|| self.after_prompt()).unwrap_or(here),
                     false => here,
                 });
+                self.commands.full_screen = self.mode(crate::Mode::AlternateScreen);
             }
             b"D" => {
                 let status = option
@@ -82,6 +91,28 @@ impl Screen {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Whether a mark of a program the shell runs (the nested nonce's)
+    /// counts: while a command the shell started runs. The first sets that
+    /// command aside: the program's marks say what runs within it.
+    pub(crate) fn nest(&mut self) -> bool {
+        if self.outer.is_none() {
+            let Some(start) = self.commands.output_start.take() else {
+                return false;
+            };
+            self.outer = Some((start, self.commands.full_screen));
+        }
+        true
+    }
+
+    /// The shell marks again: its command set aside runs once more, to end
+    /// as its marks say, whatever the program it ran left running.
+    pub(crate) fn unnest(&mut self) {
+        if let Some((start, full_screen)) = self.outer.take() {
+            self.commands.output_start = Some(start);
+            self.commands.full_screen = full_screen;
         }
     }
 

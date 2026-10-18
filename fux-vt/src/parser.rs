@@ -914,9 +914,13 @@ impl Parser {
     /// Makes shell marks (OSC 133) count only if they carry
     /// `nonce=NONCE` among their options; `None`, every one. A mark
     /// without it is ignored: printed by a program, not by the shell
-    /// that was given the nonce.
-    pub fn require_mark_nonce(&mut self, nonce: Option<&[u8]>) {
-        self.screen.require_mark_nonce(nonce);
+    /// that was given the nonce. One that carries `nonce=NESTED` instead
+    /// is a program's the shell runs (a remote shell's, relayed; a nested
+    /// multiplexer's), which the shell gave `NESTED`: it counts while the
+    /// shell's command runs, and says which commands run within it, until
+    /// the shell's next mark ends that command (`Screen::commands`).
+    pub fn require_mark_nonce(&mut self, nonce: Option<&[u8]>, nested: Option<&[u8]>) {
+        self.screen.require_mark_nonce(nonce, nested);
     }
     /// Notes that the host submitted a line with the cursor where it is:
     /// a late `C` (`133;C;late`, a line the shell could not run) starts

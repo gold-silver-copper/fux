@@ -497,9 +497,10 @@ pub struct Pane {
     /// The bytes of output read since the last action's input, as far as
     /// `REDRAWS`: within them, a line drawn again is told from news.
     redraws: usize,
-    /// The nonce its shell's marks carry, if fux marked its shell: then
-    /// they are the authority on what it reads and runs.
-    pub nonce: Option<String>,
+    /// The nonces its shell's marks carry, and its programs', if fux
+    /// marked its shell: then they are the authority on what it reads and
+    /// runs.
+    pub nonce: Option<crate::marks::Nonces>,
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,
@@ -950,11 +951,14 @@ impl Pane {
         self.parser.screen()
     }
 
-    /// Makes the pane's shell marks count only with `nonce` (`None`:
-    /// fux marked no shell in it, and they carry no authority).
-    pub fn mark_with(&mut self, nonce: Option<String>) {
-        self.parser
-            .require_mark_nonce(nonce.as_deref().map(str::as_bytes));
+    /// Makes the pane's shell marks count only with `nonce`'s, a program's
+    /// within a command with its nested one (`None`: fux marked no shell in
+    /// it, and they carry no authority).
+    pub fn mark_with(&mut self, nonce: Option<crate::marks::Nonces>) {
+        self.parser.require_mark_nonce(
+            nonce.as_ref().map(|n| n.shell.as_bytes()),
+            nonce.as_ref().map(|n| n.nested.as_bytes()),
+        );
         self.nonce = nonce;
     }
 

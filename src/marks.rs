@@ -195,6 +195,30 @@ pub fn nonce() -> Option<String> {
     Some(random.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// The variable a marked shell's programs are given its pane's nested
+/// nonce in: a program the user runs in it on purpose (a remote shell
+/// relaying its marks, a nested multiplexer) adds `nonce=` it to its own
+/// OSC 133 marks, which then count while the command that started it runs.
+pub const NESTED: &str = "FUX_MARK_NONCE";
+
+/// The nonces a marked shell's pane takes marks with: the shell's own,
+/// kept from the programs it runs, and the one they are given (`NESTED`).
+#[derive(Clone, Debug)]
+pub struct Nonces {
+    pub shell: String,
+    pub nested: String,
+}
+
+impl Nonces {
+    /// Two new nonces, or none if the system's randomness cannot be read.
+    pub fn new() -> Option<Nonces> {
+        Some(Nonces {
+            shell: nonce()?,
+            nested: nonce()?,
+        })
+    }
+}
+
 /// How a shell is started so that it marks its commands: its words, and
 /// variables to add and remove.
 #[derive(Debug, Default)]
