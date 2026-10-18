@@ -16,16 +16,16 @@ fn heap(grid: &Grid) -> [usize; 4] {
 }
 /// A full history's storage, metadata included, stops growing: the
 /// screen's as much after 20,000 scrolls as after 10,000, and history's
-/// within its budget. The peak a resize reaches, with
-/// both screens' replacements built before either is assigned, is printed
-/// (`MEMORY-BOUNDS`), not asserted.
+/// within its budget. A resize builds the new screen and history before
+/// it lets the old go (`threats.md` B37): the new history within its
+/// budget and a tenth more and 64 KiB (3.2's resize term), the new screens'
+/// cells exactly their size, so the peak is the old and those together.
 #[test]
-fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> Result<(), Error> {
+fn storage_with_history_full_stops_growing_and_a_resize_holds_its_bound() -> Result<(), Error> {
+    const BUDGET: usize = 10_000 * 24;
     let mut next = 0;
-    let mut primary = Grid::new(Size::of(24, 80), 10_000 * 24, &mut next, 0)?;
+    let mut primary = Grid::new(Size::of(24, 80), BUDGET, &mut next, 0)?;
     let alternate = Grid::new(Size::of(24, 80), 0, &mut next, 0)?;
-    let initial_primary = heap(&primary);
-    let initial_alternate = heap(&alternate);
     for version in 1..=10_000 {
         primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version)?;
     }
@@ -36,26 +36,20 @@ fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> R
     // The screen's storage as it was, and history's within its budget.
     let now = heap(&primary);
     assert_eq!(now.get(..3), plateau.get(..3));
-    assert!(now.iter().zip(plateau).skip(3).all(|(h, _)| *h <= 240_000));
+    assert!(now.iter().zip(plateau).skip(3).all(|(h, _)| *h <= BUDGET));
     // 240,000 bytes hold 19 of the ring's chunks of 512 empty rows (12,288
     // bytes each, threats.md B17): the newest of them filling, and the
     // oldest let go only once all its rows have gone.
     assert!((18 * 512 + 1..=19 * 512).contains(&primary.history_len()));
     let resized_primary = primary.resized(Size::of(60, 120), &mut next, 20_001)?;
     let resized_alternate = alternate.resized(Size::of(60, 120), &mut next, 20_001)?;
-    let new_primary = heap(&resized_primary);
-    let new_alternate = heap(&resized_alternate);
-    // Screen::resize constructs BOTH replacements before assigning either.
-    // These are actual reserved vector capacities, not just live cell counts.
-    let old_heap = plateau.iter().sum::<usize>() + initial_alternate.iter().sum::<usize>();
-    let new_heap = new_primary.iter().sum::<usize>() + new_alternate.iter().sum::<usize>();
-    let screen_bytes = std::mem::size_of::<crate::Screen>();
-    let peak_reserved = old_heap + new_heap + screen_bytes + 2 * std::mem::size_of::<Grid>();
-    assert_eq!(std::mem::size_of::<Compact>(), 8);
-    println!(
-        "MEMORY-BOUNDS {{\"components\":[\"cells\",\"row_metadata\",\"slot_order\",\"history\"],\"initial_primary\":{initial_primary:?},\"initial_alternate\":{initial_alternate:?},\"plateau_primary\":{plateau:?},\"resized_primary\":{new_primary:?},\"resized_alternate\":{new_alternate:?},\"screen_object_bytes\":{screen_bytes},\"steady_reserved_bytes\":{},\"resize_peak_reserved_bytes\":{peak_reserved},\"scrolls\":20000}}",
-        old_heap + screen_bytes
+    let [cells, _, _, history] = heap(&resized_primary);
+    assert!(
+        history <= BUDGET + BUDGET / 10 + (64 << 10),
+        "{history} bytes of new history"
     );
+    assert_eq!(cells, 60 * 120 * size_of::<Compact>());
+    assert_eq!(heap(&resized_alternate).first(), Some(&cells));
     Ok(())
 }
 
