@@ -16,6 +16,17 @@
 //! `y\n` and sixel frames, [`census`]) are workloads too, each alone at
 //! 50x200 (`bench census` names them all). Workloads are made one at a time,
 //! and the timer encloses the feed alone: never a snapshot.
+//!
+//! Each run gives four tables, never ranked together: equal budget (10,000
+//! rows asked, the rows each engine held read back) and equal retention (no
+//! history, read back as 0, or the cell is marked and not ranked), each in
+//! process and out of process apart. fux-vt is also run with print recording
+//! on, as fux runs it (`fux-vt+prints`). After the timer each cell records
+//! the contract (rows held, reply bytes, prints recorded) and the time of one
+//! read (`snapshot(0)`), a feed-plus-read figure for engines that defer work.
+//! Every heading and the JSON carry the fairness record: the input's
+//! SHA-256, the chunk size, the setup, reflow and recording, that no read is
+//! timed, in or out of process, the CPU set and the repeats.
 use crate::engine::{ENGINES, Kind, SUBJECT, Setup};
 use crate::rng::Rng;
 use std::fmt::Write;
@@ -356,71 +367,461 @@ pub fn chosen(names: &[String]) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// The best of [`RUNS`] times to feed `bytes` to a fresh engine: the timer
-/// encloses the feed alone, never a read of the screen.
-fn time(kind: &Kind, load: &Load) -> Result<Duration, String> {
+/// The history the engines are set up to keep, for one table: never
+/// ranked together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retention {
+    /// Equal budget: 10,000 rows asked. fux-vt gets the bytes for 10,000
+    /// full rows, which hold more short rows; the others keep what their
+    /// own setups keep (100,000 rows, Ghostty 64 MiB). The rows each held
+    /// are read back.
+    Budget,
+    /// Equal retention: no history, every engine holding the screen alone,
+    /// checked by reading back the rows each held (0). Only engines whose
+    /// history this harness sets.
+    None,
+}
+
+impl Retention {
+    pub const ALL: [Retention; 2] = [Retention::Budget, Retention::None];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Retention::Budget => "equal-budget",
+            Retention::None => "equal-retention",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Retention> {
+        Retention::ALL.into_iter().find(|r| r.name() == name)
+    }
+
+    pub fn about(self) -> &'static str {
+        match self {
+            Retention::Budget => {
+                "10,000 rows asked: fux-vt the bytes for 10,000 full rows, the others their \
+                 own setups (100,000 rows, Ghostty 64 MiB); rows held read back"
+            }
+            Retention::None => {
+                "no history: every engine holds the screen alone, read back as 0 rows"
+            }
+        }
+    }
+
+    /// `kind` made for this retention, or `None` if this harness cannot set
+    /// its history.
+    pub fn make(
+        self,
+        kind: &Kind,
+        setup: &Setup,
+    ) -> Option<Result<Box<dyn crate::engine::Engine>, String>> {
+        use crate::engines;
+        if self == Retention::Budget {
+            return Some((kind.make)(setup));
+        }
+        let none = Setup {
+            history: 0,
+            ..*setup
+        };
+        Some(match kind.name {
+            "fux-vt" => (kind.make)(&none),
+            "ghostty" => engines::ghostty::with_scrollback(&none, 0),
+            "alacritty" => engines::alacritty::with_history(&none, 0),
+            "libvterm" => engines::libvterm::with_history(&none, 0),
+            "avt" => engines::avt::with_history(&none, 0),
+            "wezterm" => engines::wezterm::with_history(&none, 0),
+            "vt100" => engines::vt100::with_history(&none, 0),
+            _ => return None,
+        })
+    }
+}
+
+/// One engine on one workload: the best of [`RUNS`] feeds, each into a
+/// fresh engine, timed around the feed alone; then, outside the timer,
+/// what the engine kept (the contract): the rows of history it holds and
+/// the reply bytes it wrote; and the time of one read after the feed
+/// (`snapshot(0)`), for engines that defer work until they are read.
+struct Measured {
+    /// Bytes fed.
+    fed: usize,
+    feed: Duration,
+    read: Duration,
+    rows_held: Option<usize>,
+    reply_bytes: usize,
+    /// fux-vt with print recording: the runs it recorded.
+    prints: Option<usize>,
+}
+
+fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Measured, String>> {
     let setup = Setup {
         rows: load.rows,
         cols: load.cols,
         history: 10_000,
         reflow: true,
     };
+    retention.make(kind, &setup)?.ok()?;
     let bytes = load.bytes.as_slice();
-    let mut best = Duration::MAX;
-    for _ in 0..RUNS {
-        let took = crate::case::guarded(|| {
-            let mut engine = (kind.make)(&setup)?;
+    Some(crate::case::guarded(|| {
+        let mut best: Option<Measured> = None;
+        for _ in 0..RUNS {
+            let mut engine = retention.make(kind, &setup).ok_or("no setup")??;
             let started = Instant::now();
             engine.feed(bytes, CHUNK)?;
-            Ok(started.elapsed())
-        })?;
-        best = best.min(took);
+            let feed = started.elapsed();
+            let started = Instant::now();
+            std::hint::black_box(engine.snapshot(0)?);
+            let read = started.elapsed();
+            let run = Measured {
+                fed: bytes.len(),
+                feed,
+                read,
+                rows_held: engine.history_len(),
+                reply_bytes: engine.replies().len(),
+                prints: None,
+            };
+            if best.as_ref().is_none_or(|b| run.feed < b.feed) {
+                best = Some(run);
+            }
+        }
+        best.ok_or_else(|| "no run".to_owned())
+    }))
+}
+
+/// fux-vt as fux runs it, recording what is printed (`record_prints`) and
+/// taking the record after each chunk, as a pane does after each read.
+fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String> {
+    let size = crate::vt_size(load.rows, load.cols)?;
+    let rows = match retention {
+        Retention::Budget => 10_000usize,
+        Retention::None => 0,
+    };
+    // As the adapter sizes it: 24 bytes a row and 8 a cell.
+    let history = rows.saturating_mul(usize::from(load.cols).saturating_mul(8).saturating_add(24));
+    let mut best: Option<Measured> = None;
+    for _ in 0..RUNS {
+        let mut parser =
+            fux_vt::Parser::with_options(size, history, crate::engines::fux_vt::options(true))
+                .map_err(|e| format!("fux-vt: {e}"))?;
+        parser.record_prints(true);
+        let mut recorded = 0usize;
+        let started = Instant::now();
+        let mut rest = load.bytes.as_slice();
+        while !rest.is_empty() {
+            let (now, later) = rest
+                .split_at_checked(CHUNK.min(rest.len()))
+                .unwrap_or((rest, &[]));
+            parser
+                .process_with_replies(now, |r| {
+                    std::hint::black_box(r);
+                })
+                .map_err(|e| format!("fux-vt: {e}"))?;
+            let prints = parser.take_prints();
+            recorded = recorded.saturating_add(std::hint::black_box(prints).iter().count());
+            rest = later;
+        }
+        let feed = started.elapsed();
+        let run = Measured {
+            fed: load.bytes.len(),
+            feed,
+            read: Duration::ZERO,
+            rows_held: Some(parser.screen().history_len()),
+            reply_bytes: 0,
+            prints: Some(recorded),
+        };
+        if best.as_ref().is_none_or(|b| run.feed < b.feed) {
+            best = Some(run);
+        }
     }
-    Ok(best)
+    best.ok_or_else(|| "no run".to_owned())
+}
+
+/// The input's SHA-256, by `shasum -a 256` (as run.sh checks its
+/// downloads), for the fairness record.
+pub fn sha256(bytes: &[u8]) -> String {
+    use std::io::Write as _;
+    let child = std::process::Command::new("shasum")
+        .args(["-a", "256"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        return "unknown".into();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(bytes);
+    }
+    child.wait_with_output().map_or_else(
+        |_| "unknown".into(),
+        |out| {
+            String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or("unknown")
+                .to_owned()
+        },
+    )
+}
+
+/// The CPUs this process may run on.
+pub fn cpu_set() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+                .map(|l| l.trim().to_owned())
+        })
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// A table's columns: fux-vt with print recording, then each engine.
+enum Column<'a> {
+    Prints,
+    Engine(&'a Kind),
+}
+
+impl Column<'_> {
+    fn name(&self) -> &'static str {
+        match self {
+            Column::Prints => "fux-vt+prints",
+            Column::Engine(k) => k.name,
+        }
+    }
 }
 
 /// Times fux-vt and `engines` on the named workloads (see [`chosen`]),
-/// each `mb` MiB, made one at a time, and prints MB/s as a table.
+/// each `mb` MiB, made one at a time, and prints MB/s in four tables:
+/// equal budget and equal retention, each in process and out of process
+/// apart, never ranked together. Each heading carries the fairness record,
+/// and the JSON (to `json`, if given) every measure.
 pub fn run(engines: &[usize], names: &[String], mb: usize) -> Result<bool, String> {
+    run_to(engines, names, mb, None)
+}
+
+pub fn run_to(
+    engines: &[usize],
+    names: &[String],
+    mb: usize,
+    json: Option<&str>,
+) -> Result<bool, String> {
     let bytes = mb.saturating_mul(1 << 20);
     let chosen = chosen(names)?;
     let kinds: Vec<&Kind> = std::iter::once(&SUBJECT)
         .chain(engines.iter().filter_map(|&i| ENGINES.get(i)))
         .collect();
-    println!(
-        "MB/s, best of {RUNS}, {CHUNK}-byte chunks, {mb} MiB per workload, {ROWS}x{COLS} (the corpus at its own size); * = own process, end to end"
-    );
-    print!("{:<22}", "");
-    for kind in &kinds {
-        let mark = if kind.in_process { "" } else { "*" };
-        print!(" {:>10}", format!("{}{mark}", kind.name));
-    }
-    println!();
-    let mut abouts = Vec::new();
+    let cpus = cpu_set();
+    // Each table's cells, by workload: (column, measured).
+    type Cells = Vec<(String, Option<Result<Measured, String>>)>;
+    let tables: Vec<(Retention, bool)> = Retention::ALL
+        .into_iter()
+        .flat_map(|r| [(r, true), (r, false)])
+        .collect();
+    let mut results: Vec<Vec<(String, Cells)>> = tables.iter().map(|_| Vec::new()).collect();
+    let mut inputs = Vec::new();
     for name in &chosen {
         // Made one at a time, and dropped after: all of them at once took
         // gigabytes.
         let load = load(name, bytes)?;
-        print!("{name:<22}");
-        for kind in &kinds {
-            let cell = match time(kind, &load) {
-                Ok(took) => {
-                    let mbs = (load.bytes.len() as f64) / took.as_secs_f64().max(1e-9) / 1e6;
-                    format!("{mbs:.1}")
-                }
-                Err(e) => {
-                    eprintln!("{}: {name}: {e}", kind.name);
-                    "error".to_owned()
-                }
-            };
-            print!(" {cell:>10}");
+        inputs.push(serde_json::json!({
+            "name": load.name, "about": load.about, "bytes": load.bytes.len(),
+            "sha256": sha256(&load.bytes), "rows": load.rows, "cols": load.cols,
+        }));
+        for ((retention, in_process), out) in tables.iter().zip(&mut results) {
+            let mut columns: Vec<Column> = Vec::new();
+            if *in_process {
+                columns.push(Column::Prints);
+            }
+            columns.extend(
+                kinds
+                    .iter()
+                    .filter(|k| k.in_process == *in_process)
+                    .map(|k| Column::Engine(k)),
+            );
+            let cells: Cells = columns
+                .iter()
+                .map(|c| {
+                    let m = match c {
+                        Column::Prints => Some(measure_prints(&load, *retention)),
+                        Column::Engine(k) => measure(k, &load, *retention),
+                    };
+                    (c.name().to_owned(), m)
+                })
+                .collect();
+            out.push((name.clone(), cells));
+        }
+    }
+    let mut doc_tables = Vec::new();
+    for ((retention, in_process), rows) in tables.iter().zip(&results) {
+        let Some((_, first)) = rows.first() else {
+            continue;
+        };
+        if first.is_empty() {
+            continue;
+        }
+        let place = if *in_process {
+            "in process"
+        } else {
+            "own process, end to end"
+        };
+        println!(
+            "\n{} ({}), {place}: MB/s, the best of {RUNS} feeds, the timer around the feed alone \
+             (no read timed); {CHUNK}-byte chunks; {mb} MiB per workload; {ROWS}x{COLS} \
+             (recordings at their size); fux-vt reflow on, print recording off but in \
+             fux-vt+prints; CPUs {cpus}; ! = the contract failed (not ranked)",
+            retention.name(),
+            retention.about()
+        );
+        print!("{:<34}", "");
+        for (column, _) in first {
+            print!(" {column:>13}");
         }
         println!();
-        abouts.push((load.name, load.about));
+        let mut doc_rows = Vec::new();
+        for (name, cells) in rows {
+            print!("{name:<34}");
+            let mut doc_cells = serde_json::Map::new();
+            for (column, cell) in cells {
+                let text = match cell {
+                    None => "unavailable".to_owned(),
+                    Some(Err(e)) => {
+                        eprintln!("{column}: {name}: {e}");
+                        "error".to_owned()
+                    }
+                    Some(Ok(m)) => {
+                        let total = (m.fed as f64).max(1.0);
+                        let mbs = total / m.feed.as_secs_f64().max(1e-9) / 1e6;
+                        // Equal retention: every engine must hold no rows.
+                        let kept =
+                            *retention == Retention::None && m.rows_held.is_some_and(|r| r > 0);
+                        doc_cells.insert(
+                            column.clone(),
+                            serde_json::json!({
+                                "mb_per_s": mbs,
+                                "feed_seconds": m.feed.as_secs_f64(),
+                                "read_seconds": m.read.as_secs_f64(),
+                                "feed_and_read_mb_per_s": total / m.feed.saturating_add(m.read).as_secs_f64().max(1e-9) / 1e6,
+                                "rows_held": m.rows_held,
+                                "reply_bytes": m.reply_bytes,
+                                "prints_recorded": m.prints,
+                                "contract_failed": kept,
+                            }),
+                        );
+                        format!("{mbs:.1}{}", if kept { "!" } else { "" })
+                    }
+                };
+                print!(" {text:>13}");
+            }
+            println!();
+            doc_rows.push(serde_json::json!({ "name": name, "engines": doc_cells }));
+        }
+        // The rows each engine held, read back, and a read after the feed.
+        println!(
+            "rows held after the feed (read back), and MB/s of the feed plus one read (snapshot(0); fux-vt's adapter reads its whole history):"
+        );
+        for (name, cells) in rows {
+            print!("{name:<34}");
+            for (_, cell) in cells {
+                let text = match cell {
+                    Some(Ok(m)) => format!(
+                        "{}/{:.0}",
+                        m.rows_held
+                            .map_or_else(|| "?".to_owned(), |r| r.to_string()),
+                        (m.fed as f64)
+                            / m.feed.saturating_add(m.read).as_secs_f64().max(1e-9)
+                            / 1e6
+                    ),
+                    _ => "-".to_owned(),
+                };
+                print!(" {text:>13}");
+            }
+            println!();
+        }
+        doc_tables.push(serde_json::json!({
+            "retention": retention.name(),
+            "setup": retention.about(),
+            "in_process": in_process,
+            "fairness": {
+                "chunk_bytes": CHUNK,
+                "mb": mb,
+                "read_timed": false,
+                "reflow": "fux-vt on; the others as they are",
+                "print_recording": "off, but fux-vt+prints",
+                "cpus": cpus,
+                "repeats": RUNS,
+                "kitty_images": "ignored-protocol throughput: fux-vt keeps no kitty images",
+            },
+            "workloads": doc_rows,
+        }));
     }
     println!();
-    for (name, about) in &abouts {
-        println!("{name:<22} {about}");
+    for input in &inputs {
+        println!(
+            "{:<34} {} sha256 {}",
+            input
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
+            input
+                .get("about")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
+            input
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+        );
+    }
+    if let Some(path) = json {
+        let doc = serde_json::json!({
+            "kind": "fux-vt-compare bench",
+            "inputs": inputs,
+            "tables": doc_tables,
+        });
+        let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+        eprintln!("wrote {path}");
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Retention;
+    use crate::engine::{ENGINES, SUBJECT, Setup};
+
+    /// Equal retention holds what it says: every engine this harness sets
+    /// up keeps no history after 300 lines on a 10-row screen, and equal
+    /// budget keeps some.
+    #[test]
+    fn equal_retention_keeps_no_history() -> Result<(), String> {
+        let setup = Setup {
+            rows: 10,
+            cols: 20,
+            history: 10_000,
+            reflow: true,
+        };
+        let lines = super::repeated(b"line\r\n", 300 * 6);
+        for kind in std::iter::once(&SUBJECT)
+            .chain(ENGINES)
+            .filter(|k| k.in_process)
+        {
+            for (retention, keeps) in [(Retention::None, false), (Retention::Budget, true)] {
+                let Some(engine) = retention.make(kind, &setup) else {
+                    continue;
+                };
+                let mut engine = engine?;
+                engine.feed(&lines, 64)?;
+                if let Some(rows) = engine.history_len() {
+                    assert_eq!(
+                        rows > 0,
+                        keeps,
+                        "{} {}: {rows}",
+                        kind.name,
+                        retention.name()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }

@@ -4,9 +4,10 @@
 //! Each engine and workload runs in a child process of its own (this
 //! binary again, [`CHILD`]), counted by `count::Counter` as `fux-bench
 //! --against` counts (`/usr/bin/time -l` on macOS). The child makes the
-//! workload as `bench` does, makes the engine as `bench` does (50x200 with
-//! 10,000 rows of history; the corpus at its first recording's size), and
-//! feeds it in 4 KiB chunks. Its baseline is the same child without the
+//! workload as `bench` does, makes the engine as `bench` does, under each
+//! retention (`bench::Retention`: equal budget, 10,000 rows asked; equal
+//! retention, no history), and feeds it in 4 KiB chunks; it prints the rows
+//! its engine held, read back. Its baseline is the same child without the
 //! feeding: making the bytes and the engine. An engine's count is the
 //! fewest instructions of its runs less the fewest of its baseline's, per
 //! byte fed; its noise, the spread of its runs over that count. The engine
@@ -23,7 +24,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-/// The hidden subcommand a child runs: `CHILD ENGINE WORKLOAD MB [baseline]`.
+/// The hidden subcommand a child runs: `CHILD ENGINE WORKLOAD MB RETENTION
+/// [baseline]`.
 pub const CHILD: &str = "--instructions-child";
 
 /// The named workload, `mb` MiB of it, alone, as `bench` makes it.
@@ -38,15 +40,22 @@ fn kind(name: &str) -> Result<&'static Kind, String> {
         .ok_or(format!("no engine in this process named {name:?}"))
 }
 
-/// The child: makes the workload and the engine, and feeds it unless this
-/// is the baseline. Prints the bytes fed.
+/// The child: makes the workload and the engine set up for RETENTION
+/// (`bench::Retention`), and feeds it unless this is the baseline. Prints
+/// the bytes made and the rows of history the engine holds after (`?` if
+/// it cannot tell), read outside anything counted that matters: the
+/// baseline reads them too.
 pub fn child(args: &[String]) -> Result<(), String> {
-    let (engine, workload, mb, baseline) = match args {
-        [engine, workload, mb] => (engine, workload, mb, false),
-        [engine, workload, mb, b] if b == "baseline" => (engine, workload, mb, true),
-        _ => return Err(format!("{CHILD} ENGINE WORKLOAD MB [baseline]")),
+    let (engine, workload, mb, retention, baseline) = match args {
+        [engine, workload, mb, retention] => (engine, workload, mb, retention, false),
+        [engine, workload, mb, retention, b] if b == "baseline" => {
+            (engine, workload, mb, retention, true)
+        }
+        _ => return Err(format!("{CHILD} ENGINE WORKLOAD MB RETENTION [baseline]")),
     };
     let mb: usize = mb.parse().map_err(|e| format!("MB: {e}"))?;
+    let retention =
+        bench::Retention::parse(retention).ok_or(format!("no retention {retention:?}"))?;
     let load = load(workload, mb)?;
     let kind = kind(engine)?;
     let setup = Setup {
@@ -56,16 +65,23 @@ pub fn child(args: &[String]) -> Result<(), String> {
         reflow: true,
     };
     // Kept to the end of the process: dropping it would count freeing.
-    let vt = Box::leak((kind.make)(&setup)?);
+    let made = retention
+        .make(kind, &setup)
+        .ok_or(format!("{engine}: no {} setup", retention.name()))??;
+    let vt = Box::leak(made);
     if !baseline {
         vt.feed(&load.bytes, CHUNK)?;
     }
-    println!("{}", load.bytes.len());
+    let rows = vt
+        .history_len()
+        .map_or_else(|| "?".to_owned(), |r| r.to_string());
+    println!("{} {rows}", load.bytes.len());
     Ok(())
 }
 
 /// One child to count.
 struct Task {
+    /// The column: an engine with a retention.
     engine: usize,
     workload: usize,
     baseline: bool,
@@ -112,17 +128,34 @@ pub fn run(
         .filter(|k| !k.in_process)
         .map(|k| k.name)
         .collect();
-    let kinds: Vec<&Kind> = kinds.into_iter().filter(|k| k.in_process).collect();
+    // Each engine in process, under each retention it can be set up for.
+    let probe = Setup {
+        rows: ROWS,
+        cols: COLS,
+        history: 10_000,
+        reflow: true,
+    };
+    let columns: Vec<(&Kind, bench::Retention)> = bench::Retention::ALL
+        .into_iter()
+        .flat_map(|r| {
+            kinds
+                .iter()
+                .filter(|k| k.in_process)
+                .filter(move |k| r.make(k, &probe).is_some())
+                .map(move |k| (*k, r))
+        })
+        .collect();
     let workloads = bench::chosen(names)?;
-    // Each workload made once here, to check its name and give its size.
-    let loads: Vec<(usize, String)> = workloads
+    // Each workload made once here, to check its name, give its size and
+    // its hash.
+    let loads: Vec<(usize, String, String)> = workloads
         .iter()
-        .map(|w| load(w, mb).map(|l| (l.bytes.len(), l.about)))
+        .map(|w| load(w, mb).map(|l| (l.bytes.len(), l.about, bench::sha256(&l.bytes))))
         .collect::<Result<_, _>>()?;
     let mut tasks = Vec::new();
     for _ in 0..repeats.max(1) {
         for workload in 0..workloads.len() {
-            for engine in 0..kinds.len() {
+            for engine in 0..columns.len() {
                 for baseline in [false, true] {
                     tasks.push(Task {
                         engine,
@@ -134,9 +167,10 @@ pub fn run(
         }
     }
     eprintln!(
-        "{} children ({} engines, {} workloads, {} repeats), {jobs} at a time, counted by {}",
+        "{} children ({} engines and retentions, {} workloads, {} repeats), {jobs} at a time, \
+         counted by {}",
         tasks.len(),
-        kinds.len(),
+        columns.len(),
         workloads.len(),
         repeats.max(1),
         counter.name()
@@ -154,9 +188,11 @@ pub fn run(
                     let Some(task) = tasks.get(i) else {
                         break;
                     };
-                    let engine = kinds.get(task.engine).map_or("", |k| k.name);
+                    let (engine, retention) = columns
+                        .get(task.engine)
+                        .map_or(("", ""), |(k, r)| (k.name, r.name()));
                     let workload = workloads.get(task.workload).map_or("", String::as_str);
-                    let mut args = vec![CHILD, engine, workload, mb_text.as_str()];
+                    let mut args = vec![CHILD, engine, workload, mb_text.as_str(), retention];
                     if task.baseline {
                         args.push("baseline");
                     }
@@ -179,23 +215,34 @@ pub fn run(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // Each engine's and workload's counts, runs and baselines.
-    let mut counts = vec![vec![[Vec::new(), Vec::new()]; workloads.len()]; kinds.len()];
+    let mut counts = vec![vec![[Vec::new(), Vec::new()]; workloads.len()]; columns.len()];
+    // The rows each column's engine held after a feed, read back.
+    let mut held = vec![vec![None; workloads.len()]; columns.len()];
     let mut failed = Vec::new();
     for (i, result) in &results {
         let Some(task) = tasks.get(*i) else {
             continue;
         };
-        let fed = loads.get(task.workload).map(|(n, _)| n.to_string());
+        let fed = loads.get(task.workload).map(|(n, _, _)| n.to_string());
         let result = result.as_ref().map_err(Clone::clone).and_then(|run| {
-            // The child prints the bytes it made: the same as here.
-            if Some(run.stdout.trim()) == fed.as_deref() {
-                Ok(run)
+            // The child prints the bytes it made, the same as here, and the
+            // rows its engine held.
+            let mut words = run.stdout.split_whitespace();
+            if words.next() == fed.as_deref() {
+                Ok((run, words.next().map(str::to_owned)))
             } else {
                 Err(format!("the child made {:?} bytes", run.stdout.trim()))
             }
         });
         match result {
-            Ok(run) => {
+            Ok((run, rows)) => {
+                if !task.baseline
+                    && let Some(slot) = held
+                        .get_mut(task.engine)
+                        .and_then(|h| h.get_mut(task.workload))
+                {
+                    *slot = rows;
+                }
                 if let Some(list) = counts
                     .get_mut(task.engine)
                     .and_then(|c| c.get_mut(task.workload))
@@ -206,7 +253,7 @@ pub fn run(
             }
             Err(e) => failed.push(format!(
                 "{} {}: {e}",
-                kinds.get(task.engine).map_or("?", |k| k.name),
+                columns.get(task.engine).map_or("?", |(k, _)| k.name),
                 workloads.get(task.workload).map_or("?", String::as_str)
             )),
         }
@@ -215,56 +262,82 @@ pub fn run(
         eprintln!("bench --instructions: {f}");
     }
 
-    let mut text = format!(
-        "instructions per byte, the fewest of {} runs less the fewest of their baseline \
-         (making the bytes and the engine), {mb} MiB per workload, {CHUNK}-byte chunks, \
-         {ROWS}x{COLS} (the corpus at its own size); counted by {}\n{:<16}",
-        repeats.max(1),
-        counter.name(),
-        ""
-    );
-    for kind in &kinds {
-        let _ = write!(text, " {:>10}", kind.name);
-    }
-    let _ = writeln!(text);
+    let cpus = bench::cpu_set();
+    let mut text = String::new();
     let mut rows = Vec::new();
     let mut worst = 0f64;
-    for (w, workload) in workloads.iter().enumerate() {
-        let _ = write!(text, "{workload:<16}");
-        let bytes = loads.get(w).map_or(0, |(n, _)| *n);
-        let mut per_engine = serde_json::Map::new();
-        for (e, kind) in kinds.iter().enumerate() {
-            let cell = counts
-                .get(e)
-                .and_then(|c| c.get(w))
-                .filter(|[full, base]| !full.is_empty() && !base.is_empty())
-                .map(|[full, base]| side(full, base));
-            match cell {
-                Some(s) => {
-                    worst = worst.max(s.noise);
-                    let per_byte = (s.count as f64) / (bytes.max(1) as f64);
-                    let _ = write!(text, " {per_byte:>10.2}");
-                    per_engine.insert(
-                        kind.name.to_owned(),
-                        serde_json::json!({
-                            "instructions": s.count,
-                            "per_byte": per_byte,
-                            "noise_percent": s.noise * 100.0,
-                        }),
-                    );
-                }
-                None => {
-                    let _ = write!(text, " {:>10}", "error");
-                }
-            }
+    for retention in bench::Retention::ALL {
+        let here: Vec<(usize, &Kind)> = columns
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, r))| *r == retention)
+            .map(|(i, (k, _))| (i, *k))
+            .collect();
+        if here.is_empty() {
+            continue;
+        }
+        let _ = write!(
+            text,
+            "\n{} ({}), in process: instructions per byte, the fewest of {} runs less the \
+             fewest of their baseline (making the bytes and the engine), no read counted; \
+             {mb} MiB per workload, {CHUNK}-byte chunks, {ROWS}x{COLS} (recordings at their \
+             size); fux-vt reflow on, print recording off; counted by {} on CPUs {cpus} \
+             (the counter's own set is in the JSON)\n{:<34}",
+            retention.name(),
+            retention.about(),
+            repeats.max(1),
+            counter.name(),
+            ""
+        );
+        for (_, kind) in &here {
+            let _ = write!(text, " {:>10}", kind.name);
         }
         let _ = writeln!(text);
-        rows.push(serde_json::json!({
-            "name": workload,
-            "about": loads.get(w).map_or("", |(_, a)| a.as_str()),
-            "bytes": bytes,
-            "engines": per_engine,
-        }));
+        for (w, workload) in workloads.iter().enumerate() {
+            let _ = write!(text, "{workload:<34}");
+            let (bytes, about, hash) = loads
+                .get(w)
+                .map_or((0, "", ""), |(n, a, h)| (*n, a.as_str(), h.as_str()));
+            let mut per_engine = serde_json::Map::new();
+            let mut held_line = String::new();
+            for (c, kind) in &here {
+                let cell = counts
+                    .get(*c)
+                    .and_then(|v| v.get(w))
+                    .filter(|[full, base]| !full.is_empty() && !base.is_empty())
+                    .map(|[full, base]| side(full, base));
+                let rows_held = held.get(*c).and_then(|h| h.get(w)).cloned().flatten();
+                let _ = write!(held_line, " {:>10}", rows_held.as_deref().unwrap_or("-"));
+                match cell {
+                    Some(s) => {
+                        worst = worst.max(s.noise);
+                        let per_byte = (s.count as f64) / (bytes.max(1) as f64);
+                        let _ = write!(text, " {per_byte:>10.2}");
+                        per_engine.insert(
+                            kind.name.to_owned(),
+                            serde_json::json!({
+                                "instructions": s.count,
+                                "per_byte": per_byte,
+                                "noise_percent": s.noise * 100.0,
+                                "rows_held": rows_held,
+                            }),
+                        );
+                    }
+                    None => {
+                        let _ = write!(text, " {:>10}", "error");
+                    }
+                }
+            }
+            let _ = writeln!(text, "\n{:<34}{held_line}  rows held", "");
+            rows.push(serde_json::json!({
+                "name": workload,
+                "retention": retention.name(),
+                "about": about,
+                "bytes": bytes,
+                "sha256": hash,
+                "engines": per_engine,
+            }));
+        }
     }
     let seconds = started.elapsed().as_secs_f64();
     let _ = writeln!(
@@ -289,7 +362,18 @@ pub fn run(
             "repeats": repeats.max(1),
             "mb": mb,
             "chunk": CHUNK,
-            "engines": kinds.iter().map(|k| k.name).collect::<Vec<_>>(),
+            "engines": columns.iter().map(|(k, r)| format!("{} {}", k.name, r.name())).collect::<Vec<_>>(),
+            "fairness": {
+                "chunk_bytes": CHUNK,
+                "read_counted": false,
+                "reflow": "fux-vt on; the others as they are",
+                "print_recording": "off",
+                "in_process": true,
+                "cpus": cpus,
+                "repeats": repeats.max(1),
+                "retentions": bench::Retention::ALL.map(|r| serde_json::json!({"name": r.name(), "setup": r.about()})),
+                "kitty_images": "ignored-protocol throughput: fux-vt keeps no kitty images",
+            },
             "worst_noise_percent": worst * 100.0,
             "seconds": seconds,
             "failed": failed,
