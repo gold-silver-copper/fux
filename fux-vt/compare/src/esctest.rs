@@ -69,6 +69,14 @@ const EXPECTED_TERMINAL: &str = "xterm";
 /// (VT520) tests are skipped.
 const VT_LEVEL: &str = "4";
 
+/// `--xterm-reverse-wrap`: the xterm patch whose reverse-wrap movement
+/// esctest expects. From 383 on, a test that asks for reverse wraparound
+/// sets extended reverse wraparound (mode 1045, `esccmd.py`,
+/// `ReverseWraparound`) and expects the cursor where xterm since 383 puts
+/// it (`tests/bs.py`, `tests/cub.py`); the default, 0, expects patch 380's
+/// movement, which xterm 411 no longer has.
+const XTERM_REVERSE_WRAP: u32 = 383;
+
 /// The usage of `esctest`.
 pub const USAGE: &str = "\
 usage: fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [--xterm]
@@ -505,6 +513,7 @@ fn esctest_argv(
         format!("--expected-terminal={EXPECTED_TERMINAL}"),
         format!("--max-vt-level={VT_LEVEL}"),
         format!("--timeout={timeout}"),
+        format!("--xterm-reverse-wrap={XTERM_REVERSE_WRAP}"),
         format!("--logfile={}", log.display()),
         "--no-print-logs".into(),
         format!("--include=^{}\\.(?:{})$", area.name, names.join("|")),
@@ -1870,11 +1879,18 @@ fn source(reason: &str) -> Option<&'static str> {
 /// set up as esctest's README says: 80 by 25, UTF-8 as fux is, a VT420
 /// (`decTerminalID`, xterm's default), and DECRQCRA allowed, which xterm's
 /// default `disallowedWindowOps` forbids; the other window operations stay
-/// as xterm keeps them by default. Its checksum counts a cell nothing was
-/// written to as a space (`checksumExtension` 8, "do not skip uninitialized
-/// cells", ctlseqs' XTCHECKSUM), as esctest expects of a DEC terminal by
-/// default: xterm's own default counts it as nothing, which esctest reads
-/// as no character at all, failing every test that reads an empty cell.
+/// as xterm keeps them by default.
+///
+/// Its checksum is `checksumExtension` 26 (ctlseqs' XTCHECKSUM, xterm's
+/// manual): bit 1, the video attributes left out, as esctest reads one
+/// character a cell; bit 3, a cell nothing was written to counted as a
+/// space, as esctest expects of a DEC terminal (xterm's default counts it as
+/// nothing, which esctest reads as no character at all, failing every test
+/// that reads an empty cell); and bit 4, the cell's own character, not
+/// masked. Without bit 4, xterm 411 sums `charSeen` (`screen.c:3209`,
+/// `xtermCheckRect`), a per-cell copy of what was written that DCH, ICH
+/// and the scrolls never move, so it reads back characters that are no
+/// longer there.
 fn in_xterm(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
     let log = scratch.join(format!("{}.xterm.log", area.name));
     let argv = esctest_argv(job.python, job.suite, area, job.request.timeout, &log, None);
@@ -1883,7 +1899,7 @@ fn in_xterm(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
         "XTerm*locale: false",
         "XTerm*utf8: 2",
         "XTerm*decTerminalID: 420",
-        "XTerm*checksumExtension: 8",
+        "XTerm*checksumExtension: 26",
         "XTerm*disallowedWindowOps: GetIconTitle,GetWinTitle,SetSelection,GetSelection,SetXprop",
     ];
     let mut command = Command::new("xterm");
