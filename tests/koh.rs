@@ -96,7 +96,8 @@ const CLOCK: &str = "import os, select, termios, tty\n\
 #[ignore = "needs koh: FUX_KOH=path/to/koh cargo test --test koh -- --ignored"]
 fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
     let bin = std::env::var("FUX_KOH").map_err(|_| "FUX_KOH names no koh binary")?;
-    let server = Server::start("")?;
+    // A limit short enough to wait past (`wait-done`).
+    let server = Server::start("str wait-seconds 5 set")?;
     let (local, remote) = (server.dir.join("koh-local"), server.dir.join("koh-remote"));
     std::fs::create_dir_all(&local).map_err(e)?;
     std::fs::create_dir_all(&remote).map_err(e)?;
@@ -162,6 +163,34 @@ fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
     assert!(x.contains("\ngot x"), "{x}");
     let quit = within(&server, 5, &[&p[..], &["str", "q", "type"]].concat())?;
     assert!(quit.contains("done 0"), "{quit}");
+
+    // A remote command that prints nothing for longer than the limit is
+    // waited for to its end: the text did not come (5).
+    within(
+        &server,
+        5,
+        &[
+            &p[..],
+            &["0", "timeout", "str", "sleep 7; (exit 6)", "line"],
+        ]
+        .concat(),
+    )?;
+    let began = Instant::now();
+    let wait = [
+        &p[..],
+        &["opts", "str", "NEVER", "wait-text", "wait-done", "wait"],
+    ]
+    .concat();
+    let ended = server.fux(&wait)?;
+    assert_eq!(ended.status, 5, "{}{}", ended.stdout, ended.stderr);
+    assert!(
+        ended
+            .stdout
+            .starts_with(&format!("{pane} reading · done 6")),
+        "{}",
+        ended.stdout
+    );
+    assert!(began.elapsed() > Duration::from_secs(5));
 
     let repl = line("python3 -i", 10)?;
     assert!(repl.contains(">>>"), "{repl}");

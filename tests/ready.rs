@@ -525,3 +525,65 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
     assert!(answer.starts_with(&format!("{pane} exited 0")), "{answer}");
     Ok(())
 }
+
+/// `wait-done` waits as long as the shell command running in the pane
+/// runs, past the wait's limit (here `wait-seconds` 2): it ends at what
+/// else it waits for, or at the command's end, `· done STATUS`; a text
+/// that had not come by then fails it, status 5. With no command
+/// running, a wait is as it was.
+#[test]
+fn wait_done_waits_as_long_as_the_command_runs() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("str wait-seconds 2 set")?;
+    let pane = bash(&server)?;
+    let p = ["str", pane.as_str(), "pane"];
+    let start = |command: &str| {
+        let line = [&p[..], &["0", "timeout", "str", command, "line"]].concat();
+        server.ok(&line)
+    };
+    let waited = |opts: &[&str]| {
+        let began = std::time::Instant::now();
+        let wait = [&p[..], &["opts"], opts, &["wait"]].concat();
+        server.fux(&wait).map(|out| (out, began.elapsed()))
+    };
+    let long = std::time::Duration::from_secs(3);
+    start("sleep 4; echo READY; sleep 2; (exit 4)")?;
+    let (ready, took) = waited(&["str", "READY", "wait-text", "wait-done"])?;
+    assert_eq!(ready.status, 0, "{}{}", ready.stdout, ready.stderr);
+    assert!(ready.stdout.contains("met \"READY\""), "{}", ready.stdout);
+    assert!(took > long, "{took:?}");
+    let (never, _) = waited(&["str", "NEVER", "wait-text", "wait-done"])?;
+    assert_eq!(never.status, 5, "{}{}", never.stdout, never.stderr);
+    let first = never.stdout.lines().next().unwrap_or_default();
+    assert_eq!(
+        first,
+        format!("{pane} reading · done 4"),
+        "{}",
+        never.stdout
+    );
+    assert!(never.stderr.contains("ended"), "{}", never.stderr);
+    start("sleep 4; (exit 2)")?;
+    let (done, took) = waited(&["wait-done"])?;
+    assert_eq!(done.status, 0, "{}{}", done.stdout, done.stderr);
+    assert!(
+        done.stdout.starts_with(&format!("{pane} reading · done 2")),
+        "{}",
+        done.stdout
+    );
+    assert!(took > long, "{took:?}");
+    // At a limit given, the hint says how to wait for the command.
+    start("sleep 30")?;
+    let (limited, _) = waited(&["str", "NEVER", "wait-text", "1", "timeout"])?;
+    assert_eq!(limited.status, 124, "{}{}", limited.stdout, limited.stderr);
+    assert!(limited.stderr.contains("wait-done"), "{}", limited.stderr);
+    server.ok(&[&p[..], &["str", "C-c", "press"]].concat())?;
+    // No command runs, nor ended since the last input: the shell reads,
+    // and the text cannot come (7).
+    server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
+    let (none, took) = waited(&["str", "NEVER", "wait-text", "wait-done"])?;
+    assert_eq!(none.status, 7, "{}{}", none.stdout, none.stderr);
+    assert!(took < long, "{took:?}");
+    Ok(())
+}

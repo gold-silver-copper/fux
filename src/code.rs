@@ -13,6 +13,8 @@ const USAGE: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
 const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
 /// The pane waited on closed, or everything an event stream watched.
 const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
+/// The shell command a wait lasted for ended before the wait was met.
+const ENDED: NonZeroU8 = NonZeroU8::MIN.saturating_add(4);
 /// The program reads its terminal, and the text waited for has not come
 /// (or gone): fux judges it cannot before the agent types.
 const READING: NonZeroU8 = NonZeroU8::MIN.saturating_add(6);
@@ -139,6 +141,8 @@ codes! {
     // How a wait ends.
     /// The program exited, or was started again, before the wait was met.
     Exited "exited" EXITED,
+    /// The shell command a wait lasted for (`wait-done`) ended first.
+    Ended "ended" ENDED,
     /// A wait's limit came first.
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.

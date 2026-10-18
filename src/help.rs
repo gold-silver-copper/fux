@@ -151,7 +151,7 @@ pub fn explain(name: &str) -> Option<String> {
 
 /// A wait's words, which every word that waits takes, and `marks` for the
 /// screen it prints.
-pub(crate) const WAITING: &str = "wait-text wait-gone wait-exit wait-bell timeout marks";
+pub(crate) const WAITING: &str = "wait-text wait-gone wait-exit wait-bell wait-done timeout marks";
 
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of;
@@ -199,6 +199,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "respawn" => "fux %3 opts kill-first respawn",
         "wait" => "fux %3 opts wait",
         "wait-text" => "fux %3 opts str ready wait-text 30 timeout wait",
+        "wait-done" => "fux %3 opts str 'build ok' wait-text wait-done wait",
         "times" => "fux %3 keys str Down key 2 times str Enter key send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" => "fux %3 keys str 'ls -l' text str Enter key send-keys",

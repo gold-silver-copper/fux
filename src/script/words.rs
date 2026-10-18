@@ -92,6 +92,7 @@ pub const WORDS: &[Word] = &[
     word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
     word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
     word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
+    word("Waiting", "wait-done", 1, "x -- x", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
     word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once; on options, keys, a mouse event, or the pane itself: %2 0 timeout str ls line"),
     word("Waiting", "wait", 2, "x opts -- answer", "wait for the pane to settle, or as the options say, in a pane, or each pane of a tab or workspace"),
     // Input
@@ -957,9 +958,10 @@ impl fuxth::Host for Host<'_> {
                 let n = within(&next()?, COUNT)?;
                 with(name, x, out, |w| w.timeout = Some(Duration::from_secs(n)))
             }
-            "wait-exit" | "wait-bell" => {
+            "wait-exit" | "wait-bell" | "wait-done" => {
                 let until = match name {
                     "wait-exit" => Until::Exit,
+                    "wait-done" => Until::Done,
                     _ => Until::Bell,
                 };
                 with(name, next()?, out, |w| w.until.push(until))

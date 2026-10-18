@@ -132,6 +132,7 @@ const ELSEWHERE: &[(&str, &str)] = &[
     ("not_reading", "keys a program has no room to read: needs a process"),
     ("own_server", "kill-server from a pane of that server: needs FUX_PANE and a server"),
     ("closed", "a wait whose pane closed while it waited: needs time and a process"),
+    ("ended", "a wait-done whose shell command ended first: needs a shell and its marks (tests/ready.rs)"),
     ("gone", "an events stream whose target went: the server's stream"),
     ("lost", "an events stream whose reader fell behind: the server's stream"),
     ("stopped", "a wait on a program reading its terminal: needs a process"),

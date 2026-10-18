@@ -42,7 +42,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
 - **Time:** an action, a `capture` and a `wait` all wait 30s at most (the server's
   `wait-seconds`); `SECS timeout` changes it for one, on its options, keys or mouse event or on the pane before them (`%2 0 timeout str ls line`). `0 timeout` acts and answers
   at once, the state as it is (start many programs so, then one `wait` on their tab or
-  workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on.
+  workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on. A shell command of unknown length (a build quiet for minutes): `wait-done` on the options waits as long as it runs, with no limit but a `timeout` given, to its end (`· done STATUS`) or to the text first: `%2 opts str 'build ok' wait-text wait-done wait` (status 5 if it ended first).
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
   workspace `agent`. OPTIONS: `str app name` (the tab's; one given already
   is refused, one fux gave, `tab-2`, is taken), `100 30 size`, `str "$PWD" cwd` (a real path), `str K str V env`,
@@ -154,7 +154,8 @@ the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr, one line (a line
 end in it shown as `\n`), with how the word is used when one of fux's own
 words was given too few values or the wrong kind; 2 a command used wrongly
 (`usage`); 3 the program exited (or was started again) before the wait;
-4 the pane closed; 7 the program is blocked reading its terminal and the
+4 the pane closed; 5 the shell command a `wait-done` lasted for ended before
+the text came; 7 the program is blocked reading its terminal and the
 text has not come (or gone); 124 still busy at the time limit (with `0 timeout`, a wait for a text
 or the exit not met at once). A met wait for the exit (`wait-exit`) is 0:
 the program's own status is in its state line (`%2 exited 3`) and in

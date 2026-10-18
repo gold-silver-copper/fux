@@ -71,7 +71,8 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
   remote pager or REPL answers `reading` as a local one does. A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
   status is the exit status, while its answer is left (`drop` it, and it
-  is 0): 3 the program exited first, 4 the pane closed,
+  is 0): 3 the program exited first, 4 the pane closed, 5 the shell
+  command a `wait-done` lasted for ended first,
   7 the program reads its terminal and the waited text has not come, 124
   still busy at the time limit (`SECS timeout`, on the options or keys or
   on the pane before them, `%3 0 timeout str ls line`; the `wait-seconds`
