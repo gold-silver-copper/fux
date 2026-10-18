@@ -14,13 +14,9 @@ fn arriving(id: u64, cells: &[Compact], width: u16) -> Arriving<'_> {
     Arriving {
         id: RowId(id),
         version: id.wrapping_mul(3),
-        wrapped: id % 2 == 1,
-        prompt: id.is_multiple_of(3),
-        rendition: if id % 5 == 4 {
-            LineRendition::DoubleWidth
-        } else {
-            LineRendition::Single
-        },
+        flags: u8::from(id % 2 == 1)
+            | u8::from(id.is_multiple_of(3)) << 1
+            | u8::from(id % 5 == 4) << RENDITION_SHIFT,
         cells,
         width,
     }
@@ -38,7 +34,7 @@ fn found(history: &History) -> Vec<Found> {
                 row.kept.id.0,
                 row.kept.version,
                 row.kept.wrapped(),
-                (row.kept.prompt(), row.rendition.is_double()),
+                (row.flags & PROMPT != 0, row.flags >> RENDITION_SHIFT != 0),
                 row.kept.width(),
                 row.cells.to_vec(),
             )

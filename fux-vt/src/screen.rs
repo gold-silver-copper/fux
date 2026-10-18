@@ -152,6 +152,19 @@ enum Designated {
     Supplemental,
 }
 
+impl Designated {
+    /// The set a final alone designates (SCS): `0` DEC Special Graphics,
+    /// `<` DEC Supplemental, any other ASCII.
+    #[inline]
+    fn of(byte: u8) -> Self {
+        match byte {
+            b'0' => Self::Graphics,
+            b'<' => Self::Supplemental,
+            _ => Self::Ascii,
+        }
+    }
+}
+
 impl Default for Charsets {
     fn default() -> Self {
         Self::at(Level::Two)
@@ -193,6 +206,24 @@ impl Charsets {
         } else {
             special_graphics(raw)
         }
+    }
+    /// SCS of a set with an intermediate of its own (`ESC ( % 5`): DEC
+    /// Supplemental for `% 5`, else ASCII; `intermediates` the designator
+    /// and that one. Out of line, as such sets are rare.
+    #[cold]
+    #[inline(never)]
+    fn scs(&mut self, intermediates: &[u8], byte: u8) {
+        let kind = match (intermediates.get(1), byte) {
+            (Some(b'%'), b'5') => Designated::Supplemental,
+            _ => Designated::Ascii,
+        };
+        let set = match intermediates.first() {
+            Some(b')') => Set::G1,
+            Some(b'*') => Set::G2,
+            Some(b'+') => Set::G3,
+            _ => Set::G0,
+        };
+        self.designate(set, kind);
     }
     /// SCS: `set` designated as `kind`.
     fn designate(&mut self, set: Set, kind: Designated) {
@@ -1097,6 +1128,16 @@ impl Screen {
     pub fn row_wrapped(&self, row: u16) -> bool {
         self.grid().live_wrapped(row)
     }
+    /// The line rendition of row `row` of the screen (DECDWL, DECDHL),
+    /// read without making its `Row`: single width while no row of the
+    /// screen may be anything else.
+    pub fn line_rendition(&self, row: u16) -> LineRendition {
+        let g = self.grid();
+        if !g.doubled() {
+            return LineRendition::Single;
+        }
+        g.rendition(row)
+    }
     /// How many rows of history the screen keeps now.
     pub fn history_len(&self) -> usize {
         self.grid().history_len()
@@ -1984,6 +2025,7 @@ impl Screen {
         }
         let g = self.grid_mut();
         g.set_col(col);
+        g.fit_cursor();
         g.cursor.pending_wrap = false;
     }
     /// Whether BS and CUB wrap back: reverse wraparound, either kind, with
@@ -2040,6 +2082,7 @@ impl Screen {
             };
             g.set_row(before);
             g.set_col(columns.last());
+            g.fit_cursor();
             count = count.saturating_sub(1);
         }
     }
@@ -2068,6 +2111,7 @@ impl Screen {
         let (lines, columns) = g.addressed();
         g.set_row(g.cursor.row().clamp(lines.first(), lines.last()));
         g.set_col(g.cursor.col().clamp(columns.first(), columns.last()));
+        g.fit_cursor();
         self.attributes = saved.attributes;
         self.pen_changed();
         // A single shift is no state DECSC saves (DEC STD 070, DECSC and
@@ -2080,25 +2124,23 @@ impl Screen {
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
-        // SCS: ESC ( F designates G0, ESC ) F G1, ESC * F G2 and ESC + F
-        // G3; F `0` is DEC Special Graphics, `% 5` and `<` (the
-        // user-preferred supplemental set) DEC Supplemental, and any other
-        // set is ASCII here (DEC STD 070, SCS).
-        let kind = match (intermediates.get(1), byte) {
-            (None, b'0') => Designated::Graphics,
-            (None, b'<') | (Some(b'%'), b'5') => Designated::Supplemental,
-            _ => Designated::Ascii,
-        };
+        // SCS (DEC STD 070, SCS): ESC ( F designates G0, ESC ) F G1, ESC * F
+        // G2 and ESC + F G3; F `0` is DEC Special Graphics, `<` (the
+        // user-preferred supplemental set) and `% 5` DEC Supplemental, and
+        // any other set is ASCII here. `ESC ( B` follows every SGR 0 that
+        // ncurses writes (xterm-256color's `sgr0`), so a final alone is
+        // read inline.
         match intermediates {
-            [b'('] | [b'(', _] => self.charsets.designate(Set::G0, kind),
-            [b')'] | [b')', _] => self.charsets.designate(Set::G1, kind),
-            [b'*'] | [b'*', _] => self.charsets.designate(Set::G2, kind),
-            [b'+'] | [b'+', _] => self.charsets.designate(Set::G3, kind),
+            b"(" => self.charsets.designate(Set::G0, Designated::of(byte)),
+            b")" => self.charsets.designate(Set::G1, Designated::of(byte)),
+            b"*" => self.charsets.designate(Set::G2, Designated::of(byte)),
+            b"+" => self.charsets.designate(Set::G3, Designated::of(byte)),
+            [b'(' | b')' | b'*' | b'+', _] => self.charsets.scs(intermediates, byte),
             b"#" if byte == b'8' => {
                 self.alignment();
                 return Ok(true);
             }
-            b"#" => return Ok(self.line_rendition(byte)),
+            b"#" => return Ok(self.set_line_rendition(byte)),
             // S7C1T and S8C1T (DEC STD 070, 1.7.2's level 2 list): replies
             // are 7-bit, as S7C1T asks; S8C1T is accepted and changes
             // nothing, a departure, as UTF-8 has no C1 bytes (ECMA-35,
@@ -2207,7 +2249,7 @@ impl Screen {
     /// and a pending wrap ends (DEC STD 070, Appendix D.6.1). DECDWL and
     /// DECDHL do nothing while DECLRMM is set (DECDWL, note 3; DECDHL, note
     /// 4). Whether the sequence is one of the four.
-    fn line_rendition(&mut self, byte: u8) -> bool {
+    fn set_line_rendition(&mut self, byte: u8) -> bool {
         let rendition = match byte {
             b'3' => LineRendition::DoubleHeightTop,
             b'4' => LineRendition::DoubleHeightBottom,
@@ -2266,6 +2308,7 @@ impl Screen {
             self.shift_columns(columns.first(), 1, !forward);
         } else if forward {
             g.set_col(col.saturating_add(1));
+            g.fit_cursor();
         } else {
             g.set_col(col.saturating_sub(1));
         }
@@ -2383,6 +2426,23 @@ impl Screen {
         }
         // Every line single width (DEC STD 070, DECALN, its algorithm).
         g.single_width(version);
+    }
+
+    /// DECSTR (`soft`), or DECSCL (`CSI Pl ; Pc " p`; DEC STD 070, DECSCL):
+    /// level 1 or 2, with a soft reset (note 3); a level fux-vt does not
+    /// support is ignored (note 4). Pc selects 7-bit or 8-bit C1 replies
+    /// (0, the default, and 2 are 8-bit): fux-vt's replies stay 7-bit, as
+    /// UTF-8 has no C1 bytes (ECMA-35, 15.4), a departure. Out of line.
+    #[inline(never)]
+    fn soft_reset_or_level(&mut self, p: &Parameters, soft: bool) {
+        if !soft {
+            match p.first(0, 0) {
+                61 => self.terminal.level = Level::One,
+                62 => self.terminal.level = Level::Two,
+                _ => return,
+            }
+        }
+        self.soft_reset();
     }
 
     /// DECSTR (`CSI ! p`), as xterm does it: the modes a program sets go
@@ -2889,23 +2949,10 @@ impl Screen {
         {
             return Ok(dispatch);
         }
-        if intermediates == b"!" && byte == b'p' {
-            self.soft_reset();
-            return Ok(Dispatch::Done);
-        }
-        // DECSCL (`CSI Pl ; Pc " p`; DEC STD 070, DECSCL): level 1 or 2,
-        // with a soft reset (note 3); a level fux-vt does not support is
-        // ignored (note 4). Pc selects 7-bit or 8-bit C1 replies (0, the
-        // default, and 2 are 8-bit): fux-vt's replies stay 7-bit, as UTF-8
-        // has no C1 bytes (ECMA-35, 15.4), a departure.
-        if intermediates == b"\"" && byte == b'p' {
-            let level = match p.first(0, 0) {
-                61 => Level::One,
-                62 => Level::Two,
-                _ => return Ok(Dispatch::Done),
-            };
-            self.terminal.level = level;
-            self.soft_reset();
+        // DECSTR and DECSCL, here, not in `other_csi`, as the parser asks
+        // whether synchronized output ended as this returns.
+        if byte == b'p' && matches!(intermediates, b"!" | b"\"") {
+            self.soft_reset_or_level(p, intermediates == b"!");
             return Ok(Dispatch::Done);
         }
         if !intermediates.is_empty() && !private {

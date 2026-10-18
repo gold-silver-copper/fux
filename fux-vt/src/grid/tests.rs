@@ -144,7 +144,13 @@ impl Grid {
                         (*c, read.attributes(), read.contents().to_owned(), link)
                     })
                     .collect();
-                (row.id, row.version, row.wrapped, row.prompt, cells)
+                (
+                    row.id,
+                    row.version,
+                    row.wrapped(),
+                    row.starts_prompt(),
+                    cells,
+                )
             })
             .collect()
     }
@@ -249,8 +255,11 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         };
         let col = r.below(width);
         match r.below(5) {
-            0 => m.wrapped = !m.wrapped,
-            1 => m.prompt = true,
+            0 => {
+                let wrapped = m.wrapped();
+                m.set(WRAPPED, !wrapped);
+            }
+            1 => m.set(PROMPT, true),
             2 => {
                 m.used = cols;
                 let half = match r.below(3) {

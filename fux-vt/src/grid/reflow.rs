@@ -128,7 +128,7 @@ impl Grid {
             target,
         };
         // Whether any row may be half as long, which only then is asked.
-        let halved = self.doubled || self.history.has_renditions();
+        let halved = self.doubled() || self.history.has_renditions();
         let double = |index: usize| halved && self.rendition_at(index).is_double();
         let mut start = 0;
         while start < retained {
@@ -168,7 +168,7 @@ impl Grid {
     /// The rendition of retained row `index`.
     fn rendition_at(&self, index: usize) -> LineRendition {
         self.row_at(index)
-            .map_or(LineRendition::Single, |row| row.rendition)
+            .map_or(LineRendition::Single, |row| row.rendition())
     }
 
     /// Lays out the line of rows `start` through `end`, a run of cells at a
@@ -209,7 +209,7 @@ impl Grid {
             let len = row.width;
             // The row the row's first cell goes to is where the prompt
             // starts after, or the line's last, if no cell goes after it.
-            line.pending |= row.prompt;
+            line.pending |= row.starts_prompt();
             for (offset, mark) in line.offsets.iter_mut().zip(pass.marks) {
                 if let Some((row_index, col)) = mark
                     && row_index == i
@@ -361,7 +361,7 @@ impl Grid {
             .iter()
             .rposition(|c| !c.is_blank(0))
             .map_or(0, |last| last.saturating_add(1));
-        (m.wrapped, width, text)
+        (m.wrapped(), width, text)
     }
 }
 
@@ -569,11 +569,8 @@ impl Reflow for Fill<'_> {
         let text = std::mem::take(&mut self.text);
         let links = self.links.take();
         let written = std::mem::take(&mut self.written);
-        let meta = Meta {
-            prompt,
-            rendition,
-            ..Meta::new(id, self.version, wrapped, used)
-        };
+        let mut meta = Meta::new(id, self.version, wrapped, used).with_rendition(rendition);
+        meta.set(PROMPT, prompt);
         let history = row < self.screen;
         let cells = (self.cells.as_slice(), written);
         (self.grid).keep_row(meta, cells, (Some(text), links), history)?;

@@ -98,9 +98,12 @@ const _: () = assert!(size_of::<Kept>() == 24);
 const CHUNKS_PER_BUDGET: usize = size_of::<Kept>() * 16;
 const _: () = assert!(BLOCK <= 1 << 12);
 
-/// `Kept`'s flags.
-const WRAPPED: u8 = 1;
-const PROMPT: u8 = 2;
+/// `Kept`'s flags, the first two the screen's rows keep too (`Meta`).
+pub(crate) const WRAPPED: u8 = 1;
+pub(crate) const PROMPT: u8 = 2;
+/// Where a screen row's flags keep its rendition (`LineRendition::bits`),
+/// above `WRAPPED` and `PROMPT`; history keeps it apart (`renditions`).
+pub(crate) const RENDITION_SHIFT: u8 = 2;
 const LINKED: u8 = 4;
 const TEXT: u8 = 8;
 
@@ -108,7 +111,7 @@ impl Kept {
     /// What `row` is kept as, its cells at `start` in block `block`.
     #[inline]
     fn new(row: &Arriving<'_>, (block, start): (u16, u16)) -> Self {
-        let flags = (if row.wrapped { WRAPPED } else { 0 }) | (if row.prompt { PROMPT } else { 0 });
+        let flags = row.flags & (WRAPPED | PROMPT);
         let len = u16::try_from(row.cells.len()).unwrap_or(u16::MAX);
         Self {
             id: row.id,
@@ -150,9 +153,6 @@ impl Kept {
     pub(crate) fn wrapped(&self) -> bool {
         self.flags() & WRAPPED != 0
     }
-    pub(crate) fn prompt(&self) -> bool {
-        self.flags() & PROMPT != 0
-    }
 }
 
 /// The most room a map of history's holds for `len` entries before it
@@ -177,9 +177,10 @@ pub(crate) fn trimmed(cells: &[Compact]) -> &[Compact] {
 pub(crate) struct Arriving<'a> {
     pub(crate) id: RowId,
     pub(crate) version: u64,
-    pub(crate) wrapped: bool,
-    pub(crate) prompt: bool,
-    pub(crate) rendition: LineRendition,
+    /// Whether it is soft-wrapped (`WRAPPED`) and whether a prompt starts
+    /// on it (`PROMPT`), and its rendition in the bits above them, as the
+    /// screen's row kept them.
+    pub(crate) flags: u8,
     /// Its cells before its blank tail (`trimmed`), of `width`.
     pub(crate) cells: &'a [Compact],
     pub(crate) width: u16,
@@ -188,7 +189,9 @@ pub(crate) struct Arriving<'a> {
 /// A row of history as a reader finds it.
 pub(crate) struct Found<'a> {
     pub(crate) kept: &'a Kept,
-    pub(crate) rendition: LineRendition,
+    /// Its flags as a screen row's (`WRAPPED`, `PROMPT`, its rendition
+    /// from `RENDITION_SHIFT`).
+    pub(crate) flags: u8,
     pub(crate) cells: &'a [Compact],
     pub(crate) text: &'a Text,
     pub(crate) links: Option<&'a RowLinks>,
@@ -408,9 +411,7 @@ impl History {
             self.push(Arriving {
                 id: kept.id,
                 version: kept.version,
-                wrapped: kept.wrapped(),
-                prompt: kept.prompt(),
-                rendition: found.rendition,
+                flags: found.flags,
                 cells: found.cells,
                 width: kept.width(),
             })?;
@@ -481,14 +482,13 @@ impl History {
         let text = text.flatten().unwrap_or(&NO_TEXT);
         let links = (kept.flags() & LINKED != 0).then(|| self.linked.get(&number));
         let links = links.flatten();
-        let rendition = if self.renditions.is_empty() {
-            LineRendition::Single
-        } else {
-            self.rendition_of(number)
-        };
+        let mut flags = kept.flags() & (WRAPPED | PROMPT);
+        if !self.renditions.is_empty() {
+            flags |= self.rendition_of(number).bits() << RENDITION_SHIFT;
+        }
         Some(Found {
             kept,
-            rendition,
+            flags,
             cells,
             text,
             links,
@@ -618,8 +618,8 @@ impl History {
         self.cells = self.cells.saturating_add(len);
         self.rows
             .push_back(Kept::new(&row, (self.newest_block, start)));
-        if row.rendition.is_double() {
-            self.keep_rendition(row.rendition);
+        if row.flags >> RENDITION_SHIFT != 0 {
+            self.keep_rendition(LineRendition::from_bits(row.flags >> RENDITION_SHIFT));
         }
         Ok(())
     }
@@ -1061,9 +1061,7 @@ mod faults {
             let row = Arriving {
                 id: RowId(id),
                 version: 1,
-                wrapped: false,
-                prompt: false,
-                rendition: LineRendition::Single,
+                flags: 0,
                 cells: &cells,
                 width: 4,
             };

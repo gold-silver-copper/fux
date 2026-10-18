@@ -348,14 +348,14 @@ fn draw_row(
 ) {
     let (gy, gx, width) = (line.y(), line.x(), line.w().min(window_cols));
     // The pane's own row, well formed, goes whole onto the cells; one drawn
-    // twice as wide (DECDWL, DECDHL) covers the width itself.
+    // twice as wide (DECDWL, DECDHL) is drawn over it, covering the width
+    // itself.
     let mut len = row.map_or(0, |row| row.len());
     if let Some(row) = row {
+        grid.put_row(gy, gx, pane, row, width);
         if row.rendition().is_double() {
-            grid.put_doubled_row(gy, gx, pane, row, width);
+            grid.put_doubled_row(gy, gx, pane, &row, width);
             len = usize::from(width);
-        } else {
-            grid.put_row(gy, gx, pane, row, width);
         }
     }
     // At most `width`, which is at most the line's.
@@ -584,7 +584,9 @@ impl Grid {
     /// columns, its glyph and a blank in its colours, a wide glyph four;
     /// what the doubled cells do not reach of `width` is blank. A double
     /// height half is drawn as double width.
-    fn put_doubled_row(&mut self, y: u16, x: u16, pane: PaneId, row: Row<'_>, width: u16) {
+    #[cold]
+    #[inline(never)]
+    fn put_doubled_row(&mut self, y: u16, x: u16, pane: PaneId, row: &Row<'_>, width: u16) {
         let Some(start) = self.index(y, x) else {
             return;
         };
@@ -902,7 +904,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             None => {
                 let (y, x) = screen.cursor_position();
                 // On a row drawn twice as wide, at its glyph's first half.
-                let doubled = (screen.window().row(y)).is_some_and(|r| r.rendition().is_double());
+                let doubled = screen.line_rendition(y).is_double();
                 let x = if doubled { x.saturating_mul(2) } else { x };
                 if screen.mode(fux_vt::Mode::ShowCursor)
                     && view.mode.is_normal()

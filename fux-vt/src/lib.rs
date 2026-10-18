@@ -236,6 +236,7 @@ pub struct Mark(pub(crate) u64);
 /// and printing stop short of them. The cells keep their columns; the host
 /// draws each twice as wide.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum LineRendition {
     /// DECSWL (`ESC # 5`), and every line until another is set.
     #[default]
@@ -253,6 +254,19 @@ impl LineRendition {
     pub fn is_double(self) -> bool {
         self != Self::Single
     }
+    /// The rendition as two bits, 0 single width (`bits`'s inverse).
+    pub(crate) fn from_bits(bits: u8) -> Self {
+        match bits & 3 {
+            0 => Self::Single,
+            1 => Self::DoubleWidth,
+            2 => Self::DoubleHeightTop,
+            _ => Self::DoubleHeightBottom,
+        }
+    }
+    /// The rendition as two bits.
+    pub(crate) fn bits(self) -> u8 {
+        self as u8
+    }
 }
 
 /// A retained row, and its place among the rows retained: history's,
@@ -266,10 +280,10 @@ pub struct Row<'a> {
     pub(crate) index: usize,
     pub(crate) id: RowId,
     pub(crate) version: u64,
-    pub(crate) wrapped: bool,
-    /// Whether a prompt starts on the row (OSC 133 ; A).
-    pub(crate) prompt: bool,
-    pub(crate) rendition: LineRendition,
+    /// Whether the row is soft-wrapped and whether a prompt starts on it
+    /// (OSC 133 ; A), and its rendition, as a screen row's flags hold them
+    /// (`history::WRAPPED`, `PROMPT`, `RENDITION_SHIFT`).
+    pub(crate) flags: u8,
     /// The cells the row keeps: all of them, or those before its blank
     /// tail, a history row's; those past them, to `width`, are blank.
     pub(crate) cells: &'a [compact::Compact],
@@ -285,7 +299,7 @@ impl fmt::Debug for Row<'_> {
             .field("index", &self.index)
             .field("id", &self.id)
             .field("version", &self.version)
-            .field("wrapped", &self.wrapped)
+            .field("wrapped", &self.wrapped())
             .finish_non_exhaustive()
     }
 }
@@ -343,12 +357,12 @@ impl<'a> Row<'a> {
     }
     /// Whether the row is soft-wrapped: its line goes on in the next row.
     pub fn wrapped(&self) -> bool {
-        self.wrapped
+        self.flags & history::WRAPPED != 0
     }
     /// The row's line rendition: whether the host draws it double width,
     /// or as half of double height (DECDWL, DECDHL).
     pub fn rendition(&self) -> LineRendition {
-        self.rendition
+        LineRendition::from_bits(self.flags >> history::RENDITION_SHIFT)
     }
     /// How many cells the row has: a history row keeps the width it had.
     pub fn len(&self) -> usize {
@@ -363,7 +377,7 @@ impl<'a> Row<'a> {
     /// in, no part of the text (reflow and copies skip it). A blank erased
     /// in a colour is a cell painted, and no spacer.
     pub fn ends_in_spacer(&self) -> bool {
-        self.wrapped
+        self.wrapped()
             && (self.width.checked_sub(1))
                 .and_then(|col| self.stored(col))
                 .is_some_and(|c| c.is_blank(0))
@@ -416,7 +430,7 @@ impl<'a> Row<'a> {
     /// `OSC 133 ; A` while the cursor was on it. The mark goes with the row
     /// as it scrolls and reflows; ED, erasing the row whole, removes it.
     pub fn starts_prompt(&self) -> bool {
-        self.prompt
+        self.flags & history::PROMPT != 0
     }
     /// Bytes of text the row keeps for clusters over 17 bytes, overwritten
     /// ones included until the row is compacted: at most
@@ -784,7 +798,7 @@ impl<'a> Window<'a> {
     /// Whether row `row` of the window is soft-wrapped, its line going on in
     /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
-        self.row(row).is_some_and(|r| r.wrapped)
+        self.row(row).is_some_and(|r| r.wrapped())
     }
     /// Inclusive endpoints, normalized to wide leaders. Limits are checked
     /// before allocation and before every append; an oversized copy is refused.
@@ -830,7 +844,7 @@ impl<'a> Window<'a> {
                 }
                 output.push_str(text);
             }
-            if y == end.0 || !row.wrapped {
+            if y == end.0 || !row.wrapped() {
                 while output.len() > line_start && output.ends_with(' ') {
                     output.pop();
                 }
