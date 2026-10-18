@@ -1,6 +1,7 @@
 //! The rectangular area operations of DEC STD 070, 5.12.1 (VT420, level
 //! 4): DECFRA (`CSI Pch ; Pt ; Pl ; Pb ; Pr $ x`), DECERA (`$ z`), DECSERA
-//! (`$ {`) and DECCRA (`$ v`). Each expected screen is worked out by hand from the
+//! (`$ {`), DECCRA (`$ v`), DECCARA (`$ r`), DECRARA (`$ t`) and DECSACE
+//! (`* x`). Each expected screen is worked out by hand from the
 //! standard's text, which each test quotes.
 
 use fux_vt::{Parser, Size};
@@ -181,5 +182,134 @@ fn deccra_blanks_a_wide_glyph_it_cuts() -> Result {
     let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
     parser.process("\u{754c}\r\n\u{8a9e}\x1b[1;1;1;1;1;2;1;1$v".as_bytes())?;
     assert_eq!(lines(&parser), ["\u{754c}", ""]);
+    Ok(())
+}
+
+/// The renditions of row `y`, columns `cols`, as `(bold, underline,
+/// blink, inverse)`, `None` for an unoccupied position.
+fn renditions(p: &Parser, y: u16, cols: std::ops::Range<u16>) -> Vec<Option<[bool; 4]>> {
+    cols.map(|x| {
+        p.screen().cell(y, x).filter(|c| c.has_contents()).map(|c| {
+            let a = c.attributes();
+            [
+                a.bold(),
+                a.underline(),
+                a.blink() != fux_vt::Blink::None,
+                a.inverse(),
+            ]
+        })
+    })
+    .collect()
+}
+
+const PLAIN: Option<[bool; 4]> = Some([false; 4]);
+const BOLD: Option<[bool; 4]> = Some([true, false, false, false]);
+
+/// DEC STD 070, 5.12.1, DECCARA (`CSI Pt ; Pl ; Pb ; Pr ; Ps … $ r`): the
+/// renditions Ps names (0 all off, 1 bold, 4 underscore, 5 blink, 7
+/// negative, 22, 24, 25 and 27 each off, and the Color Text Extension's
+/// colours, 5.6.3) set in each position of the area, "without altering
+/// any characters"; several are "cumulative, as if several DECCARA control
+/// functions were received and executed in sequence"; "if no valid
+/// subsequent parameter is received", 0; other values are ignored. The
+/// cursor and the pen stay. Checked against a second reader given only the
+/// standard's pages.
+#[test]
+fn deccara_changes_the_renditions_of_an_area() -> Result {
+    let p = after("\x1b[1;2;1;4;1$r")?;
+    assert_eq!(renditions(&p, 0, 0..5), [PLAIN, BOLD, BOLD, BOLD, PLAIN]);
+    assert_eq!(lines(&p).first().map(String::as_str), Some("abcdef"));
+    assert_eq!(p.screen().cursor_position(), (1, 2));
+    let p = after("\x1b[1;2;1;4;1;4;7$r\x1b[1;3;1;3;27$r")?;
+    let all = Some([true, true, false, true]);
+    assert_eq!(
+        renditions(&p, 0, 1..4),
+        [all, Some([true, true, false, false]), all]
+    );
+    // None, or none valid, is 0.
+    assert_eq!(
+        renditions(&after("\x1b[1;1;1;2;1$r\x1b[1;1;1;2$r")?, 0, 0..2),
+        [PLAIN; 2]
+    );
+    assert_eq!(
+        renditions(&after("\x1b[1;1;1;2;1$r\x1b[1;1;1;2;9$r")?, 0, 0..2),
+        [PLAIN; 2]
+    );
+    // The pen is not changed: text printed after it is plain.
+    let p = after("\x1b[1;1;1;1;1$rX")?;
+    assert_eq!(renditions(&p, 1, 2..3), [PLAIN]);
+    // Colours.
+    let p = after("\x1b[1;1;1;1;31;44$r")?;
+    let a = p.screen().cell(0, 0).map(|c| c.attributes());
+    assert_eq!(
+        a.map(|a| (a.foreground(), a.background())),
+        Some((fux_vt::Color::Idx(1), fux_vt::Color::Idx(4)))
+    );
+    // An area whose left is past its right is ignored.
+    assert_eq!(renditions(&after("\x1b[1;5;2;2;1$r")?, 0, 0..6), [PLAIN; 6]);
+    Ok(())
+}
+
+/// DEC STD 070, DECSACE (`CSI Ps * x`): with 0 or 1, the default, DECCARA
+/// and DECRARA change "the stream of character positions beginning with
+/// the first character position specified in the command, and ending with
+/// the second", whole lines between, and its unoccupied positions "are
+/// not affected"; with 2, the rectangle, whose unoccupied positions "are
+/// changed to blanks and are affected".
+#[test]
+fn decsace_selects_a_stream_or_a_rectangle() -> Result {
+    let stream = after("\x1b[1;2;2;3;1$r")?;
+    assert_eq!(
+        renditions(&stream, 0, 0..6),
+        [PLAIN, BOLD, BOLD, BOLD, BOLD, BOLD]
+    );
+    assert_eq!(renditions(&stream, 1, 0..4), [BOLD, BOLD, BOLD, PLAIN]);
+    let rectangle = after("\x1b[2*x\x1b[1;2;2;3;1$r")?;
+    assert_eq!(renditions(&rectangle, 0, 0..4), [PLAIN, BOLD, BOLD, PLAIN]);
+    assert_eq!(renditions(&rectangle, 1, 0..4), [PLAIN, BOLD, BOLD, PLAIN]);
+    // Unoccupied positions.
+    let mut p = Parser::new(Size::new(3, 6)?, 0)?;
+    p.process(b"AB\x1b[1;1;2;3;4$r")?;
+    let under = Some([false, true, false, false]);
+    assert_eq!(renditions(&p, 0, 0..3), [under, under, None]);
+    assert_eq!(renditions(&p, 1, 0..1), [None]);
+    let mut p = Parser::new(Size::new(3, 6)?, 0)?;
+    p.process(b"\x1b[2*xAB\x1b[1;1;2;3;4$r")?;
+    assert_eq!(renditions(&p, 0, 0..4), [under, under, under, None]);
+    assert_eq!(renditions(&p, 1, 0..3), [under; 3]);
+    assert_eq!(
+        lines(&p).into_iter().take(2).collect::<Vec<_>>(),
+        ["AB", ""]
+    );
+    // DECSACE 3 is none of them: the rectangle stays.
+    let p = after("\x1b[2*x\x1b[3*x\x1b[1;2;2;3;1$r")?;
+    assert_eq!(renditions(&p, 0, 0..4), [PLAIN, BOLD, BOLD, PLAIN]);
+    Ok(())
+}
+
+/// DEC STD 070, 5.12.1, DECRARA (`CSI Pt ; Pl ; Pb ; Pr ; Ps … $ t`): the
+/// renditions Ps names reversed (0 all four, 1 bold, 4 underscore, 5
+/// blink, 7 negative), cumulatively; "if no valid subsequent parameter is
+/// received, the command is ignored", and colours, whose reverse "is not
+/// defined", are no valid parameter.
+#[test]
+fn decrara_reverses_the_renditions_of_an_area() -> Result {
+    let p = after("\x1b[1;1;1;1;4$r\x1b[1;1;1;2;0;1$t")?;
+    assert_eq!(
+        renditions(&p, 0, 0..2),
+        [
+            Some([false, false, true, true]),
+            Some([false, true, true, true])
+        ]
+    );
+    assert_eq!(renditions(&after("\x1b[1;1;1;2$t")?, 0, 0..2), [PLAIN; 2]);
+    assert_eq!(
+        renditions(&after("\x1b[1;1;1;2;31$t")?, 0, 0..2),
+        [PLAIN; 2]
+    );
+    assert_eq!(
+        renditions(&after("\x1b[1;1;1;2;1;1$t")?, 0, 0..2),
+        [PLAIN; 2]
+    );
     Ok(())
 }

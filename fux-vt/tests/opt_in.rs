@@ -521,6 +521,21 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
             "{setup:?}"
         );
     }
+    // DECSACE's Ps as it was set, 0 until set (DEC STD 070, DECRQSS; esctest
+    // sets 0 and expects `0*x`); one it does not take changes nothing.
+    for (setup, ps) in [
+        ("", 0),
+        ("\x1b[2*x", 2),
+        ("\x1b[1*x", 1),
+        ("\x1b[2*x\x1b[3*x", 2),
+    ] {
+        let reply = format!("\x1bP1$r{ps}*x\x1b\\");
+        assert_eq!(
+            ask(&format!("{setup}\x1bP$q*x\x1b\\"))?,
+            [reply],
+            "{setup:?}"
+        );
+    }
     // Requests fux-vt does not know, a long one among them, are invalid.
     for request in ["t", "$|", "mm", "a long request"] {
         assert_eq!(

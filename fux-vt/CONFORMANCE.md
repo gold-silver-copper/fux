@@ -5,8 +5,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | Reference | implemented | partial | departure | not implemented | not applicable | all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 63 | 1 | 3 | 7 | 88 | 162 |
-| DEC STD 070 | 84 | 4 | 2 | 25 | 25 | 140 |
-| ctlseqs | 103 | 15 | 3 | 32 | 92 | 245 |
+| DEC STD 070 | 87 | 4 | 2 | 22 | 25 | 140 |
+| ctlseqs | 106 | 15 | 3 | 29 | 92 | 245 |
 | fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
 
 ## ECMA-48
@@ -275,9 +275,9 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 5-170 DECFRA | DECFRA (FILL RECTANGULAR AREA) | implemented | `rectangles::decfra_fills_a_rectangle` |  |
 | 5-171 DECERA | DECERA (ERASE RECTANGULAR AREA) | implemented | `rectangles::decera_and_decsera_erase_a_rectangle` |  |
 | 5-172 DECSERA | DECSERA (SELECTIVE ERASE RECTANGULAR AREA) | implemented | `rectangles::decera_and_decsera_erase_a_rectangle` |  |
-| 5-173 DECCARA | DECCARA (CHANGE ATTRIBUTES RECTANGULAR AREA) | not implemented |  | not implemented |
-| 5-175 DECRARA | DECRARA (REVERSE ATTRIBUTES RECTANGULAR AREA) | not implemented |  | not implemented |
-| 5-177 DECSACE | DECSACE (SELECT ATTRIBUTE CHANGE EXTENT) | not implemented |  | not implemented |
+| 5-173 DECCARA | DECCARA (CHANGE ATTRIBUTES RECTANGULAR AREA) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle` |  |
+| 5-175 DECRARA | DECRARA (REVERSE ATTRIBUTES RECTANGULAR AREA) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle` |  |
+| 5-177 DECSACE | DECSACE (SELECT ATTRIBUTE CHANGE EXTENT) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle`, `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` |  |
 | 5-179 DECRQCRA | DECRQCRA (REQUEST CHECKSUM OF RECTANGULAR AREA) | implemented | `opt_in::rectangle_checksums_sum_the_cells` | with `Feature::RectangleChecksums` |
 | 5-180 DSR | DSR (MEMORY CHECKSUM DEVICE STATUS REPORT) | implemented | `opt_in::extended_replies_answer_the_device_status_reports` | answers that there is no macro space, so a memory checksum of none (DSR 63 answers `DCS Pid ! ~ 0000 ST`) |
 | 5-182 DECDMAC | DECDMAC (DEFINE MACRO) | not implemented |  | macros (DEC STD 070, 5.12.3) are not implemented: DSR 62 and 63 answer that there is no macro space |
@@ -468,7 +468,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI # q | CSI # q (Pop video attributes from stack (XTPOPSGR), xterm.) | not implemented |  | the video attribute stack is not implemented |
 | CSI Ps ; Ps r | CSI Ps ; Ps r (Set Scrolling Region [top;bottom] (default = full size of window) (DECSTBM), VT100.) | implemented | `conformance::decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set` |  |
 | CSI ? Pm r | CSI ? Pm r (Restore DEC Private Mode Values (XTRESTORE), xterm.) | implemented | `modes::xtsave_and_xtrestore_save_and_restore_modes` |  |
-| CSI Pt ; Pl ; Pb ; Pr ; Pm $ r | CSI Pt ; Pl ; Pb ; Pr ; Pm $ r (Change Attributes in Rectangular Area (DECCARA), VT400 and up.) | not implemented |  | not implemented |
+| CSI Pt ; Pl ; Pb ; Pr ; Pm $ r | CSI Pt ; Pl ; Pb ; Pr ; Pm $ r (Change Attributes in Rectangular Area (DECCARA), VT400 and up.) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle` |  |
 | CSI s | CSI s (Save cursor, available only when DECLRMM is disabled (SCOSC, also ANSI.SYS).) | implemented | `extended::scosc_and_scorc_save_and_restore_position_and_attributes` |  |
 | CSI Pl ; Pr s | CSI Pl ; Pr s (Set left and right margins (DECSLRM), VT420 and up.) | implemented | `margins::declrmm_lets_decslrm_set_the_margins` |  |
 | CSI > Ps s | CSI > Ps s (Set/reset shift-escape options (XTSHIFTESCAPE), xterm.) | not applicable |  | a resource xterm keeps and fux-vt does not (shift-escape) |
@@ -476,7 +476,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI Ps ; Ps ; Ps t | CSI Ps ; Ps ; Ps t (Window manipulation (XTWINOPS), dtterm, extended by xterm.) | partial | `opt_in::size_reports_answer_the_text_area_in_characters` | 14, 16 and 18 are answered (with `Feature::SizeReports` and the host's cell size); the other window operations are the host's |
 | CSI > Pm t | CSI > Pm t (This xterm control sets one or more features of the title modes (XTSMTITLE), xterm.) | not applicable |  | title modes are the host's |
 | CSI Ps SP t | CSI Ps SP t (Set warning-bell volume (DECSWBV), VT520.) | not applicable |  | the bell's volume is the host's |
-| CSI Pt ; Pl ; Pb ; Pr ; Pm $ t | CSI Pt ; Pl ; Pb ; Pr ; Pm $ t (Reverse Attributes in Rectangular Area (DECRARA), VT400 and up.) | not implemented |  | not implemented |
+| CSI Pt ; Pl ; Pb ; Pr ; Pm $ t | CSI Pt ; Pl ; Pb ; Pr ; Pm $ t (Reverse Attributes in Rectangular Area (DECRARA), VT400 and up.) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle` |  |
 | CSI u | CSI u (Restore cursor (SCORC, also ANSI.SYS).) | implemented | `extended::scosc_and_scorc_save_and_restore_position_and_attributes` |  |
 | CSI & u | CSI & u (User-Preferred Supplemental Set (DECRQUPSS), VT320, VT510.) | not implemented |  | not implemented |
 | CSI Ps SP u | CSI Ps SP u (Set margin-bell volume (DECSMBV), VT520.) | not applicable |  | the bell's volume is the host's |
@@ -485,7 +485,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI Ps $ w | CSI Ps $ w (Request presentation state report (DECRQPSR), VT320 and up.) | not implemented |  | a terminal state report (TSI extension) fux-vt does not give |
 | CSI Pt ; Pl ; Pb ; Pr ' w | CSI Pt ; Pl ; Pb ; Pr ' w (Enable Filter Rectangle (DECEFR), VT420 and up.) | not applicable |  | fux-vt has no locator (DEC STD 070, chapter 13): mouse reports are xterm's (CSI ? 1000 h and the others) |
 | CSI Ps x | CSI Ps x (Request Terminal Parameters (DECREQTPARM).) | not implemented |  | DECREQTPARM is not implemented |
-| CSI Ps * x | CSI Ps * x (Select Attribute Change Extent (DECSACE), VT420 and up.) | not implemented |  | not implemented |
+| CSI Ps * x | CSI Ps * x (Select Attribute Change Extent (DECSACE), VT420 and up.) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle`, `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` |  |
 | CSI Pc ; Pt ; Pl ; Pb ; Pr $ x | CSI Pc ; Pt ; Pl ; Pb ; Pr $ x (Fill Rectangular Area (DECFRA), VT420 and up.) | implemented | `rectangles::decfra_fills_a_rectangle` |  |
 | CSI Ps # y | CSI Ps # y (Select checksum extension (XTCHECKSUM), xterm.) | not implemented |  | the checksum is xterm's default, the VT520's; it cannot be changed |
 | CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y | CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y (Request Checksum of Rectangular Area (DECRQCRA), VT420 and up.) | implemented | `opt_in::rectangle_checksums_sum_the_cells` | with `Feature::RectangleChecksums` |

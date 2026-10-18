@@ -78,7 +78,6 @@ DECRQMTests.test_DECRQM_DEC_DECVCCM  xterm-too: esctest's known xterm bug (Not s
 DECRQMTests.test_DECRQM_DEC_DECXRLM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQSSTests.test_DECRQSS_DECELF  xterm-too: esctest's known xterm bug (Not implemented.)
 DECRQSSTests.test_DECRQSS_DECLFKC  xterm-too: esctest's known xterm bug (Not implemented.)
-DECRQSSTests.test_DECRQSS_DECSACE  not-implemented: deferred: DECSACE, the extent of DECCARA and DECRARA, which fux-vt does not implement; no program in the corpus sends them
 DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSCL  departure: DECSCL selects level 1 or 2 alone, the levels DA claims (DEC STD 070, DECSCL, note 4: an unsupported level is ignored), and DECRQSS answers `62;1"p`; esctest asks for level 5 and expects its max-vt-level, 4 (README, CSI " p)
 DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q), the margins (r, s) and DECSCA ("q); fux-vt keeps no other setting it reports

@@ -472,6 +472,9 @@ struct Terminal {
     integrity: Integrity,
     /// The conformance level DECSCL selected last, level 2 until then.
     level: Level,
+    /// DECSACE's Ps as set, 0 until then: 0 and 1 have DECCARA and DECRARA
+    /// change a stream of positions, 2 a rectangle (DEC STD 070, DECSACE).
+    extent: u8,
 }
 
 /// A conformance level DECSCL selects (DEC STD 070, DECSCL): fux-vt is
@@ -699,6 +702,53 @@ mod tests;
 /// starts at colour `from`'s.
 fn indexed(n: u16, from: u16) -> Color {
     Color::Idx(u8::try_from(n.saturating_sub(from)).unwrap_or(0))
+}
+
+/// `attributes` with DECCARA's renditions `ops` set in turn (DEC STD 070,
+/// DECCARA: 0 normal intensity, positive image, not underlined, not
+/// blinking; 1 bold, 4 underscore, 5 blink, 7 negative; 22, 24, 25 and 27
+/// each off; 30 to 37, 39, 40 to 47 and 49 the colours, the Color Text
+/// Extension's (5.6.3.1)), or with `reverse` DECRARA's reversed (0 all
+/// four, 1 bold, 4 underscore, 5 blink, 7 negative). Each is cumulative,
+/// as if one function of each were carried out in turn.
+fn rendition_change(mut a: Attributes, ops: &[u16], reverse: bool) -> Attributes {
+    let flip = |a: Attributes, op: u16| match op {
+        1 => a.with_bold(!a.bold()),
+        4 => a.with_underline(!a.underline()),
+        5 => a.with_blink(if a.blink() == Blink::None {
+            Blink::Slow
+        } else {
+            Blink::None
+        }),
+        7 => a.with_inverse(!a.inverse()),
+        _ => a,
+    };
+    for &op in ops {
+        a = match (reverse, op) {
+            (true, 0) => [1, 4, 5, 7].into_iter().fold(a, flip),
+            (true, _) => flip(a, op),
+            (false, 0) => a
+                .with_bold(false)
+                .with_dim(false)
+                .with_underline(false)
+                .with_blink(Blink::None)
+                .with_inverse(false),
+            (false, 1) => a.with_bold(true),
+            (false, 4) => a.with_underline_style(UnderlineStyle::Single),
+            (false, 5) => a.with_blink(Blink::Slow),
+            (false, 7) => a.with_inverse(true),
+            (false, 22) => a.with_bold(false).with_dim(false),
+            (false, 24) => a.with_underline(false),
+            (false, 25) => a.with_blink(Blink::None),
+            (false, 27) => a.with_inverse(false),
+            (false, 39) => a.with_foreground(Color::Default),
+            (false, 49) => a.with_background(Color::Default),
+            (false, n @ 30..=37) => a.with_foreground(indexed(n, 30)),
+            (false, n @ 40..=47) => a.with_background(indexed(n, 40)),
+            (false, _) => a,
+        };
+    }
+    a
 }
 
 /// The colour of 38, 48 or 58, `rest` being what follows the selector:
@@ -2639,6 +2689,92 @@ impl Screen {
         }
     }
 
+    /// DECCARA (`CSI Pt ; Pl ; Pb ; Pr ; Ps … $ r`) and DECRARA (`… $ t`,
+    /// `reverse`; DEC STD 070, 5.12.1): the renditions the parameters
+    /// after the rectangle name (`rendition_change`) changed, or reversed,
+    /// in each occupied position of the area, its characters and the
+    /// cursor staying. The area is the rectangle `rectangle` reads, or with
+    /// DECSACE 0 or 1 the stream of positions from its first corner to its
+    /// second, whole lines between; with DECSACE 2 its unoccupied
+    /// positions become spaces and change too. Each style of the area is
+    /// mapped once while a few are about, and found again by the grid's
+    /// table otherwise. Out of line, as they are rare.
+    #[inline(never)]
+    fn change_attributes(&mut self, p: &Parameters, reverse: bool) {
+        let Some((lines, columns)) = self.rectangle(p, 0) else {
+            return;
+        };
+        let valid: &[u16] = if reverse {
+            &[0, 1, 4, 5, 7]
+        } else {
+            &[
+                0, 1, 4, 5, 7, 22, 24, 25, 27, 30, 31, 32, 33, 34, 35, 36, 37, 39, 40, 41, 42, 43,
+                44, 45, 46, 47, 49,
+            ]
+        };
+        let mut ops = [0u16; 32];
+        let mut count = 0usize;
+        for group in p.groups().skip(4) {
+            if let [n] = group
+                && valid.contains(n)
+                && let Some(op) = ops.get_mut(count)
+            {
+                *op = *n;
+                count = count.saturating_add(1);
+            }
+        }
+        // DECCARA with no valid parameter clears the renditions (0); DECRARA
+        // with none is ignored.
+        if count == 0 && reverse {
+            return;
+        }
+        let ops = ops.get(..count.max(1)).unwrap_or_default();
+        self.break_cluster();
+        let rectangle = self.terminal.extent == 2;
+        let cols = self.size().cols();
+        let (top, bottom) = (lines.first(), lines.last());
+        let span = |y: u16| match rectangle {
+            true => (columns.first(), columns.end()),
+            false => (
+                if y == top { columns.first() } else { 0 },
+                if y == bottom { columns.end() } else { cols },
+            ),
+        };
+        let cells = (lines.each()).map(|y| {
+            let (start, end) = span(y);
+            usize::from(end.saturating_sub(start))
+        });
+        let cells = cells.fold(0usize, usize::saturating_add);
+        crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
+        // The last few styles mapped, and the sweeps they were mapped
+        // after: a sweep renumbers styles, and the memo goes.
+        let mut memo = [(0u32, 0u32); 16];
+        let (mut kept, mut sweeps) = (0usize, None);
+        let mut restyle = |g: &mut Grid, old: u32| {
+            if sweeps != Some(g.sweeps()) {
+                (kept, sweeps) = (0, Some(g.sweeps()));
+            }
+            let seen = memo.get(..kept.min(memo.len())).unwrap_or_default();
+            if let Some(&(_, new)) = seen.iter().find(|(from, _)| *from == old) {
+                return new;
+            }
+            let styles = g.styles();
+            let guarded = styles.guarded(old);
+            let changed = rendition_change(styles.get(old), ops, reverse).with_guard(guarded);
+            let new = g.style(changed);
+            if let Some(slot) = memo.get_mut(kept % 16) {
+                *slot = (old, new);
+            }
+            kept = kept.saturating_add(1);
+            new
+        };
+        self.with_grid(|g, _, v| {
+            for y in lines.each() {
+                g.restyle(y, span(y), rectangle, v, &mut restyle);
+            }
+        });
+    }
+
     /// `f` with the grid shown, each of the rows `lines` and the version,
     /// each row keeping its soft wrap: a rectangular area operation changes
     /// no line's (DEC STD 070, 5.12.1), as xterm keeps them.
@@ -2850,6 +2986,10 @@ impl Screen {
                 let (left, right) = self.left_right_margins();
                 let (left, right) = (left.saturating_add(1), right.saturating_add(1));
                 let _ = write!(out, "{left};{right}s");
+            }
+            // DECSACE's Ps, as it was set (esctest sets 0 and wants `0*x`).
+            b"*x" => {
+                let _ = write!(out, "{}*x", self.terminal.extent);
             }
             // DECSCL's level, and 7-bit C1 replies (1), as fux-vt sends.
             b"\"p" => {
@@ -3364,6 +3504,18 @@ impl Screen {
             }
             (b"$", b'x' | b'z' | b'{' | b'v') => {
                 self.rectangle_area(p, byte);
+                return Some(Dispatch::Done);
+            }
+            (b"$", b'r' | b't') => {
+                self.change_attributes(p, byte == b't');
+                return Some(Dispatch::Done);
+            }
+            // DECSACE (`CSI Ps * x`; DEC STD 070, DECSACE): 0 and 1 a
+            // stream, 2 a rectangle; another Ps is none of them, ignored.
+            (b"*", b'x') => {
+                if n <= 2 {
+                    self.terminal.extent = u8::try_from(n).unwrap_or(0);
+                }
                 return Some(Dispatch::Done);
             }
             (b"*", b'y') if options.has(Feature::RectangleChecksums) => {

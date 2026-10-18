@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::compact::{BLANK, Compact, Line, Text};
+use crate::compact::{BLANK, Compact, Line, PROTECTED, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
 use crate::link::{Held, Hyperlink, Links, RowLinks};
@@ -363,6 +363,9 @@ pub(crate) struct Grid {
     /// whenever styles are numbered anew, each holds the default attributes,
     /// which are no style of the table.
     recent: [(Attributes, u32); RECENT],
+    /// How many sweeps have renumbered the table's styles: a number found
+    /// before one may name another style after it.
+    sweeps: u64,
     /// The slot of each row of the screen, top to bottom.
     order: Order,
     history: History,
@@ -492,6 +495,7 @@ impl Grid {
             links: Links::default(),
             styles: Arc::default(),
             recent: [(Attributes::default(), 0); RECENT],
+            sweeps: 0,
             order: Order::default(),
             history: History::new(history_bytes),
             size,
@@ -1005,6 +1009,12 @@ impl Grid {
         self.cells.iter_mut().for_each(&mut renumbered);
         self.history.each_cell_mut(renumbered);
         self.recent = [(Attributes::default(), 0); RECENT];
+        self.sweeps = self.sweeps.wrapping_add(1);
+    }
+
+    /// How many sweeps have renumbered the table's styles.
+    pub(crate) fn sweeps(&self) -> u64 {
+        self.sweeps
     }
 
     /// How many styles the grid's table holds, in use or not.
@@ -1335,6 +1345,56 @@ impl Grid {
         });
         if all.is_some() {
             self.set_link(row, usize::from(start)..usize::from(end), None, version);
+        }
+    }
+
+    /// DECCARA's and DECRARA's work on the cells `start..end` of the
+    /// screen's row `row`: each occupied cell, a wide glyph's second half
+    /// too, takes the style `restyle` gives for its own, and with `fill`
+    /// (DECSACE 2) each unoccupied one becomes a space in it first (DEC STD
+    /// 070, DECSACE). Their text, protection and links stay. `restyle`
+    /// may add styles to the table, or sweep it, so each cell is read when
+    /// its turn comes.
+    pub fn restyle(
+        &mut self,
+        row: u16,
+        (start, end): (u16, u16),
+        fill: bool,
+        version: u64,
+        restyle: &mut impl FnMut(&mut Self, u32) -> u32,
+    ) {
+        let Some(slot) = self.slot(row) else {
+            return;
+        };
+        let end = end.min(self.size.cols());
+        work!(cells, end.saturating_sub(start));
+        let mut changed = false;
+        for col in usize::from(start)..usize::from(end) {
+            let Some(&cell) = self.slice(slot).get(col) else {
+                break;
+            };
+            let occupied = cell.has_contents() || cell.is_wide_continuation();
+            if !occupied && !fill {
+                continue;
+            }
+            let style = restyle(self, cell.style());
+            let new = if occupied {
+                let mut new = cell;
+                new.set_style(style);
+                new
+            } else {
+                let protect = if cell.is_protected() { PROTECTED } else { 0 };
+                Compact::ascii(b' ', style | protect)
+            };
+            if new != cell
+                && let Some(at) = self.slice_mut(slot).get_mut(col)
+            {
+                *at = new;
+                changed = true;
+            }
+        }
+        if changed {
+            self.changed(slot, usize::from(end), version);
         }
     }
 
