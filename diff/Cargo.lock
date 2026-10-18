@@ -62,7 +62,6 @@ dependencies = [
  "fuxix 0.6.1",
  "fuxth",
  "signal-hook",
- "unicode-width",
 ]
 
 [[package]]
@@ -97,9 +96,6 @@ dependencies = [
 [[package]]
 name = "fux-vt"
 version = "0.10.0"
-dependencies = [
- "unicode-width",
-]
 
 [[package]]
 name = "fux-vt-oracle"

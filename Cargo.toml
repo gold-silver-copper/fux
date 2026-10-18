@@ -36,6 +36,11 @@ debug = 0
 [profile.dev.package.unicode-segmentation]
 opt-level = 3
 
+# And its widths against unicode-width's, for every code point and many
+# clusters.
+[profile.dev.package.unicode-width]
+opt-level = 3
+
 [profile.release]
 strip = true
 lto = "thin"

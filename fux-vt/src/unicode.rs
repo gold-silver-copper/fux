@@ -1,50 +1,21 @@
 //! Extended grapheme cluster boundaries (UAX #29), decided one character at
-//! a time.
+//! a time, and the columns characters and clusters take (fux-vt's width
+//! rule).
 //!
 //! [`Cluster`] is the state of the cluster being printed: a few bits, enough
 //! for every rule that looks further back than one character (emoji ZWJ
 //! sequences, regional indicator pairs, Indic conjuncts). Boundaries so
 //! never depend on the text a cell stores, which may be cut short, and each
 //! character costs one table lookup. The tables are generated from the
-//! Unicode Character Database by `fux-vt/gen`.
+//! Unicode Character Database by `fux-vt/gen`, with each character's width
+//! beside its segmentation properties.
 
 #[rustfmt::skip]
 mod tables;
+mod width;
 
 pub use tables::UNICODE_VERSION;
-
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-/// The one character unicode-width makes 3 columns wide: U+17D8 KHMER SIGN
-/// BEYYAL.
-const THREE: char = '\u{17d8}';
-
-/// The columns `c` takes as fux-vt prints it, `None` for a control: its
-/// width by unicode-width, but that a cell holds 1 column or 2, so U+17D8,
-/// the one character unicode-width makes 3, takes 1, as in xterm 411 and
-/// glibc (UAX #11 leaves a terminal's widths to it). A host that lays out
-/// what fux-vt holds (fux's painter) takes its widths from here.
-#[inline]
-pub fn char_width(c: char) -> Option<usize> {
-    // U+17D8 is the only character unicode-width says 3 for.
-    match c.width() {
-        Some(3) => Some(1),
-        width => width,
-    }
-}
-
-/// The columns `text` takes, as [`char_width`] counts its characters:
-/// unicode-width's, with U+17D8 at 1.
-#[inline]
-pub fn str_width(text: &str) -> usize {
-    let width = text.width();
-    // Text narrower than 3 holds no U+17D8: it is looked for only past that.
-    if width < 3 {
-        return width;
-    }
-    let threes = text.chars().filter(|c| *c == THREE).count();
-    width.saturating_sub(threes.saturating_mul(2))
-}
+pub use width::{char_width, str_width};
 
 /// Whether `c`, printed right after the grapheme cluster `cluster`, would
 /// continue it rather than start the next one, as fux-vt joins what is
@@ -98,7 +69,7 @@ closed! {
 impl Break {
     /// The kind the low four bits of `bits` number; a number past the last
     /// is `Other`.
-    fn of(bits: u8) -> Self {
+    fn of(bits: u16) -> Self {
         let kind = Self::ALL.get(usize::from(bits & 0x0f));
         kind.copied().unwrap_or_default()
     }
@@ -121,21 +92,27 @@ struct Properties {
     conjunct: Conjunct,
 }
 
+/// `c`'s sixteen bits in the generated table (`tables.rs` says what each
+/// holds).
+#[inline]
+fn bits(c: char) -> u16 {
+    let code = u32::from(c);
+    let low = code & ((1 << tables::SHIFT) - 1);
+    code.checked_shr(tables::SHIFT)
+        .and_then(|block| usize::try_from(block).ok())
+        .and_then(|block| tables::BLOCK.get(block))
+        .and_then(|&block| {
+            let start = usize::from(block).checked_shl(tables::SHIFT)?;
+            start.checked_add(usize::try_from(low).ok()?)
+        })
+        .and_then(|at| tables::PROPERTIES.get(at))
+        .copied()
+        .unwrap_or(0)
+}
+
 impl Properties {
     fn of(c: char) -> Self {
-        let code = u32::from(c);
-        let low = code & ((1 << tables::SHIFT) - 1);
-        let bits = code
-            .checked_shr(tables::SHIFT)
-            .and_then(|block| usize::try_from(block).ok())
-            .and_then(|block| tables::BLOCK.get(block))
-            .and_then(|&block| {
-                let start = usize::from(block).checked_shl(tables::SHIFT)?;
-                start.checked_add(usize::try_from(low).ok()?)
-            })
-            .and_then(|at| tables::PROPERTIES.get(at))
-            .copied()
-            .unwrap_or(0);
+        let bits = bits(c);
         Self {
             kind: Break::of(bits),
             pictographic: bits & 0x10 != 0,
@@ -185,8 +162,14 @@ pub(crate) struct Cluster {
 }
 
 impl Cluster {
-    /// A cluster that starts with `c`.
+    /// A cluster that starts with `c`. Printable ASCII, which the run path
+    /// starts every cell with, is Other, no pictograph and no conjunct's
+    /// part, with no look in the table.
+    #[inline]
     pub(crate) fn start(c: char) -> Self {
+        if matches!(c, ' '..='~') {
+            return Self::default();
+        }
         Self::default().after(Properties::of(c), false)
     }
 

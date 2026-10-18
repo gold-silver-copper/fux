@@ -126,6 +126,10 @@ get unicode/ucd/DerivedCoreProperties.txt $ucd/DerivedCoreProperties.txt
 get unicode/ucd/auxiliary/GraphemeBreakProperty.txt $ucd/auxiliary/GraphemeBreakProperty.txt
 get unicode/ucd/auxiliary/GraphemeBreakTest.txt $ucd/auxiliary/GraphemeBreakTest.txt
 get unicode/ucd/emoji/emoji-data.txt $ucd/emoji/emoji-data.txt
+get unicode/ucd/emoji/emoji-variation-sequences.txt $ucd/emoji/emoji-variation-sequences.txt
+get unicode/ucd/HangulSyllableType.txt $ucd/HangulSyllableType.txt
+get unicode/ucd/PropList.txt $ucd/PropList.txt
+get unicode/ucd/UnicodeData.txt $ucd/UnicodeData.txt
 
 # --- Modern extensions, each its own de facto specification -------------------
 get modern/kitty_keyboard_protocol.html https://sw.kovidgoyal.net/kitty/keyboard-protocol/

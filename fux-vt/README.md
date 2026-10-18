@@ -42,7 +42,7 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 
 | Sequence | Behaviour | Tests |
 | --- | --- | --- |
-| Text, UTF-8 | Printed in ground state; widths from unicode-width 0.2; a character split across calls is completed. Invalid UTF-8 prints one U+FFFD, one column wide, per maximal subpart (Unicode 3.9), then rereads the byte that broke it off, and one per byte that starts no sequence (0xc0, 0xc1, 0xf5–0xff, and a continuation byte alone, 0x80–0xbf, which xterm reads as Latin-1); overlong and surrogate forms are invalid. UTF-8-encoded C1 characters are ignored. | `conformance::invalid_utf8_*` |
+| Text, UTF-8 | Printed in ground state; widths by fux-vt's width rule (below, "Width"); a character split across calls is completed. Invalid UTF-8 prints one U+FFFD, one column wide, per maximal subpart (Unicode 3.9), then rereads the byte that broke it off, and one per byte that starts no sequence (0xc0, 0xc1, 0xf5–0xff, and a continuation byte alone, 0x80–0xbf, which xterm reads as Latin-1); overlong and surrogate forms are invalid. UTF-8-encoded C1 characters are ignored. | `conformance::invalid_utf8_*` |
 | Grapheme clusters | A character that continues the grapheme cluster of the cell just printed joins that cell (UAX #29 as written, GB9b's Prepend included, one character at a time, from tables `gen/` makes). A narrow cell whose cluster becomes two columns wide is widened over the cell under the cursor, except in the last column. Cursor moves and row edits end the cluster; SGR, modes and queries do not. A cluster keeps at most `CLUSTER_CAPACITY` (128) bytes and what its row's text budget allows; the rest is dropped, never split into another cell. `continues_cluster` tells a host what would join. | `unicode::tests`, `properties::printed_text_*`, `extended::*cluster*`, `conformance::a_prepend_*` |
 | C0 controls | BS: back a column, stopping at the left margin unless already left of it (see CSI ? 45). HT: the next tab stop, else the right margin (the last column without DECLRMM); from right of the margin, or on a line outside the scrolling region, the next stop or the last column (DEC STD 070, HT, note 1); CHT as that many HTs. LF, VT, FF: down a line, scrolling at the bottom margin (between left and right margins only), CR too under LNM. CR: column 0, or the left margin if the cursor is at or right of it, or in origin mode. SO, SI: G1, G0 into GL. BEL and the rest: nothing visible. BS, HT, LF, VT, FF and CR end a pending wrap (see CSI ? 7). | `semantics::text_controls_*`, `conformance::a_tab_from_*` |
 | ESC 7 / 8, CSI s / u | DECSC/SCOSC save and DECRC/SCORC restore the position with its pending wrap, origin mode, the pen, protection and the character sets. `CSI s` is DECSLRM while DECLRMM is set. With origin mode restored, the cursor comes back inside all four margins: a line above the top margin goes to it, below the bottom margin to it, and a column left or right of the margins to the nearer (DEC STD 070, DECRC, note 3 and its algorithm). Each screen has its own saved position, pen, protection and character sets, as each of xterm's screens has; the position is clamped by a resize. | `extended::scosc_*`, `conformance::each_screen_saves_*` |
@@ -405,6 +405,20 @@ fux-vt's work counters and a counting allocator against it.
 - **A glyph** (B32) takes at most 2 columns: U+17D8, the one character
   unicode-width makes 3 wide, takes 1, as in xterm 411 and glibc
   (`char_width`, `str_width`, which fux's painter uses too).
+- **Width.** fux-vt's width rule is its own, generated with its
+  segmentation tables from the Unicode Character Database 17.0.0 by
+  `fux-vt/gen`, one lookup a character in the same table. A character
+  takes the columns unicode-width 0.2.2 gives it (zero for its zero
+  widths, 2 for East Asian Wide and Fullwidth, else 1; controls none),
+  U+17D8 aside. A grapheme cluster takes unicode-width 0.2.2's string
+  width of that cluster alone (`src/unicode/width.rs`: emoji and text
+  presentation, modifiers, ZWJ, tag and keycap sequences, flags, Kirat
+  Rai's vowels, Khmer conjuncts); its ligatures between clusters (Arabic
+  Lam-Alef and the like) take no part, as a cluster is laid out alone. It
+  is a recorded tailoring of UAX #11, which leaves a terminal's widths to
+  it, chosen to match what programs laid out with unicode-width expect.
+  Tested against unicode-width 0.2.2 for every code point and some 17 M
+  clusters (`unicode::tests`).
 - **An OSC string** (B20) keeps at most `OSC_PAYLOAD_LIMIT` (65,536)
   bytes, read to its end however long; its buffer holds at most 65,537,
   and 81,921 while it grows.
@@ -484,7 +498,7 @@ One departure from the standards remains, from mode 2027's spec
 (`references/modern/mode_2027_grapheme_clusters.tex`, "Grapheme
 Cluster"), whose emoji rules its join rule cannot meet:
 
-- **A cluster takes its string width** (unicode-width) as characters join
+- **A cluster takes its string width** (the width rule's) as characters join
   it, where the spec moves the cursor on a join only for VS16. Its
   "Emoji" section wants a flag (two regional indicators, each one column
   alone) and an emoji modifier sequence two columns, which no VS16 makes;

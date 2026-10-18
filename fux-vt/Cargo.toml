@@ -10,17 +10,17 @@ readme = "README.md"
 keywords = ["terminal", "vt100", "ansi", "emulator", "parser"]
 categories = ["command-line-interface", "parser-implementations"]
 
-[dependencies]
-unicode-width = "0.2"
-
 [features]
 # The work counters and the invariant checker (threats.md P15): for the
 # bounds tests, the fuzz targets and mutation runs, never for a release.
 checks = []
 
 [dev-dependencies]
-# The reference the generated grapheme tables are tested against.
+# The references the generated tables are tested against: grapheme
+# segmentation, and widths (fux-vt's width rule is unicode-width 0.2.2's,
+# U+17D8 aside).
 unicode-segmentation = "=1.13.3"
+unicode-width = "=0.2.2"
 # The bounds tests' counting allocator (threats.md 3.5): live bytes and a
 # peak it resets, for each thread apart, its `unsafe` its own.
 fux-vt-peak = { path = "peak" }
