@@ -210,6 +210,8 @@ pub(crate) struct History {
     /// maps' share of it.
     held: usize,
     maps: usize,
+    /// The bytes the rows' links' runs take (`threats.md` B15).
+    runs: usize,
     texts: ByRow<Text>,
     linked: ByRow<RowLinks>,
     /// The cells the rows keep, for `storage_cells`.
@@ -269,7 +271,8 @@ impl History {
         self.maps = self.maps_bytes();
         self.held = (self.rows.capacity().saturating_mul(size_of::<Kept>()))
             .saturating_add(self.room_cells.saturating_mul(size_of::<Compact>()))
-            .saturating_add(self.maps);
+            .saturating_add(self.maps)
+            .saturating_add(self.runs);
     }
     /// The bytes the maps' buckets take.
     fn maps_bytes(&self) -> usize {
@@ -318,6 +321,7 @@ impl History {
     }
     /// Lets all its storage go, holding no row.
     fn release(&mut self) {
+        self.runs = 0;
         self.rows = Ring::new(Self::shift_for(self.budget));
         self.older.clear();
         self.newest = Vec::new();
@@ -663,8 +667,13 @@ impl History {
         {
             self.text = self.text.saturating_sub(text.bytes());
         }
-        if flags & LINKED != 0 {
-            self.linked.remove(&number);
+        if flags & LINKED != 0
+            && let Some(links) = self.linked.remove(&number)
+        {
+            self.runs = self.runs.saturating_sub(links.heap());
+            self.maps_changed();
+            self.recount();
+            return;
         }
         self.maps_changed();
     }
@@ -722,12 +731,14 @@ impl History {
             self.texts.insert(number, text);
             kept.set(TEXT, true);
         }
-        if let Some(links) = links {
+        if let Some(mut links) = links {
+            links.shrink();
+            self.runs = self.runs.saturating_add(links.heap());
             self.linked.insert(number, links);
             kept.set(LINKED, true);
-        }
-        // Inserting only grows a map.
-        if self.maps_bytes() != self.maps {
+            self.recount();
+        } else if self.maps_bytes() != self.maps {
+            // Inserting only grows a map.
             self.recount();
         }
     }
@@ -740,8 +751,11 @@ impl History {
         {
             kept.set(LINKED, false);
             kept.version = version;
-            self.linked.remove(&number);
+            if let Some(links) = self.linked.remove(&number) {
+                self.runs = self.runs.saturating_sub(links.heap());
+            }
             self.maps_changed();
+            self.recount();
         }
     }
 
@@ -761,16 +775,19 @@ impl History {
                     .saturating_mul(std::mem::size_of::<Kept>()),
             )
             .saturating_add(self.maps_bytes())
+            .saturating_add(self.linked.values().map(RowLinks::heap).sum::<usize>())
             .saturating_add(self.text)
     }
 
     /// Forgets every row's links: RIS.
     pub(crate) fn reset_links(&mut self) {
         self.linked.clear();
+        self.runs = 0;
         for kept in self.rows.iter_mut() {
             kept.set(LINKED, false);
         }
         self.maps_changed();
+        self.recount();
     }
 }
 

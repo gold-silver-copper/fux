@@ -90,6 +90,17 @@ struct Run {
 }
 
 impl RowLinks {
+    /// The bytes its runs take.
+    pub(crate) fn heap(&self) -> usize {
+        self.0.capacity().saturating_mul(size_of::<Run>())
+    }
+    /// Gives back its room past twice its runs: a row going into history
+    /// keeps about what it has, without a copy for each row.
+    pub(crate) fn shrink(&mut self) {
+        if self.0.capacity() > self.0.len().saturating_mul(2) {
+            self.0.shrink_to_fit();
+        }
+    }
     /// Whether no cell has a link.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()

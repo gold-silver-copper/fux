@@ -543,7 +543,8 @@ pub fn b14(scale: Scale, chunk: usize) -> Found {
 
 // B15: link runs that history keeps count in its budget.
 pub fn b15(scale: Scale, chunk: usize) -> Found {
-    let setup = Setup::defaults().history(64 << 10);
+    // History large enough that its rows' runs are most of what is held.
+    let setup = Setup::defaults().history(1 << 20);
     let bound = heap(
         history_peak(setup.history)
             .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * 48))
@@ -554,9 +555,17 @@ pub fn b15(scale: Scale, chunk: usize) -> Found {
         row.extend(b"\x1b]8;id=a;u\x07x\x1b]8;id=b;u\x07x");
     }
     row.extend(b"\r\n");
-    let input = repeat(&row, scale.times().saturating_mul(100));
-    fed(&setup, bound, chunk.max(16), scale.times(), &input, |_| {
-        Ok(())
+    let input = repeat(&row, scale.times().saturating_mul(1000));
+    // Once fed, history holds its term, its rows' runs included, beside
+    // the screen's runs (two grids of 50 rows of at most 256 runs, room
+    // for twice that) and `Prints`.
+    let most = history_term(setup.history)
+        .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * 48))
+        .saturating_add(prints(&setup));
+    fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
+        (p.live() <= most)
+            .then_some(())
+            .ok_or(format!("{} bytes held, past {most}", p.live()))
     })
 }
 

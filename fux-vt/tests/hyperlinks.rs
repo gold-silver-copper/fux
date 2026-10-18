@@ -298,7 +298,10 @@ fn links_past_their_limits_are_not_opened() -> Result {
 /// theirs, and the newest still have theirs.
 #[test]
 fn links_are_bounded_and_history_loses_them_first() -> Result {
-    let mut p = Parser::with_options(Size::new(4, 4)?, 4000 * 32, LINKS)?;
+    // History for 4,000 rows of one linked cell: a 24-byte record, an
+    // 8-byte cell, its 48-byte run and the links' map's room for it, about
+    // 38 to 76 bytes (threats.md B15, B17), so the links' bound decides.
+    let mut p = Parser::with_options(Size::new(4, 4)?, 4000 * 160, LINKS)?;
     let long: String = std::iter::repeat_n('u', 2000).collect();
     // About 2 KiB each: 3000 are past the 4 MiB a screen holds.
     for n in 0..3000 {
