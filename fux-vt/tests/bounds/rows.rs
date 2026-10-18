@@ -7,7 +7,10 @@
 use std::time::Instant;
 
 use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
-use fux_vt::{Feature, Graphics, Mode, Parser, Size, Work, bytes::ByteQueue, sixel::Picture};
+use fux_vt::{
+    Feature, Graphics, Identity, Mode, Options, Parser, Size, Work, bytes::ByteQueue,
+    sixel::Picture,
+};
 
 use super::Heap;
 use super::probe::{
@@ -1018,7 +1021,60 @@ pub fn b28(scale: Scale, chunk: usize) -> Found {
     ));
     fed(&setup, BOUND, chunk, scale.times(), &input, |p| {
         p.at_least("replies", 585 * 20)
-    })
+    })?;
+    // Each kind of reply against the shortest request for it, with what
+    // makes its answer longest set up first: the most digits a position
+    // has (a screen of 8192 columns, the cursor at its end), an identity
+    // of `Identity::MAX_LEN` bytes, every rendition and three direct
+    // colours: at most 16 bytes a byte that asked (SCR-12).
+    let half: String = std::iter::repeat_n('n', Identity::MAX_LEN / 2).collect();
+    let name: &'static str = Box::leak(half.clone().into_boxed_str());
+    let version: &'static str = Box::leak(half.into_boxed_str());
+    let options = Options::from_iter(Feature::ALL).with_identity(Some(Identity { name, version }));
+    let wide = Setup {
+        options,
+        ..Setup::defaults().sized(3, 8192)
+    };
+    let before =
+        b("\x1b[3;8192H\x1b[1;2;3;4:3;5;7;8;9;38;2;111;222;233;48;2;144;255;166;58;2;177;188;199m");
+    let asks: [&[u8]; 18] = [
+        b"\x1b[5n",
+        b"\x1b[6n",
+        b"\x1b[?6n",
+        b"\x1b[c",
+        b"\x1b[>c",
+        b"\x1b[=c",
+        b"\x1b[>q",
+        b"\x1b[?2026$p",
+        b"\x1b[4$p",
+        b"\x1b]4;255;?\x07",
+        b"\x1b]10;?\x07",
+        b"\x1b]12;?\x07",
+        b"\x1b[18t",
+        b"\x1b[14t",
+        b"\x1b[1;1;1;1;1;1*y",
+        b"\x1bP$qm\x1b\\",
+        b"\x1bP$qr\x1b\\",
+        b"\x1b[?996n",
+    ];
+    let mut answered = 0usize;
+    for ask in asks {
+        let mut probe = Probe::new(&wide, heap(steady(&wide)), chunk, 1)?;
+        probe.feed(&before)?;
+        let set_up = probe.counted("replies");
+        probe.feed(ask)?;
+        let replied = probe.counted("replies").saturating_sub(set_up);
+        let most = u64::try_from(ask.len()).unwrap_or(0).saturating_mul(16);
+        if replied > most {
+            return Err(format!("{ask:?}: {replied} bytes of reply"));
+        }
+        answered = answered.saturating_add(usize::from(replied > 0));
+    }
+    // Those a host's colours, pixels or a colour scheme answer go
+    // unanswered here: the 13 others answer.
+    (answered >= 13)
+        .then_some(())
+        .ok_or(format!("{answered} of the requests answered"))
 }
 
 // B29: a prompt mark costs a fixed number of row reads: at most 9 a byte.

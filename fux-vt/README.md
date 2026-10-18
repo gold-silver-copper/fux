@@ -358,6 +358,10 @@ fux-vt's work counters and a counting allocator against it.
   records, blocks and maps included, and at most half as much again
   while its storage grows; a lowered budget keeps the newest rows that
   fit, in storage made for it.
+- **Replies** (B28) are at most 16 bytes for each byte that asked, the
+  longest DECRQSS's of a pen with every rendition and three direct
+  colours, and XTVERSION's, 55 bytes for 4; each is made where it is
+  sent, synchronously, so fux-vt queues none.
 - **A resize** (B37) builds the new screens and history before it lets
   the old go, so while it runs it needs up to history's memory again and
   the new screens' (about 12 MiB more at 50 by 200 with 8 MiB of
