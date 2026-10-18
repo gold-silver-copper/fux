@@ -476,7 +476,7 @@ fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Meas
                 feed,
                 read,
                 rows_held: engine.history_len(),
-                reply_bytes: engine.replies().len(),
+                reply_bytes: engine.replies()?.len(),
                 prints: None,
             };
             if best.as_ref().is_none_or(|b| run.feed < b.feed) {
