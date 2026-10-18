@@ -16,14 +16,21 @@ fn arriving(id: u64, cells: &[Compact], width: u16) -> Arriving<'_> {
         version: id.wrapping_mul(3),
         wrapped: id % 2 == 1,
         prompt: id.is_multiple_of(3),
+        rendition: if id % 5 == 4 {
+            LineRendition::DoubleWidth
+        } else {
+            LineRendition::Single
+        },
         cells,
         width,
     }
 }
 
-/// What a reader finds of each row: its identity, version, flags, width
-/// and cells.
-fn found(history: &History) -> Vec<(u64, u64, bool, bool, u16, Vec<Compact>)> {
+/// What a reader finds of each row: its identity, version, flags (whether
+/// it is soft-wrapped; whether a prompt starts on it, and whether it is
+/// double width), width and cells.
+type Found = (u64, u64, bool, (bool, bool), u16, Vec<Compact>);
+fn found(history: &History) -> Vec<Found> {
     (0..history.len())
         .filter_map(|index| history.get(index))
         .map(|row| {
@@ -31,7 +38,7 @@ fn found(history: &History) -> Vec<(u64, u64, bool, bool, u16, Vec<Compact>)> {
                 row.kept.id.0,
                 row.kept.version,
                 row.kept.wrapped(),
-                row.kept.prompt(),
+                (row.kept.prompt(), row.rendition.is_double()),
                 row.kept.width(),
                 row.cells.to_vec(),
             )
@@ -79,7 +86,7 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
             id,
             id.wrapping_mul(3),
             id % 2 == 1,
-            id.is_multiple_of(3),
+            (id.is_multiple_of(3), id % 5 == 4),
             width,
             cells,
         ));
@@ -153,7 +160,7 @@ fn block_numbers_wrap() -> Result<(), Error> {
             id,
             id.wrapping_mul(3),
             id % 2 == 1,
-            id.is_multiple_of(3),
+            (id.is_multiple_of(3), id % 5 == 4),
             width,
             cells,
         ));

@@ -228,6 +228,33 @@ pub struct RowId(pub(crate) u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mark(pub(crate) u64);
 
+/// A line's rendition (DEC STD 070, 5.6.1): single width, as every line
+/// starts, or double width (DECDWL, `ESC # 6`), or the top or bottom half
+/// of double height and double width (DECDHL, `ESC # 3` and `ESC # 4`). A
+/// line that is not single width is half as long: its cells past half the
+/// screen's width (rounded down) are lost when it is set, and the cursor
+/// and printing stop short of them. The cells keep their columns; the host
+/// draws each twice as wide.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LineRendition {
+    /// DECSWL (`ESC # 5`), and every line until another is set.
+    #[default]
+    Single,
+    /// DECDWL (`ESC # 6`).
+    DoubleWidth,
+    /// DECDHL's top half (`ESC # 3`).
+    DoubleHeightTop,
+    /// DECDHL's bottom half (`ESC # 4`).
+    DoubleHeightBottom,
+}
+
+impl LineRendition {
+    /// Whether the line is drawn twice as wide, and so half as long.
+    pub fn is_double(self) -> bool {
+        self != Self::Single
+    }
+}
+
 /// A retained row, and its place among the rows retained: history's,
 /// oldest first, then the screen's from its top. It borrows the screen, so
 /// no row is held past a change that could move it; to find a row again
@@ -242,6 +269,7 @@ pub struct Row<'a> {
     pub(crate) wrapped: bool,
     /// Whether a prompt starts on the row (OSC 133 ; A).
     pub(crate) prompt: bool,
+    pub(crate) rendition: LineRendition,
     /// The cells the row keeps: all of them, or those before its blank
     /// tail, a history row's; those past them, to `width`, are blank.
     pub(crate) cells: &'a [compact::Compact],
@@ -316,6 +344,11 @@ impl<'a> Row<'a> {
     /// Whether the row is soft-wrapped: its line goes on in the next row.
     pub fn wrapped(&self) -> bool {
         self.wrapped
+    }
+    /// The row's line rendition: whether the host draws it double width,
+    /// or as half of double height (DECDWL, DECDHL).
+    pub fn rendition(&self) -> LineRendition {
+        self.rendition
     }
     /// How many cells the row has: a history row keeps the width it had.
     pub fn len(&self) -> usize {

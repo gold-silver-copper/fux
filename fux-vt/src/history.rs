@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
 use crate::grid::{MAX_CELLS, MAX_ROWS};
 use crate::link::RowLinks;
-use crate::{Error, RowId};
+use crate::{Error, LineRendition, RowId};
 
 /// The cells a block holds, unless one row needs more. Small, as a block
 /// partly filled (the newest) or partly left (the oldest) costs what it
@@ -51,6 +51,8 @@ const BLOCKS: usize = 1 << 16;
 /// buckets for 7 of capacity.
 const TEXT_BUCKET: usize = (size_of::<(u64, Text)>() + 1) * 8 / 7 + 1;
 const LINK_BUCKET: usize = (size_of::<(u64, RowLinks)>() + 1) * 8 / 7 + 1;
+/// The bytes `History::renditions` takes for each row of its capacity.
+const RENDITION: usize = size_of::<(u64, LineRendition)>();
 
 /// A map by a row's number in the order rows came.
 type ByRow<T> = HashMap<u64, T, BuildHasherDefault<SlotHasher>>;
@@ -177,6 +179,7 @@ pub(crate) struct Arriving<'a> {
     pub(crate) version: u64,
     pub(crate) wrapped: bool,
     pub(crate) prompt: bool,
+    pub(crate) rendition: LineRendition,
     /// Its cells before its blank tail (`trimmed`), of `width`.
     pub(crate) cells: &'a [Compact],
     pub(crate) width: u16,
@@ -185,6 +188,7 @@ pub(crate) struct Arriving<'a> {
 /// A row of history as a reader finds it.
 pub(crate) struct Found<'a> {
     pub(crate) kept: &'a Kept,
+    pub(crate) rendition: LineRendition,
     pub(crate) cells: &'a [Compact],
     pub(crate) text: &'a Text,
     pub(crate) links: Option<&'a RowLinks>,
@@ -247,6 +251,9 @@ pub(crate) struct History {
     runs: usize,
     texts: ByRow<Text>,
     linked: ByRow<RowLinks>,
+    /// The rows that are not single width, by number, oldest first: most
+    /// histories have none, and a row's record has no bit to spare.
+    renditions: VecDeque<(u64, LineRendition)>,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
     /// The bytes of the rows' text.
@@ -318,6 +325,7 @@ impl History {
     fn maps_bytes(&self) -> usize {
         (self.texts.capacity().saturating_mul(TEXT_BUCKET))
             .saturating_add(self.linked.capacity().saturating_mul(LINK_BUCKET))
+            .saturating_add(self.renditions.capacity().saturating_mul(RENDITION))
     }
     /// The cells a block holds: a block's worth (`BLOCK`), or for a small
     /// budget an eighth of it, so that a block is never most of what
@@ -369,6 +377,7 @@ impl History {
         self.room_cells = 0;
         self.texts = ByRow::default();
         self.linked = ByRow::default();
+        self.renditions = VecDeque::new();
         self.recount();
     }
     /// Holds at most `budget` bytes from now on, letting the oldest rows
@@ -401,6 +410,7 @@ impl History {
                 version: kept.version,
                 wrapped: kept.wrapped(),
                 prompt: kept.prompt(),
+                rendition: found.rendition,
                 cells: found.cells,
                 width: kept.width(),
             })?;
@@ -471,8 +481,14 @@ impl History {
         let text = text.flatten().unwrap_or(&NO_TEXT);
         let links = (kept.flags() & LINKED != 0).then(|| self.linked.get(&number));
         let links = links.flatten();
+        let rendition = if self.renditions.is_empty() {
+            LineRendition::Single
+        } else {
+            self.rendition_of(number)
+        };
         Some(Found {
             kept,
+            rendition,
             cells,
             text,
             links,
@@ -602,7 +618,52 @@ impl History {
         self.cells = self.cells.saturating_add(len);
         self.rows
             .push_back(Kept::new(&row, (self.newest_block, start)));
+        if row.rendition.is_double() {
+            self.keep_rendition(row.rendition);
+        }
         Ok(())
+    }
+
+    /// Notes the rendition of the row pushed last, which is not single
+    /// width. Out of line, as most rows are.
+    #[cold]
+    #[inline(never)]
+    fn keep_rendition(&mut self, rendition: LineRendition) {
+        let Some(number) = self.rows.len().checked_sub(1).and_then(|i| self.number(i)) else {
+            return;
+        };
+        // No memory for it: the row is kept single width.
+        if self.renditions.try_reserve(1).is_ok() {
+            self.renditions.push_back((number, rendition));
+            self.recount();
+        }
+    }
+    /// Whether a row kept is not single width.
+    pub(crate) fn has_renditions(&self) -> bool {
+        !self.renditions.is_empty()
+    }
+    /// The rendition of row `number`, single width unless noted.
+    #[cold]
+    #[inline(never)]
+    fn rendition_of(&self, number: u64) -> LineRendition {
+        let found = self.renditions.binary_search_by_key(&number, |&(n, _)| n);
+        found
+            .ok()
+            .and_then(|i| self.renditions.get(i))
+            .map_or(LineRendition::Single, |&(_, r)| r)
+    }
+    /// Lets the renditions of the rows let go go with them.
+    #[cold]
+    #[inline(never)]
+    fn drop_renditions(&mut self) {
+        while self
+            .renditions
+            .front()
+            .is_some_and(|&(n, _)| n < self.first_row)
+        {
+            self.renditions.pop_front();
+        }
+        self.maps_changed();
     }
 
     /// Lets the oldest rows go up to the first whose going may change what
@@ -644,6 +705,9 @@ impl History {
             .wrapping_add(u64::try_from(n).unwrap_or(u64::MAX));
         self.let_go = let_go;
         self.cells = self.cells.saturating_sub(cells);
+        if !self.renditions.is_empty() {
+            self.drop_renditions();
+        }
         let freed = self.rows.advance(n);
         match leave {
             Some(block) => self.leave_blocks(block),
@@ -667,6 +731,9 @@ impl History {
         self.cells = self.cells.saturating_sub(gone.len());
         if gone.flags() & (TEXT | LINKED) != 0 {
             self.forget(number, gone.flags());
+        }
+        if !self.renditions.is_empty() {
+            self.drop_renditions();
         }
         let ended = (gone.len() > 0)
             .then(|| gone.start().saturating_add(gone.len()))
@@ -730,6 +797,9 @@ impl History {
         }
         if shrink(self.linked.capacity(), self.linked.len()) {
             self.linked.shrink_to(self.linked.len());
+        }
+        if shrink(self.renditions.capacity(), self.renditions.len()) {
+            self.renditions.shrink_to(self.renditions.len());
         }
         if self.maps_bytes() != self.maps {
             self.recount();
@@ -912,7 +982,19 @@ impl History {
                     self.linked.len()
                 )
             },
-        )
+        )?;
+        // The renditions noted are of rows kept, oldest first, and none
+        // single width.
+        let (first, next) = self.numbers();
+        let mut after = first;
+        for &(number, rendition) in &self.renditions {
+            crate::check::ensure(
+                (after..next).contains(&number) && rendition.is_double(),
+                || format!("a rendition noted for row {number} of {first}..{next}"),
+            )?;
+            after = number.saturating_add(1);
+        }
+        Ok(())
     }
 
     /// 21: within the budget, and the most rows and cells a grid holds.
@@ -949,6 +1031,11 @@ impl History {
         for (name, capacity, len) in [
             ("texts", self.texts.capacity(), self.texts.len()),
             ("links", self.linked.capacity(), self.linked.len()),
+            (
+                "renditions",
+                self.renditions.capacity(),
+                self.renditions.len(),
+            ),
         ] {
             crate::check::ensure(capacity <= most_room(len), || {
                 format!("the {name} holds room for {capacity}, keeping {len}")
@@ -976,6 +1063,7 @@ mod faults {
                 version: 1,
                 wrapped: false,
                 prompt: false,
+                rendition: LineRendition::Single,
                 cells: &cells,
                 width: 4,
             };
@@ -1011,6 +1099,10 @@ mod faults {
             if let Some(kept) = h.rows.back_mut() {
                 kept.set(TEXT, true);
             }
+        });
+        shows("history.flags", |h| {
+            h.renditions
+                .push_back((u64::MAX, LineRendition::DoubleWidth));
         });
         shows("history.budget", |h| h.budget = 0);
         shows("history.capacities", |h| h.rows.reserve_more(1000));

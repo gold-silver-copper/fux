@@ -5,8 +5,8 @@ use crate::link::Held;
 use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SET_FOR_GOOD, Switch};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, Mark, Options, Prints,
-    Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
+    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
+    Options, Prints, Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, Written},
     palette::Colours,
@@ -1362,7 +1362,7 @@ impl Screen {
         // margin (xterm's `WrapLine`).
         self.new_line()?;
         let g = self.grid();
-        Ok(Some(if g.lr() { g.line_end() } else { end }))
+        Ok(Some(if g.narrow() { g.line_end() } else { end }))
     }
 
     /// SUB (DEC STD 070, p. 5-132): the error character, a reversed
@@ -2000,6 +2000,7 @@ impl Screen {
                 self.alignment();
                 return Ok(true);
             }
+            b"#" => return Ok(self.line_rendition(byte)),
             [] => {}
             _ => return Ok(false),
         }
@@ -2092,6 +2093,31 @@ impl Screen {
             _ => return Ok(byte == b'\\'),
         }
         Ok(true)
+    }
+
+    /// DECSWL (`ESC # 5`), DECDWL (`ESC # 6`) and DECDHL (`ESC # 3`, `ESC #
+    /// 4`): the cursor's line takes the rendition (`Grid::set_rendition`),
+    /// and a pending wrap ends (DEC STD 070, Appendix D.6.1). DECDWL and
+    /// DECDHL do nothing while DECLRMM is set (DECDWL, note 3; DECDHL, note
+    /// 4). Whether the sequence is one of the four.
+    fn line_rendition(&mut self, byte: u8) -> bool {
+        let rendition = match byte {
+            b'3' => LineRendition::DoubleHeightTop,
+            b'4' => LineRendition::DoubleHeightBottom,
+            b'5' => LineRendition::Single,
+            b'6' => LineRendition::DoubleWidth,
+            _ => return false,
+        };
+        if rendition.is_double() && self.mode(Mode::LeftRightMargins) {
+            return true;
+        }
+        self.break_cluster();
+        let version = self.version;
+        let g = self.grid_mut();
+        g.cursor.pending_wrap = false;
+        let row = g.cursor.row();
+        g.set_rendition(row, rendition, version);
+        true
     }
 
     /// DECIC (`insert`) and DECDC: `count` columns inserted or deleted at
@@ -2248,6 +2274,8 @@ impl Screen {
             g.wrap(y, false, version);
             g.set_prompt(y, false, version);
         }
+        // Every line single width (DEC STD 070, DECALN, its algorithm).
+        g.single_width(version);
     }
 
     /// DECSTR (`CSI ! p`), as xterm does it: the modes a program sets go
@@ -2547,10 +2575,14 @@ impl Screen {
             }
             // DECLRMM: reset, the margins go back to the screen's edges (DEC
             // STD 070, DECLRMM; xterm's `set_left_right_margin_mode`).
+            // Set, every line is single width (DECLRMM, 5-29).
             Kind::Margins => {
                 self.modes.set(mode, on);
-                if !on {
-                    for g in [&mut self.primary, &mut self.alternate] {
+                let version = self.version;
+                for g in [&mut self.primary, &mut self.alternate] {
+                    if on {
+                        g.single_width(version);
+                    } else {
                         g.set_columns(g.size().columns());
                     }
                 }

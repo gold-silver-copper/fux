@@ -347,10 +347,16 @@ fn draw_row(
     colours: Option<&Screen>,
 ) {
     let (gy, gx, width) = (line.y(), line.x(), line.w().min(window_cols));
-    // The pane's own row, well formed, goes whole onto the cells.
-    let len = row.map_or(0, |row| row.len());
+    // The pane's own row, well formed, goes whole onto the cells; one drawn
+    // twice as wide (DECDWL, DECDHL) covers the width itself.
+    let mut len = row.map_or(0, |row| row.len());
     if let Some(row) = row {
-        grid.put_row(gy, gx, pane, row, width);
+        if row.rendition().is_double() {
+            grid.put_doubled_row(gy, gx, pane, row, width);
+            len = usize::from(width);
+        } else {
+            grid.put_row(gy, gx, pane, row, width);
+        }
     }
     // At most `width`, which is at most the line's.
     let end = u16::try_from(len).unwrap_or(width).min(width);
@@ -569,6 +575,47 @@ impl Grid {
         }
         let len = self.cells.len();
         for (i, col) in (start..).zip(0..room) {
+            let link = row.link(col).map(|link| (pane, link));
+            self.links.set(i, link, len);
+        }
+    }
+    /// `put_row` for a row drawn twice as wide (`fux_vt::LineRendition`),
+    /// as no terminal can draw half a line so: each cell takes two
+    /// columns, its glyph and a blank in its colours, a wide glyph four;
+    /// what the doubled cells do not reach of `width` is blank. A double
+    /// height half is drawn as double width.
+    fn put_doubled_row(&mut self, y: u16, x: u16, pane: PaneId, row: Row<'_>, width: u16) {
+        let Some(start) = self.index(y, x) else {
+            return;
+        };
+        let room = usize::from(self.cols.saturating_sub(x).min(width));
+        let len = self.cells.len();
+        for at in 0..room {
+            let (col, second) = (at / 2, at % 2 == 1);
+            let i = start.saturating_add(at);
+            let Some(cell) = row.cell(col) else {
+                self.cells.set(i, CellRef::default());
+                self.links.unlink(i..i.saturating_add(1));
+                continue;
+            };
+            // A wide glyph's two halves take the first two of its four
+            // columns, if both fit.
+            let fits = at.saturating_add(1) < room;
+            let shown = match (cell.is_wide(), second) {
+                (true, false) if fits => Some(cell),
+                (true, true) => row.cell(col.saturating_add(1)),
+                (false, false) if !cell.is_wide_continuation() => Some(cell),
+                _ => None,
+            };
+            match shown {
+                Some(shown) => {
+                    self.cells.set(i, shown);
+                }
+                None => {
+                    self.cells.set(i, CellRef::default());
+                    self.cells.set_attributes(i, cell.attributes());
+                }
+            }
             let link = row.link(col).map(|link| (pane, link));
             self.links.set(i, link, len);
         }
@@ -854,6 +901,9 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             }
             None => {
                 let (y, x) = screen.cursor_position();
+                // On a row drawn twice as wide, at its glyph's first half.
+                let doubled = (screen.window().row(y)).is_some_and(|r| r.rendition().is_double());
+                let x = if doubled { x.saturating_mul(2) } else { x };
                 if screen.mode(fux_vt::Mode::ShowCursor)
                     && view.mode.is_normal()
                     && let Some(at) = rect.at(y, x)
@@ -2106,6 +2156,28 @@ mod tests {
         let narrow = bar(&s);
         assert!(narrow.contains("y copy  q quit"), "{narrow}");
         assert!(!narrow.contains("other end"), "{narrow}");
+        Ok(())
+    }
+
+    /// A line a program made double width (DECDWL) or double height
+    /// (DECDHL) is drawn twice as wide, each cell over two columns, a wide
+    /// glyph over four, and the cursor at its glyph's first half; a single
+    /// width line beside it is drawn as it is.
+    #[test]
+    fn a_double_width_line_is_drawn_twice_as_wide() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(10, 30)?;
+        s.output(
+            PaneId::of(1),
+            "\x1b#6a界b\r\n\x1b#3\x1b[7mx\x1b[m\r\nplain\x1b[1;3H".as_bytes(),
+        );
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let text = |y| grid.row_text(y);
+        assert_eq!(text(0), "a 界  b");
+        assert_eq!(text(1), "x");
+        assert_eq!(text(2), "plain");
+        // The blank beside x is in its colours.
+        assert!(grid.get(1, 1).is_some_and(|cell| cell.inverse()));
+        assert_eq!(grid.cursor, Some((0, 4)));
         Ok(())
     }
 

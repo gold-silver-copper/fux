@@ -271,6 +271,17 @@ fn rectangles(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// DECDHL, DECSWL and DECDWL on the cursor's line, and moves onto lines
+/// that have one.
+fn renditions(r: &mut Rng) -> Vec<u8> {
+    match r.below(3) {
+        0 => pick(r, &["\x1b#3", "\x1b#4", "\x1b#5", "\x1b#6"]),
+        1 => format!("\x1b[{};{}H", number(r), number(r)),
+        _ => csi(r, &["A", "B", "C", "@", "P", "J", "K"]),
+    }
+    .into_bytes()
+}
+
 fn edit(r: &mut Rng) -> Vec<u8> {
     csi(r, &["@", "P", "L", "M"]).into_bytes()
 }
@@ -813,6 +824,20 @@ pub const FAMILIES: &[Family] = &[
         },
         ratty_only: false,
         generate: rectangles,
+    },
+    Family {
+        name: "renditions",
+        about: "DECSWL, DECDWL and DECDHL (ESC # 5, 6, 3, 4), then cursor movement, edits and erases",
+        status: Status::Decided {
+            why: "a line that is not single width is half as long (DEC STD 070, 5.6.1, and 5.14.1's end_of_line): its cells past half the screen are lost as it is set, and the cursor, printing and ICH and DCH stop at its end, as fux-vt does and libvterm does on these (`replay --engines all --size 3x10 'abcdefghij\\r\\e#6\\e#5' '\\e#6\\e[1;9HZ' '\\e#6abcdefgh' '\\e[3;1H\\e#6\\e[2;8H\\e[BX'`); xterm keeps the cells, hidden, and lets the cursor past the line's end, and Ghostty, alacritty, avt, wezterm, vt100, xterm.js and tmux ignore the four, outvoting fux-vt. libvterm splits elsewhere in what the generator writes (the pending wrap, see `controls`), so the test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, 5.6.1",
+                test: "renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end",
+            },
+        },
+        ratty_only: false,
+        generate: renditions,
     },
     Family {
         name: "edit",

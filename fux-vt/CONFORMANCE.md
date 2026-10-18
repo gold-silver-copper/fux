@@ -5,8 +5,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | Reference | implemented | partial | departure | not implemented | not applicable | all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 63 | 1 | 3 | 7 | 88 | 162 |
-| DEC STD 070 | 80 | 4 | 0 | 30 | 26 | 140 |
-| ctlseqs | 98 | 15 | 1 | 38 | 93 | 245 |
+| DEC STD 070 | 83 | 4 | 0 | 27 | 26 | 140 |
+| ctlseqs | 102 | 15 | 1 | 34 | 93 | 245 |
 | fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
 
 ## ECMA-48
@@ -244,9 +244,9 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 5-91 SU | SU (PAN DOWN (SCROLL UP)) | implemented | `margins::scrolling_is_bounded_by_the_margins` |  |
 | 5-92 SD | SD (PAN UP (SCROLL DOWN)) | implemented | `margins::scrolling_is_bounded_by_the_margins` |  |
 | 5-94 DECSCNM | DECSCNM (SET/RESET SCREEN MODE) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps` | the host draws reverse video, read with Screen::mode |
-| 5-96 DECSWL | DECSWL (SINGLE-WIDTH LINE) | not implemented |  | not implemented |
-| 5-97 DECDWL | DECDWL (DOUBLE-WIDTH LINE) | not implemented |  | not implemented |
-| 5-99 DECDHLT/DECDHLB | DECDHLT, DECDHLB (DOUBLE-HEIGHT LINE) | not implemented |  | not implemented |
+| 5-96 DECSWL | DECSWL (SINGLE-WIDTH LINE) | implemented | `renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end`, `renditions::the_cursor_stops_at_the_end_of_a_halved_line` | has no effect on a line already single width, as every line starts; on one double width or height it doubles the line's length again, keeping every cell (DEC STD 070, DECSWL) |
+| 5-97 DECDWL | DECDWL (DOUBLE-WIDTH LINE) | implemented | `renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end`, `renditions::the_cursor_stops_at_the_end_of_a_halved_line` | the line half as long, its cells past half the width lost, the cursor and edits stopping at its end (DEC STD 070, 5.6.1); fux's painter draws it twice as wide; xterm keeps the cells past the end |
+| 5-99 DECDHLT/DECDHLB | DECDHLT, DECDHLB (DOUBLE-HEIGHT LINE) | implemented | `renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end`, `renditions::the_cursor_stops_at_the_end_of_a_halved_line` | the line half as long, its cells past half the width lost, the cursor and edits stopping at its end (DEC STD 070, 5.6.1); fux's painter draws it twice as wide; xterm keeps the cells past the end |
 | 5-103 SGR | SGR (SELECT GRAPHIC RENDITION) | implemented | `conformance::sgr_colours_take_the_colon_forms_with_a_colour_space`, `semantics::sgr_defaults_resets_and_colour_parameter_forms` |  |
 | 5-109 DECCTR | DECCTR (Color Table Request/Report/Restore) | not implemented |  | not implemented: colours are xterm's OSC 4, which the palette keeps |
 | 5-113 DECSTGLT | DECSTGLT (Select Text/Graphics Look-Up Table) | not applicable |  | a documented exception (DEC STD 070, 5-113), for a graphics terminal |
@@ -357,10 +357,10 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | ESC SP L | ESC SP L (Set ANSI conformance level 1, ECMA-43.) | not applicable |  | an ECMA-43 conformance level for an 8-bit code: fux-vt reads UTF-8 |
 | ESC SP M | ESC SP M (Set ANSI conformance level 2, ECMA-43.) | not applicable |  | an ECMA-43 conformance level for an 8-bit code: fux-vt reads UTF-8 |
 | ESC SP N | ESC SP N (Set ANSI conformance level 3, ECMA-43.) | not applicable |  | an ECMA-43 conformance level for an 8-bit code: fux-vt reads UTF-8 |
-| ESC # 3 | ESC # 3 (DEC double-height line, top half (DECDHL), VT100.) | not implemented |  | not implemented |
-| ESC # 4 | ESC # 4 (DEC double-height line, bottom half (DECDHL), VT100.) | not implemented |  | not implemented |
-| ESC # 5 | ESC # 5 (DEC single-width line (DECSWL), VT100.) | not implemented |  | not implemented |
-| ESC # 6 | ESC # 6 (DEC double-width line (DECDWL), VT100.) | not implemented |  | not implemented |
+| ESC # 3 | ESC # 3 (DEC double-height line, top half (DECDHL), VT100.) | implemented | `renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end`, `renditions::the_cursor_stops_at_the_end_of_a_halved_line` | the line half as long, its cells past half the width lost, the cursor and edits stopping at its end (DEC STD 070, 5.6.1); fux's painter draws it twice as wide; xterm keeps the cells past the end |
+| ESC # 4 | ESC # 4 (DEC double-height line, bottom half (DECDHL), VT100.) | implemented | `renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end`, `renditions::the_cursor_stops_at_the_end_of_a_halved_line` | the line half as long, its cells past half the width lost, the cursor and edits stopping at its end (DEC STD 070, 5.6.1); fux's painter draws it twice as wide; xterm keeps the cells past the end |
+| ESC # 5 | ESC # 5 (DEC single-width line (DECSWL), VT100.) | implemented | `renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end`, `renditions::the_cursor_stops_at_the_end_of_a_halved_line` | has no effect on a line already single width, as every line starts; on one double width or height it doubles the line's length again, keeping every cell (DEC STD 070, DECSWL) |
+| ESC # 6 | ESC # 6 (DEC double-width line (DECDWL), VT100.) | implemented | `renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end`, `renditions::the_cursor_stops_at_the_end_of_a_halved_line` | the line half as long, its cells past half the width lost, the cursor and edits stopping at its end (DEC STD 070, 5.6.1); fux's painter draws it twice as wide; xterm keeps the cells past the end |
 | ESC # 8 | ESC # 8 (DEC Screen Alignment Test (DECALN), VT100.) | implemented | `modes::decaln_fills_the_screen_with_e` |  |
 | ESC % @ | ESC % @ (Select default character set.) | not applicable |  | fux-vt reads UTF-8 alone, and leaves it for no other coding |
 | ESC % G | ESC % G (Select UTF-8 character set, ISO 2022.) | not applicable |  | fux-vt reads UTF-8 alone, so there is nothing to select |

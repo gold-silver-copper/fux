@@ -8,7 +8,7 @@ use crate::history::{Arriving, History, trimmed};
 use crate::link::{Held, Hyperlink, Links, RowLinks};
 use crate::screen::Saved;
 use crate::style::Styles;
-use crate::{Attributes, CellRef, Error, Row, RowId, reserve};
+use crate::{Attributes, CellRef, Error, LineRendition, Row, RowId, reserve};
 
 /// The cursor, and what DECSC saves with it. Only the grid's movements set
 /// its row and column, each keeping them on the grid: a glyph that reaches
@@ -132,9 +132,12 @@ struct Meta {
     used: u16,
     /// Whether a prompt starts on the row (OSC 133 ; A).
     prompt: bool,
+    /// Its line rendition (DECDWL, DECDHL).
+    rendition: LineRendition,
 }
 
-// `prompt` fits where the struct had padding: a row costs no more for it.
+// `prompt` and `rendition` fit where the struct had padding: a row costs
+// no more for them.
 const _: () = assert!(size_of::<Meta>() == 24);
 
 impl Meta {
@@ -146,6 +149,7 @@ impl Meta {
             version: self.version,
             wrapped: self.wrapped,
             prompt: self.prompt,
+            rendition: self.rendition,
             cells,
             width,
         }
@@ -157,6 +161,7 @@ impl Meta {
             wrapped,
             used,
             prompt: false,
+            rendition: LineRendition::Single,
         }
     }
 }
@@ -356,6 +361,11 @@ pub(crate) struct Grid {
     /// Whether `columns` is narrower than the screen: one test for every
     /// operation the margins bound, which without them does as it did.
     lr: bool,
+    /// Whether a row of the screen may be half as long (`LineRendition`):
+    /// set when one is made so, and cleared when every row is single width
+    /// again. Every operation a row's end bounds looks here first, so
+    /// without such rows each costs this test and no more.
+    doubled: bool,
     /// Whether its screen's cells are yet to be made (`Grid::unmade`):
     /// every row is blank, and `make` makes them.
     unmade: bool,
@@ -475,6 +485,7 @@ impl Grid {
             lines: size.lines(),
             columns: size.columns(),
             lr: false,
+            doubled: false,
             unmade: false,
             keyboard: KeyboardStack::default(),
         }
@@ -553,6 +564,7 @@ impl Grid {
                 .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
             self.cells.resize(start.saturating_add(cols), BLANK);
         }
+        self.doubled |= meta.rendition.is_double();
         self.meta.push(meta);
         self.texts.push(text.unwrap_or_default());
         self.linked.push(links.unwrap_or_default());
@@ -621,6 +633,7 @@ impl Grid {
             version: m.version,
             wrapped: m.wrapped,
             prompt: m.prompt,
+            rendition: m.rendition,
             cells: self.slice(slot),
             width: usize::from(self.size.cols()),
             text: self.texts.get(slot)?,
@@ -638,6 +651,7 @@ impl Grid {
                 version: found.kept.version,
                 wrapped: found.kept.wrapped(),
                 prompt: found.kept.prompt(),
+                rendition: found.rendition,
                 cells: found.cells,
                 width: usize::from(found.kept.width()),
                 text: found.text,
@@ -1194,6 +1208,9 @@ impl Grid {
                 if whole {
                     erase(self, y, 0, cols);
                     self.set_prompt(y, false, version);
+                    if self.doubled {
+                        self.set_rendition(y, LineRendition::Single, version);
+                    }
                 }
             }
         }
@@ -1203,6 +1220,13 @@ impl Grid {
             Erase::All => (0, cols),
         };
         erase(self, row, start, end);
+        // ED makes a line it erases whole single width (DEC STD 070, ED,
+        // note 1, and its algorithm); EL leaves it as it is.
+        if display && self.doubled && start == 0 && end >= self.row_end(row) {
+            self.set_rendition(row, LineRendition::Single, version);
+            // Every row is single width again after ED 2.
+            self.doubled &= part != Erase::All;
+        }
     }
 
     /// `erase`, leaving the guarded glyphs (SPA's) as they are. Each run of
@@ -1371,8 +1395,9 @@ impl Grid {
         version: u64,
     ) {
         // The cells the edit moves end at the right margin, which is the
-        // last column without margins.
-        let end = self.columns.end();
+        // last column without margins, or at the row's end, on a row half
+        // as long (ICH and DCH, their algorithms).
+        let end = self.columns.end().min(self.row_end(row));
         // At most the cells from the column to the margin.
         let count = usize::from(count.min(end.saturating_sub(col)));
         if count == 0 {
@@ -1932,6 +1957,13 @@ impl Grid {
                 if let (Some(dst), Some(src)) = (row.get_mut(..len), old.cells.get(..len)) {
                     crate::copy_from(dst, src);
                 }
+                // A row half as long keeps its rendition, and loses what
+                // is past its end at the new width, as DECDWL loses it.
+                if old.rendition.is_double()
+                    && let Some(past) = row.get_mut(usize::from((width / 2).max(1))..)
+                {
+                    past.fill(BLANK);
+                }
                 repair_wide(&mut row);
                 // The row's text comes along, stored again within the
                 // budget of the row's new width.
@@ -1939,10 +1971,12 @@ impl Grid {
             }
             let meta = Meta {
                 prompt: old.is_some_and(|r| r.prompt),
+                rendition: old.map_or(LineRendition::Single, |r| r.rendition),
                 ..Meta::new(id, row_version, wrapped, width)
             };
             replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
+        replacement.fit_cursor();
         Ok(replacement)
     }
 
@@ -2013,6 +2047,7 @@ impl Grid {
         self.cursor = Cursor::default();
         self.saved = Saved::default();
         self.keyboard = KeyboardStack::default();
+        self.doubled = false;
         self.reset_margins();
     }
     /// Whether every slot's cells from `used` to its width are blank, as
@@ -2056,23 +2091,107 @@ impl Grid {
     /// One past the last column a glyph printed now may take: the right
     /// margin's, unless the cursor is past it, when the margin is no bound
     /// (DEC STD 070, 5.4.3; xterm's `dotext`). The screen's without margins.
+    /// On a row half as long, its end bounds it too (`row_end`).
     #[inline]
     pub fn line_end(&self) -> u16 {
-        if self.lr {
+        if self.narrow() {
             return self.line_end_in_margins();
         }
         self.size.cols()
     }
-    /// `line_end` with left and right margins. Out of line, as every margin
-    /// case is, so that without margins each costs one test.
+    /// `line_end` with left and right margins, or a row half as long. Out
+    /// of line, as every margin case is, so that without margins each
+    /// costs one test.
     #[cold]
     #[inline(never)]
     fn line_end_in_margins(&self) -> u16 {
-        if self.cursor.col <= self.columns.last() {
+        let end = if self.lr && self.cursor.col <= self.columns.last() {
             self.columns.end()
         } else {
             self.size.cols()
+        };
+        end.min(self.row_end(self.cursor.row))
+    }
+    /// Whether a line may end before the screen's edge: left and right
+    /// margins are set, or a row may be half as long.
+    #[inline]
+    pub fn narrow(&self) -> bool {
+        self.lr | self.doubled
+    }
+    /// The rendition of the screen's row `row` (DECDWL, DECDHL).
+    pub fn rendition(&self, row: u16) -> LineRendition {
+        self.slot(row)
+            .and_then(|slot| self.meta.get(slot))
+            .map_or(LineRendition::Single, |m| m.rendition)
+    }
+    /// One past the last column of the screen's row `row`: the screen's
+    /// width, or on a row that is not single width half of it, rounded
+    /// down (DEC STD 070, 5.14.1, `end_of_line`), and at least one column.
+    #[inline]
+    pub fn row_end(&self, row: u16) -> u16 {
+        if !self.doubled {
+            return self.size.cols();
         }
+        self.halved_end(row)
+    }
+    #[cold]
+    #[inline(never)]
+    fn halved_end(&self, row: u16) -> u16 {
+        let cols = self.size.cols();
+        if self.rendition(row).is_double() {
+            (cols / 2).max(1)
+        } else {
+            cols
+        }
+    }
+    /// Keeps the cursor short of its row's end: a cursor moved onto or
+    /// along a row half as long stops at its last column (DEC STD 070,
+    /// 5.6.1; IND, LF, CUU, CUD, CUF, CUP and HT, their algorithms).
+    #[inline]
+    fn fit_cursor(&mut self) {
+        if self.doubled {
+            self.fit_to_row();
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn fit_to_row(&mut self) {
+        let last = self.halved_end(self.cursor.row).saturating_sub(1);
+        self.cursor.col = self.cursor.col.min(last);
+    }
+    /// Sets the rendition of the screen's row `row` (DECSWL, DECDWL,
+    /// DECDHL). A row made half as long loses its cells past its new end,
+    /// and the cursor on it goes no further than its last column (DECDWL
+    /// and DECDHL, their notes and algorithms); one made single width
+    /// keeps every cell it has (DECSWL, note 2).
+    pub fn set_rendition(&mut self, row: u16, rendition: LineRendition, version: u64) {
+        let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) else {
+            return;
+        };
+        if m.rendition == rendition {
+            return;
+        }
+        m.rendition = rendition;
+        m.version = version;
+        if rendition.is_double() {
+            self.doubled = true;
+            let (end, cols) = (self.halved_end(row), self.size.cols());
+            self.erase(row, end, cols, 0, version);
+            if self.cursor.row == row {
+                self.fit_to_row();
+            }
+        }
+    }
+    /// Makes every row of the screen single width, as setting DECLRMM does
+    /// (DEC STD 070, DECLRMM, 5-29).
+    pub fn single_width(&mut self, version: u64) {
+        if !self.doubled {
+            return;
+        }
+        for row in 0..self.size.rows() {
+            self.set_rendition(row, LineRendition::Single, version);
+        }
+        self.doubled = false;
     }
     /// Where the next glyph goes, before any wrap: the cursor's column, or
     /// one past the last column while a wrap is pending.
@@ -2098,11 +2217,13 @@ impl Grid {
     #[inline]
     pub fn set_row(&mut self, row: u16) {
         self.cursor.row = row.min(self.size.lines().last());
+        self.fit_cursor();
     }
     /// Moves the cursor to column `col`, the last if past it.
     #[inline]
     pub fn set_col(&mut self, col: u16) {
         self.cursor.col = col.min(self.size.columns().last());
+        self.fit_cursor();
     }
     /// The cursor's line as CUP addresses it: from the top margin in
     /// origin mode.
@@ -2137,6 +2258,7 @@ impl Grid {
         self.cursor.pending_wrap = false;
         let (lines, columns) = self.addressed();
         (self.cursor.row, self.cursor.col) = (lines.nth(row), columns.nth(col));
+        self.fit_cursor();
     }
     /// The rows and columns CUP addresses: between the margins in origin
     /// mode, else the whole screen, as the margins are no bound outside it.
@@ -2160,6 +2282,7 @@ impl Grid {
         } else {
             col.min(self.size.columns().last())
         };
+        self.fit_cursor();
     }
     #[cold]
     #[inline(never)]
@@ -2196,6 +2319,7 @@ impl Grid {
         } else {
             col.min(self.size.columns().last())
         };
+        self.fit_cursor();
     }
     /// Moves the cursor to line `line` as CUP does, keeping its column,
     /// which origin mode keeps within the right margin (VPA and VPR, as
@@ -2205,6 +2329,7 @@ impl Grid {
         let col = self.cursor.col;
         self.position(line, 0);
         self.cursor.col = col.min(self.addressed().1.last());
+        self.fit_cursor();
     }
 }
 
@@ -2545,6 +2670,12 @@ impl Grid {
         )?;
         crate::check::ensure(self.lr == (self.columns != self.size.columns()), || {
             format!("lr {} with columns {:?}", self.lr, self.columns)
+        })?;
+        // A row half as long is never missed: its end bounds the cursor
+        // and printing only while `doubled` says one may be.
+        let halved = (0..rows).any(|row| self.rendition(row).is_double());
+        crate::check::ensure(self.doubled || !halved, || {
+            "a row is half as long, unmarked".into()
         })
     }
 
@@ -2663,6 +2794,10 @@ mod faults {
         })?;
         shows("grid.cursor", |g| g.cursor.row = 3)?;
         shows("grid.margins", |g| g.lr = true)?;
+        shows("grid.margins", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            g.doubled = false;
+        })?;
         shows("grid.keyboard", |g| g.keyboard.0.extend([1; 33]))?;
         Ok(())
     }
