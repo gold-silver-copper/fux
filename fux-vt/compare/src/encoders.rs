@@ -43,6 +43,14 @@ pub const VERDICTS: &[(&str, &str)] = &[
          sends BS (a choice no reference decides)",
     ),
     (
+        "ctrl-backspace-bs",
+        "open: Backspace with Ctrl and another modifier is BS (8) in fux-vt, a port of xterm's \
+         input.c (ESC BS for Ctrl-Alt-Shift outside any protocol, `CSI 27 ; m ; 8 ~` under \
+         modifyOtherKeys 2), where ghostty sends DEL (127); plain Ctrl-Backspace is DEL in both \
+         (ctrl-backspace). Which real xterm sends is not checked here: its key bytes through \
+         XTest would decide it",
+    ),
+    (
         "modify-other-keys",
         "modifyOtherKeys 2: xterm sends every modified key as CSI 27 ; m ; k ~, Ctrl-letters and \
          Alt-Escape included, but a printable key with Shift alone as its character, as fux-vt \
@@ -532,13 +540,28 @@ fn key_verdict(
     {
         return Some("f3");
     }
-    if key == Key::Backspace && mods.ctrl && flags & 9 == 0 {
+    // BS, where ghostty has DEL: open (see the verdict).
+    let bs_form = ours == b"\x1b\x08"
+        || String::from_utf8_lossy(ours)
+            .strip_prefix("\x1b[27;")
+            .is_some_and(|rest| rest.ends_with(";8~"));
+    let ghostty_del =
+        (mods.alt || mods.shift) && theirs.ends_with(b"\x7f") || theirs.ends_with(b";127~");
+    if key == Key::Backspace && mods.ctrl && bs_form && ghostty_del {
+        return Some("ctrl-backspace-bs");
+    }
+    // DEL, as for Backspace, after an Escape for Alt.
+    let del: &[u8] = if mods.alt { b"\x1b\x7f" } else { b"\x7f" };
+    if key == Key::Backspace && mods.ctrl && flags & 9 == 0 && ours == del {
         return Some("ctrl-backspace");
     }
-    if flags == 0 && !other_keys && kitty_form(theirs) && !kitty_form(ours) {
+    if flags == 0 && !other_keys && kitty_form(theirs) && ours == legacy {
         return Some("legacy-extras");
     }
-    if other_keys && ours.starts_with(b"\x1b[27;") != theirs.starts_with(b"\x1b[27;") {
+    if other_keys
+        && ours.starts_with(b"\x1b[27;") != theirs.starts_with(b"\x1b[27;")
+        && modified_other_key(key, mods, ours)
+    {
         return Some("modify-other-keys");
     }
     if flags != 0 && flags & 9 == 0 && ours == legacy {
@@ -559,6 +582,76 @@ fn key_verdict(
         }
     }
     None
+}
+
+/// Whether `ours` is what xterm's modifyOtherKeys 2 sends for `key` with
+/// `mods`: `CSI 27 ; M ; K ~`, M one more than Shift (1), Alt (2) and Ctrl
+/// (4), with Shift held for a character typed with it (an upper-case
+/// letter, or one of `SHIFTED`), and K the key's code (a character's own,
+/// or 27, 13, 9 and 127 for Escape, Enter, Tab and Backspace); or a
+/// printable key with Shift alone as its character.
+fn modified_other_key(key: Key, mods: Modifiers, ours: &[u8]) -> bool {
+    let (code, shifted) = match key {
+        Key::Char(c) => (
+            Some(u32::from(c)),
+            c.is_ascii_uppercase() || SHIFTED.iter().any(|&(s, _)| s == c),
+        ),
+        Key::Escape => (Some(27), false),
+        Key::Enter => (Some(13), false),
+        Key::Tab => (Some(9), false),
+        Key::Backspace => (Some(127), false),
+        Key::Delete
+        | Key::Insert
+        | Key::Arrow(_)
+        | Key::Home
+        | Key::End
+        | Key::PageUp
+        | Key::PageDown
+        | Key::F(_) => (None, false),
+    };
+    let shift = mods.shift || shifted;
+    if let Key::Char(c) = key
+        && shift
+        && !mods.alt
+        && !mods.ctrl
+    {
+        let mut utf8 = [0u8; 4];
+        if ours == c.encode_utf8(&mut utf8).as_bytes() {
+            return true;
+        }
+    }
+    let m = [(true, 1u8), (shift, 1), (mods.alt, 2), (mods.ctrl, 4)]
+        .iter()
+        .filter(|(held, _)| *held)
+        .fold(0u8, |m, (_, bit)| m.saturating_add(*bit));
+    let text = String::from_utf8_lossy(ours);
+    let Some(rest) = text.strip_prefix(&format!("\x1b[27;{m};")) else {
+        return false;
+    };
+    let Some(k) = rest.strip_suffix('~').and_then(|k| k.parse::<u32>().ok()) else {
+        return false;
+    };
+    code.is_none_or(|code| code == k)
+}
+
+/// What fux-vt's recorded paste verdicts say it sends for `text`: the text
+/// as pasted, and, bracketed, between `CSI 200 ~` and `CSI 201 ~` with
+/// every end of a bracketed paste (`CSI 201 ~`, and its C1 form) removed,
+/// again until none is left. Written apart from fux-vt's encoder, so the
+/// verdicts check what fux-vt sends.
+fn pasted(text: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return text.as_bytes().to_vec();
+    }
+    let mut body = text.to_owned();
+    loop {
+        let removed = body.replace("\x1b[201~", "").replace("\u{9b}201~", "");
+        if removed == body {
+            break;
+        }
+        body = removed;
+    }
+    [b"\x1b[200~".as_slice(), body.as_bytes(), b"\x1b[201~"].concat()
 }
 
 const BUTTONS: [MouseButton; 9] = [
@@ -838,7 +931,10 @@ fn compare_pastes(
             fux_vt::keys::encode::paste(&String::from_utf8_lossy(&seen), bracketed, &mut out);
             out
         };
-        let verdict = if modelled == theirs {
+        // A verdict says what fux-vt sends: it must send it.
+        let verdict = if ours != pasted(&text, asked) {
+            None
+        } else if modelled == theirs {
             if controls {
                 Some("paste-controls")
             } else if newline {
@@ -859,4 +955,62 @@ fn compare_pastes(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{key_verdict, modified_other_key, pasted};
+    use fux_vt::keys::{Key, Modifiers};
+
+    const CTRL: Modifiers = Modifiers {
+        ctrl: true,
+        alt: false,
+        shift: false,
+    };
+
+    /// A verdict passes only on the bytes its reason says fux-vt sends (at
+    /// the parent each passed on whatever fux-vt sent): DEL for
+    /// Ctrl-Backspace, not ESC; the legacy bytes, not some other form;
+    /// modifyOtherKeys' `CSI 27 ; M ; K ~` with the key's modifiers and
+    /// code; a paste as pasted, its ends removed.
+    #[test]
+    fn a_verdict_holds_only_on_what_fux_vt_should_send() {
+        let bs = |ours: &[u8]| key_verdict("", Key::Backspace, CTRL, ours, b"\x08", b"\x7f");
+        assert_eq!(bs(b"\x7f"), Some("ctrl-backspace"));
+        assert_eq!(bs(b"\x1b"), None);
+        let all = Modifiers {
+            alt: true,
+            shift: true,
+            ..CTRL
+        };
+        let open = key_verdict("", Key::Backspace, all, b"\x1b\x08", b"\x7f", b"");
+        assert_eq!(open, Some("ctrl-backspace-bs"));
+        let extras = |ours: &[u8]| key_verdict("", Key::Tab, CTRL, ours, b"\x1b[9;5u", b"\t");
+        assert_eq!(extras(b"\t"), Some("legacy-extras"));
+        assert_eq!(extras(b"x"), None);
+        let a = Key::Char('a');
+        assert!(modified_other_key(a, CTRL, b"\x1b[27;5;97~"));
+        assert!(!modified_other_key(a, CTRL, b"\x1b[27;9;97~"));
+        assert!(!modified_other_key(a, CTRL, b"\x1b[27;5;98~"));
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert!(modified_other_key(Key::Char('A'), shift, b"A"));
+        assert!(modified_other_key(
+            Key::Char('{'),
+            Modifiers::default(),
+            b"{"
+        ));
+        let ctrl_alt = Modifiers { alt: true, ..CTRL };
+        assert!(modified_other_key(
+            Key::Char('_'),
+            ctrl_alt,
+            b"\x1b[27;8;95~"
+        ));
+        assert_eq!(pasted("a\nb", false), b"a\nb");
+        assert_eq!(pasted("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
+        assert_eq!(pasted("\x1b[20\x1b[201~1~x", true), b"\x1b[200~x\x1b[201~");
+        assert_eq!(pasted("a\u{9b}201~b", true), b"\x1b[200~ab\x1b[201~");
+    }
 }
