@@ -84,6 +84,16 @@ text budget. They are kept as they were written; nothing regenerates them.
 What a run adds, and the `graphemes` and `cells` corpora, stay local (git
 ignores them); a crash becomes a named regression test.
 
+`seeds/terminal` and `seeds/keys` hold the frozen seeds: each safety
+reproducer of `threats.md` (`b01-raster-pictures`, `b20-long-osc`, …) in
+the target's format, written from its definition in `tests/seeds.rs`,
+which also replays each at its row's screen size and checks that it reaches
+the limit it is for. The sixel ones are slow at BASE until their fixes
+land (a width ladder, a 360:1 aspect and 215 declared extents each take
+over 25 s), and `keys/b25-long-csi-answer` fails the `keys` target's
+whole-against-split check (KEY-2), so they are not in `corpus/` yet; give
+them to a run as a second corpus directory.
+
 Coverage, as text:
 
 ```sh

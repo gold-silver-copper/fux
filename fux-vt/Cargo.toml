@@ -29,6 +29,10 @@ peak_alloc = "=0.3.0"
 name = "bounds"
 required-features = ["checks"]
 
+[[test]]
+name = "seeds"
+required-features = ["checks"]
+
 [lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
