@@ -1,8 +1,9 @@
 # fux-vt-gen
 
 Generates fux-vt's grapheme segmentation and width tables, `src/unicode/tables.rs`,
-and the conformance cases its tests run, `tests/data/GraphemeBreakTest.txt`,
-from the Unicode Character Database. Its own workspace; not published.
+and the cases of Unicode's own files its tests run (`tests/data/`:
+GraphemeBreakTest, NormalizationTest, emoji-test and
+emoji-variation-sequences), from the Unicode Character Database. Its own workspace; not published.
 
 To move to a new Unicode version, change the version in
 `references/fetch.sh` (its Unicode section), fetch, and generate, from the

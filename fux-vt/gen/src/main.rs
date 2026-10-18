@@ -15,14 +15,17 @@
 //! `ucd/auxiliary/GraphemeBreakProperty.txt` and `GraphemeBreakTest.txt`,
 //! `ucd/emoji/emoji-data.txt` and `emoji-variation-sequences.txt`,
 //! `ucd/DerivedCoreProperties.txt`, `EastAsianWidth.txt`,
-//! `HangulSyllableType.txt`, `PropList.txt` and `UnicodeData.txt`. The
-//! version is read from them (`UnicodeData.txt` names none), and they must
-//! agree.
+//! `HangulSyllableType.txt`, `NormalizationTest.txt`, `PropList.txt` and
+//! `UnicodeData.txt`, and `emoji/emoji-test.txt`. The version is read from
+//! them (`UnicodeData.txt` names none), and they must agree.
 //!
 //! Output, relative to the repository root:
 //! - `fux-vt/src/unicode/tables.rs`: sixteen bits of properties per code
 //!   point, in a two-stage table.
-//! - `fux-vt/tests/data/GraphemeBreakTest.txt`: the conformance cases alone.
+//! - in `fux-vt/tests/data/`, the conformance files' cases alone:
+//!   `GraphemeBreakTest.txt`, `emoji-test.txt` and
+//!   `emoji-variation-sequences.txt`, and `NormalizationTest.txt` as each
+//!   line's distinct forms.
 //!
 //! The widths are fux-vt's width rule (fux-vt's README, "Width"): each
 //! character's columns as unicode-width 0.2.2 counts them for Unicode
@@ -100,6 +103,8 @@ fn main() -> Result<()> {
     let breaks = read(&ucd, "auxiliary/GraphemeBreakProperty.txt")?;
     let emoji = read(&ucd, "emoji/emoji-data.txt")?;
     let variations = read(&ucd, "emoji/emoji-variation-sequences.txt")?;
+    let normalization = read(&ucd, "NormalizationTest.txt")?;
+    let emoji_test = read(&unicode, "emoji/emoji-test.txt")?;
     let derived = read(&ucd, "DerivedCoreProperties.txt")?;
     let east_asian = read(&ucd, "EastAsianWidth.txt")?;
     let hangul = read(&ucd, "HangulSyllableType.txt")?;
@@ -113,6 +118,7 @@ fn main() -> Result<()> {
         (&hangul, "HangulSyllableType"),
         (&props, "PropList"),
         (&test, "GraphemeBreakTest"),
+        (&normalization, "NormalizationTest"),
     ] {
         let other = version_of(text, name)?;
         if other != version {
@@ -124,6 +130,7 @@ fn main() -> Result<()> {
     for (text, name) in [
         (&emoji, "emoji-data"),
         (&variations, "emoji-variation-sequences"),
+        (&emoji_test, "emoji-test"),
     ] {
         let emoji_version = text
             .lines()
@@ -182,8 +189,18 @@ fn main() -> Result<()> {
     let tables = tables(&properties, &version)?;
     write(&root.join("fux-vt/src/unicode/tables.rs"), &tables)?;
     let data = root.join("fux-vt/tests/data");
-    let name = "GraphemeBreakTest.txt";
-    write(&data.join(name), &cases(name, &test, &version))?;
+    let files = [
+        ("GraphemeBreakTest.txt", &test),
+        ("emoji-test.txt", &emoji_test),
+        ("emoji-variation-sequences.txt", &variations),
+    ];
+    for (name, text) in files {
+        write(&data.join(name), &cases(name, text, &version))?;
+    }
+    write(
+        &data.join("NormalizationTest.txt"),
+        &normalization_forms(&normalization, &version)?,
+    )?;
     Ok(())
 }
 
@@ -492,4 +509,44 @@ fn cases(name: &str, text: &str, version: &str) -> String {
         }
     }
     out
+}
+
+/// NormalizationTest.txt cut to what fux-vt's test reads: of each line,
+/// the distinct forms of its two sets of canonical equivalents, c1 to c3
+/// (the source, its NFC and its NFD) and c4 and c5 (its NFKC and NFKD),
+/// each set's forms `;` apart and the sets `|` apart (the second left out
+/// when it holds the first's forms), the code points in hex. The file's
+/// part headers and comments are left out.
+fn normalization_forms(text: &str, version: &str) -> Result<String> {
+    let mut out = format!(
+        "# NormalizationTest-{version}.txt, each line's distinct forms, c1 to c3 | c4 and c5 (fux-vt/gen)\n"
+    );
+    for line in text.lines() {
+        let data = line.split('#').next().unwrap_or("").trim();
+        if data.is_empty() || data.starts_with('@') {
+            continue;
+        }
+        let columns: Vec<&str> = data.split(';').map(str::trim).collect();
+        let (Some(canonical), Some(compatible)) = (columns.get(..3), columns.get(3..5)) else {
+            return Err(format!("NormalizationTest: {line:?}").into());
+        };
+        let distinct = |forms: &[&str]| {
+            let mut kept: Vec<&str> = Vec::new();
+            for form in forms {
+                if !kept.contains(form) {
+                    kept.push(form);
+                }
+            }
+            kept.join(";")
+        };
+        let (canonical, compatible) = (distinct(canonical), distinct(compatible));
+        out.push_str(&canonical);
+        // Mostly the same forms: then written once.
+        if compatible != canonical {
+            out.push('|');
+            out.push_str(&compatible);
+        }
+        out.push('\n');
+    }
+    Ok(out)
 }

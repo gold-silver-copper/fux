@@ -431,6 +431,12 @@ command = "cargo test -p fux-vt --test table: every function's status, its probe
 needs = []
 
 [[check]]
+name = "ci-unicode-files"
+schedule = "ci"
+command = "cargo test -p fux-vt --test ucd (GraphemeBreakTest, NormalizationTest, emoji-test, emoji-variation-sequences through the parser) and conformance::utf8_tables_3_8_to_3_11_substitute_maximal_subparts (3.9's tables)"
+needs = []
+
+[[check]]
 name = "ci-libtermkey"
 schedule = "ci"
 command = "libtermkey's decoding cases"

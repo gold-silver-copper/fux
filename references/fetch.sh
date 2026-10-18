@@ -130,6 +130,8 @@ get unicode/ucd/emoji/emoji-variation-sequences.txt $ucd/emoji/emoji-variation-s
 get unicode/ucd/HangulSyllableType.txt $ucd/HangulSyllableType.txt
 get unicode/ucd/PropList.txt $ucd/PropList.txt
 get unicode/ucd/UnicodeData.txt $ucd/UnicodeData.txt
+get unicode/ucd/NormalizationTest.txt $ucd/NormalizationTest.txt
+get unicode/emoji/emoji-test.txt https://www.unicode.org/Public/17.0.0/emoji/emoji-test.txt
 
 # --- Modern extensions, each its own de facto specification -------------------
 get modern/kitty_keyboard_protocol.html https://sw.kovidgoyal.net/kitty/keyboard-protocol/
