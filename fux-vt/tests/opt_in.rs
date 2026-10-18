@@ -762,9 +762,10 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
 /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16 bits
 /// and negated, four upper-case hex digits. An empty cell is a space; a
 /// character past Latin-1 is ESC; a DEC Special Graphics glyph, the code it
-/// was drawn with. The page is ignored, as in xterm; the rectangle defaults
-/// to the whole screen, and is relative to the margins in origin mode.
-/// Without the option, nothing is answered.
+/// was drawn with. The page is ignored, as in xterm (decisions.md 47); the
+/// rectangle defaults to the whole screen, and counts from the margins in
+/// origin mode. An inverted rectangle has "the sequence ... ignored" (DEC
+/// STD 070, DECRQCRA): no reply. Without the option, nothing is answered.
 #[test]
 fn rectangle_checksums_sum_the_cells() -> Result {
     let checksum = |sum: u16| format!("{:04X}", sum.wrapping_neg());
@@ -803,7 +804,6 @@ fn rectangle_checksums_sum_the_cells() -> Result {
         (7, checksum(0x71)),
         (8, checksum(0x20)),
         (9, checksum(whole)),
-        (10, "0000".to_owned()),
         (11, checksum(0x7a)),
     ]
     .map(|(id, sum)| format!("\x1bP{id}!~{sum}\x1b\\").into_bytes());

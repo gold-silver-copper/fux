@@ -2595,25 +2595,27 @@ impl Screen {
     /// screen (to the margins in origin mode), with absent or 0 meaning
     /// its whole extent; one whose top is below its bottom, or left past
     /// its right, sums nothing.
-    pub(crate) fn rectangle_checksum(&self, p: &Parameters) -> Reply {
+    pub(crate) fn rectangle_checksum(&self, p: &Parameters) -> Option<Reply> {
         let g = self.grid();
         let mut sum = 0u16;
-        if let Some((lines, columns)) = self.rectangle(p, 2) {
-            spend!(
-                cells,
-                usize::from(lines.len()).saturating_mul(usize::from(columns.len()))
-            );
-            for y in lines.each() {
-                for x in columns.each() {
-                    if let Some(cell) = g.cell(y, x) {
-                        sum = sum.wrapping_add(checksum_of(&cell));
-                    }
+        // A rectangle whose top is below its bottom, or left past its
+        // right, has "the sequence ... ignored" (DEC STD 070, DECRQCRA):
+        // no reply.
+        let (lines, columns) = self.rectangle(p, 2)?;
+        spend!(
+            cells,
+            usize::from(lines.len()).saturating_mul(usize::from(columns.len()))
+        );
+        for y in lines.each() {
+            for x in columns.each() {
+                if let Some(cell) = g.cell(y, x) {
+                    sum = sum.wrapping_add(checksum_of(&cell));
                 }
             }
         }
         let id = p.first(0, 0);
         let checksum = sum.wrapping_neg();
-        reply!("\x1bP{id}!~{checksum:04X}\x1b\\")
+        Some(reply!("\x1bP{id}!~{checksum:04X}\x1b\\"))
     }
 
     /// The rectangle `Pt ; Pl ; Pb ; Pr` of the parameters from `at` on, as
@@ -3537,7 +3539,10 @@ impl Screen {
                 return Some(Dispatch::Done);
             }
             (b"*", b'y') if options.has(Feature::RectangleChecksums) => {
-                Some(self.rectangle_checksum(p))
+                let Some(reply) = self.rectangle_checksum(p) else {
+                    return Some(Dispatch::Done);
+                };
+                Some(reply)
             }
             // DECRQM.
             (b"?$" | b"$", b'p') if modes => {
