@@ -284,6 +284,90 @@ const ZSH_RESIZE_AT: &[Exception] = &[
     },
 ];
 
+/// How fux-vt's replies have changed since the recordings were made: a
+/// reply as recorded (`was`), as fux-vt gives it now, and the change that
+/// made it, cited. Each is applied to every recording's replies before
+/// they are compared with fux-vt's now (`record::replies_now`), so any
+/// other change to DA, DECRQM or the colour replies shows in the corpus;
+/// one that no recording shows any more fails.
+pub const REPLY_CHANGES: &[(&str, &str, &str)] = &[
+    (
+        "\x1b[?62;22c",
+        "\x1b[?62;6;21;22;28c",
+        "DA1 names selective erase (6), horizontal scrolling (21) and rectangular editing (28): a218350c and the commits before it",
+    ),
+    (
+        "\x1b[?2027;0$y",
+        "\x1b[?2027;3$y",
+        "mode 2027 (grapheme clusters) is permanently set: 3a6bda6a",
+    ),
+    (
+        "\x1b[?69;0$y",
+        "\x1b[?69;2$y",
+        "DECLRMM (69) is a mode fux-vt knows, reset: f9a18914",
+    ),
+];
+
+/// The recordings whose replies changed in a way no reply as recorded can
+/// say (a reply given now to a query once left unanswered), and why. One
+/// that agrees again fails.
+pub const REPLIES_DIFFER: &[(&str, &str)] = &[
+    (
+        "zellij",
+        "zellij asks OSC 4 for each of its 256 colours; fux's panes answer them now (Feature::Palette, src/pane.rs), where they answered none when it was recorded",
+    ),
+    (
+        "zellij-small",
+        "zellij asks OSC 4 for each of its 256 colours; fux's panes answer them now (Feature::Palette, src/pane.rs), where they answered none when it was recorded",
+    ),
+];
+
+/// fux-vt's replies `now` beside those a recording kept (`then`), as
+/// they are compared: versions as `VERSION`, and the recorded replies with
+/// every change since ([`REPLY_CHANGES`]) applied; and which changes were.
+fn replies_beside(now: &[u8], then: &[u8]) -> (String, String, Vec<usize>) {
+    let now = unversioned(now);
+    let mut then = unversioned(then);
+    let mut used = Vec::new();
+    for (i, (was, is, _)) in REPLY_CHANGES.iter().enumerate() {
+        if then.contains(was) {
+            used.push(i);
+            then = then.replace(was, is);
+        }
+    }
+    (now, then, used)
+}
+
+/// A reply's version numbers, which change with every release, as
+/// `VERSION`: XTVERSION's `fux X.Y.Z` and DA2's version parameter. What a
+/// reply says otherwise is compared.
+fn unversioned(replies: &[u8]) -> String {
+    let text = String::from_utf8_lossy(replies).into_owned();
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(at) = [rest.find("fux "), rest.find("\x1b[>1;")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
+        let (head, tail) = rest.split_at_checked(at).unwrap_or((rest, ""));
+        out.push_str(head);
+        let (lead, digits) = if let Some(t) = tail.strip_prefix("fux ") {
+            ("fux ", t)
+        } else {
+            ("\x1b[>1;", tail.get(5..).unwrap_or_default())
+        };
+        out.push_str(lead);
+        out.push_str("VERSION");
+        let end = digits
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(digits.len());
+        rest = digits.get(end..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    out
+}
+
 /// No exception: the recording is expected to agree.
 const AGREE: &[Exception] = &[];
 
@@ -414,6 +498,9 @@ pub struct Recording {
     pub cols: u16,
     /// Each step's keys (escaped, as typed) and the output after them.
     pub steps: Vec<(String, Vec<u8>)>,
+    /// What fux-vt answered the program while it was recorded, in order
+    /// (`record`), escaped in the JSON's `replies`.
+    pub replies: Vec<u8>,
     /// The steps that resized the terminal (`!resize` in the keys) rather
     /// than typing: the step's index and the new size, rows and columns.
     /// The step's output is what the program wrote after the resize.
@@ -569,6 +656,8 @@ fn load(path: &Path) -> Result<Recording, String> {
         version: string("version")?,
         rows: dimension(0)?,
         cols: dimension(1)?,
+        replies: crate::escape::unescape(&string("replies")?)
+            .map_err(|e| format!("{}: replies: {e}", path.display()))?,
         steps,
         resizes,
     })
@@ -872,6 +961,8 @@ pub fn run(
     let mut ok = true;
     let (mut agree, mut differ) = (0usize, 0usize);
     let mut results = Vec::new();
+    // The reply changes some recording shows.
+    let mut shown_changes = BTreeSet::new();
     for recording in &recordings {
         let case = recording.case();
         let expected = status(&recording.name);
@@ -887,7 +978,32 @@ pub fn run(
         );
         let reasons: BTreeSet<&str> = exceptions.iter().map(|e| e.reason).collect();
         let (abstained, unjudged) = abstentions(outcome);
+        // What fux-vt answers the program now, beside what it answered,
+        // with the changes since it was recorded applied.
+        let (now, then, used) =
+            replies_beside(&crate::record::replies_now(recording)?, &recording.replies);
+        shown_changes.extend(used);
+        let replies_agree = now == then;
+        let listed = REPLIES_DIFFER.iter().find(|(n, _)| *n == recording.name);
+        match (replies_agree, listed) {
+            (true, None) | (false, Some(_)) => {}
+            (false, None) => {
+                ok = false;
+                println!(
+                    "REPLIES  {label}: fux-vt answers {:?}, where it answered {:?}",
+                    crate::escape::escape(now.as_bytes()),
+                    crate::escape::escape(then.as_bytes())
+                );
+            }
+            (true, Some((_, why))) => {
+                ok = false;
+                println!(
+                    "REPLIES  {label}: listed as replying otherwise ({why}), and agrees: remove it"
+                );
+            }
+        }
         results.push(serde_json::json!({
+            "replies_agree": replies_agree,
             "abstained": abstained,
             "unjudged": unjudged,
             "recording": recording.name,
@@ -955,6 +1071,16 @@ pub fn run(
             let end = case.run_until(&[], false)?;
             for line in &end.fux.screen {
                 println!("    |{}", line.text());
+            }
+        }
+    }
+    if names.is_empty() {
+        for (i, (was, is, why)) in REPLY_CHANGES.iter().enumerate() {
+            if !shown_changes.contains(&i) {
+                ok = false;
+                println!(
+                    "REPLIES  the change {was:?} to {is:?} ({why}) shows in no recording: remove it"
+                );
             }
         }
     }
@@ -1411,6 +1537,31 @@ fn listed(keys: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A recording's replies are compared with fux-vt's now, versions
+    /// aside and with each change since recorded applied: a DA1 reply as
+    /// recorded matches the one fux-vt gives since a218350c, a DA2 of
+    /// another version matches, and a DA1 reply no change covers does not
+    /// (at the parent the replies were never compared).
+    #[test]
+    fn replies_are_compared_with_the_changes_since_recorded() {
+        let (now, then, used) = super::replies_beside(
+            b"\x1b[>1;2700;0c\x1b[?62;6;21;22;28c\x1bP>|fux 0.27.0\x1b\\",
+            b"\x1b[>1;1700;0c\x1b[?62;22c\x1bP>|fux 0.17.0\x1b\\",
+        );
+        assert_eq!(now, then);
+        assert_eq!(used, [0]);
+        let (now, then, _) = super::replies_beside(b"\x1b[?65;1c", b"\x1b[?62;22c");
+        assert_ne!(now, then);
+        assert_eq!(
+            super::unversioned(b"fux 1.2.3 \x1b[>1;99;0c"),
+            "fux VERSION \x1b[>1;VERSION;0c"
+        );
+        assert_eq!(
+            super::unversioned(b"\x1b[>1;99;0c fux 1.2.3"),
+            "\x1b[>1;VERSION;0c fux VERSION"
+        );
+    }
+
     /// Every subject is judged at the same points: one where it fails
     /// nothing but could not be judged on a field is unavailable, neither
     /// a pass nor a failure, and a recording with such a point does not
@@ -1555,6 +1706,7 @@ mod tests {
                 (String::new(), b"c".to_vec()),
                 ("k".into(), b"d".to_vec()),
             ],
+            replies: Vec::new(),
             resizes: vec![(2, 3, 8)],
         };
         let case = recording.case();

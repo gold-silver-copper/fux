@@ -465,6 +465,15 @@ shows it. The comparison goes on past a covered difference to the
 recording's end. `corpus` exits 1 on a difference no exception covers, on
 an exception that no longer occurs, and on a recording with no status;
 `corpus NAME` lists each covered difference with its step.
+
+The replies a recording kept, what fux-vt answered the program as it ran,
+are compared too: the recording is replayed through a parser set up as
+`record` set it up, and fux-vt's replies now must be the ones kept, with
+version numbers aside (XTVERSION's, DA2's) and each change made since it
+was recorded applied (`REPLY_CHANGES`, each cited; one no recording shows
+any more fails). A recording whose replies changed otherwise is listed in
+`REPLIES_DIFFER` with why, and fails once it agrees again. So a change to
+DA, DECRQM or the colour replies shows in the corpus.
 `--json FILE` writes the results. The counts are in
 [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
 

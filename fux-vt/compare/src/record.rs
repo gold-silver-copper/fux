@@ -197,6 +197,31 @@ impl fux_vt::Sink for Replies {
     }
 }
 
+/// What fux-vt answers the program of `recording` now, set up and fed as
+/// `record` set it up and fed it: the replies a recording keeps, to
+/// compare with what it kept (`corpus`).
+pub fn replies_now(recording: &crate::corpus::Recording) -> Result<Vec<u8>, String> {
+    let mut parser = fux_vt::Parser::with_options(
+        crate::vt_size(recording.rows, recording.cols)?,
+        8 << 20,
+        fux::pane::OPTIONS,
+    )
+    .map_err(|e| format!("fux-vt: {e}"))?;
+    let mut out = Vec::new();
+    for (i, (_, bytes)) in recording.steps.iter().enumerate() {
+        if let Some((rows, cols)) = recording.resize_at(i) {
+            parser
+                .resize(crate::vt_size(rows, cols)?)
+                .map_err(|e| format!("fux-vt: {e}"))?;
+            out.extend(parser.resize_report().unwrap_or_default());
+        }
+        let mut sink = Replies::default();
+        let _ = parser.process_with(bytes, &mut sink);
+        out.extend_from_slice(&sink.0);
+    }
+    Ok(out)
+}
+
 /// The program on its PTY, the parser beside it, and everything read.
 struct Session {
     master: File,

@@ -756,6 +756,7 @@ fn chosen(options: &Options) -> Result<Vec<Recording>, String> {
         rows,
         cols,
         steps,
+        replies: Vec::new(),
         resizes: Vec::new(),
     }])
 }
@@ -1797,6 +1798,7 @@ mod tests {
             rows: 3,
             cols: 10,
             steps: vec![(String::new(), output.to_vec())],
+            replies: Vec::new(),
             resizes: Vec::new(),
         };
         let outcome = super::through_fux(ghostty()?, &recording, Some(3))?;
