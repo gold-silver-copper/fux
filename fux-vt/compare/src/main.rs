@@ -80,10 +80,11 @@ survey   each family alone (with plain text), counting the cases that
          status should be.
 matrix   each family alone beside each engine alone, and beside the whole
          panel: the share of cases that differ, as a table.
-cases    the named cases (default: all), beside every engine that can run
-         here. Exit 1 if a case in a family expected to agree fails, or
-         the engines that decide a family with a recorded verdict (xterm,
-         for most) outvote fux-vt on one of its cases.
+cases    the named cases (default: all), beside every engine that votes
+         (default `panel,xterm.js,tmux,xterm`: all but vt100), judged
+         after every step. Exit 1 if one
+         fails: outvoted, or, in a family with a recorded verdict, against
+         its section's expected fields or the engines that decide it.
 verdicts the families with a recorded verdict (or those named), each
          beside the engines that decide it (default; --list names them):
          their named cases, then random cases from each with plain text
@@ -717,17 +718,17 @@ fn named_cases(args: &Args, subject: usize) -> Result<Vec<NamedCase>, String> {
 fn case_result(
     named: (&str, &str, usize),
     subject: usize,
-    outcome: &case::Outcome,
+    (outcome, failures, at_end): &(case::Outcome, Vec<String>, bool),
 ) -> Result<serde_json::Value, String> {
     let (name, family, index) = named;
-    let failures = case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)?;
     // The fields the subject cannot tell where the judge would have
     // failed it: unavailable, so the case is no pass (`case::reread`).
     let reread = case::reread(&outcome.fux, &outcome.verdicts);
-    let unavailable: Vec<String> = case::judged(index, name, subject, &outcome.fux, &reread)?
-        .into_iter()
-        .filter(|f| !failures.contains(f))
-        .collect();
+    let unavailable: Vec<String> =
+        case::judged(index, name, subject, &outcome.fux, &reread, *at_end)?
+            .into_iter()
+            .filter(|f| !failures.contains(f))
+            .collect();
     let xterm = engine::find("xterm").and_then(|x| {
         outcome
             .verdicts
@@ -751,12 +752,18 @@ fn write_json(path: &str, value: &serde_json::Value) -> Result<(), String> {
     std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))
 }
 
+/// The engines `cases` runs beside by default.
+const CASES_PANEL: &str = "panel,xterm.js,tmux,xterm";
+
 fn cases(args: &Args) -> Result<bool, String> {
     let subject = subject(args)?;
     if subject != FUX_VT {
         return cases_beside(args, subject);
     }
-    let panel = panel(args, "all")?;
+    // Every engine that votes: the panel, xterm.js and tmux (left out of
+    // `panel` for their speed alone), and xterm, which decides most
+    // decided families; not vt100, which does not vote.
+    let panel = panel(args, CASES_PANEL)?;
     println!("engines: {}", names(&panel));
     let mut ok = true;
     let (mut agree, mut differ, mut fixed) = (0usize, 0usize, 0usize);
@@ -768,8 +775,10 @@ fn cases(args: &Args) -> Result<bool, String> {
         case,
     } in named_cases(args, subject)?
     {
-        let outcome = case.run_until(&panel, false)?;
-        results.push(case_result((name, family, index), subject, &outcome)?);
+        // Judged after every step, stopping at the first it fails.
+        let judged = case::judge_named(&case, &panel, index, name)?;
+        results.push(case_result((name, family, index), subject, &judged)?);
+        let (outcome, failures, _) = judged;
         let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
         if let Some(Status::Decided { by, authority, .. }) = status {
@@ -790,7 +799,7 @@ fn cases(args: &Args) -> Result<bool, String> {
                 if !by.is_empty() && !heard(&outcome.verdicts, by) && !(standard && limited) {
                     Err(format!("none of {} gave a verdict", by.join(", ")))
                 } else {
-                    case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)
+                    Ok(failures.clone())
                 }
             });
             match checked {
@@ -820,7 +829,6 @@ fn cases(args: &Args) -> Result<bool, String> {
         }
         // Any other family's case is judged on every field, a case recorded
         // as differing (`cases::DIFFERING`) only where its record says.
-        let failures = case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)?;
         match (failures.is_empty(), cases::differing(name)) {
             (true, None) => {
                 agree = agree.saturating_add(1);
@@ -878,7 +886,7 @@ fn heard(verdicts: &[case::Verdict], by: &[&str]) -> bool {
 /// subject voting in its place: the cases where one is outvoted and the
 /// other is not are listed, each with the replay that shows it.
 fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
-    let panel = panel_beside(args, "all", subject)?;
+    let panel = panel_beside(args, CASES_PANEL, subject)?;
     // The panel fux-vt is judged beside: the subject where fux-vt was.
     let swapped: Vec<usize> = panel
         .iter()
@@ -894,31 +902,26 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
     let mut results = Vec::new();
     for named in named_cases(args, subject)? {
         count = count.saturating_add(1);
-        let outcome = named.case.run_until(&panel, false)?;
+        let judged = case::judge_named(&named.case, &panel, named.index, named.name)?;
         results.push(case_result(
             (named.name, named.family, named.index),
             subject,
-            &outcome,
+            &judged,
         )?);
+        let (outcome, on, _) = judged;
         let marks = marks(&outcome);
         let deciders = match FAMILIES.get(named.index).map(|f| f.status) {
             Some(Status::Decided { by: [one], .. }) => format!(": {one} decides"),
             Some(Status::Decided { by, .. }) => format!(": {} decide", by.join(", ")),
             _ => String::new(),
         };
-        let on = case::judged(
-            named.index,
-            named.name,
-            subject,
-            &outcome.fux,
-            &outcome.verdicts,
-        )?;
-        let fux_on = match case::rejudge(subject, &outcome.fux, &outcome.verdicts, FUX_VT) {
-            Some((base, verdicts)) => {
-                case::judged(named.index, named.name, FUX_VT, &base, &verdicts)?
-            }
-            None => vec!["fux-vt abstained".to_owned()],
+        // fux-vt, judged as the subject is, every step, with the subject
+        // voting in its place.
+        let as_fux = Case {
+            subject: FUX_VT,
+            ..named.case.clone()
         };
+        let (_, fux_on, _) = case::judge_named(&as_fux, &swapped, named.index, named.name)?;
         if fux_on.is_empty() {
             fux_agree = fux_agree.saturating_add(1);
         }
@@ -940,10 +943,6 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
             }
         }
         if !on.is_empty() || !fux_on.is_empty() {
-            let as_fux = Case {
-                subject: FUX_VT,
-                ..named.case.clone()
-            };
             split.push((
                 named.name,
                 named.family,
@@ -955,7 +954,7 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
         }
     }
     println!(
-        "{name_of}: {agree} of {count} named cases agree; fux-vt, judged on the same screens \
+        "{name_of}: {agree} of {count} named cases agree; fux-vt, judged on the same cases \
          with {name_of} voting in its place: {fux_agree} of {count}"
     );
     let lists = [
@@ -1081,9 +1080,8 @@ fn verdicts(args: &Args) -> Result<bool, String> {
                 steps,
                 subject: FUX_VT,
             };
-            let outcome = case.run_until(&panel, false)?;
+            let (outcome, failures, _) = case::judge_named(&case, &panel, i, name)?;
             let marks = marks(&outcome);
-            let failures = case::judged(i, name, FUX_VT, &outcome.fux, &outcome.verdicts)?;
             if failures.is_empty() {
                 println!("   ok    {name}   {marks}");
             } else {

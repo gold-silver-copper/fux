@@ -165,7 +165,9 @@ libvterm, avt and wezterm, all in this process and fast.
   choices are what the vote is meant to catch.
 - **xterm.js, tmux and xterm don't vote by default.** They run in
   processes of their own, about 20 times slower. Add them with `--engines
-  panel,xterm.js` and so on. `cases` uses every engine.
+  panel,xterm.js` and so on. `cases` runs beside every engine that votes
+  (`panel,xterm.js,tmux,xterm`: all but vt100), and judges every step of
+  a case, not its end alone.
 - **The panel can be wrong.** Where it splits, the standards and xterm
   decide: such a family is "decided" and checked by `verdicts` (see
   "Families").

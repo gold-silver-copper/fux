@@ -191,7 +191,9 @@ fn blank(snapshot: &Snapshot, y: usize, x: usize) -> bool {
 /// deciders the section alone judges. A family xterm decides is judged by
 /// its deciders' vote, and any other by the whole panel's. An error if a
 /// case of a family a standard decides has no expected fields, or one
-/// names a field no snapshot has.
+/// names a field no snapshot has. The expected fields, and whether a case
+/// recorded as differing still differs, are judged `at_end` only, after
+/// the case's last step; the deciders never judge what the section settles.
 ///
 /// [`cases::EXPECTED`]: crate::cases::EXPECTED
 pub fn judged(
@@ -200,6 +202,7 @@ pub fn judged(
     subject_engine: usize,
     subject: &Snapshot,
     verdicts: &[Verdict],
+    at_end: bool,
 ) -> Result<Vec<String>, String> {
     let Some(families::Status::Decided { by, authority, .. }) =
         FAMILIES.get(family).map(|f| f.status)
@@ -213,7 +216,7 @@ pub fn judged(
         };
         let covered = |key: &String| record.on.iter().any(|p| families::glob(p, key));
         let mut out = Vec::new();
-        if !outvoted.iter().any(covered) {
+        if at_end && !outvoted.iter().any(covered) {
             out.push(format!(
                 "{name}: recorded as differing ({}), but no longer does: remove its record",
                 record.on.join(", ")
@@ -234,7 +237,8 @@ pub fn judged(
             "{name}: its family's section decides, and it has no expected fields"
         ))?;
         let can = engine::kind(subject_engine).map_or(engine::Can::ALL, |k| k.can);
-        for &(key, value) in expected.fields {
+        // The fields are what the section leaves after the last step.
+        for &(key, value) in expected.fields.iter().filter(|_| at_end) {
             let (field, got) =
                 snapshot::read(subject, key).ok_or(format!("{name}: no field {key:?}"))?;
             if field.told_by(&can) && got != value {
@@ -253,6 +257,45 @@ pub fn judged(
             .filter(|key| !settled.iter().any(|(k, _)| snapshot::covers(k, key))),
     );
     Ok(out)
+}
+
+/// Runs the named case `name`, of the family at `family`, beside `panel`,
+/// judging it as [`judged`] does after every step, and stopping at the
+/// first step it fails. The outcome there (at the end if it never fails),
+/// where it fails (empty: it passes), and whether that is the last step.
+pub fn judge_named(
+    case: &Case,
+    panel: &[usize],
+    family: usize,
+    name: &str,
+) -> Result<(Outcome, Vec<String>, bool), String> {
+    let last = case.steps.len();
+    let at = std::cell::Cell::new(0usize);
+    let error = std::cell::RefCell::new(None);
+    let outcome = case.run_judged(panel, true, |base, verdicts| {
+        let i = at.get();
+        at.set(i.saturating_add(1));
+        match judged(family, name, case.subject, base, verdicts, i == last) {
+            Ok(failures) => !failures.is_empty(),
+            Err(e) => {
+                *error.borrow_mut() = Some(e);
+                true
+            }
+        }
+    })?;
+    if let Some(e) = error.into_inner() {
+        return Err(e);
+    }
+    let at_end = outcome.step.is_none_or(|s| s == last);
+    let failures = judged(
+        family,
+        name,
+        case.subject,
+        &outcome.fux,
+        &outcome.verdicts,
+        at_end,
+    )?;
+    Ok((outcome, failures, at_end))
 }
 
 fn outvoted(verdicts: &[Verdict]) -> bool {
@@ -967,7 +1010,7 @@ mod tests {
         };
         let departs = verdict(&follows, text(&["abcdX", ""], 5, (0, 4), false));
         let judged = |fux: &Snapshot, verdicts: &[Verdict]| {
-            super::judged(erase, name, FUX_VT, fux, verdicts)
+            super::judged(erase, name, FUX_VT, fux, verdicts, true)
         };
         assert_eq!(
             judged(&follows, std::slice::from_ref(&departs))?,
@@ -994,12 +1037,12 @@ mod tests {
         let el = "el-while-wrap-pending";
         let erased = text(&["abcd"], 5, (0, 4), false);
         assert_eq!(
-            super::judged(wrap, el, FUX_VT, &erased, &[])?,
+            super::judged(wrap, el, FUX_VT, &erased, &[], true)?,
             Vec::<String>::new()
         );
         let kept = text(&["abcde"], 5, (0, 4), true);
-        assert_eq!(super::judged(wrap, el, FUX_VT, &kept, &[])?.len(), 2);
-        assert!(super::judged(wrap, "no-such-case", FUX_VT, &erased, &[]).is_err());
+        assert_eq!(super::judged(wrap, el, FUX_VT, &kept, &[], true)?.len(), 2);
+        assert!(super::judged(wrap, "no-such-case", FUX_VT, &erased, &[], true).is_err());
         Ok(())
     }
 
@@ -1020,7 +1063,8 @@ mod tests {
             snapshot: other,
         };
         let moved = verdict(text(&["abc"], 5, (0, 0), false));
-        let judged = |family, name, v: &[Verdict]| super::judged(family, name, FUX_VT, &fux, v);
+        let judged =
+            |family, name, v: &[Verdict]| super::judged(family, name, FUX_VT, &fux, v, true);
         assert_eq!(
             judged(
                 scroll,
@@ -1062,6 +1106,38 @@ mod tests {
         assert_eq!(outvoted_on(&verdicts), Vec::<String>::new());
         let again = super::reread(&base, &verdicts);
         assert_eq!(outvoted_on(&again), ["cell (0,0) dim"]);
+        Ok(())
+    }
+
+    /// A named case is judged after every step: one that differs midway
+    /// and agrees at its end fails at the step it differs (judged at its
+    /// end alone, as `cases` did, it passed). Ghostty keeps synchronized
+    /// output through DECSTR, fux-vt ends it; resetting it agrees again.
+    #[test]
+    fn a_named_case_is_judged_after_every_step() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let sync = crate::families::find("sync").ok_or("no sync family")?;
+        let step = |bytes: &[u8]| {
+            Step::Output(vec![Snippet {
+                family: sync,
+                bytes: bytes.to_vec(),
+            }])
+        };
+        let case = Case {
+            rows: 1,
+            cols: 4,
+            history: 0,
+            reflow: true,
+            newline_before_resize: false,
+            steps: vec![step(b"\x1b[?2026h\x1b[!p"), step(b"\x1b[?2026l")],
+            subject: FUX_VT,
+        };
+        let at_end = case.run_until(&[ghostty], false)?;
+        assert!(at_end.agrees());
+        let (outcome, failures, last) = super::judge_named(&case, &[ghostty], sync, "midway")?;
+        assert_eq!(outcome.step, Some(1));
+        assert_eq!(failures, ["synchronized output"]);
+        assert!(!last);
         Ok(())
     }
 
