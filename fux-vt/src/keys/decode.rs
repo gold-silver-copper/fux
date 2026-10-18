@@ -1627,6 +1627,7 @@ mod tests {
                 };
                 let legacy = KeyMode::Legacy {
                     application: false,
+                    keypad: false,
                     other_keys: None,
                     backarrow: false,
                 };

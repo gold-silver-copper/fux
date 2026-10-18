@@ -271,6 +271,7 @@ fn run_shrunk(
             &recordings,
             fux::encode::KeyMode::Legacy {
                 application: false,
+                keypad: false,
                 other_keys: None,
                 backarrow: false,
             },

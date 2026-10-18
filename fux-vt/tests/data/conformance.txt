@@ -287,9 +287,9 @@ DEC STD 070 6-41 DECARM	DECARM	SET/RESET AUTO REPEAT MODE	Levels: 1, 2	implement
 DEC STD 070 6-52 DECNRCM	DECNRCM	SET/RESET CHARACTER SET MODE	Levels: 2x, 3x	not implemented	\e[?42h => nothing		national replacement sets are not implemented: with UTF-8 the keys send the characters themselves
 DEC STD 070 6-57 DECKBUM	DECKBUM	SET/RESET KEYBOARD USAGE MODE	Levels: 2x, 3	not applicable	\e[?68h => nothing		the keyboard is the host's: fux-vt encodes the keys a host gives it (keys::encode)
 DEC STD 070 6-62 DECCKM	DECCKM	SET/RESET CURSOR KEY MODE	Levels: 1, 2	implemented	\e[?1h => effect	keys::encode::tests::legacy_keys_follow_xterm	read by Screen::key_mode
-DEC STD 070 6-66 DECKPAM	DECKPAM	SET KEYPAD APPLICATION MODE	Levels: 1,2	partial	\e= => effect	modes::decrqm_reports_the_modes_xterm_keeps	kept as Mode::ApplicationKeypad; no key changes (KEY-17)
-DEC STD 070 6-67 DECKPNM	DECKPNM	SET KEYPAD NUMERIC MODE	Levels: 1,2	partial	\e= >> \e> => effect	modes::decrqm_reports_the_modes_xterm_keeps	kept as Mode::ApplicationKeypad; no key changes (KEY-17)
-DEC STD 070 6-68 DECNKM	DECNKM	SET/RESET NUMERIC KEYPAD MODE	Levels: 2x, 3	partial	\e[?66h => effect	modes::decrqm_reports_the_modes_xterm_keeps	the mode of ESC = and ESC >; no key changes (KEY-17)
+DEC STD 070 6-66 DECKPAM	DECKPAM	SET KEYPAD APPLICATION MODE	Levels: 1,2	implemented	\e= => effect	modes::decrqm_reports_the_modes_xterm_keeps, keys::encode::tests::the_application_keypad_sends_its_ss3_sequences	the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode)
+DEC STD 070 6-67 DECKPNM	DECKPNM	SET KEYPAD NUMERIC MODE	Levels: 1,2	implemented	\e= >> \e> => effect	modes::decrqm_reports_the_modes_xterm_keeps, keys::encode::tests::the_application_keypad_sends_its_ss3_sequences	the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode)
+DEC STD 070 6-68 DECNKM	DECNKM	SET/RESET NUMERIC KEYPAD MODE	Levels: 2x, 3	implemented	\e[?66h => effect	modes::decrqm_reports_the_modes_xterm_keeps, keys::encode::tests::the_application_keypad_sends_its_ss3_sequences	the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode)
 DEC STD 070 7-32 DSR	DSR	REPORT PRINTER STATUS	Levels: 1X, 2X, 3X	implemented	\e[?15n => reply	opt_in::extended_replies_answer_the_device_status_reports	answers no printer (`?13`), with `Feature::ExtendedReplies`
 DEC STD 070 7-34 MC	MC	SET/RESET PRINTER CONTROLLER MODE	Levels: 1X, 2X, 3X	not applicable	\e[5i => unhandled		fux-vt has no printer port (DEC STD 070, chapter 7)
 DEC STD 070 7-37 DECPFF	DECPFF	SET/RESET PRINT FORM FEED MODE	Levels: 1X, 2X, 3X	not applicable	\e[?18h => nothing		fux-vt has no printer port (DEC STD 070, chapter 7)
@@ -355,8 +355,8 @@ ctlseqs ESC 6	ESC 6	Back Index (DECBI), VT420 and up.		implemented	\e6 => effect
 ctlseqs ESC 7	ESC 7	Save Cursor (DECSC), VT100.		implemented	\e7 => effect	extended::scosc_and_scorc_save_and_restore_position_and_attributes	
 ctlseqs ESC 8	ESC 8	Restore Cursor (DECRC), VT100.		implemented	\e[1;1H\e7\e[3;5H >> \e8 => effect	margins::decrc_in_origin_mode_brings_the_cursor_inside_the_margins	
 ctlseqs ESC 9	ESC 9	Forward Index (DECFI), VT420 and up.		implemented	\e9 => effect	margins::decbi_and_decfi_move_or_shift_the_columns	
-ctlseqs ESC =	ESC =	Application Keypad (DECKPAM).		partial	\e= => effect	modes::decrqm_reports_the_modes_xterm_keeps	kept as Mode::ApplicationKeypad; no key changes (KEY-17)
-ctlseqs ESC >	ESC >	Normal Keypad (DECKPNM), VT100.		partial	\e= >> \e> => effect	modes::decrqm_reports_the_modes_xterm_keeps	kept as Mode::ApplicationKeypad; no key changes (KEY-17)
+ctlseqs ESC =	ESC =	Application Keypad (DECKPAM).		implemented	\e= => effect	modes::decrqm_reports_the_modes_xterm_keeps, keys::encode::tests::the_application_keypad_sends_its_ss3_sequences	the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode)
+ctlseqs ESC >	ESC >	Normal Keypad (DECKPNM), VT100.		implemented	\e= >> \e> => effect	modes::decrqm_reports_the_modes_xterm_keeps, keys::encode::tests::the_application_keypad_sends_its_ss3_sequences	the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode)
 ctlseqs ESC F	ESC F	Cursor to lower left corner of screen.		not implemented	\eF => unhandled		not implemented: xterm does it only with its hpLowerleftBugCompat resource
 ctlseqs ESC c	ESC c	Full Reset (RIS), VT100.		implemented	\ec => effect	semantics::regions_origin_and_reset_have_explicit_history_semantics	
 ctlseqs ESC l	ESC l	Memory Lock (per HP terminals).		not applicable	\el => unhandled		an HP terminal's memory lock: fux-vt follows DEC and xterm
@@ -564,7 +564,7 @@ fux-vt DECSET 40	Allow 80 to 132	Allow 80 to 132 mode	ctlseqs, CSI ? Pm h	not ap
 fux-vt DECSET 45	Reverse-wraparound	Reverse-wraparound mode	ctlseqs, CSI ? Pm h	implemented	\e[?45h => effect	modes::reverse_wraparound_moves_as_xterm_moves	
 fux-vt DECSET 47	Alternate screen	Use the alternate screen buffer	ctlseqs, CSI ? Pm h	implemented	\e[?47h => effect	conformance::switching_screens_keeps_the_cursor	
 fux-vt DECSET 60	DECHCCM	Horizontal cursor coupling	ctlseqs, CSI ? Pm h	implemented	\e[?60$p => reply	modes::decrqm_reports_dechccm_permanently_reset	permanently reset (DEC STD 070, DECRQM, 5-194)
-fux-vt DECSET 66	DECNKM	Application keypad	ctlseqs, CSI ? Pm h	partial	\e[?66h => effect	modes::decrqm_reports_the_modes_xterm_keeps	kept; no key changes (KEY-17)
+fux-vt DECSET 66	DECNKM	Application keypad	ctlseqs, CSI ? Pm h	implemented	\e[?66h => effect	modes::decrqm_reports_the_modes_xterm_keeps, keys::encode::tests::the_application_keypad_sends_its_ss3_sequences	the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode)
 fux-vt DECSET 67	DECBKM	Backarrow key sends backspace	ctlseqs, CSI ? Pm h	implemented	\e[?67h => effect	keys::encode::tests::decbkm_makes_backspace_send_bs	
 fux-vt DECSET 69	DECLRMM	Left and right margin mode	ctlseqs, CSI ? Pm h	implemented	\e[?69h => effect	margins::declrmm_lets_decslrm_set_the_margins	
 fux-vt DECSET 1000	Normal mouse tracking	Send the mouse position on press and release	ctlseqs, CSI ? Pm h	implemented	\e[?1000h => effect	keys::mouse::tests::normal_tracking_reports_presses_releases_and_the_wheel_with_modifiers	

@@ -1757,6 +1757,7 @@ pub fn b45(_: Scale, _: usize) -> Found {
         ] {
             modes.push(KeyMode::Legacy {
                 application,
+                keypad: application,
                 other_keys,
                 backarrow,
             });

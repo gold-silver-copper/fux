@@ -19,6 +19,9 @@ pub enum KeyMode {
     Legacy {
         /// Application cursor keys (DECCKM): the arrows, Home and End as SS3.
         application: bool,
+        /// The application keypad (DECKPAM, DECNKM): the keypad keys a
+        /// terminal speaking the kitty protocol names send SS3 sequences.
+        keypad: bool,
         /// xterm's modifyOtherKeys, if set: the keys it applies to are
         /// `CSI 27 ; mods ; code ~`, the others keep their legacy bytes.
         other_keys: Option<OtherKeys>,
@@ -78,6 +81,7 @@ impl crate::Screen {
             (false, _) => {
                 return KeyMode::Legacy {
                     application: self.mode(crate::Mode::ApplicationCursor),
+                    keypad: self.mode(crate::Mode::ApplicationKeypad),
                     other_keys: self.modify_other_keys(),
                     backarrow: self.mode(crate::Mode::BackarrowSendsBackspace),
                 };
@@ -170,14 +174,55 @@ pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
         } => kitty(stroke, alternate, report, backarrow, out),
         KeyMode::Legacy {
             application,
+            keypad,
             other_keys: level,
             backarrow,
         } => {
+            if keypad && application_keypad(stroke, out) {
+                return;
+            }
             if !level.is_some_and(|level| other_keys(stroke, level, backarrow, out)) {
                 legacy(stroke.press, application, backarrow, out);
             }
         }
     }
+}
+
+/// A keypad key in application mode: `SS3 final`, or `SS3 modifier final`
+/// modified, the final from ctlseqs' "VT220-Style Function Keys" table, for
+/// a key the terminal named by its kitty keypad code; Num Lock held
+/// overrides the mode ("PC-Style Function Keys": "Use the NumLock key to
+/// override the application mode"). Whether it was one.
+fn application_keypad(stroke: Keystroke, out: &mut Vec<u8>) -> bool {
+    let Some(kitty) = stroke.kitty else {
+        return false;
+    };
+    if kitty.mods & NUM_LOCK_BIT != 0 {
+        return false;
+    }
+    let final_byte = match kitty.code {
+        // KP_0 to KP_9: SS3 p to SS3 y.
+        Some(code @ 57399..=57408) => {
+            let digit = u8::try_from(code.saturating_sub(57399)).unwrap_or(0);
+            b'p'.saturating_add(digit)
+        }
+        Some(57409) => b'n',
+        Some(57410) => b'o',
+        Some(57411) => b'j',
+        Some(57412) => b'm',
+        Some(57413) => b'k',
+        Some(57414) => b'M',
+        Some(57415) => b'X',
+        Some(57416) => b'l',
+        _ => return false,
+    };
+    let held = kitty.mods & !LOCKS;
+    out.extend_from_slice(b"\x1bO");
+    if held != 0 {
+        let _ = write!(out, "{}", u16::from(held).saturating_add(1));
+    }
+    out.push(final_byte);
+    true
 }
 
 /// The kitty keyboard protocol's bytes for a key, its keys escaped as
@@ -674,12 +719,14 @@ mod tests {
     }
     const LEGACY: KeyMode = KeyMode::Legacy {
         application: false,
+        keypad: false,
         other_keys: None,
         backarrow: false,
     };
     /// Legacy keys in application cursor mode (DECCKM).
     const APPLICATION: KeyMode = KeyMode::Legacy {
         application: true,
+        keypad: false,
         other_keys: None,
         backarrow: false,
     };
@@ -821,6 +868,7 @@ mod tests {
     const fn other_keys_level(level: OtherKeys) -> KeyMode {
         KeyMode::Legacy {
             application: false,
+            keypad: false,
             other_keys: Some(level),
             backarrow: false,
         }
@@ -987,11 +1035,13 @@ mod tests {
     fn decbkm_makes_backspace_send_bs() -> Result<(), crate::Error> {
         const BS: KeyMode = KeyMode::Legacy {
             application: false,
+            keypad: false,
             other_keys: None,
             backarrow: true,
         };
         const BS_ALL: KeyMode = KeyMode::Legacy {
             application: false,
+            keypad: false,
             other_keys: Some(OtherKeys::All),
             backarrow: true,
         };
@@ -1038,6 +1088,7 @@ mod tests {
                 "\x1b[?67h",
                 KeyMode::Legacy {
                     application: false,
+                    keypad: false,
                     other_keys: None,
                     backarrow: true,
                 },
@@ -1064,6 +1115,61 @@ mod tests {
     /// cursor keys, unless modified; Alt an ESC before a key's bytes, a lone
     /// ESC's too (xterm's Alt-Escape is ESC ESC), but not before a sequence,
     /// which carries it.
+    /// DECKPAM (`ESC =`, DECNKM): the keypad keys a terminal speaking the
+    /// kitty protocol names (`Kitty::code`, its keypad codes 57399 to 57416)
+    /// send their application sequences, ctlseqs' "VT220-Style Function
+    /// Keys" table: Enter `SS3 M`, 0 to 9 `SS3 p` to `SS3 y`, `*` `SS3 j`,
+    /// `+` `SS3 k`, `,` `SS3 l`, `-` `SS3 m`, `.` `SS3 n`, `/` `SS3 o`, `=`
+    /// `SS3 X`; modified, the modifier after SS3 (`SS3 5 q`), as Ghostty's
+    /// `key_encode.zig` has it. Num Lock held overrides the application mode
+    /// (ctlseqs, "PC-Style Function Keys": "Use the NumLock key to override
+    /// the application mode"), and a keypad key in numeric mode, or named by
+    /// a legacy terminal, sends what it types.
+    #[test]
+    fn the_application_keypad_sends_its_ss3_sequences() -> Result<(), crate::Error> {
+        use crate::keys::{CTRL_BIT, Kitty};
+        let keypad = |code: u32, mods: u8| Keystroke {
+            press: KeyPress::char('1'),
+            kitty: Some(Kitty {
+                code: Some(code),
+                mods,
+                ..Kitty::default()
+            }),
+        };
+        let mode = |keypad: bool| KeyMode::Legacy {
+            application: false,
+            keypad,
+            other_keys: None,
+            backarrow: false,
+        };
+        for (code, want) in [
+            (57399, "\x1bOp"),
+            (57400, "\x1bOq"),
+            (57408, "\x1bOy"),
+            (57409, "\x1bOn"),
+            (57410, "\x1bOo"),
+            (57411, "\x1bOj"),
+            (57412, "\x1bOm"),
+            (57413, "\x1bOk"),
+            (57414, "\x1bOM"),
+            (57415, "\x1bOX"),
+            (57416, "\x1bOl"),
+        ] {
+            assert_eq!(stroke(keypad(code, 0), mode(true)), want, "{code}");
+        }
+        assert_eq!(stroke(keypad(57400, CTRL_BIT), mode(true)), "\x1bO5q");
+        assert_eq!(stroke(keypad(57400, NUM_LOCK_BIT), mode(true)), "1");
+        assert_eq!(stroke(keypad(57400, 0), mode(false)), "1");
+        assert_eq!(stroke(KeyPress::char('1').into(), mode(true)), "1");
+        // ESC = sets it, ESC > resets it, as `Screen::key_mode` reads them.
+        let mut p = crate::Parser::new(crate::Size::of(2, 4), 0)?;
+        p.process(b"\x1b=")?;
+        assert_eq!(stroke(keypad(57400, 0), p.screen().key_mode()), "\x1bOq");
+        p.process(b"\x1b>")?;
+        assert_eq!(stroke(keypad(57400, 0), p.screen().key_mode()), "1");
+        Ok(())
+    }
+
     #[test]
     fn legacy_keys_follow_xterm() {
         let application = APPLICATION;

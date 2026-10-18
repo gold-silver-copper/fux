@@ -5,9 +5,9 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | Reference | implemented | partial | departure | not implemented | not applicable | all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 63 | 1 | 3 | 7 | 88 | 162 |
-| DEC STD 070 | 77 | 7 | 0 | 30 | 26 | 140 |
-| ctlseqs | 96 | 17 | 1 | 38 | 93 | 245 |
-| fux-vt | 40 | 2 | 0 | 5 | 3 | 50 |
+| DEC STD 070 | 80 | 4 | 0 | 30 | 26 | 140 |
+| ctlseqs | 98 | 15 | 1 | 38 | 93 | 245 |
+| fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
 
 ## ECMA-48
 
@@ -302,9 +302,9 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 6-52 DECNRCM | DECNRCM (SET/RESET CHARACTER SET MODE) | not implemented |  | national replacement sets are not implemented: with UTF-8 the keys send the characters themselves |
 | 6-57 DECKBUM | DECKBUM (SET/RESET KEYBOARD USAGE MODE) | not applicable |  | the keyboard is the host's: fux-vt encodes the keys a host gives it (keys::encode) |
 | 6-62 DECCKM | DECCKM (SET/RESET CURSOR KEY MODE) | implemented | `keys::encode::tests::legacy_keys_follow_xterm` | read by Screen::key_mode |
-| 6-66 DECKPAM | DECKPAM (SET KEYPAD APPLICATION MODE) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | kept as Mode::ApplicationKeypad; no key changes (KEY-17) |
-| 6-67 DECKPNM | DECKPNM (SET KEYPAD NUMERIC MODE) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | kept as Mode::ApplicationKeypad; no key changes (KEY-17) |
-| 6-68 DECNKM | DECNKM (SET/RESET NUMERIC KEYPAD MODE) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | the mode of ESC = and ESC >; no key changes (KEY-17) |
+| 6-66 DECKPAM | DECKPAM (SET KEYPAD APPLICATION MODE) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps`, `keys::encode::tests::the_application_keypad_sends_its_ss3_sequences` | the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode) |
+| 6-67 DECKPNM | DECKPNM (SET KEYPAD NUMERIC MODE) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps`, `keys::encode::tests::the_application_keypad_sends_its_ss3_sequences` | the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode) |
+| 6-68 DECNKM | DECNKM (SET/RESET NUMERIC KEYPAD MODE) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps`, `keys::encode::tests::the_application_keypad_sends_its_ss3_sequences` | the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode) |
 | 7-32 DSR | DSR (REPORT PRINTER STATUS) | implemented | `opt_in::extended_replies_answer_the_device_status_reports` | answers no printer (`?13`), with `Feature::ExtendedReplies` |
 | 7-34 MC | MC (SET/RESET PRINTER CONTROLLER MODE) | not applicable |  | fux-vt has no printer port (DEC STD 070, chapter 7) |
 | 7-37 DECPFF | DECPFF (SET/RESET PRINT FORM FEED MODE) | not applicable |  | fux-vt has no printer port (DEC STD 070, chapter 7) |
@@ -375,8 +375,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | ESC 7 | ESC 7 (Save Cursor (DECSC), VT100.) | implemented | `extended::scosc_and_scorc_save_and_restore_position_and_attributes` |  |
 | ESC 8 | ESC 8 (Restore Cursor (DECRC), VT100.) | implemented | `margins::decrc_in_origin_mode_brings_the_cursor_inside_the_margins` |  |
 | ESC 9 | ESC 9 (Forward Index (DECFI), VT420 and up.) | implemented | `margins::decbi_and_decfi_move_or_shift_the_columns` |  |
-| ESC = | ESC = (Application Keypad (DECKPAM).) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | kept as Mode::ApplicationKeypad; no key changes (KEY-17) |
-| ESC > | ESC > (Normal Keypad (DECKPNM), VT100.) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | kept as Mode::ApplicationKeypad; no key changes (KEY-17) |
+| ESC = | ESC = (Application Keypad (DECKPAM).) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps`, `keys::encode::tests::the_application_keypad_sends_its_ss3_sequences` | the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode) |
+| ESC > | ESC > (Normal Keypad (DECKPNM), VT100.) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps`, `keys::encode::tests::the_application_keypad_sends_its_ss3_sequences` | the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode) |
 | ESC F | ESC F (Cursor to lower left corner of screen.) | not implemented |  | not implemented: xterm does it only with its hpLowerleftBugCompat resource |
 | ESC c | ESC c (Full Reset (RIS), VT100.) | implemented | `semantics::regions_origin_and_reset_have_explicit_history_semantics` |  |
 | ESC l | ESC l (Memory Lock (per HP terminals).) | not applicable |  | an HP terminal's memory lock: fux-vt follows DEC and xterm |
@@ -589,7 +589,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | DECSET 45 | Reverse-wraparound (Reverse-wraparound mode) | implemented | `modes::reverse_wraparound_moves_as_xterm_moves` |  |
 | DECSET 47 | Alternate screen (Use the alternate screen buffer) | implemented | `conformance::switching_screens_keeps_the_cursor` |  |
 | DECSET 60 | DECHCCM (Horizontal cursor coupling) | implemented | `modes::decrqm_reports_dechccm_permanently_reset` | permanently reset (DEC STD 070, DECRQM, 5-194) |
-| DECSET 66 | DECNKM (Application keypad) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | kept; no key changes (KEY-17) |
+| DECSET 66 | DECNKM (Application keypad) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps`, `keys::encode::tests::the_application_keypad_sends_its_ss3_sequences` | the keypad keys a terminal speaking the kitty protocol names send SS3 sequences, Num Lock overriding (Screen::key_mode) |
 | DECSET 67 | DECBKM (Backarrow key sends backspace) | implemented | `keys::encode::tests::decbkm_makes_backspace_send_bs` |  |
 | DECSET 69 | DECLRMM (Left and right margin mode) | implemented | `margins::declrmm_lets_decslrm_set_the_margins` |  |
 | DECSET 1000 | Normal mouse tracking (Send the mouse position on press and release) | implemented | `keys::mouse::tests::normal_tracking_reports_presses_releases_and_the_wheel_with_modifiers` |  |

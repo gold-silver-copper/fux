@@ -237,6 +237,7 @@ stack!(
         press.into(),
         fux::encode::KeyMode::Legacy {
             application,
+            keypad: false,
             other_keys: None,
             backarrow: false,
         },

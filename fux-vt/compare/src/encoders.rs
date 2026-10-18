@@ -509,6 +509,7 @@ fn compare_keys(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Strin
             stroke,
             fux_vt::keys::encode::KeyMode::Legacy {
                 application: pair.fux.screen().mode(fux_vt::Mode::ApplicationCursor),
+                keypad: pair.fux.screen().mode(fux_vt::Mode::ApplicationKeypad),
                 other_keys: None,
                 backarrow: false,
             },
