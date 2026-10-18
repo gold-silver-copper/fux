@@ -1400,8 +1400,9 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
 
 /// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run of
 /// cells painted one after another, where it is not one byte of ASCII or
-/// follows a glyph that `joined` the one before it; whether it joins the one
-/// before it.
+/// follows a glyph that `joined` the one before it; whether the next glyph
+/// is to be placed by a cursor move: it joins the one before it, or it was
+/// measured otherwise.
 ///
 /// A glyph that continues the cluster of the one before it (an emoji
 /// modifier a program put after an emoji with a cursor move of its own, as
@@ -1409,6 +1410,10 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
 /// the client's terminal joins it to the glyph before, or not, as it does
 /// when the program writes it directly, and the next glyph is where fux-vt
 /// has it either way.
+///
+/// So is what follows a cluster whose width fux-vt makes other than the sum
+/// of its characters' widths, which a terminal measuring each character
+/// alone would advance by.
 ///
 /// Zero-width characters after a glyph that leaves the cursor in the last
 /// column: with autowrap off, as fux's client has it, Ghostty puts them on
@@ -1439,7 +1444,12 @@ fn cluster(
     if marks_at_the_edge {
         out.extend_from_slice(b"\x1b[?7l");
     }
-    joins
+    // A cluster fux-vt makes wider or narrower than its characters' sum (a
+    // VS16 emoji widened, jamo capped at 2): a terminal that measures each
+    // character alone, as xterm does through wcwidth, advances by the sum,
+    // so the next glyph is placed too.
+    let measured_apart = text.chars().map(cells).fold(0, u16::saturating_add) != width;
+    joins || measured_apart
 }
 
 /// A row or column as the terminal counts it, from 1; exact in a u32.
@@ -1653,7 +1663,8 @@ fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
             goto(out, y, start);
             let mut cx = start;
             // Whether the glyph before was one the client's terminal may
-            // have joined to the one before it (see `cluster`).
+            // have joined to the one before it, or measured otherwise (see
+            // `cluster`): then the next is placed by a cursor move.
             let mut joined = false;
             while cx < new.cols
                 && (cx == start
@@ -2173,6 +2184,44 @@ mod tests {
         // The glyph is painted as a blank, and moving past it stops the run.
         let bytes = paint(None, &grid);
         assert!(bytes.ends_with(b"\x1b[?2026l"));
+    }
+
+    /// A cluster whose width fux-vt makes other than the sum of its
+    /// characters' (a VS16 emoji widened, jamo capped at 2) is followed by
+    /// a cursor move: a client terminal that measures each character alone
+    /// (xterm, through wcwidth) would put what follows elsewhere (TXT-11).
+    #[test]
+    fn a_cluster_measured_otherwise_apart_is_followed_by_a_cursor_move() -> Result<(), String> {
+        // A heart VS16 widened, and four leading jamo capped at 2: a client
+        // terminal measuring each character alone advances 1 and 8, so
+        // what follows is placed where fux-vt has it, column 2.
+        for cluster in ["\u{2764}\u{fe0f}", "\u{1100}\u{1100}\u{1100}\u{1100}"] {
+            let mut grid = Grid::new(1, 12);
+            grid.set(0, 0, CellRef::new(cluster, true, Attributes::default()));
+            grid.set(0, 1, CellRef::wide_continuation());
+            grid.text(0, 2, "ab", Attributes::default(), 12);
+            let bytes = paint(None, &grid);
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(text.contains(&format!("{cluster}\x1b[1;3Hab")), "{text:?}");
+            let mut parser = terminal(1, 12)?;
+            assert_eq!(apply(&bytes, &mut parser), grid_lines(&grid));
+        }
+        // A flag is two columns either way, and a mark adds none: no move.
+        for cluster in ["\u{1f1ef}\u{1f1f5}", "e\u{301}"] {
+            let mut grid = Grid::new(1, 12);
+            let wide = cluster.starts_with('\u{1f1ef}');
+            grid.set(0, 0, CellRef::new(cluster, wide, Attributes::default()));
+            let next = if wide {
+                grid.set(0, 1, CellRef::wide_continuation());
+                2
+            } else {
+                1
+            };
+            grid.text(0, next, "ab", Attributes::default(), 12);
+            let text = String::from_utf8_lossy(&paint(None, &grid)).into_owned();
+            assert!(text.contains(&format!("{cluster}ab")), "{text:?}");
+        }
+        Ok(())
     }
 
     /// A glyph that continues the cluster of the one before it (an emoji
