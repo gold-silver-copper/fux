@@ -95,14 +95,25 @@ get xterm/terminfo.src.gz https://invisible-island.net/datafiles/current/terminf
 if [[ -s $here/xterm/terminfo.src.gz && ( ! -s $here/xterm/terminfo.src || $force == --force ) ]]; then
   gunzip -c "$here/xterm/terminfo.src.gz" > "$here/xterm/terminfo.src"
 fi
-get xterm/vttest.tar.gz https://invisible-island.net/datafiles/release/vttest.tar.gz
-if [[ -s $here/xterm/vttest.tar.gz && ( ! -d $here/xterm/vttest || $force == --force ) ]]; then
+# The suites are pinned, and checked on use: vttest 2.7 (20251205) by its
+# SHA-256, esctest2 by its commit (fux-vt/compare's esctest refuses another).
+vttest_sha256=cd6886f9aefe6a3f6c566fa61271a55710901a71849c630bf5376aa984bf77cc
+get xterm/vttest.tar.gz https://invisible-island.net/archives/vttest/vttest-20251205.tgz
+if [[ -s $here/xterm/vttest.tar.gz ]] &&
+  [[ $(shasum -a 256 "$here/xterm/vttest.tar.gz" | cut -d' ' -f1) != "$vttest_sha256" ]]; then
+  failed+=("xterm/vttest.tar.gz: not vttest 20251205 (SHA-256); --force fetches it again")
+elif [[ -s $here/xterm/vttest.tar.gz && ( ! -d $here/xterm/vttest || $force == --force ) ]]; then
   rm -rf "$here/xterm/vttest" && mkdir -p "$here/xterm/vttest"
   tar -xzf "$here/xterm/vttest.tar.gz" -C "$here/xterm/vttest" --strip-components=1
 fi
+esctest_commit=2798f12149a19c3295e9b4853ab2da4b2eff1b2b
 if [[ ! -d $here/xterm/esctest2 ]]; then
-  git clone -q --depth 1 https://github.com/ThomasDickey/esctest2 "$here/xterm/esctest2" \
-    && echo "cloned xterm/esctest2" || failed+=("xterm/esctest2")
+  { git init -q "$here/xterm/esctest2" &&
+    git -C "$here/xterm/esctest2" fetch -q --depth 1 https://github.com/ThomasDickey/esctest2 "$esctest_commit" &&
+    git -C "$here/xterm/esctest2" -c advice.detachedHead=false checkout -q FETCH_HEAD &&
+    echo "fetched xterm/esctest2 at $esctest_commit"; } || failed+=("xterm/esctest2")
+elif [[ $(git -C "$here/xterm/esctest2" rev-parse HEAD) != "$esctest_commit" ]]; then
+  failed+=("xterm/esctest2: not at $esctest_commit (remove it to fetch it again)")
 fi
 
 # --- Unicode, at the version fux-vt's tables follow (17.0.0) -------------------

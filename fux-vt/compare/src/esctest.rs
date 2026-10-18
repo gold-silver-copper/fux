@@ -269,13 +269,31 @@ pub fn options() -> fux_vt::Options {
         .with(fux_vt::Feature::ExtendedReplies)
 }
 
+/// The esctest2 commit the results and the lists are of, as
+/// `references/fetch.sh` pins it.
+const ESCTEST_COMMIT: &str = "2798f12149a19c3295e9b4853ab2da4b2eff1b2b";
+
 /// Where esctest is: `references/xterm/esctest2/esctest`, which
-/// `references/fetch.sh` clones.
+/// `references/fetch.sh` fetches, checked to be at [`ESCTEST_COMMIT`].
 fn suite() -> Result<PathBuf, String> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../references/xterm/esctest2/esctest")
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../references/xterm/esctest2");
+    let dir = checkout
+        .join("esctest")
         .canonicalize()
         .map_err(|_| "esctest is not in references/xterm/esctest2: run references/fetch.sh")?;
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&checkout)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| format!("esctest2's commit: {e}"))?;
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    if head != ESCTEST_COMMIT {
+        return Err(format!(
+            "references/xterm/esctest2 is at {head:?}, not {ESCTEST_COMMIT}: remove it and run \
+             references/fetch.sh"
+        ));
+    }
     Ok(dir)
 }
 
@@ -1418,6 +1436,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     let mut problems = Vec::new();
     let mut json = serde_json::json!({
         "suite": "esctest2",
+        "suite_commit": ESCTEST_COMMIT,
         "expected_terminal": EXPECTED_TERMINAL,
         "max_vt_level": VT_LEVEL,
         "timeout": request.timeout,
