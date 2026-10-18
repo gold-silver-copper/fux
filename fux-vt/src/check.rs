@@ -11,7 +11,28 @@
 //! fault test kills. The checker does no work the work counters see: it
 //! puts them back as they were.
 
-use std::fmt;
+use std::{cell::Cell, fmt};
+
+thread_local! {
+    /// How many more of `crate::reserve`'s allocations on this thread are
+    /// refused (`refuse_next`).
+    static REFUSE: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Refuses the next `n` allocations fux-vt makes room for on this thread
+/// (history's blocks, a grid's cells), as if memory had run out: for the
+/// tests of what a refusal leaves (threats.md B44). With the `checks`
+/// feature only.
+pub fn refuse_next(n: u32) {
+    REFUSE.set(n);
+}
+
+/// Whether this allocation is one `refuse_next` refuses; it counts one.
+pub(crate) fn refusing() -> bool {
+    let n = REFUSE.get();
+    REFUSE.set(n.saturating_sub(1));
+    n > 0
+}
 
 /// What a check found wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]

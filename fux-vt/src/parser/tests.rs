@@ -259,13 +259,13 @@ fn scalar(
         return Ok(None);
     }
     parser.screen.begin();
-    let start = crate::budget::spent();
+    let (start, refused) = (crate::budget::spent(), parser.refused);
     parser.end = match until_stop {
         true => start.saturating_add(crate::budget::LIMIT.saturating_sub(parser.spent)),
         false => u64::MAX,
     };
     for (i, &byte) in bytes.iter().enumerate() {
-        let framed = parser.byte(byte, sink)?.or_else(|| parser.over::<true>());
+        let framed = parser.byte(byte, sink).or_else(|| parser.over::<true>());
         if until_stop && let Some(stop) = framed {
             parser.spend_since(start, stop);
             return Ok(Some((i.saturating_add(1), stop)));
@@ -274,7 +274,10 @@ fn scalar(
     if until_stop {
         parser.spend_since(start, Stop::Ended);
     }
-    Ok(None)
+    match parser.refused == refused {
+        true => Ok(None),
+        false => Err(Error::Capacity),
+    }
 }
 
 /// Random options, each on or off.

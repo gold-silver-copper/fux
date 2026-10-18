@@ -968,6 +968,9 @@ pub struct Parser {
     /// in the call of `process_until_stop` under way; `u64::MAX` in one of
     /// `process_with`, which does not stop.
     end: u64,
+    /// How many times carrying out the input was refused room
+    /// ([`Parser::refused`]).
+    refused: u64,
 }
 #[cfg(test)]
 mod tests;
@@ -1001,6 +1004,7 @@ impl Parser {
             sixel: None,
             spent: 0,
             end: u64::MAX,
+            refused: 0,
         })
     }
     /// Checks every invariant of the parser and its screen that the state
@@ -1192,6 +1196,12 @@ impl Parser {
     pub fn options(&self) -> Options {
         self.options
     }
+    /// How many times carrying out output was refused room: history, the
+    /// alternate screen, a grid made anew (threats.md 1.3). Each refusal
+    /// loses only what it was for; the rest of the output is read.
+    pub fn refused(&self) -> u64 {
+        self.refused
+    }
     /// Process output while deliberately discarding terminal query replies.
     pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.process_with_replies(bytes, |_| {})
@@ -1204,7 +1214,10 @@ impl Parser {
     ) -> Result<(), Error> {
         self.process_with(bytes, &mut Replies(reply))
     }
-    /// Process output, delivering replies and (with [`Feature::Events`]) events.
+    /// Process output, delivering replies and (with [`Feature::Events`])
+    /// events. Every byte is read: `Err(Error::Capacity)` says room was
+    /// refused on the way ([`Parser::refused`]), which cost only what it
+    /// was for.
     pub fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
         self.run::<false>(bytes, sink).map(|_| ())
     }
@@ -1230,7 +1243,10 @@ impl Parser {
     /// what the sequence that crossed it did.
     ///
     /// [`Parser::process_with`] is this call given the rest again until
-    /// none is left: its work has no ceiling but the bytes it is given.
+    /// none is left: its work has no ceiling but the bytes it is given. As
+    /// there, a refusal of room is counted ([`Parser::refused`]) and the
+    /// rest read; `Err(Error::Capacity)` says one happened in a call that
+    /// read every byte.
     pub fn process_until_stop(
         &mut self,
         bytes: &[u8],
@@ -1264,7 +1280,7 @@ impl Parser {
             return Ok(None);
         }
         self.screen.begin();
-        let start = crate::budget::spent();
+        let (start, refused) = (crate::budget::spent(), self.refused);
         self.end = match UNTIL_STOP {
             true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
             false => u64::MAX,
@@ -1272,31 +1288,39 @@ impl Parser {
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
+            // A refusal costs what was refused, and the rest is read
+            // (`kept`, threats.md 1.3, B44).
             let framed = if ground && (0x20..=0x7e).contains(&byte) {
                 let length = printable(remaining);
-                self.screen
-                    .ascii(remaining.get(..length).unwrap_or_default())?;
-                remaining = remaining.get(length..).unwrap_or_default();
+                let (run, rest) = remaining
+                    .split_at_checked(length)
+                    .unwrap_or((remaining, &[]));
+                if self.screen.ascii(run).is_err() {
+                    self.refuse();
+                }
+                remaining = rest;
                 None
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // A C0 control, as `ground` carries it out.
-                self.control(byte, sink)?;
+                if self.control(byte, sink).is_err() {
+                    self.refuse();
+                }
                 self.screen.forget_repeat();
                 remaining = tail;
                 None
             } else if ground
                 && byte >= 0x80
-                && let Some(length) = self.text(remaining)?
+                && let Some(length) = self.text(remaining)
             {
                 remaining = remaining.get(length..).unwrap_or_default();
                 None
             } else if ground && byte == 0x1b {
-                let (length, framed) = self.sequence(remaining, sink)?;
+                let (length, framed) = self.sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
                 framed.or_else(|| self.over::<UNTIL_STOP>())
             } else {
                 remaining = tail;
-                self.byte(byte, sink)?.or_else(|| self.over::<UNTIL_STOP>())
+                self.byte(byte, sink).or_else(|| self.over::<UNTIL_STOP>())
             };
             // A sequence that began or ended a frame ends whatever was
             // taken, and so does one that spent the budget (`over`): stop
@@ -1312,7 +1336,10 @@ impl Parser {
             self.spend_since(start, Stop::Ended);
         }
         work!(bytes, bytes.len());
-        Ok(None)
+        match self.refused == refused {
+            true => Ok(None),
+            false => Err(Error::Capacity),
+        }
     }
     /// Keeps what was spent since `start`, in a call that stopped as `stop`
     /// says (or ended, as for a frame's end): all of it, until a stop at the
@@ -1326,6 +1353,27 @@ impl Parser {
             }
         };
     }
+    /// What `done` gave, or, if it was refused room (`Error::Capacity`, all
+    /// that carrying out the input can fail with), nothing, counted in
+    /// [`Parser::refused`]: the refusal costs what it was for, and the
+    /// rest of the input is read (threats.md 1.3, B44).
+    #[inline]
+    fn kept<T: Default>(&mut self, done: Result<T, Error>) -> T {
+        match done {
+            Ok(done) => done,
+            Err(_) => {
+                self.refuse();
+                T::default()
+            }
+        }
+    }
+    /// Counts a refusal of room, out of the way of the paths that are
+    /// never refused.
+    #[cold]
+    #[inline(never)]
+    fn refuse(&mut self) {
+        self.refused = self.refused.saturating_add(1);
+    }
     /// [`Stop::Budget`] if the call under way stops at its budget
     /// (`UNTIL_STOP`) and spent it.
     #[inline]
@@ -1335,14 +1383,18 @@ impl Parser {
     /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
     /// at once rather than byte by byte, and says how many
     /// bytes it took; `None`, with nothing done, if `bytes` begins with
-    /// invalid or incomplete UTF-8, which the byte-by-byte path handles.
-    fn text(&mut self, bytes: &[u8]) -> Result<Option<usize>, Error> {
+    /// invalid or incomplete UTF-8, which the byte-by-byte path handles. A
+    /// character whose printing is refused is counted (`kept`), and the
+    /// rest printed.
+    fn text(&mut self, bytes: &[u8]) -> Option<usize> {
         let mut taken = 0usize;
         while let Some((c, length)) = bytes.get(taken..).and_then(decode) {
-            self.screen.print(c)?;
+            if self.screen.print(c).is_err() {
+                self.refuse();
+            }
             taken = taken.saturating_add(length);
         }
-        Ok((taken > 0).then_some(taken))
+        (taken > 0).then_some(taken)
     }
     /// Reads the escape sequence `bytes` begins with (its ESC read in
     /// ground state) as far as it is one programs send most: an escape
@@ -1354,11 +1406,7 @@ impl Parser {
     /// with the parser in the state `byte` would have left it in, for
     /// `byte` to go on from. Says how many bytes it took, at least the ESC,
     /// and whether the sequence it carried out began or ended a frame.
-    fn sequence(
-        &mut self,
-        bytes: &[u8],
-        sink: &mut impl Sink,
-    ) -> Result<(usize, Option<Stop>), Error> {
+    fn sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
         if bytes.get(1) == Some(&b'[') {
             return self.csi_sequence(bytes, sink);
         }
@@ -1377,29 +1425,26 @@ impl Parser {
                 },
                 b']' if first => {
                     let taken = self.osc_string(bytes.get(next..).unwrap_or_default());
-                    return Ok((next.saturating_add(taken), None));
+                    return (next.saturating_add(taken), None);
                 }
                 // The other strings, which `byte` begins.
                 b'P' | b'X' | b'^' | b'_' if first => break,
                 0x30..=0x7e => {
                     self.state = State::Ground;
-                    let framed = self.escape_dispatch(read.as_slice(), byte, sink)?;
+                    let framed = self.escape_dispatch(read.as_slice(), byte, sink);
+                    let framed = self.kept(framed);
                     self.screen.forget_repeat();
-                    return Ok((next, framed));
+                    return (next, framed);
                 }
                 _ => break,
             }
             at = next;
         }
         self.state = State::Escape(read);
-        Ok((at, None))
+        (at, None)
     }
     /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
-    fn csi_sequence(
-        &mut self,
-        bytes: &[u8],
-        sink: &mut impl Sink,
-    ) -> Result<(usize, Option<Stop>), Error> {
+    fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
         self.params.clear();
         // The parameter being read and how many there are, kept here
         // rather than in `params` until the sequence ends or this does: one
@@ -1427,7 +1472,7 @@ impl Parser {
                             self.params.end(len, ended);
                             self.params.full = true;
                             self.state = State::Csi(Phase::Param(marker));
-                            return Ok((next, None));
+                            return (next, None);
                         }
                     }
                 }
@@ -1440,9 +1485,10 @@ impl Parser {
                     self.params
                         .end(len, u16::try_from(value).unwrap_or(u16::MAX));
                     self.state = State::Ground;
-                    let framed = self.csi_dispatch(marker.as_slice(), byte, sink)?;
+                    let framed = self.csi_dispatch(marker.as_slice(), byte, sink);
+                    let framed = self.kept(framed);
                     self.screen.forget_repeat();
-                    return Ok((next, framed));
+                    return (next, framed);
                 }
                 _ => break,
             }
@@ -1455,7 +1501,7 @@ impl Parser {
         } else {
             Phase::Param(marker)
         });
-        Ok((at, None))
+        (at, None)
     }
     /// Begins an OSC string and takes its bytes `bytes` begins with, up to
     /// the BEL, CAN, SUB or ESC that ends it, at once rather than each
@@ -1540,7 +1586,8 @@ impl Parser {
             // 17, 3.9, "U+FFFD Substitution of Maximal Subparts"), as in
             // xterm. Then this byte is read again; it can be ESC.
             None => {
-                self.screen.print(char::REPLACEMENT_CHARACTER)?;
+                let printed = self.screen.print(char::REPLACEMENT_CHARACTER);
+                self.kept(printed);
                 self.ground(byte, sink)?;
             }
         }
@@ -1556,14 +1603,19 @@ impl Parser {
     }
 
     /// Reads one byte; whether it ended a sequence that began or ended a
-    /// frame.
-    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<Option<Stop>, Error> {
+    /// frame. What it carries out that is refused room is counted
+    /// (`kept`), and loses only what it was for.
+    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Option<Stop> {
         let state = self.state;
         if matches!(state, State::Ground) {
-            return self.ground(byte, sink).map(|()| None);
+            let done = self.ground(byte, sink);
+            self.kept(done);
+            return None;
         }
         if let State::Utf8(read) = state {
-            return self.continuation(read, byte, sink).map(|()| None);
+            let done = self.continuation(read, byte, sink);
+            self.kept(done);
+            return None;
         }
         // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence. ESC
         // also begins ST, so it completes a pending OSC string or DECRQSS.
@@ -1571,18 +1623,25 @@ impl Parser {
             self.state = State::Ground;
             self.sixel = None;
             self.screen.forget_repeat();
-            return Ok(None);
+            return None;
         }
         if byte == 0x1b {
+            // The ESC begins a sequence whatever carrying out the string
+            // does: a refusal there leaves no string open (PAR-3).
+            self.state = State::Escape(Intermediates::default());
             match state {
-                State::Osc { whole } => self.dispatch_osc(whole, false, sink)?,
+                State::Osc { whole } => {
+                    let done = self.dispatch_osc(whole, false, sink);
+                    self.kept(done);
+                }
                 State::Request(request) => self.dispatch_request(request, sink),
                 State::Sixel => {
                     let screen = &mut self.screen;
                     let picture = (self.sixel.take())
                         .and_then(|decoder| decoder.finish(&mut |bytes| screen.make_room(bytes)));
                     if let Some(picture) = picture {
-                        self.screen.place_picture(picture)?;
+                        let placed = self.screen.place_picture(picture);
+                        self.kept(placed);
                     }
                 }
                 State::Ground
@@ -1594,8 +1653,7 @@ impl Parser {
                 | State::Dcs(_)
                 | State::IgnoreString => {}
             }
-            self.state = State::Escape(Intermediates::default());
-            return Ok(None);
+            return None;
         }
         let mut framed = None;
         match state {
@@ -1603,20 +1661,21 @@ impl Parser {
             State::Ground | State::Utf8(_) => {}
             State::Osc { whole } => match byte {
                 0x07 => {
-                    self.dispatch_osc(whole, true, sink)?;
                     self.state = State::Ground;
+                    let done = self.dispatch_osc(whole, true, sink);
+                    self.kept(done);
                 }
                 // A string's data leaves it a string: it returns at once.
-                _ if !whole || !in_command_string(byte) => return Ok(None),
+                _ if !whole || !in_command_string(byte) => return None,
                 _ if self.osc.len() < self.osc_limit => {
                     self.osc.push(byte);
-                    return Ok(None);
+                    return None;
                 }
                 // What came first stays: a prompt mark, and an OSC 8 too
                 // long to keep, which closes the link, are told by it.
                 _ => {
                     self.state = State::Osc { whole: false };
-                    return Ok(None);
+                    return None;
                 }
             },
             // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
@@ -1624,18 +1683,21 @@ impl Parser {
             // there, as in `\u{271c}` (e2 9c 9c).
             State::Request(request) => {
                 self.state = State::Request(request.and_then(|r| r.push(byte)));
-                return Ok(None);
+                return None;
             }
-            State::IgnoreString => return Ok(None),
+            State::IgnoreString => return None,
             State::Sixel => {
                 if let Some(decoder) = &mut self.sixel {
                     let screen = &mut self.screen;
                     decoder.push(byte, &mut |bytes| screen.make_room(bytes));
                 }
-                return Ok(None);
+                return None;
             }
             State::Escape(read) => match byte {
-                0x00..=0x1f => self.control(byte, sink)?,
+                0x00..=0x1f => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 0x20..=0x2f => {
                     self.state = read.push(byte).map_or(State::EscapeIgnore, State::Escape);
                 }
@@ -1655,27 +1717,38 @@ impl Parser {
                     ([], b'X' | b'^' | b'_') => self.state = State::IgnoreString,
                     (intermediates, _) => {
                         self.state = State::Ground;
-                        framed = self.escape_dispatch(intermediates, byte, sink)?;
+                        let done = self.escape_dispatch(intermediates, byte, sink);
+                        framed = self.kept(done);
                     }
                 },
                 _ => {}
             },
             State::EscapeIgnore => match byte {
-                0x00..=0x1f => self.control(byte, sink)?,
+                0x00..=0x1f => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 0x30..=0x7e => self.state = State::Ground,
                 _ => {}
             },
             State::Csi(phase) => match phase.next(byte, &mut self.params) {
                 Next::Phase(phase) => self.state = State::Csi(phase),
                 Next::Ignore => self.state = State::CsiIgnore,
-                Next::Control => self.control(byte, sink)?,
+                Next::Control => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 Next::Final(read) => {
                     self.state = State::Ground;
-                    framed = self.csi_dispatch(read.as_slice(), byte, sink)?;
+                    let done = self.csi_dispatch(read.as_slice(), byte, sink);
+                    framed = self.kept(done);
                 }
             },
             State::CsiIgnore => match byte {
-                0x00..=0x1f => self.control(byte, sink)?,
+                0x00..=0x1f => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 0x40..=0x7e => self.state = State::Ground,
                 _ => {}
             },
@@ -1712,7 +1785,7 @@ impl Parser {
         if matches!(self.state, State::Ground) {
             self.screen.forget_repeat();
         }
-        Ok(framed)
+        framed
     }
 
     /// Carries out the escape sequence whose final byte is `byte`, its

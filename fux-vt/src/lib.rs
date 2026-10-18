@@ -115,7 +115,7 @@ pub use cell::{
     Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle,
 };
 #[cfg(feature = "checks")]
-pub use check::{Checked, Fault};
+pub use check::{Checked, Fault, refuse_next};
 pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};
@@ -148,6 +148,10 @@ pub(crate) fn split_semicolon(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 
 /// Makes room in `v` for `len` items in all, or says there is none.
 pub(crate) fn reserve<T>(v: &mut Vec<T>, len: usize) -> Result<(), Error> {
+    #[cfg(feature = "checks")]
+    if check::refusing() {
+        return Err(Error::Capacity);
+    }
     v.try_reserve_exact(len.saturating_sub(v.len()))
         .map_err(|_| Error::Capacity)
 }

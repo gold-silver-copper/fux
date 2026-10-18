@@ -7,10 +7,10 @@
 use std::time::Instant;
 
 use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
-use fux_vt::{Graphics, Mode, Parser, Size, Work, bytes::ByteQueue, sixel::Picture};
+use fux_vt::{Feature, Graphics, Mode, Parser, Size, Work, bytes::ByteQueue, sixel::Picture};
 
 use super::Heap;
-use super::probe::{Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, repeat, steady};
+use super::probe::{Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, pieces, repeat, steady};
 
 /// What a row's probe found: nothing, or how it broke its bound.
 pub type Found = Result<(), String>;
@@ -1298,9 +1298,69 @@ pub fn b43(scale: Scale, chunk: usize) -> Found {
     )
 }
 
-// B44: a refused allocation loses only what it was for.
-pub fn b44(_: Scale, _: usize) -> Found {
-    waits("a test-only fail switch in crate::reserve and Parser::refused (SCR-10, PAR-3)")
+// B44: a refused allocation loses only what it was for, and every later
+// byte is read (PAR-3; each site's own degrade is SCR-10's).
+pub fn b44(_: Scale, chunk: usize) -> Found {
+    // A prompt mark's fresh line, and a picture's placement, scroll the
+    // row into history, whose first block is refused. At BASE the parser
+    // stayed in the OSC (`hello` went into it) or in sixel with no
+    // decoder (`hello` was swallowed).
+    for string in [
+        &b"\x1b]133;A\x07"[..],
+        b"\x1b]133;A\x1b\\",
+        b"\x1bPq#1~~\x1b\\",
+    ] {
+        let mut parser = refusing(1)?;
+        let failed = (pieces(&[string, b"hello"].concat(), chunk))
+            .filter(|piece| parser.process(piece).is_err())
+            .count();
+        fux_vt::refuse_next(0);
+        let text: String = parser
+            .screen()
+            .main_rows()
+            .map(|r| r.cells_text())
+            .collect();
+        let shown = string.escape_ascii();
+        if !text.contains("hello") {
+            return Err(format!(
+                "{shown}: the text after the refusal was lost: {text:?}"
+            ));
+        }
+        if (failed, parser.refused()) != (1, 1) {
+            return Err(format!(
+                "{shown}: {failed} calls failed and {} refusals were counted, not 1 and 1",
+                parser.refused()
+            ));
+        }
+        let report = parser.check();
+        if !report.is_clean() {
+            return Err(format!("{shown}: the checker found: {report}"));
+        }
+    }
+    // Two refusals are counted as two: the alternate screen's grid too.
+    let mut parser = refusing(2)?;
+    let _ = parser.process(b"\x1b]133;A\x07");
+    let _ = parser.process(b"\x1b[?1049h");
+    fux_vt::refuse_next(0);
+    match parser.refused() {
+        2 => Ok(()),
+        n => Err(format!("two refusals counted as {n}")),
+    }
+}
+
+/// A parser of 1 row by 10 columns, with history and every feature, sixel
+/// shown, an `x` printed, and its next `n` allocations refused.
+fn refusing(n: u32) -> Result<Parser, String> {
+    let size = Size::new(1, 10).map_err(|e| e.to_string())?;
+    let options = Feature::ALL.into_iter().collect();
+    let mut parser = Parser::with_options(size, 1 << 20, options).map_err(|e| e.to_string())?;
+    parser.set_host_graphics(Graphics {
+        cell: Some((10, 20)),
+        sixel: true,
+    });
+    parser.process(b"x").map_err(|e| e.to_string())?;
+    fux_vt::refuse_next(n);
+    Ok(parser)
 }
 
 // B45: each encoded key or mouse event is at most 64 bytes.
