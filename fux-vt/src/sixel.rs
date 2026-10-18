@@ -223,7 +223,11 @@ impl Decoder {
         let tall = MACRO_ASPECT.get(usize::from(p1)).copied().unwrap_or(200);
         Box::new(Self {
             palette: vt340_palette(),
-            colour: 0,
+            // "Sixel color: Contrasting to background" (DEC STD 070-9, 10,
+            // the initial states), the background being register 0: xterm
+            // 411 starts at register 3 (`graphics_sixel.c`), the VT340's
+            // green, and so does this (SIX-11).
+            colour: 3,
             command: Command::None,
             numbers: [0; 5],
             count: 0,
@@ -779,6 +783,22 @@ mod tests {
         let mut decoder = Decoder::new(9, 1);
         data.iter().for_each(|b| decoder.push(*b, &mut |_| true));
         decoder.finish(&mut |_| true)
+    }
+
+    /// A sixel before any colour is selected is drawn in a colour that
+    /// contrasts with the background (DEC STD 070-9, 10: "Sixel color:
+    /// Contrasting to background"): register 3, the VT340's green, 20% red,
+    /// 80% green and 20% blue, as xterm 411 starts, not register 0, the
+    /// background's black.
+    #[test]
+    fn the_first_sixel_colour_contrasts_with_the_background() -> Result<(), String> {
+        let picture = decode(b"~").ok_or("no picture")?;
+        assert_eq!(picture.pixel(0, 0), Some([51, 204, 51, 255]));
+        let mut decoder = Decoder::new(0, 0);
+        b"~".iter().for_each(|b| decoder.push(*b, &mut |_| true));
+        let picture = decoder.finish(&mut |_| true).ok_or("no picture")?;
+        assert_ne!(picture.pixel(0, 0), picture.background);
+        Ok(())
     }
 
     /// Colours defined and selected, sixels repeated, bands below one
