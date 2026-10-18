@@ -175,6 +175,15 @@ fn bytes(text: &str) -> Vec<u8> {
     out
 }
 
+/// Ghostty's `src/input/key_encode.zig` (KEY-10).
+#[test]
+fn ghostty_key_encode() -> Result {
+    let counts = encoder_suite("Ghostty", include_str!("data/keys/ghostty-key-encode.txt"))?;
+    // Agree, differ as recorded, not applicable.
+    assert_eq!(counts, (48, 41, 43));
+    Ok(())
+}
+
 /// What a terminal's bytes decode to, as the decoder suites write it: each
 /// input space-separated, a key by its name (`C-a`, `M-Up`, a character as
 /// itself, or `U+XXXX` for one past ASCII), others by their kind.

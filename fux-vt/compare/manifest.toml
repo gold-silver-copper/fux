@@ -451,10 +451,8 @@ needs = []
 [[check]]
 name = "ci-ghostty-key-encode"
 schedule = "ci"
-command = "Ghostty's key_encode.zig (103 cases)"
+command = "cargo test -p fux-vt --test input_suites ghostty_key_encode: Ghostty's key_encode.zig, 132 encodings of its 79 key tests (48 agree, 41 differ as recorded, 43 not applicable)"
 needs = []
-wired = false
-why = "not ported yet"
 
 [[check]]
 name = "ci-kitty-keys"
