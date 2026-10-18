@@ -71,19 +71,18 @@ impl Master {
         &self.1
     }
 
-    /// Whether output its program wrote waits to be read from it. Asked
-    /// with `TIOCOUTQ` on macOS, where `FIONREAD` on a master counts the
-    /// keys its program has yet to read instead (xnu's `ttnread`), and with
-    /// `FIONREAD` elsewhere.
+    /// Whether output its program wrote waits to be read from it, as a
+    /// poll that does not wait says. Not `FIONREAD`: on Linux a write to
+    /// the slave reaches the master's count only once a kernel worker has
+    /// moved it on (`flush_to_ldisc`), which a poll or a read waits for and
+    /// `FIONREAD` does not (just after a write it said 0 nearly every time);
+    /// on macOS `FIONREAD` on a master counts the keys its program has yet
+    /// to read instead (xnu's `ttnread`).
     pub fn output_unread(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        let request = libc::TIOCOUTQ;
-        #[cfg(not(target_os = "macos"))]
-        let request = libc::FIONREAD;
-        let mut count: libc::c_int = 0;
-        // SAFETY: both requests write one c_int, and `count` is one.
-        let asked = check(unsafe { libc::ioctl(self.0.as_raw_fd(), request, &mut count) });
-        asked.is_ok() && count > 0
+        let mut fds = [crate::poll::PollFd::new(&self.0, crate::poll::Events::IN)];
+        let polled = crate::poll::poll(&mut fds, Some(std::time::Duration::ZERO));
+        polled.is_ok_and(|n| n > 0)
+            && (fds.iter()).any(|fd| fd.revents().intersects(crate::poll::Events::IN))
     }
 
     /// Whether keys wait in the terminal for its program to read: blocked
