@@ -66,11 +66,9 @@ needs = []
 
 [[check]]
 name = "lists-diff"
-schedule = "release"
+schedule = "quick"
 command = "fux-vt-compare lists --against fux-vt/compare/lists-c0.json --esctest DIR (citations: fux-vt/compare/list-changes.txt)"
 needs = ["lists-c0.json, checkpoint 0's lists"]
-wired = false
-why = "checkpoint 0 has not frozen its lists: commit `fux-vt-compare lists --json fux-vt/compare/lists-c0.json` at BASE, then move this check to quick and run it there"
 
 [[check]]
 name = "oracle"
@@ -491,10 +489,8 @@ why = "not wired yet"
 [[check]]
 name = "release-census-payloads"
 schedule = "release"
-command = "kitty's benchmark and every census payload, feed-only"
-needs = []
-wired = false
-why = "the payloads are not bench workloads yet"
+command = "fux-vt-compare bench --engines ENGINE census, and bench --instructions --engines ENGINE --jobs N --repeats 5 census, each engine beside fux-vt (kitty's benchmark is among the payloads)"
+needs = ["perf (instructions:u)", "the census payload data (bench/payloads)"]
 
 [[check]]
 name = "release-alacritty-ref"
@@ -515,10 +511,8 @@ why = "not wired yet"
 [[check]]
 name = "release-bounds-100x"
 schedule = "release"
-command = "the bounds suite at 100x, under a 2 GiB cap"
-needs = []
-wired = false
-why = "the bounds suite does not exist yet"
+command = "cargo test -p fux-vt --features checks --release --locked --test bounds -- --ignored --test-threads=1 (under a 2 GiB cap: systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=0)"
+needs = ["systemd-run --user, or another memory cap"]
 
 [[check]]
 name = "release-conformance-table"

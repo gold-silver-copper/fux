@@ -129,9 +129,11 @@ quick() {
   # master: every observable, after every step, over the corpus,
   # 10,000 random cases and 50 resize streams.
   # The input encoders beside libghostty-vt's (encoders.rs) take seconds.
-  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the encoders, the lists, the oracle"
-  # Every judged list, as JSON (lists.json), for the list-diff report.
-  ran+=(corpus corpus-ghostty transparency random cases encoders lists oracle)
+  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the encoders, the lists and their diff, the oracle"
+  # Every judged list, as JSON (lists.json), and the list-diff report:
+  # each change since checkpoint 0's lists (lists-c0.json) beside its
+  # citation in list-changes.txt.
+  ran+=(corpus corpus-ghostty transparency random cases encoders lists lists-diff oracle)
   together \
     "corpus $compare corpus --json $out/corpus.json" \
     "corpus-ghostty $compare corpus --subject ghostty --json $out/corpus-ghostty.json" \
@@ -140,6 +142,7 @@ quick() {
     "cases $compare cases --json $out/cases.json" \
     "encoders $compare encoders" \
     "lists $compare lists --json $out/lists.json" \
+    "lists-diff $compare lists --against $here/lists-c0.json --esctest $out" \
     "+oracle $root/diff/oracle.sh ${against:-} ${jobs:+--threads $jobs}"
 }
 
