@@ -131,6 +131,9 @@ struct Watch {
     reading_since: Option<Instant>,
     /// Since when, and at which revision, its pane has looked settled.
     settled_since: Option<(Instant, u64)>,
+    /// It waits for a command the input began (a `line`'s) to end, not
+    /// only for quiet: any wait but a capture's.
+    ends: bool,
 }
 
 /// What a wait found.
@@ -168,7 +171,7 @@ impl Waiting {
             .collect();
         Waiting {
             watches: (panes.iter())
-                .map(|p| (p.id, Look::Looking(Watch::new(p))))
+                .map(|p| (p.id, Look::Looking(Watch::new(p, &follows))))
                 .collect(),
             texts,
             deadline: after(now, limit),
@@ -313,7 +316,7 @@ impl Wait {
     /// `action`.
     fn told(&self, pane: &Pane, told: Told, limit: Duration, watch: &Watch, action: bool) -> Reply {
         let (id, now) = (pane.id, Instant::now());
-        let state = || ready::state(pane, now);
+        let state = || watch.state(pane, now);
         let came = || since_text(pane, watch, self.marks);
         let output = |body: String| {
             let field = ("output", Json::str(body.clone()));
@@ -484,6 +487,12 @@ impl Wait {
             let said = status.map_or_else(|| "done".to_owned(), |s| format!("done {s}"));
             notes.push((said, vec![("done", status.map_or(Json::Null, Json::int))]));
         }
+        // A marked command runs on, though the pane settled: one the keys
+        // went into, or one that took the full screen. (Busy, it waits on.)
+        if commands.running() && state != State::Busy {
+            let field = ("command_running", Json::Bool(true));
+            notes.push(("command running".into(), vec![field]));
+        }
         if action && pane.revision == watch.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
         }
@@ -540,8 +549,9 @@ impl Until {
 impl Watch {
     /// How `pane` stands as a wait begins: it counts from the last action's
     /// input to the pane (the action's own, for a wait that follows one), or
-    /// its program's start.
-    fn new(pane: &Pane) -> Watch {
+    /// its program's start; what it `follows` says whether it waits for a
+    /// command that input began to end.
+    fn new(pane: &Pane, follows: &Follows) -> Watch {
         let start = pane.since;
         Watch {
             start,
@@ -559,7 +569,14 @@ impl Watch {
             starts: pane.starts,
             reading_since: None,
             settled_since: None,
+            ends: !matches!(follows, Follows::Capture(..)),
         }
+    }
+
+    /// What `pane`'s program is doing at `now`, as this wait sees it: a
+    /// command its input began is waited for, if it waits for that.
+    fn state(&self, pane: &Pane, now: Instant) -> State {
+        ready::state(pane, now, self.ends.then_some(self.start.started))
     }
 
     /// What the wait has come to in this pane, if anything: what it waited
@@ -695,7 +712,7 @@ impl Watch {
         if !shown || wait.until.contains(&Until::Settled) {
             return None;
         }
-        if ready::state(pane, now) != State::Reading {
+        if self.state(pane, now) != State::Reading {
             self.reading_since = None;
             return None;
         }
@@ -834,7 +851,7 @@ impl Watch {
         (began, now): (Instant, Instant),
         more: bool,
     ) -> Option<Found> {
-        let state = ready::state(pane, now);
+        let state = self.state(pane, now);
         // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
         // with nothing known) waits for something new, what it waits on or
         // a change, for `MORE` at most.

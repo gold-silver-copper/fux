@@ -531,10 +531,12 @@ const POLL: Duration = Duration::from_millis(2);
 const FLOOR: Duration = Duration::from_millis(2);
 
 /// Where a wait counts from: a number in the pane's journal, and then, how
-/// many shell commands had ended and whether the full screen was in use.
+/// many shell commands had begun and ended and whether the full screen was
+/// in use.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Start {
     pub from: log::Seq,
+    pub started: u64,
     pub finished: u64,
     pub on_full: bool,
 }
@@ -544,6 +546,7 @@ impl Start {
     pub fn at(from: log::Seq, screen: &Screen) -> Start {
         Start {
             from,
+            started: screen.commands().started,
             finished: screen.commands().finished,
             on_full: screen.mode(fux_vt::Mode::AlternateScreen),
         }

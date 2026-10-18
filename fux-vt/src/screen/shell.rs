@@ -27,6 +27,10 @@ pub struct Mark {
 /// What the shell's marks say of its commands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Commands {
+    /// How many commands have begun (`C` with none running; one while
+    /// one runs, a relay placing its start anew, begins none): one that
+    /// grows began since.
+    pub started: u64,
     /// How many commands have ended (`D`): a host waits for it to grow.
     pub finished: u64,
     /// The status the last command ended with, if the shell said it.
@@ -69,6 +73,9 @@ impl Screen {
         match command {
             b"C" => {
                 let late = option == Some(&b"late"[..]);
+                if !self.commands.running() {
+                    self.commands.started = self.commands.started.wrapping_add(1);
+                }
                 self.commands.prompt = false;
                 let submitted = (self.submitted.take())
                     .and_then(|s| self.line_after(self.grid().index_of(s.row)?));

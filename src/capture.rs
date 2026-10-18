@@ -286,6 +286,8 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         (pane.process.child()).map(|child| pane.process.job().unwrap_or(child.leader.pid()));
     let program = foreground.and_then(fuxix::process::name);
     let idle = now.saturating_duration_since(pane.changed_at).as_millis();
+    // As an action that typed nothing sees it: no command waited for.
+    let state = crate::ready::state(pane, now, None);
     let commands = screen.commands();
     let argv = match (&pane.runs, pane.process.job()) {
         (_, Some(job)) => fuxix::process::argv(job),
@@ -308,7 +310,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
         // reading, waiting, busy, exited 0, …: whether to look now.
-        ("state", Json::str(crate::ready::state(pane, now).word())),
+        ("state", Json::str(state.word())),
         ("paused", Json::Bool(paused)),
         ("exited", exited),
         ("signal", signal),
