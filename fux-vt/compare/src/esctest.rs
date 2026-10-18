@@ -569,7 +569,8 @@ fn outcomes(log: &str) -> BTreeMap<String, Outcome> {
 }
 
 /// The arguments esctest is run with for `area`, logging to `log`, with
-/// each test's bytes in `cases` if asked.
+/// each test's bytes in `cases` if asked, and the terminal's esctest
+/// `options` (README.txt, `--options`): none but for real xterm.
 fn esctest_argv(
     python: &Path,
     suite: &Path,
@@ -577,6 +578,7 @@ fn esctest_argv(
     timeout: f64,
     log: &Path,
     cases: Option<&Path>,
+    options: &[&str],
 ) -> Vec<String> {
     let names: Vec<&str> = area
         .tests
@@ -596,6 +598,10 @@ fn esctest_argv(
     ];
     if let Some(dir) = cases {
         argv.push(format!("--test-case-dir={}", dir.display()));
+    }
+    if !options.is_empty() {
+        argv.push("--options".into());
+        argv.extend(options.iter().map(|o| (*o).to_owned()));
     }
     argv
 }
@@ -755,6 +761,7 @@ fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Resul
         job.request.timeout,
         &log,
         cases.as_deref(),
+        &[],
     );
     let deadline = deadline(job.request.limit);
     let mut ran = Ran::default();
@@ -898,7 +905,15 @@ fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
 /// attached on a PTY one row taller than esctest's terminal, for fux's bar.
 fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran, String> {
     let log = scratch.join(format!("{}.fux.log", area.stem()));
-    let argv = esctest_argv(job.python, job.suite, area, job.request.timeout, &log, None);
+    let argv = esctest_argv(
+        job.python,
+        job.suite,
+        area,
+        job.request.timeout,
+        &log,
+        None,
+        &[],
+    );
     let server = server(fux, &argv)?;
     let rows = ROWS.saturating_add(1);
     let terminal = fux_vt::Options::new()
@@ -1224,6 +1239,24 @@ fn mismatches(
         }
     }
     out
+}
+
+/// The tests `list` says xterm fails too (`xterm-too:`) that pass in
+/// xterm's `results`: each line's tag is stale.
+fn xterm_too_passing(
+    results: &[(String, Outcome)],
+    list: &BTreeMap<String, Listed>,
+) -> Vec<String> {
+    results
+        .iter()
+        .filter(|(name, outcome)| {
+            matches!(outcome, Outcome::Pass { .. })
+                && list
+                    .get(name)
+                    .is_some_and(|l| l.reason.starts_with("xterm-too:"))
+        })
+        .map(|(name, _)| format!("{name}: listed as xterm-too, but passes in xterm: retag it"))
+        .collect()
 }
 
 /// Counts of a set of results.
@@ -1641,6 +1674,10 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         (Some((subject, list, _)), Place::Direct(s)) if s == *subject => list,
         _ => &list,
     };
+    // A line saying xterm fails a test too must say it of xterm's column.
+    if let Some(xterm) = columns.iter().find(|c| c.place == Place::Xterm) {
+        problems.extend(xterm_too_passing(&xterm.flat(), &list));
+    }
     for column in &columns {
         let flat = column.flat();
         let first = column.place == Place::Direct(terminal);
@@ -2129,11 +2166,17 @@ fn source(reason: &str) -> Option<&'static str> {
         .map(|(_, source)| *source)
 }
 
+/// Real xterm's esctest options: every window operation allowed, as its
+/// resources below set them (README.txt, `xtermWinopsEnabled`).
+const XTERM_OPTIONS: &[&str] = &["xtermWinopsEnabled"];
+
 /// Runs `area` in a real xterm, under the harness's Xvfb (`engines::xterm`),
 /// set up as esctest's README says: 80 by 25, UTF-8 as fux is, a VT420
-/// (`decTerminalID`, xterm's default), and DECRQCRA allowed, which xterm's
-/// default `disallowedWindowOps` forbids; the other window operations stay
-/// as xterm keeps them by default.
+/// (`decTerminalID`, xterm's default), and every window operation allowed
+/// (`allowWindowOps`, an empty `disallowedWindowOps`; README.txt's
+/// `xtermWinopsEnabled`, [`XTERM_OPTIONS`]), DECRQCRA among them. A base
+/// and its combining marks are kept as written (`precompose: false`), as
+/// the engine xterm keeps them (`engines::xterm`).
 ///
 /// Its checksum is `checksumExtension` 26 (ctlseqs' XTCHECKSUM, xterm's
 /// manual): bit 1, the video attributes left out, as esctest reads one
@@ -2147,14 +2190,24 @@ fn source(reason: &str) -> Option<&'static str> {
 /// longer there.
 fn in_xterm(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
     let log = scratch.join(format!("{}.xterm.log", area.stem()));
-    let argv = esctest_argv(job.python, job.suite, area, job.request.timeout, &log, None);
+    let argv = esctest_argv(
+        job.python,
+        job.suite,
+        area,
+        job.request.timeout,
+        &log,
+        None,
+        XTERM_OPTIONS,
+    );
     let display = crate::engines::xterm::display()?;
     let resources = [
         "XTerm*locale: false",
         "XTerm*utf8: 2",
         "XTerm*decTerminalID: 420",
         "XTerm*checksumExtension: 26",
-        "XTerm*disallowedWindowOps: GetIconTitle,GetWinTitle,SetSelection,GetSelection,SetXprop",
+        "XTerm*allowWindowOps: true",
+        "XTerm*disallowedWindowOps: ",
+        "XTerm*precompose: false",
     ];
     let mut command = Command::new("xterm");
     command
@@ -2477,6 +2530,24 @@ a
         );
         let filtered = super::mismatches(&skipped, &gone, false, false, false);
         assert_eq!(filtered.len(), 1, "{filtered:?}");
+        // A test tagged xterm-too that xterm passes: its tag is stale.
+        let tagged = super::expected("A.t1 xterm-too: x\nA.t2 xterm-too: y\n")?;
+        let in_xterm = vec![
+            (
+                "A.t1".to_owned(),
+                Outcome::Pass {
+                    beyond_xterm: false,
+                },
+            ),
+            ("A.t2".to_owned(), Outcome::Fail("e".into())),
+        ];
+        let stale = super::xterm_too_passing(&in_xterm, &tagged);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(
+            stale
+                .iter()
+                .all(|m| m.starts_with("A.t1: listed as xterm-too"))
+        );
         Ok(())
     }
 
