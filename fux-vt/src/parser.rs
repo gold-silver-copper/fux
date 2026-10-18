@@ -347,13 +347,30 @@ enum Phase {
 /// sequence is read once however the frame comes split.
 #[derive(Clone, Debug)]
 pub struct FrameScan {
-    /// Where in the held bytes it goes on: past what it has read, or at a
-    /// sequence they end in the middle of.
+    /// Where in the held bytes it goes on: past what it has read.
     from: usize,
+    /// Where it is in a sequence the bytes read so far end in the middle
+    /// of, kept so that no byte is read twice (`threats.md` B19).
+    pending: Pending,
     params: Parameters,
     options: Options,
     /// Whether XTSAVE holds synchronized output set, for XTRESTORE.
     saved: bool,
+}
+
+/// Where a frame scan is in the sequence it reads: none, an escape
+/// sequence (`plain` while no intermediate came), or a CSI.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Pending {
+    #[default]
+    Ground,
+    Escape {
+        plain: bool,
+    },
+    Csi {
+        phase: Phase,
+        ignored: bool,
+    },
 }
 
 impl FrameScan {
@@ -364,24 +381,40 @@ impl FrameScan {
     /// many of them go up to and through the sequence that ends
     /// synchronized output, as the parser carries it out (DECRST naming
     /// it, XTRESTORE of it saved reset, DECSTR, RIS); `None` if none does.
+    /// Each byte is read once, however the frame comes split.
     pub fn end(&mut self, held: &[u8]) -> Option<usize> {
         loop {
-            let Some(esc) = held.get(self.from..).and_then(esc_in) else {
-                work!(scanned, held.len().saturating_sub(self.from));
-                self.from = held.len();
-                return None;
-            };
-            work!(scanned, esc);
-            let at = self.from.checked_add(esc)?;
-            // A sequence the bytes end in the middle of is read again.
-            let (len, ended) = self.sequence(held.get(at..)?).or_else(|| {
-                work!(scanned, held.len().saturating_sub(at));
-                self.from = at;
-                None
-            })?;
-            work!(scanned, len);
-            self.from = at.checked_add(len)?;
-            if ended {
+            let rest = held.get(self.from..)?;
+            if self.resume() == Pending::Ground {
+                // Between sequences, to the next ESC at once.
+                let Some(esc) = esc_in(rest) else {
+                    work!(scanned, rest.len());
+                    self.from = held.len();
+                    return None;
+                };
+                work!(scanned, esc);
+                let at = self.from.checked_add(esc)?;
+                // A sequence held whole is read at once; one the bytes end
+                // in the middle of, a byte at a time from its ESC, so that
+                // the next call goes on where it stopped.
+                if let Some((len, ended)) = self.sequence(held.get(at..)?) {
+                    work!(scanned, len);
+                    self.from = at.checked_add(len)?;
+                    if ended {
+                        return Some(self.from);
+                    }
+                } else {
+                    // Its bytes are counted as the steps below take them.
+                    work!(scanned, 1);
+                    self.from = at.checked_add(1)?;
+                    self.pending = Pending::Escape { plain: true };
+                }
+                continue;
+            }
+            let &byte = rest.first()?;
+            work!(scanned, 1);
+            self.from = self.from.checked_add(1)?;
+            if self.step(byte) {
                 return Some(self.from);
             }
         }
@@ -441,6 +474,56 @@ impl FrameScan {
             }
         }
         None
+    }
+
+    /// Where the scan is in a sequence, kept from the bytes read before.
+    fn resume(&self) -> Pending {
+        self.pending
+    }
+
+    /// Reads `byte` of a sequence, as `Parser::byte` does: CAN and SUB
+    /// cancel it, ESC begins another; whether it ends synchronized output.
+    fn step(&mut self, byte: u8) -> bool {
+        let (next, ended) = match (self.pending, byte) {
+            (Pending::Ground, _) => (Pending::Ground, false),
+            (_, 0x18 | 0x1a) => (Pending::Ground, false),
+            (_, 0x1b) => (Pending::Escape { plain: true }, false),
+            (Pending::Escape { .. }, 0x20..=0x2f) => (Pending::Escape { plain: false }, false),
+            (Pending::Escape { plain: true }, b'[') => {
+                self.params.clear();
+                let csi = Pending::Csi {
+                    phase: Phase::Entry,
+                    ignored: false,
+                };
+                (csi, false)
+            }
+            (Pending::Escape { plain: true }, b'c') => (Pending::Ground, Self::RESET),
+            // A final byte, or a control string's introducer among them.
+            (Pending::Escape { .. }, 0x30..=0x7e) => (Pending::Ground, false),
+            (Pending::Escape { .. }, _) => (self.pending, false),
+            (Pending::Csi { ignored: true, .. }, 0x40..=0x7e) => (Pending::Ground, false),
+            (Pending::Csi { ignored: true, .. }, _) => (self.pending, false),
+            (Pending::Csi { phase, .. }, _) => match phase.next(byte, &mut self.params) {
+                Next::Phase(phase) => (
+                    Pending::Csi {
+                        phase,
+                        ignored: false,
+                    },
+                    false,
+                ),
+                Next::Ignore => (
+                    Pending::Csi {
+                        phase,
+                        ignored: true,
+                    },
+                    false,
+                ),
+                Next::Control => (self.pending, false),
+                Next::Final(read) => (Pending::Ground, self.ends(read.as_slice(), byte)),
+            },
+        };
+        self.pending = next;
+        ended
     }
 
     /// Whether the CSI just read, `intermediates` and `byte` its own,
@@ -1128,6 +1211,7 @@ impl Parser {
     pub fn frame_scan(&self) -> FrameScan {
         FrameScan {
             from: 0,
+            pending: Pending::Ground,
             params: Parameters::default(),
             options: self.options,
             saved: self.screen.saved_mode(Mode::SynchronizedOutput),

@@ -353,6 +353,8 @@ fux-vt's work counters and a counting allocator against it.
 - **`Prints`** (B10) keeps at most 4 bytes of text a screen cell (16 KiB
   at least) and 4,096 runs between takes. Past that, or after a resize,
   it records nothing more and says so (`Prints::lost`).
+- **Finding a frame's end** (B19): `FrameScan::end` reads each byte once,
+  however the frame comes split, a sequence left unfinished included.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.
