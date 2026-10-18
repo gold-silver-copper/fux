@@ -7,3 +7,41 @@
 # test added to a list also says which engines pass it (--esctest DIR
 # names them from esctest's JSON) and why neither a standard nor xterm
 # decides it.
+corpus-statuses nvim-diagnostics a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-diff a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-help a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-insert a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-netrw a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-resize a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-scroll a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-search a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-small a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-split a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-tabs a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-terminal a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-unicode a871f47d (KEY-22): the kitty flags exception added beside the clusters one: fux-vt keeps only the flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-visual a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+corpus-statuses nvim-wide a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
+encoder-verdicts ctrl-alt-question 144a207c (KEY-13, audit-prep 1): real xterm 411 sends ESC ? for Ctrl-Alt-? (tests/data/keys/xterm-keys.txt, "CMS slash legacy C-M-?"), as fux-vt has since dc5c6b23
+encoder-verdicts default-limit c37ef3fd (KEY-16): ctlseqs gives 223 as the default encoding's last position, so xterm 411's EmitMousePosition decides past it: a 0 byte
+encoder-verdicts paste-controls d91b5fa7 (KEY-15, KEY-25): the citation names xterm 411's removeControls (button.c) and why fux-vt passes controls as pasted
+encoder-verdicts paste-newline d91b5fa7 (KEY-15, KEY-25): xterm 411 sends each LF of a paste as CR (button.c, unless pasteLiteralNL), so fux-vt does and the verdict is now ghostty's bracketed LF
+encoder-verdicts shift-tab 144a207c (KEY-13, audit-prep 1): real xterm 411 sends CSI Z for Shift-Tab at modifyOtherKeys 2 (tests/data/keys/xterm-keys.txt, "S Tab legacy mok=2"), as fux-vt has since 0e0ab4d8
+encoder-verdicts utf8-limit c37ef3fd (KEY-16, KEY-25): ctlseqs gives 2015 as UTF-8 mode's last position, so xterm 411's EmitMousePosition decides past it: fux-vt clamps and sends a 0 byte
+esctest-expected DECRQMTests.test_DECRQM_ANSI_EBM fa81287e (HAR-90): DECRQM answers EBM permanently reset, as DEC STD 070's DECRQM table (p. 5-194, VT420: "19 EBM *", 4) has it, and the test passes
+esctest-expected DECRQMTests.test_DECRQM_DEC_DECHCCM 25ae7e3c (SCR-22): DECRQM answers DECHCCM (?60) permanently reset, and the test passes
+esctest-expected DECRQSSTests.test_DECRQSS_DECSACE a8d7fb97 (SCR-18): DECCARA, DECRARA and DECSACE implemented (DEC STD 070, 5.12.1), and the test passes
+esctest-expected DECRQSSTests.test_DECRQSS_DECSCL 4fe31aaf (SCR-20): DECSCL selects level 1 or 2 alone, the levels DA claims (DEC STD 070, DECSCL, note 4), a departure from esctest's level 4
+esctest-expected DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM 4fe31aaf (SCR-20): DECSCL gates no function by level (README, CSI " p), a departure
+esctest-expected DECSCLTests.test_DSCSCL_Level3_SupportsDECRQMDoesntSupportDECSLRM 4fe31aaf, bc42613a (SCR-20): DECSCL selects level 1 or 2 alone (DEC STD 070, DECSCL, note 4) and gates no function, so DECSLRM still sets margins, a departure
+esctest-expected DECSETTests.test_DECSET_MoreFix 27013a99 (SCR-29, decision 48): mode 41 set is xterm's tabs.c TabNext; reset, HT ends a pending wrap (DEC STD 070, Appendix D.6.1), a departure
+esctest-expected ResetSpecialColorTests.test_ResetSpecialColor_Multiple 82983a1d (PAR-15): XTGETTCAP is now answered as an invalid request (DCS 0 + r ST), naming no capability; esctest still takes 16 for Co
+esctest-expected ResetSpecialColorTests.test_ResetSpecialColor_Single 82983a1d (PAR-15): XTGETTCAP is now answered as an invalid request (DCS 0 + r ST), naming no capability; esctest still takes 16 for Co
+expected-fields kitty-flags d1e502b3 (KEY-22, decision 400): flags 1, derived by hand from the kitty spec's "Progressive enhancement" push and pop
+families charset-supplemental 27680af4 (SCR-19): level 2's G2 and G3 hold DEC Supplemental (DEC STD 070, 3.6.4.2), checked by conformance::dec_supplemental_graphics_is_in_g2_and_g3_at_level_2
+families kitty d1e502b3 (KEY-22, decision 400): decided by the kitty spec's "Detection of support", with no engine vote, checked by extended::kitty_keyboard_flags_push_set_pop_and_answer_queries
+families origin ce879477 (SCR-23): DECRC with origin mode brings the cursor inside the margins (DEC STD 070, DECRC note 3), checked by margins::decrc_in_origin_mode_brings_the_cursor_inside_the_margins
+families rectangles 94540b30 (SCR-25): in origin mode a rectangle is clamped to the page, not the margins (DEC STD 070, 5.12.1: "not otherwise affected by the margins")
+families renditions fc2a5ca1 (SCR-17): line renditions halve the line (DEC STD 070, 5.6.1 and 5.14.1), checked by renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end
+families substitute 045c72d2 (PAR-10, decision 4): SUB displays the error character (DEC STD 070, SUBSTITUTE, p. 5-132 note 2), checked by conformance::sub_is_displayed_as_the_error_character
+families tabs 27013a99 (SCR-29): TBC 2 and 5 clear every stop (ECMA-48 8.3.154, TSM's MULTIPLE), where xterm does nothing
