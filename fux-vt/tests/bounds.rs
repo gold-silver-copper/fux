@@ -54,6 +54,10 @@ impl Heap {
 
 const MIB: usize = 1 << 20;
 
+/// What the test harness's own threads may allocate or free while a probe
+/// measures: the counts are the process's.
+const SLACK: usize = 64 << 10;
+
 /// What the bounds tests rely on the allocator for (`threats.md` 3.5): it
 /// counts what is live, a reset peak starts again from what is live, and a
 /// growth by `realloc` counts the old block and the new while both live.
@@ -62,23 +66,32 @@ fn the_allocator_counts_live_bytes_a_reset_peak_and_a_growth_transient() -> Resu
     let _one = one_at_a_time();
     let heap = Heap::begin();
     let block = std::hint::black_box(vec![1u8; MIB]);
-    assert!(heap.live() >= MIB, "{} bytes live", heap.live());
+    assert!(heap.live() >= MIB - SLACK, "{} bytes live", heap.live());
     drop(block);
-    assert!(heap.live() < MIB, "{} bytes live after a free", heap.live());
-    assert!(heap.peak() >= MIB, "a peak of {}", heap.peak());
+    assert!(
+        heap.live() < SLACK,
+        "{} bytes live after a free",
+        heap.live()
+    );
+    assert!(heap.peak() >= MIB - SLACK, "a peak of {}", heap.peak());
     // A reset forgets the peak: it starts again from what is live.
     let heap = Heap::begin();
-    assert!(heap.peak() < MIB, "a peak of {} after a reset", heap.peak());
+    assert!(
+        heap.peak() < SLACK,
+        "a peak of {} after a reset",
+        heap.peak()
+    );
     // 1 MiB grown to 3 MiB: both live at once, 4 MiB, until the copy ends.
     let mut grown = std::hint::black_box(vec![1u8; MIB]);
     grown.reserve_exact(2 * MIB);
     assert!(grown.capacity() >= 3 * MIB);
-    assert!(heap.peak() >= 4 * MIB, "a growth's peak of {}", heap.peak());
     assert!(
-        heap.live() < 4 * MIB,
-        "{} live after the growth",
-        heap.live()
+        heap.peak() >= 4 * MIB - SLACK,
+        "a growth's peak of {}",
+        heap.peak()
     );
+    let live = heap.live();
+    assert!(live < 3 * MIB + SLACK, "{live} live after the growth");
     drop(grown);
     Ok(())
 }
