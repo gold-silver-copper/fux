@@ -50,8 +50,8 @@ fux ls                                                  # what there is: workspa
   (a build): `%2 wait-done wait` waits as long as it runs; a program to its
   end: `%2 wait-exit wait`. A text: `%2 str 'ready' wait-text wait`.
 - **Start:** `run` OPTIONS: `str web name`, `100 30 size`, `str "$PWD" cwd`,
-  `str K str V env`, `str 'prog -x a' command`. The answer's first word is the
-  pane: use it. The pane stays after the program ends.
+  `str K str V env`, `str 'prog -x a' command` (or `str PROG program` and
+  `str A arg` each). The answer's first word is the pane: use it. The pane stays after the program ends.
 - **Keys:** tmux's names (`Enter`, `Escape`, `C-c`, `M-s`, `Up`, `F5`), each
   after `str`; `str T text`, `str NAME key`, `str T paste`, `N times`.
 - **Read:** `capture` joins a line wrapped at the pane's width, as answers

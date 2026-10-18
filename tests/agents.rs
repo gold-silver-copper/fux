@@ -4379,19 +4379,19 @@ fn an_answer_says_what_its_keys_highlighted_and_where_the_cursor_is() -> Outcome
     let lit = server.ok(&typed(&pane, "h", &[]))?;
     assert_eq!(
         head(&lit),
-        format!("{pane} reading · highlight 1,0-2 \"SEL\""),
+        format!("{pane} {READING} · highlight 1,0-2 \"SEL\""),
         "{lit}"
     );
     let moved = server.ok(&typed(&pane, "c", &[]))?;
     assert_eq!(
         head(&moved),
-        format!("{pane} reading · cursor 3,3"),
+        format!("{pane} {READING} · cursor 3,3"),
         "{moved}"
     );
     let again = server.ok(&typed(&pane, "x", &[]))?;
     assert_eq!(
         head(&again),
-        format!("{pane} reading · cursor 4,3"),
+        format!("{pane} {READING} · cursor 4,3"),
         "{again}"
     );
     Ok(())
