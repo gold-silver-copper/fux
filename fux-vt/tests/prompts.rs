@@ -306,6 +306,23 @@ fn a_late_start_follows_the_line_submitted_last() -> Result {
     Ok(())
 }
 
+/// A late `C` looks for its prompt, and for the line submitted, on the
+/// screen alone (threats.md B29): one whose prompt and line scrolled into
+/// history starts its output at the cursor, where a `C` would, rather than
+/// after a prompt it would read all history to find.
+#[test]
+fn a_late_start_past_the_screen_starts_at_the_cursor() -> Result {
+    let mut p = Parser::with_options(Size::new(3, 20)?, 1 << 16, MARKS)?;
+    p.process(b"\x1b]133;A\x07$ cat\r\n")?;
+    p.note_submit();
+    p.process(b"one\r\ntwo\r\nthree\r\nfour")?;
+    p.process(b"\x1b]133;C;late\x07\x1b]133;D;0\x07")?;
+    let (start, _) = p.screen().commands().last_output.ok_or("no output")?;
+    let cursor = p.screen().window().row(2).map(|r| r.id());
+    assert_eq!((Some(start.row), start.col), (cursor, 4));
+    Ok(())
+}
+
 /// While recording, every run printed that changed cells is kept, with
 /// its row and columns, though drawn over in the same output; a redraw
 /// of the same text is none.

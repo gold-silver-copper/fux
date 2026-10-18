@@ -138,8 +138,11 @@ impl Screen {
                     self.commands.started = self.commands.started.wrapping_add(1);
                 }
                 self.commands.prompt = false;
+                // Looked for on the screen alone (threats.md B29): a line
+                // submitted, or a prompt, scrolled into history by the time
+                // its output starts marks none, and the output starts here.
                 let submitted = (self.submitted.take())
-                    .and_then(|s| self.line_after(self.grid().index_of(s.row)?));
+                    .and_then(|s| self.line_after(self.grid().screen_index_of(s.row)?));
                 self.commands.output_start = Some(match late {
                     true => submitted.or_else(|| self.after_prompt()).unwrap_or(here),
                     false => here,
@@ -226,11 +229,12 @@ impl Screen {
     }
 
     /// The start of the row after the line the last prompt above the
-    /// cursor starts (its soft-wrapped rows with it), if that is not below
-    /// the cursor: where what a line typed at it brought begins.
+    /// cursor on the screen starts (its soft-wrapped rows with it), if that
+    /// is not below the cursor: where what a line typed at it brought
+    /// begins.
     fn after_prompt(&self) -> Option<Mark> {
         let grid = self.grid();
-        let prompt = (0..=grid.cursor_index()?)
+        let prompt = (grid.history_len()..=grid.cursor_index()?)
             .rev()
             .find(|i| grid.row_at(*i).is_some_and(|r| r.starts_prompt()))?;
         self.line_after(prompt)
