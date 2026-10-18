@@ -94,7 +94,8 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          ulimit -d $((8 * 1024 * 1024))
+          # macOS refuses a data limit; the probes' own counts still bound it there.
+          if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
           cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds 2>&1 | tee "$CI_LOGS/bounds.log"
 
       - name: Minimum Rust version
