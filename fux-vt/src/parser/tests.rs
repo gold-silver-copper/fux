@@ -341,6 +341,8 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
         let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
         let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
         let mut fast = Parser::with_options(Size::of(rows, cols), r.below(8), options(&mut r))?;
+        // What is recorded is compared too, as `Debug` shows it (PAR-14).
+        fast.record_prints(r.chance(50));
         let mut slow = fast.clone();
         let fragments = r.below(80).saturating_add(1);
         let input = sequences(&mut r, fragments, long);
