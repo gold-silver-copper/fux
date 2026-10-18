@@ -719,6 +719,30 @@ pub fn b21(scale: Scale, chunk: usize) -> Found {
         scale.times(),
         &repeat(&one, scale.times()),
         |_| Ok(()),
+    )?;
+    // Without `Feature::Pictures`, sixel is a DCS fux-vt ignores (REB-8):
+    // 64 KiB of sixel data cost what any ignored string does.
+    let plain = Setup {
+        options: (Feature::ALL.into_iter())
+            .filter(|f| *f != Feature::Pictures)
+            .collect(),
+        ..setup
+    };
+    let mut sixel = b("\x1bPq#1;2;100;0;0");
+    sixel.extend(repeat(b"!4096~", (64 << 10) / 6));
+    sixel.extend(b"\x1b\\");
+    fed(
+        &plain,
+        BOUND,
+        chunk,
+        scale.times(),
+        &repeat(&sixel, scale.times()),
+        |p| {
+            let shown = p.parser.screen().pictures().count();
+            (shown == 0)
+                .then_some(())
+                .ok_or(format!("{shown} pictures shown"))
+        },
     )
 }
 
