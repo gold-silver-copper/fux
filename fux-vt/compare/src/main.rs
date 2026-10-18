@@ -77,7 +77,7 @@ run      random cases from the families expected to agree (or those named,
          fux-vt; every failure is shrunk and printed. Exit 1 if any.
 survey   each family alone (with plain text), counting the cases that
          fail, and the smallest of the first: how to see what a family's
-         status should be.
+         status should be. Exit 1 if a family expected to agree fails.
 matrix   each family alone beside each engine alone, and beside the whole
          panel: the share of cases that differ, as a table.
 cases    the named cases (default: all), beside every engine that votes
@@ -593,6 +593,7 @@ fn survey(args: &Args) -> Result<bool, String> {
     println!("engines: {}", names(&panel));
     let text = families::find("text").ok_or("no text family")?;
     let count = args.cases.unwrap_or(300);
+    let mut ok = true;
     for (i, f) in FAMILIES.iter().enumerate() {
         if !usable(i, args.reflow) {
             continue;
@@ -606,8 +607,13 @@ fn survey(args: &Args) -> Result<bool, String> {
         println!("== {} (expected: {status})", f.name);
         let failed = random(args, &panel, &set, count, args.seed, 1)?;
         println!("   {failed} of {count} failed");
+        // A family expected to agree that fails is a regression, as `run`
+        // has it; the others' counts are the survey's report.
+        if f.status == Status::Agree && failed > 0 {
+            ok = false;
+        }
     }
-    Ok(true)
+    Ok(ok)
 }
 
 /// The share of `count` random cases from `families` that fail beside

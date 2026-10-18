@@ -1086,7 +1086,37 @@ pub fn run(options: &Options) -> Result<bool, String> {
     println!("{total:.0} s in all");
     crate::save_json(&options.json, &json)?;
     eprintln!("wrote {}", options.json.display());
-    Ok(true)
+    // A key that timed out or a load that never arrived is a measurement
+    // not made: the JSON says so, and the run fails.
+    let missing = incomplete(&json, "");
+    for what in &missing {
+        eprintln!("incomplete: {what}");
+    }
+    Ok(missing.is_empty())
+}
+
+/// Where `value` (feel's JSON, at `at`) says a measurement was not made:
+/// keys that timed out (`timed_out` above 0), a load whose `seconds` is
+/// null (it never arrived).
+fn incomplete(value: &serde_json::Value, at: &str) -> Vec<String> {
+    let Some(map) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if map
+        .get("timed_out")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|n| n > 0)
+    {
+        out.push(format!("{at}: keys timed out"));
+    }
+    if map.contains_key("bytes") && map.get("seconds").is_some_and(serde_json::Value::is_null) {
+        out.push(format!("{at}: the load did not arrive"));
+    }
+    for (key, inner) in map {
+        out.extend(incomplete(inner, &format!("{at}/{key}")));
+    }
+    out
 }
 
 type Parts = (serde_json::Value, serde_json::Value, serde_json::Value);
@@ -1363,6 +1393,28 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A key that timed out, or a load that never arrived, is a
+    /// measurement not made, and `feel` fails (at the parent it exited 0).
+    #[test]
+    fn a_measurement_not_made_fails_the_run() {
+        let fine = serde_json::json!({
+            "latency": { "fux": { "idle": { "attempted": 3, "completed": 3, "timed_out": 0 } } },
+            "throughput": { "fux": { "y": { "bytes": 10, "seconds": 0.5 } } },
+        });
+        assert!(super::incomplete(&fine, "").is_empty());
+        let late = serde_json::json!({
+            "latency": { "fux": { "flood": { "attempted": 3, "completed": 2, "timed_out": 1 } } },
+            "throughput": { "fux": { "y": { "bytes": 10, "seconds": null } } },
+        });
+        assert_eq!(
+            super::incomplete(&late, ""),
+            [
+                "/latency/fux/flood: keys timed out",
+                "/throughput/fux/y: the load did not arrive"
+            ]
+        );
+    }
     #[test]
     fn a_summary_has_its_percentiles() {
         let mut values: Vec<f64> = (1..=100).map(f64::from).collect();
