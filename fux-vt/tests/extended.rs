@@ -475,6 +475,24 @@ fn kitty_keyboard_stacks_outlive_clears_and_resizes() -> Result {
     Ok(())
 }
 
+/// XTQMODKEYS (ctlseqs, `CSI ? Pp m`): "XTerm's response ... is formatted
+/// as an XTMODKEYS control, i.e., CSI > Pp m", as xterm answers
+/// modifyOtherKeys (4), its value 0 when off. fux-vt keeps no other
+/// resource, and answers none of them.
+#[test]
+fn xtqmodkeys_answers_the_modify_other_keys_level() -> Result {
+    let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
+    let asked =
+        |p: &mut Parser, input: &[u8]| -> Result<Vec<String>> { Ok(run(p, input)?.replies) };
+    assert_eq!(asked(&mut p, b"\x1b[?4m")?, ["\x1b[>4;0m"]);
+    assert_eq!(asked(&mut p, b"\x1b[>4;2m\x1b[?4m")?, ["\x1b[>4;2m"]);
+    assert_eq!(asked(&mut p, b"\x1b[>4;3m\x1b[?4m")?, ["\x1b[>4;3m"]);
+    assert!(asked(&mut p, b"\x1b[?1m\x1b[?6m")?.is_empty());
+    let mut off = Parser::new(Size::new(5, 20)?, 0)?;
+    assert!(asked(&mut off, b"\x1b[?4m")?.is_empty());
+    Ok(())
+}
+
 #[test]
 fn modify_other_keys_levels_survive_split_sequences() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;

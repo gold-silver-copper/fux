@@ -2689,6 +2689,19 @@ impl Screen {
                     _ => None,
                 };
             }
+            // XTQMODKEYS (ctlseqs, `CSI ? Pp m`): "XTerm's response ... is
+            // formatted as an XTMODKEYS control, i.e., CSI > Pp m", its
+            // value 0 when off. Only modifyOtherKeys (4) is kept, so only
+            // it is answered.
+            (b"?", b'm') if p.groups().next() == Some(&[4][..]) => {
+                let level = match self.terminal.modify_other_keys {
+                    None => 0,
+                    Some(OtherKeys::Usual) => 1,
+                    Some(OtherKeys::All) => 2,
+                    Some(OtherKeys::Unmodified) => 3,
+                };
+                return Some(Dispatch::Reply(reply!("\x1b[>4;{level}m")));
+            }
             // Disables it (ctlseqs, `CSI > Ps n`: "a resource value of -1",
             // which keys read as off).
             (b">", b'n') if p.groups().next() == Some(&[4][..]) => {
