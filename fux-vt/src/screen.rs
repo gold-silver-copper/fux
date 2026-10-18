@@ -829,8 +829,8 @@ impl Screen {
     /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
     /// is counted as CUP addresses it: from the top margin with DECOM set
     /// (DEC STD 070, CPR and DECXCPR, pages 5-53 to 5-56; xterm's
-    /// `CASE_CPR`), and a cursor above the margin, as DECRC can leave one,
-    /// on the first line. A cursor waiting to wrap is reported one past
+    /// `CASE_CPR`), and a cursor above the margin, should one be, on the
+    /// first line. A cursor waiting to wrap is reported one past
     /// the last column, as the vt100 crate did; with an identity it is
     /// reported at the last column, as xterm does.
     pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
@@ -1934,14 +1934,16 @@ impl Screen {
             protect,
         };
     }
-    /// DECRC. In origin mode the cursor comes back no further right than
-    /// the right margin, as xterm's `CursorRestore` places it.
+    /// DECRC. With origin mode restored, the cursor comes back inside the
+    /// margins, all four (DEC STD 070, DECRC, note 3 and its algorithm).
     fn restore(&mut self) {
         let g = self.grid_mut();
         let saved = g.saved;
         g.cursor = saved.cursor;
         g.cursor.restored = saved.cursor.pending_wrap;
-        g.set_col(g.cursor.col().min(g.addressed().1.last()));
+        let (lines, columns) = g.addressed();
+        g.set_row(g.cursor.row().clamp(lines.first(), lines.last()));
+        g.set_col(g.cursor.col().clamp(columns.first(), columns.last()));
         self.attributes = saved.attributes;
         self.pen_changed();
         self.charsets = saved.charsets;
