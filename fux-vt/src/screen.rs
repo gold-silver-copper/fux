@@ -2025,7 +2025,7 @@ impl Screen {
             // Back a column, stopping at the left margin unless the cursor
             // is already left of it (xterm's `CursorBack`).
             8 => g.backward(1),
-            9 => self.tab(1, true),
+            9 => self.tab(1, true)?,
             // LNM: a new line, the carriage returned too.
             10..=12 if new_line => self.new_line()?,
             10..=12 => self.linefeed()?,
@@ -2054,8 +2054,14 @@ impl Screen {
     ///
     /// It ends a pending wrap: DEC STD 070 (Appendix D.6.1) lists HT, CHT
     /// is HT that many times, and CBT moves back from the last column
-    /// (xterm keeps the wrap through all three).
-    fn tab(&mut self, count: u16, forward: bool) {
+    /// (xterm keeps the wrap through all three). With mode 41 set and
+    /// autowrap, forward from a wrap pending, the wrap is carried out
+    /// first, as a line feed to the first column (ctlseqs, more(1)'s fix;
+    /// xterm's `TabNext`), the row left not soft-wrapped.
+    fn tab(&mut self, count: u16, forward: bool) -> Result<(), Error> {
+        if forward && self.grid().cursor.pending_wrap && self.mode(Mode::MoreFix) {
+            self.more_fix()?;
+        }
         let g = self.grid();
         let (mut col, mut last) = (g.cursor.col(), g.columns().last());
         if col > last || !g.lines.contains(g.cursor.row()) {
@@ -2077,6 +2083,17 @@ impl Screen {
         g.set_col(col);
         g.fit_cursor();
         g.cursor.pending_wrap = false;
+        Ok(())
+    }
+    /// `tab`'s wrap carried out with mode 41, with autowrap on. Out of line.
+    #[cold]
+    #[inline(never)]
+    fn more_fix(&mut self) -> Result<(), Error> {
+        if self.mode(Mode::Autowrap) {
+            self.linefeed()?;
+            self.grid_mut().set_col(0);
+        }
+        Ok(())
     }
     /// Whether BS and CUB wrap back: reverse wraparound, either kind, with
     /// DECAWM, as xterm has it.
@@ -3312,6 +3329,9 @@ impl Screen {
                     self.scroll(region, n, direction)?;
                 }
             }
+            // `CSI` with five parameters and `T` is xterm's mouse highlight
+            // tracking (ctlseqs, XTHIMOUSE), which fux-vt ignores, not SD.
+            b'T' if p.groups().nth(4).is_some() => {}
             b'S' | b'T' => {
                 let lines = self.grid().lines;
                 let direction = match byte {
@@ -3340,10 +3360,10 @@ impl Screen {
             }
             b'b' => self.repeat(n)?,
             // CHT (ECMA-48 8.3.10): HT n times.
-            b'I' => self.tab(n, true),
+            b'I' => self.tab(n, true)?,
             // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
             // column.
-            b'Z' => self.tab(n, false),
+            b'Z' => self.tab(n, false)?,
             // TBC (ECMA-48 8.3.154; DEC STD 070, TBC, p. 5-66): each
             // parameter in turn, 0 clearing the stop at the cursor and 3
             // every stop, the two DEC STD 070 defines; the others, for
@@ -3355,7 +3375,11 @@ impl Screen {
                             let col = self.grid().cursor.col();
                             self.terminal.tabs.set(col, false);
                         }
-                        Some(3) => self.terminal.tabs.clear(),
+                        // 2, every stop in the active line, under TSM's
+                        // MULTIPLE every line's, and 5, every stop
+                        // (ECMA-48 8.3.154), clear them all, as 3 does; 1
+                        // and 4, line tabulation stops, find none.
+                        Some(2 | 3 | 5) => self.terminal.tabs.clear(),
                         _ => {}
                     }
                 }
@@ -3397,6 +3421,52 @@ impl Screen {
         let modes = extended || options.has(Feature::ModeReports);
         let identity = options.identity();
         let reply = match (intermediates, byte) {
+            // HPB (ECMA-48 8.3.58, `CSI Pn j`) and VPB (8.3.159, `CSI Pn
+            // k`): back n columns, or up n lines, as CUB and CUU go, each
+            // ending a pending wrap (DEC STD 070, Appendix D.6.1). Here,
+            // off the CSI path, as no program in the corpus sends them.
+            (b"", b'j' | b'k') => {
+                self.break_cluster();
+                let n = p.first(0, 1).max(1);
+                let g = self.grid_mut();
+                g.cursor.pending_wrap = false;
+                if byte == b'j' {
+                    g.backward(n);
+                } else {
+                    g.set_row(g.cursor.row().saturating_sub(n));
+                }
+                return Some(Dispatch::Done);
+            }
+            // CTC (ECMA-48 8.3.17, `CSI Ps W`): 0 a character tabulation
+            // stop at the cursor's column, 2 that one cleared, 4 the active
+            // line's cleared, which under TSM's MULTIPLE (kept for good) is
+            // every line's, and 5 every one; 1, 3 and 6 are the line
+            // tabulation stops, of which there are none. Each in turn.
+            (b"", b'W') => {
+                let col = self.grid().cursor.col();
+                for group in p.groups() {
+                    match group.first().copied().unwrap_or(0) {
+                        0 => self.terminal.tabs.set(col, true),
+                        2 => self.terminal.tabs.set(col, false),
+                        4 | 5 => self.terminal.tabs.clear(),
+                        _ => {}
+                    }
+                }
+                return Some(Dispatch::Done);
+            }
+            // DECST8C (ctlseqs, `CSI ? 5 W`): a stop every 8 columns again.
+            (b"?", b'W') if n == 5 => {
+                self.terminal.tabs = TabStops::default();
+                return Some(Dispatch::Done);
+            }
+            // TSR (ECMA-48 8.3.156, `CSI Pn SP d`): the stop at column n
+            // cleared; with no parameter, which has no default, nothing.
+            (b" ", b'd') => {
+                if let Some(col) = n.checked_sub(1) {
+                    self.terminal.tabs.set(col, false);
+                }
+                return Some(Dispatch::Done);
+            }
             // DECSCA (`CSI Ps " q`; DEC STD 070, 5.11.1.2): 1 protects the
             // glyphs printed next from DECSED and DECSEL, 0 and 2 end it,
             // as xterm reads it.

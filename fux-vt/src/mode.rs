@@ -111,6 +111,9 @@ modes! {
         MousePress (true, 9) => Kind::Mouse(MouseProtocolMode::Press),
         /// DECTCEM (`CSI ? 25 h`): the cursor is shown. Default.
         ShowCursor (true, 25) [default soft] => Kind::Flag,
+        /// more(1)'s fix (`CSI ? 41 h`, ctlseqs): HT with a wrap pending
+        /// carries the wrap out first, as xterm's `curses` resource has it.
+        MoreFix (true, 41) => Kind::Flag,
         /// Reverse wraparound (`CSI ? 45 h`): BS and CUB go back over soft wraps.
         ReverseWrap (true, 45) [soft] => Kind::Flag,
         /// The alternate screen (`CSI ? 47 h`).

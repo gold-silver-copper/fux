@@ -4,9 +4,9 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 
 | Reference | implemented | partial | departure | not implemented | not applicable | all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ECMA-48 | 63 | 1 | 3 | 7 | 88 | 162 |
+| ECMA-48 | 67 | 1 | 3 | 3 | 88 | 162 |
 | DEC STD 070 | 87 | 4 | 2 | 22 | 25 | 140 |
-| ctlseqs | 106 | 15 | 3 | 29 | 92 | 245 |
+| ctlseqs | 107 | 15 | 2 | 29 | 92 | 245 |
 | fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
 
 ## ECMA-48
@@ -29,7 +29,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.14 | CPR (ACTIVE POSITION REPORT) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `conformance::cursor_reports_count_lines_from_the_top_margin_in_origin_mode` | sent as the answer to DSR 6; received, it is unhandled |
 | 8.3.15 | CR (CARRIAGE RETURN) | implemented | `semantics::text_controls_cursor_and_pending_wrap` |  |
 | 8.3.16 | CSI (CONTROL SEQUENCE INTRODUCER) | implemented | `conformance::parameters_past_the_32nd_are_ignored_and_the_sequence_runs` |  |
-| 8.3.17 | CTC (CURSOR TABULATION CONTROL) | not implemented |  | not implemented, as xterm: character tabulation stops are set and cleared with HTS and TBC |
+| 8.3.17 | CTC (CURSOR TABULATION CONTROL) | implemented | `conformance::hpb_vpb_ctc_tsr_and_decst8c` |  |
 | 8.3.18 | CUB (CURSOR LEFT) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `margins::cursor_movements_stop_at_the_margins` |  |
 | 8.3.19 | CUD (CURSOR DOWN) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `margins::cursor_movements_stop_at_the_margins` |  |
 | 8.3.20 | CUF (CURSOR RIGHT) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `margins::cursor_movements_stop_at_the_margins` |  |
@@ -70,7 +70,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.55 | GSM (GRAPHIC SIZE MODIFICATION) | not applicable |  | a presentation control function (8.2.5): fux-vt presents one font at one size, left to right and top to bottom, and leaves the drawing to the host |
 | 8.3.56 | GSS (GRAPHIC SIZE SELECTION) | not applicable |  | a presentation control function (8.2.5): fux-vt presents one font at one size, left to right and top to bottom, and leaves the drawing to the host |
 | 8.3.57 | HPA (CHARACTER POSITION ABSOLUTE) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `margins::cursor_movements_stop_at_the_margins` |  |
-| 8.3.58 | HPB (CHARACTER POSITION BACKWARD) | not implemented |  | not implemented, as xterm and alacritty (Ghostty, libvterm and wezterm do it) |
+| 8.3.58 | HPB (CHARACTER POSITION BACKWARD) | implemented | `conformance::hpb_vpb_ctc_tsr_and_decst8c` |  |
 | 8.3.59 | HPR (CHARACTER POSITION FORWARD) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `margins::cursor_movements_stop_at_the_margins` |  |
 | 8.3.60 | HT (CHARACTER TABULATION) | implemented | `semantics::text_controls_cursor_and_pending_wrap`, `conformance::tab_stops_are_set_cleared_and_kept` |  |
 | 8.3.61 | HTJ (CHARACTER TABULATION WITH JUSTIFICATION) | not applicable |  | justifies text in a field (8.3.61), a presentation fux-vt does not do |
@@ -168,10 +168,10 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.153 | TATE (TABULATION ALIGNED TRAILING EDGE) | not applicable |  | a presentation control function (8.2.5): fux-vt presents one font at one size, left to right and top to bottom, and leaves the drawing to the host |
 | 8.3.154 | TBC (TABULATION CLEAR) | partial | `conformance::tab_stops_are_set_cleared_and_kept`, `conformance::tbc_acts_on_each_of_its_parameters` | 0 and 3 (DEC STD 070, TBC, defines only these); 1 and 4 clear line tabulation stops, which fux-vt keeps none of; 2 and 5 are ignored |
 | 8.3.155 | TCC (TABULATION CENTRED ON CHARACTER) | not applicable |  | a presentation control function (8.2.5): fux-vt presents one font at one size, left to right and top to bottom, and leaves the drawing to the host |
-| 8.3.156 | TSR (TABULATION STOP REMOVE) | not implemented |  | not implemented: no engine compared does it |
+| 8.3.156 | TSR (TABULATION STOP REMOVE) | implemented | `conformance::hpb_vpb_ctc_tsr_and_decst8c` |  |
 | 8.3.157 | TSS (THIN SPACE SPECIFICATION) | not applicable |  | a presentation control function (8.2.5): fux-vt presents one font at one size, left to right and top to bottom, and leaves the drawing to the host |
 | 8.3.158 | VPA (LINE POSITION ABSOLUTE) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `margins::cursor_movements_stop_at_the_margins` |  |
-| 8.3.159 | VPB (LINE POSITION BACKWARD) | not implemented |  | not implemented, as xterm and alacritty (Ghostty, libvterm and wezterm do it) |
+| 8.3.159 | VPB (LINE POSITION BACKWARD) | implemented | `conformance::hpb_vpb_ctc_tsr_and_decst8c` |  |
 | 8.3.160 | VPR (LINE POSITION FORWARD) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode`, `margins::cursor_movements_stop_at_the_margins` |  |
 | 8.3.161 | VT (LINE TABULATION) | departure | `semantics::text_controls_cursor_and_pending_wrap` | as LF, as DEC STD 070 (VERTICAL TAB, 5-61) and xterm: fux-vt keeps no line tabulation stops |
 | 8.3.162 | VTS (LINE TABULATION SET) | not implemented |  | not implemented, as xterm: fux-vt keeps no line tabulation stops |
@@ -422,9 +422,9 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI # S | CSI # S (Report position on title-stack (XTTITLEPOS), xterm.) | not applicable |  | the title stack is the host's (fux keeps it) |
 | CSI ? Pi ; Pa ; Pv S | CSI ? Pi ; Pa ; Pv S (Set or request graphics attribute (XTSMGRAPHICS), xterm.) | implemented | `extended::graphics_queries_are_answered_from_the_host` | as xterm 411 answers, with its statuses |
 | CSI Ps T | CSI Ps T (Scroll down Ps lines (default = 1) (SD), VT420.) | implemented | `margins::scrolling_is_bounded_by_the_margins` |  |
-| CSI Ps ; Ps ; Ps ; Ps ; Ps T | CSI Ps ; Ps ; Ps ; Ps ; Ps T (Initiate highlight mouse tracking (XTHIMOUSE), xterm.) | departure | `margins::scrolling_is_bounded_by_the_margins` | taken as SD by its first parameter: mouse highlight tracking is not implemented |
+| CSI Ps ; Ps ; Ps ; Ps ; Ps T | CSI Ps ; Ps ; Ps ; Ps ; Ps T (Initiate highlight mouse tracking (XTHIMOUSE), xterm.) | not implemented |  | mouse highlight tracking is not implemented: the sequence is ignored, not taken as SD |
 | CSI > Pm T | CSI > Pm T (Reset title mode features to default value (XTRMTITLE), xterm.) | not applicable |  | title modes are the host's |
-| CSI ? 5 W | CSI ? 5 W (Reset tab stops to start with column 9, every 8 columns (DECST8C), VT510.) | not implemented |  | not implemented |
+| CSI ? 5 W | CSI ? 5 W (Reset tab stops to start with column 9, every 8 columns (DECST8C), VT510.) | implemented | `conformance::hpb_vpb_ctc_tsr_and_decst8c` | has no effect on the stops a screen starts with: it sets one every 8 columns again |
 | CSI Ps X | CSI Ps X (Erase Ps Character(s) (default = 1) (ECH).) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` |  |
 | CSI Ps Z | CSI Ps Z (Cursor Backward Tabulation Ps tab stops (default = 1) (CBT).) | implemented | `conformance::tab_stops_are_set_cleared_and_kept` |  |
 | CSI Ps ^ | CSI Ps ^ (Scroll down Ps lines (default = 1) (SD), ECMA-48.) | not implemented |  | not implemented, as xterm 411: `CSI T` is SD |

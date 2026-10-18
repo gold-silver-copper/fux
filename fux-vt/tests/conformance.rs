@@ -750,8 +750,9 @@ fn ind_and_nel_feed_a_line() -> Result {
 /// list them) and by a resize, as xterm keeps them. HT and CHT stop at the
 /// last column when no stop is left, CBT at the first. TBC 0 clears the
 /// stop at the cursor and 3 every stop, the two DEC STD 070 (TBC) defines;
-/// the others, which ECMA-48 defines for stops kept line by line, do
-/// nothing, as in xterm. With a wrap pending CBT moves back from the last
+/// of the others, which ECMA-48 defines (8.3.154), 2 and 5 clear every
+/// stop too (`tbc_acts_on_each_of_its_parameters`), where xterm does
+/// nothing. With a wrap pending CBT moves back from the last
 /// column, the active position (ECMA-48 8.3.7), and so ends the wrap, as
 /// DEC STD 070 (Appendix D.6.1) ends it for a control that may move the
 /// cursor; xterm moves it but keeps the wrap. Expected values are xterm's
@@ -766,7 +767,7 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
     assert_eq!(row(10, b"abc\x1b[5ZX")?, "Xbc");
     assert_eq!(row(20, b"\x1b[3g\x1bc\tX")?, "        X");
     assert_eq!(row(20, b"\x1b[3g\x1b[!p\tX")?, "                   X");
-    assert_eq!(row(20, b"\x1b[3g\x1b[5G\x1bH\x1b[2g\x1b[5g\r\tX")?, "    X");
+    assert_eq!(row(20, b"\x1b[3g\x1b[5G\x1bH\x1b[1g\x1b[4g\r\tX")?, "    X");
     let p = run(1, 20, b"\x1b[3g\x1b[5G\x1bH\x1b[?1049h\r\tX")?;
     assert_eq!(lines(&p), ["    X"]);
     // A resize keeps them, and the columns it adds have a reset's.
@@ -790,12 +791,69 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
 
 /// TBC with several parameters acts on each in turn (DEC STD 070, TBC,
 /// p. 5-66, whose algorithm loops over every parameter, and its revision
-/// note 11): `CSI 0 ; 3 g` clears every stop, and in `CSI 5 ; 0 g` the 0
-/// still clears the stop at the cursor, though 5 does nothing.
+/// note 11): `CSI 0 ; 3 g` clears every stop, and in `CSI 1 ; 0 g` the 0
+/// still clears the stop at the cursor, though 1 (the line tabulation stop,
+/// of which there are none) does nothing. ECMA-48 8.3.154 gives 2 ("all
+/// character tabulation stops in the active line", and under TSM's
+/// MULTIPLE, which fux-vt keeps for good, every line's) and 5 ("all
+/// tabulation stops") too, each clearing every stop.
 #[test]
 fn tbc_acts_on_each_of_its_parameters() -> Result {
     assert_eq!(row(20, b"\x1b[0;3g\tX")?, "                   X");
-    assert_eq!(row(20, b"\x1b[9G\x1b[5;0g\r\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[9G\x1b[1;0g\r\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[2g\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[5g\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[4g\tX")?, "        X");
+    Ok(())
+}
+
+/// The cheap functions (ECMA-48): HPB (8.3.58, `CSI Pn j`) moves the cursor
+/// back n columns and VPB (8.3.159, `CSI Pn k`) up n lines, each ending a
+/// pending wrap (DEC STD 070, D.6.1, cursor movement); CTC (8.3.17, `CSI
+/// Ps W`) sets a character tabulation stop at the cursor (0), clears it (2),
+/// or clears every one (4, the active line's, under TSM's MULTIPLE every
+/// line's; and 5), the line tabulation stops (1, 3, 6) being none; TSR
+/// (8.3.156, `CSI Pn SP d`) clears the stop at column n, and with no
+/// parameter, which it has no default for, does nothing. DECST8C (ctlseqs,
+/// `CSI ? 5 W`) sets a stop every 8 columns again. `CSI` with 5 parameters
+/// and `T` is xterm's mouse highlight tracking (ctlseqs, XTHIMOUSE), which
+/// fux-vt ignores, not SD.
+#[test]
+fn hpb_vpb_ctc_tsr_and_decst8c() -> Result {
+    assert_eq!(row(10, b"\x1b[5Gab\x1b[2jX")?, "    Xb");
+    let p = run(3, 4, b"\x1b[3;2H\x1b[2kX")?;
+    assert_eq!(lines(&p), [" X", "", ""]);
+    let p = run(2, 3, b"abc\x1b[jX")?;
+    assert_eq!(lines(&p), ["aXc", ""]);
+    assert_eq!(row(20, b"\x1b[5G\x1b[W\r\tX")?, "    X");
+    assert_eq!(row(20, b"\x1b[9G\x1b[2W\r\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[4W\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[5W\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[1;3;6W\tX")?, "        X");
+    assert_eq!(row(20, b"\x1b[9 d\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[ d\tX")?, "        X");
+    assert_eq!(row(20, b"\x1b[3g\x1b[?5W\tX")?, "        X");
+    let p = run(3, 2, b"a\r\nb\x1b[1;2;3;4;5T")?;
+    assert_eq!(lines(&p), ["a", "b", ""]);
+    Ok(())
+}
+
+/// Mode 41 (ctlseqs, `CSI ? 41 h`, more(1)'s fix): set, HT with a wrap
+/// pending carries the wrap out first, then goes to the next stop (xterm's
+/// `TabNext` with its `curses` resource), so a line exactly as wide as the
+/// screen followed by a tab draws the tab. Reset, as by default, HT ends a
+/// pending wrap without carrying it out (DEC STD 070, Appendix D.6.1, which
+/// lists HT), where xterm keeps the wrap pending: ctlseqs describes only
+/// the set state, and DEC decides HT's.
+#[test]
+fn mode_41_has_ht_carry_out_a_pending_wrap() -> Result {
+    let p = run(2, 10, b"\x1b[?41h0123456789\tX")?;
+    assert_eq!(lines(&p), ["0123456789", "        X"]);
+    assert!(!p.screen().row_wrapped(0));
+    let p = run(2, 10, b"0123456789\tX")?;
+    assert_eq!(lines(&p), ["012345678X", ""]);
+    let p = run(2, 10, b"\x1b[?41h\x1b[?41l0123456789\tX")?;
+    assert_eq!(lines(&p), ["012345678X", ""]);
     Ok(())
 }
 
