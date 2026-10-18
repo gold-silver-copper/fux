@@ -115,6 +115,10 @@ modes! {
         ReverseWrap (true, 45) [soft] => Kind::Flag,
         /// The alternate screen (`CSI ? 47 h`).
         AlternateScreen (true, 47) => Kind::Screen(Switch::Plain),
+        /// DECHCCM (`CSI ? 60 h`), horizontal cursor coupling: permanently
+        /// reset, "always Reset in the VT420 and can not be changed" (DEC
+        /// STD 070, DECRQM, p. 5-194).
+        HorizontalCursorCoupling (true, 60) => Kind::Permanent(false),
         /// DECNKM (`CSI ? 66 h`), the keypad mode `ESC =` and `ESC >` set too.
         ApplicationKeypad (true, 66) [soft] => Kind::Flag,
         /// DECBKM (`CSI ? 67 h`), the backarrow key sending BS, which
@@ -177,8 +181,8 @@ pub(crate) const SET_FOR_GOOD: [u16; 3] = [12, 21, 22];
 
 impl Mode {
     /// What DECRQM reports for a mode SM and RM never change: 1048, an
-    /// action, is not recognized, and DECARM and 2027 are reset or set for
-    /// good. None for every other mode, which XTSAVE saves and XTRESTORE
+    /// action, is not recognized, and DECARM, DECHCCM and 2027 are reset
+    /// or set for good. None for every other mode, which XTSAVE saves and XTRESTORE
     /// restores.
     pub(crate) fn fixed(self) -> Option<ModeStatus> {
         match self.kind() {

@@ -73,6 +73,30 @@ fn decrqm_reports_the_ansi_modes_kept_in_one_state() -> Result {
     Ok(())
 }
 
+/// DECHCCM (`?60`), horizontal cursor coupling, is "always Reset in the
+/// VT420 and can not be changed" (DEC STD 070, DECRQM, p. 5-194, the
+/// VT420's table): DECRQM answers 4, set or reset, and DECSTR and RIS
+/// leave it so.
+#[test]
+fn decrqm_reports_dechccm_permanently_reset() -> Result {
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
+    for change in [
+        "",
+        "\x1b[?60h",
+        "\x1b[?60l",
+        "\x1b[?60h\x1b[!p",
+        "\x1b[?60h\x1bc",
+    ] {
+        p.process(change.as_bytes())?;
+        assert_eq!(
+            replies(&mut p, b"\x1b[?60$p")?,
+            "^[[?60;4$y",
+            "after {change:?}"
+        );
+    }
+    Ok(())
+}
+
 /// DECSCLM (4), DECSCNM (5), DECNKM (66) and DECBKM (67) are kept as modes,
 /// set and reset, and reported by DECRQM, as xterm 411 keeps them; DECARM
 /// (8) is reported permanently reset, as xterm 411 reports it (esctest
