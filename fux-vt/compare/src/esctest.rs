@@ -2126,6 +2126,11 @@ const SOURCES: &[(&str, &str)] = &[
          VT510 DECSLRM, DECLRMM; ctlseqs CSI ? 69 h, CSI Pl ; Pr s",
     ),
     (
+        "mode 41",
+        "ctlseqs CSI ? 41 h (more(1) fix, xterm's curses resource); DEC STD 070 appendix D \
+         §D.6.1, the Last Column Flag",
+    ),
+    (
         "reverse wraparound",
         "ctlseqs CSI ? 45 h (reverse-wraparound mode) and CSI ? 1045 h (extended \
          reverse-wraparound mode)",
