@@ -354,7 +354,9 @@ fn engines(list: &str) -> Result<Vec<usize>, String> {
             }
         }
     }
-    out.dedup();
+    // Each engine once, wherever the list names it again (`panel,ghostty`).
+    let mut seen = std::collections::BTreeSet::new();
+    out.retain(|&i| seen.insert(i));
     if out.is_empty() {
         return Err(format!("no engine in {list:?} can run here"));
     }
@@ -473,6 +475,9 @@ fn list_engines() {
             "own process"
         };
         println!("{:<10} {} ({role}, {place}; {here})", kind.name, kind.about);
+        if let Some((_, how)) = engine::SETTINGS.iter().find(|(n, _)| *n == kind.name) {
+            println!("           set up with: {how}");
+        }
         let missing = kind.can.missing();
         if !missing.is_empty() {
             println!("           cannot tell: {}", missing.join(", "));
@@ -548,6 +553,13 @@ fn chosen_families(args: &Args) -> Result<Vec<usize>, String> {
 /// chosen by fux-vt's statuses, so its failures are reported, and only an
 /// error fails.
 fn run(args: &Args) -> Result<bool, String> {
+    // `run` takes no words: one is a command mistyped, which would run
+    // 20,000 cases.
+    if let Some(word) = args.rest.first() {
+        return Err(format!(
+            "{word:?} is no command (see --help); run takes no words"
+        ));
+    }
     let subject = subject(args)?;
     let panel = panel_beside(args, "panel", subject)?;
     let families = chosen_families(args)?;
@@ -863,6 +875,7 @@ fn cases(args: &Args) -> Result<bool, String> {
                 "check": "cases",
                 "subject": "fux-vt",
                 "engines": panel.iter().map(|&i| engine::name(i)).collect::<Vec<_>>(),
+                "settings": engine::settings(panel.iter().map(|&i| engine::name(i))),
                 "results": results,
                 "ok": ok,
             }),
@@ -1003,6 +1016,9 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
             "check": "cases",
             "subject": name_of,
             "engines": panel.iter().map(|&i| engine::name(i)).collect::<Vec<_>>(),
+            "settings": engine::settings(
+                panel.iter().map(|&i| engine::name(i)).chain([name_of]),
+            ),
             "cases": count,
             "agree": agree,
             "fux-vt": { "agree": fux_agree },

@@ -383,6 +383,47 @@ pub const ENGINES: &[Kind] = &[
     engines::xterm::KIND,
 ];
 
+/// What each engine is set up with that is not its own default, for the
+/// fairness record every comparison's JSON carries ([`settings`]).
+pub const SETTINGS: &[(&str, &str)] = &[
+    (
+        "ghostty",
+        "mode 2027 (grapheme clusters) set when it is made (engines/ghostty.rs)",
+    ),
+    (
+        "alacritty",
+        "the kitty keyboard protocol on (Config::kitty_keyboard)",
+    ),
+    (
+        "libvterm",
+        "reflow on (vterm_screen_enable_reflow, engines/libvterm_shim.c)",
+    ),
+    (
+        "wezterm",
+        "the kitty keyboard protocol on (enable_kitty_keyboard)",
+    ),
+    (
+        "xterm.js",
+        "the unicode-graphemes addon loaded, and reflowCursorLine on (node/engine.mjs)",
+    ),
+    (
+        "xterm",
+        "the resources engines/xterm.rs lists: precompose off, every window operation allowed",
+    ),
+];
+
+/// The settings of `engines` (by name) that are not their defaults, as a
+/// JSON object by engine, for a comparison's fairness record.
+pub fn settings<'a>(engines: impl IntoIterator<Item = &'a str>) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for name in engines {
+        if let Some((_, how)) = SETTINGS.iter().find(|(n, _)| *n == name) {
+            out.insert(name.to_owned(), serde_json::json!(how));
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
 /// How an adapter's error begins when the input is beyond what it can
 /// read (xterm and SGR 58): the engine abstains for a limit of the
 /// adapter's, not for a failure of the engine's or of the run.

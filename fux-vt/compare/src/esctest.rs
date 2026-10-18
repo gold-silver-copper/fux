@@ -1676,6 +1676,11 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     let mut problems = Vec::new();
     let mut json = serde_json::json!({
         "suite": "esctest2",
+        // fux-vt's own setup here, and the engines': the fairness record.
+        "settings": {
+            "fux-vt": "as fux's panes are, with RectangleChecksums and ExtendedReplies on, which panes leave off (`options`)",
+            "engines": crate::engine::settings(crate::engine::ENGINES.iter().map(|k| k.name)),
+        },
         "suite_commit": ESCTEST_COMMIT,
         "expected_terminal": EXPECTED_TERMINAL,
         "max_vt_level": VT_LEVEL,

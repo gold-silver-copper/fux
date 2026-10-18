@@ -569,7 +569,21 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
     // such cell in reading order that has the same link.
     let mut fux_firsts: HashMap<&str, (usize, usize)> = HashMap::new();
     let mut other_firsts: HashMap<&str, (usize, usize)> = HashMap::new();
+    // A screen or a row read short would hide the cells past its end from
+    // the comparison: its length differs instead. Adapters pad every row.
+    field(
+        "screen rows read".into(),
+        Field::Size,
+        fux.screen.len().to_string(),
+        other.screen.len().to_string(),
+    );
     for (y, (a, b)) in fux.screen.iter().zip(&other.screen).enumerate() {
+        field(
+            format!("row {y} cells read"),
+            Field::Size,
+            a.cells.len().to_string(),
+            b.cells.len().to_string(),
+        );
         field(
             format!("row {y} soft-wrapped"),
             Field::Wrapped,
@@ -900,6 +914,21 @@ mod tests {
         assert!(!super::covers("row 0", "cell (0,1) bold"));
         assert!(!super::covers("row 1", "cell (10,1) text"));
         assert!(!super::covers("row 0 soft-wrapped", "cell (0,1) text"));
+    }
+
+    /// A row read short is a difference, not a row whose missing cells
+    /// go uncompared (at the parent they were zipped away).
+    #[test]
+    fn a_row_read_short_differs() {
+        let full = row(&[None, None, None]);
+        let mut short = full.clone();
+        if let Some(line) = short.screen.first_mut() {
+            line.cells.truncate(1);
+        }
+        assert_eq!(
+            fields(&full, &short),
+            [("row 0 cells read".to_owned(), Field::Size)]
+        );
     }
 
     #[test]

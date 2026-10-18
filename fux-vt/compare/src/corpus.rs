@@ -341,7 +341,7 @@ fn replies_beside(now: &[u8], then: &[u8]) -> (String, String, Vec<usize>) {
 /// A reply's version numbers, which change with every release, as
 /// `VERSION`: XTVERSION's `fux X.Y.Z` and DA2's version parameter. What a
 /// reply says otherwise is compared.
-fn unversioned(replies: &[u8]) -> String {
+pub fn unversioned(replies: &[u8]) -> String {
     let text = String::from_utf8_lossy(replies).into_owned();
     let mut out = String::new();
     let mut rest = text.as_str();
@@ -1089,6 +1089,7 @@ pub fn run(
     if let Some(path) = json {
         let value = serde_json::json!({
             "check": "corpus",
+            "settings": engine::settings(names_of.iter().copied()),
             "engines": names_of,
             "recordings": recordings.len(),
             "agree": agree,
@@ -1256,6 +1257,7 @@ fn run_subject(
     if let Some(path) = json {
         let value = serde_json::json!({
             "check": "corpus",
+            "settings": engine::settings(names_of.iter().copied()),
             "subject": name,
             "engines": names_of,
             "recordings": recordings.len(),

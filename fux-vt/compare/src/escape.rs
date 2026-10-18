@@ -50,6 +50,9 @@ pub fn unescape(text: &str) -> Result<Vec<u8>, String> {
             Some('\'') => out.push(b'\''),
             Some('x') => {
                 let digits: String = chars.by_ref().take(2).collect();
+                if digits.len() != 2 {
+                    return Err(format!("\\x{digits} needs two hex digits"));
+                }
                 let n = hex(&digits)?;
                 out.push(u8::try_from(n).map_err(|e| e.to_string())?);
             }
@@ -57,7 +60,17 @@ pub fn unescape(text: &str) -> Result<Vec<u8>, String> {
                 if chars.next() != Some('{') {
                     return Err("\\u must be followed by {".into());
                 }
-                let digits: String = chars.by_ref().take_while(|&c| c != '}').collect();
+                let mut closed = false;
+                let digits: String = chars
+                    .by_ref()
+                    .take_while(|&c| {
+                        closed = c == '}';
+                        !closed
+                    })
+                    .collect();
+                if !closed {
+                    return Err(format!("\\u{{{digits} has no closing }}"));
+                }
                 let c = char::from_u32(hex(&digits)?)
                     .ok_or(format!("\\u{{{digits}}} is not a character"))?;
                 let mut buf = [0; 4];
@@ -77,5 +90,17 @@ mod tests {
         let text = super::escape(bytes);
         assert_eq!(text, "a\\e[1m\\r\\n\\t\\\\\\'\\x07\\x7f\\xff\\u{754c}\\xc3");
         assert_eq!(super::unescape(&text), Ok(bytes.to_vec()));
+    }
+
+    /// An escape is whole or refused: `\x` takes two hex digits, `\u{`
+    /// its closing brace (at the parent, `\x7` and `\u{754c` were taken).
+    #[test]
+    fn a_short_escape_is_refused() {
+        assert!(super::unescape("\\x7").is_err());
+        assert!(super::unescape("\\u{754c").is_err());
+        assert_eq!(
+            super::unescape("\\x07\\u{754c}"),
+            Ok("\x07\u{754c}".as_bytes().to_vec())
+        );
     }
 }
