@@ -104,7 +104,12 @@ fn encoder_suite(name: &str, text: &str) -> Result<(usize, usize, usize)> {
         }
         let mut out = Vec::new();
         key_bytes(keystroke(key)?, mode(mode_spec)?, &mut out);
-        let got = written(&out);
+        // `none`: no bytes.
+        let got = if out.is_empty() {
+            "none".to_string()
+        } else {
+            written(&out)
+        };
         let want = match verdict.strip_prefix("differs: ") {
             Some(rest) => {
                 differ = differ.saturating_add(1);
@@ -190,6 +195,15 @@ fn kitty_keys() -> Result {
     let counts = encoder_suite("kitty", include_str!("data/keys/kitty-keys.txt"))?;
     // Agree, differ as recorded, not applicable.
     assert_eq!(counts, (553, 13, 18));
+    Ok(())
+}
+
+/// Real xterm 411's bytes for every key fux names, through XTest (KEY-13).
+#[test]
+fn xterm_keys() -> Result {
+    let counts = encoder_suite("xterm", include_str!("data/keys/xterm-keys.txt"))?;
+    // Agree, differ as recorded, not applicable.
+    assert_eq!(counts, (2223, 89, 112));
     Ok(())
 }
 

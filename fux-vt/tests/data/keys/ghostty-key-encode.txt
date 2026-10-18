@@ -99,32 +99,32 @@ key_encode.zig:2574	legacy	C-F2	\e[1;5Q	agree
 key_encode.zig:2574	legacy	C-F3	\e[13;5~	differs: xterm's F3 is SS3 R, modified CSI 1 ; m R (ctlseqs, "PC-Style Function Keys"); Ghostty sends CSI 13 ; m ~, which no cursor position report can be mistaken for; fux: \e[1;5R
 key_encode.zig:2574	legacy	C-F4	\e[1;5S	agree
 key_encode.zig:2574	legacy	C-F5	\e[15;5~	agree
-key_encode.zig:2633	legacy	F13	\e[25~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F13	\e[25;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F14	\e[26~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F14	\e[26;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F15	\e[28~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F15	\e[28;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F16	\e[29~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F16	\e[29;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F17	\e[31~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F17	\e[31;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F18	\e[32~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F18	\e[32;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F19	\e[33~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F19	\e[33;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F20	\e[34~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F20	\e[34;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F21	\e[42~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F21	\e[42;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F22	\e[43~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F22	\e[43;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F23	\e[44~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F23	\e[44;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F24	\e[45~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F24	\e[45;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy	F25	\e[46~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
-key_encode.zig:2633	legacy mok=2	C-F25	\e[46;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: 
+key_encode.zig:2633	legacy	F13	\e[25~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F13	\e[25;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F14	\e[26~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F14	\e[26;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F15	\e[28~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F15	\e[28;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F16	\e[29~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F16	\e[29;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F17	\e[31~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F17	\e[31;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F18	\e[32~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F18	\e[32;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F19	\e[33~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F19	\e[33;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F20	\e[34~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F20	\e[34;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F21	\e[42~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F21	\e[42;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F22	\e[43~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F22	\e[43;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F23	\e[44~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F23	\e[44;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F24	\e[45~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F24	\e[45;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F25	\e[46~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F25	\e[46;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
 key_encode.zig:2681	legacy	?	\e[28~	na: a key fux has no Key for (help)
 key_encode.zig:2681	legacy mok=2	?	\e[28;5~	na: a key fux has no Key for (help)
 key_encode.zig:2681	legacy	?	\e[29~	na: a key fux has no Key for (context_menu)

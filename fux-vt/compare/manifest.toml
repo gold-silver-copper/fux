@@ -511,10 +511,8 @@ why = "not wired yet"
 [[check]]
 name = "release-xterm-keys"
 schedule = "release"
-command = "real xterm's key bytes through XTest"
-needs = ["xterm 411", "libXtst"]
-wired = false
-why = "not wired yet"
+command = "fux-vt/compare/xterm-keys/run.sh (about 6 minutes; rewrites tests/data/keys/xterm-keys.txt, git diff --exit-code it), then cargo test -p fux-vt --test input_suites xterm_keys, which every PR runs on the recorded bytes"
+needs = ["xterm 411", "Xvfb", "libXtst", "a C compiler"]
 
 [[check]]
 name = "release-bounds-100x"
