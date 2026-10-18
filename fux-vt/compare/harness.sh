@@ -137,7 +137,7 @@ quick() {
     "corpus-ghostty $compare corpus --subject ghostty --json $out/corpus-ghostty.json" \
     "transparency $compare transparency --json $out/transparency.json" \
     "random $compare run --cases 2000" \
-    "cases $compare cases" \
+    "cases $compare cases --json $out/cases.json" \
     "encoders $compare encoders" \
     "lists $compare lists --json $out/lists.json" \
     "+oracle $root/diff/oracle.sh ${against:-} ${jobs:+--threads $jobs}"
@@ -200,8 +200,10 @@ deep() {
   feel=$(last_seconds feel 300)
   info=$(last_seconds info 20)
   full_s=480
-  local estimate=$((full_s + seeds * verdicts + esctest + muxes + feel + info + fuzz_minutes * 60 + 60))
-  echo "deep: about $((estimate / 60)) minutes (full, $seeds verdict seeds at ${verdicts}s, esctest in fux, in xterm and on each engine, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
+  # The ledger's subjects: six named-case runs and five corpus runs.
+  local subjects=150
+  local estimate=$((full_s + seeds * verdicts + esctest + subjects + muxes + feel + info + fuzz_minutes * 60 + 60))
+  echo "deep: about $((estimate / 60)) minutes (full, $seeds verdict seeds at ${verdicts}s, esctest in fux, in xterm and on each engine, the cases and corpus with each engine the subject and the ledger, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
   full
   echo "deep: verdicts beside xterm, seeds 1-$seeds"
   local seed
@@ -220,6 +222,18 @@ deep() {
     step "esctest-$engine" "$compare" esctest --terminal "$engine" --unlisted ${jobs:+--jobs "$jobs"} \
       --json "$out/esctest-$engine.json"
   done
+  # The named cases and the corpus with each engine the subject, for the
+  # conformance ledger, then its scores over every result here.
+  for engine in ghostty alacritty libvterm avt wezterm vt100; do
+    ran+=("cases-subject-$engine")
+    step "cases-subject-$engine" "$compare" cases --subject "$engine" --json "$out/cases-subject-$engine.json"
+  done
+  for engine in alacritty libvterm avt wezterm vt100; do
+    ran+=("corpus-subject-$engine")
+    step "corpus-subject-$engine" "$compare" corpus --subject "$engine" --json "$out/corpus-subject-$engine.json"
+  done
+  ran+=(ledger)
+  step ledger "$compare" ledger --results "$out" --json "$out/ledger-scores.json" --table "$out/ledger.md"
   step multiplexers "$compare" transparency --multiplexers --json "$out/multiplexers.json"
   step feel "$bench" feel --json "$out/feel.json"
   step info "$bench" info --json "$out/info.json"

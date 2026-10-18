@@ -131,6 +131,24 @@ command = "fux-vt-compare verdicts --seed SEED (seeds 1 to FUX_DEEP_SEEDS)"
 needs = ["xterm 411", "Xvfb"]
 
 [[check]]
+name = "cases-subject-*"
+schedule = "deep"
+command = "fux-vt-compare cases --subject ENGINE --json cases-subject-ENGINE.json (ghostty, alacritty, libvterm, avt, wezterm, vt100)"
+needs = ["xterm 411", "Xvfb", "Zig 0.16 and Ghostty (run.sh)"]
+
+[[check]]
+name = "corpus-subject-*"
+schedule = "deep"
+command = "fux-vt-compare corpus --subject ENGINE --json corpus-subject-ENGINE.json (alacritty, libvterm, avt, wezterm, vt100)"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "ledger"
+schedule = "deep"
+command = "fux-vt-compare ledger --results OUT --json ledger-scores.json --table ledger.md"
+needs = ["the esctest, cases and corpus results of the same run"]
+
+[[check]]
 name = "esctest-in-fux"
 schedule = "deep"
 command = "fux-vt-compare esctest --in-fux --jobs N --json esctest-in-fux.json"

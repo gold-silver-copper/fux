@@ -21,6 +21,7 @@ mod families;
 mod footprint;
 mod instructions;
 mod inventory;
+mod ledger;
 mod lists;
 mod memory;
 mod record;
@@ -46,7 +47,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                       [--engines LIST] [--no-reflow] [--subject NAME]
        fux-vt-compare survey [--seed N] [--cases N] [--engines LIST] [--no-reflow]
        fux-vt-compare matrix [--seed N] [--cases N] [--engines LIST] [--no-reflow]
-       fux-vt-compare cases [--engines LIST] [--no-reflow] [--subject NAME] [NAME...]
+       fux-vt-compare cases [--engines LIST] [--no-reflow] [--subject NAME] [--json FILE] [NAME...]
        fux-vt-compare verdicts [--seed N] [--cases N] [--family NAME]... [--engines LIST]
                                [--no-reflow]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
@@ -66,6 +67,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [FILTER] (esctest --help: the rest)
        fux-vt-compare lists [--json FILE] [--against FROZEN] [--esctest DIR]
+       fux-vt-compare ledger [--results DIR] [--json FILE] [--table FILE]
        fux-vt-compare scoreboard DIR [--keep KEPT COMMIT DATE]
        fux-vt-compare engines
        fux-vt-compare --list
@@ -692,6 +694,38 @@ fn named_cases(args: &Args, subject: usize) -> Result<Vec<NamedCase>, String> {
     Ok(out)
 }
 
+/// A named case's result for `--json` (the conformance ledger reads it):
+/// where `subject` fails it as `case::judged` judges every subject, and
+/// whether xterm, if it ran, sees the subject's screen as its own.
+fn case_result(
+    named: (&str, &str, usize),
+    subject: usize,
+    outcome: &case::Outcome,
+) -> Result<serde_json::Value, String> {
+    let (name, family, index) = named;
+    let failures = case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)?;
+    let xterm = engine::find("xterm").and_then(|x| {
+        outcome
+            .verdicts
+            .iter()
+            .find(|v| v.engine == x)
+            .map(|v| v.differences.is_empty())
+    });
+    Ok(serde_json::json!({
+        "case": name,
+        "family": family,
+        "failures": failures,
+        "xterm_agrees": xterm,
+    }))
+}
+
+/// Writes `value` as pretty JSON to `path`.
+fn write_json(path: &str, value: &serde_json::Value) -> Result<(), String> {
+    let mut text = serde_json::to_string_pretty(value).map_err(|e| format!("the results: {e}"))?;
+    text.push('\n');
+    std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))
+}
+
 fn cases(args: &Args) -> Result<bool, String> {
     let subject = subject(args)?;
     if subject != FUX_VT {
@@ -701,6 +735,7 @@ fn cases(args: &Args) -> Result<bool, String> {
     println!("engines: {}", names(&panel));
     let mut ok = true;
     let (mut agree, mut differ, mut fixed) = (0usize, 0usize, 0usize);
+    let mut results = Vec::new();
     for NamedCase {
         name,
         family,
@@ -709,6 +744,7 @@ fn cases(args: &Args) -> Result<bool, String> {
     } in named_cases(args, subject)?
     {
         let outcome = case.run_until(&panel, false)?;
+        results.push(case_result((name, family, index), subject, &outcome)?);
         let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
         if let Some(Status::Decided { by, authority, .. }) = status {
@@ -776,6 +812,18 @@ fn cases(args: &Args) -> Result<bool, String> {
     println!(
         "{agree} agree in families expected to agree or decided, {fixed} agree in families that differ elsewhere, {differ} fail"
     );
+    if let Some(path) = args.json.as_deref() {
+        write_json(
+            path,
+            &serde_json::json!({
+                "check": "cases",
+                "subject": "fux-vt",
+                "engines": panel.iter().map(|&i| engine::name(i)).collect::<Vec<_>>(),
+                "results": results,
+                "ok": ok,
+            }),
+        )?;
+    }
     Ok(ok)
 }
 
@@ -807,9 +855,15 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
     // Name, family, the fields the subject and fux-vt are outvoted on, and
     // the replays with each the subject.
     let mut split = Vec::new();
+    let mut results = Vec::new();
     for named in named_cases(args, subject)? {
         count = count.saturating_add(1);
         let outcome = named.case.run_until(&panel, false)?;
+        results.push(case_result(
+            (named.name, named.family, named.index),
+            subject,
+            &outcome,
+        )?);
         let marks = marks(&outcome);
         let deciders = match FAMILIES.get(named.index).map(|f| f.status) {
             Some(Status::Decided { by: [one], .. }) => format!(": {one} decides"),
@@ -917,15 +971,13 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
             "cases": count,
             "agree": agree,
             "fux-vt": { "agree": fux_agree },
+            "results": results,
             "ok": true,
         });
         if let Some(object) = value.as_object_mut() {
             object.extend(json);
         }
-        let mut text =
-            serde_json::to_string_pretty(&value).map_err(|e| format!("the results: {e}"))?;
-        text.push('\n');
-        std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+        write_json(path, &value)?;
     }
     Ok(true)
 }
@@ -1157,6 +1209,18 @@ fn main() -> ExitCode {
             Ok(false) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("fux-vt-compare scoreboard: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    if let Some((first, rest)) = argv.split_first()
+        && first == "ledger"
+    {
+        return match ledger::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare ledger: {e}");
                 ExitCode::from(2)
             }
         };

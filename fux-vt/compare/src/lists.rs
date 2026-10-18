@@ -5,7 +5,8 @@
 //! the corpus statuses (`corpus::STATUSES`), transparency's recorded
 //! differences (`transparency::KNOWN`), the family statuses
 //! (`families::FAMILIES`), their named cases and the cases' expected
-//! fields (`cases`), and the encoder verdicts (`encoders::VERDICTS`). Each
+//! fields (`cases`), the encoder verdicts (`encoders::VERDICTS`), and the
+//! conformance ledger's tags (`ledger.json`, by `SUITE:ID`). Each
 //! is a map from an entry's id to the entry, every entry with its
 //! `citation`: the reason, section or quote it rests on.
 //!
@@ -120,6 +121,26 @@ pub fn all() -> Result<Map<String, Value>, String> {
         .map(|&(name, why)| (name.to_owned(), json!({ "citation": why })))
         .collect();
     lists.insert("encoder-verdicts".into(), Value::Object(verdicts));
+    let ledger = crate::ledger::load()?;
+    let tags: Map<String, Value> = ledger
+        .checks
+        .iter()
+        .map(|c| {
+            let a = ledger.authorities.get(&c.authority);
+            (
+                format!("{}:{}", c.suite, c.id),
+                json!({
+                    "feature": c.feature,
+                    "authority": c.authority,
+                    "section": a.map(|a| format!("{} ({}), {}", a.document, a.edition, a.section)),
+                    "verdict": c.verdict,
+                    "applicability": c.applicability,
+                    "citation": a.map_or("", |a| a.quote.as_str()),
+                }),
+            )
+        })
+        .collect();
+    lists.insert("ledger".into(), Value::Object(tags));
     Ok(lists)
 }
 
@@ -228,7 +249,7 @@ fn passes(dir: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
             };
             let label = match (column.as_str(), d.get("terminal").and_then(Value::as_str)) {
                 ("direct", Some(engine)) => engine.to_owned(),
-                ("direct", None) => "fux-vt".to_owned(),
+                ("direct", None) | ("fux_vt", _) => "fux-vt".to_owned(),
                 (other, _) => other.to_owned(),
             };
             let passed = tests
@@ -423,6 +444,7 @@ mod tests {
             "cases",
             "expected-fields",
             "encoder-verdicts",
+            "ledger",
         ] {
             let list = all
                 .get(name)

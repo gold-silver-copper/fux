@@ -715,6 +715,51 @@ footprint beyond the same engine's empty screen, over the rows it holds.
 `--json FILE` writes every measure; `--jobs N` sets how many children run
 at once.
 
+## The conformance ledger
+
+`ledger.json` is one table of checks from every conformance suite that
+runs: each esctest2 test (567, 18 of them skipped by esctest), each named
+case (`cases`) and each corpus recording. Each check carries:
+
+- its **feature**, one of the frozen groups in `features` (an esctest
+  area's function, with the 18 colour-space tests as one feature and every
+  reverse-wrap test as one choice; a named case's family; a recording's
+  program);
+- its **authority**, an id in `authorities`: a standard's document,
+  edition, section and quoted text, with the levels the document gives the
+  function; xterm's ctlseqs at patch 411 where the standards are silent;
+  or `open` where none is known (never "engine-specific", never out of
+  scope);
+- its **level and mode** (esctest's `@vtLevel`, 7-bit or 8-bit controls,
+  options it needs), and its **applicability** (`applies`, `n/a: WHY`, or
+  `skipped: WHY` where the suite does not run it);
+- its **verdict**, how the suite's expectation stands to the authority:
+  `agrees`, `departs` (the suite expects what the text contradicts),
+  `allows` (the text also allows other answers), or `open` (not read);
+  with `follows` or `follows_when` saying which engines do what the text
+  says where the suite does not;
+- the **evidence** for each tag: the area's function, the test's own
+  decorators, its listed reason, `cases::EXPECTED`, a family's authority,
+  or a reading of the test against the quoted text.
+
+`fux-vt-compare ledger --results DIR` scores every engine whose results
+are in `DIR` (esctest's `--json` columns, `cases --json` and `corpus
+--json`, one file a subject), on one denominator a suite, four ways:
+
+| Score | What it counts |
+| --- | --- |
+| raw | the checks passed, as the suite reports, over the checks it runs |
+| standard-adjusted | each check scored by its verdict, over the checks that apply: a `departs` check passed is a fail |
+| xterm-compat | the checks passed among those real xterm passes, xterm's own column left out (the corpus is judged by xterm wherever xterm can tell a field, so there it is the raw score) |
+| feature | the features all of whose applying checks pass |
+
+A check an engine has no result for is unavailable: in the denominator,
+never a pass, and counted apart. `--table FILE` writes the whole ledger
+as one Markdown table. `run.sh deep` runs the subjects and the ledger.
+The tags were written by `<notes>/ledger-tools/gen.py` from the area
+tables, esctest's decorators and the lists; from checkpoint 0 on, the
+data file is the record, and a retag shows in the list-diff report.
+
 ## The lists and the list-diff report
 
 Every list a comparison judges by is also data: `fux-vt-compare lists
@@ -729,6 +774,7 @@ the entry with its `citation` (the reason, section or quote it rests on):
 | `families` | `families::FAMILIES`: status, `by`, authority, reason |
 | `cases`, `expected-fields` | `cases::CASES` and `cases::EXPECTED` |
 | `encoder-verdicts` | `encoders::VERDICTS` |
+| `ledger` | `ledger.json`'s tags, by `SUITE:ID`: feature, authority and its section, verdict, applicability |
 
 `run.sh quick` writes them to `lists.json`. Checkpoint 0 freezes them as
 `lists-c0.json`; from then on `fux-vt-compare lists --against
@@ -803,6 +849,7 @@ The axes:
 | `src/footprint.rs`, `src/memory.rs` | `footprint`, and the process's memory as the system and malloc count it |
 | `src/scoreboard.rs` | `scoreboard` |
 | `src/lists.rs` | `lists`: every judged list as JSON, and the list-diff report |
+| `src/ledger.rs`, `ledger.json` | `ledger`: the conformance ledger's tags, and its four scores |
 | `list-changes.txt` | each change to a judged list since checkpoint 0, with its citation |
 | `esctest-expected.txt`, `esctest-expected-ghostty.txt` | the esctest tests fux-vt and Ghostty's core fail, each with its reason |
 | `corpus/` | the recordings, their keys, `record.sh`, the man pages they show, and `INVENTORY.md` |
