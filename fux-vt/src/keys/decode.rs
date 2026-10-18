@@ -453,13 +453,9 @@ impl Decoder {
     /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
         // What is held, or an ESC that may end a dropped string, takes only
-        // what decides it of a long read (`held_first`), not a copy of all.
-        if bytes.len() > HELD
-            && matches!(
-                self.state,
-                State::Pending { .. } | State::Dropping { escape: true, .. }
-            )
-        {
+        // what decides it of a long read (`held_first`), not a copy of all;
+        // and so does a sequence a long read begins, left unfinished.
+        if bytes.len() > HELD && self.may_hold() {
             return self.held_first(bytes, out);
         }
         self.feed(bytes, false, out);
@@ -517,19 +513,33 @@ impl Decoder {
         self.state = self.run(&rest, since, flush, out);
     }
 
+    /// Whether what the decoder is in may hold the bytes a read brings:
+    /// a sequence held, an ESC that may end a string being dropped, or
+    /// nothing begun, which a sequence the read begins may leave held.
+    fn may_hold(&self) -> bool {
+        matches!(
+            self.state,
+            State::Idle | State::Pending { .. } | State::Dropping { escape: true, .. }
+        )
+    }
+
     /// `bytes` of a read longer than any sequence held, while one is held
     /// (or an ESC that may end a string being dropped): the held sequence
     /// is given from the front of them only what decides it, no more than
     /// the longest held and one byte, past which every sequence is decided
-    /// (threats.md B24, KEY-3), and the rest follows, where it lies.
+    /// (threats.md B24, KEY-3), and so again while what that decided leaves
+    /// one held; the rest follows, where it lies.
     #[cold]
     #[inline(never)]
-    fn held_first(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
-        let (head, tail) = bytes
-            .split_at_checked(HELD.saturating_add(1))
-            .unwrap_or((bytes, &[]));
-        self.feed(head, false, out);
-        self.feed(tail, false, out);
+    fn held_first(&mut self, mut bytes: &[u8], out: &mut Vec<Input>) {
+        while bytes.len() > HELD && self.may_hold() {
+            let (head, tail) = bytes
+                .split_at_checked(HELD.saturating_add(1))
+                .unwrap_or((bytes, &[]));
+            self.feed(head, false, out);
+            bytes = tail;
+        }
+        self.feed(bytes, false, out);
     }
 
     /// Decodes `bytes`, with nothing begun before them but what they begin

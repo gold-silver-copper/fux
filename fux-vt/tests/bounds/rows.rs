@@ -962,6 +962,22 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     // sequence (KEY-3): the held ESC takes only what decides it.
     let held = [repeat(b"b", 4095).as_slice(), b"\x1b", &repeat(b"a", a)].concat();
     decoded(&held, 4096, 258, 4 << 10, false)?;
+    // And when what decides it leaves another ESC held, the 259th byte of
+    // the read (lane B's finding): the rest of a 64 KiB read is decided as
+    // far again, never held or copied whole. Nothing is typed, so that
+    // the decoder's own heap shows: dropped OSC answers, each ESC ending a
+    // read's first 259 bytes.
+    let k: usize = 64 << 10;
+    let again = [
+        b("\x1b]11;"),
+        repeat(b"1", k.saturating_sub(6)),
+        b("\x1b\\\x1b]11;"),
+        repeat(b"1", 252),
+        b("\x1b]11;"),
+        repeat(b"1", k.saturating_sub(259 + 4)),
+    ]
+    .concat();
+    decoded(&again, k, 258, 1 << 10, false)?;
     // The same with nothing typed, so that the decoder's own heap shows:
     // a dropped OSC answer, the ESC that ends the read, then an OSC answer
     // too long to keep over many reads, held nowhere.
