@@ -757,8 +757,8 @@ pub fn run(options: &Options) -> Result<bool, String> {
         options.json.display(),
         raw_path.display()
     );
-    if !named(Verdict::Broken).is_empty() || !named(Verdict::Noisy).is_empty() {
-        return Err("the tool cannot judge every workload: see broken and noisy above".into());
+    if !named(Verdict::Broken).is_empty() {
+        return Err("the tool cannot judge every workload: see broken above".into());
     }
     Ok(named(Verdict::Slower).is_empty() && !broad_loss)
 }

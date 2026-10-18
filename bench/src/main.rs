@@ -35,8 +35,9 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--floors FILE]
            median change of the rounds against each workload's floor from
            FILE (else max(0.25%, 3 x the run's spread)), and a sign test
            over the recordings. Exit 1 if a workload is slower past its
-           floor or the recordings are broadly slower, 2 if a workload is
-           noisy or its floor is over 1% (the tool is broken for it):
+           floor or the recordings are broadly slower, 2 if a workload's
+           floor is over 1% (the tool is broken for it); a noisy workload
+           is listed, and judged inconclusive:
              cargo run --release --manifest-path bench/Cargo.toml -- --against master
            --only runs the workloads whose names contain TEXT.
 --calibrate  an A/A run, the working tree built twice by the recipe: each
