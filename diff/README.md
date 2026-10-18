@@ -138,9 +138,11 @@ commit it.
 Each side is read into one model (`oracle/src/model.rs`) through fux-vt's
 public API (`oracle/src/side.rs`) after every step:
 
-- **The screen's state:** size, cursor, pending wrap, every mode, the
-  margins, the pen, the open link, history length, `storage_cells`, marks,
-  `resize_report`, the options reported.
+- **The screen's state:** size, cursor, pending wrap, the twelve modes
+  `side.rs` reads (`modes`: not every mode fux-vt keeps), the top and
+  bottom margins (`scroll_region`; not the left and right ones), the pen,
+  the open link, history length, `storage_cells`, marks, `resize_report`,
+  the options reported.
 - **Every retained row:** identity and version, soft wrap, prompt mark,
   length, `text_len`, `has_links`; each cell's text, width, attributes,
   colours and link, through every getter.

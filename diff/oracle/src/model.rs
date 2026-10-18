@@ -3,9 +3,9 @@
 //! side's types into these through fux-vt's public API, so the two are
 //! compared field by field.
 //!
-//! A kind one side has and the model does not name (a colour, an event, a
-//! mouse mode added later) is read as `Other`, with its `Debug` text, so it
-//! is a difference rather than a silent match.
+//! `side.rs` reads each kind (a colour, an event, an unhandled sequence)
+//! by a match with no catch-all, so one a side has and the model does not
+//! name fails to build, rather than matching silently.
 use std::fmt::{self, Write};
 
 /// A colour.

@@ -1141,7 +1141,7 @@ struct Listed {
 fn expected(text: &str) -> Result<BTreeMap<String, Listed>, String> {
     let mut out = BTreeMap::new();
     for (n, line) in text.lines().enumerate() {
-        let at = |e: &str| format!("esctest-expected.txt line {}: {e}", n.saturating_add(1));
+        let at = |e: &str| format!("the list line {}: {e}", n.saturating_add(1));
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -1542,7 +1542,11 @@ impl Column {
 /// The list of expected failures in `path`.
 fn read_list(path: &Path) -> Result<BTreeMap<String, Listed>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    expected(&text)
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    expected(&text).map_err(|e| e.replacen("the list", &name, 1))
 }
 
 /// How `outcome` reads in a list of differences.

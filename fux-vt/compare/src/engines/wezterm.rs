@@ -1,7 +1,6 @@
 //! WezTerm's terminal model, wezterm-term, read into a snapshot.
 //!
-//! Tested at wezterm commit `cab25161054c` (the revision `Cargo.lock`
-//! pins; `Cargo.toml` names no `rev`).
+//! Tested at wezterm commit `cab25161054c`, the `rev` Cargo.toml pins.
 //!
 //! How it is driven: `Terminal::new` with a configuration of its own
 //! (100000 rows of scrollback whatever fux-vt keeps, the kitty keyboard
