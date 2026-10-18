@@ -718,7 +718,10 @@ repository:
   if it is the same commit's.
 
 Commit both with the work they measure. It runs nothing itself. Any axis
-whose check has not run says `not run`.
+whose check has not run says `not run`, and one whose check failed says
+so: a check's results are read only beside its stamp, and only if it
+passed. It exits 1 when the stamps name more than one product commit: a
+column is one product's.
 
 The axes:
 
@@ -729,7 +732,14 @@ The axes:
 - latency;
 - footprint and bytes per frame;
 - robustness: fuzz time since the last crash;
-- fux-vt beside Ghostty's core, axis by axis;
+- fux-vt beside the best other engine, row by row (esctest's passes on one
+  denominator, the corpus beside Ghostty, instructions per byte, memory,
+  MB/s): ahead or behind only past the row's floor, a tie within it, and
+  unranked with no floor. The floors: exact for counts; the spread of the
+  repeats for instructions, or `floors.json`'s `instructions` share (in
+  percent) when measured apart; two pages over the divisor for memory (a
+  figure whose whole is under a page is under resolution); and
+  `floors.json`'s `mb_per_s` for MB/s, which is unranked without it;
 - each check's stamp.
 
 ## Files
