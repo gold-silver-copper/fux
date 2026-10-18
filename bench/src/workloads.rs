@@ -28,8 +28,9 @@
 //!   with the flags fux asks of it (5).
 //! - `encode/legacy`, `encode/kitty`: those keys encoded for a pane
 //!   (`fux::encode::key_bytes`), in legacy mode and in every kitty flag.
-//! - `wait/text`: a wait for a text that never comes (`fux::wait::Waiting`)
-//!   on four panes of a session, asked for its answer and when it is due
+//! - `wait/text`: waits for a text that never comes (`fux::wait::Waiting`),
+//!   8 armed one after another, on four panes of a session, each asked for
+//!   its answer and when it is due
 //!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
 //!   look at each output while a wait is armed.
 //! - `ready/probe`: what a pane's program is blocked in
@@ -743,44 +744,55 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     Ok(s)
 }
 
+/// Waits armed one after another on the same session, each for this many
+/// of the recordings' bytes. A wait's own maps are hashed with keys of
+/// their own, so its work differs from one wait to the next; many make a
+/// run's count steady (one alone spread over 1% from run to run).
+const WAITS: usize = 8;
+
 fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, String> {
     let mut s = session(4)?;
     let panes: Vec<_> = s.panes.keys().copied().collect();
-    let wait = fux::command::Wait {
-        until: vec![fux::command::Until::Text("a text never written".into())],
-        timeout: Some(std::time::Duration::from_secs(3600)),
-        print: true,
-        marks: false,
-    };
     let now = std::time::Instant::now();
-    let mut waiting = {
+    let arm = |s: &fux::session::Session| {
+        let wait = fux::command::Wait {
+            until: vec![fux::command::Until::Text("a text never written".into())],
+            timeout: Some(std::time::Duration::from_secs(3600)),
+            print: true,
+            marks: false,
+        };
         let shown: Vec<&fux::pane::Pane> = panes.iter().filter_map(|p| s.panes.get(p)).collect();
-        let follows = fux::wait::Follows::Action;
         fux::wait::Waiting::new(
             &shown,
             wait,
-            follows,
+            fux::wait::Follows::Action,
             now,
             std::time::Duration::from_secs(3600),
         )
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);
+    let each = bytes.len().div_ceil(WAITS).max(1);
     let mut units = 0usize;
-    for (n, read) in pieces(&bytes, PANE_READ).enumerate() {
-        let pane = panes
-            .get(n.checked_rem(panes.len()).unwrap_or(0))
-            .copied()
-            .ok_or("no pane")?;
-        for piece in pieces(read, PANE_PIECE) {
-            s.output(pane, piece);
+    let mut n = 0usize;
+    for part in pieces(&bytes, each) {
+        let mut waiting = arm(&s);
+        for read in pieces(part, PANE_READ) {
+            let pane = panes
+                .get(n.checked_rem(panes.len()).unwrap_or(0))
+                .copied()
+                .ok_or("no pane")?;
+            n = n.saturating_add(1);
+            for piece in pieces(read, PANE_PIECE) {
+                s.output(pane, piece);
+            }
+            units = units.saturating_add(read.len());
+            if baseline {
+                continue;
+            }
+            black_box(waiting.answer(&s, now));
+            black_box(waiting.due());
         }
-        units = units.saturating_add(read.len());
-        if baseline {
-            continue;
-        }
-        black_box(waiting.answer(&s, now));
-        black_box(waiting.due());
     }
     Ok(Done {
         units,
