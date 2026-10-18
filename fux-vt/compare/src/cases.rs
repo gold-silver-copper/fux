@@ -459,6 +459,7 @@ const SGR: &str = "ECMA-48 (5th edition, 1991), 8.3.117";
 const OSC8: &str = "references/modern/osc8_hyperlinks.md, \"The escape sequence\"";
 const OSC8_PAINTED: &str = "all subsequent cells that are painted are hyperlinks to this target. A hyperlink is closed with the same escape sequence, omitting the parameters and the URI";
 const DECSTR: &str = "DEC STD 070 (1991), Soft Terminal Reset (DECSTR)";
+const KITTY: &str = "references/modern/kitty_keyboard_protocol.html, \"Progressive enhancement\"";
 
 /// The expected fields of every named case in a family a standard
 /// decides (`Authority::Standard`).
@@ -760,6 +761,12 @@ pub const EXPECTED: &[Expected] = &[
         section: DECSTR,
         quote: "Cursor On/Off: on (ignore NVM); Cursor Key Mode: reset (Cursor)",
         fields: &[("cursor visible", "true"), ("application cursor", "false")],
+    },
+    Expected {
+        case: "kitty-flags",
+        section: KITTY,
+        quote: "The program can also push/pop the current flags onto a stack in the terminal with: CSI > flags u # for push ... CSI < number u # to pop number entries, defaulting to 1 if unspecified",
+        fields: &[("kitty keyboard flags", "1")],
     },
     Expected {
         case: "decstr-keeps-the-screen",

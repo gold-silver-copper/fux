@@ -1155,7 +1155,14 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "kitty",
         about: "kitty keyboard flags: push, pop and set",
-        status: Status::Agree,
+        status: Status::Decided {
+            why: "fux-vt keeps and reports only the flags fux honours, 1, 4, 8 and 16, not report event types (2), as fux sends no repeats or releases: the kitty spec's \"Detection of support\" has a program learn what a terminal implementing a subset does by setting the flags and asking. Ghostty, alacritty and wezterm, which send release events, keep 2; libvterm and avt keep no flags (`replay --engines all --size 1x1 '\\e[>3u'`). The test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "the kitty keyboard protocol's Detection of support",
+                test: "extended::kitty_keyboard_flags_push_set_pop_and_answer_queries",
+            },
+        },
         ratty_only: false,
         generate: kitty,
     },

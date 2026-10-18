@@ -404,6 +404,11 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
 
 // Kitty keyboard protocol and modifyOtherKeys.
 
+/// The flags are pushed, set, popped and reported as the kitty keyboard
+/// protocol's "Progressive enhancement" has them, and kept only as far as
+/// fux honours them, not report event types (2): the kitty keyboard
+/// protocol's Detection of support has a program learn so by setting the
+/// flags it wants and asking.
 #[test]
 fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
