@@ -508,6 +508,38 @@ Cluster"), whose emoji rules its join rule cannot meet:
   conjuncts and flags (`1x6 '\u{600}1x'`: two columns, where the join
   rule would leave one).
 
+And from UAX #29, whose clusters a row of cells cannot always hold:
+
+- **A character of no width that joins no cluster** has no cell of its
+  own: it joins the cell before the cursor, and is dropped at a row's
+  start. UAX #29 makes it a cluster of its own (GB4, GB5 and GB999), which
+  no cell can hold at no width. These are the zero-width Prepend
+  characters (U+0605 and 18 more), which so stay apart from what GB9b
+  joins them to (`1x6 'x\u{605}A'`: `x\u{605}`, `A`; xterm, through
+  glibc, gives them a column of their own); the format controls of
+  Grapheme_Cluster_Break Control (SHY, ZWSP, the bidi marks, WJ to
+  U+2064, U+FEFF), as alacritty, libvterm, vt100 and tmux keep
+  `a\u{200B}b` (xterm and Ghostty drop ZWSP); a lone vowel or trailing jamo after anything but a leading one;
+  and U+3164 and U+FFA0, the Hangul fillers.
+- **A mark after a glyph that was dropped** (wider than the screen, or
+  past the margin with autowrap off) joins the cell before the cursor, as
+  in xterm, Ghostty and tmux (`1x4 '\e[?7labc\u{4e00}\u{301}'`: `c\u{301}`),
+  where GB9 makes it part of the dropped glyph's cluster.
+- **A control does not end the cluster** but BS, HT, LF, VT, FF and CR,
+  which move the cursor: a mark after BEL or NUL joins the cell before it,
+  as in xterm, Ghostty, alacritty, libvterm, vt100 and tmux
+  (`1x4 'e\x07\u{301}'`: `e\u{301}`), where GB4 and GB5 break around a
+  Control. The control is carried out, not stored as text.
+- **A cluster's width is the width rule's, at most 2**: one wider (four
+  leading jamo, `ᄀᄀᄀᄀ`, GB6; U+0600, a Prepend character of one
+  column, before a wide glyph)
+  takes one cell of two columns. A cell once wide stays wide: a text
+  presentation selector (U+FE0E) after an emoji shown wide leaves it wide.
+  A lone regional indicator takes one column and a lone emoji modifier
+  two, as unicode-width has them. xterm keeps a cell per character
+  of its own width (`1x6 '\u{600}\u{4e00}x'`: three cells there, one
+  wide cell here).
+
 And one choice where fux-vt departs from xterm, as no standard decides it
 under UTF-8:
 
