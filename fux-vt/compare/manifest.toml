@@ -325,6 +325,12 @@ needs = ["nightly Rust", "cargo-fuzz", "the oracle's pin"]
 # --- compare.yml, on request ------------------------------------------------
 
 [[check]]
+name = "workflow-compare-unicode-tables"
+schedule = "compare"
+command = "fetch the pinned Unicode files by SHA-256, cargo run --manifest-path fux-vt/gen/Cargo.toml -- references/unicode, git diff --exit-code"
+needs = ["the Unicode 17.0.0 files from unicode.org"]
+
+[[check]]
 name = "workflow-compare-cases"
 schedule = "compare"
 command = "fux-vt/compare/run.sh cases"

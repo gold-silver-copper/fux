@@ -4,19 +4,18 @@ Generates fux-vt's grapheme segmentation and width tables, `src/unicode/tables.r
 and the conformance cases its tests run, `tests/data/GraphemeBreakTest.txt`,
 from the Unicode Character Database. Its own workspace; not published.
 
-To move to a new Unicode version, from the repository root:
+To move to a new Unicode version, change the version in
+`references/fetch.sh` (its Unicode section), fetch, and generate, from the
+repository root:
 
 ```sh
-v=17.0.0
-d=$(mktemp -d)
-for f in auxiliary/GraphemeBreakProperty.txt auxiliary/GraphemeBreakTest.txt \
-         emoji/emoji-data.txt emoji/emoji-variation-sequences.txt \
-         DerivedCoreProperties.txt EastAsianWidth.txt HangulSyllableType.txt \
-         PropList.txt UnicodeData.txt; do
-  curl -sfSL -o "$d/$(basename $f)" "https://www.unicode.org/Public/$v/ucd/$f"
-done
-cargo run --manifest-path fux-vt/gen/Cargo.toml -- "$d"
+references/fetch.sh
+cargo run --manifest-path fux-vt/gen/Cargo.toml -- references/unicode
 ```
+
+`gen` reads the files as the UCD lays them out (`ucd/auxiliary/`,
+`ucd/emoji/`). compare.yml fetches them at the pinned version, by SHA-256,
+runs `gen` and fails if what it writes differs from what is committed.
 
 Then pin `unicode-segmentation`, in fux-vt's dev-dependencies and in
 `fux-vt/fuzz`, and `unicode-width` in fux-vt's dev-dependencies, to

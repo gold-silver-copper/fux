@@ -3,20 +3,21 @@
 //! run.
 //!
 //! ```sh
-//! cargo run --manifest-path fux-vt/gen/Cargo.toml -- <ucd directory>
+//! cargo run --manifest-path fux-vt/gen/Cargo.toml -- references/unicode
 //! cargo run --manifest-path fux-vt/gen/Cargo.toml -- catalogue references
 //! ```
 //!
 //! The second form writes the conformance table's catalogue, the control
 //! functions the references define (`catalogue.rs`).
 //!
-//! The directory holds, from `https://www.unicode.org/Public/<version>/ucd/`,
-//! `auxiliary/GraphemeBreakProperty.txt`, `auxiliary/GraphemeBreakTest.txt`,
-//! `emoji/emoji-data.txt`, `emoji/emoji-variation-sequences.txt`,
-//! `DerivedCoreProperties.txt`, `EastAsianWidth.txt`,
-//! `HangulSyllableType.txt`, `PropList.txt` and `UnicodeData.txt`, all in
-//! one directory (see fux-vt/gen/README.md). The version is read from them
-//! (`UnicodeData.txt` names none), and they must agree.
+//! The first reads the Unicode files as `references/fetch.sh` lays them out,
+//! the UCD's own tree from `https://www.unicode.org/Public/<version>/`:
+//! `ucd/auxiliary/GraphemeBreakProperty.txt` and `GraphemeBreakTest.txt`,
+//! `ucd/emoji/emoji-data.txt` and `emoji-variation-sequences.txt`,
+//! `ucd/DerivedCoreProperties.txt`, `EastAsianWidth.txt`,
+//! `HangulSyllableType.txt`, `PropList.txt` and `UnicodeData.txt`. The
+//! version is read from them (`UnicodeData.txt` names none), and they must
+//! agree.
 //!
 //! Output, relative to the repository root:
 //! - `fux-vt/src/unicode/tables.rs`: sixteen bits of properties per code
@@ -85,7 +86,7 @@ const CODE_POINTS: usize = 0x11_0000;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
-    let usage = "usage: fux-vt-gen <ucd directory> | fux-vt-gen catalogue <references directory>";
+    let usage = "usage: fux-vt-gen references/unicode | fux-vt-gen catalogue references";
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut args = std::env::args_os().skip(1);
     let first = args.next().ok_or(usage)?;
@@ -93,17 +94,18 @@ fn main() -> Result<()> {
         let references = args.next().map(PathBuf::from).ok_or(usage)?;
         return catalogue::run(&references, &root.join("fux-vt/tests/data/conformance.txt"));
     }
-    let ucd = PathBuf::from(first);
+    let unicode = PathBuf::from(first);
+    let ucd = unicode.join("ucd");
 
-    let breaks = read(&ucd, "GraphemeBreakProperty.txt")?;
-    let emoji = read(&ucd, "emoji-data.txt")?;
-    let variations = read(&ucd, "emoji-variation-sequences.txt")?;
+    let breaks = read(&ucd, "auxiliary/GraphemeBreakProperty.txt")?;
+    let emoji = read(&ucd, "emoji/emoji-data.txt")?;
+    let variations = read(&ucd, "emoji/emoji-variation-sequences.txt")?;
     let derived = read(&ucd, "DerivedCoreProperties.txt")?;
     let east_asian = read(&ucd, "EastAsianWidth.txt")?;
     let hangul = read(&ucd, "HangulSyllableType.txt")?;
     let props = read(&ucd, "PropList.txt")?;
     let data = read(&ucd, "UnicodeData.txt")?;
-    let test = read(&ucd, "GraphemeBreakTest.txt")?;
+    let test = read(&ucd, "auxiliary/GraphemeBreakTest.txt")?;
     let version = version_of(&breaks, "GraphemeBreakProperty")?;
     for (text, name) in [
         (&derived, "DerivedCoreProperties"),
@@ -179,10 +181,9 @@ fn main() -> Result<()> {
 
     let tables = tables(&properties, &version)?;
     write(&root.join("fux-vt/src/unicode/tables.rs"), &tables)?;
-    write(
-        &root.join("fux-vt/tests/data/GraphemeBreakTest.txt"),
-        &conformance(&test, &version),
-    )?;
+    let data = root.join("fux-vt/tests/data");
+    let name = "GraphemeBreakTest.txt";
+    write(&data.join(name), &cases(name, &test, &version))?;
     Ok(())
 }
 
@@ -375,22 +376,31 @@ fn marks(data: &str) -> Result<Vec<bool>> {
 
 /// The two-stage table in the block size that makes it smallest.
 fn tables(properties: &[u16], version: &str) -> Result<String> {
-    let (shift, index, blocks) = (4..=10)
-        .map(|shift| {
-            let size = 1usize << shift;
-            let mut seen: HashMap<&[u16], u16> = HashMap::new();
-            let mut blocks: Vec<u16> = Vec::new();
-            let mut index = Vec::new();
-            for block in pieces(properties, size) {
-                let next = u16::try_from(seen.len()).unwrap_or(u16::MAX);
-                let id = *seen.entry(block).or_insert_with(|| {
+    let mut sizes = Vec::new();
+    for shift in 4..=10 {
+        let size = 1usize << shift;
+        let mut seen: HashMap<&[u16], u16> = HashMap::new();
+        let mut blocks: Vec<u16> = Vec::new();
+        let mut index = Vec::new();
+        for block in pieces(properties, size) {
+            let id = match seen.get(block) {
+                Some(&id) => id,
+                None => {
+                    // The index holds a block's number in 16 bits: more
+                    // distinct blocks than that is an error, not a table.
+                    let id = u16::try_from(seen.len())
+                        .map_err(|_| format!("blocks of {size}: more than 65,536 distinct"))?;
+                    seen.insert(block, id);
                     blocks.extend_from_slice(block);
-                    next
-                });
-                index.push(id);
-            }
-            (shift, index, blocks)
-        })
+                    id
+                }
+            };
+            index.push(id);
+        }
+        sizes.push((shift, index, blocks));
+    }
+    let (shift, index, blocks) = sizes
+        .into_iter()
         .min_by_key(|(_, index, blocks)| (index.len() + blocks.len()) * 2)
         .ok_or("no block size")?;
     let (major, minor, update) = {
@@ -470,12 +480,14 @@ fn pieces<T>(items: &[T], size: usize) -> impl Iterator<Item = &[T]> {
 
 /// The conformance cases without their comments: one a line, `÷` a
 /// boundary and `×` none, between hexadecimal code points.
-fn conformance(text: &str, version: &str) -> String {
-    let mut out = format!("# GraphemeBreakTest-{version}.txt, cases only (fux-vt/gen)\n");
+fn cases(name: &str, text: &str, version: &str) -> String {
+    let stem = name.trim_end_matches(".txt");
+    let mut out = format!("# {stem}-{version}.txt, cases only (fux-vt/gen)\n");
     for line in text.lines() {
         let data = line.split('#').next().unwrap_or("").trim();
         if !data.is_empty() {
-            out.push_str(data);
+            // Runs of spaces (emoji-test.txt aligns its columns) as one.
+            out.push_str(&data.split_whitespace().collect::<Vec<_>>().join(" "));
             out.push('\n');
         }
     }
