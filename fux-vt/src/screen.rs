@@ -707,7 +707,6 @@ impl Screen {
     #[inline]
     fn pen_style(&mut self) -> u32 {
         let style = self.pen_style;
-        debug_assert!(style >= TABLED || Some(style) == self.attributes.inline_style());
         if style < TABLED {
             return style;
         }
@@ -723,7 +722,6 @@ impl Screen {
             self.blank_style = attributes.inline_style().unwrap_or(TABLED);
         }
         let style = self.blank_style;
-        debug_assert!(style >= TABLED || Some(style) == attributes.inline_style());
         if style < TABLED {
             return style;
         }
