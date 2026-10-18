@@ -1180,15 +1180,25 @@ fn listed_fails(listed: Option<&Listed>, in_fux: bool) -> bool {
     }
 }
 
-/// Where `results` and the list disagree: a failure not listed, or a test
-/// listed that passes; and, `unlisted` or not, a test with no result.
+/// Where `results` and the list disagree: a failure not listed, a test
+/// listed that passes or that esctest skipped, and, in a `whole` run (no
+/// FILTER) of a terminal alone, a test listed that the suite does not
+/// have; and, `unlisted` or not, a test with no result.
 fn mismatches(
     results: &[(String, Outcome)],
     list: &BTreeMap<String, Listed>,
     in_fux: bool,
     unlisted: bool,
+    whole: bool,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    if whole && !in_fux && !unlisted {
+        for name in list.keys() {
+            if !results.iter().any(|(n, _)| n == name) {
+                out.push(format!("{name}: listed, but not in the suite: remove it"));
+            }
+        }
+    }
     for (name, outcome) in results {
         let listed = listed_fails(list.get(name), in_fux);
         match outcome {
@@ -1198,6 +1208,9 @@ fn mismatches(
             }
             Outcome::Pass { .. } if listed && !unlisted => {
                 out.push(format!("{name}: passes, but is listed: remove it"));
+            }
+            Outcome::Skip(why) if listed && !unlisted => {
+                out.push(format!("{name}: skipped ({why}), but is listed: remove it"));
             }
             // The harness gave no result: not the terminal's failure, but
             // the run is not whole.
@@ -1636,7 +1649,8 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
             // gave no result is a mismatch there.
             let unlisted = column.place == Place::Xterm || (first && request.unlisted);
             let in_fux = column.place == Place::Fux;
-            let found = mismatches(&flat, list_of(column.place), in_fux, unlisted);
+            let whole = request.filter.is_none();
+            let found = mismatches(&flat, list_of(column.place), in_fux, unlisted, whole);
             problems.extend(found.iter().map(|p| {
                 if first {
                     p.clone()
@@ -2442,13 +2456,27 @@ a
             ("A.t3".to_owned(), fail),
             ("A.t4".to_owned(), pass),
         ];
-        let direct = super::mismatches(&results, &list, false, false);
+        let direct = super::mismatches(&results, &list, false, false, false);
         assert_eq!(direct.len(), 2, "{direct:?}");
         assert!(direct.iter().any(|m| m.starts_with("A.t1: passes")));
         assert!(direct.iter().any(|m| m.starts_with("A.t2: fails")));
-        let fux = super::mismatches(&results, &list, true, false);
+        let fux = super::mismatches(&results, &list, true, false, false);
         assert_eq!(fux.len(), 2, "{fux:?}");
         assert!(fux.iter().any(|m| m.starts_with("A.t3: fails")));
+        // A listed test esctest skipped, and one the suite no longer has
+        // (looked for only in a whole run): each a mismatch.
+        let gone = super::expected("A.t1 bug: x\nA.t9 bug: gone\n")?;
+        let skipped = vec![("A.t1".to_owned(), Outcome::Skip("level 5".into()))];
+        let whole = super::mismatches(&skipped, &gone, false, false, true);
+        assert_eq!(whole.len(), 2, "{whole:?}");
+        assert!(whole.iter().any(|m| m.starts_with("A.t1: skipped")));
+        assert!(
+            whole
+                .iter()
+                .any(|m| m.starts_with("A.t9: listed, but not in the suite"))
+        );
+        let filtered = super::mismatches(&skipped, &gone, false, false, false);
+        assert_eq!(filtered.len(), 1, "{filtered:?}");
         Ok(())
     }
 
@@ -2510,7 +2538,7 @@ a
         let tally = super::Tally::of(outcomes.iter().copied());
         assert_eq!((tally.passed, tally.failed, tally.run()), (1, 0, 3));
         let list = super::expected("")?;
-        let found = super::mismatches(&tests, &list, false, true);
+        let found = super::mismatches(&tests, &list, false, true, true);
         let [found] = found.as_slice() else {
             return Err(format!("{found:?}"));
         };
