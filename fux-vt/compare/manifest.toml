@@ -359,10 +359,8 @@ needs = ["nightly Rust", "cargo-fuzz"]
 [[check]]
 name = "nightly-fuzz-explore"
 schedule = "nightly"
-command = "cargo +nightly fuzz run TARGET -- -max_total_time=300 (fux-vt's targets, a cached corpus)"
+command = "cargo +nightly fuzz run TARGET -- -max_total_time=300 (fux-vt's five targets and the oracle, each a job, a cached corpus)"
 needs = ["nightly Rust", "cargo-fuzz", "an Actions cache"]
-wired = false
-why = "fuzz.yml explores only graphemes and cells, 60 s each, with no cached corpus"
 
 [[check]]
 name = "nightly-mutation"
