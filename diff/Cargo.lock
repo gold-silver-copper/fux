@@ -56,9 +56,9 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
- "fux-vt 0.8.0",
+ "fux-vt 0.9.0",
  "fuxix 0.5.0",
  "fuxth",
  "signal-hook",
@@ -70,9 +70,9 @@ name = "fux-diff"
 version = "0.0.0"
 dependencies = [
  "fux 0.20.0",
- "fux 0.26.0",
+ "fux 0.27.0",
  "fux-vt 0.3.3",
- "fux-vt 0.8.0",
+ "fux-vt 0.9.0",
  "fuxix 0.1.6",
  "fuxix 0.5.0",
 ]
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "unicode-width",
 ]
@@ -106,7 +106,7 @@ name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
  "fux-vt 0.4.0",
- "fux-vt 0.8.0",
+ "fux-vt 0.9.0",
  "serde_json",
 ]
 
