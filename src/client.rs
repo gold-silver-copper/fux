@@ -788,7 +788,7 @@ fn run_job(
     };
     let result = (|| {
         let tokens = fuxth::token::source("key", &code)?;
-        let mut machine = script::compile(&tokens)?;
+        let mut machine = script::compile_in(keymap.config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out, false);
         script::run_capped(
             &mut machine,
@@ -1083,7 +1083,7 @@ mod tests {
     fn keys_wait_only_for_a_program_that_may_open_a_screen() {
         assert!(may_open("me me focused menu"));
         assert!(may_open("me command-prompt"));
-        assert!(!may_open("me focused opts horizontal split drop"));
+        assert!(!may_open("me focused horizontal split drop"));
         assert!(!may_open("str menu rename"));
         assert!(!may_open("1 let menu"));
         assert!(!may_open("define menu 1 end"));

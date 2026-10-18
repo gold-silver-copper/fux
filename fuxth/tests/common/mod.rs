@@ -96,7 +96,7 @@ impl Host for Toy {
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    words.add("ask", 1, 1);
+    let _ = words.add("ask", "any -- integer");
     words
 }
 
@@ -212,7 +212,13 @@ type Stop = (String, u32);
 
 /// The second interpreter.
 pub struct Naive {
-    defs: HashMap<String, Vec<Token>>,
+    defs: Vec<Def>,
+    /// What each name means from here on: a definition, by its index.
+    names: HashMap<String, usize>,
+    /// The source being run, counted.
+    source: usize,
+    /// The definition each call runs.
+    running: Vec<usize>,
     globals: HashMap<String, V>,
     /// Each call's `let` names.
     frames: Vec<HashMap<String, V>>,
@@ -229,6 +235,16 @@ pub struct Naive {
     /// The lines of the calls under way, the outermost first: a failure
     /// leaves them as they were when it happened.
     calls: Vec<u32>,
+}
+
+/// A definition: its name and body; what each name meant where it was
+/// written, itself included; and its source, a later definition of which
+/// it may call too.
+struct Def {
+    name: String,
+    body: Vec<Token>,
+    scope: HashMap<String, usize>,
+    source: usize,
 }
 
 /// Where a naive run went: the lines it reached, and, for one that failed,
@@ -309,7 +325,10 @@ impl Default for Naive {
 impl Naive {
     pub fn new() -> Naive {
         Naive {
-            defs: HashMap::new(),
+            defs: Vec::new(),
+            names: HashMap::new(),
+            source: 0,
+            running: Vec::new(),
             globals: HashMap::new(),
             frames: Vec::new(),
             stack: Vec::new(),
@@ -347,9 +366,13 @@ impl Naive {
         let library = tokens("stdlib.fux", STDLIB);
         let maybe = tokens("maybe.fux", MAYBE);
         let program = tokens("program", text);
-        let ran = (naive.exec(&library))
-            .and_then(|()| naive.exec(&maybe))
-            .and_then(|()| naive.exec(&program));
+        let source = |naive: &mut Naive, tokens: &[Token]| {
+            naive.source = naive.source.saturating_add(1);
+            naive.exec(tokens)
+        };
+        let ran = (source(&mut naive, &library))
+            .and_then(|()| source(&mut naive, &maybe))
+            .and_then(|()| source(&mut naive, &program));
         let mut failing = std::mem::take(&mut naive.calls);
         failing.extend(ran.as_ref().err().map(|(_, line)| *line));
         let ended = match ran {
@@ -464,7 +487,17 @@ impl Naive {
                         .get(i.saturating_add(2)..end)
                         .unwrap_or_default()
                         .to_vec();
-                    self.defs.insert(name, body);
+                    let id = self.defs.len();
+                    let mut scope = self.names.clone();
+                    scope.insert(name.clone(), id);
+                    self.names.insert(name.clone(), id);
+                    let source = self.source;
+                    self.defs.push(Def {
+                        name,
+                        body,
+                        scope,
+                        source,
+                    });
                     i = end.saturating_add(1);
                 }
                 "let" => {
@@ -554,14 +587,30 @@ impl Naive {
         if let Some(v) = self.globals.get(text).cloned() {
             return self.push(v);
         }
-        if let Some(body) = self.defs.get(text).cloned() {
+        // As the name meant where it was written; in a definition, one
+        // unknown there is the source's later definition of it.
+        let def = match self.running.last().and_then(|d| self.defs.get(*d)) {
+            Some(def) => def.scope.get(text).copied().or_else(|| {
+                let later = |d: &&Def| d.name == text && d.source == def.source;
+                self.defs.iter().position(|d| later(&d))
+            }),
+            None => self.names.get(text).copied(),
+        };
+        if let Some(id) = def {
+            let body = self
+                .defs
+                .get(id)
+                .map(|d| d.body.clone())
+                .unwrap_or_default();
             if self.frames.len() >= LIMITS.calls {
                 return Err(err("calls", at));
             }
             self.frames.push(HashMap::new());
+            self.running.push(id);
             self.calls.push(at);
             let ran = self.exec(&body);
             self.frames.pop();
+            self.running.pop();
             // A failure keeps the calls it happened inside.
             if ran.is_ok() {
                 self.calls.pop();
@@ -804,10 +853,10 @@ const LITERALS: [&str; 12] = [
     "4294967296",
 ];
 
-const LIBRARY_WORDS: [&str; 30] = [
-    "dup", "swap", "over", "rot", "true", "false", "nip", "tuck", "-rot", "2dup", "2drop",
-    "negate", "abs", "min", "max", "ne", "le", "ge", "gt", "not", "mod", "reverse", "sort",
-    "upper", "chars", "sum", "first", "last", "glue", "cat",
+const LIBRARY_WORDS: [&str; 28] = [
+    "dup", "swap", "over", "rot", "true", "false", "nip", "-rot", "2dup", "2drop", "negate", "abs",
+    "min", "max", "ne", "le", "ge", "gt", "not", "mod", "reverse", "sort", "upper", "sum", "first",
+    "last", "glue", "cat",
 ];
 
 const CORE_WORDS: [&str; 18] = [
@@ -831,10 +880,27 @@ impl<'a> Gen<'a> {
 
     /// A whole program: some definitions, then the top level.
     pub fn program(mut self) -> String {
-        for n in 0..self.rng.below(4) {
-            let name = format!("w{n}");
+        // Now and then a library word's name, which it hides from there on.
+        let names: Vec<String> = (0..self.rng.below(4))
+            .map(
+                |n| match (self.rng.chance(5), ["abs", "even", "sum"].get(n)) {
+                    (true, Some(word)) => (*word).to_owned(),
+                    (true, None) | (false, _) => format!("w{n}"),
+                },
+            )
+            .collect();
+        for (n, name) in names.iter().enumerate() {
+            let name = name.clone();
             self.put(&["define", &name]);
-            if self.rng.chance(10) {
+            if names.len() > 1 && self.rng.chance(20) {
+                // Words calling each other, counting down: n -- …, the next
+                // one called, written after it or the first.
+                let next = n.saturating_add(1).checked_rem(names.len()).unwrap_or(0);
+                let next = names.get(next).cloned().unwrap_or_default();
+                self.put(&["dup", "0", "gt", "if", "1", "sub"]);
+                self.seq(3, 1);
+                self.put(&[&next, "then"]);
+            } else if self.rng.chance(10) {
                 // Recursion that may never return: at 0 it calls itself
                 // again, at once; else it uses what the rest of it takes.
                 self.put(&["dup", "0", "eq", "if", "drop", "0", &name, "else"]);
@@ -998,7 +1064,7 @@ impl<'a> Gen<'a> {
                     | "let"
                     | "glue"
                     | "cat"
-                    | "chars"
+                    | "words"
                     | "sum"
                     | "pick"
                     | "roll"
@@ -1062,14 +1128,13 @@ impl<'a> Gen<'a> {
                     w
                 }
                 62..=69 if above >= 2 => {
-                    let w = self.rng.pick(&["swap", "over", "nip", "tuck", "2dup"]);
+                    let w = self.rng.pick(&["swap", "over", "nip", "2dup"]);
                     let b = stack.pop().unwrap_or('i');
                     let a = stack.pop().unwrap_or('i');
                     let after: &[char] = match w {
                         "swap" => &[b, a],
                         "over" => &[a, b, a],
                         "nip" => &[b],
-                        "tuck" => &[b, a, b],
                         _ => &[a, b, a, b],
                     };
                     stack.extend(after);
@@ -1092,7 +1157,7 @@ impl<'a> Gen<'a> {
                         0 => ("len", 'i'),
                         1 => ("upper", 's'),
                         2 => ("reverse", 's'),
-                        3 => ("chars", 'l'),
+                        3 => ("words", 'l'),
                         _ => ("sort", 's'),
                     };
                     stack.pop();

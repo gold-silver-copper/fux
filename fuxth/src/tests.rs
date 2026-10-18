@@ -65,10 +65,12 @@ fn with_stdlib() -> Compiler<Ticket> {
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    words.add("ticket", 0, 1);
-    words.add("ask", 1, 1);
-    words.add("nope", 0, 0);
-    words.add("liar", 0, 1);
+    let added = (words.kind("ticket", "a ticket"))
+        .and_then(|()| words.add("ticket", "-- ticket"))
+        .and_then(|_| words.add("ask", "any -- any"))
+        .and_then(|_| words.add("nope", "--"))
+        .and_then(|_| words.add("liar", "-- any"));
+    assert!(added.is_ok(), "{added:?}");
     words
 }
 
@@ -258,7 +260,8 @@ fn mistakes_are_found_before_anything_runs() {
         ("1 ask then", "unmatched"),
         ("1 ask end", "unmatched"),
         ("begin 1 ask then", "unmatched"),
-        ("define dup 1 end", "bad_name"),
+        ("define drop 1 end", "bad_name"),
+        ("define x 1 end define x 2 end", "bad_name"),
         ("define 12 end", "bad_name"),
         ("define if end", "bad_name"),
         ("1 if define x end then", "not_top_level"),
@@ -310,13 +313,22 @@ fn errors_at_run_time_say_what_and_where() {
     );
 }
 
+/// A definition may call one written after it, in the same source; a
+/// `let` name is read only after it, and a word no one defines fails
+/// before anything runs.
 #[test]
-fn nothing_is_used_before_it_is_defined() {
+fn a_definition_may_call_one_written_after_it() -> Result<(), Error> {
     assert_eq!(code(run("define peek x end 1 let x")), Some("unknown_word"));
     assert_eq!(
-        code(run("define early later end define later 1 end")),
+        run("define early later end define later 1 end early")?,
+        ints(&[1])
+    );
+    assert_eq!(
+        code(run("define early never end 1 ask")),
         Some("unknown_word")
     );
+    assert_eq!(code(run("early define early 1 end")), Some("unknown_word"));
+    Ok(())
 }
 
 #[test]
@@ -557,7 +569,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
     assert_eq!(
         said("ticket 1 add"),
-        "type: t:1: add: add takes an integer, not a ticket"
+        "type: t:1: add: add takes an integer, not a ticket under the top"
     );
     assert_eq!(
         said("1 ticket lt"),
@@ -988,5 +1000,321 @@ fn what_mutation_testing_found() -> Result<(), Error> {
     let shallower = "list list list 1 end end end 0 5 put let x \
         0 begin list x end let x 1 add dup 63 eq until drop x len";
     assert_eq!(run(shallower)?, ints(&[1]));
+    Ok(())
+}
+
+/// A host with kinds of its own: a ticket, and a draft (a ticket marked,
+/// which must be issued). `ticket` (-- ticket); `mark` (x -- x: a ticket
+/// becomes a draft, a draft stays one); `issue` (draft -- ticket); `later`
+/// (-- ticket), answered when the machine resumes.
+#[derive(Clone, Debug, PartialEq)]
+enum Paper {
+    Ticket,
+    Draft,
+}
+
+impl AppValue for Paper {
+    fn kind(&self) -> &'static str {
+        match self {
+            Paper::Ticket => "a ticket",
+            Paper::Draft => "a draft",
+        }
+    }
+}
+
+/// The desk: how often it was called; and, if `lying`, `mark` gives a
+/// ticket, not the draft it says.
+struct Desk {
+    calls: usize,
+    lying: bool,
+}
+
+impl Host for Desk {
+    type Value = Paper;
+    type Request = ();
+    fn call(
+        &mut self,
+        word: usize,
+        args: Args<'_, Paper>,
+        out: &mut Vec<Value<Paper>>,
+    ) -> Result<Done<()>, Failure> {
+        drop(args);
+        self.calls = self.calls.saturating_add(1);
+        let given = match (word, self.lying) {
+            (1, false) => Paper::Draft,
+            (3, _) => return Ok(Done::Later(())),
+            _ => Paper::Ticket,
+        };
+        out.push(Value::App(given));
+        Ok(Done::Now)
+    }
+
+    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+        Ok(())
+    }
+}
+
+fn desk_words() -> Result<Vocabulary, Error> {
+    let mut words = Vocabulary::default();
+    words.kind("ticket", "a ticket")?;
+    words.kind("draft", "a draft")?;
+    words.must_use("draft", "a draft nothing issues: end it with issue")?;
+    words.name("x", "draft ticket>draft", "a ticket or a draft")?;
+    words.add("ticket", "-- ticket")?;
+    words.add("mark", "x -- x")?;
+    words.add("issue", "draft -- ticket")?;
+    words.add("later", "-- ticket")?;
+    Ok(words)
+}
+
+/// `text` at the desk, a later word answered with `answer`: what it left,
+/// or its error; and how often the desk was called.
+fn at_desk(text: &str, lying: bool, answer: Paper) -> (Result<Vec<Value<Paper>>, Error>, usize) {
+    let mut desk = Desk { calls: 0, lying };
+    let ran = (|| {
+        let mut compiler = Compiler::new(desk_words()?);
+        compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
+        compiler.add(&token::source("t", text)?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        loop {
+            match machine.run(&mut desk, 1)? {
+                Outcome::Finished => return Ok(machine.stack().to_vec()),
+                Outcome::Suspended(()) => machine.push(Value::App(answer.clone()))?,
+                Outcome::Paused => {}
+            }
+        }
+    })();
+    (ran, desk.calls)
+}
+
+/// The checker knows the application's kinds from its words' effects: a
+/// value of a kind a word never takes, or one that must be used left at
+/// the end, is refused before the application is called once.
+#[test]
+fn the_applications_kinds_are_checked_before_it_is_called() {
+    let said = |text: &str| {
+        let (ran, calls) = at_desk(text, false, Paper::Ticket);
+        (ran.err().map(|e| e.to_string()), calls)
+    };
+    assert_eq!(
+        at_desk("ticket mark mark issue", false, Paper::Ticket).0,
+        Ok(vec![Value::App(Paper::Ticket)])
+    );
+    assert_eq!(
+        said("ticket ticket issue"),
+        (
+            Some("type: t:1: issue: takes a draft, not a ticket".to_owned()),
+            0
+        )
+    );
+    assert_eq!(
+        said("ticket 1 mark"),
+        (
+            Some("type: t:1: mark: takes a ticket or a draft, not an integer".to_owned()),
+            0
+        )
+    );
+    assert_eq!(
+        said("ticket mark 1 2 add"),
+        (
+            Some("unused: t:1: mark: a draft nothing issues: end it with issue".to_owned()),
+            0
+        )
+    );
+    // Through a definition, and a kind passed through a word.
+    assert_eq!(said("define go ticket issue end go").1, 0);
+    assert_eq!(said("define go mark mark end ticket go issue").0, None);
+    // What its kinds can't show (a list's element) passes, for the
+    // application to check as it runs; one left that must be used is
+    // found as the program ends.
+    let (ran, calls) = at_desk("list ticket end 0 at issue", false, Paper::Ticket);
+    assert_eq!((ran.map(|v| v.len()), calls), (Ok(1), 2));
+    let (ran, _) = at_desk("list ticket mark end 0 at", false, Paper::Ticket);
+    assert_eq!(
+        ran.map_err(|e| e.to_string()),
+        Err("unused: t:1: at: a draft nothing issues: end it with issue".to_owned())
+    );
+}
+
+/// An application that gives a kind its word doesn't say is caught where
+/// it gives it: as the word returns, or as the machine resumes.
+#[test]
+fn a_kind_given_is_held_to_the_word() {
+    let (ran, _) = at_desk("ticket mark issue", true, Paper::Ticket);
+    assert_eq!(
+        ran.map_err(|e| e.to_string()),
+        Err(
+            "contract: t:1: mark: the application gave a ticket, and its word says a draft"
+                .to_owned()
+        )
+    );
+    let (ran, _) = at_desk("later", false, Paper::Draft);
+    assert_eq!(
+        ran.map_err(|e| e.to_string()),
+        Err(
+            "contract: t:1: later: the application gave a draft, and its word says a ticket"
+                .to_owned()
+        )
+    );
+    // An effect is read strictly: a name no kind has is refused.
+    let mut words = Vocabulary::default();
+    assert_eq!(
+        words.add("odd", "pane -- ").map_err(|e| e.code.name()),
+        Err("contract")
+    );
+    assert_eq!(
+        words.add("odd", "pane").map_err(|e| e.code.name()),
+        Err("contract")
+    );
+}
+
+/// Words calling each other, two and three of them, deeply (calls in last
+/// place, through the group, keep one frame), and a recursive descent
+/// parser; the checker sums each up quickly.
+#[test]
+fn words_may_call_each_other() -> Result<(), Error> {
+    let checked = |text: &str| -> Result<std::time::Duration, Error> {
+        let started = std::time::Instant::now();
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", text)?)?;
+        compiler.finish()?;
+        Ok(started.elapsed())
+    };
+    let parity = "define is-even dup 0 eq if drop true else 1 sub is-odd then end\n\
+        define is-odd dup 0 eq if drop false else 1 sub is-even then end\n";
+    assert_eq!(
+        run(&format!("{parity}10 is-even 7 is-even"))?,
+        [Value::Bool(true), Value::Bool(false)]
+    );
+    let three = "define a dup 0 eq if drop str a else 1 sub b then end\n\
+        define b dup 0 eq if drop str b else 1 sub c then end\n\
+        define c dup 0 eq if drop str c else 1 sub a then end\n";
+    assert_eq!(
+        run(&format!("{three}7 a 9 a"))?,
+        [Value::str("b"), Value::str("a")]
+    );
+    // Deeper than calls may nest, as a loop.
+    let mut compiler = with_stdlib();
+    compiler.add(&token::source("t", &format!("{three}300001 a"))?)?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    assert_eq!(
+        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?,
+        Outcome::Finished
+    );
+    assert_eq!(machine.stack(), [Value::str("b")]);
+    let descent = "define expr\n\
+          let i let s s i term let i let v\n\
+          begin i s len lt if s i at str + eq else false then\n\
+            if s i 1 add term let i v add let v false else true then until\n\
+          v i\n\
+        end\n\
+        define term\n\
+          let i let s s i factor let i let v\n\
+          begin i s len lt if s i at str * eq else false then\n\
+            if s i 1 add factor let i v mul let v false else true then until\n\
+          v i\n\
+        end\n\
+        define factor\n\
+          let i let s\n\
+          s i at str ( eq if s i 1 add expr 1 add else s i at code 48 sub i 1 add then\n\
+        end\n";
+    assert_eq!(
+        run(&format!("{descent}str 2*(3+4)+1 0 expr drop"))?,
+        ints(&[15])
+    );
+    // A kind mistake through the group is found before it runs.
+    let wrong = format!("{parity}3 is-odd 1 add");
+    assert_eq!(code(run(&wrong)), Some("type"));
+    for text in [parity, three, descent] {
+        assert!(checked(text)? < std::time::Duration::from_secs(1), "{text}");
+    }
+    Ok(())
+}
+
+/// A source that fails to compile leaves the compiler as it was: none of
+/// its definitions, nothing waiting for a later one.
+#[test]
+fn a_failed_add_leaves_the_compiler_as_it_was() -> Result<(), Error> {
+    let mut compiler = with_stdlib();
+    compiler.add(&token::source("t", "define good 1 end")?)?;
+    let failed = compiler.add(&token::source(
+        "u",
+        "define a later end define b 2 end frob",
+    )?);
+    assert_eq!(failed.map_err(|e| e.code.name()), Err("unknown_word"));
+    let pending = compiler.add(&token::source("u", "define a later end")?);
+    assert_eq!(pending.map_err(|e| e.code.name()), Err("unknown_word"));
+    compiler.add(&token::source("v", "define b 5 end good b")?)?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    assert_eq!(
+        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?,
+        Outcome::Finished
+    );
+    assert_eq!(machine.stack(), ints(&[1, 5]).as_slice());
+    Ok(())
+}
+
+/// A definition may take a library word's name: the program's from there
+/// on, the library's words keeping their own.
+#[test]
+fn a_definition_may_hide_a_library_word() -> Result<(), Error> {
+    assert_eq!(run("define count 7 end count")?, ints(&[7]));
+    let max = "define max drop drop 0 end list 3 9 2 end largest 1 2 max";
+    assert_eq!(run(max)?, ints(&[9, 0]));
+    assert_eq!(
+        run("define ticket 3 end ticket")?,
+        ints(&[3]),
+        "the application's too"
+    );
+    Ok(())
+}
+
+/// An unknown word is told with what was likely meant.
+#[test]
+fn an_unknown_word_says_what_was_meant() {
+    let said = |text: &str| run(text).err().map(|e| e.message).unwrap_or_default();
+    assert_eq!(said("1 drp"), "no such word; did you mean drop or dup?");
+    assert_eq!(said("1 2 swpa"), "no such word; did you mean swap?");
+    assert_eq!(said("Hello"), "no such word; text is `str Hello`");
+    assert_eq!(
+        said("'two words'"),
+        "no such word; text is `str 'two words'`"
+    );
+    assert_eq!(said("frob"), "no such word");
+    assert_eq!(said("str ab rever"), "no such word; did you mean reverse?");
+}
+
+/// Calls nested too deep are told at the word that calls itself, with the
+/// word it called last.
+#[test]
+fn too_deep_names_the_word_that_recurses() {
+    let said = run("define deep dup 0 gt drop 1 add deep 1 add end 0 deep")
+        .err()
+        .map(|e| e.to_string());
+    assert_eq!(
+        said.as_deref(),
+        Some("call_depth: t:1: deep: calls nest past 100: recursion too deep (in gt)")
+    );
+}
+
+/// A compiler of another's definitions sees them, wherever written; not
+/// its top level, nor its `let` names, nor a definition reading one.
+#[test]
+fn definitions_serve_a_program_of_their_own() -> Result<(), Error> {
+    let mut config = with_stdlib();
+    let text = "5 let n define five n end define seven five 2 add end define six 6 end str x print";
+    config.add(&token::source("c", text)?)?;
+    let scope = config.definitions();
+    let ran = |text: &str| -> Result<Vec<Value<Ticket>>, Error> {
+        let mut compiler = scope.clone();
+        compiler.add(&token::source("b", text)?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?;
+        Ok(machine.stack().to_vec())
+    };
+    assert_eq!(ran("six")?, ints(&[6]));
+    assert_eq!(code(ran("five")), Some("unset"));
+    assert_eq!(code(ran("seven")), Some("unset"));
+    assert_eq!(code(ran("n")), Some("unknown_word"));
     Ok(())
 }

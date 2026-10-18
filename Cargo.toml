@@ -21,7 +21,7 @@ fux-vt = { path = "fux-vt", version = "0.10.0" }
 signal-hook = "0.4"
 unicode-width = "0.2"
 fuxix = { path = "fuxix", version = "0.6.0" }
-fuxth = { path = "fuxth", version = "0.3.0" }
+fuxth = { path = "fuxth", version = "0.4.0" }
 
 # The tests' sandbox (tests/support/sandbox.rs): a seccomp filter such as
 # Codex's, installed with a safe call, since the tests forbid unsafe code.

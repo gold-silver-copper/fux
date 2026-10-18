@@ -5,7 +5,7 @@
 define fact dup 1 gt if dup 1 sub fact mul else drop 1 then end
 
 # n -- n!, counting down with the product under the counter
-define fact-loop 1 swap begin dup 1 gt if tuck mul swap 1 sub false else true then until drop end
+define fact-loop 1 swap begin dup 1 gt if swap over mul swap 1 sub false else true then until drop end
 
 0 fact
 1 fact

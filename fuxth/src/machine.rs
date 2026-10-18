@@ -10,6 +10,7 @@ use crate::compile::{Op, Program};
 use crate::error::{Code, Error, Failure, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, NESTING, TOTAL, Text, Value};
+use crate::vocabulary::through;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -123,6 +124,15 @@ pub const BUILT: u64 = 16_000_000;
 /// Elements a long step goes through for each step it costs.
 const PER_STEP: u64 = 64;
 
+/// What an application word is to give: it is checked once it has, now
+/// or when the machine resumes. The stack's depth before it gave anything,
+/// the word, and the kinds it took.
+struct Given {
+    depth: usize,
+    word: usize,
+    taken: Vec<crate::check::Kinds>,
+}
+
 /// A call under way: which code (`None`, the top level), its next step, and
 /// where its `let` names start.
 #[derive(Clone, Copy, Debug)]
@@ -153,9 +163,8 @@ pub struct Machine<A> {
     limits: Limits,
     /// What application words give, kept between calls.
     out: Vec<Value<A>>,
-    /// A suspended application word: the stack's depth before it gave
-    /// anything, and how many values it gives.
-    pending: Option<(usize, usize)>,
+    /// A suspended application word: what it is to give.
+    pending: Option<Given>,
     /// Steps the last long step costs beyond its own.
     extra: u64,
     /// Steps taken in all, through every run, long steps' costs counted.
@@ -254,15 +263,6 @@ impl<A: AppValue> Machine<A> {
             .or_else(|| self.program.token(frame.code, frame.step).cloned())
     }
 
-    /// The token of the step it takes next: in the frame it is in or, past
-    /// that frame's end, in the one it returns to; none at the program's
-    /// end. A host that stopped it may look at what its program does next
-    /// with what it answers.
-    pub fn next(&self) -> Option<Token> {
-        let token = |frame: &Frame| self.program.token(frame.code, frame.step);
-        self.frames.iter().rev().find_map(token).cloned()
-    }
-
     /// The token of the step before `step` in `code`: none at its first.
     fn before(&self, code: Option<usize>, step: usize) -> Option<Token> {
         self.program.token(code, step.checked_sub(1)?).cloned()
@@ -311,8 +311,12 @@ impl<A: AppValue> Machine<A> {
                 self.leave();
                 continue;
             };
-            // Past its last step, a definition returns.
+            // Past its last step, a definition returns; the program ends,
+            // leaving no value that must be used.
             let Some(op) = code.ops.get(frame.step) else {
+                if depth == 1 {
+                    self.used()?;
+                }
                 self.leave();
                 continue;
             };
@@ -324,8 +328,13 @@ impl<A: AppValue> Machine<A> {
                 Op::PickN(n) => self.pick(*n)?,
                 Op::RollN(n) => self.roll(*n)?,
                 Op::App(id) => {
-                    let (takes, gives) = program.vocabulary.effect(*id);
-                    let from = self.depth(takes)?;
+                    let words = &program.vocabulary;
+                    let word = words.word(*id);
+                    let from = self.depth(word.map_or(0, |w| w.takes.len()))?;
+                    // The kinds it takes, for what it passes through.
+                    let taken = (self.stack.iter().skip(from))
+                        .map(|v| words.kind_of(v))
+                        .collect();
                     let mut out = std::mem::take(&mut self.out);
                     out.clear();
                     let args = Args {
@@ -334,8 +343,16 @@ impl<A: AppValue> Machine<A> {
                         at: from,
                     };
                     let done = host.call(*id, args, &mut out);
-                    let done = done.map_err(|f| self.fail(f.code, f.message))?;
-                    let given = (self.stack.len(), gives);
+                    let done = done.map_err(|f| {
+                        let mut error = self.fail(f.code, f.message);
+                        error.word = f.word.or(error.word);
+                        error
+                    })?;
+                    let given = Given {
+                        depth: self.stack.len(),
+                        word: *id,
+                        taken,
+                    };
                     if self.stack.len().saturating_add(out.len()) > self.limits.stack {
                         return Err(self.fail(Code::StackOverflow, "the stack is full"));
                     }
@@ -359,9 +376,7 @@ impl<A: AppValue> Machine<A> {
                         via = Some(frame.via.unwrap_or((frame.code, frame.step)));
                         self.leave();
                     } else if self.frames.len() > self.limits.calls {
-                        let message =
-                            format!("calls nest past {}: recursion too deep", self.limits.calls);
-                        return Err(self.fail(Code::CallDepth, message));
+                        return Err(self.too_deep());
                     }
                     let base = self.locals.len();
                     let slots = program.words.get(*id).map_or(0, |w| w.locals);
@@ -444,17 +459,74 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Whether an application word gave as many values as its vocabulary
-    /// says: the checker counted on it. `depth` is the stack's before it
-    /// gave any. Kept out of `run`'s loop: inlined there, it made every
-    /// program 2 to 5% slower (fuxth's bench).
+    /// says, of the kinds it says: the checker counted on it. Kept out of
+    /// `run`'s loop: inlined there, it made every program 2 to 5% slower
+    /// (fuxth's bench).
     #[inline(never)]
-    fn given(&self, (depth, gives): (usize, usize)) -> Result<(), Error> {
-        let given = self.stack.len().saturating_sub(depth);
-        if given == gives {
-            return Ok(());
+    fn given(&self, given: Given) -> Result<(), Error> {
+        let words = &self.program.vocabulary;
+        let gives = words.word(given.word).map_or(&[][..], |w| &w.gives);
+        let values = self.stack.get(given.depth..).unwrap_or_default();
+        if values.len() != gives.len() {
+            let message = format!(
+                "the application gave {} values, and its word says {}",
+                values.len(),
+                gives.len()
+            );
+            return Err(self.fail(Code::Contract, message));
         }
-        let message = format!("the application gave {given} values, and its word says {gives}");
-        Err(self.fail(Code::Contract, message))
+        for (value, (from, map)) in values.iter().zip(gives) {
+            let taken = from.and_then(|i| given.taken.get(i).copied());
+            let may = through(map, taken.unwrap_or(ANY));
+            let kind = words.kind_of(value);
+            if !kind.may_be(may) {
+                let (kind, may) = (words.describe(kind), words.describe(may));
+                let message = format!("the application gave {kind}, and its word says {may}");
+                return Err(self.fail(Code::Contract, message));
+            }
+        }
+        Ok(())
+    }
+
+    /// At the program's end: a value left that must be used fails it.
+    fn used(&self) -> Result<(), Error> {
+        let words = &self.program.vocabulary;
+        match self
+            .stack
+            .iter()
+            .find_map(|v| words.unused(words.kind_of(v)))
+        {
+            Some(why) => Err(self.fail(Code::Unused, why)),
+            None => Ok(()),
+        }
+    }
+
+    /// Calls nested past the limit: said at the call to the word that
+    /// calls itself, the innermost such (not one it called last, which may
+    /// be a library's), naming the word it called last.
+    #[cold]
+    fn too_deep(&self) -> Error {
+        let message = format!("calls nest past {}: recursion too deep", self.limits.calls);
+        let mut error = self.fail(Code::CallDepth, message);
+        let mut seen = std::collections::HashMap::new();
+        for frame in &self.frames {
+            let count: &mut usize = seen.entry(frame.code).or_default();
+            *count = count.saturating_add(1);
+        }
+        // The call that began each frame, from the frame below it.
+        let begun = (self.frames.iter().zip(self.frames.iter().skip(1))).rev();
+        let recursing = begun
+            .filter(|(_, frame)| seen.get(&frame.code).is_some_and(|n| *n > 1))
+            .find_map(|(caller, _)| self.before(caller.code, caller.step));
+        if let Some(call) = recursing.filter(|call| Some(&call.text) != error.word.as_ref()) {
+            let last = error.word.as_deref().unwrap_or_default().to_owned();
+            error = Error::new(
+                Code::CallDepth,
+                format!("{} (in {last})", error.message),
+                Some(&call),
+            );
+        }
+        error
     }
 
     fn jump(&mut self, to: usize) {

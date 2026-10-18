@@ -1936,7 +1936,7 @@ impl Session {
                 Some(Armed::Before(target)) => (target, *wait, Some(command)),
                 // Started, then waited for from its first output on.
                 Some(Armed::Started) => return Ok(self.start_waiting(&command, *wait, origin)),
-                None => return Err(fail(Code::Unused, "this command takes no wait")),
+                None => return Err(fail(fuxth::Code::Unused, "this command takes no wait")),
             },
             Request::Wait(target, wait) => (target, wait, None),
             // Read once the pane settles, said with its state.
@@ -3692,7 +3692,7 @@ pub(crate) mod testing {
 /// `inputs` as pane `p`'s program takes them, a piece at a time
 /// (`Unit`): text typed in a row is one piece, keys that
 /// edit the line in a row another, and each other key, a lone Escape
-/// and a paste each their own. So in `keys str msg text str Enter key` the Enter is
+/// and a paste each their own. So in `%2 str msg text str Enter key` the Enter is
 /// read alone, as a submit, not as a newline pasted with the text, and
 /// what follows each piece is told apart (`crate::classify`).
 fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
@@ -3864,11 +3864,11 @@ mod tests {
     #[test]
     fn keys_for_several_panes_go_to_all_or_none() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        run(&mut s, "%1 opts split drop")?;
+        run(&mut s, "%1 split drop")?;
         let second = s.panes.get_mut(&PaneId::of(2)).ok_or("no %2")?;
         // Its program reads nothing: the queue refuses everything now.
         assert!(second.input.push(vec![0; 1 << 30]).is_err());
-        let sent = run(&mut s, "@1 keys str x text send-keys");
+        let sent = run(&mut s, "@1 str x text send-keys");
         assert!(sent.is_err_and(|e| e.contains("not_reading")), "refused");
         let first = s.panes.get(&PaneId::of(1)).ok_or("no %1")?;
         assert_eq!(first.input.len(), 0, "the first pane got none");
@@ -3929,7 +3929,7 @@ mod tests {
         run(&mut s, "opts str +1 workspace in new-tab")?;
         let size = |s: &Session, p| s.panes.get(&PaneId::of(p)).map(Pane::size);
         assert_eq!(size(&s, 2), Some(crate::pane::size(10, 40)));
-        run(&mut s, "str %2 pane opts vertical split")?;
+        run(&mut s, "str %2 pane vertical split")?;
         let (top, bottom) = (size(&s, 2), size(&s, 3));
         let rows = top
             .zip(bottom)
@@ -3950,7 +3950,7 @@ mod tests {
     fn ls_of_a_target_lists_what_is_in_it() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts str +1 workspace in new-tab")?;
-        run(&mut s, "str %2 pane opts vertical split")?;
+        run(&mut s, "str %2 pane vertical split")?;
         let ids = |only| {
             let text = s.ls_text(Some(only));
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
@@ -3980,7 +3980,7 @@ mod tests {
     #[test]
     fn json_outputs_are_what_they_were() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(4, 30)?;
-        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, r#"str %1 pane str 'say "hi" \ 界' rename"#)?;
         run(&mut s, "opts str +1 workspace in str two name new-tab")?;
         run(&mut s, "str c1 client str @1 tab show-tab")?;
@@ -4005,7 +4005,7 @@ mod tests {
             )
         );
         assert_eq!(
-            quiet(output(&mut s, "str %2 pane opts capture json")?),
+            quiet(output(&mut s, "str %2 pane capture json")?),
             concat!(
                 r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
                 "\n"
@@ -4033,7 +4033,7 @@ mod tests {
                 .map(|n| n.text.clone())
         };
         // Two panes: the tab stays.
-        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str %1 pane horizontal split")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
@@ -4051,7 +4051,7 @@ mod tests {
     fn a_pane_moved_beside_another_stays_out_of_empty_tabs()
     -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
-        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, "opts str +1 workspace in new-tab")?;
         run(&mut s, "str %3 pane str @1 tab move-to")?;
         run(&mut s, "str %1 pane str right move-beside")?;
@@ -4127,10 +4127,10 @@ mod tests {
         clean(&mut s);
         for line in [
             "ls",
-            "str %1 pane opts capture",
+            "str %1 pane capture",
             "list-keys",
-            "str %1 pane keys str x text send-keys",
-            "str c1 client keys str x text send-keys",
+            "str %1 pane str x text send-keys",
+            "str c1 client str x text send-keys",
         ] {
             run(&mut s, line)?;
         }
@@ -4143,7 +4143,7 @@ mod tests {
             !dirty(&s, one) && !dirty(&s, two),
             "a failure repaints no one"
         );
-        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str %1 pane horizontal split")?;
         assert!(
             dirty(&s, one) && dirty(&s, two),
             "a split repaints every client"
@@ -4272,7 +4272,7 @@ mod tests {
             ),
             ("opts str '' name new-workspace", "a name cannot be empty or blank".to_owned()),
             (
-                "str %1 pane opts horizontal str 'a\nb' typed split",
+                "str %1 pane horizontal str 'a\nb' typed split",
                 r#"the command argument "a\nb" contains the control character '\n'; it would act as a key in the shell"#.to_owned(),
             ),
             ("opts str main name new-workspace", r#"a workspace is named "main""#.to_owned()),
@@ -4335,7 +4335,7 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b]2;spool\x07");
         assert_eq!(output(&mut s, "str spool pane")?, "%1\n");
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
-        let json = output(&mut s, "%1 opts capture json")?;
+        let json = output(&mut s, "%1 capture json")?;
         assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
         let made = output(&mut s, "opts str 'sh -c \"exit 0\"' command run")?;
         assert!(made.starts_with('%'), "{made}");
@@ -4350,7 +4350,7 @@ mod tests {
     fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
-            let json = output(s, &format!("%1 opts {read} capture json"))?;
+            let json = output(s, &format!("%1 {read} capture json"))?;
             let after = json.split("\"cursor\":").nth(1).unwrap_or_default();
             Ok(after
                 .split(",\"lines\"")
@@ -4380,9 +4380,9 @@ mod tests {
         assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
         s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
-        let json = output(&mut s, "%1 opts marks capture json")?;
+        let json = output(&mut s, "%1 marks capture json")?;
         assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
-        let inverted = output(&mut s, "%1 opts 5 2 rows capture");
+        let inverted = output(&mut s, "%1 5 2 rows capture");
         assert!(
             inverted.as_ref().is_err_and(|e| e.starts_with("range: ")),
             "{inverted:?}"
@@ -4396,14 +4396,14 @@ mod tests {
     #[test]
     fn an_actions_answer_is_its_pane() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
-        assert_eq!(output(&mut s, "%1 opts wait str name get")?, "sh\n");
+        assert_eq!(output(&mut s, "%1 wait str name get")?, "sh\n");
         assert_eq!(
-            output(&mut s, "%1 opts wait dup tab swap workspace")?,
+            output(&mut s, "%1 wait dup tab swap workspace")?,
             "@1\n+1\n"
         );
-        let alone = output(&mut s, "%1 opts wait json")?;
+        let alone = output(&mut s, "%1 wait json")?;
         assert!(alone.starts_with(r#"{"pane":"%1","state":"#), "{alone}");
-        let listed = output(&mut s, "list %1 opts wait end json")?;
+        let listed = output(&mut s, "list %1 wait end json")?;
         assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
         Ok(())
     }
@@ -4418,7 +4418,7 @@ mod tests {
             Ok(out) => format!("ran: {out}"),
             Err(error) => error,
         };
-        let timeout = failed(&mut s, "%1 opts -1 timeout wait");
+        let timeout = failed(&mut s, "%1 -1 timeout wait");
         assert!(timeout.starts_with("range: "), "{timeout}");
         assert!(
             timeout.contains("-1 is out of range: from 0 (use: "),
@@ -4426,9 +4426,9 @@ mod tests {
         );
         let mouse = failed(&mut s, "%1 str click -1 0 mouse send-mouse");
         assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
-        let times = failed(&mut s, "keys str a text str 2 times");
+        let times = failed(&mut s, "%1 str a text str 2 times");
         assert!(times.starts_with("type: "), "{times}");
-        let none = failed(&mut s, "keys str a text 0 times");
+        let none = failed(&mut s, "%1 str a text 0 times send-keys");
         assert!(
             none.contains("0 is out of range: 1 to 1000 (use: "),
             "{none}"
@@ -4445,23 +4445,26 @@ mod tests {
             upper.contains("(use: S upper") && !upper.contains("each"),
             "{upper}"
         );
-        // A capture's option given a pane says where it goes.
+        // A capture's option given what is no pane says where it goes.
         for (code, shown) in [
-            ("%1 last-output", "fux %3 opts last-output capture"),
-            ("%1 0 4 rows", "fux %3 opts 0 4 rows capture"),
+            ("%1 capture last-output", "fux %3 last-output capture"),
+            ("%1 capture 0 4 rows", "fux %3 0 4 rows capture"),
         ] {
             let option = failed(&mut s, code);
-            assert!(option.contains("(use: a capture option, OPTS "), "{option}");
+            assert!(
+                option.contains("(use: a capture option, PANE-OR-OPTS "),
+                "{option}"
+            );
             assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
         }
-        let env = failed(&mut s, "opts str 1bad str v env");
+        let env = failed(&mut s, "opts str 1bad str v env new-tab");
         assert!(env.contains("not first a digit"), "{env}");
         let missing = failed(&mut s, "str /no/such/file.fux check");
         assert!(missing.contains("No such file"), "{missing}");
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
         // A tab in a waited text is a blank, as in the screen's.
-        run(&mut s, "%1 opts str 'ready\tnow' wait-text drop drop")?;
+        run(&mut s, "%1 str 'ready\tnow' wait-text drop")?;
         Ok(())
     }
 

@@ -11,7 +11,7 @@ columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 
 ## A pane
 
-`ls json` gives each pane these; `PANE opts capture json` gives them too, but
+`ls json` gives each pane these; `PANE capture json` gives them too, but
 for `id`, `name`, `title` and `pid` (it says `pane`):
 
 | Field | Value |
@@ -55,7 +55,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 a number or boolean as itself, a string as text, `null` as an answer that
 prints `null` (`string` makes it the text).
 
-## `PANE opts capture json`
+## `PANE capture json`
 
 ```json
 {"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…}
@@ -130,14 +130,9 @@ dropped or taken by a word gives none. A wait for a text, a bell or the exit tha
 fails (the program exited first or was started again, 3; the pane closed,
 4; the shell command `wait-done` waited on ended first, 5; the time limit, 124) ends the
 program with that status and says why on stderr, one line, `fux: CODE:
-MESSAGE`; its answer is printed first, as text, or as JSON when `json`
-follows it, `output` its pane's last lines (three when its program exited,
-one at the time limit; none for a pane closed or started again):
-
-```json
-{"pane":"%3","state":"busy","status":124,"code":"timeout","output":"y\n"}
-```
-
+MESSAGE`; its answer is printed first, as text, with its pane's last
+lines (three when its program exited, one at the time limit; none for a
+pane closed or started again). Nothing after the wait runs, `json` either.
 The answers of the words before it are printed first too. A wait on a
 tab's or a workspace's panes answers a line each, the first failing status
 naming the whole.

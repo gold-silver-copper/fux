@@ -494,7 +494,6 @@ fn start(
                         "str",
                         "%1",
                         "pane",
-                        "keys",
                         "str",
                         &line,
                         "text",
@@ -505,7 +504,7 @@ fn start(
                     ];
                     session.command(place, &args)?;
                 } else {
-                    let mut args = vec!["str", "%1", "pane", "opts", "horizontal"];
+                    let mut args = vec!["str", "%1", "pane", "horizontal"];
                     args.extend(program_words(p));
                     args.push("split");
                     session.command(place, &args)?;

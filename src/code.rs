@@ -178,8 +178,6 @@ codes! {
     Output "output",
     /// A word that may not run inside another's run.
     Nested "nested",
-    /// An option given to a word that takes none of it.
-    Unused "unused",
     /// A key name no key has.
     NotAKey "not_a_key",
     /// Options with no program, where one is needed.

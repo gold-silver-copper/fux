@@ -8,15 +8,16 @@ use support::*;
 fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
         "str C-a prefix\n\
-         str y str 'me focused opts vertical split drop' bind\n\
+         str y str split-below bind\n\
+         define split-below me focused vertical split drop end\n\
          str h unbind\n\
-         str g str 'me focused opts horizontal str \"echo from-g\" typed split drop' bind\n\
+         str g str 'me focused horizontal str \"echo from-g\" typed split drop' bind\n\
          str Tools group\n",
     )?;
     let mut client = server.attach(24, 90)?;
     client.wait_for("$")?;
     client.ready()?;
-    // C-a y splits; C-b is an ordinary key now.
+    // C-a y splits, by a word of the config's; C-b is an ordinary key now.
     client.keys("\x01y")?;
     eventually("split by C-a y", || {
         client.pump()?;
@@ -59,7 +60,7 @@ fn settings_reach_the_server() -> Outcome {
     // Three rows of two cells or more: 24 bytes a row and 8 a cell.
     let server = Server::start("str history-bytes 120 set")?;
     // History bytes apply to new panes.
-    let pane = server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
+    let pane = server.ok(&["str", "%1", "pane", "vertical", "split"])?;
     let pane = pane.split_whitespace().next().unwrap_or_default();
     server.type_line(
         pane,
@@ -68,7 +69,7 @@ fn settings_reach_the_server() -> Outcome {
     eventually("the loop", || {
         Ok(server.ok(&["str", pane, "pane", "screen"])?.contains("h15"))
     })?;
-    let history = server.ok(&["str", pane, "pane", "opts", "100", "history", "capture"])?;
+    let history = server.ok(&["str", pane, "pane", "100", "history", "capture"])?;
     let rows = history.lines().count();
     let screen = server.ok(&["str", pane, "pane", "screen"])?.lines().count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
@@ -80,7 +81,7 @@ fn settings_reach_the_server() -> Outcome {
         "/usr/bin/env PS1=custom$ /bin/sh",
         "set",
     ])?;
-    let custom = server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    let custom = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     eventually("the custom prompt", || {
         Ok(server
             .ok(&[
@@ -131,6 +132,39 @@ fn a_bad_config_is_reported() -> Outcome {
     );
     std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
     assert!(server.ok(&["str", &path, "check"])?.ends_with(": ok\n"));
+    // A binding sees the config's definitions, written anywhere in it; a
+    // mistake in one, or in a binding, is said at its own line and word.
+    let ok = "str v str sr bind\ndefine sr me focused horizontal split drop end\n";
+    std::fs::write(&config, ok).map_err(e)?;
+    assert!(server.ok(&["str", &path, "check"])?.ends_with(": ok\n"));
+    for (text, said) in [
+        (
+            "str C-a prefix\nstr v str sr bind\n",
+            "config.fux:2: sr: no such word, in the binding for v",
+        ),
+        (
+            "define go %2 capture str x text end\n",
+            "config.fux:1: text: takes a pane",
+        ),
+        (
+            "5 let n\ndefine go n end\nstr v str go bind\n",
+            "config.fux:3: go: reads let names",
+        ),
+    ] {
+        std::fs::write(&config, text).map_err(e)?;
+        let checked = server.fux(&["str", &path, "check"])?;
+        assert_eq!(checked.status, 1, "{text}");
+        let stderr = checked
+            .stderr
+            .strip_prefix("fux: check: ")
+            .unwrap_or_default();
+        assert!(
+            stderr.starts_with(&path.replace("config.fux", "")),
+            "{}",
+            checked.stderr
+        );
+        assert!(stderr.contains(said), "{}", checked.stderr);
+    }
     Ok(())
 }
 

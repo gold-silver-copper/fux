@@ -130,7 +130,7 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             let deadline = after(wait);
             while Instant::now() < deadline {
                 let shown = fixture
-                    .fux(&["str", pane, "pane", "opts", "500", "history", "capture"])
+                    .fux(&["str", pane, "pane", "500", "history", "capture"])
                     .map(|o| o.stdout.contains(&marker))
                     .unwrap_or(false);
                 if shown {

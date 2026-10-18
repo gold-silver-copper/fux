@@ -49,7 +49,6 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
         "str",
         "%1",
         "pane",
-        "opts",
         "vertical",
         "str",
         "echo \"from cli\"",
@@ -219,7 +218,7 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     })?;
     // From the CLI: 2 | (1 / 3), then 2 moves right, beside 1 (the nearer
     // of 1 and 3 by centre, then by number): (1 | 2) / 3.
-    server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
+    server.ok(&["str", "%1", "pane", "vertical", "split"])?;
     server.ok(&["str", "%2", "pane", "str", "right", "move-beside"])?;
     assert_eq!(size(&server, "%3")?.1, 81, "3 spans the width");
     assert_eq!(
@@ -235,7 +234,7 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
 /// (its program sleeps, so it never settles): the state line dropped.
 fn captured(server: &Server, pane: &str) -> Result<Vec<String>, String> {
     Ok(server
-        .ok(&["str", pane, "pane", "opts", "0", "timeout", "capture"])?
+        .ok(&["str", pane, "pane", "0", "timeout", "capture"])?
         .lines()
         .skip(1)
         .map(str::to_owned)
@@ -265,7 +264,7 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
         Some("last-line"),
         "{before:?}"
     );
-    server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
+    server.ok(&["str", "%1", "pane", "vertical", "split"])?;
     client.wait("two panes", |t| t.contains("%2"))?;
     eventually("the shrunk pane", || {
         let rows = captured(&server, "%1")?;

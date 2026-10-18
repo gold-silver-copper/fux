@@ -66,7 +66,7 @@ thread_local! {
 
 fn library() -> Result<Compiler<Nothing>, Error> {
     let mut words = Vocabulary::default();
-    words.add("ask", 1, 1);
+    let _ = words.add("ask", "any -- integer");
     let mut compiler = Compiler::new(words);
     compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
     let maybe = "define maybe dup 0 gt if else drop then end";

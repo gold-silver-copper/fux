@@ -68,11 +68,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     // what has its number there.
     let pane = server.ok(&["str", "%1", "pane", "str", "id", "get"])?;
     let theirs = [("FUX_PANE", pane.trim()), ("FUX_SERVER", "another-run")];
-    let stray = named(
-        &rt,
-        &["str", "t", "server", "here", "opts", "capture"],
-        &theirs,
-    )?;
+    let stray = named(&rt, &["str", "t", "server", "here", "capture"], &theirs)?;
     assert_eq!(stray.status, 1);
     assert!(
         stray.stderr.contains("another fux server"),
@@ -95,7 +91,6 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         "str",
         sh,
         "pane",
-        "keys",
         "str",
         &line,
         "text",
@@ -236,20 +231,14 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     ];
     let a = server.ok(&[&["opts", "str", "a", "name"][..], &bash, &["run"]].concat())?;
     let a = first_word(&a);
-    let b = server.ok(&[
-        &["str", a, "pane", "opts", "horizontal"][..],
-        &bash,
-        &["split"],
-    ]
-    .concat())?;
+    let b = server.ok(&[&["str", a, "pane", "horizontal"][..], &bash, &["split"]].concat())?;
     let b = first_word(&b);
-    server.ok(&["str", b, "pane", "opts", "wait"])?;
+    server.ok(&["str", b, "pane", "wait"])?;
     let both = server.ok(&[
         "str",
         a,
         "pane",
         "tab",
-        "keys",
         "str",
         "echo both-$((40+2))",
         "text",
@@ -267,7 +256,6 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
             a,
             "pane",
             "tab",
-            "opts",
             "str",
             "both-42",
             "wait-text",
@@ -401,7 +389,7 @@ fn a_crashed_server_comes_back() -> Outcome {
         "run",
     ])?;
     let app = first_word(&app);
-    let shell = server.ok(&["str", app, "pane", "opts", "horizontal", "split"])?;
+    let shell = server.ok(&["str", app, "pane", "horizontal", "split"])?;
     let shell = first_word(&shell);
     server.ok(&["str", app, "pane", "70", "resize-x"])?;
     let before = server.ok(&["ls"])?;
@@ -458,16 +446,7 @@ fn a_crashed_server_comes_back() -> Outcome {
     );
     let paused = ["str", app, "pane", "str", "paused", "get"];
     assert_eq!(server.ok(&paused)?, "true\n");
-    server.ok(&[
-        "str",
-        app,
-        "pane",
-        "opts",
-        "str",
-        "up",
-        "wait-text",
-        "respawn",
-    ])?;
+    server.ok(&["str", app, "pane", "str", "up", "wait-text", "respawn"])?;
     assert_eq!(server.ok(&paused)?, "false\n");
     server.ok(&["force-kill-server"])?;
     eventually("the layout forgotten", || {
@@ -524,7 +503,6 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "str",
         pane.trim(),
         "pane",
-        "opts",
         "vertical",
         "str",
         "sh",
@@ -559,7 +537,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "{ls}\nfrom\n{dump}"
     );
     let (made, _) = server.newest_pane()?;
-    server.ok(&["str", &made, "pane", "str", "built", "await"])?;
+    server.ok(&["str", &made, "pane", "str", "built", "wait-text", "wait"])?;
     // A workspace `run` made: its dump takes the workspace from the answer
     // `run` leaves.
     server.ok(&[
@@ -593,7 +571,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&[&file.to_string_lossy()])?;
-    let named = server.ok(&["str", "tab-2", "pane", "opts", "0", "timeout", "wait"])?;
+    let named = server.ok(&["str", "tab-2", "pane", "0", "timeout", "wait"])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains(&format!("{} sleep ", first_word(&named))),
@@ -780,7 +758,6 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             "str",
             sh,
             "pane",
-            "keys",
             "str",
             "echo door-$((40+2))",
             "text",
@@ -793,7 +770,7 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             keys.contains(READING) && keys.contains("\ndoor-42\n"),
             "{keys}"
         );
-        let capture = server.ok(&["str", sh, "pane", "opts", "capture", "json"])?;
+        let capture = server.ok(&["str", sh, "pane", "capture", "json"])?;
         assert!(
             capture.starts_with('{') && capture.contains("door-42"),
             "{capture}"
@@ -1042,8 +1019,7 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
-    let server =
-        Server::start("str j str 'me focused opts str never-comes wait-text wait drop' bind")?;
+    let server = Server::start("str j str 'me focused str never-comes wait-text wait drop' bind")?;
     let mut terminal = support::sandbox::sandboxed(|| Terminal::attach(&server, 12, 50, &[]))?;
     assert!(support::sandbox::filtered(terminal.child.id()));
     terminal.wait_for("%1 sh")?;

@@ -459,12 +459,12 @@ impl Wait {
                 // How to wait longer, which the limit's 30s often is not.
                 let mut longer = format!(
                     "to wait longer, the same with SECS timeout among its options \
-                     (`{id} opts … 300 timeout wait`)"
+                     (`{id} 300 timeout wait`)"
                 );
                 if pane.screen().commands().running() {
                     longer.push_str(&format!(
                         ", or with wait-done for as long as its shell command runs \
-                         (`{id} opts … wait-done wait`)"
+                         (`{id} wait-done wait`)"
                     ));
                 }
                 let end = failed(Code::Timeout, format!("{}; {longer}", why(reason, hint)));
@@ -476,7 +476,7 @@ impl Wait {
         match met {
             Some(met) => notes.push(met),
             None if state == State::Busy => {
-                notes.push((format!("`{id} opts wait` waits on"), Vec::new()));
+                notes.push((format!("`{id} wait` waits on"), Vec::new()));
             }
             None => {}
         }
@@ -668,7 +668,7 @@ impl Watch {
         there.then_some(
             "the text is on the screen, but on a line that reads as it did when the wait \
              began (nothing printed it since; drawn again the same, it brings nothing new); \
-             read it with `PANE opts capture`",
+             read it with `PANE capture`",
         )
     }
 
@@ -683,7 +683,7 @@ impl Watch {
         }
         self.echo_skipped.then_some(
             "the text was only in the echo of what was typed, which a wait never takes; \
-             wait for text only the output has, or read the screen with `PANE opts capture`",
+             wait for text only the output has, or read the screen with `PANE capture`",
         )
     }
 
@@ -1374,7 +1374,7 @@ mod tests {
         use crate::command::{Until, Wait};
         use std::time::{Duration, Instant};
         let mut session = crate::session::testing::started(crate::config::Config::default())?;
-        crate::session::testing::run(&mut session, "%1 opts horizontal split")?;
+        crate::session::testing::run(&mut session, "%1 horizontal split")?;
         let ids = [crate::id::PaneId::of(1), crate::id::PaneId::of(2)];
         let panes: Vec<_> = ids.iter().filter_map(|id| session.panes.get(id)).collect();
         let wait = Wait {

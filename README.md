@@ -45,8 +45,8 @@ values from a stack and leaving its own.
 ```sh
 fux ls                                            # what there is
 fux opts str htop program run                     # start htop; answers its pane, %3, and screen
-fux str %3 pane str Load await                    # wait until it shows "Load"
-fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 0
+fux %3 str Load wait-text wait                    # wait until it shows "Load"
+fux %3 str q text send-keys                       # press q; answers: %3 exited 0
 ```
 
 - A number is a value; `%3`, `@2` and `+1` alone are a pane, a tab and a
@@ -74,8 +74,8 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
   is 0): 3 the program exited first, 4 the pane closed, 5 the shell
   command a `wait-done` lasted for ended first,
   7 the program reads its terminal and the waited text has not come, 124
-  still busy at the time limit (`SECS timeout`, on the options or keys or
-  on the pane before them, `%3 0 timeout str ls line`; the `wait-seconds`
+  still busy at the time limit (`SECS timeout` on the pane,
+  `%3 0 timeout str ls line`; the `wait-seconds`
   setting, 30, by default; `0 timeout` answers at once). A wait met by its program's exit
   (`wait-exit`) exits 0: the program's own status is in the answer
   (`%3 exited 2`, `str exited get`), not in fux's.
@@ -91,33 +91,38 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
   leaves) and `SEQ each … end` (its body once per element of a string or
   list). Values are integers (checked: an overflow fails; `div` truncates
   toward zero), booleans, strings, lists, and fux's own (panes, options …).
+  A word may call one defined after it in the same file, and a definition
+  may take a library word's name (from there on; the core's words are kept).
 - Everything else is the standard library, written in fuxth: `dup swap over
   rot`, `not and or gt min max mod abs`, text (`words lines split-on trim
   upper lower number join contains starts-with pad`), lists (`range sort
   reverse sum count first last pack`) and more; `fux help` lists them all.
 - A program is checked before it runs: a word given fewer values than the
-  stack surely holds, or a value the language's own words never take (`str a
-  1 add`, `1 if`), fails before any word acts. What can't be known before it
-  runs (a loop that leaves values) is never refused. fux's own words check
-  what kind of value they get as they run.
+  stack surely holds, a value its words never take (`str a 1 add`, `1 if`,
+  `%3 capture str x text`), or a request left that no word acts on
+  (`%3 str x wait-text`), fails before any word acts. What can't be known
+  before it runs (a loop that leaves values, a list's elements) is never
+  refused, and is checked as it runs.
 - No word is a character a shell treats specially, so a program needs no
   quoting beyond the text you give `str`.
 
-`fux help` lists every word with what it takes and leaves (`pane opts --
-pane`); `fux help WORD` (`fux str WORD explain`) says one at length, with
+`fux help` lists every word with what it takes and leaves (`x secs -- x`);
+`fux help WORD` (`fux str WORD explain`) says one at length, with
 its options and an example;
 `fux help-agents` is the recipe for scripts and agents
 ([docs/agents.md](docs/agents.md)), and `fux help-json` what `json` gives
 ([docs/json.md](docs/json.md)).
 
-Words that start, wait, type and read build their request from **options**:
-`opts` is empty options, and words add to them before the word that acts.
+What a word that acts takes (**options**, a wait, keys, a mouse event) goes
+on the pane before it, in any order: the pane given them becomes a request,
+which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
+no pane yet: they start from `opts`, empty options.
 
 ```sh
-fux opts str app name 120 40 size str './app --verbose' command run
-fux str %3 pane opts str ready wait-text 30 timeout wait
-fux str %3 pane opts 200 history joined capture
-fux str %3 pane keys str 'make test' text str Enter key send-keys
+fux opts str web name 120 40 size str './app --verbose' command run
+fux %3 str ready wait-text 30 timeout wait
+fux %3 200 history joined capture
+fux %3 str 'make test' text str Enter key send-keys
 ```
 
 A program can name what it made:
@@ -128,9 +133,8 @@ fux opts str sh program run let P   P str 'echo hi' line   P screen
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
 and a key into a pane), `line` (a line typed, then the shell's command
-waited for), `screen` (a capture), `await` (text waited for), `settle` (the
-pane waited for to settle), `exited`, `launch` and `shell` (a tab with a
-shell in workspace `agent`).
+waited for), `screen` (a capture) and `shell` (a tab with a shell in
+workspace `agent`).
 
 ### Finding things
 
@@ -176,7 +180,7 @@ prefix again sends it to the pane.
 | --- | --- | --- |
 | `h` `j` `k` `l` | `me str left focus` … | focus the pane that way |
 | `o` / `q` | `me str next focus` / `me str last focus` | focus the next / last pane |
-| `v` / `s` | `me focused opts horizontal split drop` / `… vertical …` | split side by side / stacked |
+| `v` / `s` | `me focused horizontal split drop` / `… vertical …` | split side by side / stacked |
 | `x` | `me me focused confirm-close` | close the pane (asks `y`/`n`) |
 | `z` | `me zoom` | zoom the pane, or restore it |
 | `a` | `me me focused menu` | pane actions |
@@ -206,7 +210,7 @@ are free for your own bindings; `fux list-keys` prints them all.
   on the item it was opened for, even once renamed, and closes if that item
   is gone.
 - **The command prompt** (`e`) runs fuxth as your client, `me` and all
-  (`me focused opts vertical str htop program split`), and shows what it
+  (`me focused vertical str htop program split`), and shows what it
   printed, or its failure, in the bar. It and the rename prompts edit with
   the arrows, Home, End, Backspace and Delete.
 - **A key's program** runs as your client, one at a time. While one that may
@@ -263,12 +267,12 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | Words | Do |
 | --- | --- |
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
-| `pane opts split`, `opts new-tab`, `opts new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
-| `pane opts respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane opts … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
-| `pane keys … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
+| `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
+| `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
+| `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
+| `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
-| `pane opts … capture` | the pane's text, trimmed; `N history`, `all-history`, `joined`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
+| `pane … capture` | the pane's text, trimmed; `N history`, `all-history`, `joined`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
 | `ls`, `X info`, `X str FIELD get` | everything; one pane, tab or workspace; one field of its JSON, as a number, boolean or text |
 | `events`, `X events-of` (and `-json`) | what happens, a line each as it happens: made, closed, moved, renamed; a program's exit, respawn, title, size, bells, notifications; a shell command's end |
 | `X kill`, `X str NAME rename`, `X str TEXT notify` | close (without asking), rename, a notice on the clients showing it |
@@ -297,7 +301,7 @@ version, and primary ones (`CSI c`) a VT220-class terminal.
 ### JSON
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
-`pane opts capture json`, `client capture-client json`, an action's answer
+`pane capture json`, `client capture-client json`, an action's answer
 `… wait json`, `status json`, `servers json`; `events-json` and
 `events-of-json` stream an object a line. These shapes are part of fux's
 interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
@@ -329,10 +333,11 @@ str shell str '/bin/zsh -l' set
 str clipboard str off set
 
 unbind-all                                        # optional: start from no bindings
-str v str 'me focused opts horizontal split drop' bind
+define split-right me focused horizontal split drop end   # a word of the config's
+str v str split-right bind
 str 't n' str 'opts new-tab drop' bind            # t is a layer: C-b t n
 str 'r l' str 'me focused str right 1 move-border' bind  repeat   # C-b r l l l, then Esc
-str g str 'me focused opts vertical str lazygit program split drop' bind
+str g str 'me focused vertical str lazygit program split drop' bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 ```
@@ -352,7 +357,9 @@ str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 | `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
-are typed, as your client (`me`). `bind` takes the keys after the prefix,
+are typed, as your client (`me`). A binding, and the command prompt, may use
+the config's definitions, written anywhere in it; not its `let` names (a
+definition that reads one is refused there, with that reason). `bind` takes the keys after the prefix,
 space-separated (`str 't n'` makes `t` a layer); `bind-root` one key, with
 no prefix, which then never reaches any program: bind chords or function
 keys rather than letters. A key sequence is a binding or a layer, never
@@ -428,7 +435,7 @@ back with the same ids: shells start fresh in their directories; a program
 - **Hooks** (tmux's `set-hook`): read `fux events` and run fux
   instead.
 - **Programs that outlive their server**: a crash ends them; the next server
-  brings back the layout, and `PANE opts respawn` starts each again.
+  brings back the layout, and `PANE respawn` starts each again.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str
   FIELD get` for one value.
 - **Watching the config file**: a client runs it as it attaches.

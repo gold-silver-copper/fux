@@ -36,7 +36,7 @@ fn a_read_only_client_watches_and_can_only_detach() -> Outcome {
     watcher.keys("echo typed\r")?;
     watcher.wait("the notice", |t| t.contains("watching only"))?;
     watcher.keys("\x02c")?;
-    let screen = server.ok(&["str", "%1", "pane", "opts", "capture"])?;
+    let screen = server.ok(&["str", "%1", "pane", "capture"])?;
     assert!(
         !screen.contains("typed"),
         "its keys reached the pane: {screen}"
@@ -166,22 +166,22 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     client.wait_for("$")?;
     client.keys("for i in 1 2 3 4 5 6 7 8; do echo line$i; done\r")?;
     client.wait("the loop", |t| t.lines().any(|l| l == "line8"))?;
-    let screen = server.ok(&["str", "%1", "pane", "opts", "capture"])?;
+    let screen = server.ok(&["str", "%1", "pane", "capture"])?;
     assert!(screen.contains("line8"), "{screen}");
     assert!(
         !screen.contains("line1\n"),
         "line1 has scrolled into history: {screen}"
     );
-    let history = server.ok(&["str", "%1", "pane", "opts", "20", "history", "capture"])?;
+    let history = server.ok(&["str", "%1", "pane", "20", "history", "capture"])?;
     assert!(history.contains("line1\n"), "{history}");
-    let json = server.ok(&["str", "%1", "pane", "opts", "capture", "json"])?;
+    let json = server.ok(&["str", "%1", "pane", "capture", "json"])?;
     assert!(
         json.starts_with("{\"pane\":\"%1\",\"rows\":5,\"cols\":30,\"cursor\":["),
         "{json}"
     );
     assert!(json.contains("\"line8\""), "{json}");
     // From inside the pane, FUX_PANE is `here`.
-    let inside = server.fux_env(&["here", "opts", "capture"], &[("FUX_PANE", "%1")])?;
+    let inside = server.fux_env(&["here", "capture"], &[("FUX_PANE", "%1")])?;
     assert_eq!(inside.status, 0);
     assert!(inside.stdout.contains("line8"));
     Ok(())
@@ -629,7 +629,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     eventually("the program's report", || {
         // It sleeps, so it never settles: `0 timeout` looks at once. The
         // answer's first line is the pane's state.
-        let screen = server.ok(&["str", pane, "pane", "opts", "0", "timeout", "capture"])?;
+        let screen = server.ok(&["str", pane, "pane", "0", "timeout", "capture"])?;
         let mut lines = (screen.lines().skip(1)).skip_while(|l| l.trim().is_empty());
         fields = lines
             .next()

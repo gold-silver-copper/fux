@@ -15,8 +15,6 @@ define rot 2 roll end
 define -rot 2 roll 2 roll end
 # a b -- b : the value under the top dropped
 define nip 1 roll drop end
-# a b -- b a b : a copy of the top put under the value below it
-define tuck 1 roll 1 pick end
 # a b -- a b a b : copies of the top two
 define 2dup 1 pick 1 pick end
 # a b -- : the top two dropped
@@ -61,8 +59,6 @@ define even 2 mod 0 eq end
 # ---- Kinds (kind gives integer, boolean, string, list, or the host's kind)
 # x -- flag : whether x is an integer
 define is-int kind str integer eq end
-# x -- flag : whether x is a boolean
-define is-bool kind str boolean eq end
 # x -- flag : whether x is a string
 define is-string kind str string eq end
 # x -- flag : whether x is a list
@@ -99,12 +95,10 @@ define remove
   s i at drop
   s 0 i slice s i 1 add s len slice cat
 end
-# s -- list : a string's characters, as a list of one-character strings
-define chars let s list s unpack end end
 # from to -- list : from, from+1, …, to-1 (empty when to is at most from)
 define range
   let to
-  empty swap begin dup to lt if tuck push swap 1 add false else true then until drop
+  empty swap begin dup to lt if swap over push swap 1 add false else true then until drop
 end
 # n e -- n^e : n to the power e, e at least 0
 define pow
@@ -170,7 +164,7 @@ define sort-list
   then
 end
 # seq -- seq : sorted with lt, smallest first (to sort by a key, sort lists that start with it)
-define sort dup is-string if chars sort-list glue else sort-list then end
+define sort dup is-string if let s list s unpack end sort-list glue else sort-list then end
 # x1 … xn n -- list : the top n values as a list, the deepest first
 define pack
   let n

@@ -61,8 +61,12 @@ codes! {
     DivByZero "div_by_zero",
     /// Arithmetic past what an integer holds.
     Overflow "overflow",
-    /// A `let` name read before its `let` ran.
+    /// A `let` name read before its `let` ran, or one a definition reads
+    /// where it is not set (a key binding's, of its config's).
     Unset "unset",
+    /// A value of a kind the application says must be used, left at the
+    /// program's end.
+    Unused "unused",
     /// An index or slice past a string's or list's end, or a number out of
     /// a word's range (a character code, a negative depth).
     Range "range",
@@ -84,6 +88,9 @@ pub struct Error {
     pub message: String,
     pub place: Option<Place>,
     pub word: Option<Rc<str>>,
+    /// The step that fails inside the word, for a call every way through
+    /// which fails.
+    pub cause: Option<Box<Error>>,
 }
 
 impl Error {
@@ -94,20 +101,30 @@ impl Error {
             message: message.into(),
             place: at.map(|t| t.place.clone()),
             word: at.map(|t| Rc::clone(&t.text)),
+            cause: None,
         }
     }
 
     /// Where it happened and why, as `Display` writes them after its code:
     /// `PLACE: WORD: MESSAGE`.
     pub fn located(&self) -> String {
-        // An empty word (`define ''`) is said in its message, not here.
-        let word = self.word.as_deref().filter(|w| !w.is_empty());
-        match (&self.place, word) {
-            (Some(place), Some(word)) => format!("{place}: {word}: {}", self.message),
-            (Some(place), None) => format!("{place}: {}", self.message),
-            (None, Some(word)) => format!("{word}: {}", self.message),
-            (None, None) => self.message.clone(),
+        match &self.place {
+            Some(place) => format!("{place}: {}", self.said()),
+            None => self.said(),
         }
+    }
+
+    /// `WORD: MESSAGE`, and its cause's after: what it says but where.
+    fn said(&self) -> String {
+        // An empty word (`define ''`) is said in its message, not here.
+        let mut said = match self.word.as_deref().filter(|w| !w.is_empty()) {
+            Some(word) => format!("{word}: {}", self.message),
+            None => self.message.clone(),
+        };
+        if let Some(cause) = &self.cause {
+            said = format!("{said}: {}", cause.said());
+        }
+        said
     }
 }
 
@@ -183,6 +200,9 @@ pub(crate) fn underflow(takes: &str, n: usize, has: &str, inside: bool) -> Strin
 pub struct Failure {
     pub code: Code,
     pub message: String,
+    /// The word to name where it failed, if not the application's word:
+    /// one in a program the word was given (a key binding's).
+    pub word: Option<Rc<str>>,
 }
 
 impl Failure {
@@ -190,6 +210,7 @@ impl Failure {
         Self {
             code,
             message: message.into(),
+            word: None,
         }
     }
 }

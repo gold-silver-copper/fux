@@ -17,6 +17,7 @@ use crate::compile::{Op, Program, Steps};
 use crate::error::{Code, Error, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
+use crate::vocabulary::{Vocabulary, through};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::mem::take;
 
@@ -34,45 +35,47 @@ const WIDEN_AFTER: u32 = 3;
 /// taken as anything at all.
 const RECURSION_ROUNDS: u32 = 8;
 
-/// The kinds a value may be: a set, a bit for each `Kind`.
+/// The kinds a value may be: a set, a bit for each `Kind`, then one for
+/// each of the application's own (`Vocabulary::kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Kinds(u8);
+pub(crate) struct Kinds(u32);
 
 pub(crate) const INT: Kinds = Kinds::one(Kind::Int);
 const BOOL: Kinds = Kinds::one(Kind::Bool);
 pub(crate) const STR: Kinds = Kinds::one(Kind::Str);
 pub(crate) const LIST: Kinds = Kinds::one(Kind::List);
-pub(crate) const ANY: Kinds = Kinds(Kind::BITS);
+pub(crate) const ANY: Kinds = Kinds(u32::MAX);
 /// A string or a list.
 pub(crate) const SEQ: Kinds = STR.union(LIST);
 
 impl Kinds {
-    const fn one(kind: Kind) -> Self {
+    pub(crate) const NONE: Kinds = Kinds(0);
+
+    pub(crate) const fn one(kind: Kind) -> Self {
         Self(kind.bit())
     }
 
-    const fn union(self, other: Self) -> Self {
+    /// The application's kind `i`: the bits past `Kind::App`'s, which is
+    /// a value of a kind it never named.
+    pub(crate) fn host(i: usize) -> Self {
+        let shift = u32::try_from(i).map_or(u32::MAX, |i| i.saturating_add(1));
+        Self(Kind::App.bit().checked_shl(shift).unwrap_or(0))
+    }
+
+    pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
-    const fn and(self, other: Self) -> Self {
+    pub(crate) const fn and(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
-    const fn may_be(self, kind: Self) -> bool {
-        self.0 & kind.0 != 0
+    pub(crate) const fn not(self) -> Self {
+        Self(!self.0)
     }
 
-    /// As an error says it: "an integer or a string".
-    fn describe(self) -> String {
-        if self == ANY {
-            return "any value".to_owned();
-        }
-        let said: Vec<&str> = (Kind::ALL.into_iter())
-            .filter(|kind| self.may_be(Self::one(*kind)))
-            .map(Kind::said)
-            .collect();
-        said.join(" or ")
+    pub(crate) const fn may_be(self, kind: Self) -> bool {
+        self.0 & kind.0 != 0
     }
 }
 
@@ -165,8 +168,8 @@ const GIVEN: usize = 8;
 enum Special {
     /// How it ends given them.
     Does(End),
-    /// Every way through it fails given them: why.
-    Fails(String),
+    /// Every way through it fails given them: the first step that does.
+    Fails(Box<Error>),
     /// Nothing more is known than its summary says.
     Unknown,
 }
@@ -196,6 +199,9 @@ enum Failing {
     },
     /// Its values can't be the kinds it takes.
     Type(String),
+    /// A call, which every way through what it calls fails: how it is
+    /// given, and the first step there that fails.
+    Fails(String, Box<Error>),
 }
 
 /// How the ways through a code that don't come back ended: the least any
@@ -378,12 +384,36 @@ fn count(n: usize) -> i64 {
 /// Checks `program`: the first step that surely fails, if one does.
 pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Error> {
     definitions(program, &mut known);
-    let main = State::start(true);
-    let error = Unit::new(program, &program.main, main, &known, None).first_error();
-    match earliest(known.first, error) {
-        Some(error) => Err(error),
-        None => Ok(()),
+    let first = known.first.take();
+    let main = Unit::new(program, &program.main, State::start(true), &known, None);
+    if let Some(error) = earliest(first, main.first_error()) {
+        return Err(error);
     }
+    // A value that must be used, surely left at the end: said at the last
+    // word that gives one, else the program's last.
+    let words = &program.vocabulary;
+    let (ops, tokens) = (&program.main.ops, &program.main.tokens);
+    let exit = main
+        .ends(false)
+        .and_then(|(mut states, _)| states.remove(&ops.len()));
+    let unused = exit.and_then(|(exit, _)| exit.top.iter().find_map(|k| words.unused(*k)));
+    let Some(why) = unused else {
+        return Ok(());
+    };
+    let gives = |op: &Op<A>| {
+        let Op::App(id) = op else {
+            return false;
+        };
+        let gives = words.word(*id).into_iter().flat_map(|w| &w.gives);
+        gives
+            .into_iter()
+            .any(|(_, map)| words.unused(through(map, ANY)).is_some())
+    };
+    let at = ops
+        .iter()
+        .rposition(gives)
+        .map_or(tokens.last(), |i| tokens.get(i));
+    Err(Error::new(Code::Unused, why, at))
 }
 
 /// What the checker knows of a program's definitions so far: what each
@@ -400,44 +430,72 @@ pub(crate) struct Known {
 /// `known` doesn't know yet.
 pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
     let from = known.summaries.len();
-    for (id, code) in program.words.iter().enumerate().skip(from) {
-        known.summaries.push(None);
-        // Recursion: gone over until its summary stays the same, starting
-        // from knowing nothing of what a call to itself does.
-        for round in 0..=RECURSION_ROUNDS {
-            let unit = Unit::new(program, code, State::start(false), known, Some(id));
-            let new = unit.run();
-            let current = known.summaries.get(id).cloned().flatten();
-            let next = match (&current, new) {
-                (_, None) => current.clone(),
-                (None, Some(new)) => Some(new),
-                (Some(_), Some(_)) if round >= RECURSION_ROUNDS => Some(Summary::anything()),
-                (Some(old), Some(new)) => Some(Summary {
-                    need: old.need.min(new.need),
-                    end: match (&old.end, new.end) {
-                        (End::Returns(old), End::Returns(new)) => {
-                            End::Returns(old.widen(old.join(&new)))
-                        }
-                        (End::Returns(old), End::Diverges | End::Stops) => {
-                            End::Returns(old.clone())
-                        }
-                        (End::Diverges | End::Stops, End::Returns(new)) => End::Returns(new),
-                        (End::Stops, End::Stops) => End::Stops,
-                        (End::Diverges, End::Diverges | End::Stops)
-                        | (End::Stops, End::Diverges) => End::Diverges,
-                    },
-                }),
-            };
-            if next == current {
-                break;
+    known.summaries.resize(program.words.len(), None);
+    // A definition calling one written after it: the new ones are gone
+    // over together until no summary changes, as a word calling itself is.
+    let forward = (program.words.iter().enumerate().skip(from)).any(|(id, code)| {
+        code.ops
+            .iter()
+            .any(|op| matches!(op, Op::Call(c) if *c > id))
+    });
+    let passes = if forward { RECURSION_ROUNDS } else { 0 };
+    for pass in 0..=passes {
+        let mut changed = false;
+        for (id, code) in program.words.iter().enumerate().skip(from) {
+            let before = known.summaries.get(id).cloned().flatten();
+            summarise(program, known, id, code);
+            if forward
+                && pass == passes
+                && let Some(slot) = known.summaries.get_mut(id)
+            {
+                *slot = Some(Summary::anything());
             }
-            if let Some(slot) = known.summaries.get_mut(id) {
-                *slot = next;
-            }
+            changed |= known.summaries.get(id).cloned().flatten() != before;
         }
+        known.specials.get_mut().clear();
+        if !changed {
+            break;
+        }
+    }
+    for (id, code) in program.words.iter().enumerate().skip(from) {
         let unit = Unit::new(program, code, State::start(false), known, Some(id));
         let error = unit.first_error();
         known.first = earliest(known.first.take(), error);
+    }
+}
+
+/// Definition `id`'s summary, gone over until it stays the same, from what
+/// is known of it (at first, nothing of what a call to itself does).
+fn summarise<A>(program: &Program<A>, known: &mut Known, id: usize, code: &Steps<A>) {
+    for round in 0..=RECURSION_ROUNDS {
+        let unit = Unit::new(program, code, State::start(false), known, Some(id));
+        let new = unit.run();
+        let current = known.summaries.get(id).cloned().flatten();
+        let next = match (&current, new) {
+            (_, None) => current.clone(),
+            (None, Some(new)) => Some(new),
+            (Some(_), Some(_)) if round >= RECURSION_ROUNDS => Some(Summary::anything()),
+            (Some(old), Some(new)) => Some(Summary {
+                need: old.need.min(new.need),
+                end: match (&old.end, new.end) {
+                    (End::Returns(old), End::Returns(new)) => {
+                        End::Returns(old.widen(old.join(&new)))
+                    }
+                    (End::Returns(old), End::Diverges | End::Stops) => End::Returns(old.clone()),
+                    (End::Diverges | End::Stops, End::Returns(new)) => End::Returns(new),
+                    (End::Stops, End::Stops) => End::Stops,
+                    (End::Diverges, End::Diverges | End::Stops) | (End::Stops, End::Diverges) => {
+                        End::Diverges
+                    }
+                },
+            }),
+        };
+        if next == current {
+            break;
+        }
+        if let Some(slot) = known.summaries.get_mut(id) {
+            *slot = next;
+        }
     }
 }
 
@@ -482,6 +540,10 @@ struct Unit<'a, A> {
 }
 
 impl<'a, A> Unit<'a, A> {
+    fn words(&self) -> &'a Vocabulary {
+        &self.program.vocabulary
+    }
+
     fn new(
         program: &'a Program<A>,
         code: &'a Steps<A>,
@@ -601,6 +663,11 @@ impl<'a, A> Unit<'a, A> {
         let Some(code) = self.program.words.get(id) else {
             return Special::Unknown;
         };
+        // A call back into one being checked so (words calling each
+        // other): nothing more is known of it there.
+        if let Ok(mut specials) = self.known.specials.try_borrow_mut() {
+            specials.insert(key.clone(), Special::Unknown);
+        }
         let mut start = State::start(false);
         let given = len(&key.1);
         start.lo = given.saturating_neg();
@@ -618,10 +685,7 @@ impl<'a, A> Unit<'a, A> {
                 // ever calls `fail` is called to fail).
                 match (exit, ends.diverged) {
                     (None, None) => match unit.first_error() {
-                        Some(e) => Special::Fails(match e.word {
-                            Some(word) => format!("{word}: {}", e.message),
-                            None => e.message,
-                        }),
+                        Some(e) => Special::Fails(Box::new(e)),
                         None => Special::Unknown,
                     },
                     (Some(exit), _) => Special::Does(End::Returns(exit)),
@@ -720,7 +784,7 @@ impl<'a, A> Unit<'a, A> {
     fn step(&self, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
         match op {
             Op::Push(value) => state.push(Kinds::one(Kind::of(value))),
-            Op::Builtin(builtin) => return builtin_step(*builtin, state),
+            Op::Builtin(builtin) => return builtin_step(self.words(), *builtin, state),
             // As deep as the count says, with no kind kept for each value
             // reached below the top's: those are of any kind, and stay in
             // the rest, however many.
@@ -758,10 +822,23 @@ impl<'a, A> Unit<'a, A> {
                 state.push(moved);
             }
             Op::App(id) => {
-                let (takes, gives) = self.program.vocabulary.effect(*id);
-                state.pop(takes)?;
-                for _ in 0..gives {
-                    state.push(ANY);
+                let Some(word) = self.words().word(*id) else {
+                    return Ok(Flow::Go);
+                };
+                let taken = state.pop(word.takes.len())?;
+                // The `i`th value taken, the deepest first: those from the
+                // rest, any.
+                let below = word.takes.len().saturating_sub(taken.len());
+                let at = |i: usize| (i.checked_sub(below)).and_then(|i| taken.get(i)).copied();
+                for (i, (wants, said)) in word.takes.iter().enumerate() {
+                    let got = at(i).unwrap_or(ANY);
+                    if !got.may_be(*wants) {
+                        let got = placed(self.words().describe(got), i, word.takes.len());
+                        return Err(Failing::Type(format!("takes {said}, not {got}")));
+                    }
+                }
+                for (from, map) in &word.gives {
+                    state.push(through(map, from.and_then(at).unwrap_or(ANY)));
                 }
             }
             Op::Call(id) => {
@@ -791,16 +868,18 @@ impl<'a, A> Unit<'a, A> {
                         Special::Fails(why) => {
                             let said: Vec<String> = (given.iter().rev().enumerate())
                                 .filter(|(_, k)| **k != ANY)
-                                .map(|(i, k)| match i {
-                                    0 => format!("{} on top", k.describe()),
-                                    1 => format!("{} next under it", k.describe()),
-                                    i => format!("{} {i} places under the top", k.describe()),
+                                .map(|(i, k)| {
+                                    let k = self.words().describe(*k);
+                                    match i {
+                                        0 => format!("{k} on top"),
+                                        1 => format!("{k} next under it"),
+                                        i => format!("{k} {i} places under the top"),
+                                    }
                                 })
                                 .collect();
-                            return Err(Failing::Type(format!(
-                                "every way through it fails given {}: {why}",
-                                said.join(" and ")
-                            )));
+                            let given = said.join(" and ");
+                            let message = format!("every way through it fails given {given}");
+                            return Err(Failing::Fails(message, why));
                         }
                         Special::Does(does) => special = Some(does),
                         Special::Unknown => {}
@@ -850,7 +929,7 @@ impl<'a, A> Unit<'a, A> {
                 }
             }
             Op::Jump(_) | Op::EachNext(_) => {}
-            Op::JumpUnless(_) => must(Wants::Flag, state.pop1()?, BOOL)?,
+            Op::JumpUnless(_) => must(self.words(), Wants::Flag, state.pop1()?, BOOL)?,
             Op::SetLocal(slot) | Op::SetGlobal(slot) => {
                 let kinds = state.pop1()?;
                 name(&mut state.names, *slot, kinds);
@@ -884,7 +963,7 @@ impl<'a, A> Unit<'a, A> {
             }
             Op::EachStart => {
                 let kinds = state.pop1()?;
-                must(Wants::Each, kinds, SEQ)?;
+                must(self.words(), Wants::Each, kinds, SEQ)?;
                 state.iters.push(if kinds == STR { STR } else { ANY });
             }
         }
@@ -912,21 +991,37 @@ impl<'a, A> Unit<'a, A> {
                 (Code::StackUnderflow, underflow(verb, takes, &has, inside))
             }
             Failing::Type(message) => (Code::Type, message),
+            Failing::Fails(message, cause) => {
+                let mut error = Error::new(Code::Type, message, self.code.tokens.get(at));
+                error.cause = Some(cause);
+                return error;
+            }
         };
         Error::new(code, message, self.code.tokens.get(at))
     }
 }
 
 /// A value of `kinds` that must be one of `may_be`, which `wants` says.
-fn must(wants: Wants, kinds: Kinds, may_be: Kinds) -> Result<(), Failing> {
+fn must(words: &Vocabulary, wants: Wants, kinds: Kinds, may_be: Kinds) -> Result<(), Failing> {
     if kinds.may_be(may_be) {
         Ok(())
     } else {
-        Err(Failing::Type(wants.not(kinds.describe())))
+        Err(Failing::Type(wants.not(words.describe(kinds))))
     }
 }
 
-fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
+/// `got`, the kinds of the value at place `i` of `n` a word takes, the
+/// deepest first, said with where it is: "a string on top".
+fn placed(got: String, i: usize, n: usize) -> String {
+    match (n, n.saturating_sub(i)) {
+        (1, _) => got,
+        (_, 1) => format!("{got} on top"),
+        (_, 2) => format!("{got} under the top"),
+        (_, up) => format!("{got} {} under the top", up.saturating_sub(1)),
+    }
+}
+
+fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
     let args = builtin.args();
     let taken = state.pop(args.len())?;
     // The `i`th value taken, the deepest first: those from the rest, any.
@@ -943,13 +1038,7 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
         if !at(i).may_be(arg.kinds)
             && let Some(wants) = arg.wants
         {
-            let got = at(i).describe();
-            let got = match (args.len(), args.len().saturating_sub(i)) {
-                (1, _) => got,
-                (_, 1) => format!("{got} on top"),
-                (_, 2) => format!("{got} under the top"),
-                (_, up) => format!("{got} {} under the top", up.saturating_sub(1)),
-            };
+            let got = placed(words.describe(at(i)), i, args.len());
             return Err(Failing::Type(wants(builtin).not(got)));
         }
     }
@@ -980,7 +1069,7 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
         Builtin::Lt => {
             let (a, b) = (at(0), at(1));
             if !a.and(b).may_be(INT.union(SEQ)) {
-                let got = format!("{} and {}", a.describe(), b.describe());
+                let got = format!("{} and {}", words.describe(a), words.describe(b));
                 return Err(Failing::Type(Wants::Ordered.not(got)));
             }
             state.push(BOOL);
@@ -992,14 +1081,14 @@ fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
         Builtin::Push => {
             let s = at(0).and(SEQ);
             if s == STR {
-                must(Wants::PushText, at(1), STR)?;
+                must(words, Wants::PushText, at(1), STR)?;
             }
             state.push(s);
         }
         Builtin::Put => {
             let s = at(0).and(SEQ);
             if s == STR {
-                must(Wants::PutText, at(2), STR)?;
+                must(words, Wants::PutText, at(2), STR)?;
             }
             state.push(s);
         }

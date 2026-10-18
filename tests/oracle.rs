@@ -736,7 +736,6 @@ fn run_case(server: &Server, case: &Case) -> Result<Run, String> {
         let mut words: Vec<String> = vec!["str".into(), pane.clone(), "pane".into()];
         match step {
             Step::Keys { keys, probe } => {
-                words.push("keys".into());
                 for key in keys {
                     match key {
                         Key::Text(t) => words.extend(["str".into(), t.clone(), "text".into()]),
@@ -747,7 +746,6 @@ fn run_case(server: &Server, case: &Case) -> Result<Run, String> {
                 words.extend(["send-keys".into(), "json".into()]);
             }
             Step::Wait { probe } => {
-                words.push("opts".into());
                 probe_words(probe, &mut words);
                 words.extend(["wait".into(), "json".into()]);
             }

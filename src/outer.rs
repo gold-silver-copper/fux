@@ -608,7 +608,7 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b]2;make\x07");
         assert_eq!(s.before_paint(c), b"\x1b]2;make\x1b\\");
         // A pane with no title: its tab's name.
-        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, "str c1 client str %2 pane focus-pane")?;
         run(&mut s, "str @1 tab str notes rename")?;
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");

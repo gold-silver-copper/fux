@@ -19,7 +19,7 @@
 //! ```
 //!
 //! An application embeds it: it gives a [`Vocabulary`] of its own words,
-//! each with how many values it takes and gives, and its own kind of value;
+//! each with what kinds of values it takes and gives, and its own kinds;
 //! it compiles a program ([`Compiler`]) and runs it ([`Machine::run`]) as its
 //! [`Host`]. A word that needs the application to do something first (ask
 //! a server, say) suspends the run, and the application runs it again once
@@ -40,6 +40,7 @@ mod error;
 mod machine;
 pub mod token;
 mod value;
+mod vocabulary;
 
 pub use compile::{Compiler, Parsing, Program, Vocabulary};
 pub use error::{Code, Error, Failure};

@@ -44,7 +44,6 @@ fn a_program_at_its_prompt_reads_and_one_asleep_is_busy() -> Outcome {
         "str",
         &pane,
         "pane",
-        "keys",
         "str",
         "bob",
         "text",
@@ -273,7 +272,6 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
             "str",
             &pane,
             "pane",
-            "opts",
             "str",
             "NOPE",
             "wait-text",
@@ -354,16 +352,7 @@ fn a_timed_read_that_returned_is_not_timed_after() -> Outcome {
                 os.write(1, b'got ' + got + b'\\r\\n'); os.read(0, 3)\n";
     let (pane, state) = started(&server, code)?;
     assert_eq!(state, "reading");
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "keys",
-        "str",
-        "abc",
-        "text",
-        "send-keys",
-    ];
+    let keys = ["str", &pane, "pane", "str", "abc", "text", "send-keys"];
     let typed = server.ok(&keys)?;
     assert_eq!(typed, format!("{pane} reading\ngot abc\n"));
     Ok(())
@@ -383,7 +372,7 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
     let (pane, state) = started(&server, poll)?;
     assert_eq!(state, "waiting");
     let began = std::time::Instant::now();
-    let capture = server.fux(&["str", &pane, "pane", "opts", "5", "timeout", "capture"])?;
+    let capture = server.fux(&["str", &pane, "pane", "5", "timeout", "capture"])?;
     assert_eq!(capture.status, 0, "{}{}", capture.stdout, capture.stderr);
     assert!(
         capture
@@ -393,7 +382,7 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
         capture.stdout
     );
     assert!(began.elapsed() < std::time::Duration::from_secs(3));
-    let wait = server.fux(&["str", &pane, "pane", "opts", "1", "timeout", "wait"])?;
+    let wait = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
     assert_eq!(wait.status, 0, "{}{}", wait.stdout, wait.stderr);
     assert!(
         wait.stdout.starts_with(&format!("{pane} waiting")),
@@ -402,7 +391,7 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
     );
     // With a wait's own limit, nothing new within 5s: answered as it is.
     let began = std::time::Instant::now();
-    let plain = server.fux(&["str", &pane, "pane", "opts", "wait"])?;
+    let plain = server.fux(&["str", &pane, "pane", "wait"])?;
     assert_eq!(plain.status, 0, "{}{}", plain.stdout, plain.stderr);
     assert!(plain.stdout.starts_with(&format!("{pane} waiting")));
     assert!(began.elapsed() < std::time::Duration::from_secs(15));
@@ -431,7 +420,7 @@ fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
     let hook = "PROMPT_COMMAND+=$'\\n''sleep 1; echo HOOKED'";
     server.ok(&[&p[..], &["str", hook, "line"]].concat())?;
     server.ok(&[&p[..], &["str", "clear", "line"]].concat())?;
-    let screen = server.ok(&[&p[..], &["opts", "0", "timeout", "capture"]].concat())?;
+    let screen = server.ok(&[&p[..], &["0", "timeout", "capture"]].concat())?;
     assert!(screen.contains("\nHOOKED\n"), "{screen}");
     Ok(())
 }
@@ -449,7 +438,7 @@ fn keys_for_a_shell_that_left_a_job_are_not_held() -> Outcome {
     let p = ["str", pane.as_str(), "pane"];
     server.ok(&[&p[..], &["str", "set +m; (sleep 30; :) & disown", "line"]].concat())?;
     // 100 pieces, typed and erased in turn: held, they take 3 s at least.
-    let mut keys = vec!["str", pane.as_str(), "pane", "keys"];
+    let mut keys = vec!["str", pane.as_str(), "pane"];
     for _ in 0..50 {
         keys.extend(["str", "x", "text", "str", "BSpace", "key"]);
     }
@@ -545,7 +534,7 @@ fn wait_done_waits_as_long_as_the_command_runs() -> Outcome {
     };
     let waited = |opts: &[&str]| {
         let began = std::time::Instant::now();
-        let wait = [&p[..], &["opts"], opts, &["wait"]].concat();
+        let wait = [&p[..], &[], opts, &["wait"]].concat();
         server.fux(&wait).map(|out| (out, began.elapsed()))
     };
     let long = std::time::Duration::from_secs(3);
