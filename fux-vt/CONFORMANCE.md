@@ -5,8 +5,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | Reference | implemented | partial | departure | not implemented | not applicable | all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 63 | 1 | 3 | 7 | 88 | 162 |
-| DEC STD 070 | 83 | 4 | 1 | 26 | 26 | 140 |
-| ctlseqs | 102 | 15 | 2 | 33 | 93 | 245 |
+| DEC STD 070 | 84 | 4 | 2 | 25 | 25 | 140 |
+| ctlseqs | 103 | 15 | 3 | 32 | 92 | 245 |
 | fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
 
 ## ECMA-48
@@ -89,11 +89,11 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.74 | LF (LINE FEED) | implemented | `semantics::text_controls_cursor_and_pending_wrap` |  |
 | 8.3.75 | LS0 (LOCKING-SHIFT ZERO) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` | the same byte as SI |
 | 8.3.76 | LS1 (LOCKING-SHIFT ONE) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` | the same byte as SO |
-| 8.3.77 | LS1R (LOCKING-SHIFT ONE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
+| 8.3.77 | LS1R (LOCKING-SHIFT ONE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
 | 8.3.78 | LS2 (LOCKING-SHIFT TWO) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
-| 8.3.79 | LS2R (LOCKING-SHIFT TWO RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
+| 8.3.79 | LS2R (LOCKING-SHIFT TWO RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
 | 8.3.80 | LS3 (LOCKING-SHIFT THREE) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
-| 8.3.81 | LS3R (LOCKING-SHIFT THREE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
+| 8.3.81 | LS3R (LOCKING-SHIFT THREE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
 | 8.3.82 | MC (MEDIA COPY) | not applicable |  | fux-vt has no auxiliary device to copy to or from (8.3.82) |
 | 8.3.83 | MW (MESSAGE WAITING) | not applicable |  | a message-waiting indicator (8.3.83) is the host's |
 | 8.3.84 | NAK (NEGATIVE ACKNOWLEDGE) | not applicable |  | a transmission control function (8.2.13): fux-vt is not a link; executed as nothing, as xterm |
@@ -181,15 +181,15 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | Function | Name | Status | Tests | Note |
 | --- | --- | --- | --- | --- |
 | 3-68 |  (ANNOUNCE SUBSET OF CODE EXTENSION FACILITIES) | not applicable |  | announcers (ECMA-35) name the code extension used: fux-vt reads UTF-8 alone |
-| 3-71 S7C1T | S7C1T (SELECT 7-BIT C1 TRANSMISSION) | not implemented |  | fux-vt sends 7-bit controls only, so S7C1T is ignored (unhandled) |
-| 3-72 S8C1T | S8C1T (SELECT 8-BIT C1 TRANSMISSION) | not applicable |  | with UTF-8 (ECMA-35 15.4) fux-vt sends 7-bit controls only: an 8-bit C1 byte is no UTF-8 |
+| 3-71 S7C1T | S7C1T (SELECT 7-BIT C1 TRANSMISSION) | implemented | `extended::sequences_fux_vt_does_not_implement_reach_the_sink` | has no effect: fux-vt's replies are 7-bit already |
+| 3-72 S8C1T | S8C1T (SELECT 8-BIT C1 TRANSMISSION) | departure | `extended::sequences_fux_vt_does_not_implement_reach_the_sink` | has no effect: taken, and the replies stay 7-bit, as UTF-8 (ECMA-35 15.4) has no C1 bytes |
 | 3-73 SI/LS0 | SI, LS0 (SHIFT IN, LOCKING SHIFT ZERO) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | 3-74 SO/LS1 | SO, LS1 (SHIFT OUT, LOCKING SHIFT ONE) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | 3-75 LS2 | LS2 (LOCKING SHIFT TWO) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | 3-76 LS3 | LS3 (LOCKING SHIFT THREE) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
-| 3-77 LS1R | LS1R (LOCKING SHIFT ONE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
-| 3-78 LS2R | LS2R (LOCKING SHIFT TWO RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
-| 3-79 LS3R | LS3R (LOCKING SHIFT THREE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
+| 3-77 LS1R | LS1R (LOCKING SHIFT ONE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
+| 3-78 LS2R | LS2R (LOCKING SHIFT TWO RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
+| 3-79 LS3R | LS3R (LOCKING SHIFT THREE RIGHT) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
 | 3-80 SS2 | SS2 (SINGLE SHIFT TWO) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | 3-81 SS3 | SS3 (SINGLE SHIFT THREE) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | 4-17 DA | DA (DEVICE ATTRIBUTES (Primary)) | partial | `extended::an_identity_answers_device_attributes_and_version_queries` | level 2 with selective erase, horizontal scrolling, colour text and rectangular editing, with an identity; the README says what each claims and what is missing |
@@ -352,8 +352,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | SP | SP (Space.) | implemented | `semantics::text_controls_cursor_and_pending_wrap` | printed, as any graphic character |
 | TAB | TAB (Horizontal Tab (HTS is Ctrl-I).) | implemented | `semantics::text_controls_cursor_and_pending_wrap`, `conformance::tab_stops_are_set_cleared_and_kept` |  |
 | VT | VT (Vertical Tab (VT is Ctrl-K).) | implemented | `semantics::text_controls_cursor_and_pending_wrap` | as LF |
-| ESC SP F | ESC SP F (7-bit controls (S7C1T), VT220.) | not implemented |  | fux-vt sends 7-bit controls only, so S7C1T is ignored (unhandled) |
-| ESC SP G | ESC SP G (8-bit controls (S8C1T), VT220.) | not applicable |  | with UTF-8 (ECMA-35 15.4) fux-vt sends 7-bit controls only |
+| ESC SP F | ESC SP F (7-bit controls (S7C1T), VT220.) | implemented | `extended::sequences_fux_vt_does_not_implement_reach_the_sink` | has no effect: fux-vt's replies are 7-bit already |
+| ESC SP G | ESC SP G (8-bit controls (S8C1T), VT220.) | departure | `extended::sequences_fux_vt_does_not_implement_reach_the_sink` | has no effect: taken, and the replies stay 7-bit, as UTF-8 (ECMA-35 15.4) has no C1 bytes |
 | ESC SP L | ESC SP L (Set ANSI conformance level 1, ECMA-43.) | not applicable |  | an ECMA-43 conformance level for an 8-bit code: fux-vt reads UTF-8 |
 | ESC SP M | ESC SP M (Set ANSI conformance level 2, ECMA-43.) | not applicable |  | an ECMA-43 conformance level for an 8-bit code: fux-vt reads UTF-8 |
 | ESC SP N | ESC SP N (Set ANSI conformance level 3, ECMA-43.) | not applicable |  | an ECMA-43 conformance level for an 8-bit code: fux-vt reads UTF-8 |
@@ -383,9 +383,9 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | ESC m | ESC m (Memory Unlock (per HP terminals).) | not applicable |  | an HP terminal's memory unlock: fux-vt follows DEC and xterm |
 | ESC n | ESC n (Invoke the G2 Character Set as GL (LS2).) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | ESC o | ESC o (Invoke the G3 Character Set as GL (LS3).) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
-| ESC \| | ESC \| (Invoke the G3 Character Set as GR (LS3R).) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
-| ESC } | ESC } (Invoke the G2 Character Set as GR (LS2R).) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
-| ESC ~ | ESC ~ (Invoke the G1 Character Set as GR (LS1R), VT100.) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used |
+| ESC \| | ESC \| (Invoke the G3 Character Set as GR (LS3R).) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
+| ESC } | ESC } (Invoke the G2 Character Set as GR (LS2R).) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
+| ESC ~ | ESC ~ (Invoke the G1 Character Set as GR (LS1R), VT100.) | not applicable |  | with UTF-8 (ECMA-35 15.4) the bytes 0xa0 to 0xff are UTF-8, so GR is never used: the shift is taken, and changes nothing |
 | APC Pt ST | APC Pt ST (None.) | implemented | `conformance::a_control_string_ends_at_esc_backslash_alone`, `semantics::ignored_sequences_cancel_and_recover_without_payload_leakage` | has no effect of its own: xterm implements no APC either |
 | DCS Ps ; Ps \| Pt ST | DCS Ps ; Ps \| Pt ST (User-Defined Keys (DECUDK), VT220 and up.) | not applicable |  | the keyboard is the host's: fux-vt encodes the keys a host gives it (keys::encode): user-defined keys are the host's |
 | DCS Ps ! u Pt ST | DCS Ps ! u Pt ST (Assigning User-Preferred Supplemental Sets (DECAUPSS), VT320, VT510.) | not implemented |  | not implemented: the string is read and dropped |

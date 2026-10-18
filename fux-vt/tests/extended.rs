@@ -324,13 +324,17 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
             // SRM: of the ANSI modes, IRM and LNM alone are kept.
             "CSI 12h",
             "CSI ?1u",
-            // The 96-character sets are not designated, nor shifted into
-            // GR, which UTF-8 leaves no room for.
+            // The 96-character sets are not designated.
             "ESC -A",
-            "ESC ~",
             "CSI 2;3:4^"
         ]
     );
+    // LS1R, LS2R and LS3R shift into GR (ECMA-35, 9.3.2), and S7C1T and
+    // S8C1T are taken (DEC STD 070, 1.7.2's level 2 list), though no byte
+    // reaches GR in UTF-8 nor is a reply 8-bit; ANSI's conformance levels
+    // (`ESC SP L`) are not.
+    let record = run(&mut p, b"\x1b~\x1b}\x1b|\x1b F\x1b G\x1b L")?;
+    assert_eq!(record.unhandled, ["ESC  L"]);
     assert!(record.replies.is_empty());
     // Unknown private modes are consumed quietly; queries still answer.
     let record = run(&mut p, b"\x1b[?12345h\x1b[5n")?;

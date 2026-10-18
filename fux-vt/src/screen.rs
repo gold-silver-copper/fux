@@ -2099,6 +2099,11 @@ impl Screen {
                 return Ok(true);
             }
             b"#" => return Ok(self.line_rendition(byte)),
+            // S7C1T and S8C1T (DEC STD 070, 1.7.2's level 2 list): replies
+            // are 7-bit, as S7C1T asks; S8C1T is accepted and changes
+            // nothing, a departure, as UTF-8 has no C1 bytes (ECMA-35,
+            // 15.4).
+            b" " if matches!(byte, b'F' | b'G') => return Ok(true),
             [] => {}
             _ => return Ok(false),
         }
@@ -2118,6 +2123,10 @@ impl Screen {
             b'o' => self.charsets.gl = Set::G3,
             b'N' => self.charsets.single = Some(Set::G2),
             b'O' => self.charsets.single = Some(Set::G3),
+            // LS1R, LS2R and LS3R (ECMA-35, 9.3.2): G1, G2 or G3 into GR,
+            // which no byte reaches in UTF-8 (15.4): taken, and nothing
+            // prints otherwise, so no state is kept for them.
+            b'~' | b'}' | b'|' => {}
             b'=' => self.modes.set(Mode::ApplicationKeypad, true),
             b'>' => self.modes.set(Mode::ApplicationKeypad, false),
             // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling
