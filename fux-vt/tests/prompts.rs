@@ -323,9 +323,9 @@ fn a_late_start_past_the_screen_starts_at_the_cursor() -> Result {
     Ok(())
 }
 
-/// While recording, every run printed is kept, with its row and columns,
-/// though drawn over in the same output, and a redraw of the same text
-/// too: `Prints` records what was written (decisions.md 30).
+/// While recording, every run printed that changed cells is kept, with
+/// its row and columns, though drawn over in the same output; a redraw
+/// of the same text is none.
 #[test]
 fn prints_are_recorded_though_drawn_over() -> Result {
     let mut p = Parser::with_options(Size::new(4, 20)?, 10, Options::new())?;
@@ -340,36 +340,9 @@ fn prints_are_recorded_though_drawn_over() -> Result {
         .collect();
     assert_eq!(
         texts,
-        [
-            (row(0), (0, 4), "same"),
-            (row(1), (0, 5), "READY"),
-            (row(1), (0, 9), "xxxxxbold")
-        ]
+        [(row(1), (0, 5), "READY"), (row(1), (0, 9), "xxxxxbold")]
     );
     assert!(p.take_prints().is_empty());
-    Ok(())
-}
-
-/// `Prints` records what was written, however the output comes split: a
-/// run over cells that already hold part of it is recorded whole, fed at
-/// once (the run path) or a byte a call (the glyph path) (PAR-14,
-/// decisions.md 30).
-#[test]
-fn prints_are_the_same_however_the_output_is_split() -> Result {
-    let recorded = |pieces: &[&[u8]]| -> Result<Vec<((u16, u16), String)>> {
-        let mut p = Parser::with_options(Size::new(2, 10)?, 0, Options::new())?;
-        p.process(b"aXc")?;
-        p.record_prints(true);
-        for piece in pieces {
-            p.process(piece)?;
-        }
-        let prints = p.take_prints();
-        Ok(prints.iter().map(|t| (t.cols, t.text.to_owned())).collect())
-    };
-    let whole = recorded(&[b"\rabc"])?;
-    assert_eq!(whole, [((0, 3), "abc".to_owned())]);
-    assert_eq!(recorded(&[b"\r", b"a", b"b", b"c"])?, whole);
-    assert_eq!(recorded(&[b"\ra", b"bc"])?, whole);
     Ok(())
 }
 

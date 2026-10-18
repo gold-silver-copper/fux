@@ -1459,7 +1459,7 @@ impl Screen {
         let split = self.links_seen
             && width == 1
             && self.grid().stored(row, col).is_some_and(Compact::is_wide);
-        let mut written = false;
+        let mut changed = false;
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
@@ -1470,8 +1470,6 @@ impl Screen {
                 let Some(current) = cells.get(i) else {
                     return false;
                 };
-                // Written, as `Prints` records it, changed or not.
-                written = true;
                 if *current == glyph && whole(cells, i, width) {
                     return false;
                 }
@@ -1500,6 +1498,7 @@ impl Screen {
                 {
                     *cell = Compact::continuation();
                 }
+                changed = true;
                 true
             });
             // Past the glyph; in the last column it waits there to wrap.
@@ -1515,7 +1514,7 @@ impl Screen {
             }
         }
         self.last_print = Some(Printed::new((row, col), c));
-        if written && self.prints.is_some() {
+        if changed && self.prints.is_some() {
             self.printed(
                 row,
                 col..col.saturating_add(width),
@@ -1773,8 +1772,7 @@ impl Screen {
             // repairs, is written up to it, and the glyph there printed.
             let written = loop {
                 match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
-                    // Written, as `Prints` records it, changed or not.
-                    Written::All | Written::Same => {
+                    Written::All => {
                         if self.prints.is_some() {
                             let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
                             let text = str::from_utf8(run).unwrap_or_default();
@@ -1782,6 +1780,7 @@ impl Screen {
                         }
                         break true;
                     }
+                    Written::Same => break true,
                     Written::Before(n) => match run.get(..n) {
                         Some(before) if !before.is_empty() && n < run.len() => run = before,
                         Some(_) | None => break false,
