@@ -137,7 +137,9 @@ macro_rules! side {
                 s.size().into()
             }
 
-            /// Every mode, by name.
+            /// Every mode both sides have, by name (the base, master, has no
+            /// `Mode::ALL`): all but DECHCCM, which is permanent and which
+            /// the DECRQM probe compares.
             #[rustfmt::skip]
             fn modes(s: &vt::Screen) -> Vec<(String, bool)> {
                 use vt::Mode::*;
@@ -146,7 +148,7 @@ macro_rules! side {
                     Autowrap, AutoRepeat, MousePress, ShowCursor, ReverseWrap, AlternateScreen,
                     ApplicationKeypad, BackarrowSendsBackspace, LeftRightMargins,
                     MousePressRelease, MouseButtonMotion, MouseAnyMotion, FocusReporting,
-                    MouseSgr, ExtendedReverseWrap, AlternateScreenCleared, SaveCursor,
+                    MouseUtf8, MouseSgr, ExtendedReverseWrap, AlternateScreenCleared, SaveCursor,
                     AlternateScreenSaveCursor, BracketedPaste, SynchronizedOutput,
                     ColorSchemeUpdates, InBandResize, GraphemeClustering,
                 ]
