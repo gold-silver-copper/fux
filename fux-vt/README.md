@@ -131,7 +131,13 @@ decoded, and what a program asked for, encoded. It needs no option.
   `Decoder::with_paste_limit` sets), focus changes,
   mouse reports (SGR and the default encoding) and answers to the host's
   own questions (DA1, the kitty flags, DECRQM, OSC 10 and 11, OSC 4
-  palette entries, the colour scheme, DECRQSS for underline styles). A
+  palette entries, the colour scheme, DECRQSS for underline styles). An
+  Escape before a whole CSI or SS3 key is that key with Alt, as libtermkey
+  reads it (`ESC ESC [ A` is Alt-Up); `ESC ESC` alone is two Escapes, a
+  choice, as vim's users type it, where libtermkey reads Alt-Escape. A
+  byte that can be no part of a control sequence (ECMA-48 5.4), an ESC
+  among them, ends a CSI unfinished: `ESC [` alone is Alt-[, one with
+  parameters is dropped, and the byte begins the next key. A
   lone Escape is a key once
   `ESCAPE_DELAY` (35 ms) passes without more, which the host learns from
   `Decoder::deadline` and tells with `Decoder::timeout`. Every buffer is

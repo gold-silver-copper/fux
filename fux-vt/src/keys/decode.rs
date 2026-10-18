@@ -731,8 +731,25 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
                 None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
             },
         },
-        // Escape Escape: an Escape, then decode the second one on its own.
-        0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
+        // An Escape before a whole CSI or SS3 key is that key with Alt, as
+        // libtermkey reads an Escape prefix, and rxvt and PuTTY send Alt with
+        // the arrows; before anything else, or alone, an Escape, then the
+        // second decoded on its own, as vim's users type `ESC ESC`.
+        0x1b => match bytes.get(2) {
+            Some(b'[' | b'O') => match decode(bytes.get(1..).unwrap_or_default(), flush, answers) {
+                Step::Done(n, Some(Input::Key(stroke))) => {
+                    let mut stroke = stroke;
+                    stroke.press.mods.alt = true;
+                    Step::Done(n.saturating_add(1), Some(Input::Key(stroke)))
+                }
+                Step::Incomplete => Step::Incomplete,
+                Step::Done(..) | Step::PasteStart(_) | Step::Overlong { .. } => {
+                    Step::Done(1, press(Key::Escape, Modifiers::NONE))
+                }
+            },
+            None if !flush => Step::Incomplete,
+            _ => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
+        },
         // An answer only while one is expected: else `ESC P` is Alt-P at
         // once, and a string that began with it would be an answer read
         // whole and keys read in pieces. Its string ends with ST (`ESC \`);
@@ -1751,6 +1768,22 @@ mod tests {
             false,
             &[key("M-["), key("\u{e9}"), key("a")],
         );
+    }
+
+    /// An Escape before a whole CSI or SS3 key is that key with Alt, as
+    /// libtermkey reads it (`termkey.c`, an Escape prefix) and as rxvt and
+    /// PuTTY send Alt with the arrows; `ESC ESC` alone, and before anything
+    /// else, stays an Escape and what follows, as vim's users type it.
+    #[test]
+    fn an_escape_before_a_key_sequence_is_alt() {
+        assert_eq!(all(b"\x1b\x1b[A"), vec![key("M-Up")]);
+        assert_eq!(all(b"\x1b\x1bOB"), vec![key("M-Down")]);
+        assert_eq!(all(b"\x1b\x1b[1;5C"), vec![key("C-M-Right")]);
+        assert_eq!(all(b"\x1b\x1b[3~"), vec![key("M-Delete")]);
+        assert_eq!(all(b"\x1b\x1b"), vec![key("Escape"), key("Escape")]);
+        assert_eq!(all(b"\x1b\x1bx"), vec![key("Escape"), key("M-x")]);
+        assert_eq!(all(b"\x1b\x1b[I"), vec![key("Escape"), Input::FocusIn]);
+        split_anywhere(b"\x1b\x1b[A", false, &[key("M-Up")]);
     }
 
     /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
