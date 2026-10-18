@@ -31,8 +31,8 @@ keys.py:93	legacy	Tab	\x09	agree
 keys.py:93	legacy	S-Tab	\e[Z	agree
 keys.py:93	legacy	C-Tab	\x09	agree
 keys.py:93	legacy	C-M-Tab	\e\x09	agree
-keys.py:93	legacy	C-S-Tab	\e[Z	differs: kitty's legacy table sends Shift-Tab with Ctrl as CSI Z and with Alt as ESC CSI Z; fux sends Shift-Tab with them as xterm modifies a numbered key, which real xterm's bytes are to settle (KEY-13, KEY-19); fux: \e[1;6Z
-keys.py:93	legacy	M-S-Tab	\e\e[Z	differs: kitty's legacy table sends Shift-Tab with Ctrl as CSI Z and with Alt as ESC CSI Z; fux sends Shift-Tab with them as xterm modifies a numbered key, which real xterm's bytes are to settle (KEY-13, KEY-19); fux: \e[1;4Z
+keys.py:93	legacy	C-S-Tab	\e[Z	agree
+keys.py:93	legacy	M-S-Tab	\e\e[Z	differs: kitty's legacy table sends Alt-Shift-Tab as ESC CSI Z; real xterm 411 sends CSI Z (tests/data/keys/xterm-keys.txt); fux: \e[Z
 keys.py:94	legacy	Insert	\e[2~	agree
 keys.py:94	legacy	S-Insert	\e[2;2~	agree
 keys.py:94	legacy	C-Insert	\e[2;5~	agree

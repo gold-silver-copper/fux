@@ -143,7 +143,7 @@ fn encoder_suite(name: &str, text: &str) -> Result<(usize, usize, usize)> {
 fn tmux_input_keys() -> Result {
     let counts = encoder_suite("tmux", include_str!("data/keys/tmux-input-keys.txt"))?;
     // Agree, differ as recorded, not applicable.
-    assert_eq!(counts, (474, 3, 30));
+    assert_eq!(counts, (473, 4, 30));
     Ok(())
 }
 
@@ -194,7 +194,7 @@ fn ghostty_key_encode() -> Result {
 fn kitty_keys() -> Result {
     let counts = encoder_suite("kitty", include_str!("data/keys/kitty-keys.txt"))?;
     // Agree, differ as recorded, not applicable.
-    assert_eq!(counts, (553, 13, 18));
+    assert_eq!(counts, (554, 12, 18));
     Ok(())
 }
 
@@ -203,7 +203,7 @@ fn kitty_keys() -> Result {
 fn xterm_keys() -> Result {
     let counts = encoder_suite("xterm", include_str!("data/keys/xterm-keys.txt"))?;
     // Agree, differ as recorded, not applicable.
-    assert_eq!(counts, (2223, 89, 112));
+    assert_eq!(counts, (2230, 82, 112));
     Ok(())
 }
 

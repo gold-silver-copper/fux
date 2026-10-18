@@ -577,6 +577,10 @@ fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
         OtherKeys::Usual => {}
         OtherKeys::All if state.is_empty() => return false,
         OtherKeys::Unmodified if state.is_empty() => return true,
+        // At level 2 Shift-Tab alone is still CSI Z, as real xterm 411 sends it.
+        OtherKeys::All if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT => {
+            return false;
+        }
         OtherKeys::All | OtherKeys::Unmodified => {
             return match sym {
                 Sym::BackSpace => state != Modifiers::CTRL,
@@ -585,7 +589,9 @@ fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
             };
         }
     }
-    if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT {
+    // Shift-Tab is ISO_Left_Tab at level 1, a function key: CSI Z, with
+    // Ctrl or Alt held too, as real xterm 411 sends it.
+    if sym == Sym::Control(Control::Tab) && state.shift {
         return false;
     }
     // A character's modifiers are filtered first, a predefined key's not.
@@ -659,10 +665,9 @@ fn legacy(press: KeyPress, application: bool, backarrow: bool, out: &mut Vec<u8>
         }
         Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
         Form::Control(control) => match control {
-            // Shift-Tab is CSI Z; with Ctrl or Alt too, `CSI 1 ; modifier
-            // Z`, as a numbered key carries them.
-            Control::Tab if shift && !ctrl && !alt => out.extend_from_slice(b"\x1b[Z"),
-            Control::Tab if shift => numbered(out, 1, modifier, 'Z'),
+            // Shift-Tab is CSI Z, ISO_Left_Tab's, with Ctrl or Alt held too:
+            // real xterm 411 sends neither (tests/data/keys/xterm-keys.txt).
+            Control::Tab if shift => return out.extend_from_slice(b"\x1b[Z"),
             Control::Backspace => out.push(backspace(ctrl, backarrow)),
             Control::Enter | Control::Tab | Control::Escape => out.push(control.code()),
         },
@@ -939,8 +944,8 @@ mod tests {
             ("C-S-Enter", "\x1b[27;6;13~"),
             ("M-S-Enter", "\x1b[27;2;13~"),
             ("C-Tab", "\x1b[27;5;9~"),
-            ("C-BTab", "\x1b[27;6;9~"),
-            ("M-BTab", "\x1b[27;2;9~"),
+            ("C-BTab", "\x1b[Z"),
+            ("M-BTab", "\x1b[Z"),
         ] {
             assert_eq!(named(name, USUAL), bytes, "{name}");
         }
@@ -968,7 +973,7 @@ mod tests {
             ("C-a", "\x1b[27;5;97~"),
             ("C-i", "\x1b[27;5;105~"),
             ("C-Space", "\x1b[27;5;32~"),
-            ("BTab", "\x1b[27;2;9~"),
+            ("BTab", "\x1b[Z"),
             ("M-Tab", "\x1b[27;3;9~"),
             ("S-Enter", "\x1b[27;2;13~"),
             ("C-Enter", "\x1b[27;5;13~"),
@@ -1196,8 +1201,8 @@ mod tests {
             ("Tab", LEGACY, "\t"),
             ("M-Tab", LEGACY, "\x1b\t"),
             ("BTab", LEGACY, "\x1b[Z"),
-            ("M-BTab", LEGACY, "\x1b[1;4Z"),
-            ("C-S-Tab", LEGACY, "\x1b[1;6Z"),
+            ("M-BTab", LEGACY, "\x1b[Z"),
+            ("C-S-Tab", LEGACY, "\x1b[Z"),
         ] {
             assert_eq!(named(name, mode), bytes, "{name}");
         }

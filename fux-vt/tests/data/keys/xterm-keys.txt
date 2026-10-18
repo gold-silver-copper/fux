@@ -400,10 +400,10 @@ xterm 411 - Tab	legacy	Tab code=9 mods=0	\x09	agree
 xterm 411 S Tab	legacy	S-Tab code=9 mods=1	\e[Z	agree
 xterm 411 C Tab	legacy	C-Tab code=9 mods=4	\x09	agree
 xterm 411 M Tab	legacy	M-Tab code=9 mods=2	\e\x09	agree
-xterm 411 CS Tab	legacy	C-S-Tab code=9 mods=5	\e[Z	differs: xterm sends Shift-Tab as CSI Z (ISO_Left_Tab, a function key) with Ctrl or Alt held too in the legacy mode and at level 1, and alone at level 2; fux modifies it; fux: \e[1;6Z
+xterm 411 CS Tab	legacy	C-S-Tab code=9 mods=5	\e[Z	agree
 xterm 411 CM Tab	legacy	C-M-Tab code=9 mods=6	\e\x09	agree
-xterm 411 MS Tab	legacy	M-S-Tab code=9 mods=3	\e[Z	differs: xterm sends Shift-Tab as CSI Z (ISO_Left_Tab, a function key) with Ctrl or Alt held too in the legacy mode and at level 1, and alone at level 2; fux modifies it; fux: \e[1;4Z
-xterm 411 CMS Tab	legacy	C-M-S-Tab code=9 mods=7	\e[Z	differs: xterm sends Shift-Tab as CSI Z (ISO_Left_Tab, a function key) with Ctrl or Alt held too in the legacy mode and at level 1, and alone at level 2; fux modifies it; fux: \e[1;8Z
+xterm 411 MS Tab	legacy	M-S-Tab code=9 mods=3	\e[Z	agree
+xterm 411 CMS Tab	legacy	C-M-S-Tab code=9 mods=7	\e[Z	agree
 xterm 411 - Escape	legacy	Escape code=27 mods=0	\e	agree
 xterm 411 S Escape	legacy	S-Escape code=27 mods=1	\e	agree
 xterm 411 C Escape	legacy	C-Escape code=27 mods=4	\e	agree
@@ -1048,10 +1048,10 @@ xterm 411 - Tab	legacy mok=1	Tab code=9 mods=0	\x09	agree
 xterm 411 S Tab	legacy mok=1	S-Tab code=9 mods=1	\e[Z	agree
 xterm 411 C Tab	legacy mok=1	C-Tab code=9 mods=4	\e[27;5;9~	agree
 xterm 411 M Tab	legacy mok=1	M-Tab code=9 mods=2	\e\x09	agree
-xterm 411 CS Tab	legacy mok=1	C-S-Tab code=9 mods=5	\e[Z	differs: xterm sends Shift-Tab as CSI Z (ISO_Left_Tab, a function key) with Ctrl or Alt held too in the legacy mode and at level 1, and alone at level 2; fux modifies it; fux: \e[27;6;9~
+xterm 411 CS Tab	legacy mok=1	C-S-Tab code=9 mods=5	\e[Z	agree
 xterm 411 CM Tab	legacy mok=1	C-M-Tab code=9 mods=6	\e\x09	agree
-xterm 411 MS Tab	legacy mok=1	M-S-Tab code=9 mods=3	\e[Z	differs: xterm sends Shift-Tab as CSI Z (ISO_Left_Tab, a function key) with Ctrl or Alt held too in the legacy mode and at level 1, and alone at level 2; fux modifies it; fux: \e[27;2;9~
-xterm 411 CMS Tab	legacy mok=1	C-M-S-Tab code=9 mods=7	\e[Z	differs: xterm sends Shift-Tab as CSI Z (ISO_Left_Tab, a function key) with Ctrl or Alt held too in the legacy mode and at level 1, and alone at level 2; fux modifies it; fux: \e[27;2;9~
+xterm 411 MS Tab	legacy mok=1	M-S-Tab code=9 mods=3	\e[Z	agree
+xterm 411 CMS Tab	legacy mok=1	C-M-S-Tab code=9 mods=7	\e[Z	agree
 xterm 411 - Escape	legacy mok=1	Escape code=27 mods=0	\e	agree
 xterm 411 S Escape	legacy mok=1	S-Escape code=27 mods=1	\e	agree
 xterm 411 C Escape	legacy mok=1	C-Escape code=27 mods=4	\e	agree
@@ -1637,7 +1637,7 @@ xterm 411 CM Return	legacy mok=2	C-M-Enter code=13 mods=6	none	na: xterm's own d
 xterm 411 MS Return	legacy mok=2	M-S-Enter code=13 mods=3	none	na: xterm's own default translation takes Alt-Enter (full screen)
 xterm 411 CMS Return	legacy mok=2	C-M-S-Enter code=13 mods=7	none	na: xterm's own default translation takes Alt-Enter (full screen)
 xterm 411 - Tab	legacy mok=2	Tab code=9 mods=0	\x09	agree
-xterm 411 S Tab	legacy mok=2	S-Tab code=9 mods=1	\e[Z	differs: xterm sends Shift-Tab as CSI Z (ISO_Left_Tab, a function key) with Ctrl or Alt held too in the legacy mode and at level 1, and alone at level 2; fux modifies it; fux: \e[27;2;9~
+xterm 411 S Tab	legacy mok=2	S-Tab code=9 mods=1	\e[Z	agree
 xterm 411 C Tab	legacy mok=2	C-Tab code=9 mods=4	\e[27;5;9~	agree
 xterm 411 M Tab	legacy mok=2	M-Tab code=9 mods=2	\e[27;3;9~	agree
 xterm 411 CS Tab	legacy mok=2	C-S-Tab code=9 mods=5	\e[27;6;9~	agree

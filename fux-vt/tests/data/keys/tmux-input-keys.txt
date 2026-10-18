@@ -283,7 +283,7 @@ input-keys.sh:218	legacy	PPage	\e[5~	agree
 input-keys.sh:219	legacy	PageUp	\e[5~	agree
 input-keys.sh:220	legacy	PgUp	\e[5~	agree
 input-keys.sh:222	legacy	BTab	\e[Z	agree
-input-keys.sh:223	legacy	C-S-Tab	\x09	differs: tmux's standard keys drop Ctrl on Tab; fux sends Shift-Tab with Ctrl as xterm modifies a numbered key, which real xterm's bytes are to settle (KEY-13, KEY-19); fux: \e[1;6Z
+input-keys.sh:223	legacy	C-S-Tab	\x09	differs: tmux's standard keys drop Ctrl on Tab and send Tab; real xterm 411 sends CSI Z (tests/data/keys/xterm-keys.txt); fux: \e[Z
 input-keys.sh:225	legacy	Up	\e[A	agree
 input-keys.sh:226	legacy	Down	\e[B	agree
 input-keys.sh:227	legacy	Right	\e[C	agree
@@ -508,4 +508,4 @@ input-keys.sh:307	legacy mok=1	S-C-Delete	\e[3;6~	agree
 input-keys.sh:307	legacy mok=1	C-M-Delete	\e[3;7~	agree
 input-keys.sh:307	legacy mok=1	S-C-M-Delete	\e[3;8~	agree
 input-keys.sh:309	legacy mok=1	C-Tab	\e[27;5;9~	agree
-input-keys.sh:310	legacy mok=1	C-S-Tab	\e[27;6;9~	agree
+input-keys.sh:310	legacy mok=1	C-S-Tab	\e[27;6;9~	differs: tmux's extended keys send Ctrl-Shift-Tab as CSI 27 ; 6 ; 9 ~; at modifyOtherKeys 1 real xterm 411 sends CSI Z (tests/data/keys/xterm-keys.txt); fux: \e[Z
