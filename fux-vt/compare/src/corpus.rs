@@ -29,12 +29,14 @@
 //! resized it, and a recording where that differs has the reason in its
 //! status.
 //!
-//! Each recording has a status, like a family's: expected to agree, or
-//! differing for a recorded reason. `corpus` fails if one expected to
-//! agree does not.
+//! Each recording has its exceptions (`STATUSES`): none where it is
+//! expected to agree, else each difference it is expected to show, by the
+//! recorded steps it shows at, the fields, and why. The comparison goes on
+//! past an exception to the recording's end, and `corpus` fails on a
+//! difference no exception covers, on an exception that no longer occurs,
+//! and on a recording with no status.
 use crate::case::{self, Case, Snippet, Step, Verdict};
 use crate::engine::{self, ENGINES, FUX_VT};
-use crate::families::Status;
 use crate::snapshot::{self, Field};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -77,122 +79,355 @@ const ALTERNATE_RESIZE: &str = "Leaving the alternate screen after it shrank, wi
     --no-reflow '\\e[?1049h\\e[34;1H' resize:10x40 resize:40x120 '\\e[?1049lX'`). Every step \
     before the last agrees.";
 
-/// What is expected of each recording; one not listed here is reported as
-/// new, and fails.
-pub const STATUSES: &[(&str, Status)] = &[
-    ("bash", Status::Agree),
-    ("bash-complete", Status::Agree),
-    ("bash-history", Status::Agree),
-    ("bash-small", Status::Agree),
-    ("bat-diff", Status::Agree),
-    ("bat-markdown", Status::Agree),
-    ("bat-page", Status::Agree),
-    ("btop", Status::Agree),
-    ("btop-small", Status::Agree),
-    ("cargo-build", Status::Agree),
-    ("cargo-errors", Status::Agree),
-    ("cargo-test", Status::Agree),
-    ("clang-errors", Status::Agree),
-    ("claude", Status::Differs(CLAUDE_TITLE)),
-    ("claude-ghostty", Status::Differs(CLAUDE_TITLE)),
-    ("claude-main", Status::Differs(CLAUDE_TITLE)),
-    ("claude-resize", Status::Differs(CLAUDE_TITLE)),
-    ("claude-small", Status::Differs(CLAUDE_TITLE)),
-    ("delta-diff", Status::Agree),
-    ("delta-log", Status::Agree),
-    ("delta-show", Status::Agree),
-    ("delta-wide", Status::Agree),
-    ("emacs-dired", Status::Agree),
-    ("emacs-mx", Status::Agree),
-    ("emacs-resize", Status::Agree),
-    ("emacs-scroll", Status::Agree),
-    ("emacs-split", Status::Agree),
-    ("fish", Status::Agree),
-    ("fish-complete", Status::Agree),
-    ("fish-history", Status::Agree),
-    ("fish-small", Status::Agree),
-    ("fzf", Status::Agree),
-    ("fzf-height", Status::Agree),
-    ("fzf-multi", Status::Agree),
-    ("fzf-preview", Status::Agree),
-    ("fzf-small", Status::Agree),
-    ("git-add-p", Status::Agree),
-    ("git-diff", Status::Agree),
-    ("git-graph", Status::Agree),
-    ("gls", Status::Agree),
-    ("gls-long", Status::Agree),
-    ("gls-wide", Status::Agree),
-    ("helix", Status::Agree),
-    ("helix-picker", Status::Agree),
-    ("helix-resize", Status::Agree),
-    ("helix-select", Status::Agree),
-    ("helix-small", Status::Agree),
-    ("helix-unicode", Status::Differs(CLUSTERS)),
-    ("htop", Status::Agree),
-    ("htop-small", Status::Agree),
-    ("htop-tree", Status::Agree),
-    ("lazygit", Status::Agree),
-    ("lazygit-small", Status::Agree),
-    ("lazygit-stage", Status::Agree),
-    ("less", Status::Agree),
-    ("less-chop", Status::Agree),
-    ("less-color", Status::Agree),
-    ("less-small", Status::Differs(CLUSTERS)),
-    ("man", Status::Agree),
-    ("man-long", Status::Agree),
-    ("man-small", Status::Agree),
-    ("man-tables", Status::Agree),
-    ("man-wide", Status::Agree),
-    ("mc", Status::Agree),
-    ("mc-small", Status::Agree),
-    ("micro-edit", Status::Agree),
-    ("micro-small", Status::Differs(CLUSTERS)),
-    ("micro-split", Status::Agree),
-    ("ncdu", Status::Agree),
-    ("nnn", Status::Agree),
-    ("nnn-detail", Status::Agree),
-    ("npm-install", Status::Agree),
-    ("nvim-diagnostics", Status::Agree),
-    ("nvim-diff", Status::Agree),
-    ("nvim-help", Status::Agree),
-    ("nvim-insert", Status::Agree),
-    ("nvim-netrw", Status::Agree),
-    ("nvim-resize", Status::Agree),
-    ("nvim-scroll", Status::Agree),
-    ("nvim-search", Status::Agree),
-    ("nvim-small", Status::Agree),
-    ("nvim-split", Status::Agree),
-    ("nvim-tabs", Status::Agree),
-    ("nvim-terminal", Status::Agree),
-    ("nvim-unicode", Status::Differs(CLUSTERS)),
-    ("nvim-visual", Status::Agree),
-    ("nvim-wide", Status::Agree),
-    ("pico", Status::Agree),
-    ("ranger", Status::Agree),
-    ("tig", Status::Agree),
-    ("tig-blame", Status::Agree),
-    ("tig-tree", Status::Agree),
-    ("tmux", Status::Agree),
-    ("tmux-copy", Status::Agree),
-    ("tmux-resize", Status::Differs(ALTERNATE_RESIZE)),
-    ("tmux-small", Status::Agree),
-    ("tmux-vim", Status::Agree),
-    ("top", Status::Agree),
-    ("vim", Status::Agree),
-    ("vim-diff", Status::Agree),
-    ("vim-help", Status::Agree),
-    ("vim-insert", Status::Agree),
-    ("vim-resize", Status::Agree),
-    ("vim-small", Status::Agree),
-    ("vim-terminal", Status::Agree),
-    ("vim-unicode", Status::Differs(CLUSTERS)),
-    ("zellij", Status::Agree),
-    ("zellij-small", Status::Agree),
-    ("zsh", Status::Agree),
-    ("zsh-history", Status::Agree),
-    ("zsh-menu", Status::Agree),
-    ("zsh-resize", Status::Differs(REFLOW)),
-    ("zsh-small", Status::Agree),
+/// A difference a recording is expected to show: where, on what, and why.
+pub struct Exception {
+    /// The recorded steps it shows at, first and last, counted as a
+    /// report counts them ("after step N of M": 1 is the program's start).
+    pub steps: (usize, usize),
+    /// The fields, as a difference's key (`cell (3,4) text`, `title`),
+    /// with `*` standing for any run of characters.
+    pub field: &'static str,
+    pub reason: &'static str,
+}
+
+impl Exception {
+    /// Whether it covers a failure on `key` after the recorded step `step`.
+    pub fn covers(&self, step: usize, key: &str) -> bool {
+        (self.steps.0..=self.steps.1).contains(&step) && glob(self.field, key)
+    }
+}
+
+/// Whether `text` is `pattern`, each `*` in it standing for any run of
+/// characters.
+fn glob(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = text.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => {
+                rest = rest
+                    .get(at.saturating_add(part.len())..)
+                    .unwrap_or_default()
+            }
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
+
+/// claude's title, at its last step.
+const CLAUDE_AT: &[Exception] = &[Exception {
+    steps: (3, 3),
+    field: "title",
+    reason: CLAUDE_TITLE,
+}];
+
+/// claude-resize's title, at its last step.
+const CLAUDE_RESIZE_AT: &[Exception] = &[Exception {
+    steps: (5, 5),
+    field: "title",
+    reason: CLAUDE_TITLE,
+}];
+
+/// helix-unicode's clusters, from its start: the cells and the styles they move.
+const HELIX_UNICODE_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) fg",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) bg",
+        reason: CLUSTERS,
+    },
+];
+
+/// nvim-unicode's clusters, from its start: the cells and the styles they move.
+const NVIM_UNICODE_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) fg",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) bg",
+        reason: CLUSTERS,
+    },
+];
+
+/// vim-unicode's clusters, from its start.
+const VIM_UNICODE_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+];
+
+/// micro-small's clusters, from its start: the cells and the styles they move.
+const MICRO_SMALL_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) fg",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) bg",
+        reason: CLUSTERS,
+    },
+];
+
+/// less-small's clusters, on the pages that show them.
+const LESS_SMALL_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 3),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 3),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (6, 6),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (6, 6),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+];
+
+/// tmux-resize's `[exited]`, at its last step.
+const TMUX_RESIZE_AT: &[Exception] = &[
+    Exception {
+        steps: (12, 12),
+        field: "cell (*) text",
+        reason: ALTERNATE_RESIZE,
+    },
+    Exception {
+        steps: (12, 12),
+        field: "cursor",
+        reason: ALTERNATE_RESIZE,
+    },
+];
+
+/// zsh-resize's line shown twice after each shrink, and the history its reflow keeps.
+const ZSH_RESIZE_AT: &[Exception] = &[
+    Exception {
+        steps: (3, 4),
+        field: "cell (*) text",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (3, 4),
+        field: "cell (*) fg",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (3, 4),
+        field: "cursor",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (3, 4),
+        field: "row 1 soft-wrapped",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 8),
+        field: "cell (*) text",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 8),
+        field: "cell (*) fg",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 8),
+        field: "cursor",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 9),
+        field: "history row *",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 9),
+        field: "history rows kept",
+        reason: REFLOW,
+    },
+];
+
+/// No exception: the recording is expected to agree.
+const AGREE: &[Exception] = &[];
+
+/// What is expected of each recording: its exceptions, none if it is to
+/// agree. One not listed here is reported as new, and fails.
+pub const STATUSES: &[(&str, &[Exception])] = &[
+    ("bash", AGREE),
+    ("bash-complete", AGREE),
+    ("bash-history", AGREE),
+    ("bash-small", AGREE),
+    ("bat-diff", AGREE),
+    ("bat-markdown", AGREE),
+    ("bat-page", AGREE),
+    ("btop", AGREE),
+    ("btop-small", AGREE),
+    ("cargo-build", AGREE),
+    ("cargo-errors", AGREE),
+    ("cargo-test", AGREE),
+    ("clang-errors", AGREE),
+    ("claude", CLAUDE_AT),
+    ("claude-ghostty", CLAUDE_AT),
+    ("claude-main", CLAUDE_AT),
+    ("claude-resize", CLAUDE_RESIZE_AT),
+    ("claude-small", CLAUDE_AT),
+    ("delta-diff", AGREE),
+    ("delta-log", AGREE),
+    ("delta-show", AGREE),
+    ("delta-wide", AGREE),
+    ("emacs-dired", AGREE),
+    ("emacs-mx", AGREE),
+    ("emacs-resize", AGREE),
+    ("emacs-scroll", AGREE),
+    ("emacs-split", AGREE),
+    ("fish", AGREE),
+    ("fish-complete", AGREE),
+    ("fish-history", AGREE),
+    ("fish-small", AGREE),
+    ("fzf", AGREE),
+    ("fzf-height", AGREE),
+    ("fzf-multi", AGREE),
+    ("fzf-preview", AGREE),
+    ("fzf-small", AGREE),
+    ("git-add-p", AGREE),
+    ("git-diff", AGREE),
+    ("git-graph", AGREE),
+    ("gls", AGREE),
+    ("gls-long", AGREE),
+    ("gls-wide", AGREE),
+    ("helix", AGREE),
+    ("helix-picker", AGREE),
+    ("helix-resize", AGREE),
+    ("helix-select", AGREE),
+    ("helix-small", AGREE),
+    ("helix-unicode", HELIX_UNICODE_AT),
+    ("htop", AGREE),
+    ("htop-small", AGREE),
+    ("htop-tree", AGREE),
+    ("lazygit", AGREE),
+    ("lazygit-small", AGREE),
+    ("lazygit-stage", AGREE),
+    ("less", AGREE),
+    ("less-chop", AGREE),
+    ("less-color", AGREE),
+    ("less-small", LESS_SMALL_AT),
+    ("man", AGREE),
+    ("man-long", AGREE),
+    ("man-small", AGREE),
+    ("man-tables", AGREE),
+    ("man-wide", AGREE),
+    ("mc", AGREE),
+    ("mc-small", AGREE),
+    ("micro-edit", AGREE),
+    ("micro-small", MICRO_SMALL_AT),
+    ("micro-split", AGREE),
+    ("ncdu", AGREE),
+    ("nnn", AGREE),
+    ("nnn-detail", AGREE),
+    ("npm-install", AGREE),
+    ("nvim-diagnostics", AGREE),
+    ("nvim-diff", AGREE),
+    ("nvim-help", AGREE),
+    ("nvim-insert", AGREE),
+    ("nvim-netrw", AGREE),
+    ("nvim-resize", AGREE),
+    ("nvim-scroll", AGREE),
+    ("nvim-search", AGREE),
+    ("nvim-small", AGREE),
+    ("nvim-split", AGREE),
+    ("nvim-tabs", AGREE),
+    ("nvim-terminal", AGREE),
+    ("nvim-unicode", NVIM_UNICODE_AT),
+    ("nvim-visual", AGREE),
+    ("nvim-wide", AGREE),
+    ("pico", AGREE),
+    ("ranger", AGREE),
+    ("tig", AGREE),
+    ("tig-blame", AGREE),
+    ("tig-tree", AGREE),
+    ("tmux", AGREE),
+    ("tmux-copy", AGREE),
+    ("tmux-resize", TMUX_RESIZE_AT),
+    ("tmux-small", AGREE),
+    ("tmux-vim", AGREE),
+    ("top", AGREE),
+    ("vim", AGREE),
+    ("vim-diff", AGREE),
+    ("vim-help", AGREE),
+    ("vim-insert", AGREE),
+    ("vim-resize", AGREE),
+    ("vim-small", AGREE),
+    ("vim-terminal", AGREE),
+    ("vim-unicode", VIM_UNICODE_AT),
+    ("zellij", AGREE),
+    ("zellij-small", AGREE),
+    ("zsh", AGREE),
+    ("zsh-history", AGREE),
+    ("zsh-menu", AGREE),
+    ("zsh-resize", ZSH_RESIZE_AT),
+    ("zsh-small", AGREE),
 ];
 
 /// A recording, as `record` saved it.
@@ -535,24 +770,87 @@ fn report(recording: &Recording, subject: usize, outcome: &case::Outcome) -> Str
     out
 }
 
-fn status(name: &str) -> Option<Status> {
+fn status(name: &str) -> Option<&'static [Exception]> {
     STATUSES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
 
-/// Runs a recording's case as `corpus` judges it, stopping where the
-/// subject first fails.
-fn first_failure(
+/// How a recording went against its exceptions.
+struct Excepted {
+    /// The outcome: where the subject first fails on a field no exception
+    /// covers (none: it never does, and the run went to the end).
+    outcome: case::Outcome,
+    /// Each failure an exception covered, by recorded step, field and the
+    /// exception's index.
+    covered: Vec<(usize, String, usize)>,
+}
+
+impl Excepted {
+    /// Whether it agreed everywhere, no exception needed.
+    fn agrees(&self) -> bool {
+        self.outcome.agrees() && self.covered.is_empty()
+    }
+
+    /// The exceptions that never occurred (none, if it stopped early: a
+    /// later step might have shown them).
+    fn stale<'a>(&self, exceptions: &'a [Exception]) -> Vec<&'a Exception> {
+        if !self.outcome.agrees() {
+            return Vec::new();
+        }
+        exceptions
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.covered.iter().any(|(_, _, e)| e == i))
+            .map(|(_, e)| e)
+            .collect()
+    }
+}
+
+/// Sorts the failures after the recorded step `step` by the exception
+/// covering each, noting each covered one in `covered`: whether any is
+/// covered by none.
+fn sort(
+    step: usize,
+    failures: Vec<String>,
+    exceptions: &[Exception],
+    covered: &mut Vec<(usize, String, usize)>,
+) -> bool {
+    let mut uncovered = false;
+    for key in failures {
+        match exceptions.iter().position(|e| e.covers(step, &key)) {
+            Some(e) => covered.push((step, key, e)),
+            None => uncovered = true,
+        }
+    }
+    uncovered
+}
+
+/// Runs a recording's case as `corpus` judges it, through every judged
+/// point: a failure an exception covers is noted and the run goes on; it
+/// stops where the subject first fails on a field none covers.
+fn judge_excepted(
     recording: &Recording,
     case: &Case,
     panel: &[usize],
-) -> Result<case::Outcome, String> {
+    exceptions: &[Exception],
+) -> Result<Excepted, String> {
     // `run_judged` judges once before the steps and once after each.
     let judged = recording.judged();
     let at = std::cell::Cell::new(0usize);
-    case.run_judged(panel, true, |_, v| {
+    let covered = std::cell::RefCell::new(Vec::new());
+    let outcome = case.run_judged(panel, true, |_, v| {
         let i = at.get();
         at.set(i.saturating_add(1));
-        judged.get(i).copied().unwrap_or(true) && !failures(v).is_empty()
+        if !judged.get(i).copied().unwrap_or(true) {
+            return false;
+        }
+        let step = recording
+            .recorded_step(i)
+            .map_or(0, |r| r.saturating_add(1));
+        sort(step, failures(v), exceptions, &mut covered.borrow_mut())
+    })?;
+    Ok(Excepted {
+        outcome,
+        covered: covered.into_inner(),
     })
 }
 
@@ -579,59 +877,74 @@ pub fn run(
     let mut results = Vec::new();
     for recording in &recordings {
         let case = recording.case();
-        let outcome = first_failure(recording, &case, panel)?;
         let expected = status(&recording.name);
+        let exceptions = expected.unwrap_or_default();
+        let run = judge_excepted(recording, &case, panel, exceptions)?;
+        let outcome = &run.outcome;
+        let stale = run.stale(exceptions);
         let label = format!(
             "{} ({} steps, {} bytes)",
             recording.name,
             recording.steps.len(),
             recording.bytes().len()
         );
+        let reasons: BTreeSet<&str> = exceptions.iter().map(|e| e.reason).collect();
         results.push(serde_json::json!({
             "recording": recording.name,
-            "agrees": outcome.agrees(),
-            "recorded": match &expected {
-                Some(Status::Differs(why) | Status::Decided { why, .. }) => Some(why.to_string()),
-                _ => None,
-            },
+            "agrees": run.agrees(),
+            "excepted": outcome.agrees() && stale.is_empty(),
+            "covered": run.covered.len(),
+            "recorded": (!reasons.is_empty()).then(|| reasons.iter().copied().collect::<Vec<_>>().join(" ")),
         }));
-        match (outcome.agrees(), expected) {
-            (true, Some(Status::Agree)) => {
-                agree = agree.saturating_add(1);
-                println!("ok       {label}   {}", marks(&outcome));
-            }
-            (true, Some(_)) => {
-                agree = agree.saturating_add(1);
-                println!(
-                    "agrees   {label} (recorded as differing)   {}",
-                    marks(&outcome)
-                );
-            }
-            (true, None) => {
+        if run.agrees() {
+            agree = agree.saturating_add(1);
+        } else {
+            differ = differ.saturating_add(1);
+        }
+        match (expected, outcome.agrees(), stale.is_empty()) {
+            (None, ..) => {
                 ok = false;
-                agree = agree.saturating_add(1);
                 println!(
-                    "NEW      {label} (agrees; no status recorded)   {}",
-                    marks(&outcome)
+                    "NEW      {label} ({}; no status recorded)   {}",
+                    if run.agrees() { "agrees" } else { "differs" },
+                    marks(outcome)
                 );
-            }
-            (false, Some(Status::Differs(why) | Status::Decided { why, .. })) => {
-                differ = differ.saturating_add(1);
-                println!("differs  {label}: {why}   {}", marks(&outcome));
-                if !names.is_empty() {
-                    print!("{}", report(recording, FUX_VT, &outcome));
+                if !outcome.agrees() {
+                    print!("{}", report(recording, FUX_VT, outcome));
                 }
             }
-            (false, expected) => {
+            (Some(_), true, true) if run.agrees() => {
+                println!("ok       {label}   {}", marks(outcome));
+            }
+            (Some(_), true, true) => {
+                println!(
+                    "differs  {label}, as its {} exceptions say: {}",
+                    exceptions.len(),
+                    reasons.iter().copied().collect::<Vec<_>>().join(" ")
+                );
+                if !names.is_empty() {
+                    for (step, key, e) in &run.covered {
+                        println!("  after step {step}: {key} (exception {e})");
+                    }
+                }
+            }
+            (Some(_), true, false) => {
                 ok = false;
-                differ = differ.saturating_add(1);
-                let why = if expected.is_none() {
-                    "no status recorded"
-                } else {
-                    "expected to agree"
-                };
-                println!("FAIL     {label} ({why})   {}", marks(&outcome));
-                print!("{}", report(recording, FUX_VT, &outcome));
+                println!("FAIL     {label}: an exception no longer occurs");
+                for e in stale {
+                    println!(
+                        "  steps {}-{}, {}: {}",
+                        e.steps.0, e.steps.1, e.field, e.reason
+                    );
+                }
+            }
+            (Some(_), false, _) => {
+                ok = false;
+                println!(
+                    "FAIL     {label} (a difference no exception covers)   {}",
+                    marks(outcome)
+                );
+                print!("{}", report(recording, FUX_VT, outcome));
             }
         }
         if show {
@@ -720,8 +1033,8 @@ fn run_subject(
                     marks(&outcome)
                 );
                 if !names.is_empty() {
-                    let first = first_failure(recording, &case, panel)?;
-                    print!("{}", report(recording, subject, &first));
+                    let first = judge_excepted(recording, &case, panel, &[])?;
+                    print!("{}", report(recording, subject, &first.outcome));
                 }
             }
         }
@@ -1030,6 +1343,59 @@ fn listed(keys: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// zsh-resize's points as its exceptions read them: the reflow's
+    /// differences at steps 3, 4 and 8, and its history at 8 and 9, are
+    /// covered, and the run goes on past them; a difference on another
+    /// field or at another step is covered by none, even after the covered
+    /// ones (at the parent, a recording that differs passed whatever
+    /// differed after its first difference); an exception that never
+    /// occurs is stale; `*` stands for any run of characters.
+    #[test]
+    fn an_exception_covers_its_steps_and_fields_and_no_other() {
+        let exceptions = super::ZSH_RESIZE_AT;
+        let mut covered = Vec::new();
+        let points = [
+            (3, vec!["cell (1,4) text", "cursor", "row 1 soft-wrapped"]),
+            (4, vec!["cell (2,0) fg"]),
+            (
+                8,
+                vec![
+                    "cell (0,0) text",
+                    "history row 12 from the newest",
+                    "history rows kept",
+                ],
+            ),
+            (9, vec!["history row 29 from the newest soft-wrapped"]),
+        ];
+        for (step, keys) in &points {
+            let keys = keys.iter().map(|k| (*k).to_owned()).collect();
+            assert!(
+                !super::sort(*step, keys, exceptions, &mut covered),
+                "step {step}"
+            );
+        }
+        assert_eq!(covered.len(), 8);
+        let later = |step: usize, key: &str| {
+            super::sort(step, vec![key.to_owned()], exceptions, &mut Vec::new())
+        };
+        assert!(later(9, "cell (3,3) text"));
+        assert!(later(5, "cursor"));
+        assert!(later(8, "title"));
+        let used: std::collections::BTreeSet<usize> = covered.iter().map(|c| c.2).collect();
+        let stale: Vec<usize> = (0..exceptions.len())
+            .filter(|i| !used.contains(i))
+            .collect();
+        assert_eq!(stale, [5, 6]);
+        assert!(super::glob("cell (*) text", "cell (12,3) text"));
+        assert!(!super::glob("cell (*) text", "cell (12,3) width"));
+        assert!(super::glob(
+            "history row *",
+            "history row 3 from the newest"
+        ));
+        assert!(!super::glob("history row *", "history rows kept"));
+        assert!(super::glob("title", "title") && !super::glob("title", "titles"));
+    }
+
     #[test]
     fn every_recording_loads_with_a_status() -> Result<(), String> {
         let all = super::recordings(&[])?;

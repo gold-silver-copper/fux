@@ -407,8 +407,8 @@ To add a recording:
 2. Add a case for NAME to `scenario` in `corpus/record.sh`, and add NAME
    to its `all` list.
 3. Run `corpus/record.sh NAME`.
-4. Give NAME a status in `STATUSES` (`src/corpus.rs`). A recording without
-   one fails `corpus`.
+4. Give NAME its exceptions in `STATUSES` (`src/corpus.rs`), none if it
+   agrees. A recording without a status fails `corpus`.
 5. Regenerate `corpus/INVENTORY.md`.
 
 ### Replaying
@@ -432,10 +432,15 @@ with fux's 10000 rows of history.
   own way of resizing. fux's panes reflow, as Ghostty, wezterm and libvterm
   do; xterm doesn't.
 
-Each recording has a status, as a family has (`STATUSES` in
-`src/corpus.rs`): expected to agree, or differing for a recorded reason
-that says at which step and why, with a command that shows it. `corpus`
-exits 1 if a recording expected to agree fails, or one has no status.
+Each recording has its exceptions (`STATUSES` in `src/corpus.rs`): none
+where it is expected to agree, else each difference it is expected to
+show, by the recorded steps it shows at (`after step N`, as a report
+counts them), the fields (a difference's key, `*` for any run of
+characters: `cell (*) text`, `title`) and the reason, with a command that
+shows it. The comparison goes on past a covered difference to the
+recording's end. `corpus` exits 1 on a difference no exception covers, on
+an exception that no longer occurs, and on a recording with no status;
+`corpus NAME` lists each covered difference with its step.
 `--json FILE` writes the results. The counts are in
 [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
 

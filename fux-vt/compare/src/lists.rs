@@ -19,7 +19,7 @@
 use crate::cases::{CASES, EXPECTED};
 use crate::families::{Authority, FAMILIES, Status};
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const USAGE: &str =
@@ -63,7 +63,22 @@ pub fn all() -> Result<Map<String, Value>, String> {
     };
     let corpus: Map<String, Value> = crate::corpus::STATUSES
         .iter()
-        .map(|&(name, s)| (name.to_owned(), status(s)))
+        .map(|&(name, exceptions)| {
+            let each: Vec<Value> = exceptions
+                .iter()
+                .map(|e| json!({ "steps": [e.steps.0, e.steps.1], "field": e.field, "citation": e.reason }))
+                .collect();
+            let reasons: BTreeSet<&str> = exceptions.iter().map(|e| e.reason).collect();
+            let citation = reasons.into_iter().collect::<Vec<_>>().join(" ");
+            (
+                name.to_owned(),
+                json!({
+                    "status": if exceptions.is_empty() { "agree" } else { "differs" },
+                    "exceptions": each,
+                    "citation": citation,
+                }),
+            )
+        })
         .collect();
     lists.insert("corpus-statuses".into(), Value::Object(corpus));
     let known: Map<String, Value> = crate::transparency::KNOWN
