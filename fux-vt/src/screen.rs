@@ -68,6 +68,37 @@ closed! {
     }
 }
 
+impl CursorShape {
+    /// Whether it blinks, as mode 12 reports it: the terminal's own is
+    /// read as reset, as xterm's escape state starts.
+    pub(crate) const fn blinks(self) -> bool {
+        matches!(
+            self,
+            Self::Zero | Self::BlinkingBlock | Self::BlinkingUnderline | Self::BlinkingBar
+        )
+    }
+
+    /// The same form, blinking or steady, as mode 12 sets it. The
+    /// terminal's own form is unknown: set, it is xterm's block; reset, it
+    /// stays as it is, which mode 12 already reads reset.
+    pub(crate) const fn with_blink(self, on: bool) -> Self {
+        match self {
+            Self::Initial if !on => Self::Initial,
+            Self::Zero if on => Self::Zero,
+            Self::Initial | Self::Zero | Self::BlinkingBlock | Self::SteadyBlock if on => {
+                Self::BlinkingBlock
+            }
+            Self::Initial | Self::Zero | Self::BlinkingBlock | Self::SteadyBlock => {
+                Self::SteadyBlock
+            }
+            Self::BlinkingUnderline | Self::SteadyUnderline if on => Self::BlinkingUnderline,
+            Self::BlinkingUnderline | Self::SteadyUnderline => Self::SteadyUnderline,
+            Self::BlinkingBar | Self::SteadyBar if on => Self::BlinkingBar,
+            Self::BlinkingBar | Self::SteadyBar => Self::SteadyBar,
+        }
+    }
+}
+
 /// How mouse reports are to be encoded (`CSI ? 1005 / 1006 h`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseProtocolEncoding {
@@ -941,6 +972,7 @@ impl Screen {
                 self.modes.contains(mode)
             }
             Kind::Origin => self.grid().cursor.origin,
+            Kind::CursorBlink => self.terminal.cursor_shape.blinks(),
             Kind::Screen(_) => self.alternate_active,
             Kind::SaveCursor => false,
             Kind::Permanent(set) => set,
@@ -2981,6 +3013,10 @@ impl Screen {
                 if let Some(pen) = self.terminal.clear_on_show.take_if(|_| on) {
                     self.clear_alternate(pen)?;
                 }
+            }
+            Kind::CursorBlink => {
+                let shape = &mut self.terminal.cursor_shape;
+                *shape = shape.with_blink(on);
             }
             Kind::SaveCursor if on => self.save(),
             Kind::SaveCursor => self.restore(),

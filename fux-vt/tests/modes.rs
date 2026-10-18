@@ -362,3 +362,42 @@ fn decaln_fills_the_screen_with_e() -> Result {
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 0);
     Ok(())
 }
+
+/// Mode 12 (ctlseqs: "Start blinking cursor (AT&T 610)", reset "Stop
+/// blinking cursor") is the blink DECSCUSR sets too: xterm 411 keeps one
+/// state for both (`cursor_blink_esc`, set by `srm_ATT610_BLINK` and by
+/// DECSCUSR's blinking styles, cleared by its steady ones and by a reset).
+/// It starts reset; set, the shape keeps its form and blinks, the
+/// terminal's own taken as xterm's block; DECSCUSR 7 puts the terminal's
+/// own back, reset.
+#[test]
+fn mode_12_is_the_cursor_shapes_blink() -> Result {
+    use fux_vt::CursorShape::*;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
+    let ask = b"\x1b[?12$p";
+    assert_eq!(replies(&mut p, ask)?, "^[[?12;2$y");
+    p.process(b"\x1b[?12h")?;
+    assert_eq!(p.screen().cursor_shape(), BlinkingBlock);
+    assert_eq!(replies(&mut p, ask)?, "^[[?12;1$y");
+    for (bytes, shape, reply) in [
+        (&b"\x1b[6 q"[..], SteadyBar, "^[[?12;2$y"),
+        (b"\x1b[?12h", BlinkingBar, "^[[?12;1$y"),
+        (b"\x1b[?12l", SteadyBar, "^[[?12;2$y"),
+        (b"\x1b[3 q", BlinkingUnderline, "^[[?12;1$y"),
+        (b"\x1b[?12l", SteadyUnderline, "^[[?12;2$y"),
+        (b"\x1b[0 q", Zero, "^[[?12;1$y"),
+        (b"\x1b[?12l", SteadyBlock, "^[[?12;2$y"),
+        (
+            b"\x1b[?12h\x1b[?12s\x1b[?12l\x1b[?12r",
+            BlinkingBlock,
+            "^[[?12;1$y",
+        ),
+        (b"\x1b[7 q", Initial, "^[[?12;2$y"),
+        (b"\x1b[?12l", Initial, "^[[?12;2$y"),
+    ] {
+        p.process(bytes)?;
+        assert_eq!(p.screen().cursor_shape(), shape, "{bytes:?}");
+        assert_eq!(replies(&mut p, ask)?, reply, "{bytes:?}");
+    }
+    Ok(())
+}

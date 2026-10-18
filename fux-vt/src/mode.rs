@@ -109,6 +109,10 @@ modes! {
         AutoRepeat (true, 8) => Kind::Permanent(false),
         /// Mouse mode 9, X10: button presses.
         MousePress (true, 9) => Kind::Mouse(MouseProtocolMode::Press),
+        /// Mode 12 (`CSI ? 12 h`, ctlseqs: "Start blinking cursor (AT&T
+        /// 610)"): the blink of the cursor's shape, which DECSCUSR sets
+        /// too, as xterm 411 keeps one state for both.
+        CursorBlink (true, 12) => Kind::CursorBlink,
         /// DECTCEM (`CSI ? 25 h`): the cursor is shown. Default.
         ShowCursor (true, 25) [default soft] => Kind::Flag,
         /// more(1)'s fix (`CSI ? 41 h`, ctlseqs): HT with a wrap pending
@@ -204,6 +208,7 @@ impl Mode {
             | Kind::Frame
             | Kind::SizeReport
             | Kind::Origin
+            | Kind::CursorBlink
             | Kind::Screen(_)
             | Kind::Mouse(_)
             | Kind::Encoding(_) => None,
@@ -248,6 +253,8 @@ pub(crate) enum Kind {
     SizeReport,
     /// The shown grid's DECOM.
     Origin,
+    /// Mode 12: whether the cursor's shape blinks.
+    CursorBlink,
     /// Whether the alternate screen is shown.
     Screen(Switch),
     /// 1048: an action, never set, and not saved by XTSAVE.

@@ -7,7 +7,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | ECMA-48 | 67 | 1 | 3 | 3 | 88 | 162 |
 | DEC STD 070 | 87 | 4 | 2 | 22 | 25 | 140 |
 | ctlseqs | 107 | 16 | 2 | 28 | 92 | 245 |
-| fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
+| fux-vt | 42 | 1 | 0 | 5 | 2 | 50 |
 
 ## ECMA-48
 
@@ -583,7 +583,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | DECSET 7 | DECAWM (Autowrap) | implemented | `conformance::a_pending_wrap_is_a_flag_on_the_last_column`, `conformance::the_last_column_flag_is_set_with_autowrap_alone` |  |
 | DECSET 8 | DECARM (Auto-repeat keys) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps` | reported permanently reset: key repeat is the host's |
 | DECSET 9 | X10 mouse (Send the mouse position on button press) | implemented | `keys::mouse::tests::x10_reports_presses_alone_without_modifiers` |  |
-| DECSET 12 | AT&T 610 blink (Start blinking cursor) | not applicable |  | the cursor's blinking is the host's, as DECSCUSR sets its shape |
+| DECSET 12 | AT&T 610 blink (Start blinking cursor) | implemented | `modes::mode_12_is_the_cursor_shapes_blink` | the blink of DECSCUSR's shape, one state with it as in xterm 411; the terminal's own shape taken as a block when set; state only |
 | DECSET 25 | DECTCEM (Show cursor) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps` | state only: the host shows the cursor or not |
 | DECSET 40 | Allow 80 to 132 (Allow 80 to 132 mode) | not applicable |  | DECCOLM is not implemented |
 | DECSET 45 | Reverse-wraparound (Reverse-wraparound mode) | implemented | `modes::reverse_wraparound_moves_as_xterm_moves` |  |
