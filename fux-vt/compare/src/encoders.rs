@@ -22,8 +22,15 @@ pub const VERDICTS: &[(&str, &str)] = &[
     ),
     (
         "utf8-limit",
-        "UTF-8 mouse mode (1005), a position past 2015: ctlseqs gives 2015 as its last, and fux-vt \
-         sends nothing past it, as xterm does; ghostty encodes it in three bytes",
+        "UTF-8 mouse mode (1005), a position past 2015: ctlseqs gives 2015 as its last and not \
+         what comes past it, so xterm 411 decides: fux-vt clamps it and sends a 0 byte, as xterm's \
+         `EmitMousePosition` does; ghostty encodes it in three bytes",
+    ),
+    (
+        "default-limit",
+        "the default mouse encoding, a position past 223: ctlseqs gives 223 as its last and not \
+         what comes past it, so xterm 411 decides: fux-vt clamps it and sends a 0 byte, as xterm's \
+         `EmitMousePosition` does; ghostty sends nothing",
     ),
     (
         "legacy-extras",
@@ -736,7 +743,9 @@ fn mouse_events() -> Vec<MouseEvent> {
 }
 
 fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), String> {
-    let utf8 = pair.fux.screen().mouse_protocol_encoding() == fux_vt::MouseProtocolEncoding::Utf8;
+    let encoding = pair.fux.screen().mouse_protocol_encoding();
+    let utf8 = encoding == fux_vt::MouseProtocolEncoding::Utf8;
+    let default = encoding == fux_vt::MouseProtocolEncoding::Default;
     for event in mouse_events() {
         let mut encoder = gmouse::Encoder::new().map_err(err("mouse encoder"))?;
         encoder
@@ -788,8 +797,10 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
             .encode_to_vec(&g, &mut theirs)
             .map_err(err("mouse encode"))?;
         // The button code ghostty wrote raw, read as ctlseqs has it.
-        let verdict = if utf8 && ours.is_empty() && (event.col >= 2015 || event.row >= 2015) {
+        let verdict = if utf8 && (event.col >= 2015 || event.row >= 2015) {
             Some("utf8-limit")
+        } else if default && (event.col >= 223 || event.row >= 223) {
+            Some("default-limit")
         } else {
             (utf8 && theirs.get(3).is_some_and(|&b| b >= 128) && ours.len() > theirs.len())
                 .then_some("utf8-button")

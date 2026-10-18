@@ -124,9 +124,9 @@ impl crate::Screen {
 /// - a press names its button; motion over a cell is the host's to tell
 ///   from motion within it (xterm reports a move to another cell only);
 /// - the default encoding sends `CSI M` and three bytes, each value plus
-///   32, and nothing for a position past 223; UTF-8 (1005) sends each value
-///   plus 32 as a UTF-8 character, the button code too, and nothing past
-///   2015; SGR (1006) sends
+///   32, and a 0 byte for a position past 223; UTF-8 (1005) sends each
+///   value plus 32 as a UTF-8 character, the button code too, and a 0 byte
+///   for a position past 2015 (xterm 411's past-end marker); SGR (1006) sends
 ///   `CSI < code ; column ; row M`, or `m` for a release, which names its
 ///   button, for any position.
 pub fn mouse_bytes(
@@ -173,20 +173,22 @@ pub fn mouse_bytes(
             // Writing to a Vec cannot fail.
             let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
         }
+        // A position past the encoding's limit is clamped to it and sent as
+        // a 0 byte, "a past-end marker", as xterm 411 does
+        // (`EmitMousePosition`, `button.c`): ctlseqs gives the limits only.
         MouseProtocolEncoding::Default => {
-            if x > DEFAULT_LIMIT || y > DEFAULT_LIMIT {
-                return false;
-            }
             let byte = |n: u32| u8::try_from(n.saturating_add(32)).unwrap_or(u8::MAX);
+            let place = |n: u32| if n > DEFAULT_LIMIT { 0 } else { byte(n) };
             out.extend_from_slice(b"\x1b[M");
-            out.extend_from_slice(&[byte(code), byte(x), byte(y)]);
+            out.extend_from_slice(&[byte(code), place(x), place(y)]);
         }
         MouseProtocolEncoding::Utf8 => {
-            if x > UTF8_LIMIT || y > UTF8_LIMIT {
-                return false;
-            }
             out.extend_from_slice(b"\x1b[M");
-            for n in [code, x, y] {
+            for (n, place) in [(code, false), (x, true), (y, true)] {
+                if place && n > UTF8_LIMIT {
+                    out.push(0);
+                    continue;
+                }
                 let c = char::from_u32(n.saturating_add(32)).unwrap_or(char::MAX);
                 let mut utf8 = [0; 4];
                 out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());

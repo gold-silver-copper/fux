@@ -250,29 +250,26 @@ fn sgr_names_the_button_released_and_ends_a_release_with_m() {
     );
 }
 
+/// ctlseqs gives each encoding's limit (223 for the default, 2015 for
+/// UTF-8) and not what a position past it sends, so xterm 411 decides:
+/// it clamps the position to the limit and sends that as a 0 byte, "a
+/// past-end marker" (`button.c`, `EmitMousePosition`), the report sent.
 #[test]
-fn a_position_the_encoding_cannot_carry_sends_nothing() {
+fn a_position_past_the_encodings_limit_is_sent_as_a_0_byte() {
     let mode = MouseProtocolMode::PressRelease;
-    // Default: 223 is the last (byte 255).
+    // Default: 223 is the last (byte 255); past it, 0.
     assert_eq!(
         default(press(MouseButton::Left, 222, 222), mode),
         Some(vec![0x1b, b'[', b'M', 32, 255, 255])
     );
-    let mut out = b"kept".to_vec();
-    let event = press(MouseButton::Left, 0, 223);
-    assert!(!mouse_bytes(
-        event,
-        mode,
-        MouseProtocolEncoding::Default,
-        &mut out
-    ));
-    assert!(!mouse_bytes(
-        press(MouseButton::Left, 223, 0),
-        mode,
-        MouseProtocolEncoding::Default,
-        &mut out
-    ));
-    assert_eq!(out, b"kept");
+    assert_eq!(
+        default(press(MouseButton::Left, 0, 223), mode),
+        Some(vec![0x1b, b'[', b'M', 32, 0, 33])
+    );
+    assert_eq!(
+        default(press(MouseButton::Left, 300, 299), mode),
+        Some(vec![0x1b, b'[', b'M', 32, 0, 0])
+    );
     // UTF-8: one byte below 96 (position 95 is 127), two after, 2015 last.
     let utf8 = |event| report(event, mode, MouseProtocolEncoding::Utf8);
     assert_eq!(
@@ -287,7 +284,10 @@ fn a_position_the_encoding_cannot_carry_sends_nothing() {
         utf8(press(MouseButton::Left, 2014, 2014)),
         bytes(b"\x1b[M \xdf\xbf\xdf\xbf")
     );
-    assert_eq!(utf8(press(MouseButton::Left, 0, 2015)), None);
+    assert_eq!(
+        utf8(press(MouseButton::Left, 0, 2015)),
+        bytes(b"\x1b[M \x00!")
+    );
     // A button code past 95 is two bytes too.
     assert_eq!(
         utf8(press(MouseButton::Back, 0, 0)),
