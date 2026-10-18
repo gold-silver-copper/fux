@@ -100,7 +100,9 @@ fn working_tree(root: &Path, place: &Path) -> Result<String, String> {
 }
 
 /// `commit`'s tree with its `bench/` replaced by `bench`'s: REF's crates
-/// under the working tree's workloads.
+/// under the working tree's workloads. The removal is forced (`-f`): git
+/// refuses to drop staged content that differs from both the file and
+/// HEAD, as REF's `bench/` does whenever both changed it since.
 fn with_bench(root: &Path, place: &Path, commit: &str, bench: &str) -> Result<String, String> {
     let index = place.join("index");
     let _ = std::fs::remove_file(&index);
@@ -108,7 +110,15 @@ fn with_bench(root: &Path, place: &Path, commit: &str, bench: &str) -> Result<St
     git_index(
         root,
         &index,
-        &["rm", "-r", "-q", "--cached", "--ignore-unmatch", "bench"],
+        &[
+            "rm",
+            "-r",
+            "-q",
+            "-f",
+            "--cached",
+            "--ignore-unmatch",
+            "bench",
+        ],
     )?;
     git_index(root, &index, &["read-tree", "--prefix=bench/", bench])?;
     let tree = git_index(root, &index, &["write-tree"]);
@@ -780,6 +790,60 @@ fn hash(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, paired, signs, tail, verdict};
+    use std::path::Path;
+    use std::process::Command;
+
+    /// Runs `git args` in `dir`, and its output.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+        assert!(out.is_some(), "git {args:?}");
+        out.unwrap_or_default()
+    }
+
+    /// A REF whose `bench/` differs from both HEAD's and the working
+    /// tree's gets the working tree's, the rest of REF's tree kept: git
+    /// refused this removal unless forced (`9a38df95`).
+    #[test]
+    fn a_ref_whose_bench_differs_from_head_and_the_tree_takes_the_trees() {
+        let base =
+            std::env::temp_dir().join(format!("fux-bench-with-bench-{}", std::process::id()));
+        let (root, place) = (base.join("repo"), base.join("place"));
+        let _ = std::fs::remove_dir_all(&base);
+        let made = std::fs::create_dir_all(root.join("bench")).and(std::fs::create_dir_all(&place));
+        assert!(made.is_ok());
+        let write = |path: &str, text: &str| assert!(std::fs::write(root.join(path), text).is_ok());
+        git(&root, &["init", "-q"]);
+        write("bench/w.rs", "ref");
+        write("crate.rs", "ref's crate");
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-q", "-m", "ref"]);
+        let reference = git(&root, &["rev-parse", "HEAD"]);
+        write("bench/w.rs", "head");
+        git(&root, &["commit", "-q", "-am", "head"]);
+        write("bench/w.rs", "working tree");
+        let tree = super::working_tree(&root, &place);
+        let bench = tree.and_then(|t| super::git(&root, &["rev-parse", &format!("{t}:bench")]));
+        let made = bench.and_then(|b| super::with_bench(&root, &place, &reference, &b));
+        assert!(made.is_ok(), "{made:?}");
+        let made = made.unwrap_or_default();
+        assert_eq!(
+            git(&root, &["show", &format!("{made}:bench/w.rs")]),
+            "working tree"
+        );
+        assert_eq!(
+            git(&root, &["show", &format!("{made}:crate.rs")]),
+            "ref's crate"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn a_change_is_the_median_of_paired_rounds() {
