@@ -14,12 +14,18 @@
 //! on a clean tree, at no difference.
 //!
 //! Each workload runs as a child process of its own, counted (`count`),
-//! and so does its baseline (`workloads`), `--repeats` times on each
-//! side, the sides alternating. A side's count is the fewest instructions
-//! of its runs less the fewest of its baseline's (see `Side`); its noise,
-//! the spread of its runs over that count. A workload is flagged when the
-//! working tree retires more than `--threshold` percent more instructions
-//! than REF, and more than either side's noise.
+//! and so does its baseline (`workloads`): in each of `--repeats` rounds,
+//! every workload's four runs (each side, and each side's baseline), the
+//! side that goes first alternating by round. The judgement is
+//! `speed-method.md`'s: a round's change pairs both sides' runs in it, each
+//! less its side's median baseline; a workload's change is the median of
+//! its rounds', its spread their median absolute deviation. Its floor comes
+//! from a calibration (`--calibrate`, an A/A run of its own, `--floors`
+//! FILE): max(0.25%, the A/A change, 3 x the A/A spread). A change inside
+//! its floor is inconclusive; a floor over 1% means the tool is broken for
+//! that workload; a run whose spread is past a third of the floor is
+//! noisy. Across the recordings, a sign test with the recordings of one
+//! program counted once flags a broad change.
 use crate::count::Counter;
 use crate::workloads;
 use std::fmt::Write as _;
@@ -32,7 +38,10 @@ pub struct Options {
     pub reference: String,
     pub repeats: usize,
     pub jobs: usize,
-    pub threshold: f64,
+    /// A calibration's JSON (`--calibrate`) to take floors from.
+    pub floors: Option<PathBuf>,
+    /// An A/A run of the working tree against itself, writing floors.
+    pub calibrate: bool,
     pub only: Vec<String>,
     pub json: PathBuf,
 }
@@ -255,24 +264,188 @@ fn count_all(
     results.into_iter().map(|(_, r)| r).collect()
 }
 
-/// A side's count of one workload: the fewest instructions any of its
-/// runs retired less the fewest any run of its baseline did, and the
-/// spread of its runs over that count. On macOS the count includes the
-/// kernel's work for the process (interrupts, preemption, page faults),
-/// which only adds: the fewest is the least disturbed.
-struct Side {
-    count: i64,
-    noise: f64,
+/// The floor no workload's goes under, and the floor past which the tool
+/// is broken for a workload (`speed-method.md`).
+const FLOOR_MIN: f64 = 0.0025;
+const FLOOR_BROKEN: f64 = 0.01;
+/// A program's recordings count in the sign test only when their median
+/// change is past this, either way.
+const SIGN_BAND: f64 = 0.001;
+/// The sign test flags a broad change at this one-sided p or under.
+const SIGN_P: f64 = 0.01;
+
+fn median(values: &[f64]) -> f64 {
+    let mut v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    match (v.get(n / 2), n.checked_rem(2)) {
+        (Some(&high), Some(0)) => v
+            .get(n.saturating_sub(1) / 2)
+            .map_or(high, |&low| f64::midpoint(low, high)),
+        (Some(&mid), _) => mid,
+        (None, _) => f64::NAN,
+    }
 }
 
-fn side(full: &[i64], baseline: &[i64]) -> Side {
-    let low = |v: &[i64]| v.iter().copied().min().unwrap_or(0);
-    let high = full.iter().copied().max().unwrap_or(0);
-    let count = low(full).saturating_sub(low(baseline));
-    Side {
-        count,
-        noise: (high.saturating_sub(low(full)) as f64) / (count.max(1) as f64),
+/// One workload's rounds, judged: each round pairs both sides' runs in it,
+/// `change` is the median of the rounds' changes, `spread` their median
+/// absolute deviation from it. A side's run counts less its baseline's
+/// median (the baseline is the same work with the measured part left out).
+#[derive(Debug, PartialEq)]
+struct Paired {
+    /// Each side's median count less its baseline's median.
+    old: f64,
+    new: f64,
+    rounds: Vec<f64>,
+    change: f64,
+    spread: f64,
+}
+
+fn paired(old: [&[i64]; 2], new: [&[i64]; 2]) -> Paired {
+    let floats = |v: &[i64]| v.iter().map(|&n| n as f64).collect::<Vec<_>>();
+    let [old_full, old_base] = old.map(floats);
+    let [new_full, new_base] = new.map(floats);
+    let (old_base, new_base) = (median(&old_base), median(&new_base));
+    let rounds: Vec<f64> = old_full
+        .iter()
+        .zip(&new_full)
+        .map(|(o, n)| (n - new_base) / (o - old_base) - 1.0)
+        .collect();
+    let change = median(&rounds);
+    let deviations: Vec<f64> = rounds.iter().map(|r| (r - change).abs()).collect();
+    Paired {
+        old: median(&old_full) - old_base,
+        new: median(&new_full) - new_base,
+        spread: median(&deviations),
+        change,
+        rounds,
     }
+}
+
+/// What a comparison says of a workload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    Slower,
+    Faster,
+    /// Within its floor.
+    Inconclusive,
+    /// This run's spread is past a third of its calibrated floor: it says
+    /// nothing.
+    Noisy,
+    /// Its floor is over 1%: the tool cannot judge it.
+    Broken,
+}
+
+impl Verdict {
+    fn name(self) -> &'static str {
+        match self {
+            Verdict::Slower => "slower",
+            Verdict::Faster => "faster",
+            Verdict::Inconclusive => "inconclusive",
+            Verdict::Noisy => "noisy",
+            Verdict::Broken => "broken",
+        }
+    }
+}
+
+/// A workload's floor from an A/A calibration: max(0.25%, the A/A change,
+/// 3 x the A/A spread).
+fn floor(aa: &Paired) -> f64 {
+    FLOOR_MIN.max(aa.change.abs()).max(3.0 * aa.spread)
+}
+
+/// `p` judged against `floor`; `calibrated` if the floor came from an
+/// A/A run apart from this one.
+fn verdict(p: &Paired, floor: f64, calibrated: bool) -> Verdict {
+    if floor > FLOOR_BROKEN || !p.change.is_finite() {
+        Verdict::Broken
+    } else if calibrated && 3.0 * p.spread > floor {
+        Verdict::Noisy
+    } else if p.change > floor {
+        Verdict::Slower
+    } else if p.change < -floor {
+        Verdict::Faster
+    } else {
+        Verdict::Inconclusive
+    }
+}
+
+/// The program a recording workload belongs to (`vt/corpus:nvim-diff` is
+/// nvim's), or none for a workload that is not a recording.
+fn program(name: &str) -> Option<&str> {
+    let recording = name.strip_prefix("vt/corpus:")?;
+    Some(recording.split_once('-').map_or(recording, |(p, _)| p))
+}
+
+/// The sign test over the recordings, a program's recordings counted as
+/// one (their median change): how many programs are past `SIGN_BAND`
+/// slower and faster, and the one-sided p of so many slower (and of so
+/// many faster) if each way were as likely.
+#[derive(Debug, PartialEq)]
+struct Signs {
+    programs: usize,
+    slower: usize,
+    faster: usize,
+    p_slower: f64,
+    p_faster: f64,
+}
+
+fn signs(changes: &[(&str, f64)]) -> Signs {
+    let mut by: std::collections::BTreeMap<&str, Vec<f64>> = std::collections::BTreeMap::new();
+    for &(name, change) in changes {
+        if let Some(p) = program(name) {
+            by.entry(p).or_default().push(change);
+        }
+    }
+    let medians: Vec<f64> = by.values().map(|v| median(v)).collect();
+    let slower = medians.iter().filter(|&&m| m > SIGN_BAND).count();
+    let faster = medians.iter().filter(|&&m| m < -SIGN_BAND).count();
+    let n = slower.saturating_add(faster);
+    Signs {
+        programs: medians.len(),
+        slower,
+        faster,
+        p_slower: tail(n, slower),
+        p_faster: tail(n, faster),
+    }
+}
+
+/// P(X >= k) for X binomial(n, 1/2).
+fn tail(n: usize, k: usize) -> f64 {
+    let mut choose = 1f64;
+    let mut sum = 0f64;
+    for i in 0..=n {
+        if i >= k {
+            sum += choose;
+        }
+        choose = choose * (n.saturating_sub(i) as f64) / (i.saturating_add(1) as f64);
+    }
+    sum / 2f64.powi(i32::try_from(n).unwrap_or(i32::MAX))
+}
+
+/// Floors from a calibration's JSON: each workload's floor, by name.
+fn read_floors(path: &Path) -> Result<std::collections::BTreeMap<String, f64>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if json.get("kind").and_then(serde_json::Value::as_str) != Some("fux-bench calibration") {
+        return Err(format!(
+            "{}: not a calibration (--calibrate)",
+            path.display()
+        ));
+    }
+    let rows = json
+        .get("workloads")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(format!("{}: no workloads", path.display()))?;
+    Ok(rows
+        .iter()
+        .filter_map(|w| {
+            let name = w.get("name")?.as_str()?;
+            let floor = w.get("floor_percent")?.as_f64()? / 100.0;
+            Some((name.to_owned(), floor))
+        })
+        .collect())
 }
 
 /// The paint statistics a run prints: frames, and bytes painted.
@@ -312,7 +485,12 @@ pub fn run(options: &Options) -> Result<bool, String> {
     std::fs::create_dir_all(&place).map_err(|e| format!("{}: {e}", place.display()))?;
     let new_tree = working_tree(&root, &place)?;
     let bench_tree = git(&root, &["rev-parse", &format!("{new_tree}:bench")])?;
-    let old_tree = with_bench(&root, &place, &reference, &bench_tree)?;
+    // A calibration is an A/A run: the working tree on both sides.
+    let old_tree = if options.calibrate {
+        new_tree.clone()
+    } else {
+        with_bench(&root, &place, &reference, &bench_tree)?
+    };
     let short = reference.get(..12).unwrap_or(&reference).to_owned();
     eprintln!(
         "building {} ({short}) and the working tree by one recipe, in {}…",
@@ -332,7 +510,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
     for (from, to) in [&old, &new].into_iter().zip(&mut binaries) {
         std::fs::copy(from, &*to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
-    let [old, new] = binaries;
+    let [old_binary, new_binary] = binaries;
 
     // Repeats alternate the sides: REF first in even ones, the working tree
     // first in odd ones.
@@ -363,14 +541,35 @@ pub fn run(options: &Options) -> Result<bool, String> {
         counter.name()
     );
     let measure_started = Instant::now();
-    let results = count_all(counter, &[old, new], &names, &corpus, &tasks, options.jobs);
+    let results = count_all(
+        counter,
+        &[old_binary.clone(), new_binary.clone()],
+        &names,
+        &corpus,
+        &tasks,
+        options.jobs,
+    );
     let measure_secs = measure_started.elapsed().as_secs_f64();
 
     // Each workload's counts by side, runs and baselines.
     let mut counts = vec![[[Vec::new(), Vec::new()], [Vec::new(), Vec::new()]]; names.len()];
     let mut paints: Vec<[Option<(u64, u64)>; 2]> = vec![[None, None]; names.len()];
-    for (task, result) in tasks.iter().zip(&results) {
+    // perf's own report of every run, kept beside the JSON.
+    let mut raw = format!("{counter_setup}\n");
+    for (i, (task, result)) in tasks.iter().zip(&results).enumerate() {
         let run = result.as_ref().map_err(Clone::clone)?;
+        let report = run
+            .raw
+            .rsplit_once("fux-perf: begin\n")
+            .map_or(run.raw.as_str(), |(_, block)| block);
+        let _ = writeln!(
+            raw,
+            "## run {i}: {} {}{}\n{}",
+            SIDES.get(task.side).unwrap_or(&"?"),
+            names.get(task.workload).map_or("?", String::as_str),
+            if task.baseline { " --baseline" } else { "" },
+            report.trim_end()
+        );
         let (n, stdout) = (
             i64::try_from(run.instructions).unwrap_or(i64::MAX),
             &run.stdout,
@@ -391,47 +590,63 @@ pub fn run(options: &Options) -> Result<bool, String> {
         }
     }
 
+    let floors = options.floors.as_deref().map(read_floors).transpose()?;
+    let calibrating = options.calibrate;
     let mut table = format!(
-        "instructions retired, {} (REF {short}) vs the working tree ({}{}); the fewest of {} \
-         runs each, less the fewest of its baseline\n{:<26} {:>15} {:>15} {:>8} {:>7}\n",
+        "instructions retired, {} (REF {short}) vs the working tree ({}{}): the median of {} \
+         interleaved paired rounds, each run less its side's median baseline; floors {}\n\
+         {:<40} {:>14} {:>14} {:>8} {:>7} {:>7}  verdict\n",
         options.reference,
         head.get(..12).unwrap_or(&head),
         if dirty { ", with changes" } else { "" },
         options.repeats,
+        if calibrating {
+            "calibrated here: max(0.25%, |A/A change|, 3 x spread)".to_owned()
+        } else if let Some(path) = &options.floors {
+            format!("from {}", path.display())
+        } else {
+            "uncalibrated: max(0.25%, 3 x this run's spread)".to_owned()
+        },
         "workload",
         "REF",
         "working tree",
         "change",
-        "noise"
+        "spread",
+        "floor",
     );
     let mut rows = Vec::new();
-    let mut flagged = Vec::new();
-    let mut noisy = Vec::new();
-    let mut worst_noise = 0f64;
+    let mut judged: Vec<(String, Verdict)> = Vec::new();
+    let mut changes: Vec<(String, f64)> = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
         let Some([[old_full, old_base], [new_full, new_base]]) = counts.get(i) else {
             continue;
         };
-        let (old, new) = (side(old_full, old_base), side(new_full, new_base));
-        let change = (new.count as f64) / (old.count.max(1) as f64) - 1.0;
-        let noise = old.noise.max(new.noise);
-        worst_noise = worst_noise.max(noise);
-        let flag = change * 100.0 > options.threshold && change > noise;
-        if flag {
-            flagged.push(spec.name.clone());
-        }
-        if noise * 100.0 > options.threshold {
-            noisy.push(spec.name.clone());
-        }
+        let p = paired([old_full, old_base], [new_full, new_base]);
+        let (floor, calibrated) = match floors.as_ref().and_then(|f| f.get(&spec.name)) {
+            Some(&f) => (f, true),
+            None => (floor(&p), calibrating),
+        };
+        let verdict = if calibrating {
+            if floor > FLOOR_BROKEN {
+                Verdict::Broken
+            } else {
+                Verdict::Inconclusive
+            }
+        } else {
+            verdict(&p, floor, calibrated)
+        };
+        judged.push((spec.name.clone(), verdict));
+        changes.push((spec.name.clone(), p.change));
         let _ = writeln!(
             table,
-            "{:<26} {:>15} {:>15} {:>+7.2}% {:>6.2}%{}",
+            "{:<40} {:>14.0} {:>14.0} {:>+7.3}% {:>6.3}% {:>6.3}%  {}",
             spec.name,
-            old.count,
-            new.count,
-            change * 100.0,
-            noise * 100.0,
-            if flag { "  <- slower" } else { "" }
+            p.old,
+            p.new,
+            p.change * 100.0,
+            p.spread * 100.0,
+            floor * 100.0,
+            verdict.name()
         );
         let paint = paints.get(i).copied().unwrap_or_default();
         let per_frame = |p: Option<(u64, u64)>| {
@@ -446,72 +661,181 @@ pub fn run(options: &Options) -> Result<bool, String> {
         rows.push(serde_json::json!({
             "name": spec.name,
             "about": spec.about,
-            "ref": old.count,
-            "working_tree": new.count,
-            "change_percent": change * 100.0,
-            "ref_noise_percent": old.noise * 100.0,
-            "working_tree_noise_percent": new.noise * 100.0,
-            "flagged": flag,
+            "ref": p.old,
+            "working_tree": p.new,
+            "change_percent": p.change * 100.0,
+            "spread_percent": p.spread * 100.0,
+            "floor_percent": floor * 100.0,
+            "floor_calibrated": calibrated,
+            "verdict": verdict.name(),
+            "rounds_percent": p.rounds.iter().map(|r| r * 100.0).collect::<Vec<_>>(),
+            "counts": {
+                "ref": old_full, "ref_baseline": old_base,
+                "working_tree": new_full, "working_tree_baseline": new_base,
+            },
             "ref_paint": per_frame(paint.first().copied().flatten()),
             "working_tree_paint": per_frame(paint.get(1).copied().flatten()),
         }));
     }
+    let by_name: Vec<(&str, f64)> = changes.iter().map(|(n, c)| (n.as_str(), *c)).collect();
+    let signs = signs(&by_name);
+    let broad_loss = !calibrating && signs.p_slower <= SIGN_P;
+    let broad_gain = !calibrating && signs.p_faster <= SIGN_P;
+    let named = |v: Verdict| -> Vec<&str> {
+        judged
+            .iter()
+            .filter(|(_, x)| *x == v)
+            .map(|(n, _)| n.as_str())
+            .collect()
+    };
+    let list = |v: Vec<&str>| {
+        if v.is_empty() {
+            "none".to_owned()
+        } else {
+            v.join(", ")
+        }
+    };
     let total_secs = started.elapsed().as_secs_f64();
     let _ = writeln!(
         table,
-        "\nthe largest run-to-run spread of one side: {:.2}%; flagged above {}% and the \
-         noise: {}\nbuilt REF in {build_secs:.0} s, counted in {measure_secs:.0} s, \
-         {total_secs:.0} s in all",
-        worst_noise * 100.0,
-        options.threshold,
-        if flagged.is_empty() {
-            "none".to_owned()
+        "\nslower past its floor: {}\nfaster past its floor: {}\nnoisy: {}\nbroken (floor over 1%): {}\n\
+         recordings by program: {} programs, {} slower and {} faster past {:.1}%; one-sided sign \
+         test p {:.4} slower, {:.4} faster{}\n\
+         built in {build_secs:.0} s, counted in {measure_secs:.0} s, {total_secs:.0} s in all",
+        list(named(Verdict::Slower)),
+        list(named(Verdict::Faster)),
+        list(named(Verdict::Noisy)),
+        list(named(Verdict::Broken)),
+        signs.programs,
+        signs.slower,
+        signs.faster,
+        SIGN_BAND * 100.0,
+        signs.p_slower,
+        signs.p_faster,
+        if broad_loss {
+            ": a broad loss"
+        } else if broad_gain {
+            ": a broad gain"
         } else {
-            flagged.join(", ")
-        }
+            ""
+        },
     );
-    if !noisy.is_empty() {
-        let _ = writeln!(
-            table,
-            "too noisy here to judge at {}% (more --repeats, or a quieter machine): {}",
-            options.threshold,
-            noisy.join(", ")
-        );
-    }
     print!("{table}");
     let json = serde_json::json!({
-        "kind": "fux-bench against",
+        "kind": if calibrating { "fux-bench calibration" } else { "fux-bench against" },
+        "method": "speed-method.md: the median of interleaved paired rounds; floor max(0.25%, A/A change, 3 x A/A spread); over 1% broken; sign test by program",
         "ref": options.reference,
         "ref_commit": reference,
         "working_tree_commit": head,
+        "working_tree_changed": dirty,
         "trees": { "old": old_tree, "new": new_tree },
         "recipe": "git archive into paths of one length, one target dir, run as run/old and run/new",
-        "working_tree_changed": dirty,
+        "binaries": { "old": hash(&old_binary)?, "new": hash(&new_binary)? },
         "counter": counter.name(),
         "counter_setup": counter_setup,
-        "repeats": options.repeats,
+        "rounds": options.repeats,
         "jobs": options.jobs,
-        "threshold_percent": options.threshold,
-        "worst_noise_percent": worst_noise * 100.0,
-        "flagged": flagged,
-        "noisy": noisy,
-        "seconds": { "build_ref": build_secs, "count": measure_secs, "total": total_secs },
+        "floors": options.floors.as_ref().map(|p| p.display().to_string()),
+        "slower": named(Verdict::Slower),
+        "faster": named(Verdict::Faster),
+        "noisy": named(Verdict::Noisy),
+        "broken": named(Verdict::Broken),
+        "signs": {
+            "programs": signs.programs, "slower": signs.slower, "faster": signs.faster,
+            "band_percent": SIGN_BAND * 100.0, "p_slower": signs.p_slower,
+            "p_faster": signs.p_faster, "broad_loss": broad_loss, "broad_gain": broad_gain,
+        },
+        "seconds": { "build": build_secs, "count": measure_secs, "total": total_secs },
         "workloads": rows,
     });
     crate::save_json(&options.json, &json)?;
-    eprintln!("wrote {}", options.json.display());
-    Ok(flagged.is_empty())
+    let raw_path = options.json.with_extension("perf.txt");
+    std::fs::write(&raw_path, raw).map_err(|e| format!("{}: {e}", raw_path.display()))?;
+    eprintln!(
+        "wrote {} and {}",
+        options.json.display(),
+        raw_path.display()
+    );
+    if !named(Verdict::Broken).is_empty() || !named(Verdict::Noisy).is_empty() {
+        return Err("the tool cannot judge every workload: see broken and noisy above".into());
+    }
+    Ok(named(Verdict::Slower).is_empty() && !broad_loss)
+}
+
+/// A file's SHA-256, by `sha256sum`.
+fn hash(path: &Path) -> Result<String, String> {
+    let out = Command::new("sha256sum")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("sha256sum: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.split_whitespace()
+        .next()
+        .map(str::to_owned)
+        .ok_or(format!("sha256sum {}: no hash", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{Verdict, paired, signs, tail, verdict};
+
     #[test]
-    fn a_side_is_its_fewest_less_its_baselines_fewest() {
-        let side = super::side(&[1103, 1100, 1101], &[101, 100, 102]);
-        assert_eq!(side.count, 1000);
-        assert!((side.noise - 3.0 / 1000.0).abs() < 1e-9);
+    fn a_change_is_the_median_of_paired_rounds() {
+        // Baselines' medians 100 each side; rounds less them 1000/1010,
+        // 1000/1020, 1100/1110: changes +1%, +2%, +1/110; median +1%,
+        // spread the median of 0, 1% and 1% - 1/110, which is 1/1100.
+        let p = paired(
+            [&[1100, 1100, 1200], &[100, 99, 101]],
+            [&[1110, 1120, 1210], &[100, 100, 100]],
+        );
+        assert!((p.change - 0.01).abs() < 1e-12, "{p:?}");
+        assert!((p.spread - 1.0 / 1100.0).abs() < 1e-12, "{p:?}");
+        assert!((p.old - 1000.0).abs() < 1e-9 && (p.new - 1020.0).abs() < 1e-9);
     }
 
+    #[test]
+    fn a_change_inside_its_floor_is_inconclusive() {
+        let p = paired([&[1000; 5], &[0; 5]], [&[1002; 5], &[0; 5]]);
+        assert_eq!(verdict(&p, 0.0025, true), Verdict::Inconclusive);
+        assert_eq!(verdict(&p, 0.001, true), Verdict::Slower);
+        let q = paired([&[1000; 5], &[0; 5]], [&[990; 5], &[0; 5]]);
+        assert_eq!(verdict(&q, 0.0025, true), Verdict::Faster);
+        assert_eq!(verdict(&q, 0.011, true), Verdict::Broken);
+        // Rounds of +0%, +2%, -2%: spread 2%, past a third of a 0.3% floor.
+        let noisy = paired(
+            [&[1000, 1000, 1000], &[0; 3]],
+            [&[1000, 1020, 980], &[0; 3]],
+        );
+        assert_eq!(verdict(&noisy, 0.003, true), Verdict::Noisy);
+    }
+
+    #[test]
+    fn recordings_of_one_program_count_once() {
+        assert_eq!(super::program("vt/corpus:nvim-diff"), Some("nvim"));
+        assert_eq!(super::program("vt/corpus:pico"), Some("pico"));
+        assert_eq!(super::program("vt/ascii"), None);
+        // 15 nvim recordings slower count as one program; with 2 others
+        // slower and 1 faster that is 3 of 4.
+        let mut changes: Vec<(String, f64)> = (0..15)
+            .map(|i| (format!("vt/corpus:nvim-{i}"), 0.01))
+            .collect();
+        changes.push(("vt/corpus:vim".into(), 0.01));
+        changes.push(("vt/corpus:man-wide".into(), 0.01));
+        changes.push(("vt/corpus:less".into(), -0.01));
+        changes.push(("vt/corpus:zsh".into(), 0.0001));
+        let refs: Vec<(&str, f64)> = changes.iter().map(|(n, c)| (n.as_str(), *c)).collect();
+        let s = signs(&refs);
+        assert_eq!((s.programs, s.slower, s.faster), (5, 3, 1));
+        assert!((s.p_slower - 5.0 / 16.0).abs() < 1e-12, "{s:?}");
+    }
+
+    #[test]
+    fn the_sign_test_is_binomial() {
+        assert!((tail(4, 4) - 1.0 / 16.0).abs() < 1e-12);
+        assert!((tail(4, 0) - 1.0).abs() < 1e-12);
+        assert!((tail(10, 9) - 11.0 / 1024.0).abs() < 1e-12);
+        assert!(tail(0, 0) >= 1.0);
+    }
     #[test]
     fn paint_statistics_are_read_from_a_run() {
         assert_eq!(

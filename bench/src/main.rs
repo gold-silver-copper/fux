@@ -19,8 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--threshold PERCENT]
+usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--floors FILE]
                  [--only TEXT]... [--json FILE]
+       fux-bench --calibrate [--repeats N] [--jobs N] [--only TEXT]... [--json FILE]
        fux-bench list
        fux-bench run WORKLOAD [--baseline] [--corpus DIR] [--payloads DIR]
        fux-bench time [--corpus DIR] [--payloads DIR] [WORKLOAD...]
@@ -29,11 +30,17 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--threshold PERCENT]
 
 (default)  every workload on REF (default master) and on the working tree,
            both built by one recipe (git archive at paths of one length,
-           one target dir), alternating, in instructions retired; flags a
-           workload more than PERCENT (default 3) above REF and beyond the
-           noise of its repeats (default 5). Exit 1 if one is flagged:
+           one target dir), in N interleaved paired rounds (default 15),
+           in instructions retired, judged as speed-method.md says: the
+           median change of the rounds against each workload's floor from
+           FILE (else max(0.25%, 3 x the run's spread)), and a sign test
+           over the recordings. Exit 1 if a workload is slower past its
+           floor or the recordings are broadly slower, 2 if a workload is
+           noisy or its floor is over 1% (the tool is broken for it):
              cargo run --release --manifest-path bench/Cargo.toml -- --against master
            --only runs the workloads whose names contain TEXT.
+--calibrate  an A/A run, the working tree built twice by the recipe: each
+           workload's floor, max(0.25%, |change|, 3 x spread), for --floors.
 list       the workloads.
 run        one workload once (or its baseline), as `--against` counts it.
 time       each workload's thread CPU time here, best of 3, and MB/s.
@@ -109,9 +116,10 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
     let mut payloads = census::data(&against::root());
     let mut options = against::Options {
         reference: "master".into(),
-        repeats: 5,
+        repeats: 15,
         jobs: std::thread::available_parallelism().map_or(4, usize::from),
-        threshold: 3.0,
+        floors: None,
+        calibrate: false,
         only: Vec::new(),
         json: results(match command.as_str() {
             "info" => "info.json",
@@ -137,7 +145,8 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             "--against" => options.reference = value(&mut args, &arg)?,
             "--repeats" => options.repeats = number(&value(&mut args, &arg)?, &arg)?,
             "--jobs" => options.jobs = number(&value(&mut args, &arg)?, &arg)?,
-            "--threshold" => options.threshold = number(&value(&mut args, &arg)?, &arg)?,
+            "--floors" => options.floors = Some(value(&mut args, &arg)?.into()),
+            "--calibrate" => options.calibrate = true,
             "--only" => options.only.push(value(&mut args, &arg)?),
             "--json" => options.json = value(&mut args, &arg)?.into(),
             "--corpus" => corpus = value(&mut args, &arg)?.into(),
