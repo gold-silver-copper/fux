@@ -479,9 +479,10 @@ fux-vt's work counters and a counting allocator against it.
   says which checks ran and what each found. The invariant tests, the
   oracle (`diff/`) and the fuzz targets call it after every operation.
   Without the feature none of it is built.
-- **Fuzzing**: three targets in
-  [`fuzz/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/fuzz/README.md),
-  their corpora replayed nightly in CI.
+- **Fuzzing**: five targets in
+  [`fuzz/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/fuzz/README.md)
+  (`terminal`, `deep`, `keys`, `graphemes` and `cells`), explored nightly
+  in CI from cached corpora (`fuzz.yml`), beside the oracle's.
 - **Other terminals**:
   [`compare/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md)
   runs fux-vt beside Ghostty, alacritty, libvterm, avt, wezterm, vt100,
