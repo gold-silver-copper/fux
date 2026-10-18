@@ -228,6 +228,10 @@ Keys sent into a command that runs on (a pager, an editor, a REPL, a
 prompt, local or remote), and a `capture`, settle as with any program:
 once it reads, or is quiet a second. A pane that settles while a marked
 command runs on says so: `%2 waiting · command running`. A command `line` typed
+that waits for keys answers so too: one reading its terminal (`read`, a
+pager), and one polling it with a time limit (Python's REPL), once quiet a
+second, every key read; one blocked elsewhere (a download, a pipe) is
+waited for to its end, its `line` answering `· done STATUS`. A command `line` typed
 that takes the full screen after it began (`less`, `vim`, an ssh session's
 too) answers once it reads or is quiet, its screen shown. One that a
 full-screen program marks itself (its `C` came on the alternate screen, as

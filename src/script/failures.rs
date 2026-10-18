@@ -101,6 +101,7 @@ const ROWS: &[Fails] = &[
     // 0.28: a pane given a wait is for what acts on it, and refused elsewhere.
     fails("type", Cli, "%1 1 timeout str state get", "fails type 1"),
     fails("type", Cli, "%1 opts str x line", "fails type 1"),
+    fails("type", Cli, "%1 last-output", "fails type 1"),
     fails("too_long", Cli, "define deep let x list x end deep end 0 deep", "fails too_long 1"),
     fails("div_by_zero", Cli, "1 0 div", "fails div_by_zero 1"),
     fails("overflow", Cli, "9223372036854775807 1 add", "fails overflow 1"),

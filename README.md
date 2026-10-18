@@ -58,7 +58,8 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
 - An action (`run`, `send-keys`, `capture`, a bare `wait` …) answers once
   its pane settles, with its state and what came since: `%3 reading · done
   0`, then the output. A `line` waits for the shell command it typed to end
-  (or to take the full screen); keys sent into a command that runs on
+  (or to take the full screen, or to wait for keys: a prompt, or a REPL
+  polling its terminal, quiet a second); keys sent into a command that runs on
   settle once it reads or is quiet, `%3 waiting · command running`. A relay
   (`koh connect`) says what the remote program does with a state report,
   `OSC 133 ; S ; activity=reading ; nonce=N`, which stands for fux's own
