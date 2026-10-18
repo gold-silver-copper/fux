@@ -1437,6 +1437,11 @@ impl Screen {
                 if joined && self.prints.is_some() {
                     self.mark_joined(row, col, blank, c);
                 }
+                // While text is being printed, what follows is segmented
+                // after the mark, as UAX #29 segments the cell's text.
+                if joined && self.last_print.is_some() {
+                    self.last_print = Some(Printed::new((row, col), c));
+                }
             }
             return Ok(());
         }

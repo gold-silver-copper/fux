@@ -305,3 +305,22 @@ fn rep_repeats_a_clusters_first_character_as_if_printed_again() -> Result {
     assert_eq!(texts, ["\u{600}x", "\u{600}\u{600}y"]);
     Ok(())
 }
+
+/// A character of no width that joins no cluster joins the cell before
+/// (README, "A character of no width that joins no cluster"), and what
+/// follows it is segmented after it, as UAX #29 segments the cell's text:
+/// after a trailing jamo (T) a regional indicator begins a cluster (GB999),
+/// so it pairs with no indicator before the jamo; after a lone vowel (V) a
+/// spacing mark joins (GB9a), widening the cell.
+#[test]
+fn what_follows_a_character_joined_at_no_width_is_segmented_after_it() -> Result {
+    let got = plain(1, 6, "\u{1f1f5}\u{11a8}\u{1f1ef}".as_bytes())?;
+    let want = [c("\u{1f1f5}\u{11a8}", false), c("\u{1f1ef}", false)];
+    assert_eq!(got, (vec![row(&want, 6)], (0, 2), false));
+    let got = plain(1, 6, "x\u{1161}\u{e33}".as_bytes())?;
+    assert_eq!(
+        got,
+        (vec![row(&[c("x\u{1161}\u{e33}", true)], 6)], (0, 2), false)
+    );
+    Ok(())
+}

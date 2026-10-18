@@ -514,7 +514,9 @@ And from UAX #29, whose clusters a row of cells cannot always hold:
 
 - **A character of no width that joins no cluster** has no cell of its
   own: it joins the cell before the cursor, and is dropped at a row's
-  start. UAX #29 makes it a cluster of its own (GB4, GB5 and GB999), which
+  start; what follows it is segmented after it, as UAX #29 segments the
+  cell's text (`1x6 '\u{1f1f5}\u{11a8}\u{1f1ef}'`: the indicator after the
+  jamo is a cell of its own). UAX #29 makes it a cluster of its own (GB4, GB5 and GB999), which
   no cell can hold at no width. These are the zero-width Prepend
   characters (U+0605 and 18 more), which so stay apart from what GB9b
   joins them to (`1x6 'x\u{605}A'`: `x\u{605}`, `A`; xterm, through
