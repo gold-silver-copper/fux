@@ -57,7 +57,9 @@ The language's core: str WORD   define NAME … end   let NAME (names the
 
 In what a word takes and leaves below: x is a pane, tab, workspace or
 client (or an action's answer, which is its pane), a request on one (what
-the words between it and the word that acts make of it), or options; a
+the words between it and the word that acts make of it), or options; w is
+the same, but a pane given only a wait, left last, waits (`%2 str ready
+wait-text`); a
 target is what send-keys acts on, a place what wait waits on (not a
 client), a subject a pane or a request on one; ref a name or a pane, tab
 or workspace; handle a pane, tab or workspace; text a string, a number or
@@ -163,6 +165,16 @@ pub fn explain(name: &str) -> Option<String> {
 /// A wait's words, which every word that waits takes, and `marks` for the
 /// screen it prints.
 pub(crate) const WAITING: &str = "wait-text wait-gone wait-exit wait-bell wait-done timeout marks";
+
+/// The words of a wait alone: a pane given only them, left last, waits.
+pub(crate) const WAITS: [&str; 6] = [
+    "wait-text",
+    "wait-gone",
+    "wait-exit",
+    "wait-bell",
+    "wait-done",
+    "timeout",
+];
 
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of;

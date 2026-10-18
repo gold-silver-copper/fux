@@ -87,6 +87,8 @@ const ROWS: &[Row] = &[
     row(Cli, "wait", "pane", false, "%1 wait", &["string SENTINEL", "answer %1 empty"]),
     row(Key, "wait", "pane", false, "%1 wait", &["string SENTINEL", "answer %1 empty"]),
     row(Cli, "wait", "pane", true, "%1 str x wait-text wait", &["string SENTINEL", "answer %1 empty · met \"x\""]),
+    // 0.30: a wait left last on the pane waits.
+    row(Cli, "wait", "pane", true, "%1 str x wait-text", &["string SENTINEL", "answer %1 empty · met \"x\""]),
     row(Cli, "send-mouse", "pane", true, "%1 str x wait-text str click 0 0 mouse send-mouse", &["fails timeout 124"]),
     row(Key, "wait", "pane", true, "%1 str x wait-text wait", &["string SENTINEL", "answer %1 empty · met \"x\""]),
     row(Cli, "info", "pane", false, "%1 info", &["string SENTINEL", "listing   @1 main"]),

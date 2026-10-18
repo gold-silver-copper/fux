@@ -46,12 +46,13 @@ const fn word(
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 11] = [
+pub const KINDS: [(&str, &str, Option<&str>); 12] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts)", Some("options nothing takes: end them with run, new-tab or new-workspace (`opts str ./app program run`)")),
+    ("opts", "options (from opts, for run, new-tab and new-workspace; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("options nothing takes: end them with run, new-tab or new-workspace (`opts str ./app program run`)")),
+    ("waiting", "a pane given a wait", Some("a wait not last, which nothing acts on: end the line with it, or put the word that acts after it (`%2 str T wait-text wait`)")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request: end it with the word that does (`%2 str ready wait-text wait`, `%2 str y text send-keys`, `%2 all-history capture`)")),
 ];
 
@@ -61,11 +62,13 @@ pub const KINDS: [(&str, &str, Option<&str>); 11] = [
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
-    ("x", "opts request pane>request tab>request workspace>request client>request answer>request",
+    ("x", "opts request waiting>request pane>request tab>request workspace>request client>request answer>request",
         "a pane, tab, workspace or client, a request on one, or options (from opts)"),
-    ("target", "pane tab workspace client answer request", "a pane, tab, workspace or client, or a request on one"),
-    ("subject", "pane answer request", "a pane, or a request on one"),
-    ("place", "pane tab workspace answer request", "a pane, tab or workspace, or a request on one"),
+    ("w", "opts request waiting pane>waiting tab>waiting workspace>waiting client>request answer>waiting",
+        "a pane, tab, workspace or client, a request on one, or options (from opts)"),
+    ("target", "pane tab workspace client answer request waiting", "a pane, tab, workspace or client, or a request on one"),
+    ("subject", "pane answer request waiting", "a pane, or a request on one"),
+    ("place", "pane tab workspace answer request waiting", "a pane, tab or workspace, or a request on one"),
     ("pane", "pane answer", "a pane (from pane, run or split)"),
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
@@ -116,12 +119,12 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", "x text -- x", "wait until text shows anew, not on the line typed"),
-    word("Waiting", "wait-gone", "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
-    word("Waiting", "wait-exit", "x -- x", "wait until the program exits"),
-    word("Waiting", "wait-bell", "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "wait-done", "x -- x", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
-    word("Waiting", "timeout", "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once: %2 0 timeout str ls line"),
+    word("Waiting", "wait-text", "w text -- w", "wait until text shows anew, not on the line typed"),
+    word("Waiting", "wait-gone", "w text -- w", "wait until text is no longer shown; after run or respawn, once it has been"),
+    word("Waiting", "wait-exit", "w -- w", "wait until the program exits"),
+    word("Waiting", "wait-bell", "w -- w", "wait until the program rings or notifies"),
+    word("Waiting", "wait-done", "w -- w", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
+    word("Waiting", "timeout", "w secs -- w", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once: %2 0 timeout str ls line"),
     word("Waiting", "wait", "place -- answer", "wait for the pane to settle, or as the wait words on it say, in a pane, or each pane of a tab or workspace"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
@@ -267,16 +270,14 @@ pub fn usage(word: &str) -> Option<String> {
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     // What a request's word goes on: the pane, or opts.
     let takes = takes.trim().to_uppercase();
-    let takes = match takes
-        .strip_prefix('X')
-        .filter(|r| r.is_empty() || r.starts_with(' '))
-    {
+    let request = takes.strip_prefix('X').or(takes.strip_prefix('W'));
+    let takes = match request.filter(|r| r.is_empty() || r.starts_with(' ')) {
         Some(rest) => format!("PANE-OR-OPTS{rest}"),
         None => takes,
     };
     let leaves = match leaves.trim() {
         "" => String::new(),
-        "x" => ", which leaves a request (or opts) for the word that acts".to_owned(),
+        "x" | "w" => ", which leaves a request (or opts) for the word that acts".to_owned(),
         leaves => format!(", which leaves {leaves}"),
     };
     let example = help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
@@ -700,6 +701,11 @@ fn finished(word: &str, value: Value<Fux>) -> Result<Opts, Failure> {
 /// written without `str`: a key's name, or text one of fux's words takes
 /// (a way, a mouse action, a signal, a setting, a pane's field).
 pub fn hint(word: &str) -> Option<String> {
+    if word == "keys" {
+        return Some(
+            "`keys` is gone: the keys go right after the pane (`%2 str y text send-keys`)".into(),
+        );
+    }
     let named = word.chars().next().is_some_and(char::is_uppercase) || word.contains('-');
     if named && word.chars().count() > 1 && word.parse::<crate::keys::KeyPress>().is_ok() {
         return Some(format!(
@@ -740,11 +746,11 @@ fn takers(option: &str) -> String {
 pub fn unacted(word: &str) -> Option<String> {
     let spec = WORDS
         .iter()
-        .find(|w| w.name == word && w.effect.starts_with("x "))?;
+        .find(|w| w.name == word && (w.effect.starts_with("x ") || w.effect.starts_with("w ")))?;
     let end = match spec.group {
         "Waiting" => {
-            "`%2 str T wait-text wait`, or before the word it waits after: \
-                      `%2 str T wait-text str y text send-keys`"
+            "last on the line, where it waits (`%2 str T wait-text`), or before the word \
+             it waits after (`%2 str T wait-text str y text send-keys`)"
         }
         "Input" => "`%2 str y text str Enter key send-keys`",
         "Reading" => "`%2 all-history capture`",
@@ -893,7 +899,7 @@ impl fuxth::Host for Host<'_> {
         };
         // A word of a request's, as its effect says: on options, or on what
         // the word that acts after acts on.
-        if spec.effect.starts_with("x ") {
+        if spec.effect.starts_with("x ") || spec.effect.starts_with("w ") {
             let mut built = modifying(name, next()?)?;
             modify(name, &mut built, &mut next)?;
             return now(out, Value::App(Fux::Opts(built)));

@@ -10,8 +10,8 @@ a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 a wait (`str T wait-text`, `5 timeout`) and what to read (`all-history`),
 in any order, then the word that acts (`send-keys`, `wait`, `capture`).
 Only `run`, `new-tab` and `new-workspace`, which have no pane yet, start
-from `opts`. A line that leaves a request nothing acts on is refused
-before anything runs.
+from `opts`. A line that leaves keys or options nothing acts on is refused
+before anything runs; a wait left last waits.
 
 **Act, then read the answer.** Every action waits until the pane settles,
 then answers with what happened: you never choose a wait or sleep to read.
@@ -51,7 +51,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
 - **Time:** an action, a `capture` and a `wait` all wait 30s at most (the server's
   `wait-seconds`); `SECS timeout` on the pane changes it for one (`%2 0 timeout str ls line`). `0 timeout` acts and answers
   at once, the state as it is (start many programs so, then one `wait` on their tab or
-  workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE wait` waits on. A shell command of unknown length (a build quiet for minutes): `wait-done` waits as long as it runs, with no limit but a `timeout` given, to its end (`· done STATUS`) or to the text first: `%2 str 'build ok' wait-text wait-done wait` (status 5 if it ended first). Wait words go before the action they are for; one last on the line waits for nothing and is refused (`unused`).
+  workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE wait` waits on. A shell command of unknown length (a build quiet for minutes): `wait-done` waits as long as it runs, with no limit but a `timeout` given, to its end (`· done STATUS`) or to the text first: `%2 str 'build ok' wait-text wait-done wait` (status 5 if it ended first). Wait words go before the action they are for; a wait alone on the pane, last on the line, waits by itself (`%2 str ready wait-text` is `%2 str ready wait-text wait`).
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
   workspace `agent`. OPTIONS, after `opts`: `str web name` (the tab's name,
   here `web`; one given already

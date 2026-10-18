@@ -396,7 +396,20 @@ pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Err
     let exit = main
         .ends(false)
         .and_then(|(mut states, _)| states.remove(&ops.len()));
-    let unused = exit.and_then(|(exit, _)| exit.top.iter().find_map(|k| words.unused(*k)));
+    let Some((mut exit, _)) = exit else {
+        return Ok(());
+    };
+    // What a word ends is given to it, as the machine gives it.
+    for _ in 0..KEPT {
+        let Some(id) = exit.top.last().and_then(|k| words.ender(*k)) else {
+            break;
+        };
+        let op = Op::App(id);
+        if let Err(failing) = main.step(&op, &mut exit) {
+            return Err(main.error(ops.len().saturating_sub(1), &op, failing));
+        }
+    }
+    let unused = exit.top.iter().find_map(|k| words.unused(*k));
     let Some(why) = unused else {
         return Ok(());
     };

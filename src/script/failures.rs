@@ -105,10 +105,10 @@ const ROWS: &[Fails] = &[
     fails("type", Cli, "%1 opts str x line", "fails type 1"),
     fails("type", Cli, "%1 opts capture", "fails type 1"),
     fails("type", Cli, "%1 capture last-output", "fails type 1"),
-    // 0.28.1: a wait word after the action it was meant for, last, waited
-    // for nothing and printed the pane it gave; refused before anything runs.
-    fails("unused", Cli, "%1 str x type 0 timeout", "fails unused 1"),
-    fails("unused", Cli, "%1 str x line str ok wait-text", "fails unused 1"),
+    // 0.30: a wait word left last waits on the pane; one before other
+    // values, which nothing acts on, is refused before anything runs.
+    fails("unused", Cli, "%1 str x type 0 timeout 1", "fails unused 1"),
+    fails("unused", Cli, "%1 str ok wait-text str x", "fails unused 1"),
     fails("too_long", Cli, "define deep let x list x end deep end 0 deep", "fails too_long 1"),
     fails("div_by_zero", Cli, "1 0 div", "fails div_by_zero 1"),
     fails("overflow", Cli, "9223372036854775807 1 add", "fails overflow 1"),

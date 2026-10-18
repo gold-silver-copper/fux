@@ -68,8 +68,14 @@ impl AppValue for Fux {
             Fux::Tab(_) => "tab",
             Fux::Workspace(_) => "workspace",
             Fux::Client(_) => "client",
+            // A pane given only a wait, which waits if nothing acts on it.
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
+                Some(On::Target(_))
+                    if opts.given.iter().all(|w| crate::help::WAITS.contains(w)) =>
+                {
+                    "waiting"
+                }
                 Some(_) => "request",
             },
             Fux::Extent(_) => "size",
@@ -418,6 +424,8 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in WORDS {
         vocabulary.add(word.name, word.effect)?;
     }
+    // A wait left last on the line waits: `%2 str ready wait-text`.
+    vocabulary.ends("waiting", "wait")?;
     Ok(vocabulary)
 }
 

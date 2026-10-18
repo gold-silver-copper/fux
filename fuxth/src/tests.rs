@@ -1011,6 +1011,7 @@ fn what_mutation_testing_found() -> Result<(), Error> {
 enum Paper {
     Ticket,
     Draft,
+    Stamped,
 }
 
 impl AppValue for Paper {
@@ -1018,6 +1019,14 @@ impl AppValue for Paper {
         match self {
             Paper::Ticket => "a ticket",
             Paper::Draft => "a draft",
+            Paper::Stamped => "a stamped ticket",
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Paper::Stamped => "stamped",
+            Paper::Ticket | Paper::Draft => self.kind().trim_start_matches("a "),
         }
     }
 }
@@ -1043,6 +1052,7 @@ impl Host for Desk {
         let given = match (word, self.lying) {
             (1, false) => Paper::Draft,
             (3, _) => return Ok(Done::Later(())),
+            (4, _) => Paper::Stamped,
             _ => Paper::Ticket,
         };
         out.push(Value::App(given));
@@ -1064,6 +1074,10 @@ fn desk_words() -> Result<Vocabulary, Error> {
     words.add("mark", "x -- x")?;
     words.add("issue", "draft -- ticket")?;
     words.add("later", "-- ticket")?;
+    words.kind("stamped", "a stamped ticket")?;
+    words.add("stamp", "ticket -- stamped")?;
+    words.add("file", "stamped -- ticket")?;
+    words.ends("stamped", "file")?;
     Ok(words)
 }
 
@@ -1134,6 +1148,16 @@ fn the_applications_kinds_are_checked_before_it_is_called() {
         ran.map_err(|e| e.to_string()),
         Err("unused: t:1: at: a draft nothing issues: end it with issue".to_owned())
     );
+}
+
+/// A value of a kind that names a word, left on top at the end, is given
+/// to it; one under the top is not.
+#[test]
+fn a_kind_may_end_with_a_word() {
+    let (ran, calls) = at_desk("ticket stamp", false, Paper::Ticket);
+    assert_eq!((ran, calls), (Ok(vec![Value::App(Paper::Ticket)]), 3));
+    let (ran, calls) = at_desk("ticket stamp 1", false, Paper::Ticket);
+    assert_eq!((ran.map(|v| v.len()), calls), (Ok(2), 2));
 }
 
 /// An application that gives a kind its word doesn't say is caught where

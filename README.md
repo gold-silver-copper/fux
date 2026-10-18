@@ -99,8 +99,9 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
   reverse sum count first last pack`) and more; `fux help` lists them all.
 - A program is checked before it runs: a word given fewer values than the
   stack surely holds, a value its words never take (`str a 1 add`, `1 if`,
-  `%3 capture str x text`), or a request left that no word acts on
-  (`%3 str x wait-text`), fails before any word acts. What can't be known
+  `%3 capture str x text`), or keys or options left that no word acts on
+  (`%3 str x text`), fails before any word acts; a wait left last on the
+  pane waits (`%3 str x wait-text`). What can't be known
   before it runs (a loop that leaves values, a list's elements) is never
   refused, and is checked as it runs.
 - No word is a character a shell treats specially, so a program needs no

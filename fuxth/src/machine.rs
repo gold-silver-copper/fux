@@ -311,10 +311,22 @@ impl<A: AppValue> Machine<A> {
                 self.leave();
                 continue;
             };
-            // Past its last step, a definition returns; the program ends,
-            // leaving no value that must be used.
+            // Past its last step, a definition returns; the program ends:
+            // a value on top that a word ends is given to it, and none left
+            // must be used.
             let Some(op) = code.ops.get(frame.step) else {
                 if depth == 1 {
+                    let words = &program.vocabulary;
+                    let ends = self
+                        .stack
+                        .last()
+                        .and_then(|v| words.ender(words.kind_of(v)));
+                    if let Some(id) = ends {
+                        if let Some(request) = self.app(id, host)? {
+                            return Ok(Outcome::Suspended(request));
+                        }
+                        continue;
+                    }
                     self.used()?;
                 }
                 self.leave();
@@ -328,43 +340,8 @@ impl<A: AppValue> Machine<A> {
                 Op::PickN(n) => self.pick(*n)?,
                 Op::RollN(n) => self.roll(*n)?,
                 Op::App(id) => {
-                    let words = &program.vocabulary;
-                    let word = words.word(*id);
-                    let from = self.depth(word.map_or(0, |w| w.takes.len()))?;
-                    // The kinds it takes, for what it passes through.
-                    let taken = (self.stack.iter().skip(from))
-                        .map(|v| words.kind_of(v))
-                        .collect();
-                    let mut out = std::mem::take(&mut self.out);
-                    out.clear();
-                    let args = Args {
-                        stack: &mut self.stack,
-                        from,
-                        at: from,
-                    };
-                    let done = host.call(*id, args, &mut out);
-                    let done = done.map_err(|f| {
-                        let mut error = self.fail(f.code, f.message);
-                        error.word = f.word.or(error.word);
-                        error
-                    })?;
-                    let given = Given {
-                        depth: self.stack.len(),
-                        word: *id,
-                        taken,
-                    };
-                    if self.stack.len().saturating_add(out.len()) > self.limits.stack {
-                        return Err(self.fail(Code::StackOverflow, "the stack is full"));
-                    }
-                    self.stack.append(&mut out);
-                    self.out = out;
-                    match done {
-                        Done::Now => self.given(given)?,
-                        // What it gives comes with the host's answer.
-                        Done::Later(request) => {
-                            self.pending = Some(given);
-                            return Ok(Outcome::Suspended(request));
-                        }
+                    if let Some(request) = self.app(*id, host)? {
+                        return Ok(Outcome::Suspended(request));
                     }
                 }
                 Op::Call(id) => {
@@ -447,6 +424,54 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
+    /// Application word `id` run on the stack's top values: the request
+    /// to wait for, if it suspends.
+    fn app<H: Host<Value = A>>(
+        &mut self,
+        id: usize,
+        host: &mut H,
+    ) -> Result<Option<H::Request>, Error> {
+        let words = &self.program.vocabulary;
+        let from = self.depth(words.word(id).map_or(0, |w| w.takes.len()))?;
+        // The kinds it takes, for what it passes through.
+        let taken = self
+            .stack
+            .iter()
+            .skip(from)
+            .map(|v| words.kind_of(v))
+            .collect();
+        let mut out = std::mem::take(&mut self.out);
+        out.clear();
+        let args = Args {
+            stack: &mut self.stack,
+            from,
+            at: from,
+        };
+        let done = host.call(id, args, &mut out).map_err(|f| {
+            let mut error = self.fail(f.code, f.message);
+            error.word = f.word.or(error.word);
+            error
+        })?;
+        let given = Given {
+            depth: self.stack.len(),
+            word: id,
+            taken,
+        };
+        if self.stack.len().saturating_add(out.len()) > self.limits.stack {
+            return Err(self.fail(Code::StackOverflow, "the stack is full"));
+        }
+        self.stack.append(&mut out);
+        self.out = out;
+        match done {
+            Done::Now => self.given(given).map(|()| None),
+            // What it gives comes with the host's answer.
+            Done::Later(request) => {
+                self.pending = Some(given);
+                Ok(Some(request))
+            }
+        }
+    }
+
     /// A `let` name's value pushed; `unset` if its `let` hasn't run.
     fn named(&mut self, value: Option<Value<A>>) -> Result<(), Error> {
         match value {
@@ -491,14 +516,14 @@ impl<A: AppValue> Machine<A> {
     /// At the program's end: a value left that must be used fails it.
     fn used(&self) -> Result<(), Error> {
         let words = &self.program.vocabulary;
-        match self
+        if let Some(why) = self
             .stack
             .iter()
             .find_map(|v| words.unused(words.kind_of(v)))
         {
-            Some(why) => Err(self.fail(Code::Unused, why)),
-            None => Ok(()),
+            return Err(self.fail(Code::Unused, why));
         }
+        Ok(())
     }
 
     /// Calls nested past the limit: said at the call to the word that
@@ -507,26 +532,22 @@ impl<A: AppValue> Machine<A> {
     #[cold]
     fn too_deep(&self) -> Error {
         let message = format!("calls nest past {}: recursion too deep", self.limits.calls);
-        let mut error = self.fail(Code::CallDepth, message);
-        let mut seen = std::collections::HashMap::new();
-        for frame in &self.frames {
-            let count: &mut usize = seen.entry(frame.code).or_default();
-            *count = count.saturating_add(1);
-        }
-        // The call that began each frame, from the frame below it.
-        let begun = (self.frames.iter().zip(self.frames.iter().skip(1))).rev();
-        let recursing = begun
-            .filter(|(_, frame)| seen.get(&frame.code).is_some_and(|n| *n > 1))
-            .find_map(|(caller, _)| self.before(caller.code, caller.step));
-        if let Some(call) = recursing.filter(|call| Some(&call.text) != error.word.as_ref()) {
-            let last = error.word.as_deref().unwrap_or_default().to_owned();
-            error = Error::new(
+        let error = self.fail(Code::CallDepth, message);
+        let frames = &self.frames;
+        let call = (1..frames.len()).rev().find_map(|i| {
+            let (caller, frame) = (frames.get(i.checked_sub(1)?)?, frames.get(i)?);
+            let again = frames.iter().take(i).any(|f| f.code == frame.code);
+            again.then(|| self.before(caller.code, caller.step))?
+        });
+        let last = error.word.as_deref().unwrap_or_default();
+        match call.filter(|call| *call.text != *last) {
+            Some(call) => Error::new(
                 Code::CallDepth,
                 format!("{} (in {last})", error.message),
                 Some(&call),
-            );
+            ),
+            None => error,
         }
-        error
     }
 
     fn jump(&mut self, to: usize) {
