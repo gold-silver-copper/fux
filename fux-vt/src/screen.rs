@@ -1,5 +1,5 @@
 use crate::compact::{Compact, PROTECTED};
-use crate::keys::KITTY_FLAGS;
+use crate::keys::KITTY_FLAGS_KEPT;
 use crate::keys::encode::OtherKeys;
 use crate::link::Held;
 use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SET_FOR_GOOD, Switch};
@@ -2668,8 +2668,9 @@ impl Screen {
         intermediates: &[u8],
         byte: u8,
     ) -> Option<Dispatch> {
-        // The flags, a bit set of the spec's five; other bits are dropped.
-        let flags = |n: u16| u8::try_from(n & u16::from(KITTY_FLAGS)).unwrap_or(0);
+        // The flags, a bit set of those fux-vt honours; other bits are
+        // dropped.
+        let flags = |n: u16| u8::try_from(n & u16::from(KITTY_FLAGS_KEPT)).unwrap_or(0);
         match (intermediates, byte) {
             (b">", b'u') => self.grid_mut().keyboard.push(flags(p.first(0, 0))),
             (b"<", b'u') => self.grid_mut().keyboard.pop(p.first(0, 1)),

@@ -411,7 +411,7 @@ fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     assert_eq!(
         record.replies,
         [
-            "\x1b[?0u", "\x1b[?5u", "\x1b[?7u", "\x1b[?3u", "\x1b[?1u", "\x1b[?0u"
+            "\x1b[?0u", "\x1b[?5u", "\x1b[?5u", "\x1b[?1u", "\x1b[?1u", "\x1b[?0u"
         ]
     );
     assert!(record.unhandled.is_empty());
@@ -420,15 +420,19 @@ fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     p.process(b"\x1b[>1u\x1b[>2u\x1b[<9u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[=3u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 3);
-    // Only the spec's five flags are kept ("The progressive enhancement
-    // flags": 1 to 16); other bits mean nothing.
+    assert_eq!(p.screen().kitty_keyboard_flags(), 1);
+    // Only the spec's flags fux-vt honours are kept: 1, 4, 8 and 16 ("The
+    // progressive enhancement flags"), not report event types (2), as fux
+    // sends no repeats or releases; the spec's "Detection of support":
+    // "applications can detect such implementations by first setting the
+    // desired progressive enhancements and then querying". Other bits mean
+    // nothing.
     p.process(b"\x1b[>999u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 7);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 5);
     p.process(b"\x1b[>32u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[=63u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 31);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 29);
     Ok(())
 }
 
@@ -446,9 +450,9 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
     for n in 1..=33u8 {
         p.process(format!("\x1b[>{n}u").as_bytes())?;
     }
-    p.process(b"\x1b[<31u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 2);
-    p.process(b"\x1b[<u")?;
+    p.process(b"\x1b[<30u")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 3 & 29);
+    p.process(b"\x1b[<2u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[>4u\x1b[>4;2m\x1bc")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
@@ -462,14 +466,14 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
 #[test]
 fn kitty_keyboard_stacks_outlive_clears_and_resizes() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
-    p.process(b"\x1b[>3u\x1b[?1049h\x1b[>6u\x1b[?1049l\x1b[?1049h")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    p.process(b"\x1b[>5u\x1b[?1049h\x1b[>12u\x1b[?1049l\x1b[?1049h")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 12);
     p.process(b"\x1b[?1049l\x1b[?1047h\x1b[?1047l\x1b[?1047h")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 12);
     p.resize(Size::new(7, 30)?)?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 12);
     p.process(b"\x1b[?1047l")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 3);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 5);
     p.process(b"\x1bc\x1b[?1049h")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     Ok(())
