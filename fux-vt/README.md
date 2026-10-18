@@ -195,7 +195,9 @@ every encoder beside libghostty-vt's, with its recorded verdicts.
 A direct implementation of Paul Williams's DEC ANSI state machine
 (<https://vt100.net/emu/dec_ansi_parser>), without a parser crate. UTF-8
 replaces the 8-bit controls: raw C1 bytes are invalid UTF-8, and 0x9c in a
-string is a byte of a character, not ST. Parameters saturate at
+string is a byte of a character, not ST (ECMA-35, 15.4: with a coding
+system other than ISO 2022's designated with DOCS, as UTF-8 is, the C1
+controls of ECMA-48 are not used; CONFORMANCE.md lists the parser's rows). Parameters saturate at
 `u16::MAX`. At most 32 fields are kept: the rest are ignored and the
 sequence runs with the 32, as DEC STD 070 (3.5.3.1) lets parameters
 "beyond the maximum number supported" be (xterm 411 differs: `1x4

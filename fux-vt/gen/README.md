@@ -33,3 +33,15 @@ Indic_Conjunct_Break, bits 7–8 the width alone (3: a control), bit 9
 emoji presentation, bits 10–11 the start of an emoji and a text
 presentation sequence, bit 12 Emoji_Modifier_Base, bit 13 a
 Default_Ignorable combining mark.
+
+## The conformance table's catalogue
+
+`fux-vt-gen catalogue references` reads the control functions the
+references define (ECMA-48's 8.3, DEC STD 070's function pages, ctlseqs'
+headings), from the documents `references/fetch.sh` fetches, through
+`pdftotext -layout` (poppler), and rewrites the first four columns of
+`fux-vt/tests/data/conformance.txt`. A row keeps its status, probe, tests
+and note; a function new to the references comes in as `unknown`, which
+`tests/table.rs` fails until it is given one. DEC STD 070 is a scan:
+`DEC_FIXES` in `src/catalogue.rs` mends the headings its text layer
+misreads.

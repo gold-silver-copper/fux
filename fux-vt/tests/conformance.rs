@@ -1227,3 +1227,43 @@ fn a_cluster_widened_is_placed_as_a_wide_glyph() -> Result {
     assert_eq!(orphan.bgcolor(), Color::Idx(1));
     Ok(())
 }
+
+/// DEC STD 070, 3.5.1.2.1: "the receipt of CAN causes immediate
+/// termination, without execution, of any sequence in progress. The CAN
+/// character itself receives no further processing. The characters
+/// following the CAN are ... interpreted normally." 3.5.1.2.3: "If an
+/// Escape (ESC, 1/11) is embedded in an escape or control sequence, the
+/// sequence is canceled and a new sequence begins with that ESC." And
+/// 3.5.4.4, for control strings: "the control codes CAN (1/8), SUB (1/10),
+/// ESC (1/11), or any C1 control will also terminate control strings".
+/// So, in every state the parser can be in, CAN then `c` shows `c` alone in
+/// the first column, and ESC beginning `CSI 3 C` moves three columns
+/// first. (SUB in every state is `sub_is_displayed_as_the_error_character`.)
+#[test]
+fn can_and_esc_end_a_sequence_in_every_state() -> Result {
+    for cut in [
+        &b"\x1b"[..],
+        b"\x1b(",
+        b"\x1b#",
+        b"\x1b[",
+        b"\x1b[1",
+        b"\x1b[?25",
+        b"\x1b[1;2$",
+        b"\x1b[1<",
+        b"\x1bP",
+        b"\x1bP1;2",
+        b"\x1bP$qm",
+        b"\x1bP1<x",
+        b"\x1b]0;x",
+        b"\x1b]8;;u",
+        b"\x1b_x",
+        b"\x1b^x",
+        b"\x1bXx",
+    ] {
+        let can = run(1, 6, &[cut, b"\x18c"].concat())?;
+        assert_eq!(lines(&can), ["c"], "CAN after {:?}", cut.escape_ascii());
+        let esc = run(1, 6, &[cut, b"\x1b[3Cc"].concat())?;
+        assert_eq!(lines(&esc), ["   c"], "ESC after {:?}", cut.escape_ascii());
+    }
+    Ok(())
+}

@@ -4,7 +4,11 @@
 //!
 //! ```sh
 //! cargo run --manifest-path fux-vt/gen/Cargo.toml -- <ucd directory>
+//! cargo run --manifest-path fux-vt/gen/Cargo.toml -- catalogue references
 //! ```
+//!
+//! The second form writes the conformance table's catalogue, the control
+//! functions the references define (`catalogue.rs`).
 //!
 //! The directory holds, from `https://www.unicode.org/Public/<version>/ucd/`,
 //! `auxiliary/GraphemeBreakProperty.txt`, `auxiliary/GraphemeBreakTest.txt`,
@@ -28,6 +32,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+mod catalogue;
 
 /// Grapheme_Cluster_Break values, numbered as fux-vt's `unicode.rs` reads them.
 const BREAKS: [&str; 14] = [
@@ -76,14 +82,18 @@ const LIGATURE_TRANSPARENT: u16 = 1 << 13;
 
 const CODE_POINTS: usize = 0x11_0000;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
-    let ucd = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .ok_or("usage: fux-vt-gen <ucd directory>")?;
+    let usage = "usage: fux-vt-gen <ucd directory> | fux-vt-gen catalogue <references directory>";
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next().ok_or(usage)?;
+    if first == "catalogue" {
+        let references = args.next().map(PathBuf::from).ok_or(usage)?;
+        return catalogue::run(&references, &root.join("fux-vt/tests/data/conformance.txt"));
+    }
+    let ucd = PathBuf::from(first);
 
     let breaks = read(&ucd, "GraphemeBreakProperty.txt")?;
     let emoji = read(&ucd, "emoji-data.txt")?;

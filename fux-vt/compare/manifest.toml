@@ -419,6 +419,12 @@ wired = false
 why = "not written yet (HAR-70)"
 
 [[check]]
+name = "ci-conformance-table"
+schedule = "ci"
+command = "cargo test -p fux-vt --test table: every function's status, its probe, its tests, the README's tests, ECMA-48 2.3.3's default forms, and CONFORMANCE.md"
+needs = []
+
+[[check]]
 name = "ci-libtermkey"
 schedule = "ci"
 command = "libtermkey's decoding cases"
@@ -515,7 +521,5 @@ needs = ["systemd-run --user, or another memory cap"]
 [[check]]
 name = "release-conformance-table"
 schedule = "release"
-command = "the conformance table, regenerated, drift failing"
-needs = []
-wired = false
-why = "the table does not exist yet"
+command = "cargo run --manifest-path fux-vt/gen/Cargo.toml -- catalogue references, then cargo test -p fux-vt --test table, and git diff --exit-code fux-vt/tests/data/conformance.txt fux-vt/CONFORMANCE.md"
+needs = ["the references (references/fetch.sh)", "pdftotext (poppler)"]
