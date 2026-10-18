@@ -4,7 +4,6 @@
 //! keyboard flag stacks behave as plain stacks.
 
 use fux_vt::{Cells, Feature, Options, Parser, Size};
-use unicode_width::UnicodeWidthChar;
 #[path = "corpus/graphemes.rs"]
 mod graphemes;
 #[path = "corpus/models.rs"]
@@ -52,7 +51,7 @@ fn character(r: &mut Rng, first: bool) -> char {
             let p = u32::try_from(r.below(0x3_0000)).unwrap_or(0x61);
             char::from_u32(p).unwrap_or('a')
         };
-        if printable(c) && (!first || c.width().is_some_and(|w| w > 0)) {
+        if printable(c) && (!first || models::width(c).is_some_and(|w| w > 0)) {
             return c;
         }
     }

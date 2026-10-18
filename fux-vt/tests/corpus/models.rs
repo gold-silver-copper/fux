@@ -1,6 +1,7 @@
 //! Independent models of what fux-vt should do, shared by the property
 //! tests and the fuzz targets: how printed text is segmented into cells
-//! (UAX #29 by unicode-segmentation, widths by unicode-width), and what a
+//! (UAX #29 by unicode-segmentation, widths by unicode-width as fux-vt's
+//! written rule tailors it), and what a
 //! run of `Cells` holds after edits.
 #![allow(dead_code, reason = "each user takes the models it needs")]
 
@@ -18,13 +19,29 @@ pub fn extends(c: char) -> bool {
     format!("a{c}").graphemes(true).count() == 1
 }
 
+/// The columns `c` takes, by fux-vt's written width rule (its README, "A
+/// glyph", B32): unicode-width's, but a cell holds at most 2, so U+17D8,
+/// the one character unicode-width makes 3 columns wide, takes 1, as in
+/// xterm 411 and glibc.
+pub fn width(c: char) -> Option<usize> {
+    c.width().map(|w| if w > 2 { 1 } else { w })
+}
+
+/// The columns `text` takes by the same rule: unicode-width's, each
+/// character it makes wider than 2 counted at 1.
+fn text_width(text: &str) -> usize {
+    let over = text.chars().filter(|c| c.width().is_some_and(|w| w > 2));
+    let extra = over
+        .map(|c| c.width().unwrap_or(1).saturating_sub(1))
+        .sum::<usize>();
+    text.width().saturating_sub(extra)
+}
+
 /// A character fux-vt prints as a glyph or joins to one: not a control, and
 /// if it takes no columns, one that continues a cluster (others have no
-/// cell to go in, and are attached to whatever is before them). U+17D8, the
-/// one character unicode-width makes three columns wide, is left to its own
-/// test (`a_three_column_character_*`).
+/// cell to go in, and are attached to whatever is before them).
 pub fn printable(c: char) -> bool {
-    !c.is_control() && c.width().is_some_and(|w| w <= 2) && (c.width() != Some(0) || extends(c))
+    !c.is_control() && width(c).is_some() && (width(c) != Some(0) || extends(c))
 }
 
 /// The clusters fux-vt makes of `text`: UAX #29's.
@@ -57,10 +74,10 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
     while let Some(cluster) = queue.pop_front() {
         let mut chars = cluster.chars();
         let Some(first) = chars.next() else { continue };
-        if first.width() == Some(0) {
+        if width(first) == Some(0) {
             let leading: String = cluster
                 .chars()
-                .take_while(|c| c.width() == Some(0))
+                .take_while(|c| width(*c) == Some(0))
                 .collect();
             if let Some((text, _)) = cells.last_mut() {
                 for c in leading.chars() {
@@ -74,13 +91,13 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
             continue;
         }
         let mut text = String::from(first);
-        let mut wide = first.width() == Some(2);
+        let mut wide = width(first) == Some(2);
         // A start of the cluster: once a character is dropped, the rest go.
         for c in chars {
             if !append(&mut text, c) {
                 break;
             }
-            wide |= text.width() >= 2;
+            wide |= text_width(&text) >= 2;
         }
         cells.push((text, wide));
     }
