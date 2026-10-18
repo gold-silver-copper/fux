@@ -197,8 +197,10 @@ enum Failing {
         hi: i64,
         inside: bool,
     },
-    /// Its values can't be the kinds it takes.
+    /// Its values can't be the kinds it takes; and, for one that came
+    /// through other words first, the step that made it.
     Type(String),
+    Made(String, usize),
     /// A call, which every way through what it calls fails: how it is
     /// given, and the first step there that fails.
     Fails(String, Box<Error>),
@@ -405,7 +407,7 @@ pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Err
             break;
         };
         let op = Op::App(id);
-        if let Err(failing) = main.step(&op, &mut exit) {
+        if let Err(failing) = main.step(ops.len(), &op, &mut exit) {
             return Err(main.error(ops.len().saturating_sub(1), &op, failing));
         }
     }
@@ -751,7 +753,7 @@ impl<'a, A> Unit<'a, A> {
                 state.iters.pop();
                 return vec![(next, body), (*out, state)];
             }
-            match self.step(op, &mut state) {
+            match self.step(at, op, &mut state) {
                 Err(failing) => {
                     failed(at, self.error(at, op, failing));
                     return Vec::new();
@@ -794,7 +796,7 @@ impl<'a, A> Unit<'a, A> {
     }
 
     /// One step: whether a run can go on past it.
-    fn step(&self, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
+    fn step(&self, step: usize, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
         match op {
             Op::Push(value) => state.push(Kinds::one(Kind::of(value))),
             Op::Builtin(builtin) => return builtin_step(self.words(), *builtin, state),
@@ -846,8 +848,16 @@ impl<'a, A> Unit<'a, A> {
                 for (i, (wants, said)) in word.takes.iter().enumerate() {
                     let got = at(i).unwrap_or(ANY);
                     if !got.may_be(*wants) {
-                        let got = placed(self.words().describe(got), i, word.takes.len());
-                        return Err(Failing::Type(format!("takes {said}, not {got}")));
+                        let n = word.takes.len();
+                        let message = format!(
+                            "takes {said}, not {}",
+                            placed(self.words().describe(got), i, n)
+                        );
+                        let depth = n.saturating_sub(i).saturating_sub(1);
+                        return Err(match self.made(step, depth, *wants) {
+                            Some(made) => Failing::Made(message, made),
+                            None => Failing::Type(message),
+                        });
                     }
                 }
                 for (from, map) in &word.gives {
@@ -983,6 +993,63 @@ impl<'a, A> Unit<'a, A> {
         Ok(Flow::Go)
     }
 
+    /// The step that made the value `depth` below the top as step `at`
+    /// begins, if it came through words that pass it on (`x secs -- x`)
+    /// since, each of which would have passed on a value of `wants`: the
+    /// word out of place, not one that passed it on. Followed back along
+    /// the steps before, none a jump's target, each a word or a value
+    /// written.
+    fn made(&self, at: usize, depth: usize, wants: Kinds) -> Option<usize> {
+        let (mut at, mut depth, mut passed) = (at, depth, false);
+        loop {
+            if at == 0 || self.starts.contains(&at) {
+                return None;
+            }
+            at = at.saturating_sub(1);
+            let (takes, gives) = match self.code.ops.get(at)? {
+                Op::Push(_) if depth == 0 => return None,
+                Op::Push(_) => (0, 1),
+                Op::App(id) => {
+                    let word = self.words().word(*id)?;
+                    (word.takes.len(), word.gives.len())
+                }
+                Op::Builtin(_)
+                | Op::PickN(_)
+                | Op::RollN(_)
+                | Op::Call(_)
+                | Op::Jump(_)
+                | Op::JumpUnless(_)
+                | Op::SetLocal(_)
+                | Op::GetLocal(_)
+                | Op::SetGlobal(_)
+                | Op::GetGlobal(_)
+                | Op::Mark
+                | Op::Gather
+                | Op::EachStart
+                | Op::EachNext(_) => return None,
+            };
+            let Some(out) = gives
+                .checked_sub(1)
+                .and_then(|last| last.checked_sub(depth))
+            else {
+                depth = depth.saturating_sub(gives).saturating_add(takes);
+                continue;
+            };
+            let Op::App(id) = self.code.ops.get(at)? else {
+                return None;
+            };
+            let word = self.words().word(*id)?;
+            match word.gives.get(out)? {
+                (Some(_), map) if !through(map, wants).may_be(wants) => return None,
+                (Some(from), _) => {
+                    depth = takes.checked_sub(1)?.checked_sub(*from)?;
+                    passed = true;
+                }
+                (None, _) => return passed.then_some(at),
+            }
+        }
+    }
+
     fn error(&self, at: usize, op: &Op<A>, failing: Failing) -> Error {
         let (code, message) = match failing {
             Failing::Underflow {
@@ -1004,6 +1071,11 @@ impl<'a, A> Unit<'a, A> {
                 (Code::StackUnderflow, underflow(verb, takes, &has, inside))
             }
             Failing::Type(message) => (Code::Type, message),
+            Failing::Made(message, made) => {
+                let mut error = Error::new(Code::Type, message, self.code.tokens.get(at));
+                error.made_by = self.code.tokens.get(made).cloned().map(Box::new);
+                return error;
+            }
             Failing::Fails(message, cause) => {
                 let mut error = Error::new(Code::Type, message, self.code.tokens.get(at));
                 error.cause = Some(cause);

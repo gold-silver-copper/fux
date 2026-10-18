@@ -1043,8 +1043,13 @@ impl Grid {
             }
         }
         // A whole row erased keeps no text, and no links: its blank cells
-        // would never read them.
+        // would never read them. Nor does the line above go on in it, once
+        // its text is gone: a line editor that erases it to draw its prompt
+        // again (bash after a resize) starts a line of its own there.
         if start == 0 && end >= cols {
+            if changed && let Some(above) = row.checked_sub(1) {
+                self.wrap(above, false, version);
+            }
             if let Some(text) = self.texts.get_mut(slot) {
                 text.release();
             }

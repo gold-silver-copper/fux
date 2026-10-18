@@ -405,6 +405,22 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{before}"
     );
     assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
+    // A finding word among the options is named, and what was meant.
+    let misplaced = said(&[
+        "opts",
+        "str",
+        "web",
+        "workspace",
+        "str",
+        "sh",
+        "command",
+        "run",
+    ])?;
+    assert!(
+        misplaced.contains("`workspace` (argument 4) made it")
+            && misplaced.contains("`str NAME name`"),
+        "{misplaced}"
+    );
     // The language's own words say how they are written.
     for (words, usage) in [
         (

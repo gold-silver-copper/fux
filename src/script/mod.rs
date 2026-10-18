@@ -380,6 +380,15 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if error.word.as_deref().is_some_and(bundled) {
         error.cause = None;
     }
+    // A value of the wrong kind that other words passed on: the word
+    // that made it is the one out of place, and what was likely meant.
+    if let Some(made) = error.made_by.take() {
+        let meant = words::misplaced(&made.text).map_or_else(String::new, |m| format!(": {m}"));
+        error.message.push_str(&format!(
+            "; `{}` ({}) made it{meant}",
+            made.text, made.place
+        ));
+    }
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
         error.message.push_str(&format!(" ({usage})"));
     }
@@ -778,6 +787,7 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
         place: Some(at.place),
         word: Some(at.text),
         cause: None,
+        made_by: None,
     };
     Failed {
         message: ours(machine, error).message,

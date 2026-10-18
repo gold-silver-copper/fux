@@ -548,8 +548,8 @@ pub struct Start {
     pub started: u64,
     pub finished: u64,
     pub on_full: bool,
-    /// The row the cursor was on.
-    pub row: u16,
+    /// Where the cursor was: its row and column.
+    pub cursor: (u16, u16),
 }
 
 impl Start {
@@ -560,7 +560,7 @@ impl Start {
             started: screen.commands().started,
             finished: screen.commands().finished,
             on_full: screen.mode(fux_vt::Mode::AlternateScreen),
-            row: screen.cursor_position().0,
+            cursor: screen.cursor_position(),
         }
     }
 }

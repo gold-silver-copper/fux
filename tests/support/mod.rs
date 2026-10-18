@@ -44,7 +44,7 @@ pub const ASLEEP: &str = if PROBED { "busy" } else { "settled" };
 /// quiet: busy, with how to wait on.
 pub fn asleep(pane: &str) -> String {
     match PROBED {
-        true => format!("busy · `{pane} wait` waits on"),
+        true => format!("busy · `{pane} wait` waits for it to settle"),
         false => ASLEEP.to_owned(),
     }
 }

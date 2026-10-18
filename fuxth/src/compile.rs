@@ -742,7 +742,7 @@ fn mismatched(token: &Token, open: &Open) -> Error {
 
 /// How many characters must change, go, come or swap with the next to
 /// make `a` into `b`.
-fn distance(a: &str, b: &str) -> usize {
+pub fn distance(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     // Rows of the table, the last two: each cell the distance between a's
     // first i and b's first j characters.

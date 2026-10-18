@@ -485,7 +485,7 @@ impl Wait {
                 notes.push((note, Vec::new()));
             }
             None if state == State::Busy => {
-                notes.push((format!("`{id} wait` waits on"), Vec::new()));
+                notes.push((format!("`{id} wait` waits for it to settle"), Vec::new()));
             }
             None => {}
         }
@@ -545,30 +545,37 @@ impl Wait {
             notes.push(("redraws on its own".into(), vec![field]));
         }
         // Not a full-screen program, nor a line editor reading (bracketed
-        // paste on, as Python's REPL has it), and it waits on something
-        // else (the network: `koh exec`, a download): it may well be at
-        // work still, to end on its own, which it is waited for so.
+        // paste on, as Python's REPL has it): it may well be at work
+        // still, to end on its own, which it is waited for so. One blocked
+        // off its terminal (on the network: `koh exec`, a download) may as
+        // well wait for input there, which fux cannot see.
         let waiting = matches!(state, State::Waiting | State::Redrawing);
         let screen = pane.screen();
         let keys = [fux_vt::Mode::AlternateScreen, fux_vt::Mode::BracketedPaste];
         if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
             let word = if running { "wait-done" } else { "wait-exit" };
             let id = pane.id;
+            let why = match crate::ready::elsewhere(pane, Instant::now()) {
+                true => "not reading its terminal, so fux cannot tell when it waits for input",
+                false => "may be at work",
+            };
             notes.push((
-                format!("may be at work: `{id} {word} wait` waits for its end"),
+                format!("{why}: `{id} {word} wait` waits for its end"),
                 vec![("wait_with", Json::str(word))],
             ));
         }
         // What an action's keys moved, which plain text does not show: the
-        // cursor, where text goes on right of it (a line editor's after
-        // Left or Home, an editor's), not at the end of what was typed;
-        // and a selection drawn in reverse video or a background of its
-        // own, newly highlighted. A few runs at most: more is a screen
-        // drawn anew, shown whole.
+        // cursor, where text goes on under or right of it (a line editor's
+        // after Left or Home, an editor's), not at the end of what was
+        // typed, unless the keys moved it alone (End); and a selection
+        // drawn in reverse video or a background of its own, newly
+        // highlighted. A few runs at most: more is a screen drawn anew,
+        // shown whole.
         if action && pane.process.exit_status().is_none() {
             let screen = pane.screen();
             let (row, col) = screen.cursor_position();
-            if screen.mode(fux_vt::Mode::ShowCursor) && text_after(screen, row, col) {
+            let said = within_line(screen, row, col) || moved_alone(screen, watch);
+            if screen.mode(fux_vt::Mode::ShowCursor) && said {
                 let at = Json::Array(vec![Json::int(row), Json::int(col)]);
                 notes.push((format!("cursor {row},{col}"), vec![("cursor", at)]));
             }
@@ -627,14 +634,26 @@ impl Wait {
     }
 }
 
-/// Whether the screen shows text right of the cursor at `row`, `col`, on
-/// its row: the cursor is within a line, not at its end.
-fn text_after(screen: &fux_vt::Screen, row: u16, col: u16) -> bool {
-    (screen.window().row(row)).is_some_and(|r| {
-        r.cells()
-            .skip(usize::from(col).saturating_add(1))
-            .any(|c| !c.shown().trim().is_empty())
-    })
+/// Whether the screen shows text under the cursor at `row`, `col`, or
+/// right of it on its row: the cursor is within a line, not at its end.
+/// A glyph in the last column with a wrap pending is behind the cursor.
+fn within_line(screen: &fux_vt::Screen, row: u16, col: u16) -> bool {
+    let from = usize::from(col).saturating_add(usize::from(screen.pending_wrap()));
+    (screen.window().row(row))
+        .is_some_and(|r| r.cells().skip(from).any(|c| !c.shown().trim().is_empty()))
+}
+
+/// Whether the cursor moved since `watch` began, every row showing as it
+/// did then: the input moved the cursor alone.
+fn moved_alone(screen: &fux_vt::Screen, watch: &Watch) -> bool {
+    let window = screen.window();
+    screen.cursor_position() != watch.start.cursor
+        && (0..window.rows()).all(|y| {
+            window.row(y).is_some_and(|r| {
+                let was = watch.before.get(&r.id()).map(|(_, was)| *was);
+                was == Some((y, crate::pane::shows(&r)))
+            })
+        })
 }
 
 impl Until {
@@ -1349,7 +1368,7 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
 fn scrolled_on(pane: &Pane, watch: &Watch) -> Option<usize> {
     let screen = pane.screen();
     let window = screen.window();
-    let typed = usize::from(watch.start.row);
+    let typed = usize::from(watch.start.cursor.0);
     let mut was = vec![None; usize::from(window.rows())];
     for (cells, (y, shows)) in watch.before.values() {
         if let Some(row) = was.get_mut(usize::from(*y)) {
