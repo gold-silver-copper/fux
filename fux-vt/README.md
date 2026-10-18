@@ -349,6 +349,11 @@ fux-vt's work counters and a counting allocator against it.
   and read as the picture is shown. Placing a picture fills its cells, at
   most about 2,300 cells a byte at a 10 by 20 cell and 7,600 at the
   smallest cell a host may give, 2 by 6.
+- **Listing pictures** (B09) doesn't search history: each picture's top
+  row is followed into history as it scrolls there, by its number in the
+  order rows came, so `Screen::pictures` reads at most the screen's rows
+  a picture, and the cells only of a picture's rows changed since it was
+  last found whole. Placing a picture checks the others the same way.
 - **Styles** (B12): a program can't choose colours that collide in the
   style table: its hash takes both of a style's words, keyed once a
   process from std's random keys.

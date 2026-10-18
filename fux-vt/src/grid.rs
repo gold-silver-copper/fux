@@ -616,16 +616,41 @@ impl Grid {
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.index_of(id).and_then(|index| self.row_at(index))
     }
+    /// Where the row with identity `id` is, counted from the oldest row
+    /// history keeps: the screen's rows are looked through first, then
+    /// history's.
     pub fn index_of(&self, id: RowId) -> Option<usize> {
-        self.history.position(id).or_else(|| {
-            let row = (self.order.iter())
-                .position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id));
-            spend!(
-                rows,
-                row.map_or(self.order.len(), |row| row.saturating_add(1))
-            );
-            row.and_then(|row| row.checked_add(self.history.len()))
-        })
+        self.screen_index_of(id)
+            .or_else(|| self.history.position(id))
+    }
+    /// Where the row with identity `id` is, as `index_of` says, if it is
+    /// one of the screen's rows: at most its rows read.
+    pub(crate) fn screen_index_of(&self, id: RowId) -> Option<usize> {
+        let row =
+            (self.order.iter()).position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id));
+        spend!(
+            rows,
+            row.map_or(self.order.len(), |row| row.saturating_add(1))
+        );
+        row.and_then(|row| row.checked_add(self.history.len()))
+    }
+    /// The numbers, in the order rows came into history, of the oldest row
+    /// it keeps and of the next to come.
+    pub(crate) fn history_numbers(&self) -> (u64, u64) {
+        self.history.numbers()
+    }
+    /// Where the history row numbered `number` in the order rows came is,
+    /// if it is kept and is row `id`: one row read.
+    pub(crate) fn index_of_number(&self, number: u64, id: RowId) -> Option<usize> {
+        work!(rows, 1);
+        let index = self.history.index_of_number(number)?;
+        (self.history.kept(index)?.id == id).then_some(index)
+    }
+    /// The identity of the history row numbered `number` in the order rows
+    /// came, if it is kept.
+    pub(crate) fn id_of_number(&self, number: u64) -> Option<RowId> {
+        let index = self.history.index_of_number(number)?;
+        Some(self.history.kept(index)?.id)
     }
     /// Whether the screen's row `row` is soft-wrapped, read without making
     /// its `Row`: printing asks on its way.

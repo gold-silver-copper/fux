@@ -9,6 +9,7 @@ use crate::Error;
 use crate::RowId;
 use crate::sixel::Picture;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// What a picture's cells hold while it is there: the character kitty's
 /// graphics protocol keeps for cells a picture covers, one cell wide.
@@ -41,12 +42,42 @@ pub struct Graphics {
 /// terminal font's.
 const CELL: (u16, u16) = (10, 20);
 
+/// A number the screen notes while it is read (`Screen::track_pictures`),
+/// which reading it from several threads at once notes alike: `None` is
+/// `u64::MAX`, no row's number.
+#[derive(Debug)]
+pub(crate) struct Noted(AtomicU64);
+
+impl Noted {
+    /// None noted.
+    pub(crate) const fn none() -> Self {
+        Self(AtomicU64::new(u64::MAX))
+    }
+    pub(crate) fn get(&self) -> Option<u64> {
+        Some(self.0.load(Ordering::Relaxed)).filter(|n| *n != u64::MAX)
+    }
+    pub(crate) fn set(&self, n: Option<u64>) {
+        self.0.store(n.unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+}
+
+impl Clone for Noted {
+    fn clone(&self) -> Self {
+        Self(AtomicU64::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
 /// A picture placed on a grid.
 #[derive(Clone, Debug)]
 pub(crate) struct Placement {
     picture: Arc<Picture>,
-    /// Its top row, which it moves with, and its first column.
+    /// Its top row, which it moves with, and its first column; and its
+    /// bottom row.
     top: RowId,
+    bottom: RowId,
+    /// The top row's number in the order rows came into the main screen's
+    /// history, once it has (`Screen::track_pictures`).
+    number: Noted,
     col: u16,
     /// The cells it covers, and the cell size it was laid out in.
     cols: u16,
@@ -54,6 +85,11 @@ pub(crate) struct Placement {
     cell: (u16, u16),
     /// On the alternate screen.
     alternate: bool,
+    /// The version it was last found whole at: a row of it no newer holds
+    /// the placeholder still, as a row's version changes with its cells,
+    /// while its bottom row is where it was. Scrolls keep the order of the
+    /// rows they don't make anew, so no older row is among its rows then.
+    whole_at: u64,
     /// Its number, never reused, so a host can tell it from another.
     id: u64,
 }
@@ -94,6 +130,11 @@ impl Screen {
     /// or an erase over it, its rows gone from history), whose pixels
     /// nothing can show again.
     pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> Result<(), Error> {
+        if self.pictures.is_empty() {
+            // Nothing to follow: its rows are followed from here.
+            self.tracked.set(Some(self.primary.history_numbers().1));
+        }
+        self.track_pictures();
         let cell = self.graphics.cell.unwrap_or(CELL);
         let cells = |pixels: u32, per: u16| {
             let per = u32::from(per.max(1));
@@ -129,32 +170,49 @@ impl Screen {
                 g.wrap(y, wrapped, v);
             });
         }
+        let bottom = self.cursor_mark().map_or(top, |mark| mark.row);
         self.linefeed()?;
         self.grid_mut().set_col(col);
         let alternate = self.alternate_active;
-        // Pictures it now covers, wholly or not, are gone: their cells hold
-        // its placeholder, not theirs.
-        let gone = |p: &Placement, screen: &Screen| {
-            p.alternate == alternate
-                && screen.shown(p).is_none_or(|s| {
-                    let mine = (screen.top_row(top), col, cols, rows);
-                    overlaps((s.row, s.col, s.cols, s.rows), mine)
-                })
-        };
-        let keep: Vec<bool> = self.pictures.iter().map(|p| !gone(p, self)).collect();
-        let mut keep = keep.into_iter();
-        self.pictures.retain(|_| keep.next().unwrap_or(true));
         self.picture_ids = self.picture_ids.wrapping_add(1);
         self.pictures.push_back(Placement {
             picture,
             top,
+            bottom,
+            number: Noted::none(),
             col,
             cols,
             rows,
             cell,
             alternate,
+            whole_at: self.version,
             id: self.picture_ids,
         });
+        // Its rows, and others', may have gone into history.
+        self.track_pictures();
+        // Pictures it now covers, wholly or not, are gone: their cells hold
+        // its placeholder, not theirs.
+        let placed = self.pictures.len().saturating_sub(1);
+        let top_row = |p: &Placement| self.row_of(self.top_index(p));
+        let mine = (self.pictures.back()).map(|p| (top_row(p), col, cols, rows));
+        let gone = |p: &Placement, screen: &Screen| {
+            p.alternate == alternate
+                && screen.shown(p).is_none_or(|s| {
+                    mine.is_some_and(|mine| overlaps((s.row, s.col, s.cols, s.rows), mine))
+                })
+        };
+        let keep: Vec<bool> = (self.pictures.iter().enumerate())
+            .map(|(at, p)| at >= placed || !gone(p, self))
+            .collect();
+        let mut keep = keep.into_iter();
+        self.pictures.retain(|_| keep.next().unwrap_or(true));
+        // Those of this screen kept are whole now, and this one is: what
+        // changes them from here on takes a newer version.
+        let whole_at = self.version;
+        (self.pictures.iter_mut())
+            .filter(|p| p.alternate == alternate)
+            .for_each(|p| p.whole_at = whole_at);
+        self.begin();
         // Its pixels had room as it grew: only the count can be past.
         while self.pictures.len() > MAX_PICTURES || self.over_budget(0) {
             let Some(victim) = self.victim() else { break };
@@ -186,6 +244,7 @@ impl Screen {
     /// Lets pictures go, [`Self::victim`] first, until `bytes` more fit in
     /// the budget beside them; false if they don't with none kept.
     pub(crate) fn make_room(&mut self, bytes: usize) -> bool {
+        self.track_pictures();
         while self.over_budget(bytes) {
             let Some(victim) = self.victim() else {
                 return false;
@@ -206,22 +265,91 @@ impl Screen {
     /// The pictures the screen shows: on the screen in use, every cell they
     /// cover that the grid still keeps holding the placeholder.
     pub fn pictures(&self) -> impl Iterator<Item = Shown<'_>> {
+        self.track_pictures();
         self.pictures
             .iter()
             .filter(|p| p.alternate == self.alternate_active)
             .filter_map(|p| self.shown(p))
     }
 
-    /// `placement` as the screen shows it, if it is whole.
+    /// Follows the pictures whose top rows have gone into the main screen's
+    /// history since last followed, so that each is found there by its
+    /// number, not by a search of history (`threats.md` B09): the rows
+    /// come since are read once, each looked for among those tops, with
+    /// nothing to do if none came or no picture's top is still to follow.
+    /// Rows go into history only from the screen's top and stay in the
+    /// order they came, so a top not on the screen is there or gone.
+    pub(crate) fn track_pictures(&self) {
+        let (first, next) = self.primary.history_numbers();
+        let tracked = self.tracked.get().unwrap_or(first);
+        if tracked == next || self.pictures.is_empty() {
+            return;
+        }
+        let from = tracked.max(first);
+        self.tracked.set(Some(next));
+        let mut wanted: Vec<(RowId, usize)> = (self.pictures.iter().enumerate())
+            .filter(|(_, p)| !p.alternate && p.number.get().is_none())
+            .map(|(at, p)| (p.top, at))
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        wanted.sort_unstable();
+        for number in from..next {
+            work!(rows, 1);
+            let Some(id) = self.primary.id_of_number(number) else {
+                continue;
+            };
+            if let Ok(found) = wanted.binary_search_by_key(&id, |(top, _)| *top)
+                && let Some(&(_, at)) = wanted.get(found)
+                && let Some(placement) = self.pictures.get(at)
+            {
+                placement.number.set(Some(number));
+            }
+        }
+    }
+
+    /// Follows the pictures into a history made anew (a resize): each is
+    /// looked for in all of it once.
+    pub(crate) fn retrack_pictures(&mut self) {
+        self.pictures.iter().for_each(|p| p.number.set(None));
+        self.tracked.set(Some(self.primary.history_numbers().0));
+        self.track_pictures();
+    }
+
+    /// Where `placement`'s top row is, counted from the oldest row history
+    /// keeps: by its number in the main screen's history, if followed
+    /// there, else among the screen's rows.
+    fn top_index(&self, placement: &Placement) -> Option<usize> {
+        let grid = self.grid();
+        let followed = (placement.number.get())
+            .filter(|_| !placement.alternate)
+            .and_then(|number| grid.index_of_number(number, placement.top));
+        followed.or_else(|| grid.screen_index_of(placement.top))
+    }
+
+    /// `placement` as the screen shows it, if it is whole: its top row
+    /// found by `top_index`, and the cells read of its rows changed since
+    /// it was last found whole (`threats.md` B09).
     fn shown<'a>(&'a self, placement: &'a Placement) -> Option<Shown<'a>> {
         let grid = self.grid();
-        let first = grid.index_of(placement.top)?;
+        let first = self.top_index(placement)?;
         let width = self.size().cols();
         let across = placement.cols.min(width.saturating_sub(placement.col));
+        let last = usize::from(placement.rows.saturating_sub(1));
+        let bottom = first.checked_add(last).and_then(|i| grid.row_at(i));
+        let since = match bottom {
+            Some(row) if row.id() == placement.bottom => Some(placement.whole_at),
+            Some(_) | None => None,
+        };
         for offset in 0..usize::from(placement.rows) {
             let Some(row) = first.checked_add(offset).and_then(|i| grid.row_at(i)) else {
                 continue;
             };
+            if since.is_some_and(|since| row.version() <= since) {
+                continue;
+            }
+            work!(cells, across);
             let whole = (placement.col..placement.col.saturating_add(across)).all(|c| {
                 row.cell(usize::from(c))
                     .is_some_and(|cell| cell.contents() == PLACEHOLDER)
@@ -233,7 +361,7 @@ impl Screen {
         Some(Shown {
             id: placement.id,
             picture: &placement.picture,
-            row: self.top_row(placement.top),
+            row: self.row_of(Some(first)),
             col: placement.col,
             cols: placement.cols,
             rows: placement.rows,
@@ -241,11 +369,12 @@ impl Screen {
         })
     }
 
-    /// Where row `id` is from the screen's top, negative in history.
-    fn top_row(&self, id: RowId) -> i64 {
-        let grid = self.grid();
-        let index = grid.index_of(id).and_then(|i| i64::try_from(i).ok());
-        let top = i64::try_from(grid.history_len()).unwrap_or(i64::MAX);
+    /// Where the row at `index`, counted from the oldest history keeps, is
+    /// from the screen's top: negative in history, the least there is if
+    /// it is gone.
+    fn row_of(&self, index: Option<usize>) -> i64 {
+        let top = i64::try_from(self.grid().history_len()).unwrap_or(i64::MAX);
+        let index = index.and_then(|i| i64::try_from(i).ok());
         index.map_or(i64::MIN, |i| i.saturating_sub(top))
     }
 
@@ -342,11 +471,14 @@ mod faults {
         Some(Placement {
             picture: Arc::new(Picture::new(1, 1, rgba)?),
             top,
+            bottom: top,
+            number: Noted::none(),
             col: 0,
             cols: 1,
             rows: 1,
             cell: CELL,
             alternate: false,
+            whole_at: 0,
             id,
         })
     }

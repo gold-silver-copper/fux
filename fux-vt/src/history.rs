@@ -275,6 +275,18 @@ impl History {
     fn number(&self, index: usize) -> Option<u64> {
         self.first_row.checked_add(u64::try_from(index).ok()?)
     }
+    /// The numbers, in the order rows came, of the oldest row kept and of
+    /// the next to come.
+    pub(crate) fn numbers(&self) -> (u64, u64) {
+        let next = self.number(self.rows.len()).unwrap_or(u64::MAX);
+        (self.first_row, next)
+    }
+    /// Where the row numbered `number` in the order rows came is, oldest
+    /// first, if it is kept.
+    pub(crate) fn index_of_number(&self, number: u64) -> Option<usize> {
+        let index = usize::try_from(number.checked_sub(self.first_row)?).ok()?;
+        (index < self.rows.len()).then_some(index)
+    }
     /// Where the block numbered `block` is, if it is held, given the
     /// first's number and how many are older than the newest: its index in
     /// `older`, or `older`'s length for the newest.

@@ -373,6 +373,10 @@ pub struct Screen {
     /// and what the host's terminal draws.
     pictures: VecDeque<pictures::Placement>,
     picture_ids: u64,
+    /// The number, in the order rows came into the main screen's history,
+    /// of the next to come when the pictures were last followed there
+    /// (`track_pictures`), which reading them does too.
+    tracked: pictures::Noted,
     graphics: Graphics,
     /// The most bytes the pictures may hold (`PICTURE_BYTES`).
     picture_budget: usize,
@@ -624,6 +628,7 @@ impl Screen {
             alternate: Grid::unmade(size, &mut next_id, 1)?,
             pictures: VecDeque::new(),
             picture_ids: 0,
+            tracked: pictures::Noted::none(),
             graphics: Graphics::default(),
             picture_budget: PICTURE_BYTES,
             commands: Commands::default(),
@@ -1177,6 +1182,8 @@ impl Screen {
         self.next_id = next;
         self.version = version;
         self.structural = version;
+        // History is made anew: the pictures are found in it again.
+        self.retrack_pictures();
         // What was printed before it is on rows and columns that changed.
         if let Some(prints) = self.prints.as_mut().filter(|p| !p.is_empty()) {
             prints.lose();

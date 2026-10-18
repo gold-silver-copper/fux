@@ -888,6 +888,72 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     Ok(())
 }
 
+/// A picture shows while every cell it covers, row by row down from its
+/// top, holds the placeholder: a region scroll that moves part of it past
+/// the rest, or an edit in the call that placed it, takes it away, as
+/// text over a cell does, however the screen remembers having found it
+/// whole.
+#[test]
+fn a_picture_split_or_written_over_after_it_was_placed_is_gone() -> Result {
+    // 4 pixels by 24 at 4 by 8: one cell by three, at rows 1 to 3, with
+    // text in the rows below.
+    let place = |p: &mut Parser, after: &[u8]| -> Result<usize> {
+        p.set_host_graphics(fux_vt::Graphics {
+            cell: Some((4, 8)),
+            sixel: true,
+        });
+        let mut bytes =
+            b"\x1b[5;1Hxxx\r\nxxx\x1b[2;1H\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~\x1b\\".to_vec();
+        bytes.extend(after);
+        p.process(&bytes)?;
+        // Another picture placed, apart, checks the first again.
+        p.process(b"\x1b[1;9H\x1bPq~\x1b\\")?;
+        Ok(p.screen().pictures().filter(|s| s.col == 0).count())
+    };
+    let fresh = || -> Result<Parser> { Ok(Parser::with_options(Size::new(8, 10)?, 10, PICTURES)?) };
+    assert_eq!(place(&mut fresh()?, b"")?, 1, "whole");
+    // Rows 1 to 3 scrolled down: its second row goes, its top moves to row
+    // 2, and text is where its last row would be.
+    assert_eq!(place(&mut fresh()?, b"\x1b[1;3r\x1b[T\x1b[r")?, 0, "SD");
+    // Rows 3 to 7 scrolled up: its second row goes, text below its last.
+    assert_eq!(place(&mut fresh()?, b"\x1b[3;7r\x1b[S\x1b[r")?, 0, "SU");
+    assert_eq!(place(&mut fresh()?, b"\x1b[3;1H\x1b[M")?, 0, "DL");
+    assert_eq!(
+        place(&mut fresh()?, b"\x1b[3;1Hy")?,
+        0,
+        "text, in the same call"
+    );
+    Ok(())
+}
+
+/// A picture whose rows scroll into history is shown there, where they
+/// are, as history lets its oldest rows go, and still after a resize
+/// makes history anew and brings some of them back.
+#[test]
+fn a_picture_scrolled_into_history_is_shown_where_it_is() -> Result {
+    // 420 bytes of history: 24 a row and 8 a cell, so the 17th row the
+    // line feeds below take in lets the first go.
+    let mut p = Parser::with_options(Size::new(8, 10)?, 420, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // One cell by three at row 1; the cursor ends at row 4.
+    p.process(b"\r\n\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~\x1b\\")?;
+    let rows = |p: &Parser| p.screen().pictures().map(|s| s.row).collect::<Vec<_>>();
+    assert_eq!(rows(&p), [1]);
+    // Three line feeds to the bottom row, then 17 scrolls.
+    p.process(&[b'\n'; 20])?;
+    assert_eq!(rows(&p), [-16]);
+    assert_eq!(p.screen().history_len(), 16, "the first row went");
+    // Two more rows: two come back from history.
+    p.resize(Size::new(10, 10)?)?;
+    assert_eq!(rows(&p), [-14]);
+    p.process(b"\n")?;
+    assert_eq!(rows(&p), [-15]);
+    Ok(())
+}
+
 /// A copy reads a picture's cells as a reader sees them, as blanks
 /// (`CellRef::shown`), not as the placeholder that marks them.
 #[test]

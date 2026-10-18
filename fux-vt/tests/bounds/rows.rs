@@ -184,14 +184,16 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 }
 
 // B05: a declared extent with nothing drawn allocates and paints nothing,
-// and its placement is a row fill: cells at most 2,271 a byte at a 10×20
-// cell and 7,577 at the smallest, 2×6 (P5), the line feeds' copies into
-// history included (decision 11; measured at SIX-3's fix).
+// and its placement is a row fill: each of its rows (⌈2160 ÷ the cell's
+// height⌉) filled across the 200 columns, and taken into history by a line
+// feed at B18's 200 + 3 cells (decision 11): at a 10×20 cell 108 × 403 ÷
+// 19 bytes, at most 2,291 cells a byte, and at the smallest, 2×6, 360 ×
+// 403 ÷ 19, at most 7,636 (P5).
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let one = repeat(b"\x1bPq\"1;1;4096;2160\x1b\\", 215);
     let input = repeat(&one, scale.times());
-    for (cell, per_byte, rows) in [((10, 20), 2271, 108), ((2, 6), 7577, 360)] {
+    for (cell, per_byte, rows) in [((10, 20), 2291, 108), ((2, 6), 7636, 360)] {
         let bound = Bound {
             work: &[("pixels", 0, 0, 0)],
             heap: steady(&setup),
@@ -1353,14 +1355,23 @@ pub fn b40(scale: Scale, chunk: usize) -> Found {
         },
         1,
     );
-    let top = probe.parser.screen().window().row(0).map(|r| r.id());
-    let Some(top) = top else {
-        return Err("no top row".into());
+    // The screen's top row, and history's newest, just above it.
+    let screen = probe.parser.screen();
+    let top = screen.window().row(0).map(|r| r.id());
+    let above = screen
+        .rows()
+        .rev()
+        .nth(usize::from(setup.rows))
+        .map(|r| r.id());
+    let (Some(top), Some(above)) = (top, above) else {
+        return Err("no top row, or none above it".into());
     };
     for _ in 0..10usize.saturating_mul(scale.times()) {
-        let found = probe.host(0, |p| p.screen().row_by_id(top).is_some())?;
-        if !found {
-            return Err("the top row was not found".into());
+        for id in [top, above] {
+            let found = probe.host(0, |p| p.screen().row_by_id(id).is_some())?;
+            if !found {
+                return Err(format!("row {id:?} was not found"));
+            }
         }
     }
     probe.at_least("rows", 1)?;
