@@ -255,8 +255,10 @@ struct Attached {
     placement: Placement,
     /// When the next paint may be made.
     clock: PaintClock,
-    /// The pictures its terminal was last sent, as they show there.
+    /// The pictures its terminal was last sent, as they show there, and
+    /// their sixel data.
     pictures: Vec<render::Visible>,
+    sixels: render::Sixels,
 }
 
 /// When a client may be painted next: `PAINT` after its last paint, as a
@@ -354,6 +356,7 @@ impl Attached {
             spare: Grid::new(0, 0),
             placement: Placement::default(),
             pictures: Vec::new(),
+            sixels: render::Sixels::default(),
             clock: PaintClock {
                 next: now,
                 due: now,
@@ -1262,11 +1265,12 @@ impl Server {
         };
         let mut drawn = Vec::new();
         for (picture, _) in pictures.iter().zip(&send).filter(|(_, send)| **send) {
-            render::picture_into(picture, &mut drawn);
+            attached.sixels.picture_into(picture, &mut drawn);
         }
         if !drawn.is_empty() {
             attached.paint(&mut conn.out, &drawn);
         }
+        attached.sixels.keep(&pictures);
         attached.pictures = pictures;
         if let Some(view) = session.views.get_mut(&client) {
             view.dirty = false;

@@ -158,14 +158,59 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     visible
 }
 
-/// What shows `picture` on a terminal that draws sixel, its cursor kept:
-/// at its area's top left, its crop of pixels.
-pub fn picture_into(picture: &Visible, out: &mut Vec<u8>) {
-    let (row, col, _, _) = picture.area;
-    out.extend_from_slice(b"\x1b7");
-    goto(out, row, col);
-    fux_vt::sixel::encode(&picture.picture, picture.crop, out);
-    out.extend_from_slice(b"\x1b8");
+/// The sixel data of the pictures a client was last sent, each by its pane,
+/// number and crop: a picture that only moves is sent again with the same
+/// data at its new place, encoded once (`threats.md` B08). At most
+/// `SIXEL_BYTES` are kept; a picture past them is encoded each time it is
+/// sent.
+#[derive(Debug, Default)]
+pub struct Sixels {
+    kept: Vec<(SixelKey, Vec<u8>)>,
+    /// How many pictures were encoded: for the tests.
+    #[cfg(test)]
+    encoded: usize,
+}
+
+/// A picture's pane, number and crop: what its sixel data is kept by.
+type SixelKey = (PaneId, u64, (u32, u32, u32, u32));
+
+/// The most sixel data a client keeps to send again: 16 MiB, a 4K screen
+/// of one picture's worth in 256 colours at half its 12 bytes a pixel.
+const SIXEL_BYTES: usize = 16 << 20;
+
+impl Sixels {
+    /// What shows `picture` on a terminal that draws sixel, its cursor
+    /// kept: at its area's top left, its crop of pixels, from the data
+    /// kept for its crop or encoded now.
+    pub fn picture_into(&mut self, picture: &Visible, out: &mut Vec<u8>) {
+        let (row, col, _, _) = picture.area;
+        out.extend_from_slice(b"\x1b7");
+        goto(out, row, col);
+        let key = (picture.pane, picture.id, picture.crop);
+        if let Some((_, data)) = self.kept.iter().find(|(k, _)| *k == key) {
+            out.extend_from_slice(data);
+        } else {
+            let mut data = Vec::new();
+            fux_vt::sixel::encode(&picture.picture, picture.crop, &mut data);
+            #[cfg(test)]
+            {
+                self.encoded = self.encoded.saturating_add(1);
+            }
+            out.extend_from_slice(&data);
+            let held: usize = self.kept.iter().map(|(_, d)| d.len()).sum();
+            if held.saturating_add(data.len()) <= SIXEL_BYTES {
+                self.kept.push((key, data));
+            }
+        }
+        out.extend_from_slice(b"\x1b8");
+    }
+
+    /// Lets go of the data of every picture not in `shown`, the pictures
+    /// the client now shows.
+    pub fn keep(&mut self, shown: &[Visible]) {
+        self.kept
+            .retain(|(key, _)| shown.iter().any(|p| (p.pane, p.id, p.crop) == *key));
+    }
 }
 
 /// Grids are equal when they show the same.
@@ -1667,6 +1712,47 @@ fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
+    /// A picture that moves, its crop the same, is encoded once, and sent
+    /// at each place with the same data; a new crop is encoded again, and
+    /// a picture no longer shown is let go of (`threats.md` B08).
+    #[test]
+    fn a_moving_picture_is_encoded_once() -> Result<(), String> {
+        let rgba: Vec<u8> = std::iter::repeat_n([255, 0, 0, 255], 20 * 12)
+            .flatten()
+            .collect();
+        let picture =
+            std::sync::Arc::new(fux_vt::sixel::Picture::new(20, 12, rgba).ok_or("20 by 12")?);
+        let at = |row: u16, crop: (u32, u32, u32, u32)| Visible {
+            pane: PaneId::of(1),
+            id: 7,
+            area: (row, 0, 1, 2),
+            crop,
+            picture: std::sync::Arc::clone(&picture),
+        };
+        let whole = (0, 0, 20, 12);
+        let mut sixels = Sixels::default();
+        let mut sent = Vec::new();
+        for row in 0..100 {
+            let mut out = Vec::new();
+            sixels.picture_into(&at(row, whole), &mut out);
+            sixels.keep(&[at(row, whole)]);
+            sent.push(out);
+        }
+        assert_eq!(sixels.encoded, 1, "encoded each time it moved");
+        let mut alone = Vec::new();
+        fux_vt::sixel::encode(&picture, whole, &mut alone);
+        assert_eq!(
+            sent.last(),
+            Some(&[b"\x1b7\x1b[100;1H".as_slice(), &alone, b"\x1b8"].concat())
+        );
+        let mut out = Vec::new();
+        sixels.picture_into(&at(0, (0, 6, 20, 6)), &mut out);
+        assert_eq!(sixels.encoded, 2, "a new crop is encoded");
+        sixels.keep(&[]);
+        assert!(sixels.kept.is_empty(), "kept what no longer shows");
+        Ok(())
+    }
+
     /// `compose` into a grid and placement kept, as the server composes:
     /// false if there is no such client.
     fn compose_into(s: &Session, c: ClientId, grid: &mut Grid, placement: &mut Placement) -> bool {
