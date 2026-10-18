@@ -1598,11 +1598,13 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
     // A prompt mark's fresh line, and a picture's placement, scroll the
     // row into history, whose first block is refused. At BASE the parser
     // stayed in the OSC (`hello` went into it) or in sixel with no
-    // decoder (`hello` was swallowed).
+    // decoder (`hello` was swallowed). The picture's graphics new lines
+    // take the cursor down a row, past the 20-pixel cell its one band
+    // fits in (SIX-12: the cursor goes where the sixel motion went).
     for string in [
         &b"\x1b]133;A\x07"[..],
         b"\x1b]133;A\x1b\\",
-        b"\x1bPq#1~~\x1b\\",
+        b"\x1bPq#1~~---\x1b\\",
     ] {
         let mut parser = refusing(1)?;
         let failed = (pieces(&[string, b"hello"].concat(), chunk))

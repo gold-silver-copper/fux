@@ -878,7 +878,10 @@ fn the_history_budget_changes_on_a_live_parser() -> Result {
 
 /// A sixel picture takes the cells it covers, in the host's cell size, and
 /// shows while they are its: text over one of them takes it away, and a
-/// scroll carries it up. The cursor ends below it.
+/// scroll carries it up. The cursor ends on the row the last band ends in
+/// (DEC STD 070-9, 11.3: "updated to reflect the vertical motion commands
+/// executed"): its last row here, below it after a final graphics new
+/// line, at its left either way.
 #[test]
 fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
@@ -897,9 +900,17 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     assert_eq!(shown, [(1, 3, 2, 2)]);
     assert_eq!(
         p.screen().cursor_position(),
-        (3, 3),
-        "below it, at its left"
+        (2, 3),
+        "on its last row, at its left"
     );
+    // A graphics new line after the last band takes it below.
+    let mut q = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    q.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    q.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~-\x1b\\")?;
+    assert_eq!(q.screen().cursor_position(), (3, 3), "below it");
     let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
     assert_eq!(lines(&p).get(1).map(|l| l.trim()), Some(covered.as_str()));
     p.process(b"\x1b[6;1H\n")?;
@@ -964,8 +975,9 @@ fn a_picture_scrolled_into_history_is_shown_where_it_is() -> Result {
         cell: Some((4, 8)),
         sixel: true,
     });
-    // One cell by three at row 1; the cursor ends at row 4.
-    p.process(b"\r\n\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~\x1b\\")?;
+    // One cell by three at row 1; a last graphics new line takes the
+    // cursor to row 4.
+    p.process(b"\r\n\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~-\x1b\\")?;
     let rows = |p: &Parser| p.screen().pictures().map(|s| s.row).collect::<Vec<_>>();
     assert_eq!(rows(&p), [1]);
     // Three line feeds to the bottom row, then 17 scrolls.
@@ -1069,7 +1081,7 @@ fn sub_inside_sixel_is_a_blank_sixel_and_can_ends_it() -> Result {
     assert_eq!(sixel_pixel(picture, (1, 0))?, ((3, 6), blank));
     assert_eq!(sixel_pixel(picture, (2, 5))?, ((3, 6), red));
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
-    p.process(b"\x1bPq\"1;1#1;2;100;0;0~\x1a~\x1b\\x")?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~\x1a~\x1b\\\r\nx")?;
     assert_eq!(p.screen().pictures().count(), 1);
     let text = lines(&p).concat();
     assert!(text.contains('x') && !text.contains('\u{2426}'), "{text:?}");

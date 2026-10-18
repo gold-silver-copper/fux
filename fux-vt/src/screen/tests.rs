@@ -339,7 +339,10 @@ fn pictures_hold_no_more_than_their_budget() -> Result<(), Error> {
     for _ in 0..64 {
         p.process(&hostile)?;
         assert!(p.picture_bytes() <= PICTURE_BYTES, "while drawing");
-        p.process(b"\x1b\\")?;
+        // A line feed after it, so the next is placed below it: the cursor
+        // ends on a picture's last row, and one placed over another takes
+        // its place.
+        p.process(b"\x1b\\\n")?;
         assert!(p.screen().picture_bytes() <= PICTURE_BYTES);
     }
     assert_eq!(p.screen().pictures().count(), 2, "two of the largest fit");
@@ -373,6 +376,7 @@ fn pictures_fill_their_budget_exactly() -> Result<(), Error> {
     // 4096 by 2048 pixels: 32 MiB, three to the budget.
     for _ in 0..3 {
         p.process(&picture(4096, 2048))?;
+        p.process(b"\n")?;
     }
     assert_eq!(shown(&p), [1, 2, 3], "three thirds of the budget");
     p.process(&picture(1, 1))?;

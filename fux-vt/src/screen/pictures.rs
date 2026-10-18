@@ -99,7 +99,7 @@ impl Screen {
     /// Places `picture` at the cursor: its cells take the placeholder, a
     /// row at a time down from the cursor's (scrolling at the bottom, as a
     /// terminal scrolls a sixel picture), clipped at the right edge; the
-    /// cursor ends below it, in its first column. A picture of this screen
+    /// cursor ends on the row its last band ends in, in its first column. A picture of this screen
     /// it covers goes, and so does one this screen no longer shows (text
     /// or an erase over it, its rows gone from history), whose pixels
     /// nothing can show again.
@@ -147,7 +147,20 @@ impl Screen {
             });
         }
         let bottom = self.cursor_mark().map_or(top, |mark| mark.row);
-        self.linefeed()?;
+        // "The ANSI text vertical position is updated to reflect the
+        // vertical motion commands executed" (DEC STD 070-9, 11.3): the
+        // cursor goes down to the row the last band ends in when that is
+        // below the picture, a graphics new line having come last, as
+        // encoders end; else it stays on the picture's last row, where
+        // xterm 411 puts it, as "conforming software will not assume any
+        // exact alignment of the ANSI text vertical position" (11.3) and
+        // xterm decides what the standard leaves. Its column is where it
+        // was.
+        let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
+        let down = u16::try_from(down).unwrap_or(u16::MAX);
+        for _ in 0..down.saturating_sub(rows.saturating_sub(1)).min(8) {
+            self.linefeed()?;
+        }
         self.grid_mut().set_col(col);
         let alternate = self.alternate_active;
         self.picture_ids = self.picture_ids.wrapping_add(1);

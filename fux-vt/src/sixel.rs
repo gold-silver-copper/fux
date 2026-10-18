@@ -33,6 +33,10 @@ pub struct Picture {
     aspect: (u32, u32),
     /// What a pixel no sixel set reads as, if not clear.
     background: Option<[u8; 4]>,
+    /// The square pixel row the decoder's last sixel band ends on: where
+    /// its vertical motion left it (DEC STD 070-9, 11.3), past the picture
+    /// if a graphics new line came last.
+    ended: u32,
     rgba: Vec<u8>,
 }
 
@@ -48,8 +52,15 @@ impl Picture {
             down: height,
             aspect: (1, 1),
             background: None,
+            ended: height.saturating_sub(1),
             rgba,
         })
+    }
+    /// The square pixel row its last sixel band ends on: the vertical
+    /// motion its data made, down from its top; a picture made whole, its
+    /// last row.
+    pub(crate) fn ended(&self) -> u32 {
+        self.ended
     }
     /// Its width in pixels.
     pub fn width(&self) -> u32 {
@@ -501,6 +512,9 @@ impl Decoder {
             down: self.down,
             aspect: self.aspect,
             background,
+            ended: shown_at(self.aspect, 0, self.y.saturating_add(6))
+                .1
+                .saturating_sub(1),
             rgba,
         }))
     }
