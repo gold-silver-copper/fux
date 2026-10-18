@@ -507,3 +507,17 @@ Cluster"), whose emoji rules its join rule cannot meet:
   its string width by a host terminal that measures so, as Ghostty draws
   conjuncts and flags (`1x6 '\u{600}1x'`: two columns, where the join
   rule would leave one).
+
+And one choice where fux-vt departs from xterm, as no standard decides it
+under UTF-8:
+
+- **A non-ASCII character inside an escape sequence or a CSI** is
+  ignored, the sequence going on: `ESC é x` is `ESC x`, and `CSI 1 é C`
+  is CUF 1, as in Ghostty, alacritty, wezterm, vt100 and tmux. DEC STD
+  070 (3.5.4.5) reads a GR byte in a sequence as its GL equivalent, a
+  rule for 8-bit codes with no meaning once UTF-8 is designated (ECMA-35,
+  15.4); xterm 411 applies it to the characters U+00A0 to U+00FF it
+  decodes (`CSI 1 é` is `CSI 1 i`, MC, and the `C` printed) and drops the
+  sequence at any character past U+00FF, which would make a sequence's
+  meaning hang on how a character was encoded (`1x8 'a\eéxb'`: `ab`
+  here and in five engines, `axb` in xterm, avt and xterm.js).
