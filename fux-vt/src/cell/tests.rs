@@ -12,7 +12,7 @@ fn stored_cells_read_back_as_they_were_made() {
         flags: (0x1ff & !Attributes::RAPID_BLINK) | Attributes::UNDERLINE,
     };
     let seventeen = "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
-    let mut cells = Cells::new(3);
+    let mut cells = Cells::new(3).unwrap_or_default();
     for (i, text) in ["é", seventeen, &format!("{seventeen}{seventeen}")]
         .into_iter()
         .enumerate()
@@ -65,17 +65,17 @@ fn underline_styles_keep_to_their_own_bits() {
 #[test]
 fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
     let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
-    let mut a = Cells::new(4);
+    let mut a = Cells::new(4).unwrap_or_default();
     assert!(a.set(1, CellRef::new(family, true, Attributes::default())));
     a.set(2, CellRef::wide_continuation());
     // Copied cell by cell, through a third run, in another order.
-    let mut c = Cells::new(4);
+    let mut c = Cells::new(4).unwrap_or_default();
     for i in [3, 2, 1, 0] {
         if let Some(cell) = a.get(i) {
             c.set(i, cell);
         }
     }
-    let mut b = Cells::new(4);
+    let mut b = Cells::new(4).unwrap_or_default();
     for i in 0..4 {
         if let Some(cell) = c.get(i) {
             b.set(i, cell);
@@ -87,7 +87,7 @@ fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
     assert_ne!(a, b);
     assert!(b.get(1).is_some_and(|c| c.bold() && c.contents() == family));
     b.fill(0..4, CellRef::default());
-    assert_eq!(b, Cells::new(4));
+    assert_eq!(b, Cells::new(4).unwrap_or_default());
     assert_eq!(b.range(2..9).len(), 2);
 }
 
@@ -117,8 +117,8 @@ fn range_eq_agrees_with_comparing_each_cell() {
     let (mut same, mut differ) = (0usize, 0usize);
     for case in 0..3_000 {
         let len = 1 + r.below(40);
-        let mut a = Cells::new(len);
-        let mut b = Cells::new(len);
+        let mut a = Cells::new(len).unwrap_or_default();
+        let mut b = Cells::new(len).unwrap_or_default();
         for _ in 0..r.below(60) {
             let row = if r.below(2) == 0 { &mut a } else { &mut b };
             let i = r.below(len + 2);

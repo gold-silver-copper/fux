@@ -1332,12 +1332,37 @@ pub fn b38(_: Scale, _: usize) -> Found {
 }
 
 // B39: `Cells` holds at most 64 Mi cells, and refuses more.
-pub fn b39(_: Scale, _: usize) -> Found {
-    let made = std::panic::catch_unwind(|| fux_vt::Cells::new(usize::MAX).len());
-    match made {
-        Ok(_) => Err("Cells::new(usize::MAX) made cells".into()),
-        Err(_) => Err("Cells::new(usize::MAX) panics (SCR-11)".into()),
+pub fn b39(scale: Scale, _: usize) -> Found {
+    const MAX_CELLS: usize = 64 << 20;
+    // Past the most: refused, by `new` and by `resize`, which leaves the
+    // cells as they were. (At the most, 512 MiB, only at 100x.)
+    for len in [MAX_CELLS.saturating_add(1), usize::MAX] {
+        let made = std::panic::catch_unwind(|| fux_vt::Cells::new(len).map(|c| c.len()));
+        match made {
+            Ok(Err(fux_vt::Error::Capacity)) => {}
+            Ok(other) => return Err(format!("Cells::new({len}) gave {other:?}")),
+            Err(_) => return Err(format!("Cells::new({len}) panics (SCR-11)")),
+        }
+        let mut cells = fux_vt::Cells::new(4).map_err(|e| e.to_string())?;
+        let grown = std::panic::catch_unwind(move || {
+            let grown = cells.resize(len, fux_vt::CellRef::default());
+            (grown, cells.len())
+        });
+        match grown {
+            Ok((Err(fux_vt::Error::Capacity), 4)) => {}
+            Ok(other) => return Err(format!("resize to {len} gave {other:?}")),
+            Err(_) => return Err(format!("resize to {len} panics (SCR-11)")),
+        }
     }
+    let most = if scale == Scale::Hundred {
+        MAX_CELLS
+    } else {
+        1 << 10
+    };
+    let made = fux_vt::Cells::new(most).map_err(|e| e.to_string())?;
+    (made.len() == most)
+        .then_some(())
+        .ok_or(format!("Cells::new({most}) made {}", made.len()))
 }
 
 // B40: finding a row by its identity costs a binary search: rows at most

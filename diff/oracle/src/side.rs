@@ -572,7 +572,7 @@ macro_rules! side {
                 }
 
                 fn run(len: usize) -> vt::Cells {
-                    vt::Cells::new(len)
+                    vt::Cells::new(len).unwrap_or_default()
                 }
 
                 fn apply(run: &mut vt::Cells, edit: &crate::cells::Edit) -> String {

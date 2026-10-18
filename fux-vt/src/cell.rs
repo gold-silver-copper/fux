@@ -3,6 +3,7 @@
 //! Cells are stored one way only (`compact.rs`), in a screen's rows and in
 //! a host's [`Cells`] alike, so a reader never sees half a cluster.
 
+use crate::Error;
 use crate::compact::{Compact, Line, Text};
 
 /// A colour: red, green and blue, 8 bits each, as xterm keeps every
@@ -733,12 +734,24 @@ impl Cells {
     pub fn text_len(&self) -> usize {
         self.text.long_len()
     }
-    /// `len` blank cells.
-    pub fn new(len: usize) -> Self {
-        Self {
-            cells: vec![Stored::default(); len],
-            text: Text::default(),
+    /// `len` blank cells; `Error::Capacity` past `MAX_CELLS` (64 Mi, as a
+    /// screen holds at most) or if there is no memory for them
+    /// (`threats.md` B39).
+    pub fn new(len: usize) -> Result<Self, Error> {
+        let mut cells = Self::default();
+        cells.room_for(len)?;
+        cells.cells.resize(len, Stored::default());
+        Ok(cells)
+    }
+    /// Room for `len` cells in all, if it is at most `MAX_CELLS`.
+    fn room_for(&mut self, len: usize) -> Result<(), Error> {
+        if len > crate::grid::MAX_CELLS {
+            return Err(Error::Capacity);
         }
+        let more = len.saturating_sub(self.cells.len());
+        self.cells
+            .try_reserve_exact(more)
+            .map_err(|_| Error::Capacity)
     }
     /// How many cells there are.
     pub fn len(&self) -> usize {
@@ -832,7 +845,10 @@ impl Cells {
     /// Makes the run `len` cells long, new ones `cell`. A shorter run keeps
     /// a shorter run's budget: its cells' text is stored again, left to
     /// right, and what no longer fits is cut to its first 17 bytes.
-    pub fn resize(&mut self, len: usize, cell: CellRef<'_>) {
+    /// `Error::Capacity`, with nothing changed, past `MAX_CELLS` or if there
+    /// is no memory for them.
+    pub fn resize(&mut self, len: usize, cell: CellRef<'_>) -> Result<(), Error> {
+        self.room_for(len)?;
         let was = self.cells.len();
         self.cells.resize(len, Stored::default());
         if len < was {
@@ -840,6 +856,7 @@ impl Cells {
         } else {
             self.fill(was..len, cell);
         }
+        Ok(())
     }
     fn line(&mut self) -> Line<'_, Stored> {
         Line {
@@ -855,7 +872,11 @@ impl<'a> FromIterator<CellRef<'a>> for Cells {
         // All the cells first, so the text is stored within the budget of
         // the whole run, as it was where it came from.
         let cells: Vec<CellRef<'a>> = cells.into_iter().collect();
-        let mut copy = Cells::new(cells.len());
+        // As many as there are: they are in memory already.
+        let mut copy = Cells {
+            cells: vec![Stored::default(); cells.len()],
+            text: Text::default(),
+        };
         for (at, cell) in cells.into_iter().enumerate() {
             copy.set(at, cell);
         }

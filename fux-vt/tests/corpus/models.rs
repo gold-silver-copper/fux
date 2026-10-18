@@ -291,7 +291,10 @@ pub fn apply(cells: &mut Cells, other: &mut Cells, model: &mut Vec<Model>, op: &
             }
         }
         CellsOp::Resize { len } => {
-            cells.resize(*len, CellRef::default());
+            assert!(
+                cells.resize(*len, CellRef::default()).is_ok(),
+                "{len} cells"
+            );
             model.resize(*len, Model::blank());
             // A shorter run keeps a shorter run's budget: cells whose text
             // no longer fits, left to right, keep what fits inline.

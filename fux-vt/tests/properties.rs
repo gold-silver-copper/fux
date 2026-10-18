@@ -268,9 +268,9 @@ fn cells_agree_with_a_plain_list_of_cells() -> Result {
     let mut edits = 0usize;
     for _ in 0..1_500 {
         let len = r.upto(6);
-        let mut cells = Cells::new(len);
+        let mut cells = Cells::new(len).unwrap_or_default();
         let mut model = vec![Model::blank(); len];
-        let mut other = Cells::new(4);
+        let mut other = Cells::new(4).unwrap_or_default();
         for _ in 0..60 {
             let i = r.below(model.len().saturating_add(1));
             let text = texts.get(r.below(texts.len())).cloned().unwrap_or_default();

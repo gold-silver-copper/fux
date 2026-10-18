@@ -653,7 +653,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
     let input = format!("\x1b[1;4;38;5;208;48;2;1;2;3m界e\u{301}\x1b[m {family}");
     parser.process(input.as_bytes())?;
     let screen = parser.screen();
-    let mut copy = Cells::new(6);
+    let mut copy = Cells::new(6).unwrap_or_default();
     for col in 0..6 {
         let original = screen.cell(0, col).ok_or("cell")?;
         if original.is_wide_continuation() {

@@ -358,6 +358,9 @@ fux-vt's work counters and a counting allocator against it.
   records, blocks and maps included, and at most half as much again
   while its storage grows; a lowered budget keeps the newest rows that
   fit, in storage made for it.
+- **`Cells`** (B39) holds at most 64 Mi cells, as a screen does:
+  `Cells::new` and `Cells::resize` refuse more with `Error::Capacity`,
+  and so does a lack of memory, the cells left as they were.
 - **Listing pictures** (B09) doesn't search history: each picture's top
   row is followed into history as it scrolls there, by its number in the
   order rows came, so `Screen::pictures` reads at most the screen's rows

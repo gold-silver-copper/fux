@@ -382,11 +382,17 @@ impl PartialEq for Links {
 impl Eq for Links {}
 
 impl Grid {
+    /// A blank grid `rows` by `cols`; one of no cells if that is more than
+    /// fux-vt's cells hold (`Cells::new`), which draws nothing.
     pub fn new(rows: u16, cols: u16) -> Grid {
+        let (rows, cols, cells) = match Cells::new(cell_count(rows, cols)) {
+            Ok(cells) => (rows, cols, cells),
+            Err(_) => (0, 0, Cells::default()),
+        };
         Grid {
             rows,
             cols,
-            cells: Cells::new(cell_count(rows, cols)),
+            cells,
             links: Links::default(),
             cursor: None,
             modes: Modes::default(),
@@ -408,11 +414,15 @@ impl Grid {
                 self.cells.fill(0..self.cells.len(), CellRef::default());
             }
         } else {
-            self.rows = rows;
-            self.cols = cols;
-            self.cells.resize(0, CellRef::default());
-            self.cells
-                .resize(cell_count(rows, cols), CellRef::default());
+            (self.rows, self.cols) = (rows, cols);
+            let blank = CellRef::default();
+            // Past what fux-vt's cells hold, a grid of none, which draws
+            // nothing.
+            let made = (self.cells.resize(0, blank))
+                .and_then(|()| self.cells.resize(cell_count(rows, cols), blank));
+            if made.is_err() {
+                (self.rows, self.cols) = (0, 0);
+            }
         }
         self.cursor = None;
         self.modes = Modes::default();

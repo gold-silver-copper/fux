@@ -50,8 +50,9 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
     let style = |s: &u8| models::STYLES[usize::from(*s) % models::STYLES.len()];
     // Small runs, so their text budget runs out.
     let len = usize::from(len % 9);
-    let mut cells = Cells::new(len);
-    let mut other = Cells::new(4);
+    let (Ok(mut cells), Ok(mut other)) = (Cells::new(len), Cells::new(4)) else {
+        return;
+    };
     let mut model = vec![Model::blank(); len];
     for op in ops.iter().take(200) {
         let op = match op {
