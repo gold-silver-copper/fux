@@ -21,6 +21,13 @@ checks = []
 [dev-dependencies]
 # The reference the generated grapheme tables are tested against.
 unicode-segmentation = "=1.13.3"
+# The bounds tests' counting allocator (threats.md 3.5): live bytes and a
+# peak it resets, its `unsafe` its own.
+peak_alloc = "=0.3.0"
+
+[[test]]
+name = "bounds"
+required-features = ["checks"]
 
 [lints.rust]
 unused_must_use = "forbid"
