@@ -57,7 +57,9 @@ fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
 - An action (`run`, `send-keys`, `capture`, a bare `wait` …) answers once
   its pane settles, with its state and what came since: `%3 reading · done
-  0`, then the output. A failure prints `fux: CODE: MESSAGE` on stderr,
+  0`, then the output. A `line` waits for the shell command it typed to end
+  (or to take the full screen); keys sent into a command that runs on
+  settle once it reads or is quiet, `%3 waiting · command running`. A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
   status is the exit status, while its answer is left (`drop` it, and it
   is 0): 3 the program exited first, 4 the pane closed,

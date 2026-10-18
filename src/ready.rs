@@ -59,8 +59,10 @@ impl State {
     }
 }
 
-/// What the program in `pane` is doing at `now`.
-pub fn state(pane: &Pane, now: Instant) -> State {
+/// What the program in `pane` is doing at `now`; `typed`, how many
+/// commands its marks had begun as the input of the wait asking was
+/// written, if it waits for one that input began to end (`line`).
+pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     let child = match &pane.process {
         Process::Exited(ended) => return State::Exited(*ended),
         Process::Absent => return State::Absent,
@@ -77,14 +79,17 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     let quiet = now.saturating_duration_since(since);
     let tty = child.master.slave_path();
     let activity = activity(pane, child, now);
-    // A command still runs that does not read: at work until it ends or
-    // asks. A shell's, unless it took the full screen (an editor polling
-    // there is not at work); one the full-screen program marked itself (a
-    // remote shell's, relayed) runs until it says it ended.
+    // The command the input typed still runs and does not read: at work
+    // until it ends or asks. One that took the full screen since it began
+    // (an editor, a pager, polling there) is not at work; one whose output
+    // began there, marked by the full-screen program itself (a remote
+    // shell's, relayed), runs until it says it ended. A command begun
+    // before the input (keys sent into it) is not waited for so.
     let screen = pane.screen();
     let commands = screen.commands();
-    let command =
-        commands.running() && (commands.full_screen || !screen.mode(fux_vt::Mode::AlternateScreen));
+    let command = commands.running()
+        && typed.is_some_and(|n| commands.started != n)
+        && (commands.full_screen || !screen.mode(fux_vt::Mode::AlternateScreen));
     match activity {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty) => State::Reading,
         Activity::Polling | Activity::Waiting if command => State::Busy,

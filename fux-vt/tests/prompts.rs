@@ -239,6 +239,19 @@ fn a_nested_programs_marks_count_within_the_shells_command() -> Result {
     Ok(())
 }
 
+/// A `C` while a command runs (a relay placing that command's start anew)
+/// moves its start but begins no command: `started` counts those begun.
+#[test]
+fn a_start_while_a_command_runs_begins_none() -> Result {
+    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
+    p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07out\r\n\x1b]133;C\x07")?;
+    let commands = p.screen().commands();
+    assert_eq!((commands.started, commands.finished), (1, 0));
+    p.process(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;C\x07")?;
+    assert_eq!(p.screen().commands().started, 2);
+    Ok(())
+}
+
 /// A late `C` (a line the shell could not run) starts the output after
 /// the line last submitted, not after the prompt's first line: the
 /// continuation prompts and the lines typed at them are not its output.

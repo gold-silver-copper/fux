@@ -222,14 +222,22 @@ it exits the shell's own end ends that command. Its marks without the
 nonce, or before it ran, count for nothing. A program `run` in a pane of
 its own needs no nonce: its marks always count.
 
-A command that a full-screen program marks itself (its `C` came on the
-alternate screen, as a remote shell's relayed do) is waited for like a
-shell's, though the program waits on the network meanwhile: `line` answers
-once it ends, `· done STATUS`, or `busy` at the time limit. So a remote
-command that waits for input or takes the full screen (`sudo`, `vim`
-through koh) answers `busy` at the limit: wait for its prompt with
-`wait-text`, or use `0 timeout`. A full-screen program a local shell's
-command runs (an editor) is not waited for so.
+Only the action whose input began a marked command waits for it to end:
+`line` (or keys ending in Enter at a prompt), and a bare `wait` after it.
+Keys sent into a command that runs on (a pager, an editor, a REPL, a
+prompt, local or remote), and a `capture`, settle as with any program:
+once it reads, or is quiet a second. A pane that settles while a marked
+command runs on says so: `%2 waiting · command running`. A command `line` typed
+that takes the full screen after it began (`less`, `vim`, an ssh session's
+too) answers once it reads or is quiet, its screen shown. One that a
+full-screen program marks itself (its `C` came on the alternate screen, as
+a remote shell's relayed by `koh connect` do) is waited for to its end,
+though the program waits on the network meanwhile: `line` answers
+`· done STATUS`, or `busy` at the time limit. fux cannot tell a remote
+command that waits for input there (`sudo`, `less`, `python3 -i` through
+koh; a REPL over ssh) from a slow one: its `line` answers `busy` at the
+limit. Type such a command with `0 timeout`, or wait for its prompt with
+`wait-text`; the keys you send it next settle at once.
 
 ## Sizes
 

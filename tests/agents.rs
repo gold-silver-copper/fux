@@ -648,10 +648,14 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
 }
 
 /// A full-screen program that relays a shell's marks, as `koh connect`
-/// does: it takes a line at its prompt, marks the command, and answers
-/// `slow` with what comes down the FIFO it is given, `forge` with marks
-/// that carry no nonce or the wrong one, and anything else with `hi` and
-/// status 1. Its marks carry `FUX_MARK_NONCE` if it was given one.
+/// does (on the main screen, given `main` after the FIFO, as ssh does):
+/// it takes a line at its prompt, marks the command, and answers `slow`
+/// with what comes down the FIFO it is given; `hang` prints `hanging`
+/// first, as a remote program waiting for input shows its screen, and
+/// ends with status 4; `full` takes the full screen first, as a remote
+/// pager does, and ends with status 5; `forge` answers with marks that
+/// carry no nonce or the wrong one, and anything else with `hi` and status
+/// 1. Its marks carry `FUX_MARK_NONCE` if it was given one.
 const RELAY: &str = r#"
 import os, sys
 nonce = os.environ.get("FUX_MARK_NONCE")
@@ -661,7 +665,8 @@ def mark(m):
 def prompt():
     mark("A"); out.write("r$ "); out.flush()
 far = os.open(sys.argv[1], os.O_RDWR) if len(sys.argv) > 1 else None
-out.write("\x1b[?1049h"); prompt()
+main = sys.argv[2:] == ["main"]
+out.write("" if main else "\x1b[?1049h"); prompt()
 while True:
     line = sys.stdin.readline().strip()
     if line == "exit":
@@ -673,11 +678,28 @@ while True:
     mark("C"); out.flush()
     if line == "slow":
         out.write(os.read(far, 100).decode()); mark("D;3")
+    elif line == "hang":
+        out.write("hanging\n"); out.flush()
+        out.write(os.read(far, 100).decode()); mark("D;4")
+    elif line == "full":
+        out.write("\x1b[?1049hfull\n"); out.flush()
+        out.write("\x1b[?1049l" + os.read(far, 100).decode()); mark("D;5")
     else:
         out.write("hi\n"); mark("D;1")
     prompt()
-out.write("\x1b[?1049l"); out.flush()
+out.write("" if main else "\x1b[?1049l"); out.flush()
 "#;
+
+/// `RELAY` written into `server`'s directory, and a FIFO for it: their
+/// paths.
+fn relay(server: &Server) -> Result<(String, std::path::PathBuf), String> {
+    let relay = server.dir.join("relay.py");
+    std::fs::write(&relay, RELAY).map_err(e)?;
+    let fifo = server.dir.join("far");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+    Ok((relay.to_string_lossy().into_owned(), fifo))
+}
 
 /// A full-screen program that marks its own commands (a remote shell's,
 /// relayed) has a settling action wait for a slow one to end, as a shell's
@@ -689,12 +711,8 @@ fn a_command_a_full_screen_program_marks_is_waited_for() -> Outcome {
         return Ok(());
     }
     let server = Server::start("")?;
-    let relay = server.dir.join("relay.py");
-    std::fs::write(&relay, RELAY).map_err(e)?;
-    let fifo = server.dir.join("far");
-    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
-    assert!(made.is_ok_and(|s| s.success()), "mkfifo");
-    let (relay, far) = (relay.to_string_lossy(), fifo.to_string_lossy());
+    let (relay, fifo) = relay(&server)?;
+    let far = fifo.to_string_lossy().into_owned();
     let pane = id(&server.ok(&run(&[], &["python3", &relay, &far]))?);
     let writer = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -710,6 +728,63 @@ fn a_command_a_full_screen_program_marks_is_waited_for() -> Outcome {
     Ok(())
 }
 
+/// Only the action that typed a marked command waits for it to end: keys
+/// sent into one that runs on (a remote pager or REPL waiting for them,
+/// which looks the same) settle once it is quiet and say it runs, on the
+/// full screen of a program that marks it (koh's) and on the main screen
+/// (ssh's) alike; a wait after them hears it end.
+#[test]
+fn keys_into_a_marked_command_settle_once_quiet() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let (relay, fifo) = relay(&server)?;
+    let far = fifo.to_string_lossy().into_owned();
+    let full = id(&server.ok(&run(&[], &["python3", &relay, &far]))?);
+    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
+    let started = line(&server, "sh", &format!("python3 '{relay}' '{far}' main"))?;
+    assert_eq!(head(&started), format!("{} {READING}", id(&started)));
+    for pane in [full.as_str(), "sh"] {
+        let hanging = ["str", "hanging", "wait-text"];
+        server.ok(&typed(pane, "hang", &hanging))?;
+        let began = std::time::Instant::now();
+        let typed = server.ok(&["str", pane, "pane", "str", "x", "type"])?;
+        assert!(
+            head(&typed).ends_with(" waiting · command running"),
+            "{typed}"
+        );
+        assert!(began.elapsed() < PATIENCE, "{typed}");
+        std::fs::write(&fifo, "back\n").map_err(e)?;
+        let ended = server.ok(&["str", pane, "pane", "opts", "wait"])?;
+        assert_eq!(done(&ended), Some("done 4"), "{ended}");
+    }
+    Ok(())
+}
+
+/// A command typed that takes the full screen once it began (a remote
+/// pager, relayed on the main screen) waits for its keys: `line` answers
+/// once it is quiet, not at its end.
+#[test]
+fn a_command_that_takes_the_full_screen_is_not_waited_for() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let (relay, fifo) = relay(&server)?;
+    let far = fifo.to_string_lossy().into_owned();
+    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
+    line(&server, "sh", &format!("python3 '{relay}' '{far}' main"))?;
+    let shown = line(&server, "sh", "full")?;
+    let pane = id(&shown);
+    assert_eq!(head(&shown), format!("{pane} waiting · command running"));
+    assert!(body(&shown).contains("full\n"), "{shown}");
+    std::fs::write(&fifo, "back\n").map_err(e)?;
+    let ended = server.ok(&["str", &pane, "pane", "opts", "wait"])?;
+    assert_eq!(done(&ended), Some("done 5"), "{ended}");
+    Ok(())
+}
+
 /// A program typed into a marked shell is given the pane's nested nonce
 /// (`FUX_MARK_NONCE`): its marks that carry it count while its command
 /// runs, so `line` typed into it answers `done` and `last-output` its
@@ -718,10 +793,9 @@ fn a_command_a_full_screen_program_marks_is_waited_for() -> Outcome {
 #[test]
 fn a_nested_programs_marks_count_in_a_shell_pane() -> Outcome {
     let server = Server::start("")?;
-    let relay = server.dir.join("relay.py");
-    std::fs::write(&relay, RELAY).map_err(e)?;
+    let (relay, _) = relay(&server)?;
     server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
-    let started = line(&server, "sh", &format!("python3 '{}'", relay.display()))?;
+    let started = line(&server, "sh", &format!("python3 '{relay}'"))?;
     assert_eq!(done(&started), None, "{started}");
     let answer = line(&server, "sh", "echo")?;
     assert_eq!(done(&answer), Some("done 1"), "{answer}");
@@ -1499,10 +1573,13 @@ fn the_rechecks_hold() -> Outcome {
     server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
     // Elsewhere than Linux, quiet, it is taken as settled.
     let at_work = server.fux(&typed("sh", "sleep 30", &["1", "timeout"]))?;
-    let status = if PROBED { 124 } else { 0 };
+    let (status, state) = match PROBED {
+        true => (124, asleep("%2")),
+        false => (0, format!("{ASLEEP} · command running")),
+    };
     assert_eq!(at_work.status, status, "{}", at_work.stderr);
     assert!(
-        head(&at_work.stdout).ends_with(&format!(" {}", asleep("%2"))),
+        head(&at_work.stdout).ends_with(&format!(" {state}")),
         "{}",
         at_work.stdout
     );
