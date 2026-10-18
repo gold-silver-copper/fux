@@ -74,6 +74,9 @@ const OSC_LIMIT: usize = 128;
 /// `DCS 1 $ r 0;1;4:3;6;7;8;2;3;9;38:2::255:255:255;48:2::…;58:2::… m ST`,
 /// is under 90 bytes, and XTGETTCAP's answer for `Smulx` under 50.
 const DCS_LIMIT: usize = 256;
+/// The longest sequence the decoder holds unfinished: `ESC P` and a DCS
+/// answer's limit.
+const HELD: usize = DCS_LIMIT + 2;
 /// The largest paste delivered; a longer one is refused whole.
 pub const PASTE_LIMIT: usize = 64 * 1024;
 /// How long a bracketed paste waits for more of itself before it ends
@@ -180,11 +183,13 @@ enum State {
         held: Vec<u8>,
         since: Option<Instant>,
     },
-    /// An answer's string past its limit (OSC or DCS), dropped as it
-    /// arrives until it ends (`drop_to_end`), as an answer begun waits.
+    /// An answer's string past its limit (OSC or DCS), or a `CSI ?` answer
+    /// past its (`csi`), dropped as it arrives until it ends
+    /// (`drop_to_end`), as an answer begun waits.
     Dropping {
         bel: bool,
         escape: bool,
+        csi: bool,
         since: Option<Instant>,
     },
     /// Inside a bracketed paste: what it has kept, and since when no more
@@ -245,11 +250,30 @@ struct Expecting {
 /// ends within them, else whether they end with such an ESC. An Escape that
 /// ends it unfinished begins what follows, put back if the last read ended
 /// with it.
+/// The ESC that begins them is the last read's: it is put back before
+/// them, a copy of at most the longest held sequence and a byte, as a long
+/// read comes in pieces (`held_first`).
 #[cold]
-fn drop_to_end(bel: bool, mut escape: bool, bytes: &[u8]) -> Result<Cow<'_, [u8]>, bool> {
+fn drop_to_end(
+    bel: bool,
+    mut escape: bool,
+    csi: bool,
+    bytes: &[u8],
+) -> Result<Cow<'_, [u8]>, bool> {
     // Every byte is looked at, at most: those after the end are decoded
     // again, and counted again there.
     work!(keys, bytes.len());
+    // A `CSI ?` answer ends with its final byte, as one read whole does
+    // (`long_answer`).
+    if csi {
+        let end = bytes
+            .iter()
+            .position(|b| (0x40..=0x7e).contains(b))
+            .ok_or(false)?;
+        return Ok(Cow::Borrowed(
+            bytes.get(end.saturating_add(1)..).unwrap_or_default(),
+        ));
+    }
     for (i, &byte) in bytes.iter().enumerate() {
         let rest = match (escape, byte) {
             (true, b'\\') => i.saturating_add(1),
@@ -274,7 +298,9 @@ fn drop_to_end(bel: bool, mut escape: bool, bytes: &[u8]) -> Result<Cow<'_, [u8]
 /// once its end marker is among them, what it comes to, to `out`, and the
 /// bytes after it; else what it keeps. Once it is past `limit`, by more
 /// than the end that may begin the marker, it is reported too long, at
-/// once, and dropped from then on.
+/// once, and dropped from then on. The marker is looked for in `bytes`
+/// where they lie, and only what the paste keeps is copied: a read that
+/// holds many pastes is never copied whole for each (threats.md B23).
 fn paste<'a>(
     pasted: Pasted,
     bytes: &'a [u8],
@@ -285,34 +311,57 @@ fn paste<'a>(
         Pasted::Text(text) => (text, false),
         Pasted::TooLong(tail) => (tail, true),
     };
-    let (old, marker) = (text.len(), PASTE_END.len());
-    text.extend_from_slice(bytes);
-    // The marker may have begun in the bytes before these.
-    let from = old.saturating_sub(marker.saturating_sub(1));
-    // The bytes copied, and those searched for the marker.
-    work!(
-        keys,
-        bytes.len().saturating_add(text.len().saturating_sub(from))
-    );
-    let found =
-        (from..text.len()).find(|&i| text.get(i..).is_some_and(|t| t.starts_with(PASTE_END)));
-    let Some(end) = found else {
-        let tail = text.len().saturating_sub(marker.saturating_sub(1));
+    let marker = PASTE_END.len();
+    // The marker begun in what was kept, and ended in these bytes: the
+    // longest such start first, the earliest.
+    let across = (1..marker).rev().find(|&k| {
+        PASTE_END
+            .split_at_checked(k)
+            .is_some_and(|(head, tail)| text.ends_with(head) && bytes.starts_with(tail))
+    });
+    let found = match across {
+        Some(k) => Some((text.len().saturating_sub(k), 0, marker.saturating_sub(k))),
+        None => (0..bytes.len())
+            .find(|&at| bytes.get(at..).is_some_and(|b| b.starts_with(PASTE_END)))
+            .map(|at| (text.len(), at, at.saturating_add(marker))),
+    };
+    // The bytes searched: to the marker's end, or all of them.
+    work!(keys, found.map_or(bytes.len(), |(_, _, rest)| rest));
+    let Some((kept, taken, rest)) = found else {
+        // No end yet: the paste keeps its bytes while it may still be
+        // within its limit, else only the end that may begin the marker.
+        let total = text.len().saturating_add(bytes.len());
+        let tail = total.saturating_sub(marker.saturating_sub(1));
         if !too_long && tail <= limit {
+            work!(keys, bytes.len());
+            text.extend_from_slice(bytes);
             return Err(Pasted::Text(text));
         }
         if !too_long {
             out.push(Input::PasteTooLong);
         }
-        work!(keys, text.len().saturating_sub(tail));
-        return Err(Pasted::TooLong(
-            text.get(tail..).unwrap_or_default().to_vec(),
-        ));
+        let keep = marker.saturating_sub(1);
+        let from_text = keep.saturating_sub(bytes.len()).min(text.len());
+        let mut end = (text.get(text.len().saturating_sub(from_text)..))
+            .unwrap_or_default()
+            .to_vec();
+        end.extend_from_slice(
+            bytes
+                .get(bytes.len().saturating_sub(keep)..)
+                .unwrap_or_default(),
+        );
+        return Err(Pasted::TooLong(end));
     };
-    let rest = end.saturating_add(marker).saturating_sub(old);
-    text.truncate(end);
     if !too_long {
-        out.push(finished(text, limit));
+        // Copied only if the paste is within its limit with them.
+        if kept.saturating_add(taken) > limit {
+            out.push(Input::PasteTooLong);
+        } else {
+            text.truncate(kept);
+            work!(keys, taken);
+            text.extend_from_slice(bytes.get(..taken).unwrap_or_default());
+            out.push(finished(text, limit));
+        }
     }
     Ok(bytes.get(rest..).unwrap_or_default())
 }
@@ -324,7 +373,8 @@ enum Step {
     PasteStart(usize),
     /// The bytes are an answer's string past its limit, all of it: the rest
     /// of it is dropped as it comes, to its end (BEL too if `bel`, or ST).
-    Overlong { bel: bool },
+    /// A `CSI ?` answer past its limit (`csi`) ends at its final byte.
+    Overlong { bel: bool, csi: bool },
     /// The bytes are a prefix of something longer.
     Incomplete,
 }
@@ -402,6 +452,16 @@ impl Decoder {
     /// Decodes `bytes`, appending what they complete to `out`; an incomplete
     /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        // What is held, or an ESC that may end a dropped string, takes only
+        // what decides it of a long read (`held_first`), not a copy of all.
+        if bytes.len() > HELD
+            && matches!(
+                self.state,
+                State::Pending { .. } | State::Dropping { escape: true, .. }
+            )
+        {
+            return self.held_first(bytes, out);
+        }
         self.feed(bytes, false, out);
     }
 
@@ -422,11 +482,21 @@ impl Decoder {
                 held.extend_from_slice(bytes);
                 (Cow::Owned(held), since)
             }
-            State::Dropping { bel, escape, since } => match drop_to_end(bel, escape, bytes) {
+            State::Dropping {
+                bel,
+                escape,
+                csi,
+                since,
+            } => match drop_to_end(bel, escape, csi, bytes) {
                 Ok(rest) => (rest, None),
                 Err(_) if flush => return,
                 Err(escape) => {
-                    self.state = State::Dropping { bel, escape, since };
+                    self.state = State::Dropping {
+                        bel,
+                        escape,
+                        csi,
+                        since,
+                    };
                     return;
                 }
             },
@@ -445,6 +515,21 @@ impl Decoder {
             },
         };
         self.state = self.run(&rest, since, flush, out);
+    }
+
+    /// `bytes` of a read longer than any sequence held, while one is held
+    /// (or an ESC that may end a string being dropped): the held sequence
+    /// is given from the front of them only what decides it, no more than
+    /// the longest held and one byte, past which every sequence is decided
+    /// (threats.md B24, KEY-3), and the rest follows, where it lies.
+    #[cold]
+    #[inline(never)]
+    fn held_first(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        let (head, tail) = bytes
+            .split_at_checked(HELD.saturating_add(1))
+            .unwrap_or((bytes, &[]));
+        self.feed(head, false, out);
+        self.feed(tail, false, out);
     }
 
     /// Decodes `bytes`, with nothing begun before them but what they begin
@@ -489,9 +574,14 @@ impl Decoder {
                         }
                     }
                 }
-                Step::Overlong { bel } => {
+                Step::Overlong { bel, csi } => {
                     let escape = false;
-                    return State::Dropping { bel, escape, since };
+                    return State::Dropping {
+                        bel,
+                        escape,
+                        csi,
+                        since,
+                    };
                 }
                 Step::Incomplete => {
                     work!(keys, bytes.len());
@@ -701,7 +791,7 @@ fn answer(
         // Cut short: dropped.
         None if flush => return Step::Done(bytes.len(), None),
         // Longer than any answer: dropped, the rest of it as it comes.
-        None if body.len() > limit => return Step::Overlong { bel },
+        None if body.len() > limit => return Step::Overlong { bel, csi: false },
         None => return Step::Incomplete,
     };
     // Within `bytes`: the string, its two-byte opening and its end.
@@ -846,13 +936,20 @@ fn unfinished(params: &[u8]) -> Step {
 /// A `CSI ?` answer longer than any answer, `body` its bytes after `ESC [`:
 /// dropped through its final byte once that is here, as an over-long OSC
 /// or DCS answer is dropped to its end; held until then, up to
-/// `DCS_LIMIT` bytes, past which (or at a timeout) what is held is dropped.
+/// `DCS_LIMIT` bytes, past which the rest is dropped as it comes, to its
+/// final byte, and at a timeout what is held is dropped.
 #[cold]
 #[inline(never)]
 fn long_answer(body: &[u8], flush: bool) -> Step {
     match body.iter().position(|b| (0x40..=0x7e).contains(b)) {
         Some(end) => Step::Done(end.saturating_add(3), None),
-        None if flush || body.len() > DCS_LIMIT => Step::Done(body.len().saturating_add(2), None),
+        None if flush => Step::Done(body.len().saturating_add(2), None),
+        // Past what is held: the rest of it is dropped as it comes, to its
+        // final byte, however it is split (threats.md B25).
+        None if body.len() > DCS_LIMIT => Step::Overlong {
+            bel: false,
+            csi: true,
+        },
         None => Step::Incomplete,
     }
 }
@@ -1888,6 +1985,14 @@ mod tests {
             streams.push(([string.as_slice(), b"\x1bx"].concat(), vec![key("M-x")]));
             streams.push(([string.as_slice(), b"\xeb"].concat(), vec![]));
         }
+        // A `CSI ?` answer past what is held, dropped through its final
+        // byte (KEY-2): at the parent, read in pieces, its digits were typed.
+        let mut answer = b"\x1b[?".to_vec();
+        answer.extend(std::iter::repeat_n(b'1', DCS_LIMIT + 20));
+        streams.push((
+            [answer.as_slice(), b"cxy"].concat(),
+            vec![key("x"), key("y")],
+        ));
         for (stream, tail) in &streams {
             let whole = pieced(stream, stream.len());
             assert!(whole.ends_with(tail), "{stream:?}: {whole:?}");
