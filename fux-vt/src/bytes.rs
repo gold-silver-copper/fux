@@ -51,11 +51,22 @@ impl ByteQueue {
         self.bytes.extend_from_slice(more);
     }
     /// Appends what `write` adds to the end of the queue's buffer, in place.
-    /// The bytes already there are the queue's: `write` only adds after
-    /// them, or takes back what it added.
+    /// The bytes already there are the queue's: `write` should only add
+    /// after them, or take back what it added. One that truncates below
+    /// them leaves the queue holding what is left, and what is pushed
+    /// later is not lost.
     pub fn push_with<T>(&mut self, write: impl FnOnce(&mut Vec<u8>) -> T) -> T {
         self.compact();
-        write(&mut self.bytes)
+        let wrote = write(&mut self.bytes);
+        self.clamp_taken();
+        wrote
+    }
+    /// Takes no more than the buffer holds: after a `push_with` whose
+    /// closure cut the buffer short, what was taken ends at its end.
+    fn clamp_taken(&mut self) {
+        if self.taken > self.bytes.len() {
+            self.taken = self.bytes.len();
+        }
     }
     /// Reclaims the space taken, once at least as much has been taken as is
     /// left.
