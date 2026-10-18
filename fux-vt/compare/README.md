@@ -375,7 +375,11 @@ typed into them, byte for byte. Each scenario has:
   environment, the replies fux-vt gave, and each step's keys and where its
   output ends;
 - `corpus/keys/NAME.keys`: the keys, headed by a comment saying what the
-  scenario does.
+  scenario does;
+- its line in `corpus/SHA256SUMS`, which a test checks the bytes against;
+  `record` writes it, and, in the JSON, when, from which commit and on
+  what system the recording was made (`recorded`: the 113 recorded before
+  it have none).
 
 ### Recording
 

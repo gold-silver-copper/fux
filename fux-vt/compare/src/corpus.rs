@@ -1003,6 +1003,9 @@ pub fn run(
             }
         }
         results.push(serde_json::json!({
+            // The program, so recordings of one program count once (the
+            // speed method's sign test groups them).
+            "program": recording.program,
             "replies_agree": replies_agree,
             "abstained": abstained,
             "unjudged": unjudged,
@@ -1200,6 +1203,7 @@ fn run_subject(
         }
         results.push(serde_json::json!({
             "recording": recording.name,
+            "program": recording.program,
             "points": points.len(),
             "subject": jm.json(recording),
             "abstained": abstained,
@@ -1673,6 +1677,41 @@ mod tests {
         assert!(
             crate::families::glob("title", "title") && !crate::families::glob("title", "titles")
         );
+    }
+
+    /// Every recording's bytes are the ones recorded: each `.bin` has its
+    /// SHA-256 in `SHA256SUMS`, and it matches.
+    #[test]
+    fn every_recording_is_its_recorded_bytes() -> Result<(), String> {
+        let dir = super::dir();
+        let sums = std::fs::read_to_string(dir.join("SHA256SUMS")).map_err(|e| e.to_string())?;
+        let mut listed = std::collections::BTreeMap::new();
+        for line in sums.lines() {
+            let (hash, name) = line
+                .split_once("  ")
+                .ok_or(format!("SHA256SUMS: {line:?}"))?;
+            listed.insert(name.to_owned(), hash.to_owned());
+        }
+        let mut bins = 0usize;
+        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().is_none_or(|x| x != "bin") {
+                continue;
+            }
+            bins = bins.saturating_add(1);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            assert_eq!(
+                listed.get(&name),
+                Some(&crate::bench::sha256(&bytes)),
+                "{name}"
+            );
+        }
+        assert_eq!(bins, listed.len());
+        Ok(())
     }
 
     #[test]
