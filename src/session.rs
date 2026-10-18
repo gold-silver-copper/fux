@@ -4445,6 +4445,15 @@ mod tests {
             upper.contains("(use: S upper") && !upper.contains("each"),
             "{upper}"
         );
+        // A capture's option given a pane says where it goes.
+        for (code, shown) in [
+            ("%1 last-output", "fux %3 opts last-output capture"),
+            ("%1 0 4 rows", "fux %3 opts 0 4 rows capture"),
+        ] {
+            let option = failed(&mut s, code);
+            assert!(option.contains("(use: a capture option, OPTS "), "{option}");
+            assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
+        }
         let env = failed(&mut s, "opts str 1bad str v env");
         assert!(env.contains("not first a digit"), "{env}");
         let missing = failed(&mut s, "str /no/such/file.fux check");

@@ -225,7 +225,8 @@ pub fn usage(word: &str) -> Option<String> {
     let core = || fuxth::Builtin::named(word).map(fuxth::Builtin::effect);
     // Fux's, the prelude's or library's, or the core's; else the
     // language's own syntax, said as it is written.
-    let effect = match WORDS.iter().find(|w| w.name == word) {
+    let fuxs = WORDS.iter().find(|w| w.name == word);
+    let effect = match fuxs {
         Some(w) => w.effect,
         None => match library().or_else(core) {
             Some(effect) => effect,
@@ -242,7 +243,12 @@ pub fn usage(word: &str) -> Option<String> {
         leaves => format!(", which leaves {leaves}"),
     };
     let example = help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
-    Some(format!("use: {takes} {word}{leaves}{example}"))
+    // A capture's option says so: it goes between opts and capture.
+    let kind = match fuxs.is_some_and(|w| w.about.starts_with("capture: ")) {
+        true => "a capture option, ",
+        false => "",
+    };
+    Some(format!("use: {kind}{takes} {word}{leaves}{example}"))
 }
 
 fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {

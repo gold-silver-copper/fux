@@ -68,30 +68,109 @@ fn a_program_at_its_prompt_reads_and_one_asleep_is_busy() -> Outcome {
     Ok(())
 }
 
-/// A shell command that pauses, polling its terminal with a time limit, is
-/// at work until it ends: `line` answers with its end and its output, not
-/// with the quiet before them.
-#[test]
-fn a_shell_command_that_polls_is_answered_when_it_ends() -> Outcome {
-    if !PROBED {
-        return Ok(());
-    }
-    let server = Server::start("")?;
-    let pane = server
+/// An interactive bash fux marks, in a pane of its own.
+fn bash(server: &Server) -> Result<String, String> {
+    Ok(server
         .ok(&[
             "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run",
         ])?
         .split_whitespace()
         .next()
         .unwrap_or_default()
-        .to_owned();
+        .to_owned())
+}
+
+/// A shell command that polls its terminal with a time limit is at work
+/// until it ends, as a pause that watches for keys is: `line` answers with
+/// its end. One that takes pastes as it polls (bracketed paste on: a line
+/// editor reading, as Python's REPL) waits for keys once quiet: `line`
+/// answers `waiting · command running` in a second or so, and the line
+/// typed next is what it reads.
+#[test]
+fn a_shell_command_that_polls_its_terminal_waits_for_keys_while_editing() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let pane = bash(&server)?;
+    let p = ["str", pane.as_str(), "pane"];
     let pause = "python3 -c 'import select,sys; print(\"start\", flush=True); \
                  [select.select([sys.stdin], [], [], 0.1) for _ in range(25)]; \
                  print(\"end\")'; (exit 5)";
-    let answer = server.ok(&["str", &pane, "pane", "str", pause, "line"])?;
+    let answer = server.ok(&[&p[..], &["str", pause, "line"]].concat())?;
     let first = answer.lines().next().unwrap_or_default();
     assert_eq!(first, format!("{pane} reading · done 5"), "{answer}");
     assert!(answer.contains("\nend\n"), "{answer}");
+    let poll = "python3 -c 'import select,sys; print(\"\\x1b[?2004hask>\", flush=True)\n\
+                while not select.select([sys.stdin], [], [], 0.1)[0]: pass\n\
+                print(\"\\x1b[?2004lgot\", input())'; (exit 5)";
+    let began = std::time::Instant::now();
+    let answer = server.ok(&[&p[..], &["str", poll, "line"]].concat())?;
+    assert!(began.elapsed() < std::time::Duration::from_secs(10));
+    let first = answer.lines().next().unwrap_or_default();
+    assert_eq!(
+        first,
+        format!("{pane} waiting · command running"),
+        "{answer}"
+    );
+    assert!(answer.contains("\nask>\n"), "{answer}");
+    let answer = server.ok(&[&p[..], &["str", "bob", "line"]].concat())?;
+    assert!(answer.contains("got bob\n"), "{answer}");
+    assert!(
+        answer.starts_with(&format!("{pane} reading · done 5")),
+        "{answer}"
+    );
+    Ok(())
+}
+
+/// A shell command blocked on a pipe (its writer, out of the terminal's
+/// group, slow) is at work until it ends: `line` answers with its end and
+/// its output, not with the quiet before them.
+#[test]
+fn a_shell_command_blocked_on_a_pipe_is_answered_when_it_ends() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let pane = bash(&server)?;
+    let slow = "python3 -c 'import os,time; r,w=os.pipe(); print(\"start\", flush=True)\n\
+                if os.fork() == 0: os.setsid(); time.sleep(2.5); os.write(w, b\"end\\n\"); os._exit(0)\n\
+                os.close(w); print(os.read(r, 9).decode(), end=\"\")'; (exit 5)";
+    let answer = server.ok(&["str", &pane, "pane", "str", slow, "line"])?;
+    let first = answer.lines().next().unwrap_or_default();
+    assert_eq!(first, format!("{pane} reading · done 5"), "{answer}");
+    assert!(answer.contains("\nend\n"), "{answer}");
+    Ok(())
+}
+
+/// Python's own REPL (pyrepl, 3.13 on) polls its terminal with a time
+/// limit: typed as a shell command, it answers once it shows its prompt,
+/// and takes a line. Left out where there is no `python3`.
+#[test]
+fn a_python_repl_typed_at_a_shell_answers_at_its_prompt() -> Outcome {
+    let found = std::process::Command::new("python3")
+        .arg("-c")
+        .arg("")
+        .status()
+        .is_ok_and(|s| s.success());
+    if !PROBED || !found {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let pane = bash(&server)?;
+    let p = ["str", pane.as_str(), "pane"];
+    let began = std::time::Instant::now();
+    let answer = server.ok(&[&p[..], &["str", "python3 -i", "line"]].concat())?;
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(10),
+        "{answer}"
+    );
+    assert!(answer.contains(">>>"), "{answer}");
+    assert!(answer.contains("command running"), "{answer}");
+    let answer = server.ok(&[&p[..], &["str", "6*7", "line"]].concat())?;
+    assert!(answer.contains("\n42\n"), "{answer}");
+    let answer = server.ok(&[&p[..], &["str", "exit()", "line"]].concat())?;
+    assert!(answer.contains("done 0"), "{answer}");
     Ok(())
 }
 
@@ -339,14 +418,7 @@ fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
         return Ok(());
     }
     let server = Server::start("")?;
-    let pane = server
-        .ok(&[
-            "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run",
-        ])?
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
+    let pane = bash(&server)?;
     let p = ["str", pane.as_str(), "pane"];
     server.ok(&[&p[..], &["str", "set +m; (sleep 30; :) & disown", "line"]].concat())?;
     let answer = server.ok(&[&p[..], &["str", "echo hi", "line"]].concat())?;
@@ -373,14 +445,7 @@ fn keys_for_a_shell_that_left_a_job_are_not_held() -> Outcome {
         return Ok(());
     }
     let server = Server::start("")?;
-    let pane = server
-        .ok(&[
-            "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run",
-        ])?
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
+    let pane = bash(&server)?;
     let p = ["str", pane.as_str(), "pane"];
     server.ok(&[&p[..], &["str", "set +m; (sleep 30; :) & disown", "line"]].concat())?;
     // 100 pieces, typed and erased in turn: held, they take 3 s at least.
