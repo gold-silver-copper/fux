@@ -1949,6 +1949,22 @@ mod tests {
     /// An answer's string past its limit is dropped to its end however its
     /// bytes are read, and none of it is typed.
     #[test]
+    fn a_key_csi_at_the_end_of_its_window_waits_for_its_final_byte() {
+        // A kitty key whose parameters fill the window, 32 bytes, its final
+        // byte in the next read: one key (KEY-8, the window's guard).
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        let digits: Vec<u8> = std::iter::repeat_n(b'0', 30).chain(*b"97").collect();
+        d.bytes(&[b"\x1b[".as_slice(), &digits].concat(), &mut out);
+        d.bytes(b"u", &mut out);
+        d.timeout(&mut out);
+        assert!(
+            matches!(out.as_slice(), [Input::Key(k)] if k.press.key == Key::Char('a')),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn a_string_past_its_limit_is_dropped_alike_however_it_is_read() {
         // Read as answers are, while one is expected.
         let pieced = |bytes: &[u8], size: usize| {

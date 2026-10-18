@@ -867,6 +867,21 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     let a = (1usize << 20).saturating_mul(scale.times()).min(16 << 20);
     input.extend(repeat(b"a", a));
     decoded(&input, chunk, 258, 4 << 10, false)?;
+    // An ESC that ends a read, held, then reads far longer than any
+    // sequence (KEY-3): the held ESC takes only what decides it.
+    let held = [repeat(b"b", 4095).as_slice(), b"\x1b", &repeat(b"a", a)].concat();
+    decoded(&held, 4096, 258, 4 << 10, false)?;
+    // The same with nothing typed, so that the decoder's own heap shows:
+    // a dropped OSC answer, the ESC that ends the read, then an OSC answer
+    // too long to keep over many reads, held nowhere.
+    let quiet = [
+        b("\x1b]11;"),
+        repeat(b"1", 4089),
+        b("\x07\x1b]11;"),
+        repeat(b"1", a),
+    ]
+    .concat();
+    decoded(&quiet, 4096, 258, 1 << 10, false)?;
     let mut answer = b("\x1bP1+r");
     answer.extend(repeat(b"6", 258 - 7));
     answer.extend(b"\x1b\\");
@@ -890,6 +905,12 @@ pub fn b25(scale: Scale, chunk: usize) -> Found {
     }
     if split.keys != 0 {
         return Err(format!("{} keys typed from an answer", split.keys));
+    }
+    // Answers past their limit with no end yet, in pieces: held no
+    // longer than 258 bytes (KEY-8's guards on each limit).
+    for head in ["\x1b]11;", "\x1b[?"] {
+        let unended = [b(head), repeat(b"1", 300)].concat();
+        decoded(&repeat(&unended, scale.times()), chunk, 258, 4 << 10, false)?;
     }
     // Each window one past its limit (KEY-5): an OSC answer of 129 bytes,
     // a DCS of 257 while answers are expected, a key CSI of 33, a `CSI ?`
