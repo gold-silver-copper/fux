@@ -2543,6 +2543,20 @@ a
             return Err(format!("{found:?}"));
         };
         assert!(found.starts_with("A.t3: no result"));
+        // The same timeout where the harness declined no checksum (a slow
+        // reply, a load): the engine's failure, not an unreadable test.
+        let slow = Ran {
+            log: log.into(),
+            stopped: true,
+            told: 1,
+            unreadable: 0,
+            failed: None,
+        };
+        let (tests, _) = super::results(&area, &slow, limit, place);
+        assert!(
+            matches!(tests.get(1), Some((_, Outcome::Fail(_)))),
+            "{tests:?}"
+        );
         // Without an unanswered read, the timeout is the engine's failure.
         let ran = Ran {
             unreadable: 0,
