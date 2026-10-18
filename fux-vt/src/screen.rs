@@ -1281,6 +1281,7 @@ impl Screen {
         let Some(end) = self.wrap_for(width)? else {
             return Ok(());
         };
+        work!(cells, width);
         if self.mode(Mode::Insert) {
             // Room for the glyph, what was there moving right (ICH).
             let blank = self.blank_style();
@@ -1429,6 +1430,7 @@ impl Screen {
         }
         let at = usize::from(anchor_col);
         let cursor = usize::from(col);
+        work!(cells, 2);
         // Within the right margin, while the cursor is not past it.
         let fits = col < g.line_end();
         let mut widened = false;
@@ -1514,9 +1516,14 @@ impl Screen {
             .saturating_add(1);
         let full = lines.saturating_mul(per_row);
         let mut count = usize::from(count);
+        #[cfg(feature = "checks")]
+        let asked = count;
         if let Some(beyond) = count.checked_sub(full) {
             count = full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0));
         }
+        // A copy skipped is a unit, as one printed is: a path that printed
+        // every copy would show (threats.md B34).
+        work!(cells, asked.saturating_sub(count));
         if let Ok(byte) = u8::try_from(c)
             && (0x20..=0x7e).contains(&byte)
         {
@@ -2012,6 +2019,7 @@ impl Screen {
         for y in 0..g.size().rows() {
             let filled = !g.live_row(y).is_some_and(|r| r.has_links())
                 && g.live_cells(y).iter().all(|c| c.is_ascii(b'E', plain));
+            work!(cells, cols);
             if !filled {
                 // Erased whole first: its long clusters' text and its links
                 // go, as an erase takes them.
@@ -2130,6 +2138,10 @@ impl Screen {
         let g = self.grid();
         let mut sum = 0u16;
         if let Some((lines, columns)) = self.rectangle(p, 2) {
+            work!(
+                cells,
+                usize::from(lines.len()).saturating_mul(usize::from(columns.len()))
+            );
             for y in lines.each() {
                 for x in columns.each() {
                     if let Some(cell) = g.cell(y, x) {

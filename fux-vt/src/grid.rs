@@ -99,6 +99,7 @@ fn take_row(
         .get_mut(start..start.wrapping_add(usize::from(m.used)))
         .unwrap_or_default();
     let len = trimmed(row).len();
+    work!(cells, row.len());
     let kept = row.get_mut(..len).unwrap_or_default();
     history.push(m.arriving(kept, width))?;
     // Blanked here, while they are at hand, not when the slot is taken;
@@ -202,6 +203,7 @@ impl Order {
     /// Puts `slot` under the last row.
     fn push_back(&mut self, slot: usize) {
         if self.top != 0 {
+            work!(slots, self.slots.len());
             if let Some(slots) = self.slots.get_mut(..) {
                 slots.rotate_left(self.top);
             }
@@ -394,6 +396,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
+        work!(cells, size);
         reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
@@ -507,8 +510,10 @@ impl Grid {
     ) {
         let slot = self.meta.len();
         let cols = usize::from(self.size.cols());
+        work!(rows, 1);
         // An unmade grid's rows are blank, and have no cells to put.
         if !self.unmade {
+            work!(cells, cols);
             let start = self.cells.len();
             self.cells
                 .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
@@ -589,6 +594,7 @@ impl Grid {
         })
     }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
+        work!(rows, 1);
         let Some(row) = index.checked_sub(self.history.len()) else {
             let found = self.history.get(index)?;
             return Some(Row {
@@ -611,10 +617,13 @@ impl Grid {
     }
     pub fn index_of(&self, id: RowId) -> Option<usize> {
         self.history.position(id).or_else(|| {
-            self.order
-                .iter()
-                .position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id))
-                .and_then(|row| row.checked_add(self.history.len()))
+            let row = (self.order.iter())
+                .position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id));
+            work!(
+                rows,
+                row.map_or(self.order.len(), |row| row.saturating_add(1))
+            );
+            row.and_then(|row| row.checked_add(self.history.len()))
         })
     }
     /// Whether the screen's row `row` is soft-wrapped, read without making
@@ -695,6 +704,7 @@ impl Grid {
         let Some(slot) = self.slot(row) else {
             return Written::Before(0);
         };
+        work!(cells, run.len());
         let start = usize::from(col);
         let Some(dst) = start
             .checked_add(run.len())
@@ -833,9 +843,11 @@ impl Grid {
     /// few compares, stays small where it is inlined.
     #[inline(never)]
     fn find_table_style(&mut self, attributes: Attributes, at: usize) -> u32 {
+        work!(lookups, 1);
         let id = match self.styles.find(attributes) {
             Some(id) => id,
             None => {
+                work!(inserts, 1);
                 let cells = self.cells.len().saturating_add(self.history.kept_cells());
                 if self.styles.wants_sweep(cells) {
                     self.sweep();
@@ -858,6 +870,10 @@ impl Grid {
     #[cold]
     #[inline(never)]
     pub(crate) fn sweep(&mut self) {
+        // Every cell is read twice: to mark its style, then to renumber it.
+        #[cfg(feature = "checks")]
+        let cells = self.cells.len().saturating_add(self.history.kept_cells());
+        work!(styles, cells.saturating_mul(2));
         let mut used = vec![false; self.styles.len()];
         let mut mark = |cell: &Compact| {
             if let Some(mark) = Styles::place(cell.style()).and_then(|i| used.get_mut(i)) {
@@ -989,6 +1005,7 @@ impl Grid {
             span_end
         };
         let blank = Compact::blank(style);
+        work!(cells, reach.saturating_sub(first));
         let cells = self.slice_mut(slot);
         // Already blank in this style up to the first that is not, as an
         // erased tail is: the row is as it was, and a blank is never half
@@ -1105,6 +1122,7 @@ impl Grid {
                     || c.is_wide_continuation() && cells.get(at.wrapping_sub(1)).is_some_and(kept)
             })
         };
+        work!(cells, end.saturating_sub(start));
         let mut runs = Vec::new();
         let mut from = start;
         for col in start..end {
@@ -1130,6 +1148,7 @@ impl Grid {
     pub fn fill(&mut self, row: u16, (start, end): (u16, u16), c: char, style: u32, version: u64) {
         self.erase(row, start, end, style, version);
         let span = usize::from(start)..usize::from(end);
+        work!(cells, span.len());
         let glyph = Compact::glyph(c, 1, style);
         self.mutate_row(row, version, end, |cells| {
             cells
@@ -1155,6 +1174,7 @@ impl Grid {
         version: u64,
     ) {
         let span = usize::from(start)..usize::from(end);
+        work!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
             // Whether the glyph before is protected.
             let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
@@ -1195,6 +1215,9 @@ impl Grid {
                 let text = self.slot(y).and_then(|slot| self.texts.get(slot));
                 let cells = self.live_cells(y).get(span.clone()).unwrap_or_default();
                 let mut cells = cells.to_vec();
+                // Each cell read, then written; and the row's text cloned.
+                work!(cells, cells.len().saturating_mul(2));
+                work!(text, text.map_or(0, Text::bytes));
                 // The half of a glyph the source's edge cuts.
                 if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
                     *cut = cut.blanked();
@@ -1257,6 +1280,7 @@ impl Grid {
         }
         let cols = self.size.cols();
         let end = usize::from(end);
+        work!(cells, end.saturating_sub(usize::from(col)));
         let blank = Compact::blank(blank);
         self.mutate_row(row, version, cols, |row_cells| {
             let col = usize::from(col);
@@ -1308,6 +1332,7 @@ impl Grid {
             used = usize::from(m.used);
             *m = Meta::new(id, version, false, 0);
         }
+        work!(cells, used);
         // A row taken into history leaves its slot blank (`take_row`).
         if used > 0 {
             let cells = self.slice_mut(slot);
@@ -1347,6 +1372,7 @@ impl Grid {
     /// never fused into one slower loop.
     #[inline(never)]
     fn colour(&mut self, slot: usize, blank: u32) {
+        work!(cells, self.size.cols());
         for cell in self.slice_mut(slot) {
             cell.set_style(blank);
         }
@@ -1399,6 +1425,7 @@ impl Grid {
         }
         let left = usize::from(self.columns.first());
         let end = usize::from(self.columns.end());
+        work!(cells, usize::from(height).saturating_mul(2));
         for y in top..=bottom {
             self.mutate_row(y, version, 0, |cells| {
                 let mut changed = false;
@@ -1446,6 +1473,7 @@ impl Grid {
             .get(span.clone())
             .unwrap_or_default()
             .to_vec();
+        work!(cells, cells.len().saturating_mul(2));
         let text = self.texts.get(source).map(Text::exact).unwrap_or_default();
         let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let mut changed = false;
@@ -1485,6 +1513,7 @@ impl Grid {
     fn blank_span(&mut self, row: u16, span: Range<usize>, blank: u32, version: u64) {
         let cell = Compact::blank(blank);
         let end = u16::try_from(span.end).unwrap_or(u16::MAX);
+        work!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
             let Some(run) = cells.get_mut(span.clone()) else {
                 return false;
@@ -1592,6 +1621,7 @@ impl Grid {
         };
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
+        work!(cells, m.used);
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
         self.history.push(m.arriving(cells, self.size.cols()))?;
         // The row's text and links, which history has just taken, go with
@@ -1614,6 +1644,7 @@ impl Grid {
         // rows from `from` to `to` lie in one of them: there the move shifts
         // that run by one.
         let (low, high) = (from.min(to), from.max(to));
+        work!(slots, high.saturating_sub(low).saturating_add(1));
         let (front, back) = self.order.as_mut_slices();
         let split = front.len();
         let run = if high < split {
@@ -1722,6 +1753,7 @@ impl Grid {
             };
             row.clear();
             row.resize(usize::from(width), BLANK);
+            work!(cells, width);
             let wrapped = old.is_some_and(|r| r.wrapped) && is_history;
             let row_version = if is_history {
                 old.map_or(version, |r| r.version)

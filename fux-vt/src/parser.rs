@@ -367,15 +367,19 @@ impl FrameScan {
     pub fn end(&mut self, held: &[u8]) -> Option<usize> {
         loop {
             let Some(esc) = held.get(self.from..).and_then(esc_in) else {
+                work!(scanned, held.len().saturating_sub(self.from));
                 self.from = held.len();
                 return None;
             };
+            work!(scanned, esc);
             let at = self.from.checked_add(esc)?;
             // A sequence the bytes end in the middle of is read again.
             let (len, ended) = self.sequence(held.get(at..)?).or_else(|| {
+                work!(scanned, held.len().saturating_sub(at));
                 self.from = at;
                 None
             })?;
+            work!(scanned, len);
             self.from = at.checked_add(len)?;
             if ended {
                 return Some(self.from);
@@ -1065,9 +1069,11 @@ impl Parser {
             // taken: stop right after it.
             if UNTIL_FRAME && let Some(frame) = framed {
                 let taken = bytes.len().saturating_sub(remaining.len());
+                work!(bytes, taken);
                 return Ok(Some((taken, frame)));
             }
         }
+        work!(bytes, bytes.len());
         Ok(None)
     }
     /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded

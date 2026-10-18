@@ -226,6 +226,10 @@ impl Decoder {
                 let y = self.y.saturating_add(bit);
                 let (_, top) = self.scaled(0, y);
                 let (_, below) = self.scaled(0, y.saturating_add(1));
+                #[cfg(feature = "checks")]
+                let area = u64::from(below.saturating_sub(top))
+                    .saturating_mul(u64::from(end.saturating_sub(left)));
+                work!(pixels, area);
                 for y in top..below {
                     for x in left..end {
                         let at = offset(x, y, self.width).unwrap_or(usize::MAX);
@@ -267,10 +271,19 @@ impl Decoder {
         if width > MAX_SIDE || height > MAX_SIDE || pixels > MAX_PIXELS {
             return false;
         }
+        let rows = usize::try_from(self.height).unwrap_or(0);
+        // The new buffer zeroed, and the old one copied into it.
+        work!(
+            pixels,
+            pixels.saturating_add(
+                usize::try_from(self.width)
+                    .unwrap_or(0)
+                    .saturating_mul(rows)
+            )
+        );
         let mut grown = vec![0u8; pixels.saturating_mul(4)];
         let old = usize::try_from(self.width).unwrap_or(0).saturating_mul(4);
         let new = usize::try_from(width).unwrap_or(0).saturating_mul(4);
-        let rows = usize::try_from(self.height).unwrap_or(0);
         for row in 0..rows {
             let (from, to) = (row.saturating_mul(old), row.saturating_mul(new));
             let source = self.pixels.get(from..from.saturating_add(old));
@@ -300,6 +313,7 @@ impl Decoder {
         // 7.2, leaves it to the device).
         let [r, g, b] = self.palette.first().copied().unwrap_or([0; 3]);
         if self.background {
+            work!(pixels, self.pixels.len() / 4);
             for pixel in self.pixels.as_chunks_mut::<4>().0 {
                 if pixel[3] == 0 {
                     *pixel = [r, g, b, 255];

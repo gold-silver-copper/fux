@@ -486,6 +486,7 @@ impl Reflow for Fill<'_> {
             return;
         };
         self.written = self.written.max(col.saturating_add(cells.len()));
+        work!(cells, cells.len());
         crate::copy_from(dst, cells);
         // The clusters held in the row's text are stored again, as placing
         // the cells one at a time stores them.
@@ -537,6 +538,7 @@ impl Reflow for Fill<'_> {
         let history = row < self.screen;
         let cells = (self.cells.as_slice(), written);
         (self.grid).keep_row(meta, cells, (Some(text), links), history)?;
+        work!(cells, written);
         if let Some(cells) = self.cells.get_mut(..written) {
             cells.fill(BLANK);
         }

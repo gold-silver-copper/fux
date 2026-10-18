@@ -341,6 +341,7 @@ impl Text {
     }
     /// A copy, in no more memory than it needs: what history keeps.
     pub(crate) fn exact(&self) -> Text {
+        work!(text, self.bytes());
         Text {
             long: self.long.as_slice().to_vec(),
             short: self.short.as_slice().to_vec(),
@@ -401,6 +402,8 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         else {
             return false;
         };
+        // The cluster is read and joined again whole.
+        work!(text, end);
         let mut encoded = [0; 4];
         let encoded = c.encode_utf8(&mut encoded).as_bytes();
         // Whole UTF-8 then a character's encoding is whole UTF-8.
@@ -493,6 +496,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         let room = long.len().saturating_add(text.len()) <= limit;
         match self.cells.get_mut(i).map(AsMut::as_mut) {
             Some(slot) if room => {
+                work!(text, text.len());
                 long.extend_from_slice(text);
                 // Compaction may have moved the text the cell had; its
                 // halves and style are `cell`'s.
@@ -532,6 +536,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
                 // a few at once, rather than growing a few bytes at a time.
                 short.reserve(FIRST_SHORT.min(limit));
             }
+            work!(text, text.len());
             short.extend_from_slice(text);
             *slot = cell.with_spilled(start, len);
         }
@@ -546,6 +551,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             &mut self.text.short
         };
         let old = std::mem::take(store);
+        work!(text, old.len());
         for cell in self.cells.iter_mut().map(AsMut::as_mut) {
             let Some(range) = cell.spilled(long) else {
                 continue;

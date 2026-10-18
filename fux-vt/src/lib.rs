@@ -59,6 +59,17 @@ macro_rules! reply {
     };
 }
 
+/// Counts `n` units of work of the kind `counter` names (threats.md 4.1),
+/// with the `checks` feature; without it, nothing at all, so a build without
+/// it carries no trace of the count: `work!(cells, n)` expands to
+/// `#[cfg(feature = "checks")] crate::work::add(|w| w.cells(crate::work::units(n)));`.
+macro_rules! work {
+    ($counter:ident, $n:expr) => {
+        #[cfg(feature = "checks")]
+        $crate::work::add(|w| w.$counter($crate::work::units($n)));
+    };
+}
+
 pub mod bytes;
 mod cell;
 mod compact;
@@ -76,6 +87,8 @@ mod style;
 #[cfg(test)]
 mod test_rng;
 mod unicode;
+#[cfg(feature = "checks")]
+mod work;
 
 use std::{fmt, ops::Range};
 
@@ -94,6 +107,8 @@ pub use screen::{
     PICTURE_BYTES, PLACEHOLDER, Report, Reported, Screen, Shown,
 };
 pub use unicode::{UNICODE_VERSION, continues_cluster};
+#[cfg(feature = "checks")]
+pub use work::Work;
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the
 /// same length.
@@ -427,6 +442,7 @@ impl Prints {
     /// Adds `text` printed at `cols` of `row`: to the last run if it goes
     /// on where that left off, on its row.
     pub(crate) fn push(&mut self, row: RowId, cols: Range<u16>, text: &str) {
+        work!(prints, text.len());
         let start = self.text.len();
         self.text.push_str(text);
         let end = self.text.len();

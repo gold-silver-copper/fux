@@ -323,6 +323,19 @@ impl Links {
             let row = row.unwrap_or(usize::MAX);
             seen.extend(links.links().map(|link| (link.key, row, link.cost())));
         }
+        // Each run, each history row's share, each `id` and the sort's
+        // steps, ⌈log2 runs⌉ × runs ÷ 16 (threats.md B16).
+        #[cfg(feature = "checks")]
+        let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
+        #[cfg(feature = "checks")]
+        let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
+        work!(
+            links,
+            seen.len()
+                .saturating_add(len)
+                .saturating_add(self.ids.len())
+                .saturating_add(sort)
+        );
         seen.sort_unstable();
         seen.dedup_by(|next, kept| {
             let same = next.0 == kept.0;

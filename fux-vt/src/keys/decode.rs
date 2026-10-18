@@ -247,6 +247,9 @@ struct Expecting {
 /// with it.
 #[cold]
 fn drop_to_end(bel: bool, mut escape: bool, bytes: &[u8]) -> Result<Cow<'_, [u8]>, bool> {
+    // Every byte is looked at, at most: those after the end are decoded
+    // again, and counted again there.
+    work!(keys, bytes.len());
     for (i, &byte) in bytes.iter().enumerate() {
         let rest = match (escape, byte) {
             (true, b'\\') => i.saturating_add(1),
@@ -286,6 +289,11 @@ fn paste<'a>(
     text.extend_from_slice(bytes);
     // The marker may have begun in the bytes before these.
     let from = old.saturating_sub(marker.saturating_sub(1));
+    // The bytes copied, and those searched for the marker.
+    work!(
+        keys,
+        bytes.len().saturating_add(text.len().saturating_sub(from))
+    );
     let found =
         (from..text.len()).find(|&i| text.get(i..).is_some_and(|t| t.starts_with(PASTE_END)));
     let Some(end) = found else {
@@ -296,6 +304,7 @@ fn paste<'a>(
         if !too_long {
             out.push(Input::PasteTooLong);
         }
+        work!(keys, text.len().saturating_sub(tail));
         return Err(Pasted::TooLong(
             text.get(tail..).unwrap_or_default().to_vec(),
         ));
@@ -409,6 +418,7 @@ impl Decoder {
         let (rest, since) = match std::mem::take(&mut self.state) {
             State::Idle => (Cow::Borrowed(bytes), None),
             State::Pending { mut held, since } => {
+                work!(keys, bytes.len());
                 held.extend_from_slice(bytes);
                 (Cow::Owned(held), since)
             }
@@ -447,7 +457,16 @@ impl Decoder {
         out: &mut Vec<Input>,
     ) -> State {
         while !bytes.is_empty() {
-            let rest = match decode(bytes, flush, self.expecting.is_some()) {
+            let step = decode(bytes, flush, self.expecting.is_some());
+            // What the step read: all the bytes, unless it ended within them.
+            work!(
+                keys,
+                match step {
+                    Step::Done(n, _) | Step::PasteStart(n) => n,
+                    Step::Overlong { .. } | Step::Incomplete => bytes.len(),
+                }
+            );
+            let rest = match step {
                 Step::Done(n, input) => {
                     if matches!(input, Some(Input::Reply(Reply::Attributes { .. }))) {
                         self.expecting = self.expecting.and_then(|e| {
@@ -475,6 +494,7 @@ impl Decoder {
                     return State::Dropping { bel, escape, since };
                 }
                 Step::Incomplete => {
+                    work!(keys, bytes.len());
                     let held = bytes.to_vec();
                     return State::Pending { held, since };
                 }

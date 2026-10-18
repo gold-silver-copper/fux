@@ -13,6 +13,11 @@ categories = ["command-line-interface", "parser-implementations"]
 [dependencies]
 unicode-width = "0.2"
 
+[features]
+# The work counters and the invariant checker (threats.md P15): for the
+# bounds tests, the fuzz targets and mutation runs, never for a release.
+checks = []
+
 [dev-dependencies]
 # The reference the generated grapheme tables are tested against.
 unicode-segmentation = "=1.13.3"

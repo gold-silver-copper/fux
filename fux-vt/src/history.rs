@@ -293,10 +293,14 @@ impl History {
     }
     /// Where the row with identity `id` is, oldest first.
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
-        self.rows.iter().position(|kept| kept.id == id)
+        let at = self.rows.iter().position(|kept| kept.id == id);
+        work!(rows, at.map_or(self.rows.len(), |at| at.saturating_add(1)));
+        at
     }
     /// The links of each row that has any, with its index, oldest first.
     pub(crate) fn links(&self) -> impl Iterator<Item = (usize, &RowLinks)> {
+        // The link sweep walks every row for those with links.
+        work!(links, self.rows.len());
         let linked = self.rows.iter().enumerate();
         linked
             .filter(|(_, kept)| kept.flags() & LINKED != 0)
@@ -383,6 +387,8 @@ impl History {
         if self.rows.len() == self.rows.capacity() || !self.fits(len) {
             self.make_room(len)?;
         }
+        work!(rows, 1);
+        work!(cells, len);
         let start = u16::try_from(self.newest.len()).unwrap_or(0);
         // A row of one cell, as a short line's often is, is stored, not
         // copied by a call.
@@ -404,6 +410,7 @@ impl History {
         let Some(gone) = self.rows.pop_front() else {
             return;
         };
+        work!(rows, 1);
         let number = self.first_row;
         self.first_row = self.first_row.wrapping_add(1);
         self.let_go = self.let_go.max(gone.version);
