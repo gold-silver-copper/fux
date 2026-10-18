@@ -14,11 +14,6 @@ use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Whether `c` continues any cluster: Extend, ZWJ or SpacingMark.
-pub fn extends(c: char) -> bool {
-    format!("a{c}").graphemes(true).count() == 1
-}
-
 /// The columns `c` takes, by fux-vt's written width rule (its README, "A
 /// glyph", B32): unicode-width's, but a cell holds at most 2, so U+17D8,
 /// the one character unicode-width makes 3 columns wide, takes 1, as in
@@ -37,11 +32,11 @@ fn text_width(text: &str) -> usize {
     text.width().saturating_sub(extra)
 }
 
-/// A character fux-vt prints as a glyph or joins to one: not a control, and
-/// if it takes no columns, one that continues a cluster (others have no
-/// cell to go in, and are attached to whatever is before them).
+/// A character fux-vt prints as a glyph or joins to one: any but a
+/// control, which is carried out. One of no width that joins no cluster is
+/// printable too: `cells_of` places it by the README's written rule.
 pub fn printable(c: char) -> bool {
-    !c.is_control() && width(c).is_some() && (width(c) != Some(0) || extends(c))
+    !c.is_control() && width(c).is_some()
 }
 
 /// The clusters fux-vt makes of `text`: UAX #29's.
@@ -64,10 +59,13 @@ pub fn append(text: &mut String, c: char) -> bool {
 /// The cells `text` printed on one line makes, as (text, wide): one a
 /// cluster, keeping its characters until one does not fit in
 /// `CLUSTER_CAPACITY` bytes, wide once a kept prefix is two columns
-/// wide. A cluster that starts with characters taking no columns (after a
-/// Control-class format character, which UAX #29 breaks after) has no cell
-/// for them: they join the cell before, as marks always have, without
-/// widening it, and the rest of it starts afresh.
+/// wide. A cluster that starts with a character taking no columns (a
+/// format control, a zero-width Prepend character, a mark or a lone vowel
+/// or trailing jamo after a break) has no cell of its own, as the README's
+/// departure from UAX #29 says ("A character of no width that joins no
+/// cluster"): it joins the cell before, with what UAX #29 joins to it, the
+/// cell widening if they make it two columns; at the line's start its
+/// characters of no width are dropped, and the rest starts afresh.
 pub fn cells_of(text: &str) -> Vec<(String, bool)> {
     let mut cells: Vec<(String, bool)> = Vec::new();
     let mut queue: VecDeque<String> = clusters(text).into();
@@ -75,18 +73,21 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
         let mut chars = cluster.chars();
         let Some(first) = chars.next() else { continue };
         if width(first) == Some(0) {
-            let leading: String = cluster
-                .chars()
-                .take_while(|c| width(*c) == Some(0))
-                .collect();
-            if let Some((text, _)) = cells.last_mut() {
-                for c in leading.chars() {
-                    append(text, c);
+            if let Some((text, wide)) = cells.last_mut() {
+                for c in cluster.chars() {
+                    if !append(text, c) {
+                        break;
+                    }
+                    *wide |= text_width(text) >= 2;
                 }
-            }
-            let rest: String = cluster.chars().skip(leading.chars().count()).collect();
-            for next in clusters(&rest).into_iter().rev() {
-                queue.push_front(next);
+            } else {
+                let rest: String = cluster
+                    .chars()
+                    .skip_while(|c| width(*c) == Some(0))
+                    .collect();
+                for next in clusters(&rest).into_iter().rev() {
+                    queue.push_front(next);
+                }
             }
             continue;
         }

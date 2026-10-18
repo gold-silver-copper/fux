@@ -66,8 +66,9 @@ fn row_is(row: Row<'_>, expected: &[(String, bool)], line: &str) {
 }
 
 fuzz_target!(|input: Input| {
-    // Lines of printable characters, the first taking columns: what the
-    // model describes. At most 8 lines of 48 characters.
+    // Lines of printable characters (any but controls), what the model
+    // describes, characters of no width among them, first too. At most 8
+    // lines of 48 characters.
     let lines: Vec<String> = input
         .lines
         .iter()
@@ -75,9 +76,7 @@ fuzz_target!(|input: Input| {
         .map(|picks| {
             let mut line = String::new();
             for (pick, _) in picks.iter().take(48) {
-                if let Some(c) = pick.char().filter(|c| models::printable(*c))
-                    && (!line.is_empty() || models::width(c).is_some_and(|w| w > 0))
-                {
+                if let Some(c) = pick.char().filter(|c| models::printable(*c)) {
                     line.push(c);
                 }
             }

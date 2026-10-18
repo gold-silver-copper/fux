@@ -43,7 +43,7 @@ impl Rng {
 
 // Printing and grapheme clusters.
 
-fn character(r: &mut Rng, first: bool) -> char {
+fn character(r: &mut Rng) -> char {
     loop {
         let c = if r.chance(85) {
             r.pick(graphemes::CHARACTERS).unwrap_or('a')
@@ -51,7 +51,7 @@ fn character(r: &mut Rng, first: bool) -> char {
             let p = u32::try_from(r.below(0x3_0000)).unwrap_or(0x61);
             char::from_u32(p).unwrap_or('a')
         };
-        if printable(c) && (!first || models::width(c).is_some_and(|w| w > 0)) {
+        if printable(c) {
             return c;
         }
     }
@@ -66,7 +66,7 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
     let mut r = Rng(0x6ea9_5e61_0000_0001);
     let mut checked = 0usize;
     for case in 0..20_000 {
-        let text: String = (0..r.upto(40)).map(|i| character(&mut r, i == 0)).collect();
+        let text: String = (0..r.upto(40)).map(|_| character(&mut r)).collect();
         let expected = cells_of(&text);
         let columns = expected.iter().fold(0usize, |sum, (_, wide)| {
             sum.saturating_add(if *wide { 2 } else { 1 })
