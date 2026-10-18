@@ -444,6 +444,25 @@ fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
     Ok(())
 }
 
+/// DECSCL (DEC STD 070, DECSCL): `CSI 61 " p` and `CSI 62 " p` select
+/// level 1 or 2, each with a soft reset (note 3); a level fux-vt does not
+/// support is ignored (note 4). A soft reset at level 1 designates ASCII
+/// into all four sets (3.6.4.1), at level 2 DEC Supplemental into G2 and
+/// G3 (3.6.4.2); RIS starts level 2 again. The level gates no function.
+#[test]
+fn decscl_selects_a_level_with_a_soft_reset() -> Result {
+    assert_eq!(row(4, b"\x1b[4hab\r\x1b[61\"pX")?, "Xb");
+    assert_eq!(row(4, b"\x1b[4hab\r\x1b[62;1\"pX")?, "Xb");
+    assert_eq!(row(4, b"\x1b[4hab\r\x1b[64\"pX")?, "Xab");
+    assert_eq!(row(4, b"\x1b[61\"p\x1bNA")?, "A");
+    assert_eq!(row(4, b"\x1b[61\"p\x1b[!p\x1bNA")?, "A");
+    assert_eq!(row(4, b"\x1b[61\"p\x1b[62\"p\x1bNA")?, "\u{c1}");
+    assert_eq!(row(4, b"\x1b[61\"p\x1bc\x1bNA")?, "\u{c1}");
+    // Level 1 executes what level 2 does: no function is gated.
+    assert_eq!(row(4, b"\x1b[61\"pab\x1b[1;1H\x1b[2X")?, "");
+    Ok(())
+}
+
 /// DEC Supplemental Graphics (DEC STD 070, 5.8.1: required at levels 2 to
 /// 4): SCS designates it with `% 5`, and with `<`, the user-preferred
 /// supplemental set, which is DEC Supplemental (SCS; 3.6.3). At level 2,

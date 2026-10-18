@@ -154,7 +154,19 @@ enum Designated {
 
 impl Default for Charsets {
     fn default() -> Self {
-        let supplemental = Set::G2.bit() | Set::G3.bit();
+        Self::at(Level::Two)
+    }
+}
+
+impl Charsets {
+    /// The sets a soft reset designates at `level`: ASCII in all four at
+    /// level 1 (DEC STD 070, 3.6.4.1), DEC Supplemental in G2 and G3 at
+    /// level 2 (3.6.4.2); G0 in GL.
+    fn at(level: Level) -> Self {
+        let supplemental = match level {
+            Level::One => 0,
+            Level::Two => Set::G2.bit() | Set::G3.bit(),
+        };
         Self {
             graphics: supplemental | supplemental << 4,
             gl: Set::G0,
@@ -427,6 +439,21 @@ struct Terminal {
     modify_other_keys: Option<OtherKeys>,
     /// What DSR 75 reports of the data integrity flag.
     integrity: Integrity,
+    /// The conformance level DECSCL selected last, level 2 until then.
+    level: Level,
+}
+
+/// A conformance level DECSCL selects (DEC STD 070, DECSCL): fux-vt is
+/// a level 2 terminal (DA), which executes level 1 too (note 1). The
+/// level gates no function, a departure from note 3's "operations ...
+/// available in each level": a stray `CSI 61 " p` must not disable half
+/// the terminal. It decides what DECSTR designates (3.6.4.1, 3.6.4.2) and
+/// what DECRQSS reports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Level {
+    One,
+    #[default]
+    Two,
 }
 
 /// Terminal state. Reading a window never changes where subsequent output lands.
@@ -2153,9 +2180,9 @@ impl Screen {
                 // The pen, the character sets, protection and the palette,
                 // as DECSTR resets them; the grids' cursors, saved cursors
                 // and margins are new already.
+                self.terminal = Terminal::default();
                 self.soft_reset();
                 self.modes = Modes::DEFAULT;
-                self.terminal = Terminal::default();
                 self.protected = false;
                 self.structural = self.version;
             }
@@ -2375,7 +2402,7 @@ impl Screen {
         self.guard = 0;
         self.attributes = Attributes::default();
         self.pen_changed();
-        self.charsets = Charsets::default();
+        self.charsets = Charsets::at(self.terminal.level);
         // The left and right margins, in the VT520 manual's table too.
         for g in [&mut self.primary, &mut self.alternate] {
             g.cursor.origin = false;
@@ -2755,6 +2782,14 @@ impl Screen {
                 let (left, right) = (left.saturating_add(1), right.saturating_add(1));
                 let _ = write!(out, "{left};{right}s");
             }
+            // DECSCL's level, and 7-bit C1 replies (1), as fux-vt sends.
+            b"\"p" => {
+                let level = match self.terminal.level {
+                    Level::One => 61,
+                    Level::Two => 62,
+                };
+                let _ = write!(out, "{level};1\"p");
+            }
             // DECSCA's selective erase attribute, which SPA is not.
             b"\"q" => {
                 let on = self.protect != 0;
@@ -2846,6 +2881,21 @@ impl Screen {
             return Ok(dispatch);
         }
         if intermediates == b"!" && byte == b'p' {
+            self.soft_reset();
+            return Ok(Dispatch::Done);
+        }
+        // DECSCL (`CSI Pl ; Pc " p`; DEC STD 070, DECSCL): level 1 or 2,
+        // with a soft reset (note 3); a level fux-vt does not support is
+        // ignored (note 4). Pc selects 7-bit or 8-bit C1 replies (0, the
+        // default, and 2 are 8-bit): fux-vt's replies stay 7-bit, as UTF-8
+        // has no C1 bytes (ECMA-35, 15.4), a departure.
+        if intermediates == b"\"" && byte == b'p' {
+            let level = match p.first(0, 0) {
+                61 => Level::One,
+                62 => Level::Two,
+                _ => return Ok(Dispatch::Done),
+            };
+            self.terminal.level = level;
             self.soft_reset();
             return Ok(Dispatch::Done);
         }

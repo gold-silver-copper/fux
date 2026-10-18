@@ -380,7 +380,8 @@ impl FrameScan {
     /// Reads `held`, the frame's bytes so far, from where it stopped: how
     /// many of them go up to and through the sequence that ends
     /// synchronized output, as the parser carries it out (DECRST naming
-    /// it, XTRESTORE of it saved reset, DECSTR, RIS); `None` if none does.
+    /// it, XTRESTORE of it saved reset, DECSTR, DECSCL, RIS); `None` if none
+    /// does.
     /// Each byte is read once, however the frame comes split.
     pub fn end(&mut self, held: &[u8]) -> Option<usize> {
         loop {
@@ -531,7 +532,8 @@ impl FrameScan {
     /// (`CSI ? Pm l`) with it among its parameters, each a group of one as
     /// `set_modes` reads them; XTRESTORE (`CSI ? Pm r`) of it while XTSAVE
     /// (`CSI ? Pm s`) holds it reset; DECSTR (`CSI ! p`), which resets it
-    /// with the modes `Modes::SOFT_RESET` names.
+    /// with the modes `Modes::SOFT_RESET` names, and DECSCL (`CSI 61 " p`,
+    /// `CSI 62 " p`), which does a soft reset.
     fn ends(&mut self, intermediates: &[u8], byte: u8) -> bool {
         let ours = |n: &u16| Mode::of(*n, true, &self.options) == Some(Mode::SynchronizedOutput);
         let named = || self.params.groups().any(|g| matches!(g, [n] if ours(n)));
@@ -544,6 +546,12 @@ impl FrameScan {
                 false
             }
             (b"!", b'p') => Self::RESET && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput),
+            // DECSCL of a level fux-vt supports, which resets as DECSTR does.
+            (b"\"", b'p') => {
+                Self::RESET
+                    && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput)
+                    && matches!(self.params.first(0, 0), 61 | 62)
+            }
             _ => false,
         }
     }

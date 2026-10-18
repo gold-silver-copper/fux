@@ -506,6 +506,21 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
             "{setup:?}"
         );
     }
+    // DECSCL's level and C1 replies, 7-bit (1), as fux-vt sends them
+    // whatever Pc asks (DEC STD 070, DECSCL; ECMA-35, 15.4).
+    for (setup, level) in [
+        ("", 62),
+        ("\x1b[61\"p", 61),
+        ("\x1b[62;0\"p", 62),
+        ("\x1b[61\"p\x1b[65;1\"p", 61),
+    ] {
+        let reply = format!("\x1bP1$r{level};1\"p\x1b\\");
+        assert_eq!(
+            ask(&format!("{setup}\x1bP$q\"p\x1b\\"))?,
+            [reply],
+            "{setup:?}"
+        );
+    }
     // Requests fux-vt does not know, a long one among them, are invalid.
     for request in ["t", "$|", "mm", "a long request"] {
         assert_eq!(

@@ -5,8 +5,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | Reference | implemented | partial | departure | not implemented | not applicable | all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 63 | 1 | 3 | 7 | 88 | 162 |
-| DEC STD 070 | 83 | 4 | 0 | 27 | 26 | 140 |
-| ctlseqs | 102 | 15 | 1 | 34 | 93 | 245 |
+| DEC STD 070 | 83 | 4 | 1 | 26 | 26 | 140 |
+| ctlseqs | 102 | 15 | 2 | 33 | 93 | 245 |
 | fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
 
 ## ECMA-48
@@ -193,7 +193,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 3-80 SS2 | SS2 (SINGLE SHIFT TWO) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | 3-81 SS3 | SS3 (SINGLE SHIFT THREE) | implemented | `conformance::g2_and_g3_are_shifted_in_locked_or_for_one_character` |  |
 | 4-17 DA | DA (DEVICE ATTRIBUTES (Primary)) | partial | `extended::an_identity_answers_device_attributes_and_version_queries` | level 2 with selective erase, horizontal scrolling, colour text and rectangular editing, with an identity; the README says what each claims and what is missing |
-| 4-22 DECSCL | DECSCL (SELECT CONFORMANCE LEVEL) | not implemented |  | not implemented |
+| 4-22 DECSCL | DECSCL (SELECT CONFORMANCE LEVEL) | departure | `conformance::decscl_selects_a_level_with_a_soft_reset`, `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` | has no effect on a screen at its defaults: 61 and 62 select level 1 or 2 with a soft reset, another level is ignored; departures: the level gates no function, and the replies stay 7-bit whatever Pc (ECMA-35, 15.4) |
 | 4-24 DA2 | DA2 (DEVICE ATTRIBUTES (Secondary)) | implemented | `opt_in::extended_replies_answer_decrqm_decxcpr_and_secondary_da`, `extended::identity_versions_encode_like_xterm_and_long_names_go_unanswered` | with `Feature::ExtendedReplies` or an identity |
 | 4-26 DA3/DECRPTUI | DA3, DECRPTUI (DEVICE ATTRIBUTES (Tertiary), REPORT TERMINAL UNIT ID) | not implemented |  | not implemented: fux-vt has no unit id to report |
 | 4-28 DECID | DECID (IDENTIFY TERMINAL) | implemented | `modes::decid_is_answered_as_da1` |  |
@@ -456,7 +456,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI ? Ps n | CSI ? Ps n (Device Status Report (DSR, DEC-specific).) | partial | `opt_in::extended_replies_answer_the_device_status_reports` | with `Feature::ExtendedReplies`: the README lists which |
 | CSI > Ps p | CSI > Ps p (Set resource value pointerMode (XTSMPOINTER), xterm.) | not applicable |  | the pointer is the host's |
 | CSI ! p | CSI ! p (Soft terminal reset (DECSTR), VT220 and up.) | implemented | `conformance::a_soft_reset_restores_the_modes_and_keeps_the_screen` |  |
-| CSI Pl ; Pc " p | CSI Pl ; Pc " p (Set conformance level (DECSCL), VT220 and up.) | not implemented |  | not implemented |
+| CSI Pl ; Pc " p | CSI Pl ; Pc " p (Set conformance level (DECSCL), VT220 and up.) | departure | `conformance::decscl_selects_a_level_with_a_soft_reset`, `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` | has no effect on a screen at its defaults: 61 and 62 select level 1 or 2 with a soft reset, another level is ignored; departures: the level gates no function, and the replies stay 7-bit whatever Pc (ECMA-35, 15.4) |
 | CSI Ps $ p | CSI Ps $ p (Request ANSI mode (DECRQM).) | implemented | `opt_in::mode_reports_answer_decrqm_alone`, `modes::decrqm_reports_the_ansi_modes_kept_in_one_state` |  |
 | CSI ? Ps $ p | CSI ? Ps $ p (Request DEC private mode (DECRQM).) | implemented | `opt_in::mode_reports_answer_decrqm_alone`, `modes::decrqm_reports_the_modes_xterm_keeps` |  |
 | CSI # p | CSI # p | not implemented |  | the video attribute stack is not implemented |
