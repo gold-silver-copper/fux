@@ -2,7 +2,8 @@ name: Fuzz corpora
 
 # Replays every fuzz target's corpus, regressions included, nightly and on
 # request: `cargo test` does not run them, and a fuzz run is too long for
-# every push.
+# every push. fux-vt's keys target is explored as well, five minutes a
+# night from its corpus and frozen seeds.
 
 on:
   schedule:
@@ -51,3 +52,11 @@ jobs:
           for target in graphemes cells; do
             cargo +nightly fuzz run "$target" --fuzz-dir fux-vt/fuzz -- -max_total_time=60 -rss_limit_mb=2048 -timeout=25
           done
+
+      - name: fux-vt's keys target, explored
+        run: |
+          set -euo pipefail
+          # Five minutes from its corpus and its frozen seeds; what it finds
+          # new stays in the job, and a crash fails it.
+          mkdir -p "$RUNNER_TEMP/keys"
+          cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz "$RUNNER_TEMP/keys" fux-vt/fuzz/corpus/keys fux-vt/fuzz/seeds/keys -- -max_total_time=300 -rss_limit_mb=2048 -timeout=25
