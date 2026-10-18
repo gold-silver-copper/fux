@@ -668,6 +668,18 @@ fn records(path: &Path) -> usize {
 
 fn answer_of(out: &support::Output) -> Result<Answer, String> {
     let line = out.stdout.lines().next().unwrap_or_default();
+    // A wait that failed answers as text, its pane and state first, and
+    // says why on stderr; its status is the run's.
+    if out.status != 0 && !line.starts_with('{') {
+        let state = line.split_once(' ').map_or("", |(_, state)| state);
+        return Ok(Answer {
+            status: out.status,
+            state: state.split(" · ").next().unwrap_or_default().to_owned(),
+            met: String::new(),
+            text: String::new(),
+            raw: line.to_owned(),
+        });
+    }
     let value = json::parse(line)
         .map_err(|err| format!("fux answered {:?} {:?}: {err}", out.stdout, out.stderr))?;
     Ok(Answer {
