@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "unicode-width",
 ]
