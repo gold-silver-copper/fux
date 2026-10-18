@@ -93,7 +93,7 @@ const XTERM_REVERSE_WRAP: u32 = 383;
 pub const USAGE: &str = "\
 usage: fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [--xterm]
                               [--jobs N] [--timeout SECONDS] [--limit SECONDS]
-                              [--expected FILE] [--json FILE] [--logs DIR]
+                              [--expected FILE | --unlisted] [--json FILE] [--logs DIR]
                               [--replays] [--show] [FILTER]
 
 Runs esctest2 (references/xterm/esctest2, from references/fetch.sh) against
@@ -111,7 +111,9 @@ esctest's logs (TEST.log, TEST.NAME.log, TEST.fux.log, TEST.xterm.log) in DIR. -
 against another engine in this process (ghostty) instead of fux-vt, checked
 against esctest-expected-NAME.txt; --beside also runs NAME (fux-vt, or an
 engine), checked against its own list, and compares the two: each area's pass
-rates, and the tests one passes and the other fails, with their features.";
+rates, and the tests one passes and the other fails, with their features.
+--unlisted scores the terminal without a list: only a test with no result
+(infrastructure) fails the run, as it does in xterm's column.";
 
 /// The terminal esctest runs against directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +202,8 @@ struct Request {
     logs: Option<PathBuf>,
     replays: bool,
     show: bool,
+    /// Score only: no list, and a failure is no mismatch.
+    unlisted: bool,
 }
 
 /// The request `argv` makes; `None` if it asks for help.
@@ -218,6 +222,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
         logs: None,
         replays: false,
         show: false,
+        unlisted: false,
     };
     let mut expected = None;
     let mut words = argv.iter();
@@ -234,6 +239,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
             "--xterm" => out.xterm = true,
             "--replays" => out.replays = true,
             "--show" => out.show = true,
+            "--unlisted" => out.unlisted = true,
             "--jobs" => {
                 let text = value("--jobs")?;
                 out.jobs = text
@@ -270,6 +276,9 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
             "--beside {0}: {0} is the terminal under test",
             out.terminal.name()
         ));
+    }
+    if out.unlisted && expected.is_some() {
+        return Err("--unlisted reads no list: it goes without --expected".into());
     }
     out.expected = expected.unwrap_or_else(|| out.terminal.expected());
     Ok(Some(out))
@@ -1155,21 +1164,22 @@ fn listed_fails(listed: Option<&Listed>, in_fux: bool) -> bool {
 }
 
 /// Where `results` and the list disagree: a failure not listed, or a test
-/// listed that passes.
+/// listed that passes; and, `unlisted` or not, a test with no result.
 fn mismatches(
     results: &[(String, Outcome)],
     list: &BTreeMap<String, Listed>,
     in_fux: bool,
+    unlisted: bool,
 ) -> Vec<String> {
     let mut out = Vec::new();
     for (name, outcome) in results {
         let listed = listed_fails(list.get(name), in_fux);
         match outcome {
-            Outcome::Fail(message) if !listed => {
+            Outcome::Fail(message) if !listed && !unlisted => {
                 let first = message.lines().next().unwrap_or_default();
                 out.push(format!("{name}: fails, not listed: {first}"));
             }
-            Outcome::Pass { .. } if listed => {
+            Outcome::Pass { .. } if listed && !unlisted => {
                 out.push(format!("{name}: passes, but is listed: remove it"));
             }
             // The harness gave no result: not the terminal's failure, but
@@ -1499,7 +1509,11 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         return Err("no esctest test matches".into());
     }
     let count: usize = areas.iter().map(|a| a.tests.len()).sum();
-    let list = read_list(&request.expected)?;
+    let list = if request.unlisted {
+        BTreeMap::new()
+    } else {
+        read_list(&request.expected)?
+    };
     let beside = match request.beside {
         Some(subject) => {
             let path = subject.expected();
@@ -1600,8 +1614,12 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     for column in &columns {
         let flat = column.flat();
         let first = column.place == Place::Direct(terminal);
-        if column.place != Place::Xterm {
-            let found = mismatches(&flat, list_of(column.place), column.place == Place::Fux);
+        {
+            // xterm, the reference, is held to no list: only a run that
+            // gave no result is a mismatch there.
+            let unlisted = column.place == Place::Xterm || (first && request.unlisted);
+            let in_fux = column.place == Place::Fux;
+            let found = mismatches(&flat, list_of(column.place), in_fux, unlisted);
             problems.extend(found.iter().map(|p| {
                 if first {
                     p.clone()
@@ -1724,7 +1742,11 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         summary,
         "; {} mismatches with {}",
         problems.len(),
-        request.expected.display()
+        if request.unlisted {
+            "no list (--unlisted)".to_owned()
+        } else {
+            request.expected.display().to_string()
+        }
     );
     if let Some((_, _, path)) = &beside {
         let _ = write!(summary, " and {}", path.display());
@@ -2403,11 +2425,11 @@ a
             ("A.t3".to_owned(), fail),
             ("A.t4".to_owned(), pass),
         ];
-        let direct = super::mismatches(&results, &list, false);
+        let direct = super::mismatches(&results, &list, false, false);
         assert_eq!(direct.len(), 2, "{direct:?}");
         assert!(direct.iter().any(|m| m.starts_with("A.t1: passes")));
         assert!(direct.iter().any(|m| m.starts_with("A.t2: fails")));
-        let fux = super::mismatches(&results, &list, true);
+        let fux = super::mismatches(&results, &list, true, false);
         assert_eq!(fux.len(), 2, "{fux:?}");
         assert!(fux.iter().any(|m| m.starts_with("A.t3: fails")));
         Ok(())
@@ -2471,7 +2493,7 @@ a
         let tally = super::Tally::of(outcomes.iter().copied());
         assert_eq!((tally.passed, tally.failed, tally.run()), (1, 0, 3));
         let list = super::expected("")?;
-        let found = super::mismatches(&tests, &list, false);
+        let found = super::mismatches(&tests, &list, false, true);
         let [found] = found.as_slice() else {
             return Err(format!("{found:?}"));
         };

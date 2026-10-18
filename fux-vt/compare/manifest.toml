@@ -1,0 +1,485 @@
+# Every check fux-vt's evidence needs: what it runs, what it needs, and
+# when it runs. `harness.sh` reads it: a command (quick, full, deep, fuzz)
+# fails when a check scheduled for it did not run, and when it runs a check
+# that is not here. A check with `wired = false` cannot run yet: it is
+# listed so that its absence is counted, never forgotten.
+#
+# A check is:
+#
+#   name      the name harness.sh gives it (a trailing * matches a family:
+#             verdicts-1, verdicts-2, ...); its results are NAME.json and
+#             NAME.stamp.json in the harness's output
+#   schedule  quick, full or deep (harness.sh; full runs quick's, deep
+#             full's and fuzz's), fuzz (harness.sh fuzz), ci (every PR),
+#             compare (.github/workflows/compare.yml, on request), nightly
+#             (.github/workflows/fuzz.yml), or release
+#   command   what runs, from the repository's root
+#   needs     what must be installed or fetched for it
+#   wired     false while nothing runs it, with `why`
+#
+# The format is a subset of TOML that harness.sh reads line by line: one
+# `key = value` a line, strings in double quotes, arrays on one line.
+
+# --- quick ------------------------------------------------------------------
+
+[[check]]
+name = "corpus"
+schedule = "quick"
+command = "fux-vt-compare corpus --json corpus.json"
+needs = ["xterm 411", "Xvfb", "node (xterm.js)", "tmux"]
+
+[[check]]
+name = "corpus-ghostty"
+schedule = "quick"
+command = "fux-vt-compare corpus --subject ghostty --json corpus-ghostty.json"
+needs = ["xterm 411", "Xvfb", "Zig 0.16 and Ghostty (run.sh)"]
+
+[[check]]
+name = "transparency"
+schedule = "quick"
+command = "fux-vt-compare transparency --json transparency.json"
+needs = ["fux built"]
+
+[[check]]
+name = "random"
+schedule = "quick"
+command = "fux-vt-compare run --cases 2000"
+needs = []
+
+[[check]]
+name = "cases"
+schedule = "quick"
+command = "fux-vt-compare cases"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "encoders"
+schedule = "quick"
+command = "fux-vt-compare encoders"
+needs = ["Zig 0.16 and Ghostty (run.sh)"]
+
+[[check]]
+name = "oracle"
+schedule = "quick"
+command = "diff/oracle.sh REF --threads N"
+needs = ["git history with REF"]
+
+# --- full -------------------------------------------------------------------
+
+[[check]]
+name = "random-wide"
+schedule = "full"
+command = "fux-vt-compare run --cases 20000"
+needs = []
+
+[[check]]
+name = "random-no-reflow"
+schedule = "full"
+command = "fux-vt-compare run --cases 20000 --no-reflow"
+needs = []
+
+[[check]]
+name = "esctest"
+schedule = "full"
+command = "fux-vt-compare esctest --jobs N --json esctest.json"
+needs = ["references/xterm/esctest2 at 2798f121 (references/fetch.sh)", "python3"]
+
+[[check]]
+name = "esctest-ghostty"
+schedule = "full"
+command = "fux-vt-compare esctest --jobs N --terminal ghostty --beside fux-vt --json esctest-ghostty.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "Zig 0.16 and Ghostty"]
+
+[[check]]
+name = "against"
+schedule = "full"
+command = "fux-bench --against REF --jobs N --repeats 9 --json against.json"
+needs = ["perf (instructions:u)", "git history with REF"]
+
+[[check]]
+name = "footprint"
+schedule = "full"
+command = "fux-vt-compare footprint --jobs N --json footprint.json"
+needs = []
+
+[[check]]
+name = "instructions"
+schedule = "full"
+command = "fux-vt-compare bench --instructions --jobs N --repeats 5 --json instructions.json"
+needs = ["perf (instructions:u)"]
+
+# --- deep -------------------------------------------------------------------
+
+[[check]]
+name = "verdicts-*"
+schedule = "deep"
+command = "fux-vt-compare verdicts --seed SEED (seeds 1 to FUX_DEEP_SEEDS)"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "esctest-in-fux"
+schedule = "deep"
+command = "fux-vt-compare esctest --in-fux --jobs N --json esctest-in-fux.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "fux built"]
+
+[[check]]
+name = "esctest-xterm"
+schedule = "deep"
+command = "fux-vt-compare esctest --xterm --jobs N --json esctest-xterm.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "xterm 411", "Xvfb"]
+
+[[check]]
+name = "esctest-alacritty"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal alacritty --unlisted --jobs N --json esctest-alacritty.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "esctest-libvterm"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal libvterm --unlisted --jobs N --json esctest-libvterm.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "libvterm 0.3.3 (run.sh)"]
+
+[[check]]
+name = "esctest-avt"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal avt --unlisted --jobs N --json esctest-avt.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "esctest-wezterm"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal wezterm --unlisted --jobs N --json esctest-wezterm.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "esctest-vt100"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal vt100 --unlisted --jobs N --json esctest-vt100.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "multiplexers"
+schedule = "deep"
+command = "fux-vt-compare transparency --multiplexers --json multiplexers.json"
+needs = ["tmux", "zellij", "herdr"]
+
+[[check]]
+name = "feel"
+schedule = "deep"
+command = "fux-bench feel --json feel.json"
+needs = ["fux built", "tmux", "zellij", "herdr"]
+
+[[check]]
+name = "info"
+schedule = "deep"
+command = "fux-bench info --json info.json"
+needs = []
+
+# --- fuzz -------------------------------------------------------------------
+
+[[check]]
+name = "fuzz-oracle-pin"
+schedule = "fuzz"
+command = "diff/oracle.sh --pin REF"
+needs = ["git history with REF"]
+
+[[check]]
+name = "fuzz-build-fuzz"
+schedule = "fuzz"
+command = "cargo +nightly fuzz build --fuzz-dir fuzz -O -a"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-build-fux-vt-fuzz"
+schedule = "fuzz"
+command = "cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-build-diff-fuzz"
+schedule = "fuzz"
+command = "cargo +nightly fuzz build --fuzz-dir diff/fuzz -O -a"
+needs = ["nightly Rust", "cargo-fuzz", "the oracle's pin"]
+
+[[check]]
+name = "fuzz-oracle-seeds"
+schedule = "fuzz"
+command = "diff/oracle.sh REF --seeds diff/fuzz/corpus/oracle --cases 1000 --streams 5"
+needs = []
+
+[[check]]
+name = "fuzz-protocol"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run protocol --fuzz-dir fuzz"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-paint"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run paint --fuzz-dir fuzz"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-layout"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run layout --fuzz-dir fuzz"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-config"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run config --fuzz-dir fuzz -- -dict=fuzz/config.dict"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-session"
+schedule = "fuzz"
+command = "ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fuzz -- -dict=fuzz/session.dict"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-fuxth_tokens"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run fuxth_tokens --fuzz-dir fuzz -- -dict=fuzz/fuxth.dict"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-fuxth_run"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run fuxth_run --fuzz-dir fuzz -- -dict=fuzz/fuxth.dict"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-fuxth_pause"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run fuxth_pause --fuzz-dir fuzz -- -dict=fuzz/fuxth.dict"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-terminal"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz -- -dict=fux-vt/fuzz/terminal.dict"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-keys"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-graphemes"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run graphemes --fuzz-dir fux-vt/fuzz"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-cells"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run cells --fuzz-dir fux-vt/fuzz"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-oracle"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run oracle --fuzz-dir diff/fuzz -- -dict=fux-vt/fuzz/terminal.dict"
+needs = ["nightly Rust", "cargo-fuzz", "the oracle's pin"]
+
+# --- compare.yml, on request ------------------------------------------------
+
+[[check]]
+name = "workflow-compare-cases"
+schedule = "compare"
+command = "fux-vt/compare/run.sh cases"
+needs = ["xterm 411 built from its tarball", "Xvfb", "tmux"]
+
+[[check]]
+name = "workflow-compare-random"
+schedule = "compare"
+command = "fux-vt/compare/run.sh --cases 20000"
+needs = []
+
+[[check]]
+name = "workflow-compare-verdicts"
+schedule = "compare"
+command = "fux-vt/compare/run.sh verdicts"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "workflow-compare-encoders"
+schedule = "compare"
+command = "fux-vt/compare/run.sh encoders"
+needs = []
+
+# --- nightly (fuzz.yml) -----------------------------------------------------
+
+[[check]]
+name = "nightly-fuzz-replay"
+schedule = "nightly"
+command = "cargo +nightly fuzz run TARGET CORPUS -- -runs=0 (every target with a corpus)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "nightly-fuzz-explore"
+schedule = "nightly"
+command = "cargo +nightly fuzz run TARGET -- -max_total_time=300 (fux-vt's targets, a cached corpus)"
+needs = ["nightly Rust", "cargo-fuzz", "an Actions cache"]
+wired = false
+why = "fuzz.yml explores only graphemes and cells, 60 s each, with no cached corpus"
+
+[[check]]
+name = "nightly-mutation"
+schedule = "nightly"
+command = "cargo mutants over the frozen guard set (threats.md)"
+needs = ["cargo-mutants", "the guard set"]
+wired = false
+why = "the guard set is not frozen yet"
+
+# --- every PR (ci.yml), not wired yet ---------------------------------------
+
+[[check]]
+name = "ci-esctest"
+schedule = "ci"
+command = "fux-vt-compare esctest (fux-vt alone, the pinned esctest2 from an Actions cache)"
+needs = ["esctest2 at 2798f121, fetched and cached (GPL: run, never vendored)", "python3", "a fux-vt-only build of compare"]
+wired = false
+why = "compare builds Ghostty by Zig, too slow for every PR, and CI has no esctest2"
+
+[[check]]
+name = "ci-wraptest"
+schedule = "ci"
+command = "cargo test -p fux-vt wraptest (25 checks re-authored, DEC STD 070 D.6.1)"
+needs = []
+wired = false
+why = "not re-authored yet"
+
+[[check]]
+name = "ci-xtermjs-fixtures"
+schedule = "ci"
+command = "xterm.js's 76 escape-sequence fixtures, vendored (MIT)"
+needs = []
+wired = false
+why = "not vendored yet"
+
+[[check]]
+name = "ci-libvterm-tests"
+schedule = "ci"
+command = "libvterm's 384 screen assertions, translated"
+needs = []
+wired = false
+why = "the translator is not fixed yet (libvterm passes 379 of its own)"
+
+[[check]]
+name = "ci-bounds"
+schedule = "ci"
+command = "the property and bounds tests at 1x and 10x"
+needs = []
+wired = false
+why = "the bounds suite does not exist yet"
+
+[[check]]
+name = "ci-libtermkey"
+schedule = "ci"
+command = "libtermkey's decoding cases"
+needs = []
+wired = false
+why = "not ported yet"
+
+[[check]]
+name = "ci-tmux-input-keys"
+schedule = "ci"
+command = "tmux's input-keys.sh (176 cases)"
+needs = []
+wired = false
+why = "not ported yet"
+
+[[check]]
+name = "ci-ghostty-key-encode"
+schedule = "ci"
+command = "Ghostty's key_encode.zig (103 cases)"
+needs = []
+wired = false
+why = "not ported yet"
+
+[[check]]
+name = "ci-kitty-keys"
+schedule = "ci"
+command = "kitty's keys.py, re-authored"
+needs = []
+wired = false
+why = "not re-authored yet"
+
+[[check]]
+name = "ci-rio-sixel"
+schedule = "ci"
+command = "rio's sixel pairs, compared as decoded RGBA"
+needs = []
+wired = false
+why = "not vendored yet"
+
+[[check]]
+name = "ci-vt-houdini"
+schedule = "ci"
+command = "vt-houdini's reply vectors, re-authored"
+needs = []
+wired = false
+why = "not re-authored yet"
+
+# --- release, and this pass's final report ----------------------------------
+
+[[check]]
+name = "release-vttest"
+schedule = "release"
+command = "vttest at 24x80.80 per engine, its 48 self-check lines from its log, beside vttest-expected.txt"
+needs = ["vttest 20251205 (references/fetch.sh)", "a PTY host in compare"]
+wired = false
+why = "compare has no PTY host for it yet"
+
+[[check]]
+name = "release-ucs-detect"
+schedule = "release"
+command = "ucs-detect in a pane, scored per category"
+needs = ["ucs-detect under $S"]
+wired = false
+why = "not wired yet"
+
+[[check]]
+name = "release-census-payloads"
+schedule = "release"
+command = "kitty's benchmark and every census payload, feed-only"
+needs = []
+wired = false
+why = "the payloads are not bench workloads yet"
+
+[[check]]
+name = "release-alacritty-ref"
+schedule = "release"
+command = "alacritty's ref tests and JediTerm's data, against real xterm"
+needs = ["xterm 411"]
+wired = false
+why = "not wired yet"
+
+[[check]]
+name = "release-xterm-keys"
+schedule = "release"
+command = "real xterm's key bytes through XTest"
+needs = ["xterm 411", "libXtst"]
+wired = false
+why = "not wired yet"
+
+[[check]]
+name = "release-bounds-100x"
+schedule = "release"
+command = "the bounds suite at 100x, under a 2 GiB cap"
+needs = []
+wired = false
+why = "the bounds suite does not exist yet"
+
+[[check]]
+name = "release-conformance-table"
+schedule = "release"
+command = "the conformance table, regenerated, drift failing"
+needs = []
+wired = false
+why = "the table does not exist yet"

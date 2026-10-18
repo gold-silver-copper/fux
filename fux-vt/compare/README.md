@@ -29,17 +29,32 @@ its arguments, or one of the harness commands in `harness.sh`:
 | Command | When | Budget | Runs |
 | --- | --- | --- | --- |
 | `run.sh quick` | before a commit | 60 s | `corpus` beside xterm and the panel; `corpus --subject ghostty`; `transparency`; `run --cases 2000`; `cases`; `encoders`; the oracle (`diff/oracle.sh`, see [`diff/README.md`](../../diff/README.md)) |
-| `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against master`; `footprint`; `bench --instructions` |
-| `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
-| `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in `harness.sh`, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
+| `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against REF`; `footprint`; `bench --instructions` |
+| `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`, `--xterm`, and `--terminal E --unlisted` for every other engine; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
+| `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | the oracle's pin, then each fuzz directory built on its own, then every target `cargo fuzz list` names in those that built, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
 | `run.sh scoreboard` | after any of them | seconds | the last results, gathered (see "The scoreboard") |
 
-Each ends with a summary of its checks and exits 1 if any failed, or says
-so if it ran over its budget. Independent checks run side by side, while
-whatever times itself or counts instructions runs alone. Results, logs
-(`logs/NAME.log`), a stamp for each check (commit, time, seconds, exit
-status) and the fuzz ledger (`fuzz.jsonl`) go to
-`fux-vt/compare/target/harness`, or `$FUX_HARNESS_OUT`.
+Each takes `--jobs N` (at most N checks at once, a check with threads of
+its own alone with N, and N cargo jobs) and `--against REF` (what the
+oracle and the instruction counts compare with; the latest master by
+default). Each ends with a summary of its checks and exits 1 if any
+failed, or says so if it ran over its budget. Independent checks run side
+by side, while whatever times itself or counts instructions runs alone.
+
+Every required check is in [`manifest.toml`](manifest.toml): its command,
+what it needs, and its schedule, including those nothing runs yet. A
+command also fails when a check the manifest schedules for it did not run,
+and when it ran one the manifest does not list.
+
+Results (`NAME.json`), logs (`logs/NAME.log`), a stamp for each check
+(`NAME.stamp.json`: the product and harness commits, each the last
+commit that changed fux-vt and fux, or the tools, and `-dirty` if their
+files differ from it; the binary's SHA-256, the exact command, when, how long, the
+exit status) and the fuzz ledger (`fuzz.jsonl`) go to
+`fux-vt/compare/target/harness`, or `$FUX_HARNESS_OUT`. A check's earlier
+results and stamp are removed before it runs. `FUX_PRODUCT_COMMIT` names
+the product when it is not HEAD's (fux-vt at another commit, by a path
+override). The binaries are run from `CARGO_TARGET_DIR` when it is set.
 
 The single commands:
 

@@ -31,22 +31,54 @@ compare=${CARGO_TARGET_DIR:-$here/target}/release/fux-vt-compare
 bench=${CARGO_TARGET_DIR:-$root/bench/target}/release/fux-bench
 mkdir -p "$out/logs" "$out/status"
 
+# The last commit that changed the paths given (along the first parents,
+# so a merge is the commit its branch's changes came in), with -dirty if
+# any of them differ from it (untracked files too): a commit that changes
+# only the harness leaves the product's the same.
+revision() {
+  local last
+  last=$(git -C "$root" log -1 --first-parent --format=%H -- "$@")
+  if [[ -n $(git -C "$root" status --porcelain -- "$@") ]]; then
+    last=$last-dirty
+  fi
+  echo "$last"
+}
+# The product measured: fux-vt and the fux it runs in, unless
+# FUX_PRODUCT_COMMIT names another (a run of this harness against another
+# commit's fux-vt, built by a path override, says which). The harness: the
+# tools that measure it.
+product=${FUX_PRODUCT_COMMIT:-$(revision fux-vt ':(exclude)fux-vt/compare' ':(exclude)fux-vt/fuzz' \
+  ':(exclude)fux-vt/gen' src fuxix fuxth Cargo.toml Cargo.lock)}
+harness=$(revision fux-vt/compare bench diff fuzz fux-vt/fuzz references/fetch.sh)
 commit=$(git -C "$root" rev-parse --short HEAD)
-if [[ -n $(git -C "$root" status --porcelain --untracked-files=no) ]]; then
-  commit=$commit-dirty
-fi
+[[ $product == *-dirty || $harness == *-dirty ]] && commit=$commit-dirty
+
+# A JSON string.
+quoted() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "${s//$'\t'/\\t}"
+}
 
 # step NAME COMMAND...: runs COMMAND with its output in logs/NAME.log, and
-# leaves its exit status and seconds in status/NAME and a stamp in
-# NAME.stamp for the scoreboard.
+# leaves its exit status and seconds in status/NAME, and its stamp in
+# NAME.stamp.json for the scoreboard: the product and harness commits, the
+# binary's SHA-256, the exact command, when, how long, and its exit status.
+# What an earlier run left (NAME.json, the stamp) is removed first, so no
+# result outlives the run that made it.
 step() {
-  local name=$1 start rc=0
+  local name=$1 start rc=0 binary=$2 sha=""
   shift
+  rm -f "$out/$name.json" "$out/$name.stamp.json"
+  [[ -f $binary ]] && sha=$(shasum -a 256 "$binary" | cut -d' ' -f1)
   start=$(date +%s)
   "$@" >"$out/logs/$name.log" 2>&1 || rc=$?
   local seconds=$(($(date +%s) - start))
   echo "$rc $seconds" >"$out/status/$name"
-  echo "$commit $(date -u +%Y-%m-%dT%H:%MZ) ${seconds}s exit $rc" >"$out/$name.stamp"
+  printf '{"check":%s,"product":%s,"harness":%s,"binary":%s,"binary_sha256":%s,"command":%s,"date":%s,"seconds":%s,"exit":%s}\n' \
+    "$(quoted "$name")" "$(quoted "$product")" "$(quoted "$harness")" "$(quoted "$binary")" \
+    "$(quoted "$sha")" "$(quoted "$(printf '%q ' "$@")")" "$(quoted "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" \
+    "$seconds" "$rc" >"$out/$name.stamp.json"
   printf '  %-14s %s %4ss\n' "$name" "$([[ $rc == 0 ]] && echo ok || echo FAIL)" "$seconds"
 }
 
@@ -144,13 +176,18 @@ last_seconds() {
 deep() {
   local verdicts esctest muxes feel info full_s
   verdicts=$(last_seconds verdicts-1 240)
-  esctest=$(last_seconds esctest-in-fux 80)
+  # In a fux pane, in xterm, and on each engine (measured at 4 jobs).
+  esctest=0
+  local part
+  for part in in-fux:110 xterm:140 alacritty:40 libvterm:45 avt:200 wezterm:50 vt100:105; do
+    esctest=$((esctest + $(last_seconds "esctest-${part%:*}" "${part#*:}")))
+  done
   muxes=$(last_seconds multiplexers 500)
   feel=$(last_seconds feel 300)
   info=$(last_seconds info 20)
   full_s=480
   local estimate=$((full_s + seeds * verdicts + esctest + muxes + feel + info + fuzz_minutes * 60 + 60))
-  echo "deep: about $((estimate / 60)) minutes (full, $seeds verdict seeds at ${verdicts}s, esctest in fux, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
+  echo "deep: about $((estimate / 60)) minutes (full, $seeds verdict seeds at ${verdicts}s, esctest in fux, in xterm and on each engine, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
   full
   echo "deep: verdicts beside xterm, seeds 1-$seeds"
   local seed
@@ -158,9 +195,17 @@ deep() {
     ran+=("verdicts-$seed")
     step "verdicts-$seed" "$compare" verdicts --seed "$seed"
   done
-  echo "deep: esctest in a fux pane; tmux and zellij; feel; MB/s (each alone)"
-  ran+=(esctest-in-fux multiplexers feel info)
+  echo "deep: esctest in a fux pane, in real xterm and on each engine; tmux and zellij; feel; MB/s (each alone)"
+  ran+=(esctest-in-fux esctest-xterm multiplexers feel info)
   step esctest-in-fux "$compare" esctest --in-fux ${jobs:+--jobs "$jobs"} --json "$out/esctest-in-fux.json"
+  step esctest-xterm "$compare" esctest --xterm ${jobs:+--jobs "$jobs"} --json "$out/esctest-xterm.json"
+  # Each engine on the one denominator, scored, with no list of its own.
+  local engine
+  for engine in alacritty libvterm avt wezterm vt100; do
+    ran+=("esctest-$engine")
+    step "esctest-$engine" "$compare" esctest --terminal "$engine" --unlisted ${jobs:+--jobs "$jobs"} \
+      --json "$out/esctest-$engine.json"
+  done
   step multiplexers "$compare" transparency --multiplexers --json "$out/multiplexers.json"
   step feel "$bench" feel --json "$out/feel.json"
   step info "$bench" info --json "$out/info.json"
@@ -265,9 +310,65 @@ scoreboard() {
   "$compare" scoreboard "$out" --keep "$here/scoreboard" "$commit" "$(date -u +%Y-%m-%d)"
 }
 
-# The summary: each check that ran, and the command's time beside its budget.
+# The manifest's checks, a line each: NAME SCHEDULE WIRED WHY.
+manifest() {
+  awk '
+    function flush() { if (name != "") print name, schedule, wired, why; name = ""; wired = "true"; why = "" }
+    function value(line) { sub(/^[^=]*= */, "", line); gsub(/^"|"$/, "", line); return line }
+    /^\[\[check\]\]/ { flush() }
+    /^name *=/ { name = value($0) }
+    /^schedule *=/ { schedule = value($0) }
+    /^wired *=/ { wired = value($0) }
+    /^why *=/ { why = value($0) }
+    END { flush() }
+  ' "$here/manifest.toml"
+}
+
+# The schedules a command runs: full runs quick's, deep full's and fuzz's.
+schedules() {
+  case $1 in
+    quick) echo quick ;;
+    full) echo quick full ;;
+    deep) echo quick full deep fuzz ;;
+    fuzz) echo fuzz ;;
+  esac
+}
+
+# Checks the run against the manifest: each check it ran is listed there,
+# and each listed for its schedules ran. Prints a line for each that is not.
+missing() {
+  local command=$1 name schedule wired why pattern found
+  local wanted
+  wanted=" $(schedules "$command") "
+  for name in "${ran[@]}"; do
+    found=""
+    while read -r pattern _; do
+      # shellcheck disable=SC2053 # the pattern may end in *, on purpose
+      [[ $name == $pattern ]] && found=1
+    done < <(manifest)
+    [[ -n $found ]] || echo "  UNLISTED $name: not in manifest.toml"
+  done
+  while read -r pattern schedule wired why; do
+    [[ $wanted == *" $schedule "* ]] || continue
+    found=""
+    for name in "${ran[@]}"; do
+      # shellcheck disable=SC2053
+      [[ $name == $pattern ]] && found=1
+    done
+    if [[ -z $found ]]; then
+      if [[ $wired == false ]]; then
+        echo "  NOT RUN $pattern: not wired yet: $why"
+      else
+        echo "  NOT RUN $pattern: required for $command, and did not run"
+      fi
+    fi
+  done < <(manifest)
+}
+
+# The summary: each check that ran, the manifest's that did not, and the
+# command's time beside its budget.
 summary() {
-  local command=$1 budget=$2 started=$3 name rc seconds failed=0
+  local command=$1 budget=$2 started=$3 name rc seconds failed=0 absent
   local took=$(($(date +%s) - started))
   echo
   echo "$command: $commit, ${took}s$([[ -n $budget ]] && echo " (budget ${budget}s)")"
@@ -279,7 +380,15 @@ summary() {
       tail -3 "$out/logs/$name.log" | sed 's/^/       /'
     fi
   done
-  echo "  ${#ran[@]} checks, $failed failed; results in $out"
+  local report
+  report=$(missing "$command")
+  absent=0
+  if [[ -n $report ]]; then
+    echo "$report"
+    absent=$(grep -c . <<<"$report")
+  fi
+  failed=$((failed + absent))
+  echo "  ${#ran[@]} checks, $failed failed ($absent of the manifest's not run or not listed); results in $out"
   if [[ -n $budget ]] && ((took > budget)); then
     echo "  over budget: a check that does not fit moves to a deeper command"
   fi
