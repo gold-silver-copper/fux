@@ -74,6 +74,13 @@ const SYNC: &[u8] = b"\x1b[c";
 /// What ends any string the request could be lost in: CAN, then ST.
 const UNSTICK: &[u8] = b"\x18\x1b\\";
 
+/// The request a sync sends again, after [`UNSTICK`]: secondary device
+/// attributes, whose reply (`ESC [ > ... c`) no DA1 reply can be taken
+/// for. A terminal answers in order, so once it arrives every reply
+/// before it has too, and a first request the terminal swallowed in a
+/// string is not waited for.
+const RESYNC: &[u8] = b"\x1b[>c";
+
 /// How long to wait for a reply before asking again, and then in all.
 const FIRST_WAIT: Duration = Duration::from_secs(2);
 const LAST_WAIT: Duration = Duration::from_secs(10);
@@ -182,8 +189,39 @@ fn listen(path: &Path, inbox: &Inbox) {
     inbox.arrived.notify_all();
 }
 
-/// Where the replies to `CSI c` are in `bytes`: `ESC [ ? digits;... c`.
-fn da_replies(bytes: &[u8]) -> Vec<(usize, usize)> {
+/// What a sync takes of the replies `fresh` since its mark, if its wait
+/// is over: the replies with the syncs' taken out, and where they end.
+/// Its wait is over once a DA1 reply has come to each of the `asked` DA1
+/// requests (one, at least); after a [`RESYNC`] (`resent`), once the
+/// RESYNC's reply has come, every reply before it having come too.
+fn taken(fresh: &[u8], asked: usize, resent: bool) -> Option<(Vec<u8>, usize)> {
+    let mut found = da_replies(fresh, b"\x1b[?");
+    let end = if resent {
+        let resync = da_replies(fresh, b"\x1b[>");
+        let end = resync.last().map(|&(_, end)| end)?;
+        found.retain(|&(_, after)| after <= end);
+        found.extend(resync);
+        found.sort_unstable();
+        end
+    } else {
+        let &(_, end) = found.last()?;
+        if found.len() < asked {
+            return None;
+        }
+        end
+    };
+    let mut batch = Vec::new();
+    let mut at = 0usize;
+    for &(start, after) in &found {
+        batch.extend_from_slice(fresh.get(at..start).unwrap_or_default());
+        at = after;
+    }
+    Some((batch, end))
+}
+
+/// Where the replies to `CSI c` are in `bytes`: `ESC [ ? digits;... c`;
+/// or, with the introducer `ESC [ >`, the replies to `CSI > c`.
+fn da_replies(bytes: &[u8], introducer: &[u8]) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut at = 0usize;
     while let Some(start) = bytes
@@ -191,8 +229,8 @@ fn da_replies(bytes: &[u8]) -> Vec<(usize, usize)> {
         .and_then(|rest| rest.iter().position(|&b| b == 0x1b))
         .and_then(|i| i.checked_add(at))
     {
-        let body = start.saturating_add(3);
-        let is_da = bytes.get(start..body) == Some(b"\x1b[?".as_slice());
+        let body = start.saturating_add(introducer.len());
+        let is_da = bytes.get(start..body) == Some(introducer);
         let end = bytes
             .get(body..)
             .and_then(|rest| {
@@ -367,10 +405,14 @@ impl Pane {
     /// `meanwhile` every [`TURN`] if there is one. Gives the replies up to
     /// the last DA1 reply, with every DA1 reply taken out, and moves
     /// `mark` past them.
+    ///
+    /// After a [`RESYNC`] (`resent`), it waits for the RESYNC's reply
+    /// instead, and takes it out too.
     fn wait(
         &mut self,
         limit: Duration,
         meanwhile: &mut Meanwhile<'_>,
+        resent: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         let deadline = Instant::now()
             .checked_add(limit)
@@ -385,17 +427,8 @@ impl Pane {
         let mut heard = lock()?;
         loop {
             let fresh = heard.bytes.get(self.mark..).unwrap_or_default();
-            let found = da_replies(fresh);
-            if let Some(&(_, end)) = found.last()
-                && found.len() >= self.asked
-            {
+            if let Some((batch, end)) = taken(fresh, self.asked, resent) {
                 self.asked = 0;
-                let mut batch = Vec::new();
-                let mut at = 0usize;
-                for &(start, after) in &found {
-                    batch.extend_from_slice(fresh.get(at..start).unwrap_or_default());
-                    at = after;
-                }
                 self.mark = self.mark.saturating_add(end);
                 drop(heard);
                 return Ok(Some(batch));
@@ -434,13 +467,13 @@ impl Pane {
 
     fn sync_while(&mut self, mut meanwhile: Meanwhile<'_>) -> Result<Vec<u8>, String> {
         self.write(SYNC)?;
-        if let Some(batch) = self.wait(FIRST_WAIT, &mut meanwhile)? {
+        if let Some(batch) = self.wait(FIRST_WAIT, &mut meanwhile, false)? {
             return Ok(batch);
         }
         let mut again = UNSTICK.to_vec();
-        again.extend_from_slice(SYNC);
+        again.extend_from_slice(RESYNC);
         self.write(&again)?;
-        self.wait(LAST_WAIT, &mut meanwhile)?
+        self.wait(LAST_WAIT, &mut meanwhile, true)?
             .ok_or_else(|| "no reply to a device attributes request".to_owned())
     }
 
@@ -918,7 +951,17 @@ mod tests {
     #[test]
     fn device_attribute_replies_are_found() {
         let bytes = b"\x1b[1;2R\x1b[?64;1;2c\x1b[0n\x1b[?1;2;4c";
-        assert_eq!(da_replies(bytes), [(6, 16), (20, 29)]);
+        assert_eq!(da_replies(bytes, b"\x1b[?"), [(6, 16), (20, 29)]);
+        // A sync whose request the terminal swallowed in a string, then
+        // asked again: only the RESYNC's reply comes, and it is enough (at
+        // the parent the second wait counted both requests, and timed out).
+        let swallowed = b"out\x1b[>41;411;0c";
+        assert_eq!(taken(swallowed, 2, true), Some((b"out".to_vec(), 15)));
+        // One that was slow: its reply comes before the RESYNC's, and both
+        // are taken out, so no later sync takes the first for its own.
+        let slow = b"a\x1b[?1;2cb\x1b[>0;1;0c";
+        assert_eq!(taken(slow, 2, true), Some((b"ab".to_vec(), 18)));
+        assert_eq!(taken(b"a\x1b[?1;2c", 2, false), None);
     }
 
     #[test]
