@@ -52,8 +52,11 @@ pub struct Answering {
     /// The end of what the program wrote that may be the start of a
     /// request, held until it is complete or is not one.
     held: Vec<u8>,
-    /// How many reports were answered here, from the snapshot.
+    /// How many reports were answered here, from the snapshot, or by the
+    /// engine's adapter for its host (`Engine::host_answers`).
     pub told: usize,
+    /// The engine's host answers counted so far.
+    hosted: usize,
     /// How many DECRQCRAs were left unanswered: in origin mode.
     pub unreadable: usize,
 }
@@ -173,6 +176,7 @@ impl Answering {
             answered: 0,
             held: Vec::new(),
             told: 0,
+            hosted: 0,
             unreadable: 0,
         }
     }
@@ -253,6 +257,9 @@ impl Answering {
             }
         }
         out.extend(self.new_replies()?);
+        let hosted = self.engine.host_answers();
+        self.told = self.told.saturating_add(hosted.saturating_sub(self.hosted));
+        self.hosted = hosted;
         Ok(out)
     }
 }

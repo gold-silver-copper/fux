@@ -85,7 +85,7 @@
 use crate::engine::{Blanks, Can, DEFECT, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use alacritty_terminal::Term;
-use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Row};
 use alacritty_terminal::index;
 use alacritty_terminal::term::cell::{self, Flags};
@@ -128,11 +128,69 @@ pub fn with_history(setup: &Setup, rows: usize) -> Result<Box<dyn Engine>, Strin
     Ok(Box::new(Alacritty::new(setup.rows, setup.cols, rows)?))
 }
 
-/// What the terminal says through its listener.
+/// What the terminal says through its listener, and what its host is.
 #[derive(Default)]
 struct Heard {
     replies: Vec<u8>,
     title: String,
+    /// The window's size in cells, rows and columns, for the size reply.
+    size: (u16, u16),
+    /// The replies given here as the engine's host.
+    host_answers: usize,
+}
+
+/// A cell's size in pixels, as the window reports it: Ghostty's adapter's.
+const CELL_WIDTH: u16 = 8;
+const CELL_HEIGHT: u16 = 16;
+
+/// The 16 colours of xterm 411's default palette.
+const SIXTEEN: [(u8, u8, u8); 16] = [
+    (0x00, 0x00, 0x00),
+    (0xcd, 0x00, 0x00),
+    (0x00, 0xcd, 0x00),
+    (0xcd, 0xcd, 0x00),
+    (0x00, 0x00, 0xee),
+    (0xcd, 0x00, 0xcd),
+    (0x00, 0xcd, 0xcd),
+    (0xe5, 0xe5, 0xe5),
+    (0x7f, 0x7f, 0x7f),
+    (0xff, 0x00, 0x00),
+    (0x00, 0xff, 0x00),
+    (0xff, 0xff, 0x00),
+    (0x5c, 0x5c, 0xff),
+    (0xff, 0x00, 0xff),
+    (0x00, 0xff, 0xff),
+    (0xff, 0xff, 0xff),
+];
+
+/// Palette entry `index`'s default as xterm 411 has it, as the host
+/// gives it: the 16 above, the 6x6x6 cube (each channel 0 or 55 + 40 n)
+/// and the grey ramp (8 + 10 n). None past the palette: the foreground,
+/// background and cursor a program has not set, which the host leaves
+/// unanswered, as fux-vt and Ghostty do here.
+fn host_colour(index: usize) -> Option<ansi::Rgb> {
+    let level = |n: usize| -> u8 {
+        let n = u8::try_from(n).unwrap_or(0);
+        if n == 0 {
+            0
+        } else {
+            n.saturating_mul(40).saturating_add(55)
+        }
+    };
+    let (r, g, b) = match index {
+        0..=15 => *SIXTEEN.get(index)?,
+        16..=231 => {
+            let n = index.saturating_sub(16);
+            (level(n / 36), level(n / 6 % 6), level(n % 6))
+        }
+        232..=255 => {
+            let step = u8::try_from(index.saturating_sub(232)).unwrap_or(0);
+            let grey = step.saturating_mul(10).saturating_add(8);
+            (grey, grey, grey)
+        }
+        _ => return None,
+    };
+    Some(ansi::Rgb { r, g, b })
 }
 
 #[derive(Clone)]
@@ -141,12 +199,37 @@ struct Listener(Rc<RefCell<Heard>>);
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         let mut heard = self.0.borrow_mut();
-        if let Event::PtyWrite(text) = event {
-            heard.replies.extend_from_slice(text.as_bytes());
-        } else if let Event::Title(title) = event {
-            heard.title = title;
-        } else if let Event::ResetTitle = event {
-            heard.title.clear();
+        match event {
+            Event::PtyWrite(text) => heard.replies.extend_from_slice(text.as_bytes()),
+            Event::Title(title) => heard.title = title,
+            Event::ResetTitle => heard.title.clear(),
+            // What alacritty asks its host: a colour no program has set, and
+            // the window's size in pixels.
+            Event::ColorRequest(index, reply) => {
+                if let Some(rgb) = host_colour(index) {
+                    heard.replies.extend_from_slice(reply(rgb).as_bytes());
+                    heard.host_answers = heard.host_answers.saturating_add(1);
+                }
+            }
+            Event::TextAreaSizeRequest(reply) => {
+                let (num_lines, num_cols) = heard.size;
+                let text = reply(WindowSize {
+                    num_lines,
+                    num_cols,
+                    cell_width: CELL_WIDTH,
+                    cell_height: CELL_HEIGHT,
+                });
+                heard.replies.extend_from_slice(text.as_bytes());
+                heard.host_answers = heard.host_answers.saturating_add(1);
+            }
+            Event::MouseCursorDirty
+            | Event::ClipboardStore(..)
+            | Event::ClipboardLoad(..)
+            | Event::CursorBlinkingChange
+            | Event::Wakeup
+            | Event::Bell
+            | Event::Exit
+            | Event::ChildExit(_) => {}
         }
     }
 }
@@ -278,7 +361,10 @@ fn err(what: &str) -> impl Fn(std::num::TryFromIntError) -> String + '_ {
 
 impl Alacritty {
     fn new(rows: u16, cols: u16, history: usize) -> Result<Alacritty, String> {
-        let heard = Rc::new(RefCell::new(Heard::default()));
+        let heard = Rc::new(RefCell::new(Heard {
+            size: (rows, cols),
+            ..Heard::default()
+        }));
         let config = Config {
             scrolling_history: history,
             kitty_keyboard: true,
@@ -434,7 +520,12 @@ impl Engine for Alacritty {
             ));
         }
         self.term.resize(Size::new(rows, cols)?);
+        self.heard.borrow_mut().size = (rows, cols);
         Ok(())
+    }
+
+    fn host_answers(&mut self) -> usize {
+        self.heard.borrow().host_answers
     }
 
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String> {
@@ -470,6 +561,31 @@ mod tests {
             .ok_or("resize(1, 1) went through")?;
         assert_eq!(crate::engine::abstention(&refused), "engine");
         engine.resize(2, 2)?;
+        Ok(())
+    }
+
+    /// What alacritty asks its host is answered as a host would: a colour
+    /// no program set, from xterm 411's default palette; the window's size
+    /// in pixels (8 by 16 a cell); each counted as the host's answer.
+    #[test]
+    fn its_host_answers_the_colours_and_size_it_asks_for() -> Result<(), String> {
+        let setup = Setup {
+            rows: 25,
+            cols: 80,
+            history: 0,
+            reflow: true,
+        };
+        let mut engine = super::make(&setup)?;
+        engine.process(b"\x1b]4;1;?\x07\x1b[14t")?;
+        let replies = String::from_utf8_lossy(&engine.replies()?).into_owned();
+        assert!(replies.contains("4;1;rgb:cdcd/0000/0000"), "{replies:?}");
+        assert!(replies.contains("\x1b[4;400;640t"), "{replies:?}");
+        assert_eq!(engine.host_answers(), 2);
+        assert_eq!(
+            super::host_colour(16 + 36 + 2 * 6 + 5).map(|c| (c.r, c.g, c.b)),
+            Some((0x5f, 0x87, 0xff))
+        );
+        assert!(super::host_colour(256).is_none());
         Ok(())
     }
 }

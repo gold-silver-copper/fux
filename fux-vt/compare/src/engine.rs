@@ -46,6 +46,13 @@ pub trait Engine {
         Ok(Vec::new())
     }
 
+    /// How many replies its adapter has given for the engine's host so far
+    /// (a colour the engine asks its host for, the window's pixel size),
+    /// for `Answering` to count as the harness's answers: adapter-observed.
+    fn host_answers(&mut self) -> usize {
+        0
+    }
+
     /// The rows of history it holds now, if it can tell (`footprint`
     /// divides its memory by them).
     fn history_len(&mut self) -> Option<usize> {
