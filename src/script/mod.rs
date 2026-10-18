@@ -479,6 +479,25 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
         }
         after = (after.is_none() && reads_token(&token.text)).then_some(&*token.text);
     }
+    // A wait word last acts on nothing: what it gives (options, keys, a
+    // pane given a wait) is for an action after it, and after an action
+    // its answer was already given (`%2 str x type 0 timeout`).
+    if let [.., before, last] = tokens
+        && !reads_token(&before.text)
+        && crate::help::WAITING
+            .split_whitespace()
+            .any(|w| w == &*last.text)
+    {
+        return Err(Failed::new(
+            Code::Unused,
+            format!(
+                "{}: {}: last, it waits for nothing: a wait word goes before the action it \
+                 is for, on its options, keys or pane (`%2 0 timeout str x type`, \
+                 `%2 opts str ready wait-text wait`)",
+                last.place, last.text
+            ),
+        ));
+    }
     Ok(out)
 }
 
