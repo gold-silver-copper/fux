@@ -43,15 +43,18 @@ fn cursor_after(input: &[u8]) -> Result<(u16, u16)> {
 /// (7.2.15; DEC STD 070's SRM: set, local echo off, the default), as
 /// fux-vt never images what is typed; GRCM (21) CUMULATIVE (7.2.8), as an
 /// SGR changes only the renditions it names; ZDM (22) DEFAULT (F.4.2), as
-/// a parameter of 0 is its default. 19, EBM in the 4th edition, "shall not
-/// be used" (8.3.106, F.5.1): not recognized (0).
+/// a parameter of 0 is its default. 19, EBM in the 4th edition, which the
+/// 5th says "shall not be used" (F.5.1), is permanently reset too: DECRQM
+/// is DEC's, and DEC STD 070's VT420 table (DECRQM, p. 5-194) lists "19
+/// EBM *", "always Reset ... and can not be changed". 23, no mode, is not
+/// recognized (0).
 #[test]
 fn decrqm_reports_the_ansi_modes_kept_in_one_state() -> Result {
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     for (state, modes) in [
         (
             4,
-            &[1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18][..],
+            &[1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19][..],
         ),
         (3, &[12, 21, 22]),
     ] {
@@ -67,8 +70,8 @@ fn decrqm_reports_the_ansi_modes_kept_in_one_state() -> Result {
         }
     }
     assert_eq!(
-        replies(&mut p, b"\x1b[19$p\x1b[?5$p")?,
-        "^[[19;0$y^[[?5;2$y"
+        replies(&mut p, b"\x1b[23$p\x1b[?5$p")?,
+        "^[[23;0$y^[[?5;2$y"
     );
     Ok(())
 }

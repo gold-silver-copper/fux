@@ -167,10 +167,12 @@ modes! {
 /// SRTM, ERM (ED, EL and ECH spare a guarded area), VEM, BDSM (EXPLICIT:
 /// no implicit bidirectional processing), DCSM (PRESENTATION: there is no
 /// data component), HEM, PUM, FEAM, FETM, MATM, TTM, SATM and TSM, which
-/// DECRQM answers permanently reset. 19, the 4th edition's EBM, "shall not
-/// be used" (F.5.1), and is not recognized.
-pub(crate) const RESET_FOR_GOOD: [u16; 16] =
-    [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18];
+/// DECRQM answers permanently reset. And 19, the 4th edition's EBM, which
+/// the 5th says "shall not be used" (F.5.1): DECRQM is DEC's, and DEC STD
+/// 070's VT420 table (DECRQM, p. 5-194) answers it "always Reset ... and
+/// can not be changed".
+pub(crate) const RESET_FOR_GOOD: [u16; 17] =
+    [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19];
 
 /// The ANSI modes fux-vt keeps in their set state for good, which DECRQM
 /// answers permanently set: SRM, SIMULTANEOUS (7.2.15; DEC STD 070's SRM,
