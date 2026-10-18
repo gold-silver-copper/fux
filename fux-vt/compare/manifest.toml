@@ -439,10 +439,8 @@ needs = []
 [[check]]
 name = "ci-libtermkey"
 schedule = "ci"
-command = "libtermkey's decoding cases"
+command = "cargo test -p fux-vt --test input_suites libtermkey_decoding: libtermkey 0.22's decoding cases and the key names both read (37 agree, 7 differ as recorded, 15 not applicable)"
 needs = []
-wired = false
-why = "not ported yet"
 
 [[check]]
 name = "ci-tmux-input-keys"

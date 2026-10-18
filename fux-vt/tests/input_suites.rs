@@ -15,6 +15,7 @@
 //! Lock 64, Num Lock 128), `shifted=N` and `base=N`. Bytes are written with
 //! `\e` for ESC, `\xHH` for a byte, `\\` for a backslash.
 
+use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::keys::encode::{KeyMode, OtherKeys, Report, key_bytes};
 use fux_vt::keys::{KeyPress, Keystroke, Kitty};
 
@@ -138,5 +139,136 @@ fn tmux_input_keys() -> Result {
     let counts = encoder_suite("tmux", include_str!("data/keys/tmux-input-keys.txt"))?;
     // Agree, differ as recorded, not applicable.
     assert_eq!(counts, (474, 3, 30));
+    Ok(())
+}
+
+/// Bytes as the data writes them.
+fn bytes(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut rest = text.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        rest = tail;
+        if b != b'\\' {
+            out.push(b);
+            continue;
+        }
+        match rest.split_first() {
+            Some((b'e', tail)) => {
+                out.push(0x1b);
+                rest = tail;
+            }
+            Some((b'x', tail)) => {
+                let hex = tail.get(..2).and_then(|h| std::str::from_utf8(h).ok());
+                out.push(
+                    hex.and_then(|h| u8::from_str_radix(h, 16).ok())
+                        .unwrap_or(0),
+                );
+                rest = tail.get(2..).unwrap_or_default();
+            }
+            Some((b'\\', tail)) => {
+                out.push(b'\\');
+                rest = tail;
+            }
+            _ => out.push(b'\\'),
+        }
+    }
+    out
+}
+
+/// What a terminal's bytes decode to, as the decoder suites write it: each
+/// input space-separated, a key by its name (`C-a`, `M-Up`, a character as
+/// itself, or `U+XXXX` for one past ASCII), others by their kind.
+fn decoded(bytes: &[u8]) -> String {
+    let mut decoder = Decoder::default();
+    let mut out = Vec::new();
+    decoder.bytes(bytes, &mut out);
+    decoder.timeout(&mut out);
+    let shown: Vec<String> = out
+        .into_iter()
+        .map(|input| match input {
+            Input::Key(stroke) => {
+                let name = stroke.press.to_string();
+                let wide = name.chars().last().filter(|c| !c.is_ascii());
+                match wide {
+                    Some(c) => format!("{}U+{:04X}", name.trim_end_matches(c), u32::from(c)),
+                    None => name,
+                }
+            }
+            Input::Paste(text) => format!("paste:{text}"),
+            Input::PasteTooLong => "paste-too-long".to_string(),
+            Input::FocusIn => "focus-in".to_string(),
+            Input::FocusOut => "focus-out".to_string(),
+            Input::Mouse(event) => {
+                let held = KeyPress::new(fux_vt::keys::Key::Char('x'), event.mods).to_string();
+                let mods = held.trim_end_matches('x');
+                format!("mouse:{mods}{:?}:{},{}", event.action, event.col, event.row)
+            }
+            Input::Reply(reply) => format!("reply:{reply:?}"),
+        })
+        .collect();
+    if shown.is_empty() {
+        "none".to_string()
+    } else {
+        shown.join(" ")
+    }
+}
+
+/// Runs a decoder suite: source, bytes, what the suite expects, verdict.
+fn decoder_suite(name: &str, text: &str) -> Result<(usize, usize, usize)> {
+    let (mut agree, mut differ, mut na) = (0usize, 0usize, 0usize);
+    let mut bad = Vec::new();
+    for line in text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [source, input, expected, verdict] = fields.as_slice() else {
+            return Err(format!("{name}: not four fields: {line}").into());
+        };
+        if verdict.starts_with("na: ") {
+            na = na.saturating_add(1);
+            continue;
+        }
+        // A key name, which libtermkey's `strpkey` reads too.
+        let got = match input.strip_prefix("name:") {
+            Some(name) => name
+                .parse::<KeyPress>()
+                .map_or("none".to_string(), |k| k.to_string()),
+            None => decoded(&bytes(input)),
+        };
+        let want = match verdict.strip_prefix("differs: ") {
+            Some(rest) => {
+                differ = differ.saturating_add(1);
+                rest.rsplit_once("; fux: ")
+                    .ok_or("a difference with no fux: inputs")?
+                    .1
+            }
+            None if *verdict == "agree" => {
+                agree = agree.saturating_add(1);
+                expected
+            }
+            None => return Err(format!("{name}: verdict {verdict:?}").into()),
+        };
+        if got != *want {
+            bad.push(format!(
+                "{source}\t{input}\t{expected}\t{verdict}\tgot {got}"
+            ));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{name}: {} cases:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+    Ok((agree, differ, na))
+}
+
+/// libtermkey 0.22's decoding cases (KEY-9).
+#[test]
+fn libtermkey_decoding() -> Result {
+    let counts = decoder_suite("libtermkey", include_str!("data/keys/libtermkey.txt"))?;
+    // Agree, differ as recorded, not applicable.
+    assert_eq!(counts, (37, 7, 15));
     Ok(())
 }
