@@ -195,7 +195,7 @@ fn n_ends_the_command_running() -> Result {
 #[test]
 fn marks_without_the_nonce_are_ignored() -> Result {
     let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
-    p.require_mark_nonce(Some(b"k3y"));
+    p.require_mark_nonce(Some(b"k3y"), None);
     p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07fake\r\n\x1b]133;D;9\x07")?;
     assert_eq!(marks(&p), Vec::<usize>::new());
     assert_eq!(p.screen().commands().finished, 0);
@@ -205,6 +205,37 @@ fn marks_without_the_nonce_are_ignored() -> Result {
     let commands = p.screen().commands();
     assert_eq!((commands.finished, commands.last_status), (1, Some(0)));
     assert!(!commands.prompt);
+    Ok(())
+}
+
+/// A program the shell runs, given the nested nonce (a remote shell's
+/// marks, relayed), marks commands within the shell's: they count while
+/// the shell's command runs, on the alternate screen too, and the shell's
+/// own end ends it, whatever the program left running. Its marks before
+/// that command, and forged ones, are none.
+#[test]
+fn a_nested_programs_marks_count_within_the_shells_command() -> Result {
+    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
+    p.require_mark_nonce(Some(b"k3y"), Some(b"n3st"));
+    p.process(b"\x1b]133;A;nonce=k3y\x07$ \x1b]133;C;nonce=n3st\x07\x1b]133;D;9;nonce=n3st\x07")?;
+    assert_eq!(p.screen().commands().finished, 0, "no shell command runs");
+    p.process(b"koh\r\n\x1b]133;C;nonce=k3y\x07\x1b[?1049h")?;
+    p.process(b"\x1b]133;A;nonce=n3st\x07r$ \x1b]133;C;nonce=n3st\x07")?;
+    let commands = p.screen().commands();
+    assert!(commands.running() && commands.full_screen);
+    p.process(b"\x1b]133;D;1\x07\x1b]133;D;1;nonce=k3y2\x07")?;
+    assert_eq!(p.screen().commands().finished, 0, "forged");
+    p.process(b"hi\r\n\x1b]133;D;1;nonce=n3st\x07\x1b]133;A;nonce=n3st\x07r$ ")?;
+    let commands = p.screen().commands();
+    assert_eq!((commands.finished, commands.last_status), (1, Some(1)));
+    assert!(commands.prompt && !commands.running());
+    // The program exits mid-command; the shell's end is the one that counts.
+    p.process(b"\x1b]133;C;nonce=n3st\x07\x1b[?1049l\x1b]133;D;0;nonce=k3y\x07")?;
+    let commands = p.screen().commands();
+    assert_eq!((commands.finished, commands.last_status), (2, Some(0)));
+    assert!(!commands.running() && !commands.full_screen);
+    p.process(b"\x1b]133;A;nonce=k3y\x07$ \x1b]133;C;nonce=n3st\x07")?;
+    assert!(!p.screen().commands().running(), "no shell command runs");
     Ok(())
 }
 

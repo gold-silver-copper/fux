@@ -647,6 +647,91 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
     Ok(())
 }
 
+/// A full-screen program that relays a shell's marks, as `koh connect`
+/// does: it takes a line at its prompt, marks the command, and answers
+/// `slow` with what comes down the FIFO it is given, `forge` with marks
+/// that carry no nonce or the wrong one, and anything else with `hi` and
+/// status 1. Its marks carry `FUX_MARK_NONCE` if it was given one.
+const RELAY: &str = r#"
+import os, sys
+nonce = os.environ.get("FUX_MARK_NONCE")
+out = sys.stdout
+def mark(m):
+    out.write("\x1b]133;" + m + (";nonce=" + nonce if nonce else "") + "\x07")
+def prompt():
+    mark("A"); out.write("r$ "); out.flush()
+far = os.open(sys.argv[1], os.O_RDWR) if len(sys.argv) > 1 else None
+out.write("\x1b[?1049h"); prompt()
+while True:
+    line = sys.stdin.readline().strip()
+    if line == "exit":
+        break
+    if line == "forge":
+        out.write("\x1b]133;C\x07\x1b]133;D;5\x07\x1b]133;C;nonce=0\x07\x1b]133;D;6;nonce=0\x07")
+        prompt()
+        continue
+    mark("C"); out.flush()
+    if line == "slow":
+        out.write(os.read(far, 100).decode()); mark("D;3")
+    else:
+        out.write("hi\n"); mark("D;1")
+    prompt()
+out.write("\x1b[?1049l"); out.flush()
+"#;
+
+/// A full-screen program that marks its own commands (a remote shell's,
+/// relayed) has a settling action wait for a slow one to end, as a shell's
+/// command is waited for, though it waits on something else meanwhile
+/// (the network, here a FIFO): `line` answers `done`, not `waiting`.
+#[test]
+fn a_command_a_full_screen_program_marks_is_waited_for() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let relay = server.dir.join("relay.py");
+    std::fs::write(&relay, RELAY).map_err(e)?;
+    let fifo = server.dir.join("far");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+    let (relay, far) = (relay.to_string_lossy(), fifo.to_string_lossy());
+    let pane = id(&server.ok(&run(&[], &["python3", &relay, &far]))?);
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::fs::write(&fifo, "slow\n")
+    });
+    let answer = line(&server, &pane, "slow")?;
+    writer
+        .join()
+        .map_err(|_| "the writer panicked")?
+        .map_err(e)?;
+    assert_eq!(done(&answer), Some("done 3"), "{answer}");
+    assert!(answer.contains("\nslow\n"), "{answer}");
+    Ok(())
+}
+
+/// A program typed into a marked shell is given the pane's nested nonce
+/// (`FUX_MARK_NONCE`): its marks that carry it count while its command
+/// runs, so `line` typed into it answers `done` and `last-output` its
+/// output; marks with no nonce or a wrong one are none, and the shell's
+/// own end still ends the command that started it.
+#[test]
+fn a_nested_programs_marks_count_in_a_shell_pane() -> Outcome {
+    let server = Server::start("")?;
+    let relay = server.dir.join("relay.py");
+    std::fs::write(&relay, RELAY).map_err(e)?;
+    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
+    let started = line(&server, "sh", &format!("python3 '{}'", relay.display()))?;
+    assert_eq!(done(&started), None, "{started}");
+    let answer = line(&server, "sh", "echo")?;
+    assert_eq!(done(&answer), Some("done 1"), "{answer}");
+    assert_eq!(last_output(&server, "sh")?, "hi\n");
+    let forged = line(&server, "sh", "forge")?;
+    assert_eq!(done(&forged), None, "{forged}");
+    assert_eq!(done(&line(&server, "sh", "exit")?), Some("done 0"));
+    Ok(())
+}
+
 /// `respawn` starts a run program again in its pane, found by its tab's
 /// name; `log-to` keeps all it wrote; `all-history` reads all history,
 /// `main-screen` what a full-screen program hides, `alt-screen` its last

@@ -784,14 +784,15 @@ impl Session {
     /// `FUX_SERVER`), given its starter's variables, and not those its
     /// starter had not, unless `env` sets them. A shell fux knows is started
     /// so that it marks its commands, unless `set shell-marks off`; its
-    /// startup files go beside the server's socket.
+    /// startup files go beside the server's socket, and the programs it
+    /// runs are given the nonce of marks of their own (`FUX_MARK_NONCE`).
     fn spawn(
         &self,
         id: PaneId,
         (argv, env): (&[String], &[(String, String)]),
         (cwd, fresh): (&Path, &Starting),
         size: Size,
-    ) -> Result<Option<(Child, Option<String>)>, Error> {
+    ) -> Result<Option<(Child, Option<crate::marks::Nonces>)>, Error> {
         let Some(socket) = &self.launch else {
             return Ok(None);
         };
@@ -800,15 +801,18 @@ impl Session {
         let marked = (self.config.shell_marks)
             .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
             .flatten();
-        // A shell fux marks is given a nonce its marks carry: one printed
-        // by a program it runs carries none (`fux_vt::Parser::require_mark_nonce`).
-        let nonce = marked.as_ref().and_then(|_| crate::marks::nonce());
+        // A shell fux marks is given a nonce its marks carry, which it keeps
+        // from the programs it runs: one printed by them carries none
+        // (`fux_vt::Parser::require_mark_nonce`). They are given another,
+        // for marks of their own that count within their command.
+        let nonce = marked.as_ref().and_then(|_| crate::marks::Nonces::new());
         let mut marks = marked.unwrap_or_else(|| crate::marks::Marked {
             argv: argv.to_vec(),
             ..crate::marks::Marked::default()
         });
         if let Some(nonce) = &nonce {
-            marks.env.push(("__fux_k".to_owned(), nonce.clone()));
+            marks.env.push(("__fux_k".to_owned(), nonce.shell.clone()));
+            (marks.env).push((crate::marks::NESTED.to_owned(), nonce.nested.clone()));
         }
         let socket = fresh.socket.as_deref().unwrap_or(socket);
         let mut vars = vec![

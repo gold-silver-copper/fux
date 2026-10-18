@@ -77,10 +77,14 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     let quiet = now.saturating_duration_since(since);
     let tty = child.master.slave_path();
     let activity = activity(pane, child, now);
-    // A shell command still runs a program that is not full-screen and
-    // does not read: it is at work until it ends or asks.
+    // A command still runs that does not read: at work until it ends or
+    // asks. A shell's, unless it took the full screen (an editor polling
+    // there is not at work); one the full-screen program marked itself (a
+    // remote shell's, relayed) runs until it says it ended.
     let screen = pane.screen();
-    let command = screen.commands().running() && !screen.mode(fux_vt::Mode::AlternateScreen);
+    let commands = screen.commands();
+    let command =
+        commands.running() && (commands.full_screen || !screen.mode(fux_vt::Mode::AlternateScreen));
     match activity {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty) => State::Reading,
         Activity::Polling | Activity::Waiting if command => State::Busy,

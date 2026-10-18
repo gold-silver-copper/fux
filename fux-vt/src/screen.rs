@@ -442,6 +442,13 @@ pub struct Screen {
     /// The nonce a shell mark must carry to count (`require_mark_nonce`):
     /// one without it is a program's output, not its shell's.
     mark_nonce: Option<Box<[u8]>>,
+    /// The nonce a mark of a program the shell runs carries to count, while
+    /// the command that started it runs (`require_mark_nonce`).
+    nested_nonce: Option<Box<[u8]>>,
+    /// The shell's running command, set aside while marks of a program it
+    /// runs say what runs: its output's start, and whether that began on
+    /// the alternate screen.
+    outer: Option<(CommandMark, bool)>,
     /// Where the cursor was as the host last said a line was submitted
     /// (`note_submit`): a late `C` starts the output after that line.
     submitted: Option<CommandMark>,
@@ -531,6 +538,8 @@ impl Screen {
             colours: None,
             prints: None,
             mark_nonce: None,
+            nested_nonce: None,
+            outer: None,
             submitted: None,
         })
     }
@@ -829,10 +838,16 @@ impl Screen {
     /// is; the rest (`B` and others) change nothing.
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
-        // Printed by a program, not its shell: no mark.
-        if let Some(nonce) = &self.mark_nonce
-            && !(payload.split(|b| *b == b';')).any(|o| o.strip_prefix(b"nonce=") == Some(nonce))
-        {
+        let carries = |nonce: &[u8]| {
+            (payload.split(|b| *b == b';')).any(|o| o.strip_prefix(b"nonce=") == Some(nonce))
+        };
+        let shell = self.mark_nonce.as_deref().is_none_or(carries);
+        let nested = !shell && self.nested_nonce.as_deref().is_some_and(carries);
+        if shell {
+            self.unnest();
+        } else if !(nested && self.nest()) {
+            // Printed by a program, not its shell nor one given the
+            // nested nonce while its command runs: no mark.
             return Ok(());
         }
         let command = parts.next().unwrap_or_default();
@@ -942,9 +957,12 @@ impl Screen {
         }
     }
     /// Makes shell marks count only with `nonce=NONCE` among their
-    /// options, or with none (`None`) every one.
-    pub(crate) fn require_mark_nonce(&mut self, nonce: Option<&[u8]>) {
+    /// options, or with none (`None`) every one; and a nested program's
+    /// with `nonce=NESTED`, while a command the shell started runs.
+    pub(crate) fn require_mark_nonce(&mut self, nonce: Option<&[u8]>, nested: Option<&[u8]>) {
         self.mark_nonce = nonce.map(Box::from);
+        self.nested_nonce = nested.map(Box::from);
+        self.outer = None;
     }
     /// Notes that a line was submitted with the cursor where it is.
     pub(crate) fn note_submit(&mut self) {
