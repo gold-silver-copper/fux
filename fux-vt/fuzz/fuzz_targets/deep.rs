@@ -64,6 +64,12 @@ const MOST: usize = 1 << 20;
 const SPLIT: usize = 64 << 10;
 const SPLIT_ROWS: usize = 2048;
 
+/// The most operations a run makes, and the most host reads (`f6`) among
+/// them: each checks screens of up to 261,121 cells and 8 MiB of history,
+/// and a read encodes every picture shown, so a run stays within seconds.
+const OPS: usize = 128;
+const READS: usize = 4;
+
 /// The work `sixel::encode` may do a crop pixel (`threats.md` B08).
 const C_ENC: u64 = 3;
 
@@ -236,8 +242,13 @@ fuzz_target!(|data: &[u8]| {
         fed: 0,
         split_fed: 0,
     };
+    let (mut ops, mut reads) = (0usize, 0usize);
     while let Some((&operation, tail)) = input.split_first() {
         input = tail;
+        ops = ops.saturating_add(1);
+        if ops > OPS {
+            break;
+        }
         let mut arg = || {
             let (first, rest) = input.split_first().map_or((0, &[][..]), |(f, r)| (*f, r));
             input = rest;
@@ -286,7 +297,12 @@ fuzz_target!(|data: &[u8]| {
                     .for_each(|p| p.require_mark_nonce(nonce, nested));
             }
             0xf7 => run.both().into_iter().for_each(Parser::note_submit),
-            0xf6 => run.both().into_iter().for_each(|p| host_reads(p)),
+            0xf6 => {
+                reads = reads.saturating_add(1);
+                if reads <= READS {
+                    run.both().into_iter().for_each(|p| host_reads(p));
+                }
+            }
             0xf5 => {
                 let cell = graphics(arg());
                 run.both()
