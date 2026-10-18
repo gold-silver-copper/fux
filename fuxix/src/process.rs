@@ -1042,12 +1042,6 @@ pub fn reads_terminal(_pid: Pid, _tty: &Path) -> bool {
     false
 }
 
-/// A thread's recent use of the processor, in tenths of a percent, from
-/// which it is taken to run: one blocked in a read was seen said to run at
-/// under 4%.
-#[cfg(target_os = "macos")]
-const IN_USE: i32 = 100;
-
 /// Whether a thread of `pid` runs (or is uninterruptible): `Some(false)`
 /// when every one waits, `Some(None)` when its threads cannot be read,
 /// `None` when it has none (ended, its parent yet to reap it).
@@ -1090,11 +1084,14 @@ fn running(pid: Pid) -> Option<Option<bool>> {
         known = true;
         // SAFETY: fully written, as checked above.
         let info = unsafe { info.assume_init() };
-        // A thread blocked in a read is now and then said to run, for an
-        // instant, its recent use of the processor near none: it runs when
-        // it uses some.
-        let runs = info.pth_run_state == libc::TH_STATE_RUNNING && info.pth_cpu_usage >= IN_USE;
-        if runs || info.pth_run_state == libc::TH_STATE_UNINTERRUPTIBLE {
+        // Said to run, it runs or is about to: woken by keys and yet to
+        // draw their echo, or on its way into a wait. Its recent use of the
+        // processor says nothing of that: a thread just woken from a long
+        // read has used next to none.
+        if matches!(
+            info.pth_run_state,
+            libc::TH_STATE_RUNNING | libc::TH_STATE_UNINTERRUPTIBLE
+        ) {
             return Some(Some(true));
         }
     }

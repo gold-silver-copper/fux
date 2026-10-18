@@ -4,7 +4,8 @@
 //! not get wrong: the [`Master`] is close-on-exec and nonblocking, and the
 //! [`Slave`] is given up to [`Slave::spawn`], which starts a program on it
 //! as the leader of a session of its own with the PTY as its controlling
-//! terminal, and leaves the parent without it.
+//! terminal, and leaves the parent without it (but on macOS, where the
+//! master holds it too: [`Master`]).
 use crate::errno::{Errno, check};
 use crate::process::Pid;
 use crate::terminal::{self, Size};
@@ -40,8 +41,25 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 /// the PTY open, and nonblocking, so a read or write that would wait fails
 /// with `AGAIN` instead. Read and write it with [`crate::io`], and wait for
 /// it with [`crate::poll`]. It keeps its slave's path.
+///
+/// On macOS it keeps the slave open too, for as long as it lives. There the
+/// last close of a slave throws away the output not yet read from the
+/// master (xnu's `ttylclose`: at once if the closing descriptor is
+/// nonblocking, else once 60 ticks pass), and the master reads nothing
+/// more once no slave is open (`ptcread`). The last close would otherwise
+/// be anyone's: this process's copies as it starts a program that has
+/// already printed and exited, or a probe that opens the slave only to
+/// ask (`O_NONBLOCK`). Held, the slave is closed last with the master,
+/// after its output was read. Its end is told by the program's exit, not
+/// by the master's hangup, which never comes while the slave is held.
 #[derive(Debug)]
-pub struct Master(OwnedFd, PathBuf);
+pub struct Master(
+    OwnedFd,
+    PathBuf,
+    #[cfg(target_os = "macos")]
+    #[expect(dead_code, reason = "held only to be closed with the master")]
+    OwnedFd,
+);
 
 /// A PTY's slave, not yet given to the program that runs on it
 /// ([`Slave::spawn`]). It is close-on-exec, and not this process's
@@ -181,7 +199,19 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
         .map_err(at("opening the PTY slave"))?;
     terminal::set_window_size(&master, size).map_err(at("TIOCSWINSZ"))?;
     crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
-    Ok((Master(master, name), Slave(OwnedFd::from(slave))))
+    let slave = OwnedFd::from(slave);
+    #[cfg(target_os = "macos")]
+    let master = Master(
+        master,
+        name,
+        slave
+            .try_clone()
+            .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
+            .map_err(at("holding the PTY slave"))?,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let master = Master(master, name);
+    Ok((master, Slave(slave)))
 }
 
 /// A new PTY master, granted.
