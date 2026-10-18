@@ -82,7 +82,7 @@
 //! clears its wrap flag (`--size 4x3 'abcd\e[H\e[2K'`). Raw bytes 0x80–0x9F
 //! are taken as C1 controls (vte), where Ghostty prints U+FFFD
 //! (`--size 1x4 'a\x90b'`).
-use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
+use crate::engine::{Blanks, Can, DEFECT, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener};
@@ -422,6 +422,17 @@ impl Engine for Alacritty {
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        // alacritty_terminal 0.26.0's `Grid::shrink_columns` (grid/resize.rs)
+        // never ends narrowing a row that holds a wide glyph to one column:
+        // it wraps the glyph's tail, puts the glyph back in front of it and
+        // loops, a row a turn, until memory runs out. So the engine sits out
+        // any shrink to one column.
+        if cols == 1 && self.term.columns() > 1 {
+            return Err(format!(
+                "{DEFECT}alacritty_terminal 0.26's Grid::shrink_columns loops forever \
+                 narrowing a wide glyph's row to one column"
+            ));
+        }
         self.term.resize(Size::new(rows, cols)?);
         Ok(())
     }
@@ -432,5 +443,33 @@ impl Engine for Alacritty {
 
     fn replies(&mut self) -> Result<Vec<u8>, String> {
         Ok(self.heard.borrow().replies.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::Setup;
+
+    /// A 1x2 grid holding U+4E00 is not narrowed to one column: alacritty
+    /// sits it out with an error of its engine's class, where its resize
+    /// would loop until memory ran out (2026-10-17, 55 GB). A resize that
+    /// keeps two columns still goes through.
+    #[test]
+    fn a_shrink_to_one_column_is_refused() -> Result<(), String> {
+        let setup = Setup {
+            rows: 1,
+            cols: 2,
+            history: 0,
+            reflow: true,
+        };
+        let mut engine = super::make(&setup)?;
+        engine.process("\u{4e00}".as_bytes())?;
+        let refused = engine
+            .resize(1, 1)
+            .err()
+            .ok_or("resize(1, 1) went through")?;
+        assert_eq!(crate::engine::abstention(&refused), "engine");
+        engine.resize(2, 2)?;
+        Ok(())
     }
 }

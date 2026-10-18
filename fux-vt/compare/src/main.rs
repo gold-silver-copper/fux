@@ -1187,7 +1187,57 @@ fn half_the_cores() -> usize {
         .div_ceil(2)
 }
 
+/// The most data compare may hold, in bytes, unless
+/// `FUX_VT_COMPARE_DATA_LIMIT` says otherwise (0: no limit of its own).
+const DATA_LIMIT: u64 = 4 << 30;
+
+/// Sets this process's data limit (`RLIMIT_DATA`, which its children
+/// inherit) to [`DATA_LIMIT`] or `FUX_VT_COMPARE_DATA_LIMIT`, never above
+/// the hard limit it has. An engine run in process that grows without end
+/// (alacritty_terminal 0.26's resize loop took 55 GB on 2026-10-17) then
+/// aborts with "memory allocation failed" instead of taking the machine.
+#[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "the data limit is set through libc's C interface, and only here"
+)]
+fn limit_data() -> Result<(), String> {
+    let bytes = match std::env::var("FUX_VT_COMPARE_DATA_LIMIT") {
+        Ok(text) => text
+            .parse::<u64>()
+            .map_err(|e| format!("FUX_VT_COMPARE_DATA_LIMIT={text:?}: {e}"))?,
+        Err(_) => DATA_LIMIT,
+    };
+    if bytes == 0 {
+        return Ok(());
+    }
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid rlimit for getrlimit to fill.
+    if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &raw mut limit) } != 0 {
+        return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
+    }
+    let wanted = libc::rlim_t::try_from(bytes).unwrap_or(libc::RLIM_INFINITY);
+    limit.rlim_cur = wanted.min(limit.rlim_max);
+    // SAFETY: `limit` is a valid rlimit, its soft limit within its hard.
+    if unsafe { libc::setrlimit(libc::RLIMIT_DATA, &raw const limit) } != 0 {
+        return Err(format!("setrlimit: {}", std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn limit_data() -> Result<(), String> {
+    Ok(())
+}
+
 fn main() -> ExitCode {
+    if let Err(e) = limit_data() {
+        eprintln!("fux-vt-compare: the data limit: {e}");
+        return ExitCode::from(2);
+    }
     // An engine's panic is caught and costs it its vote (`case::guarded`),
     // and reported there; the default hook would print each one again.
     std::panic::set_hook(Box::new(|_| {}));

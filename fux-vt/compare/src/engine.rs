@@ -381,14 +381,20 @@ pub const ENGINES: &[Kind] = &[
 /// adapter's, not for a failure of the engine's or of the run.
 pub const CANNOT: &str = "cannot tell: ";
 
+/// How an adapter's error begins when it refuses an input on which its
+/// engine has a known defect it would not survive (alacritty's loop): the
+/// engine abstains for its own failure.
+pub const DEFECT: &str = "engine defect: ";
+
 /// Why an engine abstained, from its error: `adapter-limited` (the
 /// adapter cannot read what it was given, [`CANNOT`]), `engine` (the engine
-/// panicked: `case::guarded` says so) or `infrastructure` (anything else: a
-/// reply or a print that never came, a process that died).
+/// panicked, as `case::guarded` says, or has a known defect there,
+/// [`DEFECT`]) or `infrastructure` (anything else: a reply or a print that
+/// never came, a process that died).
 pub fn abstention(why: &str) -> &'static str {
     if why.starts_with(CANNOT) {
         "adapter-limited"
-    } else if why.starts_with("panicked: ") {
+    } else if why.starts_with("panicked: ") || why.starts_with(DEFECT) {
         "engine"
     } else {
         "infrastructure"

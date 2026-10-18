@@ -200,6 +200,16 @@ engine's quirks against fux-vt and the others, each with a `replay`.
 `run.sh engines` prints what each one cannot tell and how its blanks
 differ from xterm's.
 
+The engines run in this process, so one that grows without end would
+take the machine: alacritty_terminal 0.26's resize loops forever
+narrowing a wide glyph's row to one column (`replay --engines alacritty
+--size 1x2 --history 0 '\u{4e00}' resize:1x1` took 55 GB on 2026-10-17).
+Its adapter refuses any shrink to one column, so alacritty abstains
+there, an engine defect. And `fux-vt-compare` limits its own data
+(`RLIMIT_DATA`, which its children inherit) to 4 GiB, or the bytes
+`FUX_VT_COMPARE_DATA_LIMIT` gives (0: no limit of its own), so anything
+else of the kind fails an allocation instead.
+
 | Engine | What, and pin | Votes | Notes |
 | --- | --- | --- | --- |
 | fux-vt | the subject, by path, set up as `fux::pane::OPTIONS` with reflow and an identity, as fux and ratty set it up | — | `--no-reflow`: without reflow, fux-vt's default, leaving out the families that need it |

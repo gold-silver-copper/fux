@@ -623,6 +623,7 @@ dependencies = [
  "fux",
  "fux-vt",
  "fuxix",
+ "libc",
  "libghostty-vt",
  "serde_json",
  "unicode-width 0.2.2",

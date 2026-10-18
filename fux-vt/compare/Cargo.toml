@@ -33,6 +33,9 @@ fux = { path = "../.." }
 # Reading the engines that run as their own processes.
 serde_json = "1"
 unicode-width = "0.2"
+# The data limit compare sets on itself (main.rs, `limit_data`), so a
+# runaway engine fails an allocation instead of taking the machine.
+libc = "0.2"
 
 [build-dependencies]
 # libvterm, compiled from its release source (run.sh fetches it).
