@@ -153,6 +153,15 @@ fn next_side(now: u32, needed: u32, most: u32) -> u32 {
     if doubled > most { most } else { doubled }
 }
 
+/// The largest picture the decoder keeps whole within a window of `width`
+/// by `height` pixels: its sides at most [`MAX_SIDE`], its height within
+/// [`MAX_PIXELS`] beside that width. What XTSMGRAPHICS reports (ctlseqs:
+/// "the minimum of the window size and the graphic size").
+pub(crate) fn largest(width: u32, height: u32) -> (u32, u32) {
+    let width = width.min(MAX_SIDE);
+    (width, height.min(most_beside(width)))
+}
+
 /// The most rows (or columns) a picture may keep beside `other` columns
 /// (or rows): within [`MAX_PIXELS`] and [`MAX_SIDE`].
 fn most_beside(other: u32) -> u32 {

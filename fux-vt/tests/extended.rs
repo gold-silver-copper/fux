@@ -1172,5 +1172,15 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
     assert_eq!(replies(&mut p, b"\x1b[?1;9;0S")?, "\x1b[?1;2S");
     assert_eq!(replies(&mut p, b"\x1b[?7;1;0S")?, "\x1b[?7;1S");
     assert_eq!(replies(&mut p, b"\x1b[?1S")?, "");
+    // The geometry is the screen's, no more than the decoder keeps whole
+    // (ctlseqs: "the minimum of the window size and the graphic size"): a
+    // side at most 4096 pixels, and 4096 by 2160 in all.
+    let mut wide = Parser::with_options(Size::new(200, 500)?, 10, PICTURES)?;
+    wide.set_host_graphics(fux_vt::Graphics {
+        cell: Some((10, 20)),
+        sixel: true,
+    });
+    assert_eq!(replies(&mut wide, b"\x1b[?2;1;0S")?, "\x1b[?2;0;4096;2160S");
+    assert_eq!(replies(&mut wide, b"\x1b[?2;4;0S")?, "\x1b[?2;0;4096;2160S");
     Ok(())
 }

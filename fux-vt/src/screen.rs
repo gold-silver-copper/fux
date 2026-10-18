@@ -3586,7 +3586,10 @@ impl Screen {
                 let read = self.graphics.sixel && matches!(action, 1 | 2 | 4);
                 match n {
                     1 if read => Some(reply!("\x1b[?1;0;256S")),
+                    // The screen's pixels, but no more than the decoder keeps
+                    // (SIX-10).
                     2 if read && let Some((height, width)) = self.pixel_size() => {
+                        let (width, height) = crate::sixel::largest(width, height);
                         Some(reply!("\x1b[?2;0;{width};{height}S"))
                     }
                     _ => Some(reply!("\x1b[?{n};{status}S")),
