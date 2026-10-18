@@ -99,7 +99,8 @@ fn take_row(
         .get_mut(start..start.wrapping_add(usize::from(m.used)))
         .unwrap_or_default();
     let len = trimmed(row).len();
-    work!(cells, row.len());
+    // The blank tail scanned; history's push counts the cells it keeps.
+    work!(cells, row.len().saturating_sub(len));
     let kept = row.get_mut(..len).unwrap_or_default();
     history.push(m.arriving(kept, width))?;
     // Blanked here, while they are at hand, not when the slot is taken;
@@ -1621,8 +1622,9 @@ impl Grid {
         };
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
-        work!(cells, m.used);
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
+        // The blank tail scanned; history's push counts the cells it keeps.
+        work!(cells, usize::from(m.used).saturating_sub(cells.len()));
         self.history.push(m.arriving(cells, self.size.cols()))?;
         // The row's text and links, which history has just taken, go with
         // it: a copy of the text, and the links themselves.
