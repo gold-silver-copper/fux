@@ -613,8 +613,8 @@ macro_rules! side {
                             style,
                         } => {
                             let cell = vt::CellRef::new(text, *wide, attributes(style));
-                            run.resize(*len, cell);
-                            stored(&cell)
+                            let made = run.resize(*len, cell);
+                            format!("{} {}", made.is_ok(), stored(&cell))
                         }
                         Edit::Copy { i, from } => {
                             let was = run.clone();
