@@ -1324,6 +1324,9 @@ mod tests {
             (127, 3, "M-BSpace"),
             (8, 5, "C-BSpace"),
             (8, 6, "C-S-BSpace"),
+            // BS is Ctrl's whatever else is held, none or Alt.
+            (8, 1, "C-BSpace"),
+            (8, 3, "C-M-BSpace"),
             (97, 5, "C-a"),
         ] {
             for form in [
@@ -1790,6 +1793,15 @@ mod tests {
         d.expect(t0);
         d.expire(t0 + REPLY_WINDOW);
         assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
+        // Two rounds of questions: the first DA1 answer leaves the second
+        // expected, and the second ends it.
+        let mut d = Decoder::default();
+        d.expect(t0);
+        d.expect(t0);
+        let da1 = b"\x1b[?1;2c\x1b]";
+        assert_eq!(waits(&mut d, da1, &mut out), Some(REPLY_DELAY));
+        d.timeout(&mut out);
+        assert_eq!(waits(&mut d, da1, &mut out), Some(ESCAPE_DELAY));
     }
 
     /// The DCS answers fux asks for (`outer::styles!`), in the forms
