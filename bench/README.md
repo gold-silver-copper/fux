@@ -18,7 +18,8 @@ From the repository root:
 
 ```sh
 cargo run --release --manifest-path bench/Cargo.toml -- --against master
-cargo run --release --manifest-path bench/Cargo.toml -- --against HEAD~1 --repeats 9 --only paint/
+cargo run --release --manifest-path bench/Cargo.toml -- --against HEAD~1 --floors FLOORS.json --only paint/
+cargo run --release --manifest-path bench/Cargo.toml -- --calibrate --json FLOORS.json
 
 bench/target/release/fux-bench list          # the workloads
 bench/target/release/fux-bench time          # each one's thread CPU time here, and MB/s
@@ -30,9 +31,10 @@ bench/target/release/fux-bench feel          # latency, throughput and footprint
 | Command and flags | Meaning |
 | --- | --- |
 | (default) `--against REF` | every workload on REF (default `master`) and on the working tree, in instructions |
-| `--repeats N` | runs per side (default 5) |
+| `--repeats N` | rounds (default 15) |
 | `--jobs N` | threads (default: every core) |
-| `--threshold PERCENT` | flag a workload this much above REF (default 3) |
+| `--floors FILE` | judge each workload against its floor from a calibration |
+| `--calibrate` | an A/A run of the working tree built twice: each workload's floor, written to the JSON |
 | `--only TEXT` | only workloads whose names contain TEXT; repeatable |
 | `--json FILE` | where the JSON goes (default `bench/target/fux-bench/against.json`, `info.json` or `feel.json`) |
 | `run WORKLOAD [--baseline]` | one workload, or its baseline, once |
@@ -84,14 +86,20 @@ bytes per frame in the JSON.
    (about fifty times slower). A perf count whose PMU ran for less than all
    the time it was enabled (multiplexed, or moved between core types) is
    refused, never scaled.
-4. Each side runs `--repeats` times, alternating which side goes first.
-5. A side's count is the fewest instructions of its runs less the fewest
-   of its baseline's (on macOS kernel work for the process only adds). Its
-   **noise** is the spread of its runs over its count.
-6. A workload is **flagged** when the working tree retires more than
-   `--threshold` percent more than REF and more than either side's noise,
-   and reported as too noisy to judge when its noise is above the
-   threshold.
+4. In each of `--repeats` rounds every workload runs four times (each
+   side, and each side's baseline), the side that goes first alternating.
+5. A round's change pairs both sides' runs in it, each less its side's
+   median baseline. A workload's **change** is the median of its rounds',
+   its **spread** their median absolute deviation.
+6. Its **floor** comes from a calibration (`--calibrate`, an A/A run apart
+   from the one judged): max(0.25%, the A/A change, 3 × the A/A spread). A
+   change past it is **slower** or **faster**, else **inconclusive**; a run
+   whose spread is past two thirds of it is **noisy**; a floor over 1% means
+   the tool is **broken** for that workload. Across the recordings, a sign
+   test that counts each program's recordings once flags a broad loss.
+   Exit 1 on a slower workload or a broad loss, 2 on a broken one. The JSON
+   keeps every round and count, and perf's report of every run goes beside
+   it (`NAME.perf.txt`).
 
 For fux-vt beside other engines in instructions per byte, see
 `fux-vt/compare/run.sh bench --instructions`.
