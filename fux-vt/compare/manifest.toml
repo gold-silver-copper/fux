@@ -447,10 +447,8 @@ why = "not ported yet"
 [[check]]
 name = "ci-tmux-input-keys"
 schedule = "ci"
-command = "tmux's input-keys.sh (176 cases)"
+command = "cargo test -p fux-vt --test input_suites tmux_input_keys: tmux's input-keys.sh, its 507 cases (474 agree, 3 differ as recorded, 30 not applicable)"
 needs = []
-wired = false
-why = "not ported yet"
 
 [[check]]
 name = "ci-ghostty-key-encode"

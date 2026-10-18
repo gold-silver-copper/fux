@@ -1,0 +1,511 @@
+# tmux regress/input-keys.sh (ISC, Nicholas Marriott), each case as fux-vt's encoder
+# sees it: source, mode, key (tmux's name), the bytes tmux expects, verdict.
+# tmux sends its key names into a pane reset before each, and reads the bytes
+# back; extended-keys always is modifyOtherKeys 1 (`mok=1`).
+input-keys.sh:59	legacy	C-Space	\x00	agree
+input-keys.sh:60	legacy	C-a	\x01	agree
+input-keys.sh:60	legacy	M-C-a	\e\x01	agree
+input-keys.sh:61	legacy	C-b	\x02	agree
+input-keys.sh:61	legacy	M-C-b	\e\x02	agree
+input-keys.sh:62	legacy	C-c	\x03	agree
+input-keys.sh:62	legacy	M-C-c	\e\x03	agree
+input-keys.sh:63	legacy	C-d	\x04	agree
+input-keys.sh:63	legacy	M-C-d	\e\x04	agree
+input-keys.sh:64	legacy	C-e	\x05	agree
+input-keys.sh:64	legacy	M-C-e	\e\x05	agree
+input-keys.sh:65	legacy	C-f	\x06	agree
+input-keys.sh:65	legacy	M-C-f	\e\x06	agree
+input-keys.sh:66	legacy	C-g	\x07	agree
+input-keys.sh:66	legacy	M-C-g	\e\x07	agree
+input-keys.sh:67	legacy	C-h	\x08	agree
+input-keys.sh:67	legacy	M-C-h	\e\x08	agree
+input-keys.sh:68	legacy	C-i	\x09	agree
+input-keys.sh:68	legacy	M-C-i	\e\x09	agree
+input-keys.sh:69	legacy	C-j	\x0a	agree
+input-keys.sh:69	legacy	M-C-j	\e\x0a	agree
+input-keys.sh:70	legacy	C-k	\x0b	agree
+input-keys.sh:70	legacy	M-C-k	\e\x0b	agree
+input-keys.sh:71	legacy	C-l	\x0c	agree
+input-keys.sh:71	legacy	M-C-l	\e\x0c	agree
+input-keys.sh:72	legacy	C-m	\x0d	agree
+input-keys.sh:72	legacy	M-C-m	\e\x0d	agree
+input-keys.sh:73	legacy	C-n	\x0e	agree
+input-keys.sh:73	legacy	M-C-n	\e\x0e	agree
+input-keys.sh:74	legacy	C-o	\x0f	agree
+input-keys.sh:74	legacy	M-C-o	\e\x0f	agree
+input-keys.sh:75	legacy	C-p	\x10	agree
+input-keys.sh:75	legacy	M-C-p	\e\x10	agree
+input-keys.sh:76	legacy	C-q	\x11	agree
+input-keys.sh:76	legacy	M-C-q	\e\x11	agree
+input-keys.sh:77	legacy	C-r	\x12	agree
+input-keys.sh:77	legacy	M-C-r	\e\x12	agree
+input-keys.sh:78	legacy	C-s	\x13	agree
+input-keys.sh:78	legacy	M-C-s	\e\x13	agree
+input-keys.sh:79	legacy	C-t	\x14	agree
+input-keys.sh:79	legacy	M-C-t	\e\x14	agree
+input-keys.sh:80	legacy	C-u	\x15	agree
+input-keys.sh:80	legacy	M-C-u	\e\x15	agree
+input-keys.sh:81	legacy	C-v	\x16	agree
+input-keys.sh:81	legacy	M-C-v	\e\x16	agree
+input-keys.sh:82	legacy	C-w	\x17	agree
+input-keys.sh:82	legacy	M-C-w	\e\x17	agree
+input-keys.sh:83	legacy	C-x	\x18	agree
+input-keys.sh:83	legacy	M-C-x	\e\x18	agree
+input-keys.sh:84	legacy	C-y	\x19	agree
+input-keys.sh:84	legacy	M-C-y	\e\x19	agree
+input-keys.sh:85	legacy	C-z	\x1a	agree
+input-keys.sh:85	legacy	M-C-z	\e\x1a	agree
+input-keys.sh:86	legacy	Escape	\e	agree
+input-keys.sh:86	legacy	M-Escape	\e\e	agree
+input-keys.sh:87	legacy	C-\	\x1c	agree
+input-keys.sh:87	legacy	M-C-\	\e\x1c	agree
+input-keys.sh:88	legacy	C-]	\x1d	agree
+input-keys.sh:88	legacy	M-C-]	\e\x1d	agree
+input-keys.sh:89	legacy	C-^	\x1e	agree
+input-keys.sh:89	legacy	M-C-^	\e\x1e	agree
+input-keys.sh:90	legacy	C-_	\x1f	agree
+input-keys.sh:90	legacy	M-C-_	\e\x1f	agree
+input-keys.sh:91	legacy	Space	 	agree
+input-keys.sh:91	legacy	M-Space	\e 	agree
+input-keys.sh:92	legacy	!	!	agree
+input-keys.sh:92	legacy	M-!	\e!	agree
+input-keys.sh:93	legacy	"	"	agree
+input-keys.sh:93	legacy	M-"	\e"	agree
+input-keys.sh:94	legacy	#	#	agree
+input-keys.sh:94	legacy	M-#	\e#	agree
+input-keys.sh:95	legacy	$	$	agree
+input-keys.sh:95	legacy	M-$	\e$	agree
+input-keys.sh:96	legacy	%	%	agree
+input-keys.sh:96	legacy	M-%	\e%	agree
+input-keys.sh:97	legacy	&	&	agree
+input-keys.sh:97	legacy	M-&	\e&	agree
+input-keys.sh:98	legacy	'	'	agree
+input-keys.sh:98	legacy	M-'	\e'	agree
+input-keys.sh:99	legacy	(	(	agree
+input-keys.sh:99	legacy	M-(	\e(	agree
+input-keys.sh:100	legacy	)	)	agree
+input-keys.sh:100	legacy	M-)	\e)	agree
+input-keys.sh:101	legacy	*	*	agree
+input-keys.sh:101	legacy	M-*	\e*	agree
+input-keys.sh:102	legacy	+	+	agree
+input-keys.sh:102	legacy	M-+	\e+	agree
+input-keys.sh:103	legacy	,	,	agree
+input-keys.sh:103	legacy	M-,	\e,	agree
+input-keys.sh:104	legacy	-	-	agree
+input-keys.sh:104	legacy	M--	\e-	agree
+input-keys.sh:105	legacy	.	.	agree
+input-keys.sh:105	legacy	M-.	\e.	agree
+input-keys.sh:106	legacy	/	/	agree
+input-keys.sh:106	legacy	M-/	\e/	agree
+input-keys.sh:107	legacy	0	0	agree
+input-keys.sh:107	legacy	M-0	\e0	agree
+input-keys.sh:108	legacy	1	1	agree
+input-keys.sh:108	legacy	M-1	\e1	agree
+input-keys.sh:109	legacy	2	2	agree
+input-keys.sh:109	legacy	M-2	\e2	agree
+input-keys.sh:110	legacy	3	3	agree
+input-keys.sh:110	legacy	M-3	\e3	agree
+input-keys.sh:111	legacy	4	4	agree
+input-keys.sh:111	legacy	M-4	\e4	agree
+input-keys.sh:112	legacy	5	5	agree
+input-keys.sh:112	legacy	M-5	\e5	agree
+input-keys.sh:113	legacy	6	6	agree
+input-keys.sh:113	legacy	M-6	\e6	agree
+input-keys.sh:114	legacy	7	7	agree
+input-keys.sh:114	legacy	M-7	\e7	agree
+input-keys.sh:115	legacy	8	8	agree
+input-keys.sh:115	legacy	M-8	\e8	agree
+input-keys.sh:116	legacy	9	9	agree
+input-keys.sh:116	legacy	M-9	\e9	agree
+input-keys.sh:117	legacy	:	:	agree
+input-keys.sh:117	legacy	M-:	\e:	agree
+input-keys.sh:118	legacy	;	;	agree
+input-keys.sh:118	legacy	M-;	\e;	agree
+input-keys.sh:119	legacy	<	<	agree
+input-keys.sh:119	legacy	M-<	\e<	agree
+input-keys.sh:120	legacy	=	=	agree
+input-keys.sh:120	legacy	M-=	\e=	agree
+input-keys.sh:121	legacy	>	>	agree
+input-keys.sh:121	legacy	M->	\e>	agree
+input-keys.sh:122	legacy	?	?	agree
+input-keys.sh:122	legacy	M-?	\e?	agree
+input-keys.sh:123	legacy	@	@	agree
+input-keys.sh:123	legacy	M-@	\e@	agree
+input-keys.sh:124	legacy	A	A	agree
+input-keys.sh:124	legacy	M-A	\eA	agree
+input-keys.sh:125	legacy	B	B	agree
+input-keys.sh:125	legacy	M-B	\eB	agree
+input-keys.sh:126	legacy	C	C	agree
+input-keys.sh:126	legacy	M-C	\eC	agree
+input-keys.sh:127	legacy	D	D	agree
+input-keys.sh:127	legacy	M-D	\eD	agree
+input-keys.sh:128	legacy	E	E	agree
+input-keys.sh:128	legacy	M-E	\eE	agree
+input-keys.sh:129	legacy	F	F	agree
+input-keys.sh:129	legacy	M-F	\eF	agree
+input-keys.sh:130	legacy	G	G	agree
+input-keys.sh:130	legacy	M-G	\eG	agree
+input-keys.sh:131	legacy	H	H	agree
+input-keys.sh:131	legacy	M-H	\eH	agree
+input-keys.sh:132	legacy	I	I	agree
+input-keys.sh:132	legacy	M-I	\eI	agree
+input-keys.sh:133	legacy	J	J	agree
+input-keys.sh:133	legacy	M-J	\eJ	agree
+input-keys.sh:134	legacy	K	K	agree
+input-keys.sh:134	legacy	M-K	\eK	agree
+input-keys.sh:135	legacy	L	L	agree
+input-keys.sh:135	legacy	M-L	\eL	agree
+input-keys.sh:136	legacy	M	M	agree
+input-keys.sh:136	legacy	M-M	\eM	agree
+input-keys.sh:137	legacy	N	N	agree
+input-keys.sh:137	legacy	M-N	\eN	agree
+input-keys.sh:138	legacy	O	O	agree
+input-keys.sh:138	legacy	M-O	\eO	agree
+input-keys.sh:139	legacy	P	P	agree
+input-keys.sh:139	legacy	M-P	\eP	agree
+input-keys.sh:140	legacy	Q	Q	agree
+input-keys.sh:140	legacy	M-Q	\eQ	agree
+input-keys.sh:141	legacy	R	R	agree
+input-keys.sh:141	legacy	M-R	\eR	agree
+input-keys.sh:142	legacy	S	S	agree
+input-keys.sh:142	legacy	M-S	\eS	agree
+input-keys.sh:143	legacy	T	T	agree
+input-keys.sh:143	legacy	M-T	\eT	agree
+input-keys.sh:144	legacy	U	U	agree
+input-keys.sh:144	legacy	M-U	\eU	agree
+input-keys.sh:145	legacy	V	V	agree
+input-keys.sh:145	legacy	M-V	\eV	agree
+input-keys.sh:146	legacy	W	W	agree
+input-keys.sh:146	legacy	M-W	\eW	agree
+input-keys.sh:147	legacy	X	X	agree
+input-keys.sh:147	legacy	M-X	\eX	agree
+input-keys.sh:148	legacy	Y	Y	agree
+input-keys.sh:148	legacy	M-Y	\eY	agree
+input-keys.sh:149	legacy	Z	Z	agree
+input-keys.sh:149	legacy	M-Z	\eZ	agree
+input-keys.sh:150	legacy	[	[	agree
+input-keys.sh:150	legacy	M-[	\e[	agree
+input-keys.sh:151	legacy	\	\\	agree
+input-keys.sh:151	legacy	M-\	\e\\	agree
+input-keys.sh:152	legacy	]	]	agree
+input-keys.sh:152	legacy	M-]	\e]	agree
+input-keys.sh:153	legacy	^	^	agree
+input-keys.sh:153	legacy	M-^	\e^	agree
+input-keys.sh:154	legacy	_	_	agree
+input-keys.sh:154	legacy	M-_	\e_	agree
+input-keys.sh:155	legacy	`	`	agree
+input-keys.sh:155	legacy	M-`	\e`	agree
+input-keys.sh:156	legacy	a	a	agree
+input-keys.sh:156	legacy	M-a	\ea	agree
+input-keys.sh:157	legacy	b	b	agree
+input-keys.sh:157	legacy	M-b	\eb	agree
+input-keys.sh:158	legacy	c	c	agree
+input-keys.sh:158	legacy	M-c	\ec	agree
+input-keys.sh:159	legacy	d	d	agree
+input-keys.sh:159	legacy	M-d	\ed	agree
+input-keys.sh:160	legacy	e	e	agree
+input-keys.sh:160	legacy	M-e	\ee	agree
+input-keys.sh:161	legacy	f	f	agree
+input-keys.sh:161	legacy	M-f	\ef	agree
+input-keys.sh:162	legacy	g	g	agree
+input-keys.sh:162	legacy	M-g	\eg	agree
+input-keys.sh:163	legacy	h	h	agree
+input-keys.sh:163	legacy	M-h	\eh	agree
+input-keys.sh:164	legacy	i	i	agree
+input-keys.sh:164	legacy	M-i	\ei	agree
+input-keys.sh:165	legacy	j	j	agree
+input-keys.sh:165	legacy	M-j	\ej	agree
+input-keys.sh:166	legacy	k	k	agree
+input-keys.sh:166	legacy	M-k	\ek	agree
+input-keys.sh:167	legacy	l	l	agree
+input-keys.sh:167	legacy	M-l	\el	agree
+input-keys.sh:168	legacy	m	m	agree
+input-keys.sh:168	legacy	M-m	\em	agree
+input-keys.sh:169	legacy	n	n	agree
+input-keys.sh:169	legacy	M-n	\en	agree
+input-keys.sh:170	legacy	o	o	agree
+input-keys.sh:170	legacy	M-o	\eo	agree
+input-keys.sh:171	legacy	p	p	agree
+input-keys.sh:171	legacy	M-p	\ep	agree
+input-keys.sh:172	legacy	q	q	agree
+input-keys.sh:172	legacy	M-q	\eq	agree
+input-keys.sh:173	legacy	r	r	agree
+input-keys.sh:173	legacy	M-r	\er	agree
+input-keys.sh:174	legacy	s	s	agree
+input-keys.sh:174	legacy	M-s	\es	agree
+input-keys.sh:175	legacy	t	t	agree
+input-keys.sh:175	legacy	M-t	\et	agree
+input-keys.sh:176	legacy	u	u	agree
+input-keys.sh:176	legacy	M-u	\eu	agree
+input-keys.sh:177	legacy	v	v	agree
+input-keys.sh:177	legacy	M-v	\ev	agree
+input-keys.sh:178	legacy	w	w	agree
+input-keys.sh:178	legacy	M-w	\ew	agree
+input-keys.sh:179	legacy	x	x	agree
+input-keys.sh:179	legacy	M-x	\ex	agree
+input-keys.sh:180	legacy	y	y	agree
+input-keys.sh:180	legacy	M-y	\ey	agree
+input-keys.sh:181	legacy	z	z	agree
+input-keys.sh:181	legacy	M-z	\ez	agree
+input-keys.sh:182	legacy	{	{	agree
+input-keys.sh:182	legacy	M-{	\e{	agree
+input-keys.sh:183	legacy	|	|	agree
+input-keys.sh:183	legacy	M-|	\e|	agree
+input-keys.sh:184	legacy	}	}	agree
+input-keys.sh:184	legacy	M-}	\e}	agree
+input-keys.sh:185	legacy	~	~	agree
+input-keys.sh:185	legacy	M-~	\e~	agree
+input-keys.sh:187	legacy	Tab	\x09	agree
+input-keys.sh:187	legacy	M-Tab	\e\x09	agree
+input-keys.sh:188	legacy	BSpace	\x7f	agree
+input-keys.sh:188	legacy	M-BSpace	\e\x7f	agree
+input-keys.sh:194	legacy	F1	\eOP	agree
+input-keys.sh:195	legacy	F2	\eOQ	agree
+input-keys.sh:196	legacy	F3	\eOR	agree
+input-keys.sh:197	legacy	F4	\eOS	agree
+input-keys.sh:198	legacy	F5	\e[15~	agree
+input-keys.sh:199	legacy	F6	\e[17~	agree
+input-keys.sh:200	legacy	F8	\e[19~	agree
+input-keys.sh:201	legacy	F9	\e[20~	agree
+input-keys.sh:202	legacy	F10	\e[21~	agree
+input-keys.sh:203	legacy	F11	\e[23~	agree
+input-keys.sh:204	legacy	F12	\e[24~	agree
+input-keys.sh:206	legacy	IC	\e[2~	agree
+input-keys.sh:207	legacy	Insert	\e[2~	agree
+input-keys.sh:208	legacy	DC	\e[3~	agree
+input-keys.sh:209	legacy	Delete	\e[3~	agree
+input-keys.sh:212	legacy	Home	\e[1~	differs: tmux reads TERM=screen's terminfo, whose khome is CSI 1 ~; fux promises xterm-256color, whose Home is xterm's (decided by terminfo); fux: \e[H
+input-keys.sh:213	legacy	End	\e[4~	differs: tmux reads TERM=screen's terminfo, whose kend is CSI 4 ~; fux promises xterm-256color, whose End is xterm's (decided by terminfo); fux: \e[F
+input-keys.sh:215	legacy	NPage	\e[6~	agree
+input-keys.sh:216	legacy	PageDown	\e[6~	agree
+input-keys.sh:217	legacy	PgDn	\e[6~	agree
+input-keys.sh:218	legacy	PPage	\e[5~	agree
+input-keys.sh:219	legacy	PageUp	\e[5~	agree
+input-keys.sh:220	legacy	PgUp	\e[5~	agree
+input-keys.sh:222	legacy	BTab	\e[Z	agree
+input-keys.sh:223	legacy	C-S-Tab	\x09	differs: tmux's standard keys drop Ctrl on Tab; fux sends Shift-Tab with Ctrl as xterm modifies a numbered key, which real xterm's bytes are to settle (KEY-13, KEY-19); fux: \e[1;6Z
+input-keys.sh:225	legacy	Up	\e[A	agree
+input-keys.sh:226	legacy	Down	\e[B	agree
+input-keys.sh:227	legacy	Right	\e[C	agree
+input-keys.sh:228	legacy	Left	\e[D	agree
+input-keys.sh:231	legacy	KP*	*	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:231	legacy	M-KP*	\e*	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:232	legacy	KP+	+	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:232	legacy	M-KP+	\e+	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:233	legacy	KP-	-	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:233	legacy	M-KP-	\e-	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:234	legacy	KP.	.	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:234	legacy	M-KP.	\e.	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:235	legacy	KP/	/	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:235	legacy	M-KP/	\e/	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:236	legacy	KP0	0	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:236	legacy	M-KP0	\e0	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:237	legacy	KP1	1	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:237	legacy	M-KP1	\e1	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:238	legacy	KP2	2	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:238	legacy	M-KP2	\e2	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:239	legacy	KP3	3	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:239	legacy	M-KP3	\e3	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:240	legacy	KP4	4	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:240	legacy	M-KP4	\e4	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:241	legacy	KP5	5	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:241	legacy	M-KP5	\e5	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:242	legacy	KP6	6	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:242	legacy	M-KP6	\e6	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:243	legacy	KP7	7	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:243	legacy	M-KP7	\e7	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:244	legacy	KP8	8	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:244	legacy	M-KP8	\e8	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:245	legacy	KP9	9	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:245	legacy	M-KP9	\e9	na: tmux's keypad names, which fux does not parse: a legacy client terminal sends its keypad as the keys it types
+input-keys.sh:277	legacy mok=1	S-F1	\e[1;2P	agree
+input-keys.sh:277	legacy mok=1	M-F1	\e[1;3P	agree
+input-keys.sh:277	legacy mok=1	S-M-F1	\e[1;4P	agree
+input-keys.sh:277	legacy mok=1	C-F1	\e[1;5P	agree
+input-keys.sh:277	legacy mok=1	S-C-F1	\e[1;6P	agree
+input-keys.sh:277	legacy mok=1	C-M-F1	\e[1;7P	agree
+input-keys.sh:277	legacy mok=1	S-C-M-F1	\e[1;8P	agree
+input-keys.sh:278	legacy mok=1	S-F2	\e[1;2Q	agree
+input-keys.sh:278	legacy mok=1	M-F2	\e[1;3Q	agree
+input-keys.sh:278	legacy mok=1	S-M-F2	\e[1;4Q	agree
+input-keys.sh:278	legacy mok=1	C-F2	\e[1;5Q	agree
+input-keys.sh:278	legacy mok=1	S-C-F2	\e[1;6Q	agree
+input-keys.sh:278	legacy mok=1	C-M-F2	\e[1;7Q	agree
+input-keys.sh:278	legacy mok=1	S-C-M-F2	\e[1;8Q	agree
+input-keys.sh:279	legacy mok=1	S-F3	\e[1;2R	agree
+input-keys.sh:279	legacy mok=1	M-F3	\e[1;3R	agree
+input-keys.sh:279	legacy mok=1	S-M-F3	\e[1;4R	agree
+input-keys.sh:279	legacy mok=1	C-F3	\e[1;5R	agree
+input-keys.sh:279	legacy mok=1	S-C-F3	\e[1;6R	agree
+input-keys.sh:279	legacy mok=1	C-M-F3	\e[1;7R	agree
+input-keys.sh:279	legacy mok=1	S-C-M-F3	\e[1;8R	agree
+input-keys.sh:280	legacy mok=1	S-F4	\e[1;2S	agree
+input-keys.sh:280	legacy mok=1	M-F4	\e[1;3S	agree
+input-keys.sh:280	legacy mok=1	S-M-F4	\e[1;4S	agree
+input-keys.sh:280	legacy mok=1	C-F4	\e[1;5S	agree
+input-keys.sh:280	legacy mok=1	S-C-F4	\e[1;6S	agree
+input-keys.sh:280	legacy mok=1	C-M-F4	\e[1;7S	agree
+input-keys.sh:280	legacy mok=1	S-C-M-F4	\e[1;8S	agree
+input-keys.sh:281	legacy mok=1	S-F5	\e[15;2~	agree
+input-keys.sh:281	legacy mok=1	M-F5	\e[15;3~	agree
+input-keys.sh:281	legacy mok=1	S-M-F5	\e[15;4~	agree
+input-keys.sh:281	legacy mok=1	C-F5	\e[15;5~	agree
+input-keys.sh:281	legacy mok=1	S-C-F5	\e[15;6~	agree
+input-keys.sh:281	legacy mok=1	C-M-F5	\e[15;7~	agree
+input-keys.sh:281	legacy mok=1	S-C-M-F5	\e[15;8~	agree
+input-keys.sh:282	legacy mok=1	S-F6	\e[17;2~	agree
+input-keys.sh:282	legacy mok=1	M-F6	\e[17;3~	agree
+input-keys.sh:282	legacy mok=1	S-M-F6	\e[17;4~	agree
+input-keys.sh:282	legacy mok=1	C-F6	\e[17;5~	agree
+input-keys.sh:282	legacy mok=1	S-C-F6	\e[17;6~	agree
+input-keys.sh:282	legacy mok=1	C-M-F6	\e[17;7~	agree
+input-keys.sh:282	legacy mok=1	S-C-M-F6	\e[17;8~	agree
+input-keys.sh:283	legacy mok=1	S-F8	\e[19;2~	agree
+input-keys.sh:283	legacy mok=1	M-F8	\e[19;3~	agree
+input-keys.sh:283	legacy mok=1	S-M-F8	\e[19;4~	agree
+input-keys.sh:283	legacy mok=1	C-F8	\e[19;5~	agree
+input-keys.sh:283	legacy mok=1	S-C-F8	\e[19;6~	agree
+input-keys.sh:283	legacy mok=1	C-M-F8	\e[19;7~	agree
+input-keys.sh:283	legacy mok=1	S-C-M-F8	\e[19;8~	agree
+input-keys.sh:284	legacy mok=1	S-F9	\e[20;2~	agree
+input-keys.sh:284	legacy mok=1	M-F9	\e[20;3~	agree
+input-keys.sh:284	legacy mok=1	S-M-F9	\e[20;4~	agree
+input-keys.sh:284	legacy mok=1	C-F9	\e[20;5~	agree
+input-keys.sh:284	legacy mok=1	S-C-F9	\e[20;6~	agree
+input-keys.sh:284	legacy mok=1	C-M-F9	\e[20;7~	agree
+input-keys.sh:284	legacy mok=1	S-C-M-F9	\e[20;8~	agree
+input-keys.sh:285	legacy mok=1	S-F10	\e[21;2~	agree
+input-keys.sh:285	legacy mok=1	M-F10	\e[21;3~	agree
+input-keys.sh:285	legacy mok=1	S-M-F10	\e[21;4~	agree
+input-keys.sh:285	legacy mok=1	C-F10	\e[21;5~	agree
+input-keys.sh:285	legacy mok=1	S-C-F10	\e[21;6~	agree
+input-keys.sh:285	legacy mok=1	C-M-F10	\e[21;7~	agree
+input-keys.sh:285	legacy mok=1	S-C-M-F10	\e[21;8~	agree
+input-keys.sh:286	legacy mok=1	S-F11	\e[23;2~	agree
+input-keys.sh:286	legacy mok=1	M-F11	\e[23;3~	agree
+input-keys.sh:286	legacy mok=1	S-M-F11	\e[23;4~	agree
+input-keys.sh:286	legacy mok=1	C-F11	\e[23;5~	agree
+input-keys.sh:286	legacy mok=1	S-C-F11	\e[23;6~	agree
+input-keys.sh:286	legacy mok=1	C-M-F11	\e[23;7~	agree
+input-keys.sh:286	legacy mok=1	S-C-M-F11	\e[23;8~	agree
+input-keys.sh:287	legacy mok=1	S-F12	\e[24;2~	agree
+input-keys.sh:287	legacy mok=1	M-F12	\e[24;3~	agree
+input-keys.sh:287	legacy mok=1	S-M-F12	\e[24;4~	agree
+input-keys.sh:287	legacy mok=1	C-F12	\e[24;5~	agree
+input-keys.sh:287	legacy mok=1	S-C-F12	\e[24;6~	agree
+input-keys.sh:287	legacy mok=1	C-M-F12	\e[24;7~	agree
+input-keys.sh:287	legacy mok=1	S-C-M-F12	\e[24;8~	agree
+input-keys.sh:289	legacy mok=1	S-Up	\e[1;2A	agree
+input-keys.sh:289	legacy mok=1	M-Up	\e[1;3A	agree
+input-keys.sh:289	legacy mok=1	S-M-Up	\e[1;4A	agree
+input-keys.sh:289	legacy mok=1	C-Up	\e[1;5A	agree
+input-keys.sh:289	legacy mok=1	S-C-Up	\e[1;6A	agree
+input-keys.sh:289	legacy mok=1	C-M-Up	\e[1;7A	agree
+input-keys.sh:289	legacy mok=1	S-C-M-Up	\e[1;8A	agree
+input-keys.sh:290	legacy mok=1	S-Down	\e[1;2B	agree
+input-keys.sh:290	legacy mok=1	M-Down	\e[1;3B	agree
+input-keys.sh:290	legacy mok=1	S-M-Down	\e[1;4B	agree
+input-keys.sh:290	legacy mok=1	C-Down	\e[1;5B	agree
+input-keys.sh:290	legacy mok=1	S-C-Down	\e[1;6B	agree
+input-keys.sh:290	legacy mok=1	C-M-Down	\e[1;7B	agree
+input-keys.sh:290	legacy mok=1	S-C-M-Down	\e[1;8B	agree
+input-keys.sh:291	legacy mok=1	S-Right	\e[1;2C	agree
+input-keys.sh:291	legacy mok=1	M-Right	\e[1;3C	agree
+input-keys.sh:291	legacy mok=1	S-M-Right	\e[1;4C	agree
+input-keys.sh:291	legacy mok=1	C-Right	\e[1;5C	agree
+input-keys.sh:291	legacy mok=1	S-C-Right	\e[1;6C	agree
+input-keys.sh:291	legacy mok=1	C-M-Right	\e[1;7C	agree
+input-keys.sh:291	legacy mok=1	S-C-M-Right	\e[1;8C	agree
+input-keys.sh:292	legacy mok=1	S-Left	\e[1;2D	agree
+input-keys.sh:292	legacy mok=1	M-Left	\e[1;3D	agree
+input-keys.sh:292	legacy mok=1	S-M-Left	\e[1;4D	agree
+input-keys.sh:292	legacy mok=1	C-Left	\e[1;5D	agree
+input-keys.sh:292	legacy mok=1	S-C-Left	\e[1;6D	agree
+input-keys.sh:292	legacy mok=1	C-M-Left	\e[1;7D	agree
+input-keys.sh:292	legacy mok=1	S-C-M-Left	\e[1;8D	agree
+input-keys.sh:294	legacy mok=1	S-Home	\e[1;2H	agree
+input-keys.sh:294	legacy mok=1	M-Home	\e[1;3H	agree
+input-keys.sh:294	legacy mok=1	S-M-Home	\e[1;4H	agree
+input-keys.sh:294	legacy mok=1	C-Home	\e[1;5H	agree
+input-keys.sh:294	legacy mok=1	S-C-Home	\e[1;6H	agree
+input-keys.sh:294	legacy mok=1	C-M-Home	\e[1;7H	agree
+input-keys.sh:294	legacy mok=1	S-C-M-Home	\e[1;8H	agree
+input-keys.sh:295	legacy mok=1	S-End	\e[1;2F	agree
+input-keys.sh:295	legacy mok=1	M-End	\e[1;3F	agree
+input-keys.sh:295	legacy mok=1	S-M-End	\e[1;4F	agree
+input-keys.sh:295	legacy mok=1	C-End	\e[1;5F	agree
+input-keys.sh:295	legacy mok=1	S-C-End	\e[1;6F	agree
+input-keys.sh:295	legacy mok=1	C-M-End	\e[1;7F	agree
+input-keys.sh:295	legacy mok=1	S-C-M-End	\e[1;8F	agree
+input-keys.sh:297	legacy mok=1	S-PPage	\e[5;2~	agree
+input-keys.sh:297	legacy mok=1	M-PPage	\e[5;3~	agree
+input-keys.sh:297	legacy mok=1	S-M-PPage	\e[5;4~	agree
+input-keys.sh:297	legacy mok=1	C-PPage	\e[5;5~	agree
+input-keys.sh:297	legacy mok=1	S-C-PPage	\e[5;6~	agree
+input-keys.sh:297	legacy mok=1	C-M-PPage	\e[5;7~	agree
+input-keys.sh:297	legacy mok=1	S-C-M-PPage	\e[5;8~	agree
+input-keys.sh:298	legacy mok=1	S-PageUp	\e[5;2~	agree
+input-keys.sh:298	legacy mok=1	M-PageUp	\e[5;3~	agree
+input-keys.sh:298	legacy mok=1	S-M-PageUp	\e[5;4~	agree
+input-keys.sh:298	legacy mok=1	C-PageUp	\e[5;5~	agree
+input-keys.sh:298	legacy mok=1	S-C-PageUp	\e[5;6~	agree
+input-keys.sh:298	legacy mok=1	C-M-PageUp	\e[5;7~	agree
+input-keys.sh:298	legacy mok=1	S-C-M-PageUp	\e[5;8~	agree
+input-keys.sh:299	legacy mok=1	S-PgUp	\e[5;2~	agree
+input-keys.sh:299	legacy mok=1	M-PgUp	\e[5;3~	agree
+input-keys.sh:299	legacy mok=1	S-M-PgUp	\e[5;4~	agree
+input-keys.sh:299	legacy mok=1	C-PgUp	\e[5;5~	agree
+input-keys.sh:299	legacy mok=1	S-C-PgUp	\e[5;6~	agree
+input-keys.sh:299	legacy mok=1	C-M-PgUp	\e[5;7~	agree
+input-keys.sh:299	legacy mok=1	S-C-M-PgUp	\e[5;8~	agree
+input-keys.sh:300	legacy mok=1	S-NPage	\e[6;2~	agree
+input-keys.sh:300	legacy mok=1	M-NPage	\e[6;3~	agree
+input-keys.sh:300	legacy mok=1	S-M-NPage	\e[6;4~	agree
+input-keys.sh:300	legacy mok=1	C-NPage	\e[6;5~	agree
+input-keys.sh:300	legacy mok=1	S-C-NPage	\e[6;6~	agree
+input-keys.sh:300	legacy mok=1	C-M-NPage	\e[6;7~	agree
+input-keys.sh:300	legacy mok=1	S-C-M-NPage	\e[6;8~	agree
+input-keys.sh:301	legacy mok=1	S-PageDown	\e[6;2~	agree
+input-keys.sh:301	legacy mok=1	M-PageDown	\e[6;3~	agree
+input-keys.sh:301	legacy mok=1	S-M-PageDown	\e[6;4~	agree
+input-keys.sh:301	legacy mok=1	C-PageDown	\e[6;5~	agree
+input-keys.sh:301	legacy mok=1	S-C-PageDown	\e[6;6~	agree
+input-keys.sh:301	legacy mok=1	C-M-PageDown	\e[6;7~	agree
+input-keys.sh:301	legacy mok=1	S-C-M-PageDown	\e[6;8~	agree
+input-keys.sh:302	legacy mok=1	S-PgDn	\e[6;2~	agree
+input-keys.sh:302	legacy mok=1	M-PgDn	\e[6;3~	agree
+input-keys.sh:302	legacy mok=1	S-M-PgDn	\e[6;4~	agree
+input-keys.sh:302	legacy mok=1	C-PgDn	\e[6;5~	agree
+input-keys.sh:302	legacy mok=1	S-C-PgDn	\e[6;6~	agree
+input-keys.sh:302	legacy mok=1	C-M-PgDn	\e[6;7~	agree
+input-keys.sh:302	legacy mok=1	S-C-M-PgDn	\e[6;8~	agree
+input-keys.sh:304	legacy mok=1	S-IC	\e[2;2~	agree
+input-keys.sh:304	legacy mok=1	M-IC	\e[2;3~	agree
+input-keys.sh:304	legacy mok=1	S-M-IC	\e[2;4~	agree
+input-keys.sh:304	legacy mok=1	C-IC	\e[2;5~	agree
+input-keys.sh:304	legacy mok=1	S-C-IC	\e[2;6~	agree
+input-keys.sh:304	legacy mok=1	C-M-IC	\e[2;7~	agree
+input-keys.sh:304	legacy mok=1	S-C-M-IC	\e[2;8~	agree
+input-keys.sh:305	legacy mok=1	S-Insert	\e[2;2~	agree
+input-keys.sh:305	legacy mok=1	M-Insert	\e[2;3~	agree
+input-keys.sh:305	legacy mok=1	S-M-Insert	\e[2;4~	agree
+input-keys.sh:305	legacy mok=1	C-Insert	\e[2;5~	agree
+input-keys.sh:305	legacy mok=1	S-C-Insert	\e[2;6~	agree
+input-keys.sh:305	legacy mok=1	C-M-Insert	\e[2;7~	agree
+input-keys.sh:305	legacy mok=1	S-C-M-Insert	\e[2;8~	agree
+input-keys.sh:306	legacy mok=1	S-DC	\e[3;2~	agree
+input-keys.sh:306	legacy mok=1	M-DC	\e[3;3~	agree
+input-keys.sh:306	legacy mok=1	S-M-DC	\e[3;4~	agree
+input-keys.sh:306	legacy mok=1	C-DC	\e[3;5~	agree
+input-keys.sh:306	legacy mok=1	S-C-DC	\e[3;6~	agree
+input-keys.sh:306	legacy mok=1	C-M-DC	\e[3;7~	agree
+input-keys.sh:306	legacy mok=1	S-C-M-DC	\e[3;8~	agree
+input-keys.sh:307	legacy mok=1	S-Delete	\e[3;2~	agree
+input-keys.sh:307	legacy mok=1	M-Delete	\e[3;3~	agree
+input-keys.sh:307	legacy mok=1	S-M-Delete	\e[3;4~	agree
+input-keys.sh:307	legacy mok=1	C-Delete	\e[3;5~	agree
+input-keys.sh:307	legacy mok=1	S-C-Delete	\e[3;6~	agree
+input-keys.sh:307	legacy mok=1	C-M-Delete	\e[3;7~	agree
+input-keys.sh:307	legacy mok=1	S-C-M-Delete	\e[3;8~	agree
+input-keys.sh:309	legacy mok=1	C-Tab	\e[27;5;9~	agree
+input-keys.sh:310	legacy mok=1	C-S-Tab	\e[27;6;9~	agree

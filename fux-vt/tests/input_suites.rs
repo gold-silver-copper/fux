@@ -1,0 +1,142 @@
+//! Other projects' input suites, ported as data in `tests/data/keys/`:
+//! each case is what that suite expects for a key (an encoder suite) or for
+//! bytes a terminal sent (a decoder suite), and a verdict. `agree`: fux-vt
+//! gives what the suite expects. `differs: REASON; fux: WHAT`: it gives
+//! WHAT instead, for the reason named (an authority, or a choice the
+//! README records), and still must, so a change shows as a failure here.
+//! `na: REASON`: the case tests what fux-vt has no part in, and is not
+//! run.
+//!
+//! The encoder cases name a mode (`legacy`, with `app` for DECCKM,
+//! `keypad` for DECKPAM, `bkm` for DECBKM and `mok=N` for modifyOtherKeys
+//! level N; or `kitty=FLAGS`) and a key: a key name as fux reads them
+//! (`C-M-Up`), and for a terminal speaking the kitty protocol `code=N`,
+//! `mods=BITS` (Shift 1, Alt 2, Ctrl 4, Super 8, Hyper 16, Meta 32, Caps
+//! Lock 64, Num Lock 128), `shifted=N` and `base=N`. Bytes are written with
+//! `\e` for ESC, `\xHH` for a byte, `\\` for a backslash.
+
+use fux_vt::keys::encode::{KeyMode, OtherKeys, Report, key_bytes};
+use fux_vt::keys::{KeyPress, Keystroke, Kitty};
+
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// Bytes as the data writes them, back.
+fn written(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for &b in bytes {
+        match b {
+            0x1b => out.push_str("\\e"),
+            b'\\' => out.push_str("\\\\"),
+            0x21..=0x7e | b' ' => out.push(char::from(b)),
+            _ => out.push_str(&format!("\\x{b:02x}")),
+        }
+    }
+    out
+}
+
+fn mode(spec: &str) -> Result<KeyMode> {
+    let words: Vec<&str> = spec.split(' ').collect();
+    let has = |w: &str| words.contains(&w);
+    let backarrow = has("bkm");
+    if let Some(flags) = words.iter().find_map(|w| w.strip_prefix("kitty=")) {
+        let flags: u8 = flags.parse()?;
+        let report = match (flags & 8 != 0, flags & 16 != 0) {
+            (true, true) => Report::AllKeysWithText,
+            (true, false) => Report::AllKeys,
+            (false, _) => Report::Disambiguated,
+        };
+        return Ok(KeyMode::Kitty {
+            alternate: flags & 4 != 0,
+            report,
+            backarrow,
+        });
+    }
+    let other_keys = match words.iter().find_map(|w| w.strip_prefix("mok=")) {
+        Some("1") => Some(OtherKeys::Usual),
+        Some("2") => Some(OtherKeys::All),
+        Some("3") => Some(OtherKeys::Unmodified),
+        Some(level) => return Err(format!("no modifyOtherKeys level {level}").into()),
+        None => None,
+    };
+    Ok(KeyMode::Legacy {
+        application: has("app"),
+        keypad: has("keypad"),
+        other_keys,
+        backarrow,
+    })
+}
+
+fn keystroke(spec: &str) -> Result<Keystroke> {
+    let mut words = spec.split(' ');
+    let press: KeyPress = words.next().ok_or("no key")?.parse()?;
+    let mut kitty: Option<Kitty> = None;
+    for word in words {
+        let (name, value) = word.split_once('=').ok_or("a word of name=value")?;
+        let value: u32 = value.parse()?;
+        let k = kitty.get_or_insert_with(Kitty::default);
+        match name {
+            "code" => k.code = Some(value),
+            "mods" => k.mods = u8::try_from(value)?,
+            "shifted" => k.shifted = Some(value),
+            "base" => k.base = Some(value),
+            _ => return Err(format!("no key field {name}").into()),
+        }
+    }
+    Ok(Keystroke { press, kitty })
+}
+
+/// Runs an encoder suite: every case not `na` gives what its verdict says.
+fn encoder_suite(name: &str, text: &str) -> Result<(usize, usize, usize)> {
+    let (mut agree, mut differ, mut na) = (0usize, 0usize, 0usize);
+    let mut bad = Vec::new();
+    for line in text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [source, mode_spec, key, expected, verdict] = fields.as_slice() else {
+            return Err(format!("{name}: not five fields: {line}").into());
+        };
+        if verdict.starts_with("na: ") {
+            na = na.saturating_add(1);
+            continue;
+        }
+        let mut out = Vec::new();
+        key_bytes(keystroke(key)?, mode(mode_spec)?, &mut out);
+        let got = written(&out);
+        let want = match verdict.strip_prefix("differs: ") {
+            Some(rest) => {
+                differ = differ.saturating_add(1);
+                rest.rsplit_once("; fux: ")
+                    .ok_or("a difference with no fux: bytes")?
+                    .1
+            }
+            None if *verdict == "agree" => {
+                agree = agree.saturating_add(1);
+                expected
+            }
+            None => return Err(format!("{name}: verdict {verdict:?}").into()),
+        };
+        if got != *want {
+            bad.push(format!(
+                "{source}\t{mode_spec}\t{key}\t{expected}\t{verdict}\tgot {got}"
+            ));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{name}: {} cases:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+    Ok((agree, differ, na))
+}
+
+/// tmux's `regress/input-keys.sh` (KEY-12).
+#[test]
+fn tmux_input_keys() -> Result {
+    let counts = encoder_suite("tmux", include_str!("data/keys/tmux-input-keys.txt"))?;
+    // Agree, differ as recorded, not applicable.
+    assert_eq!(counts, (474, 3, 30));
+    Ok(())
+}
