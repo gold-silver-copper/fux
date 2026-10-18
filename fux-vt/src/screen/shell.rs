@@ -222,8 +222,8 @@ impl Screen {
     /// shell reads its command line, and a line submitted before is no
     /// longer its.
     pub(crate) fn prompted(&mut self) {
-        let row = self.grid().cursor.row();
-        self.grid_mut().set_prompt(row, true);
+        let (row, version) = (self.grid().cursor.row(), self.version);
+        self.grid_mut().set_prompt(row, true, version);
         self.commands.prompt = true;
         self.submitted = None;
     }

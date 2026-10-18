@@ -1045,11 +1045,14 @@ impl Grid {
         self.history.let_go
     }
     /// Marks live row `row` as where a prompt starts (OSC 133 ; A), or
-    /// not: ED erased it.
-    pub fn set_prompt(&mut self, row: u16, prompt: bool) {
+    /// not: ED erased it. A change of mark gives the row `version`
+    /// (`threats.md` P12): a host redraws what shows the marks.
+    pub fn set_prompt(&mut self, row: u16, prompt: bool, version: u64) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
+            && m.prompt != prompt
         {
+            m.version = version;
             m.prompt = prompt;
         }
     }
@@ -1170,6 +1173,7 @@ impl Grid {
         &mut self,
         display: bool,
         part: Erase,
+        version: u64,
         mut erase: impl FnMut(&mut Self, u16, u16, u16),
     ) {
         self.cursor.pending_wrap = false;
@@ -1189,7 +1193,7 @@ impl Grid {
                 };
                 if whole {
                     erase(self, y, 0, cols);
-                    self.set_prompt(y, false);
+                    self.set_prompt(y, false, version);
                 }
             }
         }

@@ -2152,16 +2152,17 @@ impl Screen {
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
         let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
-        self.grid_mut().erase_in(display, part, |g, y, start, end| {
-            if private {
-                g.erase_to_spaces(y, (start, end), None, version);
-                if end >= cols {
-                    g.wrap(y, false, version);
+        self.grid_mut()
+            .erase_in(display, part, version, |g, y, start, end| {
+                if private {
+                    g.erase_to_spaces(y, (start, end), None, version);
+                    if end >= cols {
+                        g.wrap(y, false, version);
+                    }
+                } else {
+                    g.erase_unprotected(y, start, end, blank, version);
                 }
-            } else {
-                g.erase_unprotected(y, start, end, blank, version);
-            }
-        });
+            });
     }
 
     /// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
@@ -2201,7 +2202,7 @@ impl Screen {
                 });
             }
             g.wrap(y, false, version);
-            g.set_prompt(y, false);
+            g.set_prompt(y, false, version);
         }
     }
 
@@ -2850,7 +2851,7 @@ impl Screen {
                     } else {
                         let a = self.blank_style();
                         self.with_grid(|g, _, v| {
-                            g.erase_in(byte == b'J', part, |g, y, start, end| {
+                            g.erase_in(byte == b'J', part, v, |g, y, start, end| {
                                 g.erase(y, start, end, a, v);
                             });
                         });

@@ -369,3 +369,37 @@ fn a_tick_falls_between_pieces() -> Result {
     assert!(first < tick && tick < second);
     Ok(())
 }
+
+/// A row's prompt mark is part of what a host redraws from (`threats.md`
+/// P12, section 6's invariant 28): marking a row, or taking its mark away,
+/// gives it a new version, and the mark shows in `dirty_rows_since`; a
+/// mark that stays as it was changes nothing.
+#[test]
+fn a_prompt_mark_changes_its_row_s_version() -> Result {
+    let mut p = Parser::with_options(Size::new(4, 10)?, 0, MARKS)?;
+    p.process(b"\x1b[2;1H")?;
+    let version = |p: &Parser| p.screen().rows().nth(1).map(|r| r.version());
+    let dirty = |p: &Parser, mark| {
+        (p.screen().dirty_rows_since(mark))
+            .map(|r| r.index())
+            .collect::<Vec<_>>()
+    };
+    let (before, mark) = (version(&p), p.screen().mark());
+    // A at the first column: no fresh line, the blank row marked.
+    p.process(b"\x1b]133;A\x07")?;
+    assert!(p.screen().starts_prompt(1));
+    assert!(version(&p) > before, "marked with no new version");
+    assert_eq!(dirty(&p, mark), [1]);
+    // P with no `k`: the row marked again, as it was.
+    let (before, mark) = (version(&p), p.screen().mark());
+    p.process(b"\x1b]133;P\x07")?;
+    assert_eq!(version(&p), before, "a mark as it was changed the row");
+    assert_eq!(dirty(&p, mark), Vec::<usize>::new());
+    // ED 2 takes it away from the blank row: a change of its own.
+    let (before, mark) = (version(&p), p.screen().mark());
+    p.process(b"\x1b[2J")?;
+    assert!(!p.screen().starts_prompt(1));
+    assert!(version(&p) > before, "unmarked with no new version");
+    assert!(dirty(&p, mark).contains(&1));
+    Ok(())
+}
