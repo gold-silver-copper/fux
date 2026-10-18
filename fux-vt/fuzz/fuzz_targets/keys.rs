@@ -97,7 +97,9 @@ fn decode(steps: &[Step], size: usize, limit: usize, expect: bool, start: Instan
             },
             Step::Timeout => decoder.timeout(&mut out),
             Step::Expect => decoder.expect(start),
-            Step::Expire => decoder.expire(start + Duration::from_secs(60)),
+            Step::Expire => {
+                decoder.expire(start.checked_add(Duration::from_secs(60)).unwrap_or(start))
+            }
         }
         #[cfg(feature = "checks")]
         checked(&decoder);
@@ -113,7 +115,7 @@ fuzz_target!(|data: &[u8]| {
     let steps = steps(data.get(2..).unwrap_or_default());
     let limit = match usize::from(options >> 2) {
         0 => PASTE_LIMIT,
-        n => n * 5,
+        n => n.saturating_mul(5),
     };
     let (expect, start) = (options & 1 != 0, Instant::now());
     let whole = decode(&steps, 0, limit, expect, start);
@@ -131,6 +133,13 @@ fuzz_target!(|data: &[u8]| {
                 text.chars().count() <= limit,
                 "{} chars",
                 text.chars().count()
+            );
+            // And in bytes: each byte pasted is at most three of the text,
+            // as U+FFFD (`threats.md` B23).
+            assert!(
+                text.len() <= limit.saturating_mul(3),
+                "{} bytes",
+                text.len()
             );
             let mut framed = Vec::new();
             paste(text, true, &mut framed);

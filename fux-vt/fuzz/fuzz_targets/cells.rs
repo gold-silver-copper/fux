@@ -43,11 +43,38 @@ enum Op {
     },
 }
 
+/// Lengths past the most cells a run holds: one past it, a large one, the
+/// largest an allocation could ask for, and the largest `usize`.
+const HUGE: [usize; 4] = [(64 << 20) + 1, 1 << 40, isize::MAX as usize, usize::MAX];
+
 fuzz_target!(|input: (u8, Vec<Op>)| {
     let (len, ops) = input;
     let texts = models::texts();
-    let text = |t: &u8| texts[usize::from(*t) % texts.len()].clone();
-    let style = |s: &u8| models::STYLES[usize::from(*s) % models::STYLES.len()];
+    let text = |t: &u8| {
+        (texts.get(usize::from(*t).checked_rem(texts.len()).unwrap_or(0)))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let styles = models::STYLES;
+    let style = |s: &u8| {
+        (styles.get(usize::from(*s).checked_rem(styles.len()).unwrap_or(0)))
+            .copied()
+            .unwrap_or_default()
+    };
+    // A length past what `Cells` holds (64 Mi cells, `threats.md` B39) is
+    // refused, by `new` and by `resize`, with nothing changed: the largest
+    // `usize` too, which overflowed at BASE.
+    if let Some(huge) = HUGE
+        .get(usize::from(len.saturating_sub(0xfc)))
+        .filter(|_| len >= 0xfc)
+    {
+        assert!(Cells::new(*huge).is_err(), "{huge} cells made");
+        if let Ok(mut small) = Cells::new(3) {
+            let blank = fux_vt::CellRef::new(" ", false, fux_vt::Attributes::default());
+            assert!(small.resize(*huge, blank).is_err(), "{huge} cells made");
+            assert_eq!(small.len(), 3);
+        }
+    }
     // Small runs, so their text budget runs out.
     let len = usize::from(len % 9);
     let (Ok(mut cells), Ok(mut other)) = (Cells::new(len), Cells::new(4)) else {

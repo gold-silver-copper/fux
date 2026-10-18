@@ -12,7 +12,6 @@
 use fux_vt::{Feature, Options, Parser, Row, Size};
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
-use unicode_width::UnicodeWidthChar;
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
 #[path = "../../tests/corpus/models.rs"]
@@ -36,7 +35,9 @@ impl Pick {
         match self {
             Pick::Table(i) => {
                 let table = graphemes::CHARACTERS;
-                table.get(usize::from(*i) % table.len()).copied()
+                table
+                    .get(usize::from(*i).checked_rem(table.len())?)
+                    .copied()
             }
             Pick::Scalar(p) => char::from_u32(*p % 0x11_0000),
         }
@@ -54,9 +55,12 @@ fn row_is(row: Row<'_>, expected: &[(String, bool)], line: &str) {
             "{line:?} at column {col}"
         );
         if *wide {
-            assert!(row.cell(col + 1).is_some_and(|c| c.is_wide_continuation()));
+            assert!(
+                row.cell(col.saturating_add(1))
+                    .is_some_and(|c| c.is_wide_continuation())
+            );
         }
-        col += if *wide { 2 } else { 1 };
+        col = col.saturating_add(if *wide { 2 } else { 1 });
     }
     assert!(row.cells().skip(col).all(|c| !c.has_contents()), "{line:?}");
 }
@@ -72,7 +76,7 @@ fuzz_target!(|input: Input| {
             let mut line = String::new();
             for (pick, _) in picks.iter().take(48) {
                 if let Some(c) = pick.char().filter(|c| models::printable(*c))
-                    && (!line.is_empty() || c.width().is_some_and(|w| w > 0))
+                    && (!line.is_empty() || models::width(c).is_some_and(|w| w > 0))
                 {
                     line.push(c);
                 }
@@ -93,8 +97,8 @@ fuzz_target!(|input: Input| {
         })
         .max()
         .unwrap_or(0);
-    let cols = u16::try_from(widest + 4).unwrap_or(u16::MAX);
-    let rows = u16::try_from(lines.len() + 1).unwrap_or(1);
+    let cols = u16::try_from(widest.saturating_add(4)).unwrap_or(u16::MAX);
+    let rows = u16::try_from(lines.len().saturating_add(1)).unwrap_or(1);
 
     // The output: lines apart by CR LF, SGR where the input says.
     let mut output = Vec::new();
@@ -113,7 +117,9 @@ fuzz_target!(|input: Input| {
     }
 
     let options = Options::new().with(Feature::Reflow);
-    let size = Size::new(rows, cols).expect("a row and four columns at least");
+    let Ok(size) = Size::new(rows, cols) else {
+        return;
+    };
     let Ok(mut parser) = Parser::with_options(size, 1 << 20, options) else {
         return;
     };
@@ -122,7 +128,7 @@ fuzz_target!(|input: Input| {
     while !rest.is_empty() {
         let size = sizes
             .next()
-            .map_or(rest.len(), |s| usize::from(*s % 16) + 1);
+            .map_or(rest.len(), |s| usize::from(*s % 16).saturating_add(1));
         let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
         assert!(parser.process(piece).is_ok());
         rest = tail;
@@ -130,8 +136,11 @@ fuzz_target!(|input: Input| {
     let check = |parser: &Parser| {
         let screen = parser.screen();
         for (y, (cells, line)) in expected.iter().zip(&lines).enumerate() {
-            let row = screen.rows().nth_back(lines.len() - y);
-            row_is(row.unwrap_or_else(|| panic!("row {y}")), cells, line);
+            let row = screen.rows().nth_back(lines.len().saturating_sub(y));
+            assert!(row.is_some(), "row {y}");
+            if let Some(row) = row {
+                row_is(row, cells, line);
+            }
         }
     };
     check(&parser);
@@ -157,7 +166,9 @@ fuzz_target!(|input: Input| {
             parser.screen().pending_wrap(),
         );
         let narrow = u16::from(width).clamp(2, cols);
-        let narrow = Size::new(rows, narrow).expect("two columns at least");
+        let Ok(narrow) = Size::new(rows, narrow) else {
+            return;
+        };
         assert!(parser.resize(narrow).is_ok());
         assert!(parser.resize(size).is_ok());
         check(&parser);
