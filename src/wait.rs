@@ -138,7 +138,9 @@ struct Watch {
     /// Since when, and at which revision, its pane has looked settled.
     settled_since: Option<(Instant, u64)>,
     /// It waits for a command the input began (a `line`'s) to end, not
-    /// only for quiet: any wait but a capture's.
+    /// only for quiet: any wait but a capture's that counts from an
+    /// action's input. A command marked after the program's start (a
+    /// full-screen program `run` began, marking its own) is no input's.
     ends: bool,
     /// The screen's highlighted runs as an action's wait began: a run its
     /// input highlighted anew (a selection moved) is said.
@@ -699,7 +701,7 @@ impl Watch {
             starts: pane.starts,
             reading_since: None,
             settled_since: None,
-            ends: !matches!(follows, Follows::Capture(..)),
+            ends: start.input && !matches!(follows, Follows::Capture(..)),
             lit: match follows {
                 Follows::Action => crate::capture::highlights(pane.screen()),
                 Follows::Wait | Follows::Started | Follows::Capture(..) => Vec::new(),

@@ -557,17 +557,21 @@ pub struct Start {
     pub on_full: bool,
     /// The row the cursor was on.
     pub row: u16,
+    /// It is an action's input, not the program's start: a command marked
+    /// after it may be one that input began, which a wait waits for.
+    pub input: bool,
 }
 
 impl Start {
-    /// Counting from `from`, `screen` as it is now.
-    pub fn at(from: log::Seq, screen: &Screen) -> Start {
+    /// Counting from `from`, `screen` as it is now; `input`, an action's.
+    pub fn at(from: log::Seq, screen: &Screen, input: bool) -> Start {
         Start {
             from,
             started: screen.commands().started,
             finished: screen.commands().finished,
             on_full: screen.mode(fux_vt::Mode::AlternateScreen),
             row: screen.cursor_position().0,
+            input,
         }
     }
 }
@@ -1043,7 +1047,19 @@ impl Pane {
 
     /// An action's input begins: what comes after is what it brought.
     pub fn note_input(&mut self) {
-        self.since = Start::at(log::Seq(self.parser.tick()), self.parser.screen());
+        self.count_from(true);
+    }
+
+    /// The program starts: what comes after is what it brought, no input
+    /// of an action's among it.
+    pub fn note_start(&mut self) {
+        self.count_from(false);
+    }
+
+    /// What comes after now is new to a wait; `input`, an action's input
+    /// brings it.
+    fn count_from(&mut self, input: bool) {
+        self.since = Start::at(log::Seq(self.parser.tick()), self.parser.screen(), input);
         self.redraws = 0;
         self.before = Rc::new(
             (live(self.screen()))
@@ -1265,7 +1281,7 @@ impl Pane {
         fresh.revision = self.revision.wrapping_add(1);
         fresh.starts = self.starts.wrapping_add(1);
         fresh.process = process;
-        fresh.note_input();
+        fresh.note_start();
         Ok(std::mem::replace(self, fresh).process)
     }
 

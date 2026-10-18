@@ -531,6 +531,36 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
     Ok(())
 }
 
+/// A full-screen program `run` started that marks a command's output
+/// (`133;C`) and never its end, then reads its terminal, is waited for no
+/// longer than an unmarked one: no action's input began that command, so
+/// `run` and a bare `wait` after it answer once it is quiet, polling its
+/// terminal (`less`), not at their limit (decision 29).
+#[test]
+fn a_command_a_run_program_marks_itself_is_not_waited_for() -> Outcome {
+    let server = Server::start("")?;
+    let code = "import os, select, tty\n\
+                tty.setraw(0); os.write(1, b'\\x1b[?1049h\\x1b]133;C\\x07marked')\n\
+                select.select([0], [], [], 60)\n";
+    let began = std::time::Instant::now();
+    let answer = server.ok(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", code, "arg", "run",
+    ])?;
+    assert!(began.elapsed() < PATIENCE, "{answer}");
+    let pane = answer
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let first = answer.lines().next().unwrap_or_default();
+    assert!(first.starts_with(&format!("{pane} waiting")), "{answer}");
+    let began = std::time::Instant::now();
+    let answer = server.ok(&["str", &pane, "pane", "wait"])?;
+    assert!(began.elapsed() < PATIENCE, "{answer}");
+    assert!(answer.starts_with(&format!("{pane} waiting")), "{answer}");
+    Ok(())
+}
+
 /// `wait-done` waits as long as the shell command running in the pane
 /// runs, past the wait's limit (here `wait-seconds` 2): it ends at what
 /// else it waits for, or at the command's end, `· done STATUS`; a text
