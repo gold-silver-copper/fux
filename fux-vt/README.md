@@ -292,8 +292,8 @@ row's slot, and history.
 ### Without `Feature::Reflow`
 
 Resize is not paragraph reflow: rows keep their first cells and lose the
-columns past the new width, and the screen's rows lose their soft wraps
-(history keeps them). Rows move around the cursor so its line stays
+columns past the new width, and at a new width the screen's rows lose
+their soft wraps (history keeps them; at the same width they stay). Rows move around the cursor so its line stays
 visible: a shrink drops rows below the cursor first, then moves rows above
 it into history (or drops them, on the alternate screen); a grow pulls rows
 back from history, then adds blank rows below. Both cursors move with

@@ -253,17 +253,6 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
     Ok(())
 }
 
-#[test]
-fn height_only_resize_clears_live_wrap_metadata() -> Result {
-    let mut p = Parser::new(Size::new(3, 5)?, 0)?;
-    p.process(b"abcdef")?;
-    assert!(p.screen().row_wrapped(0));
-    p.resize(Size::new(4, 5)?)?;
-    assert!(!p.screen().row_wrapped(0));
-    assert_eq!(lines(&p), ["abcde", "f", "", ""]);
-    Ok(())
-}
-
 /// A rejected resize changes nothing, synchronized output included (the
 /// API's "failing size changes leave the old screen intact"); one that is
 /// taken, or to the same size, ends it, as in Ghostty (threats.md B37).
@@ -633,5 +622,24 @@ fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Resul
         (5, 1),
         "no region: a line feed"
     );
+    Ok(())
+}
+
+/// Without reflow, a resize that keeps the width keeps the screen's rows'
+/// soft wraps, as it keeps history's: the rows are as they were, and a copy
+/// joins them still (`Row::wrapped`'s contract). One that changes the width
+/// ends them, as a cut or padded row no longer continues on the next.
+#[test]
+fn a_resize_at_the_same_width_keeps_the_soft_wraps() -> Result {
+    let wrapped = |p: &Parser| p.screen().rows().map(|r| r.wrapped()).collect::<Vec<_>>();
+    let mut p = Parser::new(Size::new(3, 5)?, 0)?;
+    p.process(b"abcdefg")?;
+    assert_eq!(wrapped(&p), [true, false, false]);
+    p.resize(Size::new(4, 5)?)?;
+    assert_eq!(wrapped(&p), [true, false, false, false]);
+    p.resize(Size::new(2, 5)?)?;
+    assert_eq!(wrapped(&p), [true, false]);
+    p.resize(Size::new(2, 7)?)?;
+    assert_eq!(wrapped(&p), [false, false]);
     Ok(())
 }

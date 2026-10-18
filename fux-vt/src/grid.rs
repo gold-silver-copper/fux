@@ -1867,6 +1867,7 @@ impl Grid {
         replacement.reserve_screen()?;
         // Each row is laid out whole in `row`, as wide as it is, then kept.
         let mut row = Vec::new();
+        let same_width = self.size.cols() == cols;
         for source in 0..end {
             let old = self.row_at(source).filter(|_| source < old_retained);
             let is_history = source < live_top;
@@ -1879,7 +1880,9 @@ impl Grid {
             row.clear();
             row.resize(usize::from(width), BLANK);
             work!(cells, width);
-            let wrapped = old.is_some_and(|r| r.wrapped) && is_history;
+            // A row cut or padded to a new width no longer continues on
+            // the next; at the same width it does, as it did.
+            let wrapped = old.is_some_and(|r| r.wrapped) && (is_history || same_width);
             let row_version = if is_history {
                 old.map_or(version, |r| r.version)
             } else {
