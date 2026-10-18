@@ -23,9 +23,10 @@
 //! from a calibration (`--calibrate`, an A/A run of its own, `--floors`
 //! FILE): max(0.25%, the A/A change, 3 x the A/A spread). A change inside
 //! its floor is inconclusive; a floor over 1% means the tool is broken for
-//! that workload; a run whose spread is past a third of the floor is
-//! noisy. Across the recordings, a sign test with the recordings of one
-//! program counted once flags a broad change.
+//! that workload; a run whose spread is past two thirds of the floor
+//! (twice what the floor allows for) is noisy. Across the recordings, a
+//! sign test with the recordings of one program counted once flags a broad
+//! change.
 use crate::count::Counter;
 use crate::workloads;
 use std::fmt::Write as _;
@@ -329,8 +330,8 @@ enum Verdict {
     Faster,
     /// Within its floor.
     Inconclusive,
-    /// This run's spread is past a third of its calibrated floor: it says
-    /// nothing.
+    /// This run's spread is past two thirds of its calibrated floor (twice
+    /// the spread the floor allows for): it says nothing.
     Noisy,
     /// Its floor is over 1%: the tool cannot judge it.
     Broken,
@@ -359,7 +360,7 @@ fn floor(aa: &Paired) -> f64 {
 fn verdict(p: &Paired, floor: f64, calibrated: bool) -> Verdict {
     if floor > FLOOR_BROKEN || !p.change.is_finite() {
         Verdict::Broken
-    } else if calibrated && 3.0 * p.spread > floor {
+    } else if calibrated && 3.0 * p.spread > 2.0 * floor {
         Verdict::Noisy
     } else if p.change > floor {
         Verdict::Slower
@@ -801,7 +802,7 @@ mod tests {
         let q = paired([&[1000; 5], &[0; 5]], [&[990; 5], &[0; 5]]);
         assert_eq!(verdict(&q, 0.0025, true), Verdict::Faster);
         assert_eq!(verdict(&q, 0.011, true), Verdict::Broken);
-        // Rounds of +0%, +2%, -2%: spread 2%, past a third of a 0.3% floor.
+        // Rounds of +0%, +2%, -2%: spread 2%, past two thirds of a 0.3% floor.
         let noisy = paired(
             [&[1000, 1000, 1000], &[0; 3]],
             [&[1000, 1020, 980], &[0; 3]],
