@@ -5,7 +5,7 @@ resolver = "3"
 
 [package]
 name = "fux"
-version = "0.26.0"
+version = "0.27.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -17,7 +17,7 @@ categories = ["command-line-utilities"]
 include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.md", "/LICENSE"]
 
 [dependencies]
-fux-vt = { path = "fux-vt", version = "0.8.0" }
+fux-vt = { path = "fux-vt", version = "0.9.0" }
 signal-hook = "0.4"
 unicode-width = "0.2"
 fuxix = { path = "fuxix", version = "0.5.0" }
