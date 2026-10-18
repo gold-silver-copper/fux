@@ -63,9 +63,9 @@ pub const KINDS: [(&str, &str, Option<&str>); 12] = [
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
     ("x", "opts request waiting>request pane>request tab>request workspace>request client>request answer>request",
-        "a pane, tab, workspace or client, a request on one, or options (from opts)"),
+        "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
     ("w", "opts request waiting pane>waiting tab>waiting workspace>waiting client>request answer>waiting",
-        "a pane, tab, workspace or client, a request on one, or options (from opts)"),
+        "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
     ("target", "pane tab workspace client answer request waiting", "a pane, tab, workspace or client, or a request on one"),
     ("subject", "pane answer request waiting", "a pane, or a request on one"),
     ("place", "pane tab workspace answer request waiting", "a pane, tab or workspace, or a request on one"),

@@ -144,7 +144,7 @@ fn a_bad_config_is_reported() -> Outcome {
         ),
         (
             "define go %2 capture str x text end\n",
-            "config.fux:1: text: takes a pane",
+            "config.fux:1: text: takes the pane",
         ),
         (
             "5 let n\ndefine go n end\nstr v str go bind\n",
