@@ -712,6 +712,7 @@ each with the source that decides it, printed with every run:
 | --- | --- |
 | `utf8-button`, `utf8-limit` | ctlseqs: in UTF-8 mouse mode Cb is UTF-8 encoded too, and 2015 is the last position; ghostty writes Cb raw and has no limit |
 | `legacy-extras`, `f3`, `modify-other-keys` | xterm: with no keyboard mode a program gets legacy bytes (ghostty sends CSI u and CSI 27 forms, and kitty's F3); at modifyOtherKeys 2 every modified key but Shift with a printable is CSI 27 ; m ; k ~ |
+| `ctrl-alt-question`, `shift-tab` | real xterm 411's key bytes (KEY-13, `tests/data/keys/xterm-keys.txt`): Ctrl-Alt-? is ESC ?, where ghostty sends ESC DEL, and Shift-Tab at modifyOtherKeys 2 is CSI Z, where ghostty sends CSI 27 ; 2 ; 9 ~ |
 | `kitty-flags-without-disambiguate`, `kitty-press-type` | the kitty spec: it gives no other encoding without flag 1 or 8, and lets a press leave out its event type, as kitty does |
 | `ctrl-backspace` | a choice: fux-vt's Ctrl-Backspace is DEL, ghostty's BS |
 | `paste-controls`, `paste-newline` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces, and an unbracketed LF a CR; fux-vt passes a paste as pasted, removing only what would end its bracket |

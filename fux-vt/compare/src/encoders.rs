@@ -65,6 +65,19 @@ pub const VERDICTS: &[(&str, &str)] = &[
          escapes the second",
     ),
     (
+        "ctrl-alt-question",
+        "Ctrl-Alt-? with no kitty flags and no modifyOtherKeys 2: real xterm 411 sends ESC ?, \
+         its Ctrl-? being DEL by its own translation, which Alt passes by (KEY-13, \
+         `tests/data/keys/xterm-keys.txt`: `CMS slash legacy C-M-? \\e?`), as fux-vt does; \
+         ghostty sends ESC DEL",
+    ),
+    (
+        "shift-tab",
+        "Shift-Tab under modifyOtherKeys 2: real xterm 411 sends CSI Z, ISO_Left_Tab's, with \
+         Shift alone (KEY-13, `tests/data/keys/xterm-keys.txt`: `S Tab legacy mok=2 S-Tab \
+         \\e[Z`), as fux-vt does; ghostty sends CSI 27 ; 2 ; 9 ~",
+    ),
+    (
         "kitty-flags-without-disambiguate",
         "kitty flags without disambiguate (1) or all keys (8): the spec gives these keys no other \
          encoding, and fux-vt sends their legacy bytes; ghostty sends kitty's forms",
@@ -566,6 +579,15 @@ fn key_verdict(
     if key == Key::Backspace && mods.ctrl && flags & 9 == 0 && ours == del {
         return Some("ctrl-backspace");
     }
+    // xterm 411's bytes (KEY-13).
+    let plain = flags == 0;
+    if key == Key::Char('?') && mods.ctrl && mods.alt && plain && !other_keys && ours == b"\x1b?" {
+        return Some("ctrl-alt-question");
+    }
+    let shift_alone = mods.shift && !mods.ctrl && !mods.alt;
+    if key == Key::Tab && shift_alone && other_keys && plain && ours == b"\x1b[Z" {
+        return Some("shift-tab");
+    }
     if flags == 0 && !other_keys && kitty_form(theirs) && ours == legacy {
         return Some("legacy-extras");
     }
@@ -1018,6 +1040,29 @@ mod tests {
             ctrl_alt,
             b"\x1b[27;8;95~"
         ));
+        let ctrl_alt_shift = Modifiers {
+            shift: true,
+            ..ctrl_alt
+        };
+        let question = |setup, ours: &[u8]| {
+            key_verdict(
+                setup,
+                Key::Char('?'),
+                ctrl_alt_shift,
+                ours,
+                b"\x1b\x7f",
+                b"",
+            )
+        };
+        assert_eq!(question("", b"\x1b?"), Some("ctrl-alt-question"));
+        assert_eq!(question("", b"\x1b\x7f"), None);
+        assert_eq!(question("\x1b[>4;2m", b"\x1b?"), None);
+        let tab = |mods, ours: &[u8]| {
+            key_verdict("\x1b[>4;2m", Key::Tab, mods, ours, b"\x1b[27;2;9~", b"")
+        };
+        assert_eq!(tab(shift, b"\x1b[Z"), Some("shift-tab"));
+        assert_eq!(tab(shift, b"\x1b[1;2Z"), None);
+        assert_eq!(tab(ctrl_alt_shift, b"\x1b[Z"), None);
         assert_eq!(pasted("a\nb", false), b"a\rb");
         assert_eq!(pasted("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
         assert_eq!(pasted("\x1b[20\x1b[201~1~x", true), b"\x1b[200~x\x1b[201~");
