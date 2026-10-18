@@ -53,7 +53,8 @@ pub(crate) struct Placement {
     /// history, once it has (`Screen::track_pictures`).
     number: crate::history::Noted,
     col: u16,
-    /// The cells it covers, and the cell size it was laid out in.
+    /// The cells it covers, the columns those it was placed in (clipped
+    /// at the margin or edge it met), and the cell size it was laid out in.
     cols: u16,
     rows: u16,
     cell: (u16, u16),
@@ -81,7 +82,8 @@ pub struct Shown<'a> {
     pub row: i64,
     /// Its first column.
     pub col: u16,
-    /// The columns it covers, some maybe past the right edge.
+    /// The columns its cells hold: those it was placed in, clipped at the
+    /// right margin or the screen's edge it met then, and at the edge now.
     pub cols: u16,
     /// The rows it covers.
     pub rows: u16,
@@ -123,8 +125,10 @@ impl Screen {
             cells(picture.height(), cell.1),
         );
         let col = self.grid().cursor.col();
-        let width = self.size().cols();
-        let across = cols.min(width.saturating_sub(col));
+        // Clipped at the right margin, or the screen's edge past it (DEC STD
+        // 070-9, 11.2.2: sixels "printed past the right margin are not
+        // printed"), as the line a glyph printed there would end at.
+        let across = cols.min(self.grid().line_end().saturating_sub(col));
         let Some(top) = self.cursor_mark().map(|mark| mark.row) else {
             return Ok(());
         };
@@ -170,7 +174,7 @@ impl Screen {
             bottom,
             number: crate::history::Noted::none(),
             col,
-            cols,
+            cols: across,
             rows,
             cell,
             alternate,
@@ -183,7 +187,7 @@ impl Screen {
         // its placeholder, not theirs.
         let placed = self.pictures.len().saturating_sub(1);
         let top_row = |p: &Placement| self.row_of(self.top_index(p));
-        let mine = (self.pictures.back()).map(|p| (top_row(p), col, cols, rows));
+        let mine = (self.pictures.back()).map(|p| (top_row(p), col, across, rows));
         let gone = |p: &Placement, screen: &Screen| {
             p.alternate == alternate
                 && screen.shown(p).is_none_or(|s| {
@@ -354,7 +358,7 @@ impl Screen {
             picture: &placement.picture,
             row: self.row_of(Some(first)),
             col: placement.col,
-            cols: placement.cols,
+            cols: across,
             rows: placement.rows,
             cell: placement.cell,
         })

@@ -1196,3 +1196,36 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
     assert_eq!(replies(&mut wide, b"\x1b[?2;4;0S")?, "\x1b[?2;0;4096;2160S");
     Ok(())
 }
+
+/// DEC STD 070-9, 11.2.2: sixels "printed past the right margin are not
+/// printed". A picture placed between left and right margins (DECLRMM,
+/// DECSLRM) takes the cells up to the right margin and no further, and
+/// shows there, the cells past it left as they were; and a picture clipped
+/// at the screen's edge stays shown, as clipped, when the screen widens.
+#[test]
+fn a_picture_is_clipped_at_the_right_margin_and_keeps_its_clip() -> Result {
+    let graphics = fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    };
+    let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(graphics);
+    // 24 pixels wide, 6 cells, at column 3 with the right margin at 5.
+    p.process(b"abcdefghij\r\x1b[?69h\x1b[1;5s\x1b[1;3H\x1bPq\"1;1#1;2;100;0;0!24~\x1b\\")?;
+    let shown: Vec<_> = p
+        .screen()
+        .pictures()
+        .map(|s| (s.row, s.col, s.cols))
+        .collect();
+    assert_eq!(shown, [(0, 2, 3)]);
+    let row = lines(&p).first().cloned().unwrap_or_default();
+    assert!(row.ends_with("fghij"), "{row:?}");
+    // 20 cells on a screen of 10, then 30 columns.
+    let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(graphics);
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0!80~\x1b\\")?;
+    p.resize(Size::new(4, 30)?)?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.col, s.cols)).collect();
+    assert_eq!(shown, [(0, 10)]);
+    Ok(())
+}
