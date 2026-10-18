@@ -1364,9 +1364,18 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             prefix.extend(repeat(&cluster(8), usize::from(cols.min(200))));
             prefix.extend(b"\r\n");
         }
+        // At fux's largest pane the row checks each call's ceiling, U: one
+        // 4 KiB call of each function, in one piece. Its work a byte is
+        // B35's at 50x200 and 500x500 already, where the input is
+        // repeated; repeated here, the work the bound allows (N / 2 cells
+        // a byte, 8.4 M) takes hours (decisions.md 45).
+        let largest = rows == 4095;
+        if largest && chunk != 4096 {
+            continue;
+        }
         for (name, sequence) in screen_wide(rows, cols) {
-            let count = (4096usize.checked_div(sequence.len()).unwrap_or(0))
-                .saturating_mul(scale.times().min(10));
+            let times = if largest { 1 } else { scale.times().min(10) };
+            let count = (4096usize.checked_div(sequence.len()).unwrap_or(0)).saturating_mul(times);
             let input = repeat(&sequence, count);
             let mut probe = Probe::new(&setup, bound, chunk.max(16), 1)?;
             probe.feed(&prefix)?;
