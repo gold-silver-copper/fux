@@ -1,0 +1,6 @@
+# The frozen guard set (threats.md 5.2): each line a mutant's name as
+# `cargo mutants --list` prints it, every one of which must be generated and
+# caught (`mutants.sh guards`). Empty until the set is regenerated at BASE
+# 9a38df95 and frozen (threats.md 5.2, decision 8); until then the run
+# fails on its empty selection, and the manifest's nightly-mutation check
+# is not wired.

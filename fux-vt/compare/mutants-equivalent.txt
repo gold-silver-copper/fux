@@ -1,0 +1,4 @@
+# Mutants kept as equivalent rather than killed: a name as `cargo mutants
+# --list` prints it, a tab, and why no test can tell it from the code
+# (threats.md 5.1 rule 7). None yet in this list's form: decision 28's
+# four decode.rs mutants are to be written here by their names.
