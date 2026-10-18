@@ -184,6 +184,15 @@ fn ghostty_key_encode() -> Result {
     Ok(())
 }
 
+/// kitty's `kitty_tests/keys.py`, re-authored (KEY-11).
+#[test]
+fn kitty_keys() -> Result {
+    let counts = encoder_suite("kitty", include_str!("data/keys/kitty-keys.txt"))?;
+    // Agree, differ as recorded, not applicable.
+    assert_eq!(counts, (553, 13, 18));
+    Ok(())
+}
+
 /// What a terminal's bytes decode to, as the decoder suites write it: each
 /// input space-separated, a key by its name (`C-a`, `M-Up`, a character as
 /// itself, or `U+XXXX` for one past ASCII), others by their kind.

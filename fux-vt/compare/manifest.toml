@@ -457,10 +457,8 @@ needs = []
 [[check]]
 name = "ci-kitty-keys"
 schedule = "ci"
-command = "kitty's keys.py, re-authored"
+command = "cargo test -p fux-vt --test input_suites kitty_keys: kitty's keys.py, re-authored as facts, 584 encodings (553 agree, 13 differ as recorded, 18 not applicable)"
 needs = []
-wired = false
-why = "not re-authored yet"
 
 [[check]]
 name = "ci-rio-sixel"
