@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "libc",
 ]

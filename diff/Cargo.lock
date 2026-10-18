@@ -56,10 +56,10 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "fux-vt 0.10.0",
- "fuxix 0.6.0",
+ "fuxix 0.6.1",
  "fuxth",
  "signal-hook",
  "unicode-width",
@@ -70,11 +70,11 @@ name = "fux-diff"
 version = "0.0.0"
 dependencies = [
  "fux 0.20.0",
- "fux 0.30.0",
+ "fux 0.31.0",
  "fux-vt 0.10.0",
  "fux-vt 0.3.3",
  "fuxix 0.1.6",
- "fuxix 0.6.0",
+ "fuxix 0.6.1",
 ]
 
 [[package]]
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "libc",
 ]
