@@ -25,10 +25,13 @@ line, the deepest first; `print` prints a value at once.
   elements are one-character strings), lists (of any values, lists included,
   nested at most 64 deep), and the application's own.
 - **Checked before it runs.** The whole program is compiled first. An unknown
-  word or an unclosed block is an error before anything happens; so is a step
+  word or an unclosed block is an error before anything happens (told with
+  what was likely meant: a word in scope spelt nearly so, or `str WORD` for
+  text); so is a step
   that every run reaching it would fail: a word given fewer values than the
   stack surely holds, or a value of a kind it never takes (`str a 1 add`,
-  `str a not`: for a word of the library or your own, kinds on which every
+  `str a not`, or a kind the application's word doesn't take, as its
+  vocabulary says: for a word of the library or your own, kinds on which every
   way through it fails, checked again at each call with the kinds it is
   given; a way ending at `fail`, or at a call to a word that only fails, counts as
   failing, unless every way does).
@@ -38,7 +41,8 @@ line, the deepest first; `print` prints a value at once.
   inside a definition, nor whether a word's call to itself fails (taken
   as one that may succeed, leaving what its other ways leave), nor kinds
   under a call leaving a varying number of values, or deeper than the top
-  32. It follows
+  32. A value of a kind the application says must be used, left at the
+  program's end, is an error too (`unused`), before it runs and as it ends. It follows
   depths as ranges and kinds as sets through branches, loops, `list` and
   `each`, and definitions (each summed up by what it uses and leaves, and
   checked again at each call with the kinds of its top 8 values); what it
@@ -66,7 +70,7 @@ line, the deepest first; `print` prints a value at once.
 | Parsing word | |
 |---|---|
 | `str WORD` | WORD as a string, whatever it looks like: `str 12`, `str 'two words'`, `str ''` |
-| `define NAME … end` | a word of your own; it may call itself; at the top level only |
+| `define NAME … end` | a word of your own; it may call itself, and words defined after it in the same source; it may take a library's or the application's word's name, from there on (not the core's, nor one the source defines already); at the top level only |
 | `VALUE let NAME` | NAME pushes VALUE from there on in the text: inside a definition, for that call; at the top level, for the rest of the program (definitions written after it may read it). A later `let NAME` sets it again. |
 | `FLAG if … then`, `FLAG if … else … then` | one branch |
 | `begin … FLAG until` | the body, until FLAG is true |
@@ -93,10 +97,10 @@ line, the deepest first; `print` prints a value at once.
 | `print` | x -- | now, a line |
 | `fail` | x -- | stops the program, x the reason |
 
-The standard library adds, among others: `dup swap over rot nip tuck -rot
+The standard library adds, among others: `dup swap over rot nip -rot
 2dup 2drop`, `true false not and or`, `gt le ge ne min max`, `mod negate abs
-even pow`, `is-int is-bool is-string is-list`, `empty cat glue first last pop
-shift remove chars range reverse index-of contains count sum largest smallest
+even pow`, `is-int is-string is-list`, `empty cat glue first last pop
+shift remove range reverse index-of contains count sum largest smallest
 merge sort pack unpack`, `number join split-on words lines trim starts-with
 is-space is-digit is-upper is-lower is-letter upper lower copies pad`.
 
@@ -109,7 +113,9 @@ comments at a word's start.
 use fuxth::{Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary, token};
 
 let mut words = Vocabulary::default();
-let ask = words.add("ask", 1, 1);   // takes one value, gives one
+words.kind("ticket", "a ticket")?;               // a kind of the application's values
+words.name("n", "integer", "an integer")?;       // a name effects use, for kinds
+let ask = words.add("ask", "n -- ticket")?;       // takes an integer, gives a ticket
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
@@ -123,16 +129,31 @@ loop {
 }
 ```
 
+The application names its kinds (`kind`: as its values' `AppValue::name`
+says them, and as an error does), may say a kind's values must be used, and
+names sets of kinds for its effects (`name`: `"pane answer"`; `from>to` for
+a kind that becomes another when passed through, `x secs -- x`). Each word's
+effect is read strictly, in the names of kinds (`integer`, `boolean`,
+`string`, `list`, `any`, the application's, and its names): a name before
+the `--` is what a place takes, after it what one gives, and a name on both
+sides passes the kind it was given through. The checker follows those kinds,
+as it does the core's, and refuses only what surely fails.
+
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
 host pushes before running the machine again; `machine.at()` is the token
-of the word it stopped at, and `machine.next()` the one it takes next, if its
-program has one. `print(line)` prints. A word
-gives as many values as its vocabulary says: the checker counts on it, and the machine fails a run
-with `contract` if a host gives otherwise. A word that is one step (`dup`
+of the word it stopped at. A `Failure` may name a word of its own, one in a
+program the word was given. `print(line)` prints. A word
+gives as many values as its vocabulary says, of the kinds it says: the checker counts on it, and the machine fails a run
+with `contract` if a host gives otherwise, when it returns or resumes. A word that is one step (`dup`
 is `0 pick`) is copied in where it is called, so a mistake in it is placed
-at the call.
+at the call. A failed `add` leaves the compiler as it was.
+`Compiler::definitions` is a compiler for a program of its own that sees
+those definitions, not their source's top level or `let` names (a key
+binding of a config's, say); a definition reading one may not be called
+there (`unset`). An error of a call every way through which fails holds
+the step inside that does (`Error::cause`).
 
 For help, [`Builtin`] and [`Parsing`] are the core's words and the parsing
 words: each has `ALL`, `name()` and `named(name)`, a built-in its `effect()`

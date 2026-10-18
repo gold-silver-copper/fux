@@ -1,5 +1,5 @@
 //! fux's command line, config, bindings and prompt: fuxth programs, run in
-//! a client. Words build typed requests (`opts … run`, `keys … send-keys`)
+//! a client. Words build typed requests (`opts … run`, `%2 … send-keys`)
 //! and execution words submit them: the program suspends while the server
 //! does what one asks, and goes on with what it answers, as typed values
 //! (a pane's handle, a capture), never text to be read back.
@@ -28,6 +28,10 @@ use std::time::Duration;
 
 pub use words::{WORDS, Word, opens, usage};
 
+/// A config, by its name and text, whose definitions its bindings and
+/// prompt see.
+pub type Config = std::sync::Arc<(String, String)>;
+
 /// The bundled words, written in fuxth.
 pub const LIBRARY: &str = include_str!("library.fux");
 
@@ -38,16 +42,11 @@ pub enum Fux {
     Tab(TabId),
     Workspace(WsId),
     Client(ClientId),
-    /// Options being built, for `run`, `split`, `wait`, `capture` and the
-    /// rest.
+    /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
+    /// request: a pane, tab, workspace or client given options, keys, a
+    /// wait or a mouse event, for the word that acts on it after
+    /// (`%2 str ls text str Enter key send-keys`).
     Opts(Box<Opts>),
-    /// Input being built, for `send-keys`.
-    Keys(Box<Keys>),
-    /// A mouse event being built, for `send-mouse`.
-    Mouse(Box<MouseEvent>),
-    /// A pane, tab or workspace given a wait (`%2 0 timeout`), for the
-    /// action, `wait` or `capture` that follows.
-    Awaited(Box<Awaited>),
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
     /// What the server said: a capture, a listing, a wait's outcome.
@@ -56,18 +55,11 @@ pub enum Fux {
 
 impl AppValue for Fux {
     fn kind(&self) -> &'static str {
-        match self {
-            Fux::Pane(_) => "a pane",
-            Fux::Tab(_) => "a tab",
-            Fux::Workspace(_) => "a workspace",
-            Fux::Client(_) => "a client",
-            Fux::Opts(_) => "options (from opts)",
-            Fux::Keys(_) => "keys (from keys)",
-            Fux::Mouse(_) => "a mouse event (from mouse)",
-            Fux::Awaited(_) => "a pane given a wait (from timeout or wait-text on it)",
-            Fux::Extent(_) => "a size (from percent)",
-            Fux::Answer(answer) => answer.said.kind(),
+        if let Fux::Answer(answer) = self {
+            return answer.said.kind();
         }
+        let kind = words::KINDS.iter().find(|(name, ..)| *name == self.name());
+        kind.map_or("a value of fux's", |(_, said, _)| said)
     }
 
     fn name(&self) -> &'static str {
@@ -76,12 +68,18 @@ impl AppValue for Fux {
             Fux::Tab(_) => "tab",
             Fux::Workspace(_) => "workspace",
             Fux::Client(_) => "client",
-            Fux::Opts(_) => "opts",
-            Fux::Keys(_) => "keys",
-            Fux::Mouse(_) => "mouse",
-            Fux::Awaited(_) => "awaited",
+            // A pane given only a wait, which waits if nothing acts on it.
+            Fux::Opts(opts) => match opts.on {
+                None => "opts",
+                Some(On::Target(_))
+                    if opts.given.iter().all(|w| crate::help::WAITS.contains(w)) =>
+                {
+                    "waiting"
+                }
+                Some(_) => "request",
+            },
             Fux::Extent(_) => "size",
-            Fux::Answer(_) => "answer",
+            Fux::Answer(answer) => answer.said.name(),
         }
     }
 
@@ -94,9 +92,7 @@ impl AppValue for Fux {
             Fux::Answer(answer) => answer.text.clone(),
             Fux::Extent(Extent::Cells(n)) => n.to_string(),
             Fux::Extent(Extent::Percent(n)) => format!("{}%", n.get()),
-            Fux::Opts(_) | Fux::Keys(_) | Fux::Mouse(_) | Fux::Awaited(_) => {
-                format!("({})", self.kind())
-            }
+            Fux::Opts(_) => format!("({})", self.kind()),
         }
     }
 }
@@ -109,9 +105,11 @@ pub struct Waits {
     pub marks: bool,
 }
 
-/// Options, as words give them.
+/// Options, keys, waits and a mouse event, as words give them, and what
+/// they are on: nothing, for `run`, `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Opts {
+    pub on: Option<On>,
     pub name: Option<String>,
     pub size: Option<fux_vt::Size>,
     pub cwd: Option<std::path::PathBuf>,
@@ -126,37 +124,19 @@ pub struct Opts {
     pub waits: Waits,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
-    /// The option words given, for the word they go on to refuse any it
-    /// would not use.
-    pub given: Vec<&'static str>,
-}
-
-/// Input, as words give it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Keys {
     pub inputs: Vec<Input>,
-    pub waits: Waits,
-}
-
-/// A pane, tab or workspace and the wait words given on it, before the
-/// options, keys or mouse event of the word that acts on it: they wait as
-/// if given there.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Awaited {
-    pub target: AnyRef,
-    pub waits: Waits,
-    /// The wait words given, for the word they go on to refuse any it
-    /// would not use.
+    /// A mouse event: what it does, and its row and column.
+    pub mouse: Option<(Mouse, u16, u16)>,
+    /// The words given, for the word they go on to refuse any it would not
+    /// use.
     pub given: Vec<&'static str>,
 }
 
-/// A mouse event, as words give it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MouseEvent {
-    pub mouse: Mouse,
-    pub row: u16,
-    pub col: u16,
-    pub waits: Waits,
+/// What a request is on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum On {
+    Target(AnyRef),
+    Client(ClientId),
 }
 
 /// What the server answered, to print as text, or as JSON: the JSON the
@@ -187,6 +167,16 @@ pub enum Said {
 }
 
 impl Said {
+    /// Its kind, as the vocabulary names it.
+    fn name(self) -> &'static str {
+        match self {
+            Said::Capture => "capture",
+            Said::Listing | Said::Status | Said::Servers => "listing",
+            Said::Action(_) | Said::Several => "answer",
+            Said::Json => "json",
+        }
+    }
+
     /// What it is, said where it is refused.
     fn kind(self) -> &'static str {
         match self {
@@ -372,6 +362,7 @@ impl From<fuxth::Error> for Failed {
             | Lang::DivByZero
             | Lang::Overflow
             | Lang::Unset
+            | Lang::Unused
             | Lang::Fail
             | Lang::TooLong
             | Lang::Contract
@@ -386,35 +377,97 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     // A bundled word that fails whatever way it takes is told by its own
     // name and use, not by the word inside it that would fail.
     let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
-    if error.word.as_deref().is_some_and(bundled)
-        && let Some((whole, _)) = error.message.split_once(": ")
-        && whole.starts_with("every way through it fails")
-    {
-        error.message = whole.to_owned();
+    if error.word.as_deref().is_some_and(bundled) {
+        error.cause = None;
     }
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
         error.message.push_str(&format!(" ({usage})"));
     }
+    if error.code == Lang::Unused
+        && let Some(how) = error.word.as_deref().and_then(words::unacted)
+    {
+        error.message = how;
+    }
     if error.code == Lang::UnknownWord {
+        if let Some(hint) = error.word.as_deref().and_then(words::hint) {
+            error.message = format!("no such word; {hint}");
+        }
         error.message.push_str(" (`fux help` lists every word)");
     }
-    Failed::new(Code::from(error.code), error.located())
+    let code = Code::from(error.code);
+    // What check read says where its mistake is.
+    match code == Code::Check {
+        true => Failed::new(code, error.message),
+        false => Failed::new(code, error.located()),
+    }
 }
 
-/// The vocabulary fuxth compiles fux's programs with.
-pub fn vocabulary() -> fuxth::Vocabulary {
+/// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
+/// names its words' effects use, and the words.
+pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     let mut vocabulary = fuxth::Vocabulary::default();
-    for word in WORDS {
-        vocabulary.add(word.name, word.takes, word.gives());
+    for (kind, said, unused) in words::KINDS {
+        vocabulary.kind(kind, said)?;
+        if let Some(why) = unused {
+            vocabulary.must_use(kind, why)?;
+        }
     }
-    vocabulary
+    let strings = words::STRINGS
+        .split_whitespace()
+        .map(|n| (n, "string", "a string"));
+    let integers = words::INTEGERS
+        .split_whitespace()
+        .map(|n| (n, "integer", "an integer"));
+    for (name, kinds, said) in strings.chain(integers).chain(words::NAMES.iter().copied()) {
+        vocabulary.name(name, kinds, said)?;
+    }
+    for word in WORDS {
+        vocabulary.add(word.name, word.effect)?;
+    }
+    // A wait left last on the line waits: `%2 str ready wait-text`.
+    vocabulary.ends("waiting", "wait")?;
+    Ok(vocabulary)
 }
 
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    let mut compiler = READY.with(Clone::clone)?;
+    compile_in(None, tokens)
+}
+
+/// Compiles `tokens` after the library and, for a key's or the prompt's
+/// program, its client's config's definitions (`config`).
+pub fn compile_in(config: Option<&Config>, tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
+    compiled(config, tokens).map_err(|error| listing(tokens, error))
+}
+
+/// `compile_in`, its mistake as fuxth says it.
+pub(crate) fn compiled(
+    config: Option<&Config>,
+    tokens: &[Token],
+) -> Result<Machine<Fux>, fuxth::Error> {
+    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.message, None);
+    let mut compiler = READY.with(Clone::clone).map_err(broken)?;
+    if let Some((name, text)) = config.map(|config| &**config) {
+        compiler.add(&handles(&token::source(name, text)?)?)?;
+        compiler = compiler.definitions();
+    }
     compiler.add(&handles(tokens)?)?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))
+}
+
+/// A `list` never closed, with no `end` after it at all, is most likely
+/// meant as a listing: told so.
+fn listing(tokens: &[Token], mut error: fuxth::Error) -> Failed {
+    let at = |t: &Token| Some(&t.place) == error.place.as_ref() && &*t.text == "list";
+    let list = tokens.iter().position(at);
+    if error.code == Lang::Unclosed
+        && list.is_some_and(|i| tokens.iter().skip(i).all(|t| &*t.text != "end"))
+    {
+        error
+            .message
+            .push_str("; to list panes, tabs and workspaces: `fux ls`");
+    }
+    Failed::from(error)
 }
 
 thread_local! {
@@ -424,7 +477,7 @@ thread_local! {
 }
 
 fn libraries() -> Result<Compiler<Fux>, Failed> {
-    let mut compiler = Compiler::new(vocabulary());
+    let mut compiler = Compiler::new(vocabulary()?);
     compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
     compiler.add(&token::source("library.fux", LIBRARY)?)?;
     compiler.prepare();
@@ -440,33 +493,32 @@ pub(crate) fn reads_token(text: &str) -> bool {
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
 /// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
 /// `str` takes. Nor may `define` or `let` give one as a name: it
-/// would always be the handle. Nor may `let` take the name of a word an id
-/// becomes (`pane`): every id would then push its value.
-fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
+/// would always be the handle. Nor may either take the name of a word an
+/// id becomes (`pane`): every id would then be theirs.
+fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
     let mut out = Vec::with_capacity(tokens.len());
     let mut after: Option<&str> = None;
     for token in tokens {
         let id = token.text.parse::<AnyRef>().ok();
+        let named = |why: String| fuxth::Error::new(Lang::BadName, why, Some(token));
+        let bound = match after {
+            Some("let") => "let",
+            _ => "defined",
+        };
         match (after, id) {
-            (Some("let"), None) if Kind::ALL.iter().any(|k| k.name() == &*token.text) => {
-                return Err(Failed::new(
-                    Lang::BadName,
-                    format!(
-                        "{}: {}: cannot be let: a {} id is `str ID {}`",
-                        token.place, token.text, token.text, token.text
-                    ),
-                ));
+            (Some("let" | "define"), None)
+                if Kind::ALL.iter().any(|k| k.name() == &*token.text) =>
+            {
+                let kind = &token.text;
+                return Err(named(format!(
+                    "cannot be {bound}: a {kind} id is `str ID {kind}`"
+                )));
             }
             (Some("define" | "let"), Some(id)) => {
-                return Err(Failed::new(
-                    Lang::BadName,
-                    format!(
-                        "{}: {}: cannot be defined: it names a {}",
-                        token.place,
-                        token.text,
-                        id.kind().name()
-                    ),
-                ));
+                return Err(named(format!(
+                    "cannot be {bound}: it names a {}",
+                    id.kind().name()
+                )));
             }
             (None, Some(id)) => {
                 let at = |text: &str| Token {
@@ -478,25 +530,6 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
             (Some(_) | None, _) => out.push(token.clone()),
         }
         after = (after.is_none() && reads_token(&token.text)).then_some(&*token.text);
-    }
-    // A wait word last acts on nothing: what it gives (options, keys, a
-    // pane given a wait) is for an action after it, and after an action
-    // its answer was already given (`%2 str x type 0 timeout`).
-    if let [.., before, last] = tokens
-        && !reads_token(&before.text)
-        && crate::help::WAITING
-            .split_whitespace()
-            .any(|w| w == &*last.text)
-    {
-        return Err(Failed::new(
-            Code::Unused,
-            format!(
-                "{}: {}: last, it waits for nothing: a wait word goes before the action it \
-                 is for, on its options, keys or pane (`%2 0 timeout str x type`, \
-                 `%2 opts str ready wait-text wait`)",
-                last.place, last.text
-            ),
-        ));
     }
     Ok(out)
 }
@@ -703,20 +736,15 @@ pub fn run_capped(
                     .map_err(|f| placed(machine, f))?;
                 match &reply.end {
                     // A failure that answered too (a wait's): its answer is
-                    // left, printed before why it failed; as JSON, if the
-                    // program's next word asks for it.
+                    // left, printed before why it failed.
                     End::Failed { message, .. }
                         if !message.trim().is_empty() && !reply.text.trim().is_empty() =>
                     {
-                        let json = machine.next().is_some_and(|word| &*word.text == "json");
                         let answer = Reply {
                             end: End::Done,
                             ..reply.clone()
                         };
-                        match json && !reply.json.trim().is_empty() {
-                            true => machine.push(Value::str(reply.json.trim_end()))?,
-                            false => pushed(machine, answered(answer, then))?,
-                        }
+                        pushed(machine, answered(answer, then))?;
                     }
                     End::Failed { .. } | End::Done | End::Answered(_) => {}
                 }
@@ -749,6 +777,7 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
         message: failed.message,
         place: Some(at.place),
         word: Some(at.text),
+        cause: None,
     };
     Failed {
         message: ours(machine, error).message,
@@ -954,7 +983,10 @@ pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<K
     let shown = path.display().to_string();
     let text = read_file(path, SOURCE_MAX)?;
     let context = client::context();
-    let mut keymap = Keymap::default();
+    let mut keymap = Keymap {
+        config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
+        ..Keymap::default()
+    };
     run_quiet(
         &shown,
         &text,
@@ -1106,8 +1138,10 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     };
     for value in stack {
         // An answer with nothing to say (a wait for quiet, an empty
-        // listing) prints no blank line.
-        if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty()) {
+        // listing) prints no blank line; options or a request, nothing.
+        if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
+            || matches!(value, Value::App(Fux::Opts(_)))
+        {
             continue;
         }
         let _ = writeln!(host.out, "{}", value.text());
@@ -1138,9 +1172,6 @@ fn code(values: &[Value<Fux>]) -> Option<Code> {
             | Fux::Workspace(_)
             | Fux::Client(_)
             | Fux::Opts(_)
-            | Fux::Keys(_)
-            | Fux::Mouse(_)
-            | Fux::Awaited(_)
             | Fux::Extent(_),
         ) => None,
     })

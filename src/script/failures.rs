@@ -56,30 +56,31 @@ const ROWS: &[Fails] = &[
     fails("name_taken", Cli, "opts str main name new-tab drop opts str main name new-tab", "fails name_taken 1"),
     fails("id", Cli, "opts str %1 id new-tab", "fails id 1"),
     fails("id", Cli, "opts str %5 id str %6 id new-tab", "fails id 1"),
-    fails("id", Cli, "%1 opts str @5 id split", "fails id 1"),
+    fails("id", Cli, "%1 str @5 id split", "fails id 1"),
     fails("bad_value", Cli, "%1 str sideways move-beside", "fails bad_value 1"),
     fails("bad_value", Cli, "%1 str NOPE signal", "fails bad_value 1"),
     fails("bad_value", Cli, "str +x workspace", "fails bad_value 1"),
     fails("bad_value", Cli, "opts str +x in new-tab", "fails bad_value 1"),
-    fails("usage", Cli, "%1 opts str 'a\u{1}b' typed split", "fails usage 2"),
-    fails("not_running", CliExited, "%2 keys str x text send-keys", "fails not_running 1"),
-    fails("exited", CliExited, "%2 opts str x wait-text wait", "fails exited 3"),
+    fails("usage", Cli, "%1 str 'a\u{1}b' typed split", "fails usage 2"),
+    fails("not_running", CliExited, "%2 str x text send-keys", "fails not_running 1"),
+    fails("exited", CliExited, "%2 str x wait-text wait", "fails exited 3"),
     fails("only_shell", Cli, "%1 str WINCH signal", "fails only_shell 1"),
-    fails("size", Cli, "%1 opts split drop @1 4 2 resize", "fails size 1"),
+    fails("size", Cli, "%1 split drop @1 4 2 resize", "fails size 1"),
     fails("mouse", Cli, "%1 str click 0 0 mouse send-mouse", "fails mouse 1"),
     fails("not_a_directory", Cli, "opts str /nonexistent cwd new-tab", "fails not_a_directory 1"),
     fails("not_headless", Cli, "str c1 client 10 10 resize-client", "fails not_headless 1"),
-    fails("timeout", Cli, "%1 opts str never wait-text 1 timeout wait", "fails timeout 124"),
+    fails("timeout", Cli, "%1 str never wait-text 1 timeout wait", "fails timeout 124"),
     fails("not_here", Key, "str c1 client 10 10 headless", "fails not_here 1"),
-    fails("unused", Cli, "%1 opts str x wait-text capture", "fails unused 1"),
-    // 0.28: a wait word on the pane is as one among the options after it.
-    fails("unused", Cli, "%1 str x wait-text opts capture", "fails unused 1"),
-    fails("unused", Cli, "%1 opts main-screen alt-screen capture", "fails unused 1"),
-    fails("unused", Cli, "%1 opts str /bin/cat program str hi typed split", "fails unused 1"),
-    fails("not_a_key", Cli, "%1 keys str Nope key send-keys", "fails not_a_key 1"),
-    fails("no_keys", Cli, "%1 keys send-keys", "fails no_keys 1"),
+    fails("unused", Cli, "%1 str x wait-text capture", "fails unused 1"),
+    // 0.30: a request nothing acts on is refused before anything runs.
+    fails("unused", Cli, "%1 last-output", "fails unused 1"),
+    fails("unused", Cli, "opts str x name", "fails unused 1"),
+    fails("unused", Cli, "%1 main-screen alt-screen capture", "fails unused 1"),
+    fails("unused", Cli, "%1 str /bin/cat program str hi typed split", "fails unused 1"),
+    fails("not_a_key", Cli, "%1 str Nope key send-keys", "fails not_a_key 1"),
+    fails("no_keys", Cli, "%1 send-keys", "fails no_keys 1"),
     fails("not_a_client", Cli, "me", "fails not_a_client 1"),
-    fails("paste", Cli, "%1 keys str /nonexistent paste-file send-keys", "fails paste 1"),
+    fails("paste", Cli, "%1 str /nonexistent paste-file send-keys", "fails paste 1"),
     fails("config", Cli, "str bell str maybe set", "fails config 1"),
     fails("read", Cli, "str /nonexistent.fux check", "fails read 1"),
     fails("open_quote", Cli, "str 'abc", "fails open_quote 1"),
@@ -97,22 +98,24 @@ const ROWS: &[Fails] = &[
     fails("stack_overflow", Cli, "begin 1 false until", "fails stack_overflow 1"),
     fails("call_depth", Cli, "define f f 1 end f", "fails call_depth 1"),
     fails("type", Cli, "str a 1 add", "fails type 1"),
-    fails("type", Cli, "5 70000 0 mouse", "fails type 1"),
+    fails("type", Cli, "%1 5 0 0 mouse", "fails type 1"),
     // 0.28: a pane given a wait is for what acts on it, and refused elsewhere.
     fails("type", Cli, "%1 1 timeout str state get", "fails type 1"),
+    // 0.30: options are for what makes its own pane; the rest go on it.
     fails("type", Cli, "%1 opts str x line", "fails type 1"),
-    fails("type", Cli, "%1 last-output", "fails type 1"),
-    // 0.28.1: a wait word after the action it was meant for, last, waited
-    // for nothing and printed the pane it gave; refused before anything runs.
-    fails("unused", Cli, "%1 str x type 0 timeout", "fails unused 1"),
-    fails("unused", Cli, "%1 str x line str ok wait-text", "fails unused 1"),
+    fails("type", Cli, "%1 opts capture", "fails type 1"),
+    fails("type", Cli, "%1 capture last-output", "fails type 1"),
+    // 0.30: a wait word left last waits on the pane; one before other
+    // values, which nothing acts on, is refused before anything runs.
+    fails("unused", Cli, "%1 str x type 0 timeout 1", "fails unused 1"),
+    fails("unused", Cli, "%1 str ok wait-text str x", "fails unused 1"),
     fails("too_long", Cli, "define deep let x list x end deep end 0 deep", "fails too_long 1"),
     fails("div_by_zero", Cli, "1 0 div", "fails div_by_zero 1"),
     fails("overflow", Cli, "9223372036854775807 1 add", "fails overflow 1"),
     fails("unset", Cli, "false if 1 let n then n", "fails unset 1"),
     fails("range", Cli, "list end 3 at", "fails range 1"),
     fails("fail", Cli, "str boom fail", "fails fail 1"),
-    fails("not_run", Cli, "%1 opts respawn", "fails not_run 1"),
+    fails("not_run", Cli, "%1 respawn", "fails not_run 1"),
     fails("log", Cli, "%1 str /nonexistent/dir/log start-log", "fails log 1"),
     fails("people_attached", Cli, "kill-server", "fails people_attached 1"),
     fails("bad_binding", Cli, "str x str nosuchword bind", "fails bad_binding 1"),
@@ -208,5 +211,28 @@ fn every_code_has_a_row_or_a_reason() -> Result<(), String> {
             ));
         }
     }
+    Ok(())
+}
+
+/// Every kind mistake is refused before anything runs: the program is
+/// refused as it compiles, and a host recording what it is asked records
+/// nothing.
+#[test]
+fn a_kind_mistake_acts_on_nothing() -> Result<(), String> {
+    let (mut session, client) = testing::attached(24, 80)?;
+    let mut kinds = 0;
+    for row in ROWS.iter().filter(|r| r.code == "type") {
+        let tokens = fuxth::token::source("test", row.input).map_err(|e| e.to_string())?;
+        let compiled = super::compile(&tokens).map(drop).map_err(|f| f.code.name());
+        assert_eq!(compiled, Err("type"), "{}", row.input);
+        let asked = testing::requests(&mut session, client, row.input);
+        assert!(
+            asked.is_err_and(|e| e.starts_with("type: ")),
+            "{}",
+            row.input
+        );
+        kinds += 1;
+    }
+    assert!(kinds >= 5, "{kinds}");
     Ok(())
 }

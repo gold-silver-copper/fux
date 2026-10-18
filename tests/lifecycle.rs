@@ -22,7 +22,6 @@ fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
         "str",
         pane,
         "pane",
-        "keys",
         "str",
         line,
         "text",

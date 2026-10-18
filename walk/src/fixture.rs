@@ -277,7 +277,6 @@ impl Fixture {
             "str",
             pane,
             "pane",
-            "keys",
             "str",
             line,
             "text",

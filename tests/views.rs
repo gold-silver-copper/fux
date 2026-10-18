@@ -125,7 +125,7 @@ fn two_clients_have_independent_views() -> Outcome {
         client.wait_for("typed-by-one")?;
         client.wait_for("typed-by-two")?;
     }
-    let right = server.ok(&["str", "%2", "pane", "opts", "capture"])?;
+    let right = server.ok(&["str", "%2", "pane", "capture"])?;
     assert!(
         right.contains("typed-by-one") && !right.contains("typed-by-two"),
         "{right}"
@@ -213,7 +213,7 @@ fn moving_a_panes_out_leaves_an_empty_tab_with_a_hint() -> Outcome {
 #[test]
 fn capture_client_shows_what_a_client_shows_in_every_mode() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
     let captured = |server: &Server| -> Result<Vec<String>, String> {

@@ -20,7 +20,6 @@ fn start_line(server: &Server, pane: &str, line: &str) -> Outcome {
         "str",
         pane,
         "pane",
-        "keys",
         "str",
         line,
         "text",
@@ -62,7 +61,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         if how == "workspace kill" {
             server.ok(&["opts", "str", "doomed", "name", "new-workspace"])?;
         } else {
-            server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+            server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
         }
         let (pane, _) = server.newest_pane()?;
         let job = server.dir.join(format!("job-{how}"));
@@ -95,16 +94,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
             }
             // The shell exits and its pane closes: answered with status 4.
             "exit" => {
-                let keys = [
-                    "keys",
-                    "str",
-                    "exit",
-                    "text",
-                    "str",
-                    "Enter",
-                    "key",
-                    "send-keys",
-                ];
+                let keys = ["str", "exit", "text", "str", "Enter", "key", "send-keys"];
                 let out = server.fux(&[&["str", &pane, "pane"][..], &keys].concat())?;
                 assert!(matches!(out.status, 0 | 4), "{}", out.stderr);
             }
@@ -123,7 +113,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
 #[test]
 fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     let (pane, shell) = server.newest_pane()?;
     let job = server.dir.join("job");
     let front = server.dir.join("front");
@@ -157,7 +147,7 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
 #[test]
 fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     let mut client = server.attach(20, 100)?;
     let (pane, leader) = server.newest_pane()?;
     // Settled: the new shell has a prompt.
@@ -211,7 +201,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
 #[test]
 fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     let (pane, _) = server.newest_pane()?;
     let front = server.dir.join("front");
     start_line(
@@ -307,7 +297,7 @@ fn a_line_too_long_to_type_leaves_no_process_behind() -> Outcome {
     let file = server.dir.join("long.fux");
     std::fs::write(
         &file,
-        format!("str %1 pane opts horizontal str {line} typed split\n"),
+        format!("str %1 pane horizontal str {line} typed split\n"),
     )
     .map_err(e)?;
     let out = server.fux(&[&file.to_string_lossy()])?;

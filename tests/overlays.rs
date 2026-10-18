@@ -92,7 +92,7 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%2", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %2 sh?")?;
@@ -106,7 +106,7 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     client.keys("y")?;
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;
     // A confirmation whose item disappears closes, saying so.
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%3", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %3")?;
@@ -127,7 +127,7 @@ fn menus_act_on_the_item_they_were_opened_for() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%2", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}a"))?;
     client.wait_for("pane %2 sh")?;
@@ -224,7 +224,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.keys(&format!("{DOWN}\r"))?;
     bar_has(&mut client, "elsewhere")?;
     // The move choosers from the pane menu move the pane there.
-    server.ok(&["str", "%4", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%4", "pane", "horizontal", "split"])?;
     client.keys(&format!("{PREFIX}a"))?;
     client.wait_for("move to workspace")?;
     for _ in 0..6 {
@@ -248,7 +248,7 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.wait_for("$")?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accepts")?;
-    client.keys("me focused opts vertical str echo program str 'from the prompt' arg split\r")?;
+    client.keys("me focused vertical str echo program str 'from the prompt' arg split\r")?;
     client.wait("typed into the new pane", |t| {
         t.lines().any(|l| l == "from the prompt")
     })?;

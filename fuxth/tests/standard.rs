@@ -26,7 +26,6 @@ fn core_stack_words() {
         ("1 2 3 rot", &[2, 3, 1]),
         ("1 2 swap", &[2, 1]),
         ("1 2 nip", &[2]),
-        ("1 2 tuck", &[2, 1, 2]),
         ("1 2 3 -rot", &[3, 1, 2]),
         ("1 2 2dup", &[1, 2, 1, 2]),
         ("1 2 3 2drop", &[1]),
@@ -128,6 +127,8 @@ fn exercism_forth() {
         ("define dup-twice dup dup end 1 dup-twice", &[1, 1, 1]),
         ("define countup 1 2 3 end countup", &[1, 2, 3]),
         ("define foo 5 end define bar foo end bar", &[5]),
+        // A definition may take a library word's name: from there on.
+        ("define swap dup end 1 swap", &[1, 1]),
     ] {
         assert_eq!(fuxth(program, u64::MAX), ints(left), "{program}");
     }
@@ -136,9 +137,9 @@ fn exercism_forth() {
         ("1 swap", "stack_underflow"),
         ("foo", "unknown_word"),
         ("define 1 2 end", "bad_name"),
-        // Exercism lets a definition replace a word, a built-in or not; here
-        // a name is given once, so a word means one thing everywhere.
-        ("define swap dup end", "bad_name"),
+        // Exercism lets a definition replace any word; here the core's
+        // are kept, and a program defines a name once.
+        ("define drop dup end", "bad_name"),
         ("define foo 5 end define foo 6 end", "bad_name"),
     ] {
         assert!(

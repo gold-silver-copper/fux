@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for run in 0..runs {
             let compiling = Instant::now();
             let mut words = Vocabulary::default();
-            words.add("tick", 0, 1);
+            words.add("tick", "-- integer")?;
             let mut compiler = Compiler::new(words);
             compiler.add(&fuxth::token::source("stdlib.fux", STDLIB)?)?;
             compiler.add(&fuxth::token::source("bench", text)?)?;

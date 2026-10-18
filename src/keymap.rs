@@ -178,6 +178,9 @@ pub struct Keymap {
     pub bindings: Layer,
     /// Keys bound without the prefix, in the order bound; never the prefix.
     pub root: Vec<(KeyPress, Binding)>,
+    /// The config that made it, by its name and text: its definitions are
+    /// its bindings' and prompt's words too.
+    pub config: Option<std::sync::Arc<(String, String)>>,
 }
 
 /// The groups of the column, in its order; custom groups follow, `Other`
@@ -213,10 +216,10 @@ pub const DEFAULTS: &[(&str, bool, Bindings)] = &[
         &[
             (
                 "v",
-                "me focused opts horizontal split drop",
+                "me focused horizontal split drop",
                 "split side by side",
             ),
-            ("s", "me focused opts vertical split drop", "split stacked"),
+            ("s", "me focused vertical split drop", "split stacked"),
             ("x", "me me focused confirm-close", "close pane"),
             ("z", "me zoom", "zoom or restore"),
             ("a", "me me focused menu", "pane actions"),
@@ -340,6 +343,7 @@ impl Default for Keymap {
             prefix: KeyPress::new(Key::Char('b'), Modifiers::CTRL),
             bindings: Layer::default(),
             root: Vec::new(),
+            config: None,
         };
         for (group, repeat, bindings) in DEFAULTS {
             for (keys, code, label) in *bindings {

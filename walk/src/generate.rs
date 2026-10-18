@@ -123,7 +123,7 @@ pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> 
     // there are fewer than two panes, the walk makes one first.
     if panes.len() < 2 {
         let pane = panes.first().copied().unwrap_or("%1");
-        return Step::Cli(words(&format!("str {pane} pane opts horizontal split")));
+        return Step::Cli(words(&format!("str {pane} pane horizontal split")));
     }
     if clients.is_empty() {
         return Step::Attach { rows: 24, cols: 80 };
@@ -289,9 +289,9 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             rng.below(9)
         ),
         2 => format!("opts str w{} name new-workspace", rng.below(9)),
-        3 | 4 => format!("str {} pane opts horizontal split", pane(rng)),
+        3 | 4 => format!("str {} pane horizontal split", pane(rng)),
         5 => format!(
-            "str {} pane opts vertical str echo program str split-typed arg split",
+            "str {} pane vertical str echo program str split-typed arg split",
             pane(rng)
         ),
         6 if panes > 2 => format!("str {} pane kill", pane(rng)),
@@ -351,7 +351,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         // The prefix sent to a client is taken as typed there: it opens
         // the column if it is that client's prefix.
         23 => match rng.below(5) {
-            0 => format!("str {} client keys str C-b key send-keys", client(rng)),
+            0 => format!("str {} client str C-b key send-keys", client(rng)),
             n => format!(
                 "str {} client {}",
                 client(rng),
@@ -386,11 +386,11 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             .to_owned(),
         28 => "dump".into(),
         29 => format!(
-            "str {} pane keys str typed-by-send-keys text send-keys",
+            "str {} pane str typed-by-send-keys text send-keys",
             pane(rng)
         ),
-        30 => format!("str {} pane keys str Enter key send-keys", pane(rng)),
-        31 => format!("str {} pane opts 20 history capture", pane(rng)),
+        30 => format!("str {} pane str Enter key send-keys", pane(rng)),
+        31 => format!("str {} pane 20 history capture", pane(rng)),
         32 => "ls".into(),
         33 => "list-keys".into(),
         34 => "buffers".into(),

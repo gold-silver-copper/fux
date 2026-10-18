@@ -28,17 +28,20 @@ failure prints `fux: CODE: MESSAGE` on stderr, with how the word is used
 (one of fux's own); the exit statuses: `fux help-agents`, under Status.
 Each `fux` is a fresh program.
 
-Most steps have one of these shapes (UPPER = what you fill in):
+Most steps have one of these shapes (UPPER = what you fill in, [] if you
+want it): what a word that acts takes (options, a wait, keys, a mouse event)
+goes on the pane before it; only run, new-tab and new-workspace, which have
+no pane yet, start from opts.
 
   fux opts OPTIONS run                  start a program; answers once it settles: %2 reading, then its output
-  fux %2 keys INPUT send-keys           type: str T text, str Enter key, …; answers as run does
+  fux %2 INPUT send-keys                type: str T text, str Enter key, …; answers as run does
   fux %3 str 'make test' line           a shell command: answers `%3 reading · done 0` and its output
-  fux %2 opts [WAIT] wait               settle, or wait for str T wait-text, wait-exit, …
-  fux %2 opts READ capture              read once settled: 100 history, marks, …; then json
+  fux %2 [WAIT] wait                    settle, or wait for str T wait-text, wait-exit, …
+  fux %2 [READ] capture                 read once settled: 100 history, marks, …; then json
   fux %2 str FIELD get                  one value: state, exited, pid, …
 
   fux opts str 'htop -d 5' command run  start htop: %2 waiting · redraws on its own
-  fux %2 str Load await                 wait until it shows Load
+  fux %2 str Load wait-text wait        wait until it shows Load
   fux ls                                what there is
 
 The language's core: str WORD   define NAME … end   let NAME (names the
@@ -49,7 +52,18 @@ The language's core: str WORD   define NAME … end   let NAME (names the
   Everything else (dup swap over rot, not, mod, sort, upper, join, …) is
   the standard library, written in fuxth: listed below.
   Mistakes a run would surely make (too few values, a string given to add
-  or if) are found before anything runs.
+  or if, a capture given to text, a request left that nothing acts on) are
+  found before anything runs.
+
+In what a word takes and leaves below: x is a pane, tab, workspace or
+client (or an action's answer, which is its pane), a request on one (what
+the words between it and the word that acts make of it), or options; w is
+the same, but a pane given only a wait, left last, waits (`%2 str ready
+wait-text`); a
+target is what send-keys acts on, a place what wait waits on (not a
+client), a subject a pane or a request on one; ref a name or a pane, tab
+or workspace; handle a pane, tab or workspace; text a string, a number or
+a boolean.
 
 At a terminal, the prefix then Esc stops a program a key or the prompt runs.
 Driving programs from a script or an agent: `fux help-agents`.
@@ -118,11 +132,10 @@ pub fn explain(name: &str) -> Option<String> {
             out.push_str(&format!("\n{usage}\n"));
         }
         if let Some(takes) = options(name) {
-            // What they go on: send-keys' input, send-mouse's event.
+            // What they go on: options, for what makes its own pane.
             let on = match name {
-                "send-keys" => "keys (opts is refused)",
-                "send-mouse" => "mouse",
-                _ => "opts",
+                "run" | "new-tab" | "new-workspace" => "opts",
+                _ => "the pane",
             };
             out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
             for option in takes {
@@ -153,10 +166,20 @@ pub fn explain(name: &str) -> Option<String> {
 /// screen it prints.
 pub(crate) const WAITING: &str = "wait-text wait-gone wait-exit wait-bell wait-done timeout marks";
 
+/// The words of a wait alone: a pane given only them, left last, waits.
+pub(crate) const WAITS: [&str; 6] = [
+    "wait-text",
+    "wait-gone",
+    "wait-exit",
+    "wait-bell",
+    "wait-done",
+    "timeout",
+];
+
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of;
 /// and whether it waits, taking a wait's words too (`WAITING`).
-pub(crate) const OPTIONS: [(&str, &str, bool); 9] = [
+pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     (
         "run",
         "name size cwd env command program arg in log-to id",
@@ -178,7 +201,8 @@ pub(crate) const OPTIONS: [(&str, &str, bool); 9] = [
     ),
     ("wait", "", true),
     ("send-keys", "text key paste paste-file times", true),
-    ("send-mouse", "", true),
+    ("send-mouse", "mouse", true),
+    ("signal", "", true),
 ];
 
 /// The options `name` takes, if it takes any: its own, then a wait's.
@@ -191,29 +215,35 @@ pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> 
 /// An example of a word in use, as a command line.
 pub(crate) fn example(name: &str) -> Option<&'static str> {
     Some(match name {
-        "run" => "fux opts str app name 120 40 size str ./app program str --flag arg run",
-        "split" => "fux %3 opts vertical split",
+        "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
+        "split" => "fux %3 vertical split",
         "command" => "fux opts str 'python3 -I app.py --fast' command run",
+        "name" | "size" | "cwd" | "env" | "program" | "arg" | "in" | "log-to" => {
+            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program run"
+        }
+        "typed" => "fux opts str 'make test' typed new-tab",
         "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
-        "respawn" => "fux %3 opts kill-first respawn",
-        "wait" => "fux %3 opts wait",
-        "wait-text" => "fux %3 opts str ready wait-text 30 timeout wait",
-        "wait-done" => "fux %3 opts str 'build ok' wait-text wait-done wait",
-        "times" => "fux %3 keys str Down key 2 times str Enter key send-keys",
+        "respawn" => "fux %3 kill-first respawn",
+        "wait" => "fux %3 wait",
+        "wait-text" => "fux %3 str ready wait-text 30 timeout wait",
+        "wait-done" => "fux %3 str 'build ok' wait-text wait-done wait",
+        "timeout" => "fux %3 0 timeout str 'make' line",
+        "times" => "fux %3 str Down key 2 times str Enter key send-keys",
         "line" => "fux %3 str 'make test' line",
-        "send-keys" => "fux %3 keys str 'ls -l' text str Enter key send-keys",
-        "key" => "fux %3 keys str C-c key send-keys",
-        "capture" | "history" => "fux %3 opts 100 history capture",
-        "all-history" => "fux %3 opts all-history capture",
-        "joined" => "fux %3 opts joined 0 2 rows capture",
-        "full" => "fux %3 opts full capture",
-        "styles" => "fux %3 opts styles capture",
-        "main-screen" => "fux %3 opts main-screen capture",
-        "alt-screen" => "fux %3 opts alt-screen capture",
-        "last-output" => "fux %3 opts last-output capture",
-        "rows" => "fux %3 opts 0 4 rows capture",
-        "cols" => "fux %3 opts 0 39 cols capture",
+        "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
+        "key" => "fux %3 str C-c key send-keys",
+        "mouse" | "send-mouse" => "fux %3 str click 2 10 mouse send-mouse",
+        "capture" | "history" => "fux %3 100 history capture",
+        "all-history" => "fux %3 all-history capture",
+        "joined" => "fux %3 joined 0 2 rows capture",
+        "full" => "fux %3 full capture",
+        "styles" => "fux %3 styles capture",
+        "main-screen" => "fux %3 main-screen capture",
+        "alt-screen" => "fux %3 alt-screen capture",
+        "last-output" => "fux %3 last-output capture",
+        "rows" => "fux %3 0 4 rows capture",
+        "cols" => "fux %3 0 39 cols capture",
         "get" => "fux %3 str exited get",
         "json" => "fux ls json",
         "info" => "fux %3 info json",
@@ -223,7 +253,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "resize-x" => "fux %3 30 percent resize-x",
         "move-to" => "fux %3 str new-tab move-to",
         "focus" => "fux str c1 client str left focus",
-        "bind" => "str 'g v' str 'me focused opts horizontal split drop' bind",
+        "bind" => "str 'g v' str 'me focused horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",
         "set" => "fux str history-bytes 16777216 set",
@@ -273,7 +303,7 @@ mod tests {
             assert!(explain(name).is_some(), "{name}");
         }
         // Each word's options go on what it takes.
-        for (name, on) in [("send-keys", "after keys"), ("run", "after opts")] {
+        for (name, on) in [("send-keys", "after the pane"), ("run", "after opts")] {
             let explained = explain(name).unwrap_or_default();
             assert!(explained.contains(&format!("options, {on}")), "{explained}");
         }

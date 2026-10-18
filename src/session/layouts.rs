@@ -140,7 +140,7 @@ impl Session {
             Axis::Vertical => "vertical",
         };
         for (before, pane) in firsts.iter().zip(firsts.iter().skip(1)) {
-            let mut line = vec![pane_name(*before), "opts".into(), way.into()];
+            let mut line = vec![pane_name(*before), way.into()];
             self.pane_words(*pane, ids, &mut line);
             line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
             push(out, &line);

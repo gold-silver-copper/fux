@@ -9,5 +9,5 @@ str C-a str 'me zoom' bind-root
 str Nope prefix
 str 'g' str 'me zoom' bind
 str 't n m' unbind
-define split-wide me focused opts horizontal split drop end
+define split-wide me focused horizontal split drop end
 begin 1 until

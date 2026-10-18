@@ -380,9 +380,9 @@ class Fux(Driver):
 
     @staticmethod
     def keyed(keys):
-        """`keys …`: each a key by its name, or text (`text:…`, or a word no
-        key is called)."""
-        words = ["keys"]
+        """The words for keys: each a key by its name, or text (`text:…`, or
+        a word no key is called)."""
+        words = []
         for k in keys:
             if k.startswith("text:"):
                 words += ["str", k[5:], "text"]
@@ -426,10 +426,10 @@ class Fux(Driver):
         self.fux(*self.pane(pane), *self.keyed(keys), "0", "timeout", "send-keys")
 
     def text(self, pane, text):
-        self.fux(*self.pane(pane), "keys", "str", text, "text", "0", "timeout", "send-keys")
+        self.fux(*self.pane(pane), "str", text, "text", "0", "timeout", "send-keys")
 
     def paste(self, pane, text):
-        self.fux(*self.pane(pane), "keys", "str", text, "paste", "0", "timeout", "send-keys")
+        self.fux(*self.pane(pane), "str", text, "paste", "0", "timeout", "send-keys")
 
     def raw(self, pane, data):
         self.text(pane, data)
@@ -444,14 +444,14 @@ class Fux(Driver):
         return out.split("\n", 1)[1] if "\n" in out else ""
 
     def screen(self, pane, history=False):
-        return self.read(self.fux(*self.pane(pane), "opts", *(["all-history"] if history else []),
+        return self.read(self.fux(*self.pane(pane), *(["all-history"] if history else []),
                                   "0", "timeout", "capture").stdout)
 
     def ansi(self, pane):
-        return self.read(self.fux(*self.pane(pane), "opts", "styles", "0", "timeout", "capture").stdout)
+        return self.read(self.fux(*self.pane(pane), "styles", "0", "timeout", "capture").stdout)
 
     def state(self, pane):
-        return json.loads(self.fux(*self.pane(pane), "opts", "0", "timeout", "capture", "json").stdout)
+        return json.loads(self.fux(*self.pane(pane), "0", "timeout", "capture", "json").stdout)
 
     def exit_status(self, pane):
         s = self.state(pane)
@@ -460,7 +460,7 @@ class Fux(Driver):
         return 128 + s["signal"] if s.get("signal") else None
 
     def wait(self, pane, *cond, timeout=10):
-        out = self.fux(*self.pane(pane), "opts", *cond, str(timeout), "timeout", "wait",
+        out = self.fux(*self.pane(pane), *cond, str(timeout), "timeout", "wait",
                        check=False, timeout=timeout + 10)
         return self.checked(out)
 
@@ -476,7 +476,7 @@ class Fux(Driver):
 
     def wait_exit(self, pane, timeout=10):
         """The program's status: the wait says it in its state (`%2 exited 3`), and exits 0."""
-        out = self.fux(*self.pane(pane), "opts", "wait-exit", str(timeout), "timeout", "wait",
+        out = self.fux(*self.pane(pane), "wait-exit", str(timeout), "timeout", "wait",
                        check=False, timeout=timeout + 10)
         words = out.stdout.split()[1:]
         if words[:1] == ["exited"]:
@@ -530,12 +530,12 @@ class Fux(Driver):
         out = self.fux(*self.pane(pane), "str", cmd, "line", check=False, timeout=timeout + 10)
         if out.returncode == 124:
             # Longer than an action settles in: wait on.
-            out = self.fux(*self.pane(pane), "opts", str(timeout), "timeout", "wait",
+            out = self.fux(*self.pane(pane), str(timeout), "timeout", "wait",
                            check=False, timeout=timeout + 10)
         # `%3 reading · done 0`: the command's status.
         first = self.checked(out).split("\n", 1)[0]
         status = first.split("done ", 1)[1].split()[0] if "done " in first else None
-        body = self.read(self.fux(*self.pane(pane), "opts", "last-output", "0", "timeout", "capture").stdout)
+        body = self.read(self.fux(*self.pane(pane), "last-output", "0", "timeout", "capture").stdout)
         return body.rstrip("\n"), status
 
     def wait_first_exit(self, panes, timeout=15):
@@ -552,7 +552,7 @@ class Fux(Driver):
     def wait_any_text(self, pane, texts, timeout=15):
         """Which of several texts the pane shows first."""
         cond = [w for t in texts for w in ("str", t, "wait-text")]
-        out = self.fux(*self.pane(pane), "opts", *cond, str(timeout), "timeout", "wait", "json",
+        out = self.fux(*self.pane(pane), *cond, str(timeout), "timeout", "wait", "json",
                        check=False, timeout=timeout + 10)
         return json.loads(self.checked(out))["text"]
 
@@ -560,11 +560,11 @@ class Fux(Driver):
         return not self.state(pane)["cursor_visible"]
 
     def main_screen(self, pane):
-        return self.read(self.fux(*self.pane(pane), "opts", "main-screen", "all-history", "0",
+        return self.read(self.fux(*self.pane(pane), "main-screen", "all-history", "0",
                                   "timeout", "capture").stdout)
 
     def respawn(self, pane):
-        self.fux(*self.pane(pane), "opts", "0", "timeout", "respawn")
+        self.fux(*self.pane(pane), "0", "timeout", "respawn")
 
     def resize(self, pane, cols, rows):
         self.fux(*self.pane(pane), "tab", str(cols), str(rows), "resize")
@@ -573,7 +573,7 @@ class Fux(Driver):
         self.fux(*self.pane(pane), str(pct), "percent", "resize-x")
 
     def split(self, pane, argv):
-        words = [*self.pane(pane), "opts", "horizontal", "str", argv[0], "program"]
+        words = [*self.pane(pane), "horizontal", "str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
         # Started at once, as spawn starts one; the answer starts with the pane.

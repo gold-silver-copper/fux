@@ -6,23 +6,32 @@ what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
 a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 `FUX_SOCKET`'s; `fux start` starts one if none runs.
 
+**What an action takes goes on the pane, before it:** keys (`str y text`),
+a wait (`str T wait-text`, `5 timeout`) and what to read (`all-history`),
+in any order, then the word that acts (`send-keys`, `wait`, `capture`).
+Only `run`, `new-tab` and `new-workspace`, which have no pane yet, start
+from `opts`. A line that leaves keys or options nothing acts on is refused
+before anything runs; a wait left last waits.
+
 **Act, then read the answer.** Every action waits until the pane settles,
 then answers with what happened: you never choose a wait or sleep to read.
 
 ```sh
-fux opts str app name str './app --fast' command run    # start: answers %2 reading, then its output
-fux %2 keys str y text str Enter key send-keys          # type: answers as run does
+fux opts str web name str './app --fast' command run    # start: answers %2 reading, then its output
+fux %2 str y text str Enter key send-keys               # type (or str T paste): answers as run does
 fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
-fux %2 opts wait                                        # settle again (30s), what came since your input
-fux %2 opts str 'listening on' wait-text wait           # wait for a text (case ignored)
-fux %2 opts all-history capture                         # read: the screen once settled
+fux %2 wait                                             # settle again (30s), what came since your input
+fux %2 str 'listening on' wait-text wait                # wait for a text (case ignored); also wait-gone, wait-bell
+fux %2 all-history capture                              # read: the screen once settled
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
-fux %2 opts capture json                                # also: main-screen, last-output, styles, marks
+fux %2 capture json                                     # also: main-screen, last-output, styles, marks
+fux %2 str C-c key send-keys                            # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as a capture counts
-fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: opts horizontal … split
-fux %2 str TERM signal; fux %2 opts respawn             # stop; start again on a new terminal
+fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: %2 horizontal split
+fux %2 str TERM signal; fux %2 respawn                  # stop; start again on a new terminal
 fux str agent workspace kill                            # at the end: everything run started, at once
+fux ls                                                  # what there is: workspaces, tabs, panes
 ```
 
 The answer's first line is the pane and its **state**; then what came since
@@ -34,17 +43,18 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
-%2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0); `· redraws on its own` (a clock, `top`): it read your keys and drew after them, a later capture may differ, `str TEXT wait-text` waits for a text
+%2 waiting                     quiet 1s, but it may go on alone: `PANE wait` waits up to 5s for more, then answers so (status 0); `· redraws on its own` (a clock, `top`): it read your keys and drew after them, a later capture may differ, `str TEXT wait-text` waits for a text
 %2 busy · 12 bytes unread      still running, printing or asleep on a timer (a sleep loop) at the time limit (status 124); unread: input fux holds yet
 %2 exited 3                    the program ended; what it printed since your input follows
 ```
 
 - **Time:** an action, a `capture` and a `wait` all wait 30s at most (the server's
-  `wait-seconds`); `SECS timeout` changes it for one, on its options, keys or mouse event or on the pane before them (`%2 0 timeout str ls line`). `0 timeout` acts and answers
+  `wait-seconds`); `SECS timeout` on the pane changes it for one (`%2 0 timeout str ls line`). `0 timeout` acts and answers
   at once, the state as it is (start many programs so, then one `wait` on their tab or
-  workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on. A shell command of unknown length (a build quiet for minutes): `wait-done` on the options waits as long as it runs, with no limit but a `timeout` given, to its end (`· done STATUS`) or to the text first: `%2 opts str 'build ok' wait-text wait-done wait` (status 5 if it ended first). Wait words go before the action they are for; one last on the line waits for nothing and is refused (`unused`).
+  workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE wait` waits on. A shell command of unknown length (a build quiet for minutes): `wait-done` waits as long as it runs, with no limit but a `timeout` given, to its end (`· done STATUS`) or to the text first: `%2 str 'build ok' wait-text wait-done wait` (status 5 if it ended first). Wait words go before the action they are for; a wait alone on the pane, last on the line, waits by itself (`%2 str ready wait-text` is `%2 str ready wait-text wait`).
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
-  workspace `agent`. OPTIONS: `str app name` (the tab's; one given already
+  workspace `agent`. OPTIONS, after `opts`: `str web name` (the tab's name,
+  here `web`; one given already
   is refused, one fux gave, `tab-2`, is taken), `100 30 size`, `str "$PWD" cwd` (a real path), `str K str V env`,
   and the program: `str 'prog -x a' command` (split as a shell splits), or
   `str PROG program` and `str A arg` per argument. The answer's first word is
@@ -52,7 +62,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
   within one). The pane stays after the program ends. A word refuses options it would not use (`capture` a wait): `unused`. `run` answers once the program prints, or reads quiet a second having printed nothing (ssh and `koh connect` read as they connect).
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; no keypad keys; a typo
-  is refused). Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T
+  is refused), always after `str`. Between the pane and `send-keys`: `str T text`, `str NAME key`, `str T
   paste` (bracketed if the program turned that on, an end-of-paste mark in T
   then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too
   (text its bytes, a key its name's, each input after the first 5 more). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
@@ -92,7 +102,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
   (journal-bytes): text may have passed unseen`, 32 MiB by default). Status 3: the program exited first.
   A met `wait-exit` answers status 0, `%2 exited 3` and what came: the
   program's own status is in its state (`str exited get`).
-- **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
+- **Read:** `PANE READ capture`, READ any of: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output; while one runs, its output so far:
   a full-screen one's is its screen to the cursor's row, whole; one of
@@ -105,7 +115,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
   `press`, `release`, `move`), a cell counted from 0 as a capture counts:
   a program's own "row 22" hint is usually counted from 1.
 - **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) answers once the program
-  exits or settles; `%2 kill` closes one pane; `%2 opts respawn` starts it
+  exits or settles; `%2 kill` closes one pane; `%2 respawn` starts it
   again, on a new terminal.
 
 ## Keys a program reads one by one
@@ -163,7 +173,8 @@ the program's own status is in its state line (`%2 exited 3`) and in
 fail exits with the status of the first answer it leaves that has one (as
 itself, its `json`, or in a list): an answer dropped (`wait drop`) or
 taken by a word gives it none. Words before a failing one
-have already acted. `fux ls` (`ls json`, with titles and states) lists everything.
+have already acted, unless the mistake is one every run would make
+(below, under A program): that is refused before anything runs. `fux ls` (`ls json`, with titles and states) lists everything.
 
 ## A program
 
@@ -174,7 +185,7 @@ names between steps:
 # test.fux
 opts str tests name str bash program run let T
 T str 'cargo test' line drop
-T opts all-history last-output capture
+T all-history last-output capture
 ```
 
 `X let NAME` names a value, `define NAME … end` makes a word, `if … else …
@@ -188,10 +199,12 @@ split-on trim upper number join contains starts-with`), lists (`range sort
 reverse sum count first last`), and `dup swap over rot not mod min max …`;
 `fux help` lists every word, `fux help WORD` explains one. A mistake every
 run would make (a word given too few values, a string written just before
-`add` or `if`, or a word that always leaves the wrong kind) fails before
-any word acts; a value whose kind cannot be known before (from a list, or
-a word that leaves either), and the kinds fux's own words take, are
-checked as it runs.
+`add` or `if`, a pane's word given options, a capture given to `text`, a
+request left that nothing acts on, or a word that always leaves the wrong
+kind) fails before any word acts; a value whose kind cannot be known
+before (from a list, or a word that leaves either) is checked as it runs.
+A word may call one defined after it, and a definition may take a library
+word's name.
 
 ## Shells
 
@@ -301,8 +314,8 @@ checks that the server runs as you.
   kill the tab you do not want. A crashed server's next run brings its panes back,
   programs waiting for `respawn`.
 - `100 30 headless` is a client with no terminal (it prints its id, `c2`,
-  and runs until stopped: start it in the background); `str c2 client keys
-  … send-keys` types at it as a person would, its bindings included, and
+  and runs until stopped: start it in the background); `str c2 client …
+  send-keys` types at it as a person would, its bindings included, and
   `str c2 client capture-client` shows what it shows: how to drive fux's own
   menus and prompts.
 - Stop what you start by its pid (`kill $!`), not with `pkill -f`.

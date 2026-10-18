@@ -8,7 +8,7 @@
 # for it to settle (`0 timeout`), so the next starts at once
 define job json opts str sh program str -c arg str 'sleep 0.2; exit "$0"' arg swap arg 0 timeout run end
 # pane -- status: once its program has exited
-define exit-status exited str exited get end
+define exit-status dup wait-exit wait drop str exited get end
 
 1 job 2 job 3 job
 rot exit-status rot exit-status rot exit-status

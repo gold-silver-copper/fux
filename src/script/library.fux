@@ -2,20 +2,12 @@
 # `explain NAME` says what each does.
 
 # pane text -- answer : type text into a pane, nothing pressed after it; answers as send-keys does
-define type keys swap text send-keys end
+define type text send-keys end
 # pane name -- answer : press a key in a pane: Enter, C-c, Up; answers as send-keys does
-define press keys swap key send-keys end
+define press key send-keys end
 # pane text -- answer : in a shell: type a line and press Enter; answers once the shell reads again, `· done STATUS`, with the command's output
-define line keys swap text str Enter key send-keys end
+define line text str Enter key send-keys end
 # pane -- capture : the pane's screen as it is now
-define screen opts capture end
-# path -- pane : start a program in a tab of its own
-define launch opts swap program run end
+define screen capture end
 # -- pane : a tab with a shell, in workspace agent
 define shell opts str agent in new-tab end
-# pane -- pane : wait until the pane settles: its program reads its terminal, waits quiet, or exits
-define settle dup opts wait drop end
-# pane text -- pane : wait until text shows in the pane
-define await over swap opts swap wait-text wait drop end
-# pane -- pane : wait until the pane's program exits
-define exited dup opts wait-exit wait drop end

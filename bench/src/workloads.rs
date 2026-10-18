@@ -69,9 +69,9 @@ const COMPILES: usize = 2_000;
 /// Command lines an agent sends, as `docs/agents.md` shows them.
 const LINES: [&str; 4] = [
     "opts str app name str './app --fast' command run",
-    "%2 keys str y text str Enter key send-keys",
-    "%2 opts str 'listening on' wait-text wait",
-    "define twice dup add end list 1 2 3 end each twice end len drop %2 opts all-history capture",
+    "%2 str y text str Enter key send-keys",
+    "%2 str 'listening on' wait-text wait",
+    "define twice dup add end list 1 2 3 end each twice end len drop %2 all-history capture",
 ];
 /// The bytes of a pane's history fux keeps by default.
 const HISTORY: usize = 8 << 20;
@@ -149,11 +149,11 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         ),
         (
             "encode/legacy",
-            "the same keys encoded for a pane in legacy mode",
+            "the same encoded for a pane in legacy mode",
         ),
         (
             "encode/kitty",
-            "the same keys encoded for a pane with every kitty flag",
+            "the same encoded for a pane with every kitty flag",
         ),
         (
             "wait/text",

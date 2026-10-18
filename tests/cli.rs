@@ -22,7 +22,6 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "str",
         "%1",
         "pane",
-        "opts",
         "horizontal",
         "str",
         line,
@@ -61,7 +60,6 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "str",
         "%1",
         "pane",
-        "opts",
         "horizontal",
         "str",
         "echo a\nb",
@@ -82,14 +80,14 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
 #[test]
 fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     // Without FUX_PANE there is no `here`.
-    let out = server.fux(&["here", "opts", "horizontal", "split"])?;
+    let out = server.fux(&["here", "horizontal", "split"])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.starts_with("fux: no_target: "), "{}", out.stderr);
     // FUX_PANE is the caller's pane, and its tab and workspace.
     let env = [("FUX_PANE", "%2")];
-    let out = server.fux_env(&["here", "opts", "vertical", "split"], &env)?;
+    let out = server.fux_env(&["here", "vertical", "split"], &env)?;
     assert_eq!(
         (out.status, out.stdout.lines().next()),
         (0, Some(format!("%3 {READING}").as_str())),
@@ -144,7 +142,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     let at = |needle: &str| ls.find(needle).unwrap_or(usize::MAX);
     assert!(at("%2") < at("+2") && at("%1") > at("+2"), "{ls}");
     // Move to a workspace, then to a new tab.
-    server.ok(&["str", "%2", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%2", "pane", "horizontal", "split"])?;
     server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move-to"])?;
     server.ok(&["str", "%3", "pane", "str", "new-tab", "move-to"])?;
     let ls = server.ok(&["ls"])?;
@@ -184,7 +182,6 @@ fn send_keys_signal_and_buffers() -> Outcome {
         "str",
         "%1",
         "pane",
-        "keys",
         "str",
         "echo lit",
         "text",
@@ -207,7 +204,6 @@ fn send_keys_signal_and_buffers() -> Outcome {
         "str",
         "%1",
         "pane",
-        "keys",
         "str",
         "sleep 600; echo after-sleep",
         "text",
@@ -269,7 +265,6 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "str",
         "%1",
         "pane",
-        "opts",
         "str",
         "never-shown",
         "wait-text",
@@ -292,7 +287,6 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "0",
         "timeout",
         "run",
-        "opts",
         "str",
         "never-shown",
         "wait-text",
@@ -332,7 +326,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;
     assert_eq!(left, "3\na b\n%1\n@1\n");
-    let outcome = server.ok(&["str", "%1", "pane", "opts", "wait", "json"])?;
+    let outcome = server.ok(&["str", "%1", "pane", "wait", "json"])?;
     assert!(
         outcome.starts_with(&format!(r#"{{"pane":"%1","state":"{READING}""#)),
         "{outcome}"
@@ -363,7 +357,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         let wide = server.fux(&["str", "%1", "pane", size, "10", "resize"])?;
         assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
         assert!(wide.stderr.contains("1 to 500"), "{}", wide.stderr);
-        let opened = server.fux(&["opts", size, "10", "size"])?;
+        let opened = server.fux(&["opts", size, "10", "size", "new-tab"])?;
         assert!(opened.stderr.contains("1 to 500"), "{}", opened.stderr);
     }
     // A new tab from outside a pane is told the option that places it.
@@ -391,9 +385,11 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         assert_eq!(ran.status, 1, "{args:?}: {}", ran.stdout);
         Ok(ran.stderr)
     };
-    let inside = said(&["1", "2", "type"])?;
+    // What its kinds can't show before it runs (a list's element) fails
+    // as it runs, inside the word.
+    let inside = said(&["list", "1", "end", "0", "at", "str", "x", "type"])?;
     assert!(
-        inside.starts_with("fux: type: argument 3: type: inside type, send-keys: "),
+        inside.starts_with("fux: type: argument 8: type: inside type, text: "),
         "{inside}"
     );
     assert!(
@@ -433,7 +429,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     let named = said(&["1", "let", "+7"])?;
     assert!(
-        named.contains("+7: cannot be defined: it names a workspace"),
+        named.contains("+7: cannot be let: it names a workspace"),
         "{named}"
     );
     let client = said(&["str", "c9", "client", "focused"])?;
@@ -441,11 +437,11 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     // What a word takes, all of it: focus's every way, text's booleans.
     let way = said(&["str", "c9", "client", "str", "sideways", "focus"])?;
     assert!(way.contains("up, down, next, previous or last"), "{way}");
-    let text = said(&["keys", "opts", "text"])?;
+    let text = said(&["%1", "opts", "text"])?;
     assert!(text.contains("a string, a number or a boolean"), "{text}");
     // A workspace of one pane is that pane; of more, said so.
     assert_eq!(server.ok(&["%1", "workspace", "pane"])?, "%1\n");
-    server.ok(&["%1", "opts", "horizontal", "split"])?;
+    server.ok(&["%1", "horizontal", "split"])?;
     let many = said(&["%1", "workspace", "pane"])?;
     assert!(many.contains("+1 is a workspace of 2 panes"), "{many}");
     Ok(())
@@ -590,7 +586,6 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
         "str",
         "%1",
         "pane",
-        "opts",
         "horizontal",
         "str",
         "echo typed-after-quiet",
@@ -693,7 +688,7 @@ fn an_answers_status_goes_where_the_answer_goes() -> Outcome {
         "run",
     ])?;
     let pane = started.split_whitespace().next().unwrap_or_default();
-    let busy = ["str", pane, "pane", "opts", "1", "timeout", "wait"];
+    let busy = ["str", pane, "pane", "1", "timeout", "wait"];
     let status = |before: &[&str], after: &[&str]| -> Result<i32, String> {
         Ok(server.fux(&[before, &busy[..], after].concat())?.status)
     };

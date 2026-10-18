@@ -27,7 +27,7 @@ fn pressure_lines(server: &Server) -> usize {
 /// A pane's screen once it settles: the capture after the state line, which
 /// names the pane (`%1 reading`) and so would pass for a zsh prompt.
 fn screen(server: &Server, pane: &str) -> Result<String, String> {
-    let answer = server.ok(&["str", pane, "pane", "opts", "capture"])?;
+    let answer = server.ok(&["str", pane, "pane", "capture"])?;
     Ok(answer
         .split_once('\n')
         .map(|(_, s)| s.to_owned())
@@ -37,7 +37,7 @@ fn screen(server: &Server, pane: &str) -> Result<String, String> {
 /// Sends keys to a pane, answering at once (`0 timeout`): a program that is
 /// stopped, sleeping or hung up never settles.
 fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
-    let mut words = vec!["str", pane, "pane", "keys"];
+    let mut words = vec!["str", pane, "pane"];
     words.extend_from_slice(keys);
     words.extend(["0", "timeout", "send-keys"]);
     server.ok(&words)?;
@@ -330,7 +330,7 @@ fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome
         let screen = screen(&server, "%1")?;
         Ok(screen.contains('$') || screen.contains('%'))
     })?;
-    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     eventually("a prompt in %2", || {
         let screen = screen(&server, "%2")?;
         Ok(screen.contains('$') || screen.contains('%'))
@@ -381,7 +381,6 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         "str",
         "%1",
         "pane",
-        "keys",
         "str",
         "printf 'sleep-%s\\n' started; sleep 60",
         "text",

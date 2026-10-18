@@ -125,7 +125,7 @@ fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
         |text: &str, limit| within(&server, limit, &[&p[..], &["str", text, "line"]].concat());
     let press = |key: &str| within(&server, 5, &[&p[..], &["str", key, "press"]].concat());
     // The remote prompt first: what was typed before it would be lost.
-    server.ok(&[&p[..], &["opts", "str", "remote>", "wait-text", "wait"]].concat())?;
+    server.ok(&[&p[..], &["str", "remote>", "wait-text", "wait"]].concat())?;
 
     let less = line("less n.txt", 5)?;
     assert!(less.starts_with(&format!("{pane} reading")), "{less}");
@@ -150,7 +150,7 @@ fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
         slow.starts_with(&format!("{pane} reading · done 3")),
         "{slow}"
     );
-    let output = server.ok(&[&p[..], &["opts", "last-output", "capture"]].concat())?;
+    let output = server.ok(&[&p[..], &["last-output", "capture"]].concat())?;
     assert_eq!(output.lines().nth(1), Some("slow"), "{output}");
 
     // A remote full-screen program that redraws on its own (`top`-like):
@@ -176,11 +176,7 @@ fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
         .concat(),
     )?;
     let began = Instant::now();
-    let wait = [
-        &p[..],
-        &["opts", "str", "NEVER", "wait-text", "wait-done", "wait"],
-    ]
-    .concat();
+    let wait = [&p[..], &["str", "NEVER", "wait-text", "wait-done", "wait"]].concat();
     let ended = server.fux(&wait)?;
     assert_eq!(ended.status, 5, "{}{}", ended.stdout, ended.stderr);
     assert!(

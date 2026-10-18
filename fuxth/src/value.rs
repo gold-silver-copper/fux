@@ -31,8 +31,8 @@ fn bare(kind: &str) -> &str {
 }
 
 /// Expands `Variant "said", ...`, a row for each variant of `Value`, to the
-/// enum `Kind` of those variants; `of`, a value's; `BITS`, every kind's
-/// `bit` (`Kind::Int.bit() | …`); and `said`, each one's column:
+/// enum `Kind` of those variants; `of`, a value's; `bit`, its bit in a
+/// set of kinds; and `said`, each one's column:
 /// `Int "an integer",` gives `Kind::Int`, said "an integer".
 macro_rules! kinds {
     ($($variant:ident $said:literal,)*) => {
@@ -45,13 +45,11 @@ macro_rules! kinds {
         impl Kind {
             pub(crate) const ALL: [Kind; [$($said),*].len()] = [$(Kind::$variant),*];
 
-            /// Its bit, in a set of kinds.
-            pub(crate) const fn bit(self) -> u8 {
-                1 << self as u8
+            /// Its bit, in a set of kinds: an application's value's is
+            /// the first of the bits its kinds take (`check::HOST`).
+            pub(crate) const fn bit(self) -> u32 {
+                1 << self as u32
             }
-
-            /// Every kind's bit.
-            pub(crate) const BITS: u8 = 0 $(| Kind::$variant.bit())*;
 
             pub(crate) fn of<A>(value: &Value<A>) -> Kind {
                 match value {
@@ -65,6 +63,11 @@ macro_rules! kinds {
                 match self {
                     $(Kind::$variant => $said,)*
                 }
+            }
+
+            /// As an effect names it: "integer".
+            pub(crate) fn name(self) -> &'static str {
+                bare(self.said())
             }
         }
     };

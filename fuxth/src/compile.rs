@@ -13,7 +13,8 @@ use crate::error::{Code, Error};
 use crate::machine::Builtin;
 use crate::token::Token;
 use crate::value::Value;
-use std::collections::HashMap;
+pub use crate::vocabulary::Vocabulary;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
@@ -95,33 +96,6 @@ impl Parsing {
             ),
             Parsing::Str => ("str WORD", "WORD as text, whatever it looks like"),
         }
-    }
-}
-
-/// The application's words: each a name, how many values it takes, and
-/// how many it gives.
-#[derive(Clone, Debug, Default)]
-pub struct Vocabulary {
-    words: Vec<(String, usize, usize)>,
-}
-
-impl Vocabulary {
-    /// Adds a word taking `takes` values and giving `gives`; its id, which
-    /// the host is called with. A name given twice keeps its first word.
-    pub fn add(&mut self, name: &str, takes: usize, gives: usize) -> usize {
-        if let Some(id) = self.words.iter().position(|(n, _, _)| n == name) {
-            return id;
-        }
-        self.words.push((name.to_owned(), takes, gives));
-        self.words.len().saturating_sub(1)
-    }
-
-    /// How many values the word `id` takes, and how many it gives: none,
-    /// for an id no word has.
-    pub(crate) fn effect(&self, id: usize) -> (usize, usize) {
-        self.words
-            .get(id)
-            .map_or((0, 0), |(_, takes, gives)| (*takes, *gives))
     }
 }
 
@@ -212,7 +186,7 @@ pub struct Program<A> {
     pub(crate) main: Steps<A>,
     pub(crate) words: Vec<Steps<A>>,
     pub(crate) globals: usize,
-    pub(crate) vocabulary: Vocabulary,
+    pub(crate) vocabulary: Rc<Vocabulary>,
 }
 
 impl<A> Program<A> {
@@ -265,7 +239,7 @@ struct Current<A> {
 /// program: the library is compiled and checked once.
 #[derive(Clone)]
 pub struct Compiler<A> {
-    vocabulary: Vocabulary,
+    vocabulary: Rc<Vocabulary>,
     names: HashMap<Rc<str>, Entry>,
     main: Steps<A>,
     words: Vec<Steps<A>>,
@@ -277,13 +251,26 @@ pub struct Compiler<A> {
     literal: bool,
     /// What the checker has worked out of the definitions so far.
     known: crate::check::Known,
+    /// Calls to words not defined yet, each made by a definition (its
+    /// index in `words`, or `None` while it is open) at a step: patched
+    /// when the word is defined, an error if none is by the source's end.
+    forward: Vec<(Token, Option<usize>, usize)>,
+    /// The names the source being added defines: none may twice.
+    defined: HashSet<Rc<str>>,
+    /// The names the source being added gave a meaning, with what each
+    /// meant before.
+    replaced: Vec<(Rc<str>, Option<Entry>)>,
+    /// Definitions that read `let` names of the top level's, which a
+    /// program compiled after these ([`definitions`](Compiler::definitions))
+    /// may not call.
+    closed: HashSet<usize>,
 }
 
 impl<A: Clone> Compiler<A> {
     pub fn new(vocabulary: Vocabulary) -> Self {
         let mut names = HashMap::new();
-        for (id, (name, _, _)) in vocabulary.words.iter().enumerate() {
-            names.insert(Rc::from(name.as_str()), Entry::App(id));
+        for (id, name) in vocabulary.names().enumerate() {
+            names.insert(Rc::from(name), Entry::App(id));
         }
         // The core's words are the core's: an application's word of the
         // same name is never reached.
@@ -291,7 +278,7 @@ impl<A: Clone> Compiler<A> {
             names.insert(Rc::from(builtin.name()), Entry::Builtin(builtin));
         }
         Self {
-            vocabulary,
+            vocabulary: Rc::new(vocabulary),
             names,
             main: Steps::new(),
             words: Vec::new(),
@@ -300,6 +287,10 @@ impl<A: Clone> Compiler<A> {
             current: None,
             literal: false,
             known: crate::check::Known::default(),
+            forward: Vec::new(),
+            defined: HashSet::new(),
+            replaced: Vec::new(),
+            closed: HashSet::new(),
         }
     }
 
@@ -312,8 +303,44 @@ impl<A: Clone> Compiler<A> {
         }
     }
 
-    /// Compiles `tokens` onto what was compiled before.
+    /// Compiles `tokens`, a source, onto what was compiled before; if it
+    /// fails, the compiler is as it was. A definition in it may call one
+    /// written after it.
     pub fn add(&mut self, tokens: &[Token]) -> Result<(), Error> {
+        let (words, main, globals) = (self.words.len(), self.main.len(), self.globals);
+        let (open, current) = (self.open.clone(), self.current.clone());
+        self.defined.clear();
+        let added = self
+            .source(tokens)
+            .and_then(|()| match self.forward.first() {
+                Some((token, ..)) => Err(self.unknown(token)),
+                None => Ok(()),
+            });
+        let replaced = std::mem::take(&mut self.replaced);
+        if added.is_err() {
+            for (name, was) in replaced.into_iter().rev() {
+                match was {
+                    Some(entry) => self.names.insert(name, entry),
+                    None => self.names.remove(&name),
+                };
+            }
+            self.words.truncate(words);
+            self.main.ops.truncate(main);
+            self.main.tokens.truncate(main);
+            (self.globals, self.open, self.current) = (globals, open, current);
+            self.forward.clear();
+        }
+        added
+    }
+
+    /// `name` means `entry` from here on: what it meant before kept, for
+    /// a source that fails to undo.
+    fn name(&mut self, name: &Rc<str>, entry: Entry) {
+        let was = self.names.insert(Rc::clone(name), entry);
+        self.replaced.push((Rc::clone(name), was));
+    }
+
+    fn source(&mut self, tokens: &[Token]) -> Result<(), Error> {
         let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
             let text = &*token.text;
@@ -327,9 +354,18 @@ impl<A: Clone> Compiler<A> {
                     self.top_level(token)?;
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
                     self.check_name(name, false)?;
-                    // Visible from here on, its own body included.
-                    let id = Entry::Word(self.words.len());
-                    self.names.insert(Rc::clone(&name.text), id);
+                    // Visible from here on, its own body included, and to
+                    // the definitions before it that called it.
+                    let at = self.words.len();
+                    for (_, word, step) in self.forward.iter().filter(|f| f.0.text == name.text) {
+                        let code = word.and_then(|w| self.words.get_mut(w));
+                        if let Some(op) = code.and_then(|w| w.ops.get_mut(*step)) {
+                            *op = Op::Call(at);
+                        }
+                    }
+                    self.forward.retain(|f| f.0.text != name.text);
+                    self.defined.insert(Rc::clone(&name.text));
+                    self.name(&name.text, Entry::Word(at));
                     self.current = Some(Current {
                         code: Steps::new(),
                         locals: HashMap::new(),
@@ -338,6 +374,10 @@ impl<A: Clone> Compiler<A> {
                 }
                 Some(Parsing::End) => match self.open.pop() {
                     Some(Open::Define { .. }) => {
+                        let at = self.words.len();
+                        for (_, word, _) in self.forward.iter_mut().filter(|f| f.1.is_none()) {
+                            *word = Some(at);
+                        }
                         self.words.extend(self.current.take().map(|c| c.code))
                     }
                     Some(Open::List { .. }) => self.code().push(Op::Gather, token),
@@ -365,8 +405,7 @@ impl<A: Clone> Compiler<A> {
                                 Some(Entry::Builtin(_) | Entry::App(_) | Entry::Word(_)) | None => {
                                     let slot = self.globals;
                                     self.globals = slot.saturating_add(1);
-                                    self.names
-                                        .insert(Rc::clone(&name.text), Entry::Global(slot));
+                                    self.name(&name.text, Entry::Global(slot));
                                     slot
                                 }
                             };
@@ -481,6 +520,13 @@ impl<A: Clone> Compiler<A> {
             }
             Some(Entry::Builtin(b)) => self.code().push(Op::Builtin(b), token),
             Some(Entry::App(id)) => self.code().push(Op::App(id), token),
+            Some(Entry::Word(id)) if self.closed.contains(&id) => {
+                return Err(Error::new(
+                    Code::Unset,
+                    "reads let names of the program it was defined in, which this one does not see",
+                    Some(token),
+                ));
+            }
             Some(Entry::Word(id)) => {
                 // A word in its own body isn't in `words` until its `end`:
                 // a call.
@@ -497,19 +543,61 @@ impl<A: Clone> Compiler<A> {
                 }
             }
             Some(Entry::Global(slot)) => self.code().push(Op::GetGlobal(slot), token),
-            None => {
-                return Err(Error::new(
-                    Code::UnknownWord,
-                    if text.is_empty() {
-                        "no such word: an empty one (str '' pushes an empty string)"
-                    } else {
-                        "no such word"
-                    },
-                    Some(token),
-                ));
+            // Not known here: in a definition, perhaps one written later.
+            None if self.current.is_some() && !text.is_empty() => {
+                let step = self.code().len();
+                self.code().push(Op::Call(usize::MAX), token);
+                self.forward.push((token.clone(), None, step));
             }
+            None => return Err(self.unknown(token)),
         }
         Ok(())
+    }
+
+    /// `token`, a word no one defines, told with what was likely meant:
+    /// text, or a word in scope spelt nearly so.
+    fn unknown(&self, token: &Token) -> Error {
+        let text = &*token.text;
+        let message = if text.is_empty() {
+            "no such word: an empty one (str '' pushes an empty string)".to_owned()
+        } else if text.contains(|c: char| c.is_uppercase() || matches!(c, '/' | '$' | ' ')) {
+            let quoted = match text.contains([' ', '$']) {
+                true => format!("'{text}'"),
+                false => text.to_owned(),
+            };
+            format!("no such word; text is `str {quoted}`")
+        } else {
+            let locals = self.current.iter().flat_map(|c| c.locals.keys());
+            let parsing = Parsing::ALL.map(Parsing::name);
+            let mut near: Vec<(usize, &str)> = (self.names.keys().chain(locals))
+                .map(|name| &**name)
+                .chain(parsing)
+                .filter_map(|name| {
+                    // Spelt nearly so, begun so, or of a family (`wait-…`).
+                    let d = distance(text, name);
+                    let near = d <= 2 && d.saturating_mul(3) <= text.chars().count();
+                    let stem = |w: &str| {
+                        w.split_once('-')
+                            .map(|(s, _)| s.to_owned())
+                            .filter(|s| s.len() >= 3)
+                    };
+                    let kin = stem(text).is_some_and(|s| stem(name) == Some(s));
+                    (near || kin || (text.len() >= 3 && name.starts_with(text)))
+                        .then_some((d, name))
+                })
+                .collect();
+            near.sort_unstable();
+            near.dedup();
+            let near: Vec<&str> = near.into_iter().take(3).map(|(_, name)| name).collect();
+            match near.as_slice() {
+                [] => "no such word".to_owned(),
+                near => format!(
+                    "no such word; did you mean {}?",
+                    crate::vocabulary::listed(near)
+                ),
+            }
+        };
+        Error::new(Code::UnknownWord, message, Some(token))
     }
 
     /// Checks the definitions compiled so far, once, so that clones of
@@ -522,9 +610,34 @@ impl<A: Clone> Compiler<A> {
             main: Steps::new(),
             words: self.words.clone(),
             globals: self.globals,
-            vocabulary: self.vocabulary.clone(),
+            vocabulary: Rc::clone(&self.vocabulary),
         };
         crate::check::definitions(&program, &mut self.known);
+    }
+
+    /// A compiler for a program of its own that sees these definitions:
+    /// not the top level, nor its `let` names, whose values are not that
+    /// program's. A definition reading one, itself or through a call, may
+    /// not be called there. Checked once, as `prepare` checks.
+    pub fn definitions(&self) -> Self {
+        let mut scope = self.clone();
+        scope.main = Steps::new();
+        scope
+            .names
+            .retain(|_, entry| !matches!(entry, Entry::Global(_)));
+        let reads = |w: &Steps<A>, closed: &HashSet<usize>| {
+            (w.ops.iter()).any(|op| {
+                matches!(op, Op::GetGlobal(_)) || matches!(op, Op::Call(c) if closed.contains(c))
+            })
+        };
+        // Through calls, to a word written later too: until none is added.
+        while let Some(id) = (scope.words.iter().enumerate())
+            .position(|(id, w)| !scope.closed.contains(&id) && reads(w, &scope.closed))
+        {
+            scope.closed.insert(id);
+        }
+        scope.prepare();
+        scope
     }
 
     /// The program, every block closed.
@@ -553,9 +666,10 @@ impl<A: Clone> Compiler<A> {
         ))
     }
 
-    /// Whether `name` may be defined (`define`), or named (`let`, which may
-    /// take a library or host word's name for itself: only the core and the
-    /// parsing words are kept).
+    /// Whether `name` may be defined (`define`) or named (`let`): either
+    /// may take a library's or the host's word's name for itself, from
+    /// there on; only the core's and the parsing words are kept, and a
+    /// source defines a name once.
     fn check_name(&self, name: &Token, by_let: bool) -> Result<(), Error> {
         let text = &*name.text;
         let why = if text.is_empty() {
@@ -567,7 +681,9 @@ impl<A: Clone> Compiler<A> {
         } else {
             match self.names.get(text) {
                 Some(Entry::Builtin(_)) => Some("a word of the core"),
-                Some(Entry::App(_) | Entry::Word(_)) if !by_let => Some("a word there already"),
+                Some(Entry::Word(_)) if !by_let && self.defined.contains(text) => {
+                    Some("defined already")
+                }
                 Some(Entry::Global(_)) if !by_let => Some("a let name there already"),
                 Some(Entry::App(_) | Entry::Word(_) | Entry::Global(_)) | None => None,
             }
@@ -622,6 +738,35 @@ fn mismatched(token: &Token, open: &Open) -> Error {
         format!("the open block is {what}, from {}", at.place),
         Some(token),
     )
+}
+
+/// How many characters must change, go, come or swap with the next to
+/// make `a` into `b`.
+fn distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    // Rows of the table, the last two: each cell the distance between a's
+    // first i and b's first j characters.
+    let (mut before, mut row): (Vec<usize>, Vec<usize>) = (Vec::new(), (0..=b.len()).collect());
+    for (i, x) in a.iter().enumerate() {
+        let mut next = vec![i.saturating_add(1)];
+        for (j, y) in b.iter().enumerate() {
+            let at = |r: &[usize], k: usize| r.get(k).copied().unwrap_or(usize::MAX);
+            let change = at(&row, j).saturating_add(usize::from(x != y));
+            let gone = at(&row, j.saturating_add(1)).saturating_add(1);
+            let came = at(&next, j).saturating_add(1);
+            let mut least = change.min(gone).min(came);
+            let swapped = i > 0
+                && j > 0
+                && a.get(i.wrapping_sub(1)) == Some(y)
+                && b.get(j.wrapping_sub(1)) == Some(x);
+            if swapped {
+                least = least.min(at(&before, j.wrapping_sub(1)).saturating_add(1));
+            }
+            next.push(least);
+        }
+        before = std::mem::replace(&mut row, next);
+    }
+    row.last().copied().unwrap_or(0)
 }
 
 /// Whether `text` is written as an integer: digits, after a `-` or not.

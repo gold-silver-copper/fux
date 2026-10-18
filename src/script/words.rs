@@ -1,9 +1,7 @@
-//! fux's words: each a name, how many values it takes, what it does to the
-//! stack, and a line of help; and what each does, run by the program's
-//! [`Host`].
-use super::{
-    Answer, Ask, Awaited, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits,
-};
+//! fux's words: each a name, what it does to the stack, in the names of
+//! the kinds it takes and gives (`KINDS`, `NAMES`), and a line of help;
+//! and what each does, run by the program's [`Host`].
+use super::{Answer, Ask, Bound, Fux, Host, Local, On, Opts, Said, Then, Waits};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
@@ -22,192 +20,224 @@ use std::time::Duration;
 /// A word of fux's vocabulary.
 pub struct Word {
     pub name: &'static str,
-    pub takes: usize,
-    /// What it does to the stack: `pane opts -- pane`.
+    /// What it does to the stack, in the names of `KINDS` and `NAMES`:
+    /// `x secs -- x`. fuxth reads it, for how many values the word takes
+    /// and gives, and their kinds.
     pub effect: &'static str,
     pub about: &'static str,
     /// Its heading in `help`.
     pub group: &'static str,
 }
 
-impl Word {
-    /// How many values it gives, read from its effect: each word after the
-    /// `--`.
-    pub fn gives(&self) -> usize {
-        let after = self.effect.split_once("--").map_or("", |(_, after)| after);
-        after.split_whitespace().count()
-    }
-}
-
 const fn word(
     group: &'static str,
     name: &'static str,
-    takes: usize,
     effect: &'static str,
     about: &'static str,
 ) -> Word {
     Word {
         name,
-        takes,
         effect,
         about,
         group,
     }
 }
 
+/// fux's kinds of value, each as its values' `name` says it, as an error
+/// says it, and, for one that must be used, what one left over is told.
+#[rustfmt::skip]
+pub const KINDS: [(&str, &str, Option<&str>); 12] = [
+    ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
+    ("client", "a client", None), ("size", "a size (from percent)", None),
+    ("answer", "an action's answer", None), ("capture", "a capture", None),
+    ("listing", "a listing", None), ("json", "a JSON value", None),
+    ("opts", "options (from opts, for run, new-tab and new-workspace; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("options nothing takes: end them with run, new-tab or new-workspace (`opts str ./app program run`)")),
+    ("waiting", "a pane given a wait", Some("a wait not last, which nothing acts on: end the line with it, or put the word that acts after it (`%2 str T wait-text wait`)")),
+    ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request: end it with the word that does (`%2 str ready wait-text wait`, `%2 str y text send-keys`, `%2 all-history capture`)")),
+];
+
+/// The names the words' effects use beyond the kinds' own, each with the
+/// kinds it stands for (`from>to`: what a kind is once the word passes it
+/// through), and how an error says them; then the names of a string, and
+/// of an integer.
+#[rustfmt::skip]
+pub const NAMES: &[(&str, &str, &str)] = &[
+    ("x", "opts request waiting>request pane>request tab>request workspace>request client>request answer>request",
+        "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
+    ("w", "opts request waiting pane>waiting tab>waiting workspace>waiting client>request answer>waiting",
+        "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
+    ("target", "pane tab workspace client answer request waiting", "a pane, tab, workspace or client, or a request on one"),
+    ("subject", "pane answer request waiting", "a pane, or a request on one"),
+    ("place", "pane tab workspace answer request waiting", "a pane, tab or workspace, or a request on one"),
+    ("pane", "pane answer", "a pane (from pane, run or split)"),
+    ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
+    ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
+    ("text", "string integer boolean", "a string, a number or a boolean"),
+    ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
+        "a value (options and requests are none: what acts on them gives one)"),
+    ("json", "json string", "JSON"),
+    ("record", "listing", "a listing"),
+    ("width", "integer size", "cells, or a percent"),
+    ("height", "integer size", "cells, or a percent"),
+    ("where", "tab workspace string", "a tab, a workspace, new-tab or new-workspace"),
+    ("workspace", "workspace string", "a workspace, or its name"),
+];
+pub const STRINGS: &str =
+    "name dir key path line id file field setting socket way action code keys word";
+pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
+
 /// Every word of fux's, under its heading, in help's order.
 #[rustfmt::skip]
 pub const WORDS: &[Word] = &[
     // Finding
-    word("Finding", "pane", 1, "x -- pane", "the pane x names: a tab's name (its one pane), %N, a pane, or a tab of one pane"),
-    word("Finding", "tab", 1, "x -- tab", "the tab x names: its name, @N, or a pane's tab"),
-    word("Finding", "workspace", 1, "x -- workspace", "the workspace x names: its name, +N, or a pane's or tab's workspace"),
-    word("Finding", "here", 0, "-- pane", "the pane this runs in (FUX_PANE)"),
-    word("Finding", "client", 1, "name -- client", "a client by its id, c2"),
-    word("Finding", "me", 0, "-- client", "the client whose key or prompt runs this"),
-    word("Finding", "focused", 1, "client -- pane", "the pane a client focuses"),
+    word("Finding", "pane", "ref -- pane", "the pane ref names: a tab's name (its one pane), %N, a pane, or a tab of one pane"),
+    word("Finding", "tab", "ref -- tab", "the tab ref names: its name, @N, or a pane's tab"),
+    word("Finding", "workspace", "ref -- workspace", "the workspace ref names: its name, +N, or a pane's or tab's workspace"),
+    word("Finding", "here", "-- pane", "the pane this runs in (FUX_PANE)"),
+    word("Finding", "client", "name -- client", "a client by its id, c2"),
+    word("Finding", "me", "-- client", "the client whose key or prompt runs this"),
+    word("Finding", "focused", "client -- pane", "the pane a client focuses"),
     // Starting
-    word("Starting", "opts", 0, "-- opts", "empty options, for run, split, new-tab, new-workspace, respawn, wait and capture"),
-    word("Starting", "name", 2, "opts name -- opts", "the tab's or workspace's name"),
-    word("Starting", "size", 3, "opts cols rows -- opts", "what its tab is laid out on while no client shows it"),
-    word("Starting", "cwd", 2, "opts dir -- opts", "where it starts"),
-    word("Starting", "env", 3, "opts key value -- opts", "a variable for it"),
-    word("Starting", "program", 2, "opts path -- opts", "the program to start, in place of a shell"),
-    word("Starting", "arg", 2, "opts word -- opts", "an argument for the program"),
-    word("Starting", "command", 2, "opts line -- opts", "the program and its arguments, one line split as a shell splits it"),
-    word("Starting", "typed", 2, "opts line -- opts", "a command line typed into its new shell"),
-    word("Starting", "horizontal", 1, "opts -- opts", "split side by side"),
-    word("Starting", "vertical", 1, "opts -- opts", "split stacked"),
-    word("Starting", "in", 2, "opts workspace -- opts", "the workspace for run or new-tab (a name not there is made)"),
-    word("Starting", "id", 2, "opts id -- opts", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
-    word("Starting", "log-to", 2, "opts file -- opts", "keep everything the program writes in a file too"),
-    word("Starting", "kill-first", 1, "opts -- opts", "respawn: end the program first if it still runs"),
-    word("Starting", "run", 1, "opts -- pane", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
-    word("Starting", "split", 2, "pane opts -- pane", "split a pane: a shell, or the program given"),
-    word("Starting", "new-tab", 1, "opts -- pane", "a tab with a shell"),
-    word("Starting", "new-workspace", 1, "opts -- pane", "a workspace with a tab and a shell"),
-    word("Starting", "respawn", 2, "pane opts -- pane", "start again in its pane the program run started"),
+    word("Starting", "opts", "-- opts", "empty options, for run, new-tab and new-workspace (the other words take them on the pane)"),
+    word("Starting", "name", "x name -- x", "the tab's or workspace's name"),
+    word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it"),
+    word("Starting", "cwd", "x dir -- x", "where it starts"),
+    word("Starting", "env", "x key text -- x", "a variable for it"),
+    word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
+    word("Starting", "arg", "x text -- x", "an argument for the program"),
+    word("Starting", "command", "x line -- x", "the program and its arguments, one line split as a shell splits it"),
+    word("Starting", "typed", "x line -- x", "a command line typed into its new shell"),
+    word("Starting", "horizontal", "x -- x", "split side by side"),
+    word("Starting", "vertical", "x -- x", "split stacked"),
+    word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
+    word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
+    word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
+    word("Starting", "kill-first", "x -- x", "respawn: end the program first if it still runs"),
+    word("Starting", "run", "opts -- pane", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
+    word("Starting", "split", "subject -- pane", "split a pane: a shell, or the program given"),
+    word("Starting", "new-tab", "opts -- pane", "a tab with a shell"),
+    word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
+    word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew, not on the line typed (options, keys, a mouse event, or the pane itself)"),
-    word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
-    word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
-    word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "wait-done", 1, "x -- x", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
-    word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once; on options, keys, a mouse event, or the pane itself: %2 0 timeout str ls line"),
-    word("Waiting", "wait", 2, "x opts -- answer", "wait for the pane to settle, or as the options say, in a pane, or each pane of a tab or workspace"),
+    word("Waiting", "wait-text", "w text -- w", "wait until text shows anew, not on the line typed"),
+    word("Waiting", "wait-gone", "w text -- w", "wait until text is no longer shown; after run or respawn, once it has been"),
+    word("Waiting", "wait-exit", "w -- w", "wait until the program exits"),
+    word("Waiting", "wait-bell", "w -- w", "wait until the program rings or notifies"),
+    word("Waiting", "wait-done", "w -- w", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
+    word("Waiting", "timeout", "w secs -- w", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once: %2 0 timeout str ls line"),
+    word("Waiting", "wait", "place -- answer", "wait for the pane to settle, or as the wait words on it say, in a pane, or each pane of a tab or workspace"),
     // Input
-    word("Input", "keys", 0, "-- keys", "empty input, for send-keys"),
-    word("Input", "text", 2, "keys text -- keys", "text, typed"),
-    word("Input", "key", 2, "keys name -- keys", "a key by its name: Enter, C-c, Up, F5"),
-    word("Input", "paste", 2, "keys text -- keys", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
-    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
-    word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
-    word("Input", "send-keys", 2, "target keys -- outcome", "send to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
-    word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
-    word("Input", "send-mouse", 2, "pane mouse -- outcome", "send a mouse event"),
-    word("Input", "signal", 2, "pane name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground; answers once it exits or settles"),
+    word("Input", "text", "x text -- x", "text, typed"),
+    word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
+    word("Input", "paste", "x text -- x", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
+    word("Input", "paste-file", "x file -- x", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
+    word("Input", "times", "x n -- x", "the input just before it, n times (1 to 1000): str Down key 2 times"),
+    word("Input", "send-keys", "target -- answer", "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
+    word("Input", "mouse", "x action row col -- x", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
+    word("Input", "send-mouse", "subject -- answer", "send the mouse event on it"),
+    word("Input", "signal", "subject name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground; answers once it exits or settles"),
     // Reading
-    word("Reading", "capture", 2, "pane opts -- capture", "the screen, as the options say"),
-    word("Reading", "history", 2, "opts lines -- opts", "capture: lines of history first"),
-    word("Reading", "all-history", 1, "opts -- opts", "capture: all the history first"),
-    word("Reading", "joined", 1, "opts -- opts", "capture: wrapped rows joined into their lines"),
-    word("Reading", "full", 1, "opts -- opts", "capture: every row and cell, untrimmed"),
-    word("Reading", "styles", 1, "opts -- opts", "capture: colours and attributes"),
-    word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys, a mouse event, or the pane itself)"),
-    word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
-    word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
-    word("Reading", "rows", 3, "opts from to -- opts", "capture: those rows only, from 0; joined, each line they touch whole"),
-    word("Reading", "cols", 3, "opts from to -- opts", "capture: those columns only, from 0"),
-    word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
-    word("Reading", "info", 1, "handle -- record", "a pane, tab or workspace, all of it"),
-    word("Reading", "get", 2, "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
-    word("Reading", "json", 1, "x -- json", "x as JSON: an answer, or a list holding one, stays an answer, with its status"),
-    word("Reading", "events", 0, "-- ", "what happens, a line each, as it happens"),
-    word("Reading", "events-json", 0, "-- ", "what happens, as JSON lines"),
-    word("Reading", "events-of", 1, "handle -- ", "what happens in a pane, tab or workspace"),
-    word("Reading", "events-of-json", 1, "handle -- ", "the same, as JSON lines"),
-    word("Reading", "dump", 0, "-- text", "everything, as a program that makes it again (shells new, nothing typed into them)"),
-    word("Reading", "dump-of", 1, "handle -- text", "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)"),
+    word("Reading", "capture", "subject -- capture", "the screen, as the words on the pane say"),
+    word("Reading", "history", "x lines -- x", "capture: lines of history first"),
+    word("Reading", "all-history", "x -- x", "capture: all the history first"),
+    word("Reading", "joined", "x -- x", "capture: wrapped rows joined into their lines"),
+    word("Reading", "full", "x -- x", "capture: every row and cell, untrimmed"),
+    word("Reading", "styles", "x -- x", "capture: colours and attributes"),
+    word("Reading", "marks", "x -- x", "highlighted text as ⟦this⟧: in a capture, or the screen a wait prints"),
+    word("Reading", "main-screen", "x -- x", "capture: what was printed before a program took the screen"),
+    word("Reading", "alt-screen", "x -- x", "capture: the full screen a program drew last"),
+    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
+    word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0; joined, each line they touch whole"),
+    word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
+    word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
+    word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
+    word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
+    word("Reading", "json", "value -- json", "value as JSON: an answer, or a list holding one, stays an answer, with its status"),
+    word("Reading", "events", "--", "what happens, a line each, as it happens"),
+    word("Reading", "events-json", "--", "what happens, as JSON lines"),
+    word("Reading", "events-of", "handle --", "what happens in a pane, tab or workspace"),
+    word("Reading", "events-of-json", "handle --", "the same, as JSON lines"),
+    word("Reading", "dump", "-- text", "everything, as a program that makes it again (shells new, nothing typed into them)"),
+    word("Reading", "dump-of", "handle -- text", "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)"),
     // Changing
-    word("Changing", "kill", 1, "handle -- ", "close a pane, tab or workspace, without asking"),
-    word("Changing", "rename", 2, "handle name -- ", "rename a pane, tab or workspace"),
-    word("Changing", "notify", 2, "handle text -- ", "a notice on the clients showing it"),
-    word("Changing", "notify-all", 1, "text -- ", "a notice on every client"),
-    word("Changing", "resize", 3, "handle cols rows -- ", "what a tab (or a pane's) is laid out on while no client shows it"),
-    word("Changing", "resize-auto", 1, "handle -- ", "a tab laid out on a client's screen again"),
-    word("Changing", "resize-x", 2, "pane width -- ", "a pane's width: cells, or a percent"),
-    word("Changing", "resize-y", 2, "pane height -- ", "a pane's height: cells, or a percent"),
-    word("Changing", "percent", 1, "n -- size", "n percent of the tab, for resize-x and resize-y"),
-    word("Changing", "move-border", 3, "pane way cells -- ", "move the pane's nearest border: left right up down"),
-    word("Changing", "move-to", 2, "pane where -- ", "move a pane to a tab, a workspace, new-tab or new-workspace"),
-    word("Changing", "move-beside", 2, "pane way -- ", "move a pane beside its neighbour: left right up down"),
-    word("Changing", "swap-panes", 2, "pane pane -- ", "swap two panes"),
-    word("Changing", "swap-toward", 2, "pane way -- ", "swap a pane with its neighbour"),
-    word("Changing", "reorder", 2, "handle way -- ", "move one place: next or previous"),
-    word("Changing", "start-log", 2, "pane file -- ", "keep what the pane's program writes from now on"),
-    word("Changing", "stop-log", 1, "pane -- ", "stop keeping it"),
-    word("Changing", "clear-history", 1, "pane -- ", "drop the pane's history"),
-    word("Changing", "buffers", 0, "-- listing", "the paste buffers, newest 0"),
-    word("Changing", "buffer", 1, "n -- text", "paste buffer n"),
-    word("Changing", "paste-buffer", 2, "pane n -- ", "paste buffer n into a pane"),
+    word("Changing", "kill", "handle --", "close a pane, tab or workspace, without asking"),
+    word("Changing", "rename", "handle text --", "rename a pane, tab or workspace"),
+    word("Changing", "notify", "handle text --", "a notice on the clients showing it"),
+    word("Changing", "notify-all", "text --", "a notice on every client"),
+    word("Changing", "resize", "handle cols rows --", "what a tab (or a pane's) is laid out on while no client shows it"),
+    word("Changing", "resize-auto", "handle --", "a tab laid out on a client's screen again"),
+    word("Changing", "resize-x", "pane width --", "a pane's width: cells, or a percent"),
+    word("Changing", "resize-y", "pane height --", "a pane's height: cells, or a percent"),
+    word("Changing", "percent", "n -- size", "n percent of the tab, for resize-x and resize-y"),
+    word("Changing", "move-border", "pane way cells --", "move the pane's nearest border: left right up down"),
+    word("Changing", "move-to", "pane where --", "move a pane to a tab, a workspace, new-tab or new-workspace"),
+    word("Changing", "move-beside", "pane way --", "move a pane beside its neighbour: left right up down"),
+    word("Changing", "swap-panes", "pane pane --", "swap two panes"),
+    word("Changing", "swap-toward", "pane way --", "swap a pane with its neighbour"),
+    word("Changing", "reorder", "handle way --", "move one place: next or previous"),
+    word("Changing", "start-log", "pane file --", "keep what the pane's program writes from now on"),
+    word("Changing", "stop-log", "pane --", "stop keeping it"),
+    word("Changing", "clear-history", "pane --", "drop the pane's history"),
+    word("Changing", "buffers", "-- text", "the paste buffers, newest 0"),
+    word("Changing", "buffer", "n -- text", "paste buffer n"),
+    word("Changing", "paste-buffer", "pane n --", "paste buffer n into a pane"),
     // Clients
-    word("Clients", "attach", 0, "-- ", "show the server in this terminal"),
-    word("Clients", "attach-to", 1, "workspace -- ", "the same, on a workspace"),
-    word("Clients", "watch", 0, "-- ", "show it, keys doing nothing but the prefix then d"),
-    word("Clients", "headless", 2, "cols rows -- ", "a client with no terminal, until signalled; prints its id"),
-    word("Clients", "focus", 2, "client way -- ", "left right up down next previous or last pane"),
-    word("Clients", "focus-pane", 2, "client pane -- ", "focus a pane"),
-    word("Clients", "show-tab", 2, "client tab -- ", "show a tab"),
-    word("Clients", "next-tab", 1, "client -- ", "the next tab"),
-    word("Clients", "previous-tab", 1, "client -- ", "the previous tab"),
-    word("Clients", "show-workspace", 2, "client workspace -- ", "show a workspace"),
-    word("Clients", "next-workspace", 1, "client -- ", "the next workspace"),
-    word("Clients", "previous-workspace", 1, "client -- ", "the previous workspace"),
-    word("Clients", "choose-tab", 1, "client -- ", "a list of tabs to go to"),
-    word("Clients", "choose-workspace", 1, "client -- ", "a list of workspaces to go to"),
-    word("Clients", "choose-tab-for", 2, "client pane -- ", "a list of tabs to move the pane to"),
-    word("Clients", "choose-workspace-for", 2, "client pane -- ", "a list of workspaces to move the pane to"),
-    word("Clients", "choose-pane", 2, "client pane -- ", "a list of panes to swap the pane with"),
-    word("Clients", "menu", 2, "client handle -- ", "actions for a pane, tab or workspace"),
-    word("Clients", "rename-prompt", 2, "client handle -- ", "a prompt for its new name"),
-    word("Clients", "confirm-close", 2, "client handle -- ", "close it, once confirmed"),
-    word("Clients", "zoom", 1, "client -- ", "zoom the focused pane, or restore"),
-    word("Clients", "copy-mode", 1, "client -- ", "copy and select in the focused pane"),
-    word("Clients", "command-prompt", 1, "client -- ", "a prompt for fuxth"),
-    word("Clients", "detach", 1, "client -- ", "detach a client"),
-    word("Clients", "capture-client", 1, "client -- capture", "what a client's terminal shows"),
-    word("Clients", "resize-client", 3, "client cols rows -- ", "a headless client's size"),
+    word("Clients", "attach", "--", "show the server in this terminal"),
+    word("Clients", "attach-to", "workspace --", "the same, on a workspace"),
+    word("Clients", "watch", "--", "show it, keys doing nothing but the prefix then d"),
+    word("Clients", "headless", "cols rows --", "a client with no terminal, until signalled; prints its id"),
+    word("Clients", "focus", "client way --", "left right up down next previous or last pane"),
+    word("Clients", "focus-pane", "client pane --", "focus a pane"),
+    word("Clients", "show-tab", "client tab --", "show a tab"),
+    word("Clients", "next-tab", "client --", "the next tab"),
+    word("Clients", "previous-tab", "client --", "the previous tab"),
+    word("Clients", "show-workspace", "client workspace --", "show a workspace"),
+    word("Clients", "next-workspace", "client --", "the next workspace"),
+    word("Clients", "previous-workspace", "client --", "the previous workspace"),
+    word("Clients", "choose-tab", "client --", "a list of tabs to go to"),
+    word("Clients", "choose-workspace", "client --", "a list of workspaces to go to"),
+    word("Clients", "choose-tab-for", "client pane --", "a list of tabs to move the pane to"),
+    word("Clients", "choose-workspace-for", "client pane --", "a list of workspaces to move the pane to"),
+    word("Clients", "choose-pane", "client pane --", "a list of panes to swap the pane with"),
+    word("Clients", "menu", "client handle --", "actions for a pane, tab or workspace"),
+    word("Clients", "rename-prompt", "client handle --", "a prompt for its new name"),
+    word("Clients", "confirm-close", "client handle --", "close it, once confirmed"),
+    word("Clients", "zoom", "client --", "zoom the focused pane, or restore"),
+    word("Clients", "copy-mode", "client --", "copy and select in the focused pane"),
+    word("Clients", "command-prompt", "client --", "a prompt for fuxth"),
+    word("Clients", "detach", "client --", "detach a client"),
+    word("Clients", "capture-client", "client -- capture", "what a client's terminal shows"),
+    word("Clients", "resize-client", "client cols rows --", "a headless client's size"),
     // Server
-    word("Server", "server", 1, "name -- ", "the server named so (NAME.sock in fux's directory), for what follows"),
-    word("Server", "socket", 1, "path -- ", "the server on this socket, for what follows"),
-    word("Server", "start", 0, "-- ", "start the server in the background, if none answers"),
-    word("Server", "status", 0, "-- record", "whether a server answers, and its version"),
-    word("Server", "servers", 0, "-- listing", "the servers that answer in fux's directory"),
-    word("Server", "kill-server", 0, "-- ", "stop the server: not from its own panes, nor with people attached"),
-    word("Server", "force-kill-server", 0, "-- ", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", 2, "setting value -- ", "shell history-bytes wait-seconds journal-bytes journal-total clipboard buffers bell titles shell-marks update-environment"),
-    word("Server", "grant", 2, "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
-    word("Server", "revoke", 1, "socket -- ", "close a grant's socket"),
-    word("Server", "version", 0, "-- text", "this fux's version"),
+    word("Server", "server", "name --", "the server named so (NAME.sock in fux's directory), for what follows"),
+    word("Server", "socket", "path --", "the server on this socket, for what follows"),
+    word("Server", "start", "--", "start the server in the background, if none answers"),
+    word("Server", "status", "-- record", "whether a server answers, and its version"),
+    word("Server", "servers", "-- listing", "the servers that answer in fux's directory"),
+    word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
+    word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
+    word("Server", "set", "setting text --", "shell history-bytes wait-seconds journal-bytes journal-total clipboard buffers bell titles shell-marks update-environment"),
+    word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
+    word("Server", "revoke", "socket --", "close a grant's socket"),
+    word("Server", "version", "-- text", "this fux's version"),
     // Config
-    word("Config", "prefix", 1, "key -- ", "this client's prefix (config)"),
-    word("Config", "bind", 2, "keys code -- ", "keys after the prefix run fuxth (config)"),
-    word("Config", "bind-root", 2, "key code -- ", "a key without the prefix runs fuxth (config)"),
-    word("Config", "label", 1, "text -- ", "what the column says the last binding does"),
-    word("Config", "group", 1, "name -- ", "the column's heading for the last binding"),
-    word("Config", "repeat", 0, "-- ", "the last binding's layer repeats until Esc"),
-    word("Config", "unbind", 1, "keys -- ", "keys after the prefix run nothing"),
-    word("Config", "unbind-root", 1, "key -- ", "a key without the prefix runs nothing"),
-    word("Config", "unbind-all", 0, "-- ", "no bindings at all"),
-    word("Config", "list-keys", 0, "-- ", "this client's bindings"),
-    word("Config", "key-names", 0, "-- ", "the names keys go by"),
+    word("Config", "prefix", "key --", "this client's prefix (config)"),
+    word("Config", "bind", "keys code --", "keys after the prefix run fuxth (config)"),
+    word("Config", "bind-root", "key code --", "a key without the prefix runs fuxth (config)"),
+    word("Config", "label", "text --", "what the column says the last binding does"),
+    word("Config", "group", "name --", "the column's heading for the last binding"),
+    word("Config", "repeat", "--", "the last binding's layer repeats until Esc"),
+    word("Config", "unbind", "keys --", "keys after the prefix run nothing"),
+    word("Config", "unbind-root", "key --", "a key without the prefix runs nothing"),
+    word("Config", "unbind-all", "--", "no bindings at all"),
+    word("Config", "list-keys", "--", "this client's bindings"),
+    word("Config", "key-names", "--", "the names keys go by"),
     // Help
-    word("Help", "help", 0, "-- ", "the words, under their headings"),
-    word("Help", "help-agents", 0, "-- ", "how to drive programs from a script or an agent"),
-    word("Help", "help-json", 0, "-- ", "what json gives"),
-    word("Help", "explain", 1, "word -- ", "one word at length"),
-    word("Help", "check", 1, "file -- ", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),
+    word("Help", "help", "--", "the words, under their headings"),
+    word("Help", "help-agents", "--", "how to drive programs from a script or an agent"),
+    word("Help", "help-json", "--", "what json gives"),
+    word("Help", "explain", "word --", "one word at length"),
+    word("Help", "check", "file --", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),
 ];
 
 /// A failure of a word's own: its code and why.
@@ -238,9 +268,16 @@ pub fn usage(word: &str) -> Option<String> {
         },
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
+    // What a request's word goes on: the pane, or opts.
     let takes = takes.trim().to_uppercase();
+    let request = takes.strip_prefix('X').or(takes.strip_prefix('W'));
+    let takes = match request.filter(|r| r.is_empty() || r.starts_with(' ')) {
+        Some(rest) => format!("PANE-OR-OPTS{rest}"),
+        None => takes,
+    };
     let leaves = match leaves.trim() {
         "" => String::new(),
+        "x" | "w" => ", which leaves a request (or opts) for the word that acts".to_owned(),
         leaves => format!(", which leaves {leaves}"),
     };
     let example = help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
@@ -408,131 +445,321 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
     let instead = match *option {
         option if word == "capture" && help::WAITING.split_whitespace().any(|w| w == option) => {
             "it reads once the pane settles (within timeout, wait-seconds if not said); \
-             to wait for something first: PANE opts … wait, then PANE opts capture"
+             to wait for something first: PANE … wait, then PANE capture"
                 .to_owned()
         }
-        _ => {
-            let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == *option));
-            let on: Vec<&str> = (help::OPTIONS.iter())
-                .map(|(word, ..)| *word)
-                .filter(takes)
-                .collect();
-            format!("{option} goes on {}", on.join(", "))
-        }
+        _ => format!("{option} goes on {}", takers(option)),
     };
-    Err(fail(Code::Unused, format!("takes no {option}: {instead}")))
+    Err(fail(Lang::Unused, format!("takes no {option}: {instead}")))
 }
 
-/// The options `value` holds, `word` among those given.
-fn option<'a>(word: &'static str, value: &'a mut Value<Fux>) -> Result<&'a mut Opts, Failure> {
-    let built = opts(value)?;
-    built.given.push(word);
-    Ok(built)
-}
-
-/// What a word given options, keys or a mouse event changes of them,
-/// left on the stack.
-fn with(
-    word: &'static str,
-    mut value: Value<Fux>,
-    out: &mut Vec<Value<Fux>>,
-    change: impl FnOnce(&mut Waits),
-) -> Result<Done<Ask>, Failure> {
-    if let Value::App(Fux::Opts(opts)) = &mut value {
-        opts.given.push(word);
-        change(&mut opts.waits);
-    } else if let Value::App(Fux::Keys(keys)) = &mut value {
-        change(&mut keys.waits);
-    } else if let Value::App(Fux::Mouse(mouse)) = &mut value {
-        change(&mut mouse.waits);
-    } else if let Value::App(Fux::Awaited(awaited)) = &mut value {
-        awaited.given.push(word);
-        change(&mut awaited.waits);
-    } else if let Ok(target) = target(&value) {
-        // On the pane itself, for the word that acts on it after:
-        // `%2 0 timeout str ls line`.
-        let mut awaited = Awaited {
-            target,
-            waits: Waits::default(),
-            given: vec![word],
-        };
-        change(&mut awaited.waits);
-        value = Value::App(Fux::Awaited(Box::new(awaited)));
-    } else {
-        return Err(wrong(
-            "options, keys, a mouse event, or a pane, tab or workspace",
-            &value,
-        ));
+/// What a request is on: a pane, tab or workspace (an action's answer is
+/// its pane), or a client.
+fn on(value: &Value<Fux>) -> Result<On, Failure> {
+    if let Value::App(Fux::Client(c)) = value {
+        return Ok(On::Client(*c));
     }
-    out.push(value);
-    Ok(Done::Now)
+    target(value).map(On::Target)
 }
 
-/// The pane, tab or workspace an action, `wait` or `capture` acts on, and
-/// the wait words given on it (`%2 0 timeout`), if any.
-fn awaited(value: &Value<Fux>) -> Result<(AnyRef, Option<&Awaited>), Failure> {
-    match value {
-        Value::App(Fux::Awaited(awaited)) => Ok((awaited.target, Some(awaited))),
+/// The options or request `value` is, `word` given it: options stay
+/// options; what else it goes on (a pane, tab, workspace or client, an
+/// action's answer) becomes a request on that.
+fn modifying(word: &'static str, value: Value<Fux>) -> Result<Box<Opts>, Failure> {
+    let mut built = match value {
+        Value::App(Fux::Opts(built)) => built,
         other @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)) => Ok((target(other)?, None)),
-    }
-}
-
-/// The pane an action acts on, and the wait words given on it.
-fn awaited_pane(value: &Value<Fux>) -> Result<(PaneId, Option<&Awaited>), Failure> {
-    match awaited(value) {
-        Ok((AnyRef::Pane(p), on)) => Ok((p, on)),
-        Ok((AnyRef::Tab(_) | AnyRef::Workspace(_), _)) | Err(_) => {
-            Err(wrong("a pane (from pane, run or split)", value))
+        | Value::App(_)) => {
+            let on = on(&other)
+                .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
+            Box::new(Opts {
+                on: Some(on),
+                ..Opts::default()
+            })
         }
-    }
-}
-
-/// `later`, the waits given after a pane, with those given on it first
-/// (`early`): its texts first, its time limit unless one follows.
-fn merged(early: Option<&Awaited>, later: &mut Waits) {
-    let Some(early) = early else {
-        return;
     };
-    let mut until = early.waits.until.clone();
-    until.append(&mut later.until);
-    later.until = until;
-    later.timeout = later.timeout.or(early.waits.timeout);
-    later.marks |= early.waits.marks;
-}
-
-/// `value`, options, with the wait words given on the pane before them
-/// (`%2 0 timeout opts capture`), which they are then refused as.
-fn merged_opts(early: Option<&Awaited>, mut value: Value<Fux>) -> Value<Fux> {
-    if let (Some(early), Value::App(Fux::Opts(opts))) = (early, &mut value) {
-        opts.given.extend(&early.given);
-        merged(Some(early), &mut opts.waits);
-    }
-    value
-}
-
-fn opts(value: &mut Value<Fux>) -> Result<&mut Opts, Failure> {
-    let Value::App(Fux::Opts(opts)) = value else {
-        return Err(wrong("options (from opts)", value));
-    };
-    Ok(opts)
-}
-
-/// The options `value` holds, all made: refused if `word` leaves one unused.
-fn finished(word: &str, mut value: Value<Fux>) -> Result<Opts, Failure> {
-    let built = std::mem::take(opts(&mut value)?);
-    unused(word, &built)?;
+    built.given.push(word);
     Ok(built)
 }
 
-fn keys(value: &mut Value<Fux>) -> Result<&mut Keys, Failure> {
-    let Value::App(Fux::Keys(keys)) = value else {
-        return Err(wrong("keys (from keys)", value));
+/// What `mouse` takes, by name.
+const MICE: [(&str, Mouse); 8] = [
+    ("click", Mouse::Click(Button::Left)),
+    ("right", Mouse::Click(Button::Right)),
+    ("middle", Mouse::Click(Button::Middle)),
+    ("press", Mouse::Press(Button::Left)),
+    ("release", Mouse::Release(Button::Left)),
+    ("wheel-up", Mouse::Wheel(Wheel::Up)),
+    ("wheel-down", Mouse::Wheel(Wheel::Down)),
+    ("move", Mouse::Move),
+];
+
+/// What a word of a request's (an option, a wait, keys, a mouse event)
+/// changes of it, `next` giving the values it takes after it.
+fn modify(
+    name: &str,
+    built: &mut Opts,
+    next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
+) -> Result<(), Failure> {
+    let waits = &mut built.waits;
+    match name {
+        "name" => built.name = Some(string(&next()?)?),
+        "cwd" => built.cwd = Some(string(&next()?)?.into()),
+        "typed" => built.typed = Some(string(&next()?)?),
+        "in" => built.place = Some(workspace(&next()?)?),
+        "log-to" => built.log = Some(string(&next()?)?),
+        "history" => built.history = Some(within(&next()?, COUNT)?),
+        "all-history" => built.history = Some(usize::MAX),
+        "size" => built.size = Some(laid_out(&next()?, &next()?, TAB_MOST)?),
+        "horizontal" => built.axis = Some(Axis::Horizontal),
+        "vertical" => built.axis = Some(Axis::Vertical),
+        "kill-first" => built.kill = true,
+        "joined" => built.view.join = true,
+        "full" => built.view.full = true,
+        "styles" => built.view.styles = true,
+        "marks" => waits.marks = true,
+        "timeout" => waits.timeout = Some(Duration::from_secs(within(&next()?, COUNT)?)),
+        "wait-exit" => waits.until.push(Until::Exit),
+        "wait-bell" => waits.until.push(Until::Bell),
+        "wait-done" => waits.until.push(Until::Done),
+        "text" => built.inputs.push(Input::Text(text(&next()?)?)),
+        "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
+        "command" => {
+            let line = string(&next()?)?;
+            let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
+            if argv.first().is_none_or(|p| p.is_empty()) {
+                return Err(fail(Code::NoProgram, "an empty command line"));
+            }
+            built.argv = argv;
+        }
+        "program" => {
+            let program = string(&next()?)?;
+            match built.argv.first_mut() {
+                Some(first) => *first = program,
+                None => built.argv.push(program),
+            }
+        }
+        "arg" => {
+            let arg = text(&next()?)?;
+            if built.argv.is_empty() {
+                return Err(fail(Code::NoProgram, "comes after program"));
+            }
+            built.argv.push(arg);
+        }
+        "id" => {
+            let text = string(&next()?)?;
+            let bad = format!("{text:?} is not %N, @N or +N");
+            let ids = &mut built.ids;
+            let given = match text.parse().map_err(|()| fail(Code::BadValue, bad))? {
+                AnyRef::Pane(id) => ids.pane.replace(id).is_some(),
+                AnyRef::Tab(id) => ids.tab.replace(id).is_some(),
+                AnyRef::Workspace(id) => ids.workspace.replace(id).is_some(),
+            };
+            if given {
+                let why = format!("id {text}: one of its kind is given already");
+                return Err(fail(Code::Id, why));
+            }
+        }
+        "env" => {
+            let (key, value) = (string(&next()?)?, text(&next()?)?);
+            built
+                .env
+                .push(key, value)
+                .map_err(|why| fail(Code::BadValue, why))?;
+        }
+        "main-screen" | "alt-screen" | "last-output" => {
+            if built.view.source != Source::Shown {
+                let why = "a capture reads one screen, and one is given";
+                return Err(fail(Lang::Unused, why));
+            }
+            built.view.source = match name {
+                "main-screen" => Source::Main,
+                "alt-screen" => Source::Alternate,
+                _ => Source::LastOutput,
+            };
+        }
+        "rows" | "cols" => {
+            let (from, to) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
+            if from > to {
+                let why = format!("{from} {to}: the first {name} before the last");
+                return Err(fail(Lang::Range, why));
+            }
+            match name {
+                "rows" => built.view.rows = Some((from, to)),
+                _ => built.view.cols = Some((from, to)),
+            }
+        }
+        "wait-text" | "wait-gone" => {
+            let t = text(&next()?)?;
+            let bare = t.trim_start_matches('^').trim_end_matches('$').trim();
+            // A tab is a blank, as a wait compares: blanks as one.
+            if bare.is_empty() || t.contains(['\n', '\r']) {
+                let why = "a text of one line, not empty (^ and $ alone hold nothing)";
+                return Err(fail(Code::BadValue, why));
+            }
+            waits.until.push(match name {
+                "wait-text" => Until::Text(t),
+                _ => Until::Gone(t),
+            });
+        }
+        "key" => {
+            let word = string(&next()?)?;
+            let press = word.parse().map_err(|_| {
+                fail(
+                    Code::NotAKey,
+                    format!("{word:?} is no key's name (key-names lists them)"),
+                )
+            })?;
+            built.inputs.push(Input::Key(press));
+        }
+        "paste-file" => {
+            let path = string(&next()?)?;
+            let most = (INPUT_MAX, "900 KiB, the most one paste takes");
+            let text =
+                super::read_file(path.as_ref(), most).map_err(|f| fail(Code::Paste, f.message))?;
+            built.inputs.push(Input::Paste(text));
+        }
+        // The input just before it, n times in all.
+        "times" => {
+            let n: usize = within(&next()?, 1..=1000)?;
+            let Some(last) = built.inputs.last().cloned() else {
+                return Err(fail(
+                    Code::NoKeys,
+                    "repeats the input before it: str Down key 3 times",
+                ));
+            };
+            built
+                .inputs
+                .extend(std::iter::repeat_n(last, n.saturating_sub(1)));
+        }
+        "mouse" => {
+            let mouse = one_of(&next()?, &MICE)?;
+            built.mouse = Some((mouse, within(&next()?, CELL)?, within(&next()?, CELL)?));
+        }
+        _ => return Err(fail(Lang::UnknownWord, format!("{name}: no such word"))),
+    }
+    Ok(())
+}
+
+/// What an action acts on, and what it was given: a request; or a pane,
+/// tab, workspace or client alone, given nothing. Refused if `word`
+/// leaves something given unused.
+fn request(word: &str, value: Value<Fux>) -> Result<(On, Opts), Failure> {
+    let mut built = match value {
+        Value::App(Fux::Opts(built)) => *built,
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Opts {
+            on: Some(on(&other)?),
+            ..Opts::default()
+        },
     };
-    Ok(keys)
+    let Some(on) = built.on.take() else {
+        return Err(fail(
+            Lang::Type,
+            "takes a pane, not options: what opts gives is for run, new-tab and new-workspace; \
+             the rest go on the pane (`%2 all-history capture`, `%2 vertical split`)",
+        ));
+    };
+    unused(word, &built)?;
+    Ok((on, built))
+}
+
+/// The pane an action acts on, and what it was given.
+fn request_pane(word: &str, value: Value<Fux>) -> Result<(PaneId, Opts), Failure> {
+    match request(word, value)? {
+        (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
+        (On::Target(AnyRef::Tab(_) | AnyRef::Workspace(_)) | On::Client(_), _) => Err(fail(
+            Lang::Type,
+            "takes a pane (from pane, run or split), or a request on one",
+        )),
+    }
+}
+
+/// The options `value` holds, for `word`, which makes what they are for:
+/// refused if it leaves one unused.
+fn finished(word: &str, value: Value<Fux>) -> Result<Opts, Failure> {
+    match value {
+        Value::App(Fux::Opts(built)) if built.on.is_none() => {
+            unused(word, &built)?;
+            Ok(*built)
+        }
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Err(wrong("options (from opts): opts … run", &other)),
+    }
+}
+
+/// What an unknown word likely meant, if it is a value fux's words take
+/// written without `str`: a key's name, or text one of fux's words takes
+/// (a way, a mouse action, a signal, a setting, a pane's field).
+pub fn hint(word: &str) -> Option<String> {
+    if word == "keys" {
+        return Some(
+            "`keys` is gone: the keys go right after the pane (`%2 str y text send-keys`)".into(),
+        );
+    }
+    let named = word.chars().next().is_some_and(char::is_uppercase) || word.contains('-');
+    if named && word.chars().count() > 1 && word.parse::<crate::keys::KeyPress>().is_ok() {
+        return Some(format!(
+            "a key is `str {word} key` (`%2 str {word} key send-keys`)"
+        ));
+    }
+    let ways = Direction::ALL.map(Direction::name);
+    let signals = fuxix::process::Signal::ALL.map(fuxix::process::Signal::name);
+    let fields = [
+        "state", "exited", "pid", "cwd", "title", "program", "revision", "signal",
+    ];
+    let taken: [(&[&str], &str); 5] = [
+        (&ways, "`me str {} focus`"),
+        (
+            &MICE.map(|(name, _)| name),
+            "`%2 str {} 3 10 mouse send-mouse`",
+        ),
+        (&signals, "`%2 str {} signal`"),
+        (crate::config::NAMES, "`str {} str VALUE set`"),
+        (&fields, "`%2 str {} get`"),
+    ];
+    let (_, used) = taken.iter().find(|(words, _)| words.contains(&word))?;
+    Some(format!("it is text: {}", used.replace("{}", word)))
+}
+
+/// The words that take `option`, listed.
+fn takers(option: &str) -> String {
+    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
+    let on: Vec<&str> = help::OPTIONS
+        .iter()
+        .map(|(w, ..)| *w)
+        .filter(takes)
+        .collect();
+    crate::words::listed(&on, "or")
+}
+
+/// What a request's word left at a program's end is told: how to end it.
+pub fn unacted(word: &str) -> Option<String> {
+    let spec = WORDS
+        .iter()
+        .find(|w| w.name == word && (w.effect.starts_with("x ") || w.effect.starts_with("w ")))?;
+    let end = match spec.group {
+        "Waiting" => {
+            "last on the line, where it waits (`%2 str T wait-text`), or before the word \
+             it waits after (`%2 str T wait-text str y text send-keys`)"
+        }
+        "Input" => "`%2 str y text str Enter key send-keys`",
+        "Reading" => "`%2 all-history capture`",
+        _ => "on opts for run, new-tab and new-workspace: `opts str DIR cwd new-tab`",
+    };
+    let takers = takers(word);
+    Some(format!(
+        "nothing acts on it: {word} goes before {takers}, which do: {end}"
+    ))
 }
 
 /// The most input one send-keys sends: a request holds it whole.
@@ -655,8 +882,12 @@ impl fuxth::Host for Host<'_> {
         let name = spec.name;
         let mut args = args.into_iter();
         let mut next = || {
-            args.next()
-                .ok_or_else(|| fail(Lang::StackUnderflow, format!("takes {}", spec.takes)))
+            args.next().ok_or_else(|| {
+                fail(
+                    Lang::StackUnderflow,
+                    format!("too few values: {}", spec.effect),
+                )
+            })
         };
         let now = |out: &mut Vec<Value<Fux>>, value: Value<Fux>| {
             out.push(value);
@@ -666,6 +897,13 @@ impl fuxth::Host for Host<'_> {
         let resolve = |text: String, kind: Kind| {
             later(ask(Command::Resolve { text, kind }, Then::Handle(kind)))
         };
+        // A word of a request's, as its effect says: on options, or on what
+        // the word that acts after acts on.
+        if spec.effect.starts_with("x ") || spec.effect.starts_with("w ") {
+            let mut built = modifying(name, next()?)?;
+            modify(name, &mut built, &mut next)?;
+            return now(out, Value::App(Fux::Opts(built)));
+        }
         // A client's own screens, which it opens itself: from its keys or
         // prompt, here; asked from elsewhere, relayed for it to run.
         if let Some((_, opens)) = SCREENS.iter().find(|(word, _)| *word == name) {
@@ -736,117 +974,6 @@ impl fuxth::Host for Host<'_> {
             }
             // ---------------------------------------------------- starting
             "opts" => now(out, Value::App(Fux::Opts(Box::default()))),
-            "keys" => now(out, Value::App(Fux::Keys(Box::default()))),
-            "command" => {
-                let mut o = next()?;
-                let line = string(&next()?)?;
-                let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
-                if argv.first().is_none_or(|p| p.is_empty()) {
-                    return Err(fail(Code::NoProgram, "an empty command line"));
-                }
-                option(name, &mut o)?.argv = argv;
-                now(out, o)
-            }
-            "name" | "cwd" | "program" | "arg" | "typed" | "in" | "id" | "log-to" | "history" => {
-                let mut o = next()?;
-                let v = next()?;
-                let built = option(name, &mut o)?;
-                match name {
-                    "name" => built.name = Some(string(&v)?),
-                    "cwd" => built.cwd = Some(string(&v)?.into()),
-                    "program" => match built.argv.first_mut() {
-                        Some(first) => *first = string(&v)?,
-                        None => built.argv.push(string(&v)?),
-                    },
-                    "arg" => {
-                        if built.argv.is_empty() {
-                            return Err(fail(Code::NoProgram, "comes after program"));
-                        }
-                        built.argv.push(text(&v)?);
-                    }
-                    "typed" => built.typed = Some(string(&v)?),
-                    "in" => built.place = Some(workspace(&v)?),
-                    "id" => {
-                        let text = string(&v)?;
-                        let bad = format!("{text:?} is not %N, @N or +N");
-                        let ids = &mut built.ids;
-                        let given = match text.parse().map_err(|()| fail(Code::BadValue, bad))? {
-                            AnyRef::Pane(id) => ids.pane.replace(id).is_some(),
-                            AnyRef::Tab(id) => ids.tab.replace(id).is_some(),
-                            AnyRef::Workspace(id) => ids.workspace.replace(id).is_some(),
-                        };
-                        if given {
-                            let why = format!("id {text}: one of its kind is given already");
-                            return Err(fail(Code::Id, why));
-                        }
-                    }
-                    "log-to" => built.log = Some(string(&v)?),
-                    _ => built.history = Some(within(&v, COUNT)?),
-                }
-                now(out, o)
-            }
-            "size" => {
-                let mut o = next()?;
-                let size = laid_out(&next()?, &next()?, TAB_MOST)?;
-                option(name, &mut o)?.size = Some(size);
-                now(out, o)
-            }
-            "env" => {
-                let mut o = next()?;
-                let (key, value) = (string(&next()?)?, text(&next()?)?);
-                let env = &mut option(name, &mut o)?.env;
-                env.push(key, value)
-                    .map_err(|why| fail(Code::BadValue, why))?;
-                now(out, o)
-            }
-            // On a capture's options, and on what a wait prints,
-            // whether among options, keys or a mouse event.
-            "marks" => with(name, next()?, out, |w| w.marks = true),
-            "main-screen" | "alt-screen" | "last-output" => {
-                let mut o = next()?;
-                let view = &mut option(name, &mut o)?.view;
-                if view.source != Source::Shown {
-                    let why = "a capture reads one screen, and one is given".to_owned();
-                    return Err(fail(Code::Unused, why));
-                }
-                view.source = match name {
-                    "main-screen" => Source::Main,
-                    "alt-screen" => Source::Alternate,
-                    _ => Source::LastOutput,
-                };
-                now(out, o)
-            }
-            "horizontal" | "vertical" | "kill-first" | "all-history" | "joined" | "full"
-            | "styles" => {
-                let mut o = next()?;
-                let built = option(name, &mut o)?;
-                match name {
-                    "horizontal" => built.axis = Some(Axis::Horizontal),
-                    "vertical" => built.axis = Some(Axis::Vertical),
-                    "kill-first" => built.kill = true,
-                    "all-history" => built.history = Some(usize::MAX),
-                    "joined" => built.view.join = true,
-                    "full" => built.view.full = true,
-                    _ => built.view.styles = true,
-                }
-                now(out, o)
-            }
-            "rows" | "cols" => {
-                let mut o = next()?;
-                let (from, to) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
-                if from > to {
-                    return Err(fail(
-                        Lang::Range,
-                        format!("{from} {to}: the first {name} before the last"),
-                    ));
-                }
-                let view = &mut option(name, &mut o)?.view;
-                match name {
-                    "rows" => view.rows = Some((from, to)),
-                    _ => view.cols = Some((from, to)),
-                }
-                now(out, o)
-            }
             "run" | "new-tab" | "new-workspace" => {
                 let built = finished(name, next()?)?;
                 let typed: Vec<String> = built.typed.into_iter().collect();
@@ -892,8 +1019,7 @@ impl fuxth::Host for Host<'_> {
                 later(ask(command, Then::Handle(Kind::Pane)))
             }
             "split" => {
-                let p = pane(&next()?)?;
-                let built = finished(name, next()?)?;
+                let (p, built) = request_pane(name, next()?)?;
                 let Wanted {
                     pane: id,
                     tab: None,
@@ -907,7 +1033,7 @@ impl fuxth::Host for Host<'_> {
                     (false, None) => (true, built.argv),
                     (false, Some(_)) => {
                         let why = "takes no typed with a program: a line is typed into the shell the program replaces";
-                        return Err(fail(Code::Unused, why));
+                        return Err(fail(Lang::Unused, why));
                     }
                 };
                 let split = Command::Split {
@@ -923,9 +1049,7 @@ impl fuxth::Host for Host<'_> {
                 later(ask(split, Then::Handle(Kind::Pane)))
             }
             "respawn" => {
-                let on = next()?;
-                let (p, early) = awaited_pane(&on)?;
-                let built = finished(name, merged_opts(early, next()?))?;
+                let (p, built) = request_pane(name, next()?)?;
                 let respawn = Command::Respawn {
                     target: p,
                     kill: built.kill,
@@ -936,104 +1060,27 @@ impl fuxth::Host for Host<'_> {
                 later(ask(respawn, Then::Handle(Kind::Pane)))
             }
             // ----------------------------------------------------- waiting
-            "wait-text" | "wait-gone" => {
-                let x = next()?;
-                let t = string(&next()?)?;
-                let bare = t.trim_start_matches('^').trim_end_matches('$').trim();
-                // A tab is a blank, as a wait compares: blanks as one.
-                if bare.is_empty() || t.contains(['\n', '\r']) {
-                    return Err(fail(
-                        Code::BadValue,
-                        "a text of one line, not empty (^ and $ alone hold nothing)",
-                    ));
-                }
-                let until = match name {
-                    "wait-text" => Until::Text(t),
-                    _ => Until::Gone(t),
-                };
-                with(name, x, out, |w| w.until.push(until))
-            }
-            "timeout" => {
-                let x = next()?;
-                let n = within(&next()?, COUNT)?;
-                with(name, x, out, |w| w.timeout = Some(Duration::from_secs(n)))
-            }
-            "wait-exit" | "wait-bell" | "wait-done" => {
-                let until = match name {
-                    "wait-exit" => Until::Exit,
-                    "wait-done" => Until::Done,
-                    _ => Until::Bell,
-                };
-                with(name, next()?, out, |w| w.until.push(until))
-            }
             "wait" => {
-                let on = next()?;
-                let (p, early) = awaited(&on)?;
-                let built = finished(name, merged_opts(early, next()?))?;
+                let (on, built) = request(name, next()?)?;
+                let On::Target(target) = on else {
+                    return Err(fail(
+                        Lang::Type,
+                        "takes a pane, tab or workspace, not a client",
+                    ));
+                };
                 // With a wait's time either way: on a tab or workspace, for
                 // each of its panes.
-                let wait = Request::Wait(p, waited(&built.waits));
+                let wait = Request::Wait(target, waited(&built.waits));
                 later(ask(wait, Then::Outcome))
             }
             // ------------------------------------------------------- input
-            "text" | "key" | "paste" | "paste-file" | "times" => {
-                let mut k = next()?;
-                let v = next()?;
-                let built = keys(&mut k)?;
-                match name {
-                    "text" => built.inputs.push(Input::Text(text(&v)?)),
-                    "key" => {
-                        let word = string(&v)?;
-                        let press = word.parse().map_err(|_| {
-                            fail(
-                                Code::NotAKey,
-                                format!("{word:?} is no key's name (key-names lists them)"),
-                            )
-                        })?;
-                        built.inputs.push(Input::Key(press));
-                    }
-                    "paste" => built.inputs.push(Input::Paste(string(&v)?)),
-                    "paste-file" => {
-                        let path = string(&v)?;
-                        let most = (INPUT_MAX, "900 KiB, the most one paste takes");
-                        let text = super::read_file(path.as_ref(), most)
-                            .map_err(|f| fail(Code::Paste, f.message))?;
-                        built.inputs.push(Input::Paste(text));
-                    }
-                    // The input just before it, n times in all.
-                    _ => {
-                        let n: usize = within(&v, 1..=1000)?;
-                        let Some(last) = built.inputs.last().cloned() else {
-                            return Err(fail(
-                                Code::NoKeys,
-                                "repeats the input before it: str Down key 3 times",
-                            ));
-                        };
-                        built
-                            .inputs
-                            .extend(std::iter::repeat_n(last, n.saturating_sub(1)));
-                    }
-                }
-                now(out, k)
-            }
             "send-keys" => {
-                let to = next()?;
-                let mut k = next()?;
-                let mut built = keys(&mut k)?.clone();
-                if let Value::App(Fux::Opts(_)) = &to {
-                    return Err(fail(
-                        Lang::Type,
-                        "takes the pane, then keys: options between them reach no word \
-                         (each takes a set number of values); give the wait words on the pane \
-                         or on the keys: `%2 0 timeout str ls line`, \
-                         `%2 keys str y text str T wait-text send-keys`",
-                    ));
-                }
-                if let Value::App(Fux::Awaited(early)) = &to {
-                    merged(Some(early), &mut built.waits);
-                }
+                let (on, built) = request(name, next()?)?;
                 if built.inputs.is_empty() {
-                    return Err(fail(Code::NoKeys, "needs keys: keys str hello text"));
+                    return Err(fail(
+                        Code::NoKeys,
+                        "needs keys: %2 str hello text send-keys",
+                    ));
                 }
                 // As the request carries them, which must fit in one frame:
                 // text and pastes their bytes, keys their names' (`C-M-F12`
@@ -1055,92 +1102,63 @@ impl fuxth::Host for Host<'_> {
                         ),
                     ));
                 }
-                if let Value::App(Fux::Client(c)) = &to {
-                    // Typed at its terminal: whatever pane they reach is the
-                    // client's to choose, so there is none to wait on here.
-                    if built.waits != Waits::default() {
-                        return Err(fail(
-                            Code::Unused,
-                            "to a client takes no wait: wait on the pane after (PANE opts … wait)",
-                        ));
+                let target = match on {
+                    On::Target(target) => target,
+                    On::Client(c) => {
+                        // Typed at its terminal: whatever pane they reach is
+                        // the client's to choose, so there is none to wait on
+                        // here.
+                        if built.waits != Waits::default() {
+                            return Err(fail(
+                                Lang::Unused,
+                                "to a client takes no wait: wait on the pane after (PANE … wait)",
+                            ));
+                        }
+                        let keys = ClientAction::Keys(built.inputs);
+                        let typed = Command::Client {
+                            client: Some(c),
+                            action: keys,
+                        };
+                        // Its answer, empty, as send-keys to a pane leaves one.
+                        return later(ask(typed, Then::Outcome));
                     }
-                    let keys = ClientAction::Keys(built.inputs);
-                    let typed = Command::Client {
-                        client: Some(*c),
-                        action: keys,
-                    };
-                    // Its answer, empty, as send-keys to a pane leaves one.
-                    return later(ask(typed, Then::Outcome));
-                }
+                };
                 let then = wait(&built.waits, self.settle);
-                let (target, _) =
-                    awaited(&to).map_err(|_| wrong("a pane, tab, workspace or client", &to))?;
                 let keys = Command::SendKeys {
                     target,
                     inputs: built.inputs,
                 };
                 later(ask(followed(keys, then), Then::Outcome))
             }
-            "mouse" => {
-                let mouse = one_of(
-                    &next()?,
-                    &[
-                        ("click", Mouse::Click(Button::Left)),
-                        ("right", Mouse::Click(Button::Right)),
-                        ("middle", Mouse::Click(Button::Middle)),
-                        ("press", Mouse::Press(Button::Left)),
-                        ("release", Mouse::Release(Button::Left)),
-                        ("wheel-up", Mouse::Wheel(Wheel::Up)),
-                        ("wheel-down", Mouse::Wheel(Wheel::Down)),
-                        ("move", Mouse::Move),
-                    ],
-                )?;
-                let (row, col) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
-                now(
-                    out,
-                    Value::App(Fux::Mouse(Box::new(MouseEvent {
-                        mouse,
-                        row,
-                        col,
-                        waits: Waits::default(),
-                    }))),
-                )
-            }
             "send-mouse" => {
-                let on = next()?;
-                let (p, early) = awaited_pane(&on)?;
-                let m = next()?;
-                let Value::App(Fux::Mouse(m)) = &m else {
-                    return Err(wrong("a mouse event (from mouse)", &m));
+                let (p, built) = request_pane(name, next()?)?;
+                let Some((mouse, row, col)) = built.mouse else {
+                    return Err(fail(
+                        Code::NoKeys,
+                        "needs a mouse event: %2 str click 3 10 mouse send-mouse",
+                    ));
                 };
-                let mut waits = m.waits.clone();
-                merged(early, &mut waits);
-                let then = wait(&waits, self.settle);
+                let then = wait(&built.waits, self.settle);
                 let mouse = Command::SendMouse {
                     target: p,
-                    mouse: m.mouse,
-                    row: m.row,
-                    col: m.col,
+                    mouse,
+                    row,
+                    col,
                 };
                 later(ask(followed(mouse, then), Then::Outcome))
             }
             "signal" => {
-                let on = next()?;
-                let (p, early) = awaited_pane(&on)?;
+                let (p, built) = request_pane(name, next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
                 // From a command line: answers once the program exited or settled.
-                let mut waits = Waits::default();
-                merged(early, &mut waits);
-                let then = wait(&waits, self.settle);
+                let then = wait(&built.waits, self.settle);
                 let signal = followed(Command::Signal { target: p, signal }, then);
                 later(ask(signal, Then::Outcome))
             }
             // ----------------------------------------------------- reading
             "capture" => {
-                let on = next()?;
-                let (p, early) = awaited_pane(&on)?;
-                let built = finished(name, merged_opts(early, next()?))?;
+                let (p, built) = request_pane(name, next()?)?;
                 // From a command line, or given a timeout, read once the pane
                 // settles.
                 let (history, timeout) = (built.history, built.waits.timeout);
@@ -1170,10 +1188,11 @@ impl fuxth::Host for Host<'_> {
                 later(ask(Command::Ls { target, get }, then))
             }
             "json" => match next()? {
-                // Options are no value to convert: what they make is.
+                // Options and requests are no value to convert: what acts
+                // on them gives one.
                 Value::App(Fux::Opts(_)) => Err(fail(
-                    Code::Unused,
-                    "converts a value: it goes after what the options make (opts capture json)",
+                    Lang::Unused,
+                    "converts a value: it goes after what acts on the pane (%2 capture json)",
                 )),
                 // An answer's JSON as given (of several panes, a line each),
                 // still the answer, its status with it.
@@ -1469,8 +1488,10 @@ impl fuxth::Host for Host<'_> {
             "help-json" => self.show(help::JSON),
             "explain" => {
                 let word = string(&next()?)?;
-                let text = help::explain(&word)
-                    .ok_or_else(|| fail(Lang::UnknownWord, format!("no word {word:?}")))?;
+                let text = help::explain(&word).ok_or_else(|| {
+                    let hint = hint(&word).map_or_else(String::new, |hint| format!("; {hint}"));
+                    fail(Lang::UnknownWord, format!("no word {word:?}{hint}"))
+                })?;
                 self.show(&text)
             }
             "check" => {
@@ -1478,17 +1499,18 @@ impl fuxth::Host for Host<'_> {
                 // Read as running it reads it, and refused alike.
                 let text = super::read_file(path.as_ref(), super::SOURCE_MAX)
                     .map_err(|f| fail(Code::Read, f.message))?;
+                // Its mistake, with where it is, as the file's own.
+                let checked = |failed: super::Failed| fail(Code::Check, failed.message);
                 let tokens = fuxth::token::source(&path, &text)
-                    .map_err(|e| fail(Code::Check, e.to_string()))?;
-                super::compile(&tokens).map_err(|e| fail(Code::Check, e.to_string()))?;
+                    .map_err(|e| checked(super::Failed::from(e)))?;
+                super::compile(&tokens).map_err(checked)?;
                 // A config is run dry too: its bindings made, its settings
                 // checked, nothing sent.
                 let config = std::path::Path::new(&path)
                     .file_name()
                     .is_some_and(|n| n == "config.fux");
                 if config {
-                    super::run_file(std::path::Path::new(&path), None)
-                        .map_err(|e| fail(Code::Check, e.to_string()))?;
+                    super::run_file(std::path::Path::new(&path), None).map_err(checked)?;
                 }
                 self.show(&format!("{path}: ok\n"))
             }
@@ -1525,10 +1547,17 @@ impl Host<'_> {
             "bind" | "bind-root" => {
                 let keys_text = string(&next()?)?;
                 let code = string(&next()?)?;
-                // Checked now, rather than each time its keys are typed.
-                let tokens =
-                    fuxth::token::source("binding", &code).map_err(|e| refused(e.to_string()))?;
-                super::compile(&tokens).map_err(|e| refused(e.to_string()))?;
+                // Checked now, rather than each time its keys are typed:
+                // with the config's definitions, its mistake said as the
+                // binding's.
+                let mistake = |e: fuxth::Error| {
+                    let mut failed =
+                        refused(format!("{}, in the binding for {keys_text}", e.message));
+                    failed.word = e.word;
+                    failed
+                };
+                let tokens = fuxth::token::source("binding", &code).map_err(mistake)?;
+                super::compiled(keymap.config.as_ref(), &tokens).map_err(mistake)?;
                 let binding = crate::keymap::Binding {
                     label: code.clone(),
                     code,
@@ -1574,6 +1603,7 @@ impl Host<'_> {
                 };
                 let given = match name {
                     "repeat" => None,
+                    "label" => Some(text(&next()?)?),
                     _ => Some(string(&next()?)?),
                 };
                 let binding = match &bound {
@@ -1657,34 +1687,12 @@ mod tests {
         }
     }
 
-    /// A word's effect names what it takes and gives: the checker counts
-    /// on both.
+    /// Each word's effect is in the names of fux's kinds, strictly: the
+    /// vocabulary is made, no name in any effect unknown.
     #[test]
-    fn every_effect_matches_its_word() {
-        for word in WORDS {
-            let (before, _) = word.effect.split_once("--").unwrap_or_default();
-            assert_eq!(
-                before.split_whitespace().count(),
-                word.takes,
-                "{}",
-                word.name
-            );
-        }
-        let send = WORDS
-            .iter()
-            .find(|w| w.name == "send-keys")
-            .map(Word::gives);
-        assert_eq!(send, Some(1), "an outcome, with a wait or without");
-    }
-
-    /// The words of a pane and a way take the two, and give nothing: the
-    /// checker's counts are their rows'.
-    #[test]
-    fn a_pane_and_a_ways_words_take_the_two() {
-        for name in ["move-beside", "swap-toward"] {
-            let word = WORDS.iter().find(|w| w.name == name);
-            assert_eq!(word.map(|w| (w.takes, w.gives())), Some((2, 0)), "{name}");
-        }
+    fn every_effect_names_known_kinds() {
+        let made = super::super::vocabulary().map(drop);
+        assert_eq!(made, Ok(()));
     }
 
     /// A wait and an action's wait leave how long to the server
