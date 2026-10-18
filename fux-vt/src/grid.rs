@@ -212,6 +212,39 @@ impl Order {
         }
         self.slots.push(slot);
     }
+    /// Turns the slots of rows `low` to `high` by `by`: to the left (each
+    /// `by` rows up, the first `by` going to the end), or to the right.
+    /// Once, whatever `by`: rows `low` to `high`, and, if they cross the
+    /// ring's end, every row first, to bring its top to the start.
+    fn rotate(&mut self, (low, high): (usize, usize), by: usize, left: bool) {
+        let len = high.wrapping_sub(low).wrapping_add(1);
+        if high < low || high >= self.slots.len() || by > len {
+            return;
+        }
+        let (front, _) = self.as_mut_slices();
+        if low < front.len() && high >= front.len() {
+            // Across the ring's end: its top to the start, as `push_back`.
+            work!(slots, self.slots.len());
+            if let Some(slots) = self.slots.get_mut(..) {
+                slots.rotate_left(self.top);
+            }
+            self.top = 0;
+        }
+        let (front, back) = self.as_mut_slices();
+        let split = front.len();
+        let run = match (low.checked_sub(split), high.checked_sub(split)) {
+            (Some(low), Some(high)) => back.get_mut(low..=high),
+            _ => front.get_mut(low..=high),
+        };
+        if let Some(run) = run {
+            work!(slots, run.len());
+            if left {
+                run.rotate_left(by);
+            } else {
+                run.rotate_right(by);
+            }
+        }
+    }
     /// The top row's slot becomes the bottom row's.
     #[inline]
     fn turn(&mut self) {
@@ -1608,13 +1641,39 @@ impl Grid {
         if count == 0 {
             return;
         }
-        for _ in 0..count {
+        if count == 1 {
             let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
             if let Some(slot) = self.move_row(usize::from(from), usize::from(to)) {
                 self.recycle(slot, id, version);
                 if blank != 0 {
                     self.colour(slot, blank);
+                }
+            }
+        } else {
+            // The region's slots turned once, by `count` (threats.md B36),
+            // then the rows brought in made anew in the order moving them
+            // one at a time would: up, from the first brought in, at the
+            // bottom less `count`; down, from the last, at the top.
+            let (low, high) = (usize::from(top), usize::from(bottom));
+            self.order.rotate((low, high), usize::from(count), up);
+            for k in 0..count {
+                let row = if up {
+                    bottom
+                        .saturating_add(1)
+                        .saturating_sub(count)
+                        .saturating_add(k)
+                } else {
+                    top.saturating_add(count)
+                        .saturating_sub(1)
+                        .saturating_sub(k)
+                };
+                let id = next_id(next);
+                if let Some(slot) = self.slot(row) {
+                    self.recycle(slot, id, version);
+                    if blank != 0 {
+                        self.colour(slot, blank);
+                    }
                 }
             }
         }
