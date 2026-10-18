@@ -776,6 +776,16 @@ fn ready(baseline: bool, probes: usize) -> Result<Done, String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     let pid = fuxix::process::Pid::of(&child).ok_or("no pid")?;
+    // Asleep before the probes, and before the baseline kills it: the
+    // count includes the child's own start, which a child killed early
+    // had not finished (7.8 million instructions of 15 to 23).
+    let wchan = format!("/proc/{}/wchan", pid.as_raw());
+    for _ in 0..if cfg!(target_os = "linux") { 2000 } else { 0 } {
+        if std::fs::read_to_string(&wchan).is_ok_and(|w| w.contains("nanosleep")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     for _ in 0..probes {
         if baseline {
             black_box(pid);
