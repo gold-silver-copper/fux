@@ -517,6 +517,15 @@ impl Prints {
     /// on where that left off, on its row. Past its caps, nothing more is
     /// added, and it is lost; its room grows by doubling, never past them.
     pub(crate) fn push(&mut self, row: RowId, cols: Range<u16>, text: &str) {
+        self.add(row, cols, text, false);
+    }
+    /// Adds `text` joined to the cell at `cols` of `row`'s first column (a
+    /// mark, a cluster's next character): to the last run if it took that
+    /// cell, its columns grown to `cols`.
+    pub(crate) fn join(&mut self, row: RowId, cols: Range<u16>, text: &str) {
+        self.add(row, cols, text, true);
+    }
+    fn add(&mut self, row: RowId, cols: Range<u16>, text: &str, joins: bool) {
         // Its room is within its caps: while it lasts, nothing is past them.
         let start = self.text.len();
         // Written as `String` and `Vec` test their room, which then needn't
@@ -531,8 +540,13 @@ impl Prints {
         self.text.push_str(text);
         let end = self.text.len();
         match self.runs.last_mut() {
-            Some((last, at, bytes)) if *last == row && at.end == cols.start && !cols.is_empty() => {
-                at.end = cols.end;
+            // It goes on where the last left off, or joins a cell it took.
+            Some((last, at, bytes))
+                if *last == row
+                    && !cols.is_empty()
+                    && (at.end == cols.start || joins && at.contains(&cols.start)) =>
+            {
+                at.end = at.end.max(cols.end);
                 bytes.end = end;
             }
             _ => self.runs.push((row, cols, start..end)),

@@ -586,3 +586,47 @@ fn a_resize_loses_prints_untaken() -> Result<(), Error> {
     assert!(p.take_prints().lost());
     Ok(())
 }
+
+/// A run of `Prints`: its text and columns.
+type Run = (String, (u16, u16));
+
+/// What `bytes` print, each run's text and columns.
+fn printed(bytes: &[&str]) -> Result<Vec<Run>, Error> {
+    let mut p = crate::Parser::new(Size::of(4, 20), 0)?;
+    p.record_prints(true);
+    for piece in bytes {
+        p.process(piece.as_bytes())?;
+    }
+    let prints = p.take_prints();
+    Ok(prints.iter().map(|r| (r.text.to_owned(), r.cols)).collect())
+}
+
+/// Characters that join a cell's cluster are printed, as they change it
+/// (PAR-13, TXT-6; `Prints`: "each run of text that changed cells"): a
+/// combining mark, and a flag's second regional indicator, which widens
+/// its cell; the same however the input is split.
+#[test]
+fn prints_hold_what_joins_a_cluster() -> Result<(), Error> {
+    let whole = "e\u{301} \u{1F1EF}\u{1F1F5}";
+    let want = vec![(whole.to_owned(), (0, 4))];
+    assert_eq!(printed(&[whole])?, want);
+    let split: Vec<String> = whole.chars().map(String::from).collect();
+    let split: Vec<&str> = split.iter().map(String::as_str).collect();
+    assert_eq!(printed(&split)?, want, "a character a call");
+    // A mark joined after the cursor moved away and back joins the run
+    // that took its cell; one after a take is a run of its own.
+    let after = printed(&["a\u{1b}[C\u{1b}[D\u{301}"])?;
+    assert_eq!(after, vec![("a\u{301}".to_owned(), (0, 1))]);
+    let mut p = crate::Parser::new(Size::of(4, 20), 0)?;
+    p.record_prints(true);
+    p.process("\u{1F44D}".as_bytes())?;
+    p.take_prints();
+    p.process("\u{1F3FD}".as_bytes())?;
+    let tone: Vec<_> = p
+        .take_prints()
+        .iter()
+        .map(|r| (r.text.to_owned(), r.cols))
+        .collect();
+    assert_eq!(tone, vec![("\u{1F3FD}".to_owned(), (0, 2))], "a skin tone");
+    Ok(())
+}

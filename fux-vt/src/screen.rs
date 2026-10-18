@@ -456,6 +456,21 @@ pub struct Screen {
     submitted: Option<CommandMark>,
 }
 
+/// What a mark joined to a cell prints: the mark, after the space a blank
+/// cell takes for it; in `buf`.
+fn joined_text(blank: bool, c: char, buf: &mut [u8; 8]) -> &str {
+    let (space, rest) = buf
+        .split_at_mut_checked(usize::from(blank))
+        .unwrap_or_default();
+    if let Some(space) = space.first_mut() {
+        *space = b' ';
+    }
+    let len = c.encode_utf8(rest).len().saturating_add(usize::from(blank));
+    buf.get(..len)
+        .and_then(|b| str::from_utf8(b).ok())
+        .unwrap_or_default()
+}
+
 /// The screen's part of the invariant checker (threats.md section 6).
 #[cfg(feature = "checks")]
 impl Screen {
@@ -1059,6 +1074,24 @@ impl Screen {
             prints.push(id, cols, text);
         }
     }
+    /// Notes that `c` joined the cell at live row `row`, column `col`,
+    /// after a space if it was `blank`, over the columns the cell takes now:
+    /// out of line, as only a host that records prints asks for it.
+    #[cold]
+    #[inline(never)]
+    fn mark_joined(&mut self, row: u16, col: u16, blank: bool, c: char) {
+        let g = self.grid();
+        let Some(id) = g.live_row(row).map(|r| r.id()) else {
+            return;
+        };
+        let wide = g.stored(row, col).is_some_and(Compact::is_wide);
+        let cols = col..col.saturating_add(if wide { 2 } else { 1 });
+        let mut text = [0; 8];
+        let text = joined_text(blank, c, &mut text);
+        if let Some(prints) = &mut self.prints {
+            prints.join(id, cols, text);
+        }
+    }
     /// Makes shell marks count only with `nonce=NONCE` among their
     /// options, or with none (`None`) every one; and a nested program's
     /// with `nonce=NESTED`, while a command the shell started runs.
@@ -1349,6 +1382,15 @@ impl Screen {
             return Ok(());
         }
         if self.extend_cluster(c) {
+            // What joined is printed, over its cell as it is now (PAR-13,
+            // TXT-6), unless the cluster was full.
+            if self.prints.is_some()
+                && let Some(Printed {
+                    at, full: false, ..
+                }) = self.last_print
+            {
+                self.mark_joined(at.0, at.1, false, c);
+            }
             return Ok(());
         }
         if width == 0 {
@@ -1360,13 +1402,21 @@ impl Screen {
                 let end = col.saturating_add(1);
                 // The mark joins the cell's cluster; a cell already holding
                 // all it can takes no more (`append`).
+                let mut joined = false;
                 self.with_grid(|g, _, v| {
-                    g.mutate_line(row, v, end, |line| line.append(usize::from(col), c))
+                    g.mutate_line(row, v, end, |line| {
+                        joined = line.append(usize::from(col), c);
+                        joined
+                    })
                 });
                 // A mark dropped leaves the cell blank, its link unread.
                 if blank && self.links_seen {
                     let at = usize::from(col);
                     self.link_cells(row, at..at.saturating_add(1), true);
+                }
+                // The mark is printed, over its cell (PAR-13, TXT-6).
+                if joined && self.prints.is_some() {
+                    self.mark_joined(row, col, blank, c);
                 }
             }
             return Ok(());
