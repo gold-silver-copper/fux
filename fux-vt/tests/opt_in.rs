@@ -535,6 +535,21 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
     Ok(())
 }
 
+/// DEC STD 070, 3.5.4.4 (control strings): "It is recommended that all
+/// other control codes not used within a command string be ignored by
+/// hardware". So C0 controls inside a DECRQSS request are no part of it:
+/// `DCS $ q NUL m ST` asks for the pen, as `DCS $ q m ST` does, and a line
+/// break inside it changes nothing.
+#[test]
+fn c0_controls_inside_a_setting_request_are_ignored() -> Result {
+    for request in ["\x00m", "\x01m", "m\x0d\x0a", "\x07m"] {
+        let replies = run(SETTINGS, format!("\x1bP$q{request}\x1b\\").as_bytes())?.replies;
+        let expected: &[u8] = b"\x1bP1$r0m\x1b\\";
+        assert_eq!(replies, [expected.to_vec()], "{request:?}");
+    }
+    Ok(())
+}
+
 /// Without `Feature::SettingReports`, DECRQSS is a DCS like any other:
 /// consumed, unanswered.
 #[test]

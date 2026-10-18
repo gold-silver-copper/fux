@@ -1749,6 +1749,10 @@ impl Parser {
             // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
             // 8.3.143): the byte 0x9c, 8-bit ST, is part of a character
             // there, as in `\u{271c}` (e2 9c 9c).
+            // C0 controls are no part of a request: "all other control
+            // codes not used within a command string" are ignored (DEC STD
+            // 070, 3.5.4.4).
+            State::Request(_) if byte < 0x20 => {}
             State::Request(request) => {
                 self.state = State::Request(request.and_then(|r| r.push(byte)));
                 return None;
