@@ -787,30 +787,35 @@ fn cases(args: &Args) -> Result<bool, String> {
             }
             continue;
         }
-        let expected = status == Some(Status::Agree);
-        match (outcome.agrees(), expected) {
-            (true, true) => {
+        // Any other family's case is judged on every field, a case recorded
+        // as differing (`cases::DIFFERING`) only where its record says.
+        let failures = case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)?;
+        match (failures.is_empty(), cases::differing(name)) {
+            (true, None) => {
                 agree = agree.saturating_add(1);
                 println!("ok       {name}   {marks}");
             }
-            (true, false) => {
+            (true, Some(record)) => {
                 fixed = fixed.saturating_add(1);
-                println!("agrees   {name} (family {family} differs elsewhere)   {marks}");
+                println!(
+                    "differs  {name}, as recorded, on {}: {}   {marks}",
+                    record.on.join(", "),
+                    record.why
+                );
             }
-            (false, expect) => {
+            (false, _) => {
+                ok = false;
                 differ = differ.saturating_add(1);
-                if expect {
-                    ok = false;
-                    println!("FAIL     {name} (family {family} is expected to agree)   {marks}");
-                } else {
-                    println!("fails    {name} (family {family})   {marks}");
-                }
+                println!(
+                    "FAIL     {name} (family {family}) on {}   {marks}",
+                    failures.join("; ")
+                );
                 print!("{}", case::report(&case, &panel, &outcome));
             }
         }
     }
     println!(
-        "{agree} agree in families expected to agree or decided, {fixed} agree in families that differ elsewhere, {differ} fail"
+        "{agree} agree, in a family that agrees, differs or is decided, {fixed} differ as recorded, {differ} fail"
     );
     if let Some(path) = args.json.as_deref() {
         write_json(

@@ -179,6 +179,10 @@ fn blank(snapshot: &Snapshot, y: usize, x: usize) -> bool {
 /// `family`, judged at a step from `subject`, the snapshot of the engine
 /// `subject_engine`, and the panel's `verdicts`; empty if it passes.
 ///
+/// In a family that does not differ by a decision, the case is judged on
+/// every field by the panel's vote, and a case recorded as differing
+/// (`cases::DIFFERING`) only where its record says it does.
+///
 /// In a family a standard decides, the case's expected fields
 /// ([`cases::EXPECTED`]) judge what the section settles: each one the
 /// subject can tell must have its expected value, whatever the engines
@@ -200,7 +204,23 @@ pub fn judged(
     let Some(families::Status::Decided { by, authority, .. }) =
         FAMILIES.get(family).map(|f| f.status)
     else {
-        return Ok(outvoted_on(verdicts));
+        // A named case is judged on every field: one recorded as
+        // differing (`cases::DIFFERING`) only where its record says, and
+        // it must still differ there.
+        let outvoted = outvoted_on(verdicts);
+        let Some(record) = crate::cases::differing(name) else {
+            return Ok(outvoted);
+        };
+        let covered = |key: &String| record.on.iter().any(|p| families::glob(p, key));
+        let mut out = Vec::new();
+        if !outvoted.iter().any(covered) {
+            out.push(format!(
+                "{name}: recorded as differing ({}), but no longer does: remove its record",
+                record.on.join(", ")
+            ));
+        }
+        out.extend(outvoted.into_iter().filter(|k| !covered(k)));
+        return Ok(out);
     };
     let deciders: Vec<Verdict> = verdicts
         .iter()
@@ -961,6 +981,48 @@ mod tests {
         let kept = text(&["abcde"], 5, (0, 4), true);
         assert_eq!(super::judged(wrap, el, FUX_VT, &kept, &[])?.len(), 2);
         assert!(super::judged(wrap, "no-such-case", FUX_VT, &erased, &[]).is_err());
+        Ok(())
+    }
+
+    /// A named case of a family that differs is judged on every field, as
+    /// one that agrees is (at the parent, `cases` printed "fails" and
+    /// passed): a DECSTBM case outvoted on the cursor fails. One recorded
+    /// as differing passes only on its recorded fields, and fails once it
+    /// no longer differs there.
+    #[test]
+    fn a_named_case_of_a_family_that_differs_must_agree() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let scroll = crate::families::find("scroll").ok_or("no scroll family")?;
+        let resize = crate::families::find("resize").ok_or("no resize family")?;
+        let fux = text(&["abc"], 5, (0, 3), false);
+        let verdict = |other: Snapshot| Verdict {
+            engine: ghostty,
+            differences: snapshot::differences(&fux, &other),
+            snapshot: other,
+        };
+        let moved = verdict(text(&["abc"], 5, (0, 0), false));
+        let judged = |family, name, v: &[Verdict]| super::judged(family, name, FUX_VT, &fux, v);
+        assert_eq!(
+            judged(
+                scroll,
+                "decstbm-homes-to-the-origin",
+                std::slice::from_ref(&moved)
+            )?,
+            ["cursor"]
+        );
+        let saved = "reflow-moves-the-saved-cursor";
+        assert_eq!(
+            judged(resize, saved, std::slice::from_ref(&moved))?,
+            Vec::<String>::new()
+        );
+        let agrees = verdict(fux.clone());
+        let stale = judged(resize, saved, &[agrees])?;
+        assert!(
+            stale.iter().all(|f| f.contains("no longer does")) && stale.len() == 1,
+            "{stale:?}"
+        );
+        let other = verdict(text(&["abc"], 5, (0, 3), true));
+        assert_eq!(judged(resize, saved, &[other])?.len(), 2);
         Ok(())
     }
 

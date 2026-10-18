@@ -93,33 +93,8 @@ pub struct Exception {
 impl Exception {
     /// Whether it covers a failure on `key` after the recorded step `step`.
     pub fn covers(&self, step: usize, key: &str) -> bool {
-        (self.steps.0..=self.steps.1).contains(&step) && glob(self.field, key)
+        (self.steps.0..=self.steps.1).contains(&step) && crate::families::glob(self.field, key)
     }
-}
-
-/// Whether `text` is `pattern`, each `*` in it standing for any run of
-/// characters.
-fn glob(pattern: &str, text: &str) -> bool {
-    let mut parts = pattern.split('*');
-    let first = parts.next().unwrap_or_default();
-    let Some(mut rest) = text.strip_prefix(first) else {
-        return false;
-    };
-    let parts: Vec<&str> = parts.collect();
-    let Some((last, middle)) = parts.split_last() else {
-        return rest.is_empty();
-    };
-    for part in middle {
-        match rest.find(part) {
-            Some(at) => {
-                rest = rest
-                    .get(at.saturating_add(part.len())..)
-                    .unwrap_or_default()
-            }
-            None => return false,
-        }
-    }
-    rest.len() >= last.len() && rest.ends_with(last)
 }
 
 /// claude's title, at its last step.
@@ -1386,14 +1361,16 @@ mod tests {
             .filter(|i| !used.contains(i))
             .collect();
         assert_eq!(stale, [5, 6]);
-        assert!(super::glob("cell (*) text", "cell (12,3) text"));
-        assert!(!super::glob("cell (*) text", "cell (12,3) width"));
-        assert!(super::glob(
+        assert!(crate::families::glob("cell (*) text", "cell (12,3) text"));
+        assert!(!crate::families::glob("cell (*) text", "cell (12,3) width"));
+        assert!(crate::families::glob(
             "history row *",
             "history row 3 from the newest"
         ));
-        assert!(!super::glob("history row *", "history rows kept"));
-        assert!(super::glob("title", "title") && !super::glob("title", "titles"));
+        assert!(!crate::families::glob("history row *", "history rows kept"));
+        assert!(
+            crate::families::glob("title", "title") && !crate::families::glob("title", "titles")
+        );
     }
 
     #[test]

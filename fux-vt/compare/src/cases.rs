@@ -1,7 +1,9 @@
 //! Named cases: one sequence each, the smallest that shows a behaviour,
 //! in the family it belongs to. Most come from the audit of fux-vt 0.2.0.
-//! A case in a family expected to agree must agree; a case in a family
-//! that differs is reported either way, so a fix shows as it lands.
+//! A case must agree, in whatever family, unless a standard or xterm
+//! decides its family (judged as `case::judged` says) or it is recorded as
+//! differing (`DIFFERING`), and then only where its record says, for as
+//! long as it still differs there.
 
 /// Name, family, size (rows, columns), steps: output in `escape` form, or
 /// `resize:RxC`.
@@ -411,6 +413,27 @@ pub const CASES: &[Named] = &[
         &["abcdefgh12", "resize:3x4", "resize:3x8"],
     ),
 ];
+
+/// A named case recorded as differing, in a family that does not differ
+/// by a decision: the fields it differs on (a difference's key, `*` for
+/// any run of characters), and why. It fails on any other field, and when
+/// it no longer differs there. Every other named case must agree.
+pub struct Differing {
+    pub case: &'static str,
+    pub on: &'static [&'static str],
+    pub why: &'static str,
+}
+
+pub const DIFFERING: &[Differing] = &[Differing {
+    case: "reflow-moves-the-saved-cursor",
+    on: &["cell (*) text", "cursor", "row * soft-wrapped"],
+    why: "the resize family's: where the cursor's reflowed line no longer fits, Ghostty reflows the columns at the old height first; fux-vt keeps the cursor on its character and pulls rows back from history (wezterm and xterm.js agree with fux-vt)",
+}];
+
+/// The named case `name`'s record, if it is recorded as differing.
+pub fn differing(name: &str) -> Option<&'static Differing> {
+    DIFFERING.iter().find(|d| d.case == name)
+}
 
 /// What the section a decided family cites says one of its named cases
 /// leaves, after its last step: each field by the key [`read`] takes and

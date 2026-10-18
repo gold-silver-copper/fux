@@ -1127,6 +1127,31 @@ pub const FAMILIES: &[Family] = &[
     },
 ];
 
+/// Whether `text` is `pattern`, each `*` in it standing for any run of
+/// characters.
+pub fn glob(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = text.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => {
+                rest = rest
+                    .get(at.saturating_add(part.len())..)
+                    .unwrap_or_default()
+            }
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
+
 pub fn find(name: &str) -> Option<usize> {
     FAMILIES.iter().position(|f| f.name == name)
 }
@@ -1154,5 +1179,12 @@ mod tests {
         };
         assert!(uncited.check(XTERM).is_err());
         assert!(Authority::Xterm.check(&["ghostty"]).is_err());
+    }
+
+    /// `*` stands for any run of characters, and nothing else is loose.
+    #[test]
+    fn a_glob_matches_runs_of_characters() {
+        assert!(super::glob("cell (*) text", "cell (0,1) text"));
+        assert!(!super::glob("cursor", "cursor visible"));
     }
 }
