@@ -49,17 +49,14 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 /// more once no slave is open (`ptcread`). The last close would otherwise
 /// be anyone's: this process's copies as it starts a program that has
 /// already printed and exited, or a probe that opens the slave only to
-/// ask (`O_NONBLOCK`). Held, the slave is closed last with the master,
-/// after its output was read. Its end is told by the program's exit, not
+/// ask (`O_NONBLOCK`), which also wakes the program blocked reading it
+/// (every open there calls `ttymodem`, which wakes the terminal's
+/// readers). Held, the slave is closed last with the master, after its
+/// output was read, and asked what it holds with no open
+/// ([`Master::keys_unread`]). Its end is told by the program's exit, not
 /// by the master's hangup, which never comes while the slave is held.
 #[derive(Debug)]
-pub struct Master(
-    OwnedFd,
-    PathBuf,
-    #[cfg(target_os = "macos")]
-    #[expect(dead_code, reason = "held only to be closed with the master")]
-    OwnedFd,
-);
+pub struct Master(OwnedFd, PathBuf, #[cfg(target_os = "macos")] OwnedFd);
 
 /// A PTY's slave, not yet given to the program that runs on it
 /// ([`Slave::spawn`]). It is close-on-exec, and not this process's
@@ -72,6 +69,23 @@ impl Master {
     /// terminal.
     pub fn slave_path(&self) -> &Path {
         &self.1
+    }
+
+    /// Whether keys wait in the terminal for its program to read: blocked
+    /// in a read still, it has yet to be woken (a busy machine) to read
+    /// them. Where the slave is not held, it is opened only to ask, so
+    /// that its program's end still closes it.
+    pub fn keys_unread(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        let unread = crate::io::unread(&self.2);
+        #[cfg(not(target_os = "macos"))]
+        let unread = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+            .open(&self.1)
+            .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
+            .and_then(crate::io::unread);
+        unread.is_ok_and(|n| n > 0)
     }
 }
 
