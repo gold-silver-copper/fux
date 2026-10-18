@@ -1642,7 +1642,7 @@ impl Parser {
     fn control(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
         match byte {
             7 if self.options.has(Feature::Events) => sink.event(Event::Bell),
-            0x1a => return self.screen.substitute(),
+            0x1a => return self.substitute(),
             _ => {}
         }
         self.screen.control(byte)
@@ -1655,6 +1655,40 @@ impl Parser {
     fn bell(&mut self, sink: &mut impl Sink) {
         let done = self.control(0x07, sink);
         self.kept(done);
+    }
+
+    /// SUB carried out: its error character (DEC STD 070, p. 5-132). Out
+    /// of line, as programs send it seldom and every C0 control comes
+    /// through `control`.
+    #[cold]
+    #[inline(never)]
+    fn substitute(&mut self) -> Result<(), Error> {
+        self.screen.substitute()
+    }
+
+    /// CAN or SUB, `byte`, in `state`, any but ground: what is in progress
+    /// is cancelled, and SUB then shows its glyph (DEC STD 070, p. 5-132,
+    /// note 2; and in a control string, decisions.md 4); inside sixel SUB
+    /// is a blank sixel instead and the picture goes on, and CAN ends it
+    /// unplaced (the sixel chapter, 9.1). Out of line: seldom sent.
+    #[cold]
+    #[inline(never)]
+    fn cancel(&mut self, byte: u8, state: State) {
+        if byte == 0x1a
+            && matches!(state, State::Sixel)
+            && let Some(decoder) = &mut self.sixel
+        {
+            let screen = &mut self.screen;
+            decoder.push(b'?', &mut |bytes| screen.make_room(bytes));
+            return;
+        }
+        self.state = State::Ground;
+        self.sixel = None;
+        if byte == 0x1a && !matches!(state, State::Sixel) {
+            let done = self.substitute();
+            self.kept(done);
+        }
+        self.screen.forget_repeat();
     }
 
     /// Reads one byte; whether it ended a sequence that began or ended a
@@ -1672,28 +1706,11 @@ impl Parser {
             self.kept(done);
             return None;
         }
-        // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence. ESC
-        // also begins ST, so it completes a pending OSC string or DECRQSS.
-        // SUB, which aborts what is in progress, is then carried out: its
-        // glyph (DEC STD 070, p. 5-132, note 2; and in a control string,
-        // decisions.md 4). Inside sixel SUB is a blank sixel, and CAN ends
-        // the picture unplaced (the sixel chapter, 9.1).
-        if byte == 0x1a
-            && matches!(state, State::Sixel)
-            && let Some(decoder) = &mut self.sixel
-        {
-            let screen = &mut self.screen;
-            decoder.push(b'?', &mut |bytes| screen.make_room(bytes));
-            return None;
-        }
+        // Anywhere transitions: CAN/SUB cancel (`cancel`), ESC starts a new
+        // sequence. ESC also begins ST, so it completes a pending OSC
+        // string or DECRQSS.
         if matches!(byte, 0x18 | 0x1a) {
-            self.state = State::Ground;
-            self.sixel = None;
-            if byte == 0x1a && !matches!(state, State::Sixel) {
-                let done = self.screen.substitute();
-                self.kept(done);
-            }
-            self.screen.forget_repeat();
+            self.cancel(byte, state);
             return None;
         }
         if byte == 0x1b {
