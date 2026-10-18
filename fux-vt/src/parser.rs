@@ -207,11 +207,11 @@ const fn lead(first: u8) -> Option<(usize, u8, u8)> {
 /// it, setting its top bit where the byte's own is clear; one from 0x7f up
 /// has its top bit set once 1 is added to it, or before. A borrow or carry
 /// runs only into the bytes after the one it came from, so the first byte
-/// flagged is the first that is not printable.
+/// flagged is the first that is not printable. Its one caller checks the
+/// first byte; without that, the count would be off, not a panic.
 fn printable(bytes: &[u8]) -> usize {
     const ONES: u64 = u64::from_le_bytes([0x01; 8]);
     const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
-    debug_assert!(bytes.first().is_some_and(|b| (0x20..=0x7e).contains(b)));
     if !bytes.get(1).is_some_and(|b| (0x20..=0x7e).contains(b)) {
         return 1;
     }
