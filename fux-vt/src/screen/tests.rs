@@ -438,6 +438,74 @@ fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
     Ok(())
 }
 
+/// A screen keeps 64 pictures, the 64th too, and the 65th lets the oldest
+/// go (threats.md B02): each one cell, in a cell of its own.
+#[test]
+fn a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let one = picture(1, 1);
+    for n in 0..65u16 {
+        p.process(format!("\x1b[{};{}H", n / 8 + 1, (n % 8) * 2 + 1).as_bytes())?;
+        p.process(&one)?;
+        if n == 63 {
+            assert_eq!(shown(&p), (1..=64).collect::<Vec<u64>>(), "64 kept");
+        }
+    }
+    assert_eq!(shown(&p), (2..=65).collect::<Vec<u64>>(), "the 65th");
+    Ok(())
+}
+
+/// Pictures exactly at the budget are kept, a byte past it lets the oldest
+/// go, by the budget set as by one drawn (threats.md B01).
+#[test]
+fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    // 100 by 120 pixels: 48,000 bytes, 10 by 6 cells at 10 by 20.
+    let one = picture(100, 120);
+    p.process(b"\x1b[1;1H")?;
+    p.process(&one)?;
+    p.process(b"\x1b[1;30H")?;
+    p.process(&one)?;
+    p.set_picture_bytes(96_000);
+    assert_eq!(shown(&p), [1, 2], "at the budget");
+    p.set_picture_bytes(95_999);
+    assert_eq!(shown(&p), [2], "a byte past it");
+    p.set_picture_bytes(96_000);
+    p.process(b"\x1b[10;1H")?;
+    p.process(&one)?;
+    assert_eq!(shown(&p), [2, 3], "one drawn at the budget");
+    Ok(())
+}
+
+/// A picture placed takes the cells it covers from those under it, and
+/// only those: one beside it on any side, its cells touching, stays; one
+/// a cell of it covers goes (threats.md 5.2, `overlaps`).
+#[test]
+fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    // 20 by 40 pixels: 2 cells by 2 at 10 by 20, placed at row 5 col 5.
+    let two = picture(20, 40);
+    let place = |at: &[u8]| -> Result<Vec<u64>, Error> {
+        let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+        p.process(b"\x1b[5;5H")?;
+        p.process(&two)?;
+        p.process(at)?;
+        p.process(&two)?;
+        Ok(shown(&p))
+    };
+    // Beside it: left, right, above and below, touching.
+    for at in [&b"\x1b[5;3H"[..], b"\x1b[5;7H", b"\x1b[3;5H", b"\x1b[7;5H"] {
+        assert_eq!(place(at)?, [1, 2], "{:?}", String::from_utf8_lossy(at));
+    }
+    // Over one of its cells from each side.
+    for at in [&b"\x1b[5;4H"[..], b"\x1b[5;6H", b"\x1b[4;5H", b"\x1b[6;6H"] {
+        assert_eq!(place(at)?, [2], "{:?}", String::from_utf8_lossy(at));
+    }
+    Ok(())
+}
+
 /// A picture that only declares its size keeps no pixels for it, however
 /// large (`threats.md` B05): its extent reads as the background (colour
 /// register 0 for P2 0 and 2) or clear (P2 1), when shown.
