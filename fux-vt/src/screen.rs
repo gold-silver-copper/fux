@@ -2558,10 +2558,12 @@ impl Screen {
             // Which sequences reset it, `parser::FrameScan::ends` restates:
             // it changes with this arm, DECSTR, RIS and XTRESTORE.
             Kind::Frame => {
-                self.modes.set(mode, on);
-                if on {
+                // A frame begins when the mode is set from reset: set again
+                // while set, the frame being drawn goes on.
+                if on && !self.modes.contains(mode) {
                     self.frames_begun = self.frames_begun.wrapping_add(1);
                 }
+                self.modes.set(mode, on);
             }
             Kind::SizeReport => {
                 self.modes.set(mode, on);

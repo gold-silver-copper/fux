@@ -797,8 +797,9 @@ impl FromIterator<Feature> for Options {
 /// ([`Mode::SynchronizedOutput`]), or the call spent its work budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
-    /// It set the mode (BSU, `CSI ? 2026 h`, or XTRESTORE of it saved
-    /// set), even while it was set: a frame begins.
+    /// It set the mode while it was reset (BSU, `CSI ? 2026 h`, or
+    /// XTRESTORE of it saved set): a frame begins. Set again while set, the
+    /// frame being drawn goes on, and no stop is made.
     Begun,
     /// It reset the mode while it was set: the frame ends. ESU (`CSI ?
     /// 2026 l`, beside other modes too), XTRESTORE of it saved reset,

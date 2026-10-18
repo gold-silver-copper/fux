@@ -302,8 +302,13 @@ fn process_until_stop_stops_after_the_sequence_that_sets_2026() -> Result {
     p.process(b"\x1b[?2026l")?;
     assert_eq!(p.process_until_stop(b"x\x1b[?20", &mut sink)?, None);
     assert_eq!(p.process_until_stop(b"26hy", &mut sink)?, begun(3));
-    // Set again while set: each set begins a frame.
-    assert_eq!(p.process_until_stop(b"\x1b[?2026h", &mut sink)?, begun(8));
+    // Set again while set, the mode does not change: the frame being drawn
+    // goes on, and none begins (the mode 2026 spec: while it is set, the
+    // terminal keeps rendering the last state; setting it again is no new
+    // state). XTRESTORE of it saved set, while set, begins none either.
+    assert_eq!(p.process_until_stop(b"\x1b[?2026h", &mut sink)?, None);
+    p.process(b"\x1b[?2026s")?;
+    assert_eq!(p.process_until_stop(b"\x1b[?2026r", &mut sink)?, None);
     p.process(b"\x1b[?2026l")?;
     assert_eq!(p.process_until_stop(b"plain text\r\n", &mut sink)?, None);
     Ok(())
