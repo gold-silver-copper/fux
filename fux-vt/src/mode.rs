@@ -12,7 +12,7 @@ use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 /// (every mode, in the order declared),
 /// `Modes::DEFAULT` (the modes marked `default`) and `Modes::SOFT_RESET`
 /// (those marked `soft`), and checks at compile time that every mode is a
-/// bit of a `Modes` (a `u32`). A row `Autowrap (true, 7) [default soft] =>
+/// bit of a `Modes` (a `u64`). A row `Autowrap (true, 7) [default soft] =>
 /// Kind::Flag,` makes the variant `Autowrap`, the arm `(true, 7) =>
 /// Some(Self::Autowrap)` of `of`, the arm `Self::Autowrap => Kind::Flag`
 /// of `kind`, `Mode::Autowrap` in `Mode::ALL`, and `| Mode::Autowrap.bit()`
@@ -66,8 +66,8 @@ macro_rules! modes {
                 Self(0 $($($(| modes!(@soft $mark Mode::$variant))*)?)*);
         }
 
-        // Each mode is a bit of a `Modes`: at most a `u32`'s 32.
-        const _: () = assert!([$(Mode::$variant),*].len() <= 32);
+        // Each mode is a bit of a `Modes`: at most a `u64`'s 64.
+        const _: () = assert!([$(Mode::$variant),*].len() <= 64);
     };
     (@default default $mode:path) => { $mode.bit() };
     (@default soft $mode:path) => { 0 };
@@ -205,8 +205,8 @@ impl Mode {
         }
     }
 
-    const fn bit(self) -> u32 {
-        1u32.wrapping_shl(self as u32)
+    const fn bit(self) -> u64 {
+        1u64.wrapping_shl(self as u32)
     }
 }
 
@@ -269,7 +269,7 @@ pub(crate) enum Switch {
 
 /// A set of modes, a bit each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Modes(u32);
+pub(crate) struct Modes(u64);
 
 impl Modes {
     pub(crate) const fn contains(self, mode: Mode) -> bool {
