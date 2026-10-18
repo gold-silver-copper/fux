@@ -556,7 +556,7 @@ fn sign(bin: &Path, bytes: &[u8]) -> Result<(), String> {
         .filter(|l| l.split_whitespace().nth(1) != Some(name.as_str()))
         .map(str::to_owned)
         .collect();
-    lines.push(format!("{}  {name}", crate::bench::sha256(bytes)));
+    lines.push(format!("{}  {name}", crate::bench::sha256(bytes)?));
     lines.sort_by(|a, b| {
         a.split_whitespace()
             .nth(1)
@@ -588,7 +588,7 @@ mod tests {
             .filter_map(|l| l.split_whitespace().nth(1))
             .collect();
         assert_eq!(names, ["a.bin", "b.bin"]);
-        assert!(text.contains(&format!("{}  a.bin", crate::bench::sha256(b"y"))));
+        assert!(text.contains(&format!("{}  a.bin", crate::bench::sha256(b"y")?)));
         Ok(())
     }
 

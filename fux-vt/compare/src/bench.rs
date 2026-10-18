@@ -536,30 +536,38 @@ fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String>
 }
 
 /// The input's SHA-256, by `shasum -a 256` (as run.sh checks its
-/// downloads), for the fairness record.
-pub fn sha256(bytes: &[u8]) -> String {
+/// downloads) or, where there is none, `sha256sum`, for the fairness
+/// record. An error if neither is there or neither gives a hash.
+pub fn sha256(bytes: &[u8]) -> Result<String, String> {
     use std::io::Write as _;
-    let child = std::process::Command::new("shasum")
-        .args(["-a", "256"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn();
-    let Ok(mut child) = child else {
-        return "unknown".into();
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(bytes);
+    for (program, args) in [("shasum", &["-a", "256"][..]), ("sha256sum", &[])] {
+        let child = std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("{program}: {e}")),
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(bytes)
+                .map_err(|e| format!("{program}: {e}"))?;
+        }
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("{program}: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let hash = text.split_whitespace().next().unwrap_or_default();
+        if !out.status.success() || hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(format!("{program}: no hash ({})", out.status));
+        }
+        return Ok(hash.to_owned());
     }
-    child.wait_with_output().map_or_else(
-        |_| "unknown".into(),
-        |out| {
-            String::from_utf8_lossy(&out.stdout)
-                .split_whitespace()
-                .next()
-                .unwrap_or("unknown")
-                .to_owned()
-        },
-    )
+    Err("sha256: neither shasum nor sha256sum is on PATH".into())
 }
 
 /// The CPUs this process may run on.
@@ -624,7 +632,7 @@ pub fn run_to(
         let load = load(name, bytes)?;
         inputs.push(serde_json::json!({
             "name": load.name, "about": load.about, "bytes": load.bytes.len(),
-            "sha256": sha256(&load.bytes), "rows": load.rows, "cols": load.cols,
+            "sha256": sha256(&load.bytes)?, "rows": load.rows, "cols": load.cols,
         }));
         for ((retention, in_process), out) in tables.iter().zip(&mut results) {
             let mut columns: Vec<Column> = Vec::new();
@@ -789,6 +797,15 @@ pub fn run_to(
 mod tests {
     use super::Retention;
     use crate::engine::{ENGINES, SUBJECT, Setup};
+
+    /// A hash is the input's, by whichever of shasum and sha256sum there
+    /// is (FIPS 180-2's example "abc"), never a placeholder.
+    #[test]
+    fn an_input_hashes_to_its_sha256() -> Result<(), String> {
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(super::sha256(b"abc")?, abc);
+        Ok(())
+    }
 
     /// Equal retention holds what it says: every engine this harness sets
     /// up keeps no history after 300 lines on a 10-row screen, and equal

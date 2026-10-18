@@ -1853,7 +1853,7 @@ mod tests {
             let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
             assert_eq!(
                 listed.get(&name),
-                Some(&crate::bench::sha256(&bytes)),
+                Some(&crate::bench::sha256(&bytes)?),
                 "{name}"
             );
         }

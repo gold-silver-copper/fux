@@ -150,8 +150,12 @@ pub fn run(
     // its hash.
     let loads: Vec<(usize, String, String)> = workloads
         .iter()
-        .map(|w| load(w, mb).map(|l| (l.bytes.len(), l.about, bench::sha256(&l.bytes))))
-        .collect::<Result<_, _>>()?;
+        .map(|w| {
+            let l = load(w, mb)?;
+            let hash = bench::sha256(&l.bytes)?;
+            Ok((l.bytes.len(), l.about, hash))
+        })
+        .collect::<Result<_, String>>()?;
     let mut tasks = Vec::new();
     for _ in 0..repeats.max(1) {
         for workload in 0..workloads.len() {
