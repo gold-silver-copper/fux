@@ -592,6 +592,27 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             .fold(0, usize::saturating_add)
     }
 
+    /// Blanks cells `span` and keeps only the text the others hold, for
+    /// the span to be written cell by cell: what is written then is all the
+    /// row's text holds that is dead, and no write compacts the row again
+    /// (DECCRA, B35).
+    pub(crate) fn clear_for(&mut self, span: std::ops::Range<usize>) {
+        let cells = self.cells.get_mut(span).unwrap_or_default();
+        for cell in cells.iter_mut().map(AsMut::as_mut) {
+            *cell = cell.blanked();
+        }
+        for long in [true, false] {
+            let store = if long {
+                &self.text.long
+            } else {
+                &self.text.short
+            };
+            if !store.is_empty() {
+                self.compact(long);
+            }
+        }
+    }
+
     /// Keeps only the text of long clusters (`long`), or of short ones,
     /// relocating their cells.
     fn compact(&mut self, long: bool) {
@@ -601,7 +622,6 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             &mut self.text.short
         };
         let old = std::mem::take(store);
-        spend!(text, old.len());
         for cell in self.cells.iter_mut().map(AsMut::as_mut) {
             let Some(range) = cell.spilled(long) else {
                 continue;
@@ -615,6 +635,8 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             store.extend_from_slice(text);
             *cell = cell.with_spilled(start, len);
         }
+        // What it copied: the text the cells hold.
+        spend!(text, store.len());
     }
 
     /// The text of `cells`, whose text is in `old`, stored again within

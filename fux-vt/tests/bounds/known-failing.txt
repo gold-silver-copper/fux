@@ -3,11 +3,9 @@
 # rows off (a row on it that passes fails the suite).
 B14 1x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
 B14 10x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
-B35 1x  DECCRA stores each copied cluster with a compaction of the row (SCR-5)
-B35 10x  DECCRA stores each copied cluster with a compaction of the row (SCR-5)
 B40 1x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
 B40 10x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
 B14 100x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
-B35 100x  DECCRA stores each copied cluster with a compaction of the row (SCR-5)
+B35 100x  not measured at SCR-5's fix: the 4095x4096 probe ran past 15 minutes at 1-byte pieces (over the 10-minute rule), 1x and 10x pass
 B40 100x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
 B25 100x  at 4 KiB reads the decoder's heap peaks at 4,160 bytes, 64 past the probe's 4 KiB: not yet explained (KEY-5)

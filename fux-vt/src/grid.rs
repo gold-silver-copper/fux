@@ -1330,7 +1330,9 @@ impl Grid {
         let end = col.saturating_add(columns.len()).min(self.size.cols());
         for (y, (cells, text)) in (row..self.size.rows()).zip(source) {
             self.mutate_line(y, version, end, |line| {
-                for (at, cell) in (usize::from(col)..usize::from(end)).zip(&cells) {
+                let span = usize::from(col)..usize::from(end);
+                line.clear_for(span.clone());
+                for (at, cell) in span.zip(&cells) {
                     line.set(at, *cell, text.of(cell));
                 }
                 repair_wide(line.cells);
