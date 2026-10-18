@@ -9,7 +9,6 @@ use crate::Error;
 use crate::RowId;
 use crate::sixel::Picture;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// What a picture's cells hold while it is there: the character kitty's
 /// graphics protocol keeps for cells a picture covers, one cell wide.
@@ -42,31 +41,6 @@ pub struct Graphics {
 /// terminal font's.
 const CELL: (u16, u16) = (10, 20);
 
-/// A number the screen notes while it is read (`Screen::track_pictures`),
-/// which reading it from several threads at once notes alike: `None` is
-/// `u64::MAX`, no row's number.
-#[derive(Debug)]
-pub(crate) struct Noted(AtomicU64);
-
-impl Noted {
-    /// None noted.
-    pub(crate) const fn none() -> Self {
-        Self(AtomicU64::new(u64::MAX))
-    }
-    pub(crate) fn get(&self) -> Option<u64> {
-        Some(self.0.load(Ordering::Relaxed)).filter(|n| *n != u64::MAX)
-    }
-    pub(crate) fn set(&self, n: Option<u64>) {
-        self.0.store(n.unwrap_or(u64::MAX), Ordering::Relaxed);
-    }
-}
-
-impl Clone for Noted {
-    fn clone(&self) -> Self {
-        Self(AtomicU64::new(self.0.load(Ordering::Relaxed)))
-    }
-}
-
 /// A picture placed on a grid.
 #[derive(Clone, Debug)]
 pub(crate) struct Placement {
@@ -77,7 +51,7 @@ pub(crate) struct Placement {
     bottom: RowId,
     /// The top row's number in the order rows came into the main screen's
     /// history, once it has (`Screen::track_pictures`).
-    number: Noted,
+    number: crate::history::Noted,
     col: u16,
     /// The cells it covers, and the cell size it was laid out in.
     cols: u16,
@@ -132,7 +106,9 @@ impl Screen {
     pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> Result<(), Error> {
         if self.pictures.is_empty() {
             // Nothing to follow: its rows are followed from here.
-            self.tracked.set(Some(self.primary.history_numbers().1));
+            self.primary
+                .followed()
+                .set(Some(self.primary.history_numbers().1));
         }
         self.track_pictures();
         let cell = self.graphics.cell.unwrap_or(CELL);
@@ -179,7 +155,7 @@ impl Screen {
             picture,
             top,
             bottom,
-            number: Noted::none(),
+            number: crate::history::Noted::none(),
             col,
             cols,
             rows,
@@ -281,12 +257,12 @@ impl Screen {
     /// order they came, so a top not on the screen is there or gone.
     pub(crate) fn track_pictures(&self) {
         let (first, next) = self.primary.history_numbers();
-        let tracked = self.tracked.get().unwrap_or(first);
+        let tracked = self.primary.followed().get().unwrap_or(first);
         if tracked == next || self.pictures.is_empty() {
             return;
         }
         let from = tracked.max(first);
-        self.tracked.set(Some(next));
+        self.primary.followed().set(Some(next));
         let mut wanted: Vec<(RowId, usize)> = (self.pictures.iter().enumerate())
             .filter(|(_, p)| !p.alternate && p.number.get().is_none())
             .map(|(at, p)| (p.top, at))
@@ -313,7 +289,9 @@ impl Screen {
     /// looked for in all of it once.
     pub(crate) fn retrack_pictures(&mut self) {
         self.pictures.iter().for_each(|p| p.number.set(None));
-        self.tracked.set(Some(self.primary.history_numbers().0));
+        self.primary
+            .followed()
+            .set(Some(self.primary.history_numbers().0));
         self.track_pictures();
     }
 
@@ -472,7 +450,7 @@ mod faults {
             picture: Arc::new(Picture::new(1, 1, rgba)?),
             top,
             bottom: top,
-            number: Noted::none(),
+            number: crate::history::Noted::none(),
             col: 0,
             cols: 1,
             rows: 1,

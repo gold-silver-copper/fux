@@ -28,6 +28,7 @@ mod ring;
 use ring::Ring;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
 use crate::grid::{MAX_CELLS, MAX_ROWS};
@@ -189,6 +190,38 @@ pub(crate) struct Found<'a> {
     pub(crate) links: Option<&'a RowLinks>,
 }
 
+/// A number noted while it is read (`Screen::track_pictures`),
+/// which reading it from several threads at once notes alike: `None` is
+/// `u64::MAX`, no row's number.
+#[derive(Debug)]
+pub(crate) struct Noted(AtomicU64);
+
+impl Noted {
+    /// None noted.
+    pub(crate) const fn none() -> Self {
+        Self(AtomicU64::new(u64::MAX))
+    }
+    pub(crate) fn get(&self) -> Option<u64> {
+        Some(self.0.load(Ordering::Relaxed)).filter(|n| *n != u64::MAX)
+    }
+    pub(crate) fn set(&self, n: Option<u64>) {
+        self.0.store(n.unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+}
+
+/// None noted.
+impl Default for Noted {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl Clone for Noted {
+    fn clone(&self) -> Self {
+        Self(AtomicU64::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct History {
     /// The rows, oldest first.
@@ -227,6 +260,9 @@ pub(crate) struct History {
     room: usize,
     /// The newest version of a row let go past the budget.
     pub(crate) let_go: u64,
+    /// The number of the row to come next when the screen's pictures
+    /// were last followed into history (`Screen::track_pictures`).
+    followed: Noted,
 }
 
 impl History {
@@ -249,6 +285,10 @@ impl History {
     }
     pub(crate) fn len(&self) -> usize {
         self.rows.len()
+    }
+    /// Where the screen's pictures were last followed to.
+    pub(crate) fn followed(&self) -> &Noted {
+        &self.followed
     }
     pub(crate) fn budget(&self) -> usize {
         self.budget
@@ -337,6 +377,7 @@ impl History {
     pub(crate) fn set_budget(&mut self, budget: usize) {
         let mut fresh = Self::new(budget);
         (fresh.first_row, fresh.let_go) = (self.first_row, self.let_go);
+        fresh.followed = self.followed.clone();
         fresh.charge(self.charged);
         if fresh.take(self).is_ok() {
             *self = fresh;

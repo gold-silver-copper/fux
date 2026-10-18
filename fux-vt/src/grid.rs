@@ -667,6 +667,11 @@ impl Grid {
         );
         row.and_then(|row| row.checked_add(self.history.len()))
     }
+    /// Where the screen's pictures were last followed into history to
+    /// (`Screen::track_pictures`).
+    pub(crate) fn followed(&self) -> &crate::history::Noted {
+        self.history.followed()
+    }
     /// The numbers, in the order rows came into history, of the oldest row
     /// it keeps and of the next to come.
     pub(crate) fn history_numbers(&self) -> (u64, u64) {
