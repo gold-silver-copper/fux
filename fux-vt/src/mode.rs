@@ -129,6 +129,11 @@ modes! {
         BackarrowSendsBackspace (true, 67) => Kind::Flag,
         /// DECLRMM (`CSI ? 69 h`): DECSLRM sets left and right margins.
         LeftRightMargins (true, 69) [soft] => Kind::Margins,
+        /// DECSDM (`CSI ? 80 h`), Sixel Display Mode (ctlseqs: "Enable
+        /// Sixel Display Mode", "Turns on 'Sixel Scrolling'" when reset):
+        /// a picture goes at the top left, scrolls nothing and moves no
+        /// cursor, as xterm 411 has it. DEC STD 070 does not define it.
+        SixelDisplay (true, 80) => Kind::Flag,
         /// Mouse mode 1000: presses and releases.
         MousePressRelease (true, 1000) => Kind::Mouse(MouseProtocolMode::PressRelease),
         /// Mouse mode 1002: also motion while a button is down.

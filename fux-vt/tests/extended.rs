@@ -1251,3 +1251,31 @@ fn a_picture_whose_top_scrolled_off_shows_what_is_left() -> Result {
     assert_eq!(shown, [(-5, 11)]);
     Ok(())
 }
+
+/// DECSDM (`CSI ? 80 h`; ctlseqs, "Enable Sixel Display Mode", VT330 and
+/// VT340; DEC STD 070 does not define it): set, a picture goes at the top
+/// left of the screen, scrolls nothing, its rows past the bottom clipped,
+/// and the cursor stays where it was, as xterm 411 places it; reset, the
+/// default, it goes at the cursor and scrolls ("Sixel Scrolling").
+#[test]
+fn decsdm_places_a_picture_at_the_top_left_without_scrolling() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // 8 pixels wide and 84 high: 2 cells by 11, taller than the screen.
+    let bands: String = std::iter::repeat_n("!8~-", 13).collect();
+    let sixel = format!("\x1b[?80h\x1b[4;5Hx\x1bPq\"1;1#1;2;100;0;0{bands}!8~\x1b\\");
+    p.process(sixel.as_bytes())?;
+    let shown: Vec<_> = p
+        .screen()
+        .pictures()
+        .map(|s| (s.row, s.col, s.cols, s.rows))
+        .collect();
+    assert_eq!(shown, [(0, 0, 2, 6)]);
+    assert_eq!(p.screen().cursor_position(), (3, 5));
+    assert_eq!(p.screen().history_len(), 0);
+    assert!(p.screen().mode(fux_vt::Mode::SixelDisplay));
+    Ok(())
+}

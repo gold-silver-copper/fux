@@ -6,7 +6,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 67 | 1 | 3 | 3 | 88 | 162 |
 | DEC STD 070 | 87 | 4 | 2 | 22 | 25 | 140 |
-| ctlseqs | 107 | 15 | 2 | 29 | 92 | 245 |
+| ctlseqs | 107 | 16 | 2 | 28 | 92 | 245 |
 | fux-vt | 41 | 1 | 0 | 5 | 3 | 50 |
 
 ## ECMA-48
@@ -510,7 +510,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | OSC Ps ; Pt ST | OSC Ps ; Pt ST (Set Text Parameters, xterm.) | implemented | `opt_in::events_report_titles_icons_bells_and_clipboard_sets` | the commands each option keeps (see the rows below and the README) |
 | PM Pt ST | PM Pt ST (xterm implements no PM functions; Pt is ignored.) | implemented | `conformance::a_control_string_ends_at_esc_backslash_alone`, `semantics::ignored_sequences_cancel_and_recover_without_payload_leakage` | has no effect of its own: xterm implements no PM either |
 | Sixel CSI Ps c | CSI Ps c (Send Device Attributes (Primary DA), DEC graphics terminals, xterm.) | implemented | `extended::graphics_queries_are_answered_from_the_host` | says sixel (4) while the host shows it, with `Feature::Pictures` |
-| Sixel CSI ? Pm h | CSI ? Pm h (Set Mode (with corresponding Reset Mode CSI ? Pm l ):) | not implemented |  | sixel display mode (80), private colour registers (1070) and the scrolling choices are not implemented |
+| Sixel CSI ? Pm h | CSI ? Pm h (Set Mode (with corresponding Reset Mode CSI ? Pm l ):) | partial | `extended::decsdm_places_a_picture_at_the_top_left_without_scrolling` | DECSDM (80): a picture at the top left, scrolling nothing, the cursor kept, as xterm 411 does (DEC STD 070 does not define it); private colour registers (1070) and the other scrolling choices are not implemented |
 | Sixel DCS Pa ; Pb ; Ph q Ps..Ps ST | DCS Pa ; Pb ; Ph q Ps..Ps ST (Send SIXEL image, DEC graphics terminals, VT330, VT340, VT382.) | implemented | `extended::a_sixel_picture_holds_its_cells_until_text_covers_them`, `sixel::tests::sixels_decode_and_encode_back` | with `Feature::Pictures` |
 | ReGIS CSI Ps c | CSI Ps c (Send Device Attributes (Primary DA), DEC graphics terminals, xterm.) | implemented | `extended::an_identity_answers_device_attributes_and_version_queries` | DA does not claim ReGIS (3), which fux-vt lacks |
 | ReGIS CSI ? Pm h | CSI ? Pm h (Set Mode, xterm.) | not applicable |  | ReGIS is not implemented |

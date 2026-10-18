@@ -120,10 +120,23 @@ impl Screen {
                 .unwrap_or(u16::MAX)
                 .max(1)
         };
-        let (cols, rows) = (
+        let (cols, mut rows) = (
             cells(picture.width(), cell.0),
             cells(picture.height(), cell.1),
         );
+        // DECSDM set: at the top left, clipped at the bottom, scrolling
+        // nothing, the cursor put back where it was (ctlseqs; xterm 411's
+        // `graphics_sixel.c`).
+        let display = self
+            .mode(crate::Mode::SixelDisplay)
+            .then(|| self.grid().cursor);
+        if display.is_some() {
+            let g = self.grid_mut();
+            (g.cursor.pending_wrap, g.cursor.restored) = (false, false);
+            g.set_row(0);
+            g.set_col(0);
+            rows = rows.min(self.size().rows());
+        }
         let col = self.grid().cursor.col();
         // Clipped at the right margin, or the screen's edge past it (DEC STD
         // 070-9, 11.2.2: sixels "printed past the right margin are not
@@ -138,7 +151,10 @@ impl Screen {
         let placeholder = PLACEHOLDER.chars().next().unwrap_or(' ');
         let span = (col, col.saturating_add(across));
         for row in 0..rows {
-            if row > 0 {
+            if row > 0 && display.is_some() {
+                let g = self.grid_mut();
+                g.set_row(g.cursor.row().saturating_add(1));
+            } else if row > 0 {
                 self.linefeed()?;
             }
             self.grid_mut().set_col(col);
@@ -162,10 +178,14 @@ impl Screen {
         // was.
         let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
         let down = u16::try_from(down).unwrap_or(u16::MAX);
-        for _ in 0..down.saturating_sub(rows.saturating_sub(1)).min(8) {
-            self.linefeed()?;
+        if let Some(cursor) = display {
+            self.grid_mut().cursor = cursor;
+        } else {
+            for _ in 0..down.saturating_sub(rows.saturating_sub(1)).min(8) {
+                self.linefeed()?;
+            }
+            self.grid_mut().set_col(col);
         }
-        self.grid_mut().set_col(col);
         let alternate = self.alternate_active;
         self.picture_ids = self.picture_ids.wrapping_add(1);
         self.pictures.push_back(Placement {
