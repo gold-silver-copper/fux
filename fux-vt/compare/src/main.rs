@@ -50,7 +50,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                                [--no-reflow]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
                              [--newline-before-resize] [--subject NAME] STEP...
-       fux-vt-compare bench [--engines LIST] [--mb N] [WORKLOAD...]
+       fux-vt-compare bench [--engines LIST] [--mb N] [--json FILE] [WORKLOAD...]
        fux-vt-compare bench --instructions [--engines LIST] [--mb N] [--repeats N] [--jobs N]
                             [--json FILE] [WORKLOAD...]
        fux-vt-compare footprint [--engines LIST] [--jobs N] [--json FILE]
@@ -1217,6 +1217,12 @@ fn main() -> ExitCode {
             args.repeats,
             args.jobs
                 .unwrap_or_else(|| half_the_cores().saturating_mul(2)),
+            args.json.as_deref(),
+        ),
+        "bench" if args.json.is_some() => bench::run_to(
+            &panel(&args, "all")?,
+            &args.rest,
+            args.mb,
             args.json.as_deref(),
         ),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),

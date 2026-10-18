@@ -29,6 +29,18 @@ out=${FUX_HARNESS_OUT:-$here/target/harness}
 # Where cargo builds them: CARGO_TARGET_DIR if set, as run.sh builds.
 compare=${CARGO_TARGET_DIR:-$here/target}/release/fux-vt-compare
 bench=${CARGO_TARGET_DIR:-$root/bench/target}/release/fux-bench
+# The perf the instruction counts use (bench/src/count.rs): the one on
+# PATH, else the extracted package this machine keeps, if any.
+if [[ -z ${FUX_PERF:-} ]] && ! command -v perf >/dev/null; then
+  for p in "$HOME/.cache/claude-tmp/perfpkg/x/usr/bin/perf"; do
+    [[ -x $p ]] && export FUX_PERF=$p
+  done
+fi
+# The A/A floors `fux-bench --against` judges each workload by: the
+# calibration FUX_BENCH_FLOORS names, else the one committed beside this
+# script (floors.json), else the bench's own.
+floors=${FUX_BENCH_FLOORS:-}
+[[ -z $floors && -f $here/floors.json ]] && floors=$here/floors.json
 mkdir -p "$out/logs" "$out/status"
 
 # The last commit that changed the paths given (along the first parents,
@@ -149,7 +161,7 @@ full() {
   build_bench
   # Nine repeats, not the bench's five: on a busy machine five left a
   # workload's spread above the 3% it judges at.
-  step against "$bench" --against "${against:-master}" ${jobs:+--jobs "$jobs"} --repeats 9 \
+  step against "$bench" --against "${against:-master}" ${jobs:+--jobs "$jobs"} ${floors:+--floors "$floors"} --repeats 9 \
     --json "$out/against.json"
   # Each engine's memory, and its instructions per byte beside Ghostty's:
   # every measure a child process of its own. About 5 s and 45-60 s.
