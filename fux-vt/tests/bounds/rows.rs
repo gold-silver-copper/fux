@@ -21,12 +21,6 @@ pub type Row = fn(Scale, usize) -> Found;
 /// The most pixels a picture may have (`sixel.rs`, `MAX_PIXELS`).
 const MAX_PIXELS: u64 = 4096 * 2160;
 
-/// A row whose code or API is still to come: it fails, saying what it
-/// waits on.
-fn waits(on: &str) -> Found {
-    Err(format!("waits on {on}"))
-}
-
 /// Feeds `setup` `input`, held to `bound` for `copies` copies, and then
 /// `after`'s checks.
 fn fed(
@@ -1368,9 +1362,131 @@ fn refusing(n: u32) -> Result<Parser, String> {
     Ok(parser)
 }
 
-// B45: each encoded key or mouse event is at most 64 bytes.
+// B45: each encoded key or mouse event is at most 64 bytes: every key with
+// every modifier, a kitty report of the largest code points with every
+// modifier bit, in every key mode; every mouse event at the edges of each
+// encoding's positions, in every mode and encoding.
 pub fn b45(_: Scale, _: usize) -> Found {
-    waits("each encoder's exact maximum, stated from encode.rs and mouse.rs (KEY-4)")
+    use fux_vt::keys::encode::{KeyMode, OtherKeys, Report, key_bytes};
+    use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, mouse_bytes};
+    use fux_vt::keys::{Direction, Function, Key, KeyPress, Keystroke, Kitty, Modifiers};
+    use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
+    let all_mods = || {
+        (0..8u8).map(|bits| Modifiers {
+            shift: bits & 1 != 0,
+            alt: bits & 2 != 0,
+            ctrl: bits & 4 != 0,
+        })
+    };
+    let mut keys: Vec<Key> = ['a', 'A', ' ', '\u{7f}', '\u{80}', 'é', '一', '\u{10ffff}']
+        .into_iter()
+        .map(Key::Char)
+        .collect();
+    keys.extend([
+        Key::Enter,
+        Key::Tab,
+        Key::Escape,
+        Key::Backspace,
+        Key::Delete,
+        Key::Insert,
+        Key::Home,
+        Key::End,
+        Key::PageUp,
+        Key::PageDown,
+    ]);
+    keys.extend(Direction::ALL.map(Key::Arrow));
+    keys.extend((1..=Function::LAST).filter_map(Function::new).map(Key::F));
+    let mut modes = Vec::new();
+    for (application, backarrow) in [(false, false), (false, true), (true, false), (true, true)] {
+        for other_keys in [
+            None,
+            Some(OtherKeys::Usual),
+            Some(OtherKeys::All),
+            Some(OtherKeys::Unmodified),
+        ] {
+            modes.push(KeyMode::Legacy {
+                application,
+                other_keys,
+                backarrow,
+            });
+        }
+        for report in [
+            Report::Disambiguated,
+            Report::AllKeys,
+            Report::AllKeysWithText,
+        ] {
+            modes.push(KeyMode::Kitty {
+                alternate: application,
+                report,
+                backarrow,
+            });
+        }
+    }
+    let big = Kitty {
+        code: Some(0x10_ffff),
+        shifted: Some(0x10_ffff),
+        base: Some(0x10_ffff),
+        mods: u8::MAX,
+    };
+    let (mut longest, mut out) = (0usize, Vec::new());
+    for &key in &keys {
+        for mods in all_mods() {
+            for kitty in [None, Some(big)] {
+                let stroke = Keystroke {
+                    press: KeyPress::new(key, mods),
+                    kitty,
+                };
+                for &mode in &modes {
+                    out.clear();
+                    key_bytes(stroke, mode, &mut out);
+                    longest = longest.max(out.len());
+                }
+            }
+        }
+    }
+    let keyed = longest;
+    let mut actions: Vec<MouseAction> = MouseButton::ALL.map(MouseAction::Press).to_vec();
+    actions.push(MouseAction::Release(None));
+    actions.push(MouseAction::Motion(None));
+    actions.extend(MouseButton::ALL.map(|b| MouseAction::Release(Some(b))));
+    actions.extend(MouseButton::ALL.map(|b| MouseAction::Motion(Some(b))));
+    let edges = [0u16, 222, 223, 2014, 2015, u16::MAX];
+    for &action in &actions {
+        for mods in all_mods() {
+            for &row in &edges {
+                for &col in &edges {
+                    let event = MouseEvent {
+                        action,
+                        mods,
+                        row,
+                        col,
+                    };
+                    for mode in [
+                        MouseProtocolMode::Press,
+                        MouseProtocolMode::PressRelease,
+                        MouseProtocolMode::ButtonMotion,
+                        MouseProtocolMode::AnyMotion,
+                    ] {
+                        for encoding in [
+                            MouseProtocolEncoding::Default,
+                            MouseProtocolEncoding::Utf8,
+                            MouseProtocolEncoding::Sgr,
+                        ] {
+                            out.clear();
+                            mouse_bytes(event, mode, encoding, &mut out);
+                            longest = longest.max(out.len());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if longest > 64 {
+        return Err(format!(
+            "an encoding of {longest} bytes (keys at most {keyed}), past 64"
+        ));
+    }
+    Ok(())
 }
 
 /// Every row, by its name in `threats.md`.

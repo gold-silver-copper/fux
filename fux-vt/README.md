@@ -135,7 +135,13 @@ decoded, and what a program asked for, encoded. It needs no option.
   lone Escape is a key once
   `ESCAPE_DELAY` (35 ms) passes without more, which the host learns from
   `Decoder::deadline` and tells with `Decoder::timeout`. Every buffer is
-  bounded.
+  bounded (threats.md B23 to B27): a paste keeps at most its limit and 5
+  bytes, however many come in one read; an unfinished sequence at most
+  258 bytes, a long read giving it only what decides it; an answer past
+  its window (OSC 128, DCS 256, `CSI ?` 64 and then 256) is dropped to its
+  end, none of it typed, however it is split; the output is at most one
+  `Input` a byte. Each encoded key or mouse event is at most 64 bytes
+  (B45; 30 measured over every key, modifier, mode and encoding).
 
 **Encoding** reads what the program asked for from its screen:
 
