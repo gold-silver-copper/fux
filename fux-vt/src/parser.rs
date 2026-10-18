@@ -1526,6 +1526,7 @@ impl Parser {
             let held = control.is_some_and(in_command_string);
             let kept = run.saturating_add(usize::from(held));
             let kept = kept.min(room.saturating_sub(self.osc.len()));
+            self.osc_room(kept);
             self.osc
                 .extend_from_slice(rest.get(..kept).unwrap_or_default());
             length = length.saturating_add(run);
@@ -1539,6 +1540,33 @@ impl Parser {
         };
         self.osc.truncate(self.osc_limit);
         length
+    }
+
+    /// Room in the OSC buffer for `more` bytes: grown by doubling, as a
+    /// `Vec` grows, up to 16 KiB, then at once to what a string keeps,
+    /// `OSC_PAYLOAD_LIMIT` and the byte that marks it overflowed. So the
+    /// buffer never holds more than that, nor more than that and 16 KiB
+    /// while it grows (threats.md B20): doubling alone left room for
+    /// 98,304 bytes, kept for good, and 98,304 live as it grew.
+    #[inline]
+    fn osc_room(&mut self, more: usize) {
+        let need = self.osc.len().saturating_add(more);
+        if need > self.osc.capacity() {
+            self.grow_osc(need);
+        }
+    }
+    /// `osc_room`'s growth to room for `need` bytes, out of the way of the
+    /// bytes that fit.
+    #[cold]
+    #[inline(never)]
+    fn grow_osc(&mut self, need: usize) {
+        const DOUBLING: usize = 16 << 10;
+        let doubled = need.max(self.osc.capacity().saturating_mul(2));
+        let room = match doubled > DOUBLING {
+            true => OSC_PAYLOAD_LIMIT.saturating_add(1),
+            false => doubled,
+        };
+        self.osc.reserve_exact(room.saturating_sub(self.osc.len()));
     }
 
     fn ground(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
@@ -1668,6 +1696,7 @@ impl Parser {
                 // A string's data leaves it a string: it returns at once.
                 _ if !whole || !in_command_string(byte) => return None,
                 _ if self.osc.len() < self.osc_limit => {
+                    self.osc_room(1);
                     self.osc.push(byte);
                     return None;
                 }
