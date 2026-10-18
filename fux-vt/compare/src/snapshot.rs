@@ -444,6 +444,33 @@ impl Field {
 /// A mode, by name, what it is, and how to read it.
 type Mode = (&'static str, Field, fn(&Snapshot) -> bool);
 
+/// The modes compared as flags, by the name a difference in one has.
+fn flags() -> [Mode; 11] {
+    [
+        ("pending wrap", Field::PendingWrap, |s| s.pending_wrap),
+        ("cursor visible", Field::CursorVisible, |s| s.cursor_visible),
+        ("autowrap", Field::Autowrap, |s| s.autowrap),
+        ("origin mode", Field::Origin, |s| s.origin),
+        ("alternate screen", Field::Alternate, |s| s.alternate),
+        ("application cursor", Field::ApplicationCursor, |s| {
+            s.application_cursor
+        }),
+        ("application keypad", Field::ApplicationKeypad, |s| {
+            s.application_keypad
+        }),
+        ("bracketed paste", Field::BracketedPaste, |s| {
+            s.bracketed_paste
+        }),
+        ("focus reporting", Field::FocusReporting, |s| {
+            s.focus_reporting
+        }),
+        ("synchronized output", Field::SynchronizedOutput, |s| {
+            s.synchronized_output
+        }),
+        ("in-band resize", Field::InBandResize, |s| s.in_band_resize),
+    ]
+}
+
 /// One difference: where (`key`, the same for every engine), what it is
 /// about, and the two values.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -509,29 +536,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         format!("{:?}", fux.cursor),
         format!("{:?}", other.cursor),
     );
-    let flags: [Mode; 11] = [
-        ("pending wrap", Field::PendingWrap, |s| s.pending_wrap),
-        ("cursor visible", Field::CursorVisible, |s| s.cursor_visible),
-        ("autowrap", Field::Autowrap, |s| s.autowrap),
-        ("origin mode", Field::Origin, |s| s.origin),
-        ("alternate screen", Field::Alternate, |s| s.alternate),
-        ("application cursor", Field::ApplicationCursor, |s| {
-            s.application_cursor
-        }),
-        ("application keypad", Field::ApplicationKeypad, |s| {
-            s.application_keypad
-        }),
-        ("bracketed paste", Field::BracketedPaste, |s| {
-            s.bracketed_paste
-        }),
-        ("focus reporting", Field::FocusReporting, |s| {
-            s.focus_reporting
-        }),
-        ("synchronized output", Field::SynchronizedOutput, |s| {
-            s.synchronized_output
-        }),
-        ("in-band resize", Field::InBandResize, |s| s.in_band_resize),
-    ];
+    let flags = flags();
     for (name, f, get) in flags {
         field(name.into(), f, get(fux).to_string(), get(other).to_string());
     }
@@ -680,6 +685,82 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
     out
 }
 
+/// The value of the field `key` names in `s`, as [`differences`] shows
+/// it, so an expected value is written as a difference would show it:
+/// `size`, `cursor`, a mode by its name (`pending wrap`, `autowrap`, …),
+/// `kitty keyboard flags`, `title`, `reports`, `row Y` (its text, as
+/// [`Line::text`] gives it), `row Y soft-wrapped`, `row Y starts a prompt`,
+/// and `cell (Y,X) PART` for a part `differences` names; with the field it
+/// is about. None for a key it does not know or a cell off the screen.
+pub fn read(s: &Snapshot, key: &str) -> Option<(Field, String)> {
+    if let Some((_, field, get)) = flags().into_iter().find(|(name, _, _)| *name == key) {
+        return Some((field, get(s).to_string()));
+    }
+    match key {
+        "size" => return Some((Field::Size, format!("{}x{}", s.rows, s.cols))),
+        "cursor" => return Some((Field::Cursor, format!("{:?}", s.cursor))),
+        "kitty keyboard flags" => {
+            return Some((Field::Kitty, s.kitty_keyboard_flags.to_string()));
+        }
+        "title" => return Some((Field::Title, format!("{:?}", s.title))),
+        "reports" => return Some((Field::Reports, format!("{:?}", s.reports))),
+        _ => {}
+    }
+    if let Some(rest) = key.strip_prefix("row ") {
+        let (y, part) = rest.split_once(' ').unwrap_or((rest, ""));
+        let line = s.screen.get(y.parse::<usize>().ok()?)?;
+        return match part {
+            "" => Some((Field::Text, line.text())),
+            "soft-wrapped" => Some((Field::Wrapped, line.wrapped.to_string())),
+            "starts a prompt" => Some((Field::Prompt, line.prompt.to_string())),
+            _ => None,
+        };
+    }
+    let (at, part) = key.strip_prefix("cell (")?.split_once(") ")?;
+    let (y, x) = at.split_once(',')?;
+    let cell = s
+        .screen
+        .get(y.parse::<usize>().ok()?)?
+        .cells
+        .get(x.parse::<usize>().ok()?)?;
+    let st = &cell.style;
+    Some(match part {
+        "text" => (Field::Text, format!("{:?}", cell.text)),
+        "width" => (Field::Width, format!("{:?}", cell.width)),
+        "link" => (
+            Field::LinkUri,
+            format!("{:?}", cell.link.as_ref().map(|l| &l.uri)),
+        ),
+        "fg" => (Field::Fg, format!("{:?}", st.fg)),
+        "bg" => (Field::Bg, format!("{:?}", st.bg)),
+        "underline colour" => (Field::UnderlineColor, format!("{:?}", st.underline_color)),
+        "bold" => (Field::Bold, st.bold.to_string()),
+        "dim" => (Field::Dim, st.dim.to_string()),
+        "italic" => (Field::Italic, st.italic.to_string()),
+        "underline" => (Field::Underline, st.underline.to_string()),
+        "blink" => (Field::Blink, st.blink.to_string()),
+        "inverse" => (Field::Inverse, st.inverse.to_string()),
+        "hidden" => (Field::Hidden, st.hidden.to_string()),
+        "strikeout" => (Field::Strikeout, st.strikeout.to_string()),
+        _ => return None,
+    })
+}
+
+/// Whether an expected value for `key` (see [`read`]) settles the field a
+/// difference's `diff_key` names: the same key, or a row's text and the
+/// text of a cell on it.
+pub fn covers(key: &str, diff_key: &str) -> bool {
+    key == diff_key
+        || key.strip_prefix("row ").is_some_and(|y| {
+            !y.contains(' ')
+                && diff_key
+                    .strip_prefix("cell (")
+                    .and_then(|rest| rest.strip_prefix(y))
+                    .and_then(|rest| rest.strip_prefix(','))
+                    .is_some_and(|rest| rest.ends_with(") text"))
+        })
+}
+
 /// Both screens side by side, as text, with the cursor marked and each
 /// soft-wrapped row flagged.
 pub fn side_by_side(fux: &Snapshot, other: &Snapshot, engine: &str) -> String {
@@ -790,6 +871,35 @@ mod tests {
             fields(&fux, &shorter),
             [("cell (0,0) link".to_owned(), Field::LinkUri)]
         );
+    }
+
+    /// A field read by its key has the value a difference in it shows,
+    /// and a row's text covers its cells' text alone.
+    #[test]
+    fn a_field_reads_as_its_difference_shows_it() {
+        let fux = row(&[Some(("u", "1")), None]);
+        let mut other = row(&[None, None]);
+        if let Some(cell) = other.screen.first_mut().and_then(|l| l.cells.first_mut()) {
+            cell.text = "y".into();
+            cell.style.bold = true;
+        }
+        other.cursor = (0, 1);
+        other.pending_wrap = true;
+        for diff in super::differences(&fux, &other) {
+            let read = |s: &Snapshot| super::read(s, &diff.key);
+            assert_eq!(read(&fux), Some((diff.field, diff.fux)), "{}", diff.key);
+            assert_eq!(read(&other), Some((diff.field, diff.other)), "{}", diff.key);
+        }
+        assert_eq!(
+            super::read(&other, "row 0"),
+            Some((Field::Text, "yx".to_owned()))
+        );
+        assert_eq!(super::read(&other, "cell (0,2) text"), None);
+        assert_eq!(super::read(&other, "row 0 colour"), None);
+        assert!(super::covers("row 0", "cell (0,1) text"));
+        assert!(!super::covers("row 0", "cell (0,1) bold"));
+        assert!(!super::covers("row 1", "cell (10,1) text"));
+        assert!(!super::covers("row 0 soft-wrapped", "cell (0,1) text"));
     }
 
     #[test]

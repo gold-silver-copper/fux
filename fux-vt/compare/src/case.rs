@@ -175,6 +175,66 @@ fn blank(snapshot: &Snapshot, y: usize, x: usize) -> bool {
         .is_some_and(snapshot::Cell::is_blank)
 }
 
+/// Where the subject fails the named case `name` of the family at
+/// `family`, judged at a step from `subject`, the snapshot of the engine
+/// `subject_engine`, and the panel's `verdicts`; empty if it passes.
+///
+/// In a family a standard decides, the case's expected fields
+/// ([`cases::EXPECTED`]) judge what the section settles: each one the
+/// subject can tell must have its expected value, whatever the engines
+/// do. The deciding engines (`by`) judge the rest, by their vote, so an
+/// engine that departs from the section never outvotes it, and with no
+/// deciders the section alone judges. A family xterm decides is judged by
+/// its deciders' vote, and any other by the whole panel's. An error if a
+/// case of a family a standard decides has no expected fields, or one
+/// names a field no snapshot has.
+///
+/// [`cases::EXPECTED`]: crate::cases::EXPECTED
+pub fn judged(
+    family: usize,
+    name: &str,
+    subject_engine: usize,
+    subject: &Snapshot,
+    verdicts: &[Verdict],
+) -> Result<Vec<String>, String> {
+    let Some(families::Status::Decided { by, authority, .. }) =
+        FAMILIES.get(family).map(|f| f.status)
+    else {
+        return Ok(outvoted_on(verdicts));
+    };
+    let deciders: Vec<Verdict> = verdicts
+        .iter()
+        .filter(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
+        .cloned()
+        .collect();
+    let mut out = Vec::new();
+    let mut settled: &[(&str, &str)] = &[];
+    if let families::Authority::Standard { .. } = authority {
+        let expected = crate::cases::expected(name).ok_or(format!(
+            "{name}: its family's section decides, and it has no expected fields"
+        ))?;
+        let can = engine::kind(subject_engine).map_or(engine::Can::ALL, |k| k.can);
+        for &(key, value) in expected.fields {
+            let (field, got) =
+                snapshot::read(subject, key).ok_or(format!("{name}: no field {key:?}"))?;
+            if field.told_by(&can) && got != value {
+                out.push(format!(
+                    "{key}: {} gives {value:?}, {} {got:?}",
+                    expected.section,
+                    engine::name(subject_engine)
+                ));
+            }
+        }
+        settled = expected.fields;
+    }
+    out.extend(
+        outvoted_on(&deciders)
+            .into_iter()
+            .filter(|key| !settled.iter().any(|(k, _)| snapshot::covers(k, key))),
+    );
+    Ok(out)
+}
+
 fn outvoted(verdicts: &[Verdict]) -> bool {
     !outvoted_on(verdicts).is_empty()
 }
@@ -812,6 +872,95 @@ mod tests {
             outvoted_on(&panel(&no_fg, screen("", PEN, false))?),
             ["cell (0,0) fg"]
         );
+        Ok(())
+    }
+
+    /// A screen of plain text rows, `cols` wide, with the cursor at `at`
+    /// and a wrap pending or not.
+    fn text(rows: &[&str], cols: usize, at: (u16, u16), pending_wrap: bool) -> Snapshot {
+        let screen = rows
+            .iter()
+            .map(|row| {
+                let mut cells: Vec<Cell> = row
+                    .chars()
+                    .map(|c| Cell::new(&c.to_string(), Width::Narrow, Style::default()))
+                    .collect();
+                cells.resize(cols, Cell::new("", Width::Narrow, Style::default()));
+                Line {
+                    cells,
+                    wrapped: false,
+                    prompt: false,
+                    unread_from: None,
+                }
+            })
+            .collect();
+        Snapshot {
+            rows: u16::try_from(rows.len()).unwrap_or(0),
+            cols: u16::try_from(cols).unwrap_or(0),
+            cursor: at,
+            pending_wrap,
+            autowrap: true,
+            cursor_visible: true,
+            screen,
+            ..Snapshot::default()
+        }
+    }
+
+    /// In a family a standard decides, the section's expected fields judge
+    /// what it settles and the deciders the rest: xterm keeping a wrap
+    /// pending through ED (the standard: ED ends it, and the next glyph
+    /// sets it again in the last column) outvotes no one, while fux-vt
+    /// departing from the section fails whatever xterm does, and xterm
+    /// still decides a field the section leaves open. Under the rule
+    /// before (`cases`: xterm's vote alone), the first passed only if
+    /// xterm agreed. A family no engine follows (`pending-wrap`) is judged
+    /// by its section with no engine beside it.
+    #[test]
+    fn a_decided_family_is_judged_by_its_section_before_its_deciders() -> Result<(), String> {
+        let xterm = engine::find("xterm").ok_or("no xterm")?;
+        let erase = crate::families::find("erase").ok_or("no erase family")?;
+        let name = "ed-ends-a-pending-wrap";
+        let follows = text(&["abcdX", ""], 5, (0, 4), true);
+        let verdict = |fux: &Snapshot, other: Snapshot| Verdict {
+            engine: xterm,
+            differences: snapshot::differences(fux, &other),
+            snapshot: other,
+        };
+        let departs = verdict(&follows, text(&["abcdX", ""], 5, (0, 4), false));
+        let judged = |fux: &Snapshot, verdicts: &[Verdict]| {
+            super::judged(erase, name, FUX_VT, fux, verdicts)
+        };
+        assert_eq!(
+            judged(&follows, std::slice::from_ref(&departs))?,
+            Vec::<String>::new()
+        );
+        let reverted = text(&["abcdX", ""], 5, (0, 4), false);
+        let agrees = verdict(&reverted, reverted.clone());
+        let failures = judged(&reverted, &[agrees])?;
+        assert_eq!(failures.len(), 1);
+        assert!(
+            failures
+                .iter()
+                .all(|f| f.starts_with("pending wrap: DEC STD 070"))
+        );
+        let mut bold = follows.clone();
+        if let Some(cell) = bold.screen.first_mut().and_then(|l| l.cells.first_mut()) {
+            cell.style.bold = true;
+        }
+        assert_eq!(
+            judged(&follows, &[verdict(&follows, bold)])?,
+            ["cell (0,0) bold"]
+        );
+        let wrap = crate::families::find("pending-wrap").ok_or("no pending-wrap family")?;
+        let el = "el-while-wrap-pending";
+        let erased = text(&["abcd"], 5, (0, 4), false);
+        assert_eq!(
+            super::judged(wrap, el, FUX_VT, &erased, &[])?,
+            Vec::<String>::new()
+        );
+        let kept = text(&["abcde"], 5, (0, 4), true);
+        assert_eq!(super::judged(wrap, el, FUX_VT, &kept, &[])?.len(), 2);
+        assert!(super::judged(wrap, "no-such-case", FUX_VT, &erased, &[]).is_err());
         Ok(())
     }
 

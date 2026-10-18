@@ -304,14 +304,23 @@ The random cases come from families of sequences (`src/families.rs`).
   `by` is empty where no engine follows the standard all through (on
   screens of one or two columns xterm departs from DEC STD 070), and the
   test is then the check. `verdicts` runs a standard's test alone (`cargo
-  test --exact`), for every family it decides, and the test must pass. A
-  family xterm decides is checked by xterm agreeing. One whose check
-  can't be made (the test missing, citing something else or failing,
-  xterm not among `by` or not run) fails. The default
-  panel's majority is often the side the source decides against, so
-  `run` leaves these out. `verdicts` runs each family's named cases, then
-  random cases from it, beside `by`. `cases` fails a named case of a
-  decided family where those engines outvote fux-vt.
+  test --exact`), for every family it decides, and the test must pass.
+  Each named case of such a family has its expected fields
+  (`cases::EXPECTED`): what the section settles, by the key a difference
+  names (`row 0`, `cursor`, `pending wrap`, `cell (0,1) bold`), with the
+  section, its edition and the quoted passage the values were derived
+  from by hand. They judge those fields whatever the engines do, and `by`
+  judges only the rest, so an engine that departs from the section never
+  outvotes it, and a family with no engine beside it is still compared.
+  A family xterm decides is checked by xterm agreeing. One whose check
+  can't be made (the test missing, citing something else or failing, a
+  case without its expected fields, xterm not among `by` or not run)
+  fails. The default panel's majority is often the side the source
+  decides against, so `run` leaves these out. `verdicts` runs each
+  family's named cases, then random cases from it, beside `by` (the named
+  cases alone where `by` is empty). `cases` fails a named case of a
+  decided family where it departs from its expected fields, or those
+  engines outvote fux-vt on the rest.
 - **Differs** (`Status::Differs`): the panel splits on a documented fux-vt
   choice, or on something the engines agree on for reasons of their own,
   or fux-vt has a defect still to fix. The reason says which.

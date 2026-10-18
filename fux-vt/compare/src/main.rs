@@ -714,17 +714,18 @@ fn cases(args: &Args) -> Result<bool, String> {
                 [] => format!("{authority} decides"),
                 _ => format!("{authority} decides, beside {}", by.join(", ")),
             };
-            // Checked by the standard's cited test, or by xterm agreeing; a
-            // family with neither check fails.
-            let checked = match (authority, deciders_agree(&outcome.verdicts, by)) {
-                (_, Some(false)) => Ok(false),
-                (Authority::Xterm, None) => Err("xterm did not run".to_owned()),
-                (Authority::Standard { .. } | Authority::Xterm, Some(true) | None) => {
-                    authority.check(by).map(|()| true)
+            // Judged by the section's expected fields and the deciders'
+            // vote on the rest; a family xterm decides needs xterm to run,
+            // and one a standard decides its cited test.
+            let checked = authority.check(by).and_then(|()| {
+                if authority == Authority::Xterm && !heard(&outcome.verdicts, by) {
+                    Err("xterm did not run".to_owned())
+                } else {
+                    case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)
                 }
-            };
+            });
             match checked {
-                Ok(true) => {
+                Ok(failures) if failures.is_empty() => {
                     agree = agree.saturating_add(1);
                     println!("ok       {name} (family {family}: {deciders})   {marks}");
                 }
@@ -733,12 +734,16 @@ fn cases(args: &Args) -> Result<bool, String> {
                     differ = differ.saturating_add(1);
                     println!("FAIL     {name} (family {family}: {deciders}): unchecked, {why}");
                 }
-                Ok(false) => {
+                Ok(failures) => {
                     ok = false;
                     differ = differ.saturating_add(1);
                     println!(
-                        "FAIL     {name} (family {family}: {deciders}, against fux-vt)   {marks}"
+                        "FAIL     {name} (family {family}: {deciders}, against fux-vt) on {}   {marks}",
+                        failures.join("; ")
                     );
+                    if let Some(e) = cases::expected(name) {
+                        println!("  {}: \"{}\"", e.section, e.quote);
+                    }
                     print!("{}", case::report(&case, &panel, &outcome));
                 }
             }
@@ -772,33 +777,11 @@ fn cases(args: &Args) -> Result<bool, String> {
     Ok(ok)
 }
 
-/// Whether the engines named in `by` agree with the subject in
-/// `verdicts`, by their vote alone (one engine alone outvotes the subject
-/// wherever it differs); none if none of them ran or all abstained.
-fn deciders_agree(verdicts: &[case::Verdict], by: &[&str]) -> Option<bool> {
-    let deciders: Vec<case::Verdict> = verdicts
+/// Whether any engine named in `by` gave a verdict.
+fn heard(verdicts: &[case::Verdict], by: &[&str]) -> bool {
+    verdicts
         .iter()
-        .filter(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
-        .cloned()
-        .collect();
-    (!deciders.is_empty()).then(|| case::outvoted_on(&deciders).is_empty())
-}
-
-/// Whether a named case of the family at `index` agrees, at its end, as
-/// `cases` judges it: by the deciding engines in a family with a recorded
-/// verdict, else by the vote. The fields it is outvoted on, empty if none.
-fn outvoted_in(index: usize, verdicts: &[case::Verdict]) -> Vec<String> {
-    match FAMILIES.get(index).map(|f| f.status) {
-        Some(Status::Decided { by, .. }) => {
-            let deciders: Vec<case::Verdict> = verdicts
-                .iter()
-                .filter(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
-                .cloned()
-                .collect();
-            case::outvoted_on(&deciders)
-        }
-        Some(Status::Agree | Status::Differs(_)) | None => case::outvoted_on(verdicts),
-    }
+        .any(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
 }
 
 /// The named cases with another engine as the subject, judged as fux-vt
@@ -831,11 +814,19 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
             Some(Status::Decided { by, .. }) => format!(": {} decide", by.join(", ")),
             _ => String::new(),
         };
-        let on = outvoted_in(named.index, &outcome.verdicts);
-        let fux_on = case::rejudge(subject, &outcome.fux, &outcome.verdicts, FUX_VT).map_or_else(
-            || vec!["fux-vt abstained".to_owned()],
-            |(_, verdicts)| outvoted_in(named.index, &verdicts),
-        );
+        let on = case::judged(
+            named.index,
+            named.name,
+            subject,
+            &outcome.fux,
+            &outcome.verdicts,
+        )?;
+        let fux_on = match case::rejudge(subject, &outcome.fux, &outcome.verdicts, FUX_VT) {
+            Some((base, verdicts)) => {
+                case::judged(named.index, named.name, FUX_VT, &base, &verdicts)?
+            }
+            None => vec!["fux-vt abstained".to_owned()],
+        };
         if fux_on.is_empty() {
             fux_agree = fux_agree.saturating_add(1);
         }
@@ -970,23 +961,20 @@ fn verdicts(args: &Args) -> Result<bool, String> {
             println!("== {}: FAIL, unchecked: {why}", f.name);
             continue;
         }
+        // A standard decides, and no engine follows it all through: its
+        // test and its named cases' expected fields are the check.
+        let alone = matches!(f.status, Status::Decided { by: [], .. }) && args.engines.is_none();
         let panel = match (args.engines.as_deref(), f.status) {
             (Some(list), _) => engines(list)?,
-            // A standard decides, and no engine follows it all through:
-            // its test is the check.
-            (
-                None,
-                Status::Decided {
-                    by: [], authority, ..
-                },
-            ) => {
-                println!("== {} (checked by {authority}, which passes)", f.name);
-                continue;
-            }
+            (None, Status::Decided { by: [], .. }) => Vec::new(),
             (None, Status::Decided { by, .. }) => engines(&by.join(","))?,
             (None, Status::Agree | Status::Differs(_)) => engines("xterm")?,
         };
-        println!("== {} (beside {})", f.name, names(&panel));
+        if alone {
+            println!("== {} (by its section and its test, which passes)", f.name);
+        } else {
+            println!("== {} (beside {})", f.name, names(&panel));
+        }
         for &(name, family, (rows, cols), words) in cases::CASES {
             if family != f.name {
                 continue;
@@ -1005,13 +993,17 @@ fn verdicts(args: &Args) -> Result<bool, String> {
             };
             let outcome = case.run_until(&panel, false)?;
             let marks = marks(&outcome);
-            if outcome.agrees() {
+            let failures = case::judged(i, name, FUX_VT, &outcome.fux, &outcome.verdicts)?;
+            if failures.is_empty() {
                 println!("   ok    {name}   {marks}");
             } else {
                 ok = false;
-                println!("   FAIL  {name}   {marks}");
+                println!("   FAIL  {name} on {}   {marks}", failures.join("; "));
                 print!("{}", case::report(&case, &panel, &outcome));
             }
+        }
+        if alone {
+            continue;
         }
         let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
         let mut r = Rng::new(args.seed);

@@ -18,6 +18,8 @@ pub enum Status {
     /// what the feature's spec says. Left out of a random run, and checked
     /// beside them by `verdicts`, which also runs the standard's test; with
     /// no check, the standard's test passing or xterm agreeing, it fails.
+    /// A standard's family's named cases are judged first by their expected
+    /// fields (`cases::EXPECTED`), and `by` decides only the rest.
     Decided {
         why: &'static str,
         by: &'static [&'static str],
