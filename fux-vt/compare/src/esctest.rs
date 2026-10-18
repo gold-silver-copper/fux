@@ -709,6 +709,9 @@ fn deadline(limit: Duration) -> Instant {
 struct Server {
     dir: PathBuf,
     socket: PathBuf,
+    /// The client's `XDG_CONFIG_HOME`, empty: the user's config is never
+    /// run.
+    config: PathBuf,
     child: Child,
 }
 
@@ -722,9 +725,18 @@ impl Drop for Server {
 
 static SERVERS: AtomicUsize = AtomicUsize::new(0);
 
+/// `text` quoted as a shell word.
+fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// Starts a fux server whose panes run `argv`, in a directory of its own
 /// under `fuxix::file::scratch`, as fux's own tests start one
-/// (`tests/support/mod.rs`); never the user's.
+/// (`tests/support/mod.rs`); never the user's. Its panes run a script that
+/// runs `argv`, given as the server's `SHELL`: `fux __serve SOCKET` takes no
+/// config, and a client's `config.fux` (`str shell … set`) reaches only the
+/// panes made after it runs, never the first, which the server starts as
+/// it starts (`Session::start`), with the default shell.
 fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
     let dir = fuxix::file::scratch()
         .map_err(|e| e.to_string())?
@@ -735,31 +747,40 @@ fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
         ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let quoted: Vec<String> = argv.iter().map(|w| format!("'{w}'")).collect();
-    let config = dir.join("fux.conf");
-    std::fs::write(&config, format!("set shell {}\n", quoted.join(" ")))
-        .map_err(|e| format!("{}: {e}", config.display()))?;
+    let words: Vec<String> = argv.iter().map(|w| quoted(w)).collect();
+    let script = dir.join("pane.sh");
+    std::fs::write(&script, format!("#!/bin/sh\nexec {}\n", words.join(" ")))
+        .map_err(|e| format!("{}: {e}", script.display()))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("{}: {e}", script.display()))?;
+    }
+    // The client's config directory, with no config in it.
+    let config = dir.join("config");
     let socket = dir.join("s").join("fux.sock");
     let log = File::create(dir.join("server.log")).map_err(|e| format!("server.log: {e}"))?;
     let child = {
         let _guard = SPAWN.lock().map_err(|_| "a spawn panicked")?;
         Command::new(fux)
-            .arg("server")
-            .arg("--socket")
+            .arg(fux::SERVE)
             .arg(&socket)
-            .arg("--config")
-            .arg(&config)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &dir)
-            .env("SHELL", "/bin/sh")
+            .env("SHELL", &script)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
             .map_err(|e| format!("starting {}: {e}", fux.display()))?
     };
-    let server = Server { dir, socket, child };
+    let server = Server {
+        dir,
+        socket,
+        config,
+        child,
+    };
     let deadline = deadline(Duration::from_secs(10));
     while std::os::unix::net::UnixStream::connect(&server.socket).is_err() {
         if Instant::now() >= deadline {
@@ -788,7 +809,11 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
         &attach,
         rows,
         COLS,
-        &[("FUX_SOCKET", &server.socket), ("HOME", &server.dir)],
+        &[
+            ("FUX_SOCKET", &server.socket),
+            ("HOME", &server.dir),
+            ("XDG_CONFIG_HOME", &server.config),
+        ],
     )?;
     let deadline = deadline(job.request.limit);
     let ended = || {
@@ -1994,7 +2019,9 @@ fn build_fux() -> Result<PathBuf, String> {
     if !status.success() {
         return Err("building fux failed".into());
     }
-    root.join("target/release/fux")
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), PathBuf::from)
+        .join("release/fux")
         .canonicalize()
         .map_err(|e| format!("fux's binary: {e}"))
 }
