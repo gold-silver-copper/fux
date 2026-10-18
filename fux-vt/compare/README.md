@@ -572,6 +572,8 @@ fux-vt/compare/run.sh esctest --in-fux --xterm   # also in a real fux pane, and 
 fux-vt/compare/run.sh esctest --json FILE --logs DIR
 fux-vt/compare/run.sh esctest --terminal ghostty # Ghostty's core under test
 fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt beside it, test by test
+fux-vt/compare/run.sh esctest --terminal alacritty --unlisted       # any engine in process, scored with no list
+fux-vt/compare/run.sh esctest --tmux             # also in a real tmux, held to no list, as xterm is
 ```
 
 - **Directly** (`src/esctest.rs`): each test is one esctest process on a

@@ -191,6 +191,12 @@ command = "fux-vt-compare esctest --terminal vt100 --unlisted --jobs N --json es
 needs = ["references/xterm/esctest2 at 2798f121", "python3"]
 
 [[check]]
+name = "esctest-tmux"
+schedule = "deep"
+command = "fux-vt-compare esctest --tmux --jobs N --json esctest-tmux.json"
+needs = ["tmux"]
+
+[[check]]
 name = "multiplexers"
 schedule = "deep"
 command = "fux-vt-compare transparency --multiplexers --json multiplexers.json"

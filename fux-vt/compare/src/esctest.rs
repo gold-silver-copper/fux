@@ -93,7 +93,7 @@ const XTERM_REVERSE_WRAP: u32 = 383;
 pub const USAGE: &str = "\
 usage: fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [--xterm]
                               [--jobs N] [--timeout SECONDS] [--limit SECONDS]
-                              [--expected FILE | --unlisted] [--json FILE] [--logs DIR]
+                              [--tmux] [--expected FILE | --unlisted] [--json FILE] [--logs DIR]
                               [--replays] [--show] [FILTER]
 
 Runs esctest2 (references/xterm/esctest2, from references/fetch.sh) against
@@ -102,7 +102,8 @@ Python regular expression a test's name (CLASS.test_name) must contain.
 Results are checked against esctest-expected.txt: exit 1 on a failure not
 listed there, or a test listed that passes. --in-fux also runs every area in
 a pane of a real fux server (building fux), --xterm in a real xterm under Xvfb,
-and each lists where it differs from fux-vt alone. --timeout is esctest's: how
+--tmux in a real tmux (held to no list, as xterm is), and each lists where it
+differs from fux-vt alone. --timeout is esctest's: how
 long a read waits for its reply (default 1); --limit how long a test may run
 (default 60). Every test runs on a terminal made for it alone. --logs keeps
 esctest's logs (TEST.log, TEST.NAME.log, TEST.fux.log, TEST.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
@@ -112,8 +113,9 @@ against another engine in this process (ghostty) instead of fux-vt, checked
 against esctest-expected-NAME.txt; --beside also runs NAME (fux-vt, or an
 engine), checked against its own list, and compares the two: each area's pass
 rates, and the tests one passes and the other fails, with their features.
---unlisted scores the terminal without a list: only a test with no result
-(infrastructure) fails the run, as it does in xterm's column.";
+--unlisted scores the terminal, and the one beside it, without a list: only a
+test with no result (infrastructure) fails the run, as it does in xterm's
+column.";
 
 /// The terminal esctest runs against directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +192,8 @@ struct Request {
     in_fux: bool,
     /// Also run each area in a real xterm, as the reference.
     xterm: bool,
+    /// Also run each area in a real tmux, an engine of its own process.
+    tmux: bool,
     jobs: usize,
     /// esctest's own `--timeout`: how long a read waits for its reply.
     timeout: f64,
@@ -214,6 +218,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
         beside: None,
         in_fux: false,
         xterm: false,
+        tmux: false,
         jobs: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
         timeout: 1.0,
         limit: Duration::from_secs(60),
@@ -237,6 +242,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
         match word.as_str() {
             "--in-fux" => out.in_fux = true,
             "--xterm" => out.xterm = true,
+            "--tmux" => out.tmux = true,
             "--replays" => out.replays = true,
             "--show" => out.show = true,
             "--unlisted" => out.unlisted = true,
@@ -1476,6 +1482,7 @@ enum Place {
     Direct(Subject),
     Fux,
     Xterm,
+    Tmux,
 }
 
 impl Place {
@@ -1488,6 +1495,7 @@ impl Place {
             Place::Direct(subject) => subject.name().into(),
             Place::Fux => "in fux".into(),
             Place::Xterm => "in xterm".into(),
+            Place::Tmux => "in tmux".into(),
         }
     }
     /// Its key in the JSON: the terminal under test's is `direct`, the one
@@ -1498,6 +1506,7 @@ impl Place {
             Place::Direct(subject) => subject.name().replace('-', "_"),
             Place::Fux => "in_fux".into(),
             Place::Xterm => "xterm".into(),
+            Place::Tmux => "tmux".into(),
         }
     }
 }
@@ -1580,7 +1589,12 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     let beside = match request.beside {
         Some(subject) => {
             let path = subject.expected();
-            Some((subject, read_list(&path)?, path))
+            let list = if request.unlisted {
+                BTreeMap::new()
+            } else {
+                read_list(&path)?
+            };
+            Some((subject, list, path))
         }
         None => None,
     };
@@ -1626,6 +1640,9 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     if request.xterm {
         places.push(Place::Xterm);
     }
+    if request.tmux {
+        places.push(Place::Tmux);
+    }
     let mut columns = Vec::new();
     for place in places {
         let at = Instant::now();
@@ -1637,6 +1654,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
             &|area| match (place, &fux) {
                 (Place::Fux, Some(fux)) => in_fux(&job, fux, area, &scratch),
                 (Place::Xterm, _) => in_xterm(&job, area, &scratch),
+                (Place::Tmux, _) => in_tmux(&job, area, &scratch),
                 (Place::Direct(subject), _) => direct(&job, subject, area, &scratch),
                 (Place::Fux, None) => direct(&job, terminal, area, &scratch),
             },
@@ -1684,7 +1702,10 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         {
             // xterm, the reference, is held to no list: only a run that
             // gave no result is a mismatch there.
-            let unlisted = column.place == Place::Xterm || (first && request.unlisted);
+            // So is tmux, an engine without a list, and with --unlisted the
+            // terminals run directly.
+            let unlisted = matches!(column.place, Place::Xterm | Place::Tmux)
+                || (matches!(column.place, Place::Direct(_)) && request.unlisted);
             let in_fux = column.place == Place::Fux;
             let whole = request.filter.is_none();
             let found = mismatches(&flat, list_of(column.place), in_fux, unlisted, whole);
@@ -1731,12 +1752,13 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
             let differ = differences(direct, other);
             // xterm, the reference, passes many tests fux-vt does not
             // implement: they are counted, and listed with --show.
-            if other.place == Place::Xterm && !request.show {
+            if matches!(other.place, Place::Xterm | Place::Tmux) && !request.show {
                 let fails = format!("{} fails", direct.label);
                 let direct_fails = differ.iter().filter(|d| d.contains(&fails)).count();
                 println!(
-                    "in xterm: {direct_fails} tests pass that fail {}, {} the other way \
+                    "{}: {direct_fails} tests pass that fail {}, {} the other way \
                      (--show lists them)",
+                    other.label,
                     direct.label,
                     differ.len().saturating_sub(direct_fails)
                 );
@@ -2169,6 +2191,82 @@ fn source(reason: &str) -> Option<&'static str> {
 /// Real xterm's esctest options: every window operation allowed, as its
 /// resources below set them (README.txt, `xtermWinopsEnabled`).
 const XTERM_OPTIONS: &[&str] = &["xtermWinopsEnabled"];
+
+/// Runs `area` in a real tmux, as the program of a session of 80 by 25 on
+/// a server of its own (its socket in the temporary directory), with no
+/// status line, so
+/// esctest talks to tmux's terminal as a program in a pane does.
+fn in_tmux(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
+    let log = scratch.join(format!("{}.tmux.log", area.stem()));
+    // Named by a count, not by the test: a socket's path has at most 108
+    // bytes, and a test's name alone can be most of that.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let socket = std::env::temp_dir().join(format!("esctest-{}-{n}.tmux", std::process::id()));
+    let config = scratch.join(format!("{}.tmux.conf", area.stem()));
+    std::fs::write(&config, "set -g status off\nset -g window-size manual\n")
+        .map_err(|e| format!("{}: {e}", config.display()))?;
+    let argv = esctest_argv(
+        job.python,
+        job.suite,
+        area,
+        job.request.timeout,
+        &log,
+        None,
+        &[],
+    );
+    // The program as a shell line, each word quoted.
+    let line = argv
+        .iter()
+        .map(|w| format!("'{}'", w.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tmux = |args: &[&str]| {
+        let _guard = SPAWN.lock().map_err(|_| "a spawn panicked".to_owned())?;
+        Command::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .arg("-f")
+            .arg(&config)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("tmux: {e}"))
+    };
+    let (cols, rows) = (COLS.to_string(), ROWS.to_string());
+    let started = tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "esctest",
+        "-x",
+        &cols,
+        "-y",
+        &rows,
+        &line,
+    ])?;
+    if !started.success() {
+        return Err(format!("tmux new-session: {started}"));
+    }
+    let deadline = deadline(job.request.limit);
+    let mut finished = false;
+    while Instant::now() < deadline {
+        if !tmux(&["has-session", "-t", "esctest"])?.success() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = tmux(&["kill-server"]);
+    let _ = std::fs::remove_file(&socket);
+    Ok(Ran {
+        log: std::fs::read_to_string(&log).unwrap_or_default(),
+        stopped: !finished,
+        ..Ran::default()
+    })
+}
 
 /// Runs `area` in a real xterm, under the harness's Xvfb (`engines::xterm`),
 /// set up as esctest's README says: 80 by 25, UTF-8 as fux is, a VT420

@@ -193,7 +193,7 @@ deep() {
   # In a fux pane, in xterm, and on each engine (measured at 4 jobs).
   esctest=0
   local part
-  for part in in-fux:110 xterm:140 alacritty:40 libvterm:45 avt:200 wezterm:50 vt100:105; do
+  for part in in-fux:110 xterm:140 tmux:110 alacritty:40 libvterm:45 avt:200 wezterm:50 vt100:105; do
     esctest=$((esctest + $(last_seconds "esctest-${part%:*}" "${part#*:}")))
   done
   muxes=$(last_seconds multiplexers 500)
@@ -217,6 +217,9 @@ deep() {
   step esctest-xterm "$compare" esctest --xterm ${jobs:+--jobs "$jobs"} --json "$out/esctest-xterm.json"
   # Each engine on the one denominator, scored, with no list of its own.
   local engine
+  # tmux runs as its own process: esctest runs inside a real one.
+  ran+=(esctest-tmux)
+  step esctest-tmux "$compare" esctest --tmux ${jobs:+--jobs "$jobs"} --json "$out/esctest-tmux.json"
   for engine in alacritty libvterm avt wezterm vt100; do
     ran+=("esctest-$engine")
     step "esctest-$engine" "$compare" esctest --terminal "$engine" --unlisted ${jobs:+--jobs "$jobs"} \
