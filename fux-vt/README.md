@@ -422,6 +422,17 @@ fux-vt's work counters and a counting allocator against it.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.
+- **Encoding a picture** (B08): `sixel::encode` reads each pixel of its
+  crop twice and sets each sixel once, whatever its colours, and writes at
+  most 12 bytes a pixel and 6 a colour a band of six rows.
+- **Running out of memory** (B44): what grows with a program's output is
+  asked for so that a refusal can be taken: history's rows, a screen's
+  cells, a picture's pixels. A refusal loses only what it was for, the rest
+  of the input is read, and `Parser::refused` counts it. Everything else
+  fux-vt allocates is bounded by the screen's size and the limits above (a
+  row's text and links, the style table, the OSC buffer, tab stops, the
+  colours, DECCRA's copy of the screen); if the system can't give one of
+  those, the process aborts, as Rust's allocations do.
 
 ## Verification
 
