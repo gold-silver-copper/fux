@@ -216,16 +216,21 @@ fn run_shrunk(
     shrink: usize,
 ) -> Result<Done, String> {
     let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
+    // A census payload needs no recordings: reading them is most of a
+    // light workload's baseline, and of its noise.
+    if let Some(bytes) = name
+        .strip_prefix("vt/")
+        .and_then(|rest| census::make(rest, payloads, size(census::SIZE)))
+    {
+        let load = Load {
+            rows: census::ROWS,
+            cols: census::COLS,
+            bytes: bytes?,
+        };
+        return Ok(vt(&[load], baseline));
+    }
     let recordings = corpus::recordings(dir)?;
     if let Some(rest) = name.strip_prefix("vt/") {
-        if let Some(bytes) = census::make(rest, payloads, size(census::SIZE)) {
-            let load = Load {
-                rows: census::ROWS,
-                cols: census::COLS,
-                bytes: bytes?,
-            };
-            return Ok(vt(&[load], baseline));
-        }
         let loads = loads(rest, &recordings, size(RECORDING), shrink)?;
         return Ok(vt(&loads, baseline));
     }
