@@ -2072,6 +2072,7 @@ mod faults {
             "screen.ids",
             "screen.structural",
             "screen.tabs",
+            "screen.nest",
             "pictures.count",
             "pictures.bytes",
             "pictures.shown",

@@ -486,6 +486,7 @@ impl Screen {
             report.record("screen.ids", "", self.check_ids());
             report.record("screen.structural", "", self.check_structural());
             report.record("screen.tabs", "", self.check_tabs());
+            report.record("screen.nest", "", self.check_nest());
             report.record("pictures.count", "", self.check_picture_count());
             report.record("pictures.bytes", "", self.check_picture_bytes(0));
             report.record("pictures.shown", "", self.check_pictures_shown());
@@ -498,6 +499,16 @@ impl Screen {
             report.wait("grid.uniform", "P19: uniform rows");
             report
         })
+    }
+
+    /// 6a: a shell command is set aside for a nested program's marks only
+    /// while both nonces are required: the shell's, and the nested one its
+    /// programs mark with (threats.md 1.2, REB-4).
+    fn check_nest(&self) -> Result<(), String> {
+        crate::check::ensure(
+            self.outer.is_none() || (self.mark_nonce.is_some() && self.nested_nonce.is_some()),
+            || "a command set aside without both nonces".into(),
+        )
     }
 
     /// 20a: no row identity is two rows', in history or on either screen,

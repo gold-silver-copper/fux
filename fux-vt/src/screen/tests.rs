@@ -630,3 +630,18 @@ fn prints_hold_what_joins_a_cluster() -> Result<(), Error> {
     assert_eq!(tone, vec![("\u{1F3FD}".to_owned(), (0, 2))], "a skin tone");
     Ok(())
 }
+
+/// The checker's 6a (REB-4): a shell command set aside by a nested
+/// program's mark holds both nonces; one dropped from under it shows.
+#[cfg(feature = "checks")]
+#[test]
+fn the_checker_finds_a_command_set_aside_without_its_nonces() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::PromptMarks);
+    let mut p = crate::Parser::with_options(Size::of(4, 20), 0, options)?;
+    p.require_mark_nonce(Some(b"k3y"), Some(b"n3st"));
+    p.process(b"\x1b]133;C;nonce=k3y\x07\x1b]133;A;nonce=n3st\x07")?;
+    assert!(p.check().is_clean(), "{}", p.check());
+    p.screen_mut().nested_nonce = None;
+    assert!(p.check().faults_of("screen.nest").next().is_some());
+    Ok(())
+}
