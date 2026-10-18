@@ -1157,9 +1157,10 @@ impl Screen {
 
     pub(crate) fn resize(&mut self, size: Size, reflow: bool) -> Result<(), Error> {
         // A frame drawn for the old size is no frame for the new one; as in
-        // Ghostty, any resize ends synchronized output.
-        self.modes.set(Mode::SynchronizedOutput, false);
+        // Ghostty, any resize ends synchronized output: one taken, or to
+        // the same size; a rejected one changes nothing.
         if self.size() == size {
+            self.modes.set(Mode::SynchronizedOutput, false);
             return Ok(());
         }
         self.last_print = None;
@@ -1179,6 +1180,7 @@ impl Screen {
         alternate.keyboard = mem::take(&mut self.alternate.keyboard);
         self.primary = primary;
         self.alternate = alternate;
+        self.modes.set(Mode::SynchronizedOutput, false);
         self.next_id = next;
         self.version = version;
         self.structural = version;

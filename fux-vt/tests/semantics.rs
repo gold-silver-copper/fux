@@ -264,6 +264,28 @@ fn height_only_resize_clears_live_wrap_metadata() -> Result {
     Ok(())
 }
 
+/// A rejected resize changes nothing, synchronized output included (the
+/// API's "failing size changes leave the old screen intact"); one that is
+/// taken, or to the same size, ends it, as in Ghostty (threats.md B37).
+#[test]
+fn a_rejected_resize_leaves_synchronized_output_on() -> Result {
+    let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;
+    p.process(b"\x1b[?2026h")?;
+    let mark = p.screen().mark();
+    assert_eq!(
+        p.resize(Size::new(u16::MAX, u16::MAX)?),
+        Err(Error::Capacity)
+    );
+    assert!(p.screen().mode(Mode::SynchronizedOutput), "rejected");
+    assert!(!p.screen().changed_since(mark));
+    p.resize(Size::new(3, 5)?)?;
+    assert!(!p.screen().mode(Mode::SynchronizedOutput), "the same size");
+    p.process(b"\x1b[?2026h")?;
+    p.resize(Size::new(4, 6)?)?;
+    assert!(!p.screen().mode(Mode::SynchronizedOutput), "taken");
+    Ok(())
+}
+
 #[test]
 fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;
