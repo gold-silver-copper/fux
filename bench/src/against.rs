@@ -662,6 +662,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
         rows.push(serde_json::json!({
             "name": spec.name,
             "about": spec.about,
+            "fed": workloads::fed(&spec.name),
             "ref": p.old,
             "working_tree": p.new,
             "change_percent": p.change * 100.0,

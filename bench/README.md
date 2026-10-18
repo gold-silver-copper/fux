@@ -49,7 +49,7 @@ Exit status: 1 if `--against` flags a workload, 2 on an error.
 | Workload | What runs | Fed |
 | --- | --- | --- |
 | `vt/NAME` | fux-vt alone, set up as fux sets up a pane (`fux::pane::OPTIONS`), 10,000 rows of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
-| `pane/NAME` | `fux::pane::Pane::output` | 64 KiB at a time, as fux's server reads a pane |
+| `pane/NAME` | `fux::pane::Pane::output` | 16 KiB at a time, as fux's server gives a pane what it reads (up to 64 KiB a tick) |
 | `vt/corpus:NAME` | fux-vt alone on one recording at its size, repeated to 4 MiB | 4 KiB at a time |
 | `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`, `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`, `vt/sixel:frames` | fux-vt alone on each of the census's speed payloads (`src/census.rs`; vendored data in `payloads/` with its licences; kitty's GPL payloads re-made by our own code), 8 MiB at 50×200 | 4 KiB at a time |
 | `paint/corpus` | a `fux::session::Session` without processes, one client whose pane is each recording's size; after each read the screen is composed (`render::compose_into`) and painted (`render::paint_into`) | every recording in turn, to 4 MiB |

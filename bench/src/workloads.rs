@@ -10,8 +10,8 @@
 //!   `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`,
 //!   `vt/sixel:frames`: fux-vt alone on each of the census's speed
 //!   payloads (`census`), 8 MiB at 50×200, each alone.
-//! - `pane/NAME`: the same through `fux::pane::Pane::output`, in the 64 KiB
-//!   reads fux's server makes of a pane.
+//! - `pane/NAME`: the same through `fux::pane::Pane::output`, 16 KiB at a
+//!   time, as fux's server gives a pane what it reads.
 //! - `paint/corpus`: a session (`fux::session::Session`, without
 //!   processes) whose client shows one pane at each recording's size,
 //!   given every recording; after each read, the client's screen composed
@@ -30,7 +30,7 @@
 //!   (`fux::encode::key_bytes`), in legacy mode and in every kitty flag.
 //! - `wait/text`: a wait for a text that never comes (`fux::wait::Waiting`)
 //!   on four panes of a session, asked for its answer and when it is due
-//!   after each 64 KiB read of the recordings into the panes: the server's
+//!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
 //!   look at each output while a wait is armed.
 //! - `ready/probe`: what a pane's program is blocked in
 //!   (`fuxix::process::activity`, which `fux::ready` asks while a wait
@@ -51,8 +51,12 @@ use std::path::Path;
 
 /// fux-vt is fed this much at a time, as `compare`'s `bench` feeds it.
 const CHUNK: usize = 4096;
-/// fux's server reads this much of a pane's output at a time (`PANE_READ`).
+/// fux's server reads up to this much of a pane's output a tick
+/// (`PANE_READ`, src/server.rs) ...
 const PANE_READ: usize = 64 * 1024;
+/// ... and gives it to the pane this much at a time, its read buffer
+/// (`read_pane`).
+const PANE_PIECE: usize = 16 * 1024;
 /// Each synthetic workload's size.
 const SYNTHETIC: usize = 16 << 20;
 /// Each recording alone, over and over to this size.
@@ -188,6 +192,20 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         out.push(spec(name.into(), about.into()));
     }
     out
+}
+
+/// How a workload is fed, for its fairness record: the bytes a call
+/// gives the code measured.
+pub fn fed(name: &str) -> &'static str {
+    if name.starts_with("vt/") {
+        "fux-vt::Parser::process_with, 4096 bytes a call"
+    } else if name.starts_with("pane/") {
+        "fux::pane::Pane::output, 16384 bytes a call"
+    } else if name.starts_with("paint/") || name == "wait/text" {
+        "fux::session::Session::output, 16384 bytes a call, 65536 a tick"
+    } else {
+        "not a stream of bytes"
+    }
 }
 
 /// What a run did, to print: it also keeps the work from being optimized
@@ -410,7 +428,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     }
     for load in loads {
         pane.resize(fux::pane::size(load.rows, load.cols));
-        for piece in pieces(&load.bytes, PANE_READ) {
+        for piece in pieces(&load.bytes, PANE_PIECE) {
             pane.output(black_box(piece));
         }
     }
@@ -545,11 +563,13 @@ fn paint(
         for r in recordings {
             s.resize(c, r.rows.saturating_add(1), r.cols);
             for (_, output) in &r.steps {
-                for piece in pieces(output, PANE_READ) {
-                    for &id in &panes {
-                        s.output(id, piece);
+                for read in pieces(output, PANE_READ) {
+                    for piece in pieces(read, PANE_PIECE) {
+                        for &id in &panes {
+                            s.output(id, piece);
+                        }
                     }
-                    units = units.saturating_add(piece.len());
+                    units = units.saturating_add(read.len());
                     s.hold_copies();
                     let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
                     if let Some(view) = s.views.get_mut(&c) {
@@ -747,13 +767,15 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);
     let mut units = 0usize;
-    for (n, piece) in pieces(&bytes, PANE_READ).enumerate() {
+    for (n, read) in pieces(&bytes, PANE_READ).enumerate() {
         let pane = panes
             .get(n.checked_rem(panes.len()).unwrap_or(0))
             .copied()
             .ok_or("no pane")?;
-        s.output(pane, piece);
-        units = units.saturating_add(piece.len());
+        for piece in pieces(read, PANE_PIECE) {
+            s.output(pane, piece);
+        }
+        units = units.saturating_add(read.len());
         if baseline {
             continue;
         }
