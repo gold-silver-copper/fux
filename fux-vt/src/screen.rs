@@ -2618,18 +2618,38 @@ impl Screen {
 
     /// The rectangle `Pt ; Pl ; Pb ; Pr` of the parameters from `at` on, as
     /// the rectangular area operations and DECRQCRA take it (DEC STD 070,
-    /// 5.12.1, 5.12.2): one-based, from the margins in origin mode and
-    /// clamped to them, as the cursor is, else to the screen; absent or 0
-    /// its whole extent. `None` if its top is below its bottom or its left
-    /// past its right, which has the function ignored.
+    /// 5.12.1, 5.12.2): one-based, from the top and left margins in origin
+    /// mode ("affected by the setting of Origin Mode. This control is not
+    /// otherwise affected by the margins"), and clamped to the page ("If a
+    /// value exceeds the width or height of the active page, it is treated
+    /// as the width or height of the active page"); absent or 0 its whole
+    /// extent. `None` if its top is below its bottom or its left past its
+    /// right, which has the function ignored.
     fn rectangle(&self, p: &Parameters, at: usize) -> Option<(Span, Span)> {
+        let size = self.size();
+        let (top, left) = self.page_position(p, at, (1, 1));
+        let (bottom, right) = self.page_position(p, at.saturating_add(2), (u16::MAX, u16::MAX));
+        Some((
+            size.lines().part(top, bottom)?,
+            size.columns().part(left, right)?,
+        ))
+    }
+
+    /// The line and column the parameters at `at` and `at + 1` name, as a
+    /// rectangle's corner or DECCRA's destination: one-based, `default`
+    /// if absent or 0, from the top and left margins in origin mode, and
+    /// clamped to the page, whatever the margins (DEC STD 070, 5.12.1).
+    fn page_position(&self, p: &Parameters, at: usize, default: (u16, u16)) -> (u16, u16) {
         let (lines, columns) = self.grid().addressed();
-        let edge = |span: Span, i: usize, default: u16| {
-            span.nth(p.first(at.saturating_add(i), default).saturating_sub(1))
+        let (page_lines, page_columns) = (self.size().lines(), self.size().columns());
+        let on = |page: Span, from: Span, i: usize, default: u16| {
+            let n = p.first(at.saturating_add(i), default).saturating_sub(1);
+            page.nth(from.first().saturating_add(n))
         };
-        let (top, bottom) = (edge(lines, 0, 1), edge(lines, 2, u16::MAX));
-        let (left, right) = (edge(columns, 1, 1), edge(columns, 3, u16::MAX));
-        Some((lines.part(top, bottom)?, columns.part(left, right)?))
+        (
+            on(page_lines, lines, 0, default.0),
+            on(page_columns, columns, 1, default.1),
+        )
     }
 
     /// DEC STD 070's rectangular area operations (5.12.1), by final byte:
@@ -2681,10 +2701,8 @@ impl Screen {
             b'{' => self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span, None, v)),
             // DECCRA: to `Ptd ; Pld`, addressed as the rectangle is.
             _ => {
-                let (to_lines, to_columns) = self.grid().addressed();
-                let row = to_lines.nth(p.first(5, 1).saturating_sub(1));
-                let col = to_columns.nth(p.first(6, 1).saturating_sub(1));
-                self.with_grid(|g, _, v| g.copy_rectangle(lines, columns, (row, col), v));
+                let to = self.page_position(p, 5, (1, 1));
+                self.with_grid(|g, _, v| g.copy_rectangle(lines, columns, to, v));
             }
         }
     }

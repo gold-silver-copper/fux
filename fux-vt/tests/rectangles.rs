@@ -64,7 +64,10 @@ fn decfra_fills_a_rectangle() -> Result {
     assert!(screen.cell(0, 0).is_some_and(|c| c.attributes().bold()));
     assert_eq!(screen.cursor_position(), (1, 2));
     // Margins bound nothing; with origin mode the rectangle counts from
-    // them and is clamped to them.
+    // the top and left ones, and is clamped to the page, not to them (DEC
+    // STD 070, DECFRA: "affected by the setting of Origin Mode. This
+    // control is not otherwise affected by the margins"; a value past the
+    // page "is treated as the width or height of the active page").
     let margins = "\x1b[2;3r\x1b[?69h\x1b[2;4s";
     assert_eq!(
         rows(&format!("{margins}\x1b[88;1;1;1;1$x"))?,
@@ -72,7 +75,11 @@ fn decfra_fills_a_rectangle() -> Result {
     );
     assert_eq!(
         rows(&format!("{margins}\x1b[?6h\x1b[88;1;1;9;9$x"))?,
-        ["abcdef", "gXXXkl", "mXXXqr", "stuvwx"]
+        ["abcdef", "gXXXXX", "mXXXXX", "sXXXXX"]
+    );
+    assert_eq!(
+        rows(&format!("{margins}\x1b[?6h\x1b[88;2;3;2;3$x"))?,
+        ["abcdef", "ghijkl", "mnoXqr", "stuvwx"]
     );
     Ok(())
 }
@@ -136,9 +143,17 @@ fn rectangles_keep_soft_wraps() -> Result {
 /// DEC STD 070, 5.12.1, DECCRA copies the characters and attributes of
 /// the rectangle `Pts ; Pls ; Pbs ; Prs` to `Ptd ; Pld` (the pages are
 /// one here), clipped where the destination leaves the page; the cursor
-/// stays. The source is read whole first, so the two may overlap.
+/// stays. The source is read whole first, so the two may overlap. In
+/// origin mode both count from the top and left margins and are clamped
+/// to the page (DECCRA: "affected by the setting of Origin Mode. This
+/// control is not otherwise affected by the margins").
 #[test]
 fn deccra_copies_a_rectangle() -> Result {
+    let origin = "\x1b[2;3r\x1b[?69h\x1b[2;4s\x1b[?6h";
+    assert_eq!(
+        rows(&format!("{origin}\x1b[1;1;1;1;1;1;9;1$v"))?,
+        ["abcdef", "ghijkh", "mnopqr", "stuvwx"]
+    );
     assert_eq!(
         rows("\x1b[1;1;2;2;1;3;4;1$v")?,
         ["abcdef", "ghijkl", "mnoabr", "stughx"]

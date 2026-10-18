@@ -851,7 +851,7 @@ pub const FAMILIES: &[Family] = &[
         name: "rectangles",
         about: "DECFRA, DECERA, DECSERA and DECCRA",
         status: Status::Decided {
-            why: "DEC STD 070's rectangular area operations (5.12.1, level 4), which xterm implements as fux-vt does, and every other engine of the panel ignores, outvoting fux-vt (`replay --engines all --size 4x6 'abcdef\\r\\nghijkl\\e[88;1;2;2;4$x'`)",
+            why: "DEC STD 070's rectangular area operations (5.12.1, level 4), which xterm implements as fux-vt does, and every other engine of the panel ignores, outvoting fux-vt (`replay --engines all --size 4x6 'abcdef\\r\\nghijkl\\e[88;1;2;2;4$x'`). In origin mode, which the generator leaves out, xterm clamps a rectangle to the margins, where DEC STD 070 clamps it to the page (\"This control is not otherwise affected by the margins\"), as fux-vt does (`replay --engines xterm --size 4x6 'abcdef\\r\\nghijkl\\r\\nmnopqr\\r\\nstuvwx\\e[2;3r\\e[?69h\\e[2;4s\\e[?6h\\e[88;1;1;9;9$x'`)",
             by: XTERM,
             authority: Authority::Standard {
                 section: "DEC STD 070, 5.12.1",
