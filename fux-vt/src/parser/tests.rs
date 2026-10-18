@@ -486,8 +486,9 @@ fn the_alternate_screen_holds_no_cells_until_shown() -> Result<(), Error> {
     assert_eq!(parser.screen().storage_cells(), 30 * 100);
     parser.process(b"\x1b[?1049h")?;
     assert_eq!(parser.screen().storage_cells(), 2 * 30 * 100);
-    // RIS with history makes both grids afresh, the alternate unmade.
-    let mut parser = Parser::new(Size::of(5, 10), 100)?;
+    // RIS with history makes both grids afresh, the alternate unmade: a
+    // history the style table leaves room in for rows.
+    let mut parser = Parser::new(Size::of(5, 10), 64 << 10)?;
     parser.process(b"\x1b[?1049h\x1b[?1049l")?;
     let lines: Vec<u8> = std::iter::repeat_n(*b"x\n", 20).flatten().collect();
     parser.process(&lines)?;

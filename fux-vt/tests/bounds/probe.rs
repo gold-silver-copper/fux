@@ -126,7 +126,7 @@ pub fn steady(setup: &Setup) -> usize {
         .history
         .saturating_add(setup.history / 10)
         .saturating_add(2 * 4096 * 8);
-    let prints = n.saturating_mul(4).max(16 << 10).saturating_add(4096 * 32);
+    let prints = prints(setup);
     let terms = [
         n.saturating_mul(16),
         r.saturating_mul(2 * 104),
@@ -142,6 +142,15 @@ pub fn steady(setup: &Setup) -> usize {
     let steady = terms.into_iter().fold(0, usize::saturating_add);
     let transient = history / 2;
     steady.saturating_add(transient)
+}
+
+/// What `Prints` may hold for a parser of `setup` (`threats.md` B10): 4
+/// bytes of text a cell, 16 KiB at least, and 4,096 runs of 32 bytes;
+/// 171,072 bytes at the defaults.
+pub fn prints(setup: &Setup) -> usize {
+    (setup.cells().saturating_mul(4))
+        .max(16 << 10)
+        .saturating_add(4096 * 32)
 }
 
 /// The picture budget P (`threats.md` P1, decision 8): 96 MiB.

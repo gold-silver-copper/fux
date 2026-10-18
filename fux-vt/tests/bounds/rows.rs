@@ -10,7 +10,9 @@ use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
 use fux_vt::{Feature, Graphics, Mode, Parser, Size, Work, bytes::ByteQueue, sixel::Picture};
 
 use super::Heap;
-use super::probe::{Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, pieces, repeat, steady};
+use super::probe::{
+    Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, pieces, prints, repeat, steady,
+};
 
 /// What a row's probe found: nothing, or how it broke its bound.
 pub type Found = Result<(), String>;
@@ -590,12 +592,13 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
 // included.
 pub fn b17(scale: Scale, chunk: usize) -> Found {
     // Rows of 2,049 cells: two never share a block. History holds at most
-    // its term once processed, and its transients on the way.
+    // its term once processed, and its transients on the way, beside what
+    // `Prints` holds at this size.
     let wide = Setup::defaults().sized(50, 2049).history(1 << 20);
-    let bound = heap(history_peak(wide.history).saturating_add(171_072));
+    let bound = heap(history_peak(wide.history).saturating_add(prints(&wide)));
     let row = [[b'x'; 2049].as_slice(), b"\r\n"].concat();
     let rows = 130usize.saturating_mul(scale.times());
-    let most = history_term(wide.history).saturating_add(171_072);
+    let most = history_term(wide.history).saturating_add(prints(&wide));
     fed(
         &wide,
         bound,

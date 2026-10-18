@@ -94,7 +94,8 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
         );
         let kept: usize = expected.iter().map(|row| row.5.len()).sum();
         assert_eq!(history.kept_cells(), kept);
-        assert_eq!(history.bytes(), expected.len() * 24 + kept * 8);
+        // What it counts is what it holds, and within the budget.
+        assert_eq!(history.bytes(), history.heap());
         assert!(history.bytes() <= budget);
     }
     let last = history.len().saturating_sub(1);
@@ -103,24 +104,27 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
     Ok(())
 }
 
-/// Blocks the rows have left are let go, but for the spare: the history's
-/// memory stops growing once it holds as much as its budget.
+/// Blocks the rows have left are let go: the history's memory stops
+/// growing at its budget, and fills most of it.
 #[test]
 fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
-    let mut history = History::new(256 << 10);
-    let mut most = 0;
+    let budget = 256 << 10;
+    let mut history = History::new(budget);
     for round in 0..4 {
         for id in 0..2000u64 {
             let cells = row(usize::try_from(id % 120).unwrap_or(0), b'a', 0);
             history.push(arriving(id, &cells, 120))?;
             history.trim();
+            assert!(
+                history.heap() <= budget,
+                "round {round}: {}",
+                history.heap()
+            );
         }
-        if round == 0 {
-            most = history.heap();
-        }
+        // Less than two blocks and the ring's doubling short of it.
         assert!(
-            history.heap() <= most,
-            "round {round}: {} > {most}",
+            history.heap() > budget / 2,
+            "round {round}: {}",
             history.heap()
         );
     }

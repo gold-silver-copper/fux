@@ -139,11 +139,13 @@ fn wide_glyphs_blanks_and_marks() -> Result {
 /// Links go into history with their rows, and leave with them.
 #[test]
 fn links_scroll_with_their_rows() -> Result {
-    // Two rows of one cell: 24 bytes a row and 8 a cell.
+    // Two rows of one cell, 24 bytes a row and 8 a cell, and the links'
+    // map, about 38 bytes a row it has room for (threats.md B17): room for
+    // these, not for the rows below as well.
     let p = parser(
         2,
         3,
-        2 * 32,
+        256,
         b"\x1b]8;;one\x07a\x1b]8;;\x07\r\nb\r\n\x1b]8;;two\x07c\r\nd",
     )?;
     let s = p.screen();

@@ -14,10 +14,18 @@
 //! A row scrolled off is the commonest thing a terminal does, so taking it
 //! in is a few loads and stores, its cells going after the newest block's;
 //! whatever else (a block to start or leave, text, links) is out of line.
-//! The grid trims it to its budget of bytes once a row is in (`trim`): each
-//! row's record (`Kept`), the cells it keeps and its text count.
+//! The grid trims it to its budget of bytes once a row is in (`trim`): what
+//! it holds counts, as the memory it takes (`threats.md` B17): the ring of
+//! rows' records (`Kept`) and every block as their capacity, the rows'
+//! text, and the maps' buckets. Room grows by doubling, and is given back
+//! when it holds more than twice what is kept, so the oldest rows go in
+//! steps: a block's rows when a block is to come, and while the rows keep
+//! less than half the ring's room, half of them.
 
 use std::collections::{HashMap, VecDeque};
+
+mod ring;
+use ring::Ring;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 
@@ -27,14 +35,21 @@ use crate::link::RowLinks;
 use crate::{Error, RowId};
 
 /// The cells a block holds, unless one row needs more. Small, as a block
-/// partly filled (the newest), partly left (the oldest) and kept for the
-/// next (the spare) cost what they hold; so many rows to one that a row
-/// left at a block's end costs little.
+/// partly filled (the newest) or partly left (the oldest) costs what it
+/// holds; so many rows to one that a row left at a block's end costs
+/// little.
 const BLOCK: usize = 1 << 12;
 /// The most blocks: their numbers are 16 bits. More than a grid can fill
 /// (`grid::MAX_CELLS`): a block made is half full, or holds a row half its
 /// size or more.
 const BLOCKS: usize = 1 << 16;
+
+/// The bytes `History::texts` and `History::linked` take for each row of
+/// their capacity: a bucket is the row's number, its value and the map's
+/// control byte (`threats.md` B17's 57 and 33 bytes), and a map has 8
+/// buckets for 7 of capacity.
+const TEXT_BUCKET: usize = (size_of::<(u64, Text)>() + 1) * 8 / 7 + 1;
+const LINK_BUCKET: usize = (size_of::<(u64, RowLinks)>() + 1) * 8 / 7 + 1;
 
 /// A map by a row's number in the order rows came.
 type ByRow<T> = HashMap<u64, T, BuildHasherDefault<SlotHasher>>;
@@ -74,6 +89,10 @@ pub(crate) struct Kept {
 }
 
 const _: () = assert!(size_of::<Kept>() == 24);
+
+/// The bytes of budget for each row of the ring's chunks: a chunk holds a
+/// sixteenth of the most rows the budget holds (`History::shift_for`).
+const CHUNKS_PER_BUDGET: usize = size_of::<Kept>() * 16;
 const _: () = assert!(BLOCK <= 1 << 12);
 
 /// `Kept`'s flags.
@@ -102,6 +121,7 @@ impl Kept {
     fn block(&self) -> u16 {
         u16::try_from(self.place & 0xffff).unwrap_or(0)
     }
+    #[inline]
     fn start(&self) -> usize {
         usize::try_from((self.place >> 16) & 0xfff).unwrap_or(0)
     }
@@ -130,6 +150,12 @@ impl Kept {
     pub(crate) fn prompt(&self) -> bool {
         self.flags() & PROMPT != 0
     }
+}
+
+/// The most room a map of history's holds for `len` entries before it
+/// gives some back (`History::maps_changed`).
+fn most_room(len: usize) -> usize {
+    len.saturating_mul(4).saturating_add(64)
 }
 
 /// The cells of a row before its blank tail: those history keeps.
@@ -166,7 +192,7 @@ pub(crate) struct Found<'a> {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct History {
     /// The rows, oldest first.
-    rows: VecDeque<Kept>,
+    rows: Ring,
     /// The number of the rows come before the oldest.
     first_row: u64,
     /// The blocks before the newest, oldest first, and the newest, which
@@ -177,8 +203,13 @@ pub(crate) struct History {
     /// `newest_block`, is the number after `older`'s last.
     first_block: u16,
     newest_block: u16,
-    /// A block the rows left, kept for the next to fill.
-    spare: Vec<Compact>,
+    /// The cells the blocks have room for, `older`'s and the newest's.
+    room_cells: usize,
+    /// The bytes the ring, the blocks and the maps take, as their
+    /// capacity: what the rows hold but their text (`recount`); and the
+    /// maps' share of it.
+    held: usize,
+    maps: usize,
     texts: ByRow<Text>,
     linked: ByRow<RowLinks>,
     /// The cells the rows keep, for `storage_cells`.
@@ -199,10 +230,20 @@ pub(crate) struct History {
 impl History {
     pub(crate) fn new(budget: usize) -> Self {
         Self {
+            rows: Ring::new(Self::shift_for(budget)),
             budget,
             room: budget,
             ..Self::default()
         }
+    }
+    /// The ring's chunks for `budget`: a sixteenth of the most rows it
+    /// holds, as a power of two, from 1 to 512 rows (12 KiB), so that
+    /// what a chunk holds unused is little of the budget.
+    fn shift_for(budget: usize) -> u32 {
+        let rows = (budget.checked_div(CHUNKS_PER_BUDGET))
+            .unwrap_or(0)
+            .clamp(1, 512);
+        rows.ilog2()
     }
     pub(crate) fn len(&self) -> usize {
         self.rows.len()
@@ -210,17 +251,36 @@ impl History {
     pub(crate) fn budget(&self) -> usize {
         self.budget
     }
-    /// The bytes the rows hold: each one's record, its cells and its text;
-    /// and the bytes charged to it.
+    /// The bytes history holds: its ring, blocks and maps as their
+    /// capacity, and the rows' text; and the bytes charged to it.
     #[cfg(any(test, feature = "checks"))]
     pub(crate) fn bytes(&self) -> usize {
         self.rows_bytes().saturating_add(self.charged)
     }
-    /// The bytes the rows hold.
+    /// The bytes the rows hold: the ring, blocks and maps as their
+    /// capacity, and the rows' text.
+    #[inline(always)]
     fn rows_bytes(&self) -> usize {
-        (self.rows.len().saturating_mul(size_of::<Kept>()))
-            .saturating_add(self.cells.saturating_mul(size_of::<Compact>()))
-            .saturating_add(self.text)
+        self.held.saturating_add(self.text)
+    }
+    /// Counts again what the ring, the blocks and the maps take: after any
+    /// of them is made, grows, shrinks or goes.
+    fn recount(&mut self) {
+        self.maps = self.maps_bytes();
+        self.held = (self.rows.capacity().saturating_mul(size_of::<Kept>()))
+            .saturating_add(self.room_cells.saturating_mul(size_of::<Compact>()))
+            .saturating_add(self.maps);
+    }
+    /// The bytes the maps' buckets take.
+    fn maps_bytes(&self) -> usize {
+        (self.texts.capacity().saturating_mul(TEXT_BUCKET))
+            .saturating_add(self.linked.capacity().saturating_mul(LINK_BUCKET))
+    }
+    /// The cells a block holds: a block's worth (`BLOCK`), or for a small
+    /// budget an eighth of it, so that a block is never most of what
+    /// history may hold.
+    fn block_cells(&self) -> usize {
+        (self.budget / 64).clamp(1, BLOCK)
     }
     /// Counts `bytes` in the budget beside the rows, in place of what was
     /// charged before, and lets the oldest rows go to fit.
@@ -229,33 +289,83 @@ impl History {
         self.room = self.budget.saturating_sub(bytes);
         self.trim();
     }
-    /// The most rows the budget holds, and one more, as a row comes in
-    /// before the oldest goes.
-    fn most_rows(&self) -> usize {
-        (self.budget.checked_div(size_of::<Kept>()))
-            .unwrap_or(0)
-            .min(MAX_ROWS)
-            .saturating_add(1)
-    }
-    /// Lets the oldest rows go while they hold more than the budget, or
-    /// more rows or cells than a grid may (`grid::MAX_ROWS`, `MAX_CELLS`).
+    /// Lets the oldest rows go while history holds more than the budget
+    /// (`make_room` keeps it to the rows and cells a grid may hold,
+    /// `grid::MAX_ROWS` and `MAX_CELLS`). What it holds changes only out
+    /// of line, so a row arriving usually lets none go.
     #[inline]
     pub(crate) fn trim(&mut self) {
-        while !self.rows.is_empty()
-            && (self.rows_bytes() > self.room
-                || self.rows.len() > MAX_ROWS
-                || self.cells > MAX_CELLS)
-        {
-            self.pop();
+        if self.over() {
+            self.trim_over();
         }
     }
+    /// Whether history holds more than it may.
+    #[inline(always)]
+    fn over(&self) -> bool {
+        self.rows_bytes() > self.room
+    }
+    /// `trim` when history holds more than it may: the oldest rows go
+    /// until it doesn't; with none left, it holds nothing.
+    #[cold]
+    #[inline(never)]
+    fn trim_over(&mut self) {
+        while !self.rows.is_empty() && self.over() {
+            self.pop_run();
+        }
+        if self.rows.is_empty() && self.over() {
+            self.release();
+        }
+    }
+    /// Lets all its storage go, holding no row.
+    fn release(&mut self) {
+        self.rows = Ring::new(Self::shift_for(self.budget));
+        self.older.clear();
+        self.newest = Vec::new();
+        self.newest_block = self.first_block;
+        self.room_cells = 0;
+        self.texts = ByRow::default();
+        self.linked = ByRow::default();
+        self.recount();
+    }
     /// Holds at most `budget` bytes from now on, letting the oldest rows
-    /// go at once if it holds more.
+    /// go at once if it holds more: the rows that fit are kept anew, in
+    /// storage made for the new budget, with their numbers.
     pub(crate) fn set_budget(&mut self, budget: usize) {
-        self.budget = budget;
-        self.room = budget.saturating_sub(self.charged);
-        self.trim();
-        self.rows.shrink_to(self.most_rows());
+        let mut fresh = Self::new(budget);
+        (fresh.first_row, fresh.let_go) = (self.first_row, self.let_go);
+        fresh.charge(self.charged);
+        if fresh.take(self).is_ok() {
+            *self = fresh;
+        } else {
+            // No memory for it: the rows go from where they are.
+            self.budget = budget;
+            self.room = budget.saturating_sub(self.charged);
+            self.trim();
+        }
+    }
+    /// Takes in `old`'s rows, oldest first, letting the oldest go as it
+    /// fills; fails only if there is no memory for them.
+    fn take(&mut self, old: &Self) -> Result<(), Error> {
+        for index in 0..old.len() {
+            let Some(found) = old.get(index) else {
+                continue;
+            };
+            let kept = found.kept;
+            self.push(Arriving {
+                id: kept.id,
+                version: kept.version,
+                wrapped: kept.wrapped(),
+                prompt: kept.prompt(),
+                cells: found.cells,
+                width: kept.width(),
+            })?;
+            let text = (!found.text.is_empty()).then(|| found.text.exact());
+            if text.is_some() || found.links.is_some() {
+                self.attach(text, found.links.cloned());
+            }
+            self.trim();
+        }
+        Ok(())
     }
     /// The cells the rows keep.
     pub(crate) fn kept_cells(&self) -> usize {
@@ -263,10 +373,7 @@ impl History {
     }
     /// Whether nothing is held: no row, and no storage made for one.
     pub(crate) fn is_bare(&self) -> bool {
-        self.rows.capacity() == 0
-            && self.older.is_empty()
-            && self.newest.capacity() == 0
-            && self.spare.capacity() == 0
+        self.rows.capacity() == 0 && self.older.is_empty() && self.newest.capacity() == 0
     }
     pub(crate) fn kept(&self, index: usize) -> Option<&Kept> {
         self.rows.get(index)
@@ -305,6 +412,7 @@ impl History {
         Some(start..start.checked_add(kept.len())?)
     }
     /// Row `index`, oldest first.
+    #[inline(always)]
     pub(crate) fn get(&self, index: usize) -> Option<Found<'_>> {
         let kept = self.kept(index)?;
         let cells = if kept.len() == 0 {
@@ -327,7 +435,16 @@ impl History {
     }
     /// Where the row with identity `id` is, oldest first.
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
-        let at = self.rows.iter().position(|kept| kept.id == id);
+        // A chunk at a time, each a slice searched as such.
+        let mut before = 0usize;
+        let mut at = None;
+        for slice in self.rows.slices() {
+            if let Some(found) = slice.iter().position(|kept| kept.id == id) {
+                at = before.checked_add(found);
+                break;
+            }
+            before = before.saturating_add(slice.len());
+        }
         spend!(rows, at.map_or(self.rows.len(), |at| at.saturating_add(1)));
         at
     }
@@ -345,7 +462,7 @@ impl History {
     /// styles they use, and renumber them.
     pub(crate) fn each_cell_mut(&mut self, mut f: impl FnMut(&mut Compact)) {
         let (older, newest) = (&mut self.older, &mut self.newest);
-        for kept in &self.rows {
+        for kept in self.rows.iter() {
             let at = Self::block_at(self.first_block, older.len(), kept.block());
             let block = at.map(|at| older.get_mut(at).unwrap_or(&mut *newest));
             if let Some(cells) =
@@ -364,50 +481,57 @@ impl History {
         len == 0 || end <= BLOCK && end <= self.newest.capacity()
     }
 
-    /// Room for a row of `len` cells, if there is not: a row more in
-    /// `rows`, doubling, up to the most the budget holds (`most_rows`);
-    /// and its cells, after the newest block's or in a block of its own:
-    /// the newest block grows, doubling, until it holds a block; else a
-    /// block starts, the spare if it holds the row, or a block, or for the
-    /// first block as much as its first row needs. Fails only if there is
-    /// no memory for it. Out of line: a row arriving in history usually
-    /// fits where the last one ended.
+    /// Room for a row of `len` cells, if there is not: a chunk more in
+    /// `rows`; and its cells, after the newest block's or in a block of its
+    /// own: the newest block grows, doubling, until it holds a block
+    /// (`block_cells`); else a block starts, of a block's cells, or just the
+    /// row's for a row longer than half a block, or for the first block as
+    /// much as its first row needs. Fails only if there is no memory for
+    /// it. Out of line: a row arriving in history usually fits where the
+    /// last one ended.
     #[cold]
     #[inline(never)]
     fn make_room(&mut self, len: usize) -> Result<(), Error> {
-        if self.rows.len() == self.rows.capacity() {
-            let capacity = self
-                .rows
-                .len()
-                .saturating_add(1)
-                .saturating_mul(2)
-                .min(self.most_rows().max(self.rows.len().saturating_add(1)));
-            self.rows
-                .try_reserve_exact(capacity.saturating_sub(self.rows.len()))
-                .map_err(|_| Error::Capacity)?;
+        let block = self.block_cells();
+        if !self.rows.has_room() {
+            // No more rows than a grid may hold, once the chunk fills.
+            let most = MAX_ROWS.saturating_sub(self.rows.chunk());
+            while self.rows.len() > most {
+                self.pop();
+            }
+            self.rows.grow()?;
+            self.recount();
         }
         if self.fits(len) {
             return Ok(());
         }
-        let end = self.newest.len().saturating_add(len);
-        if self.newest.capacity() > 0 && end <= BLOCK {
-            let capacity = self.newest.capacity().saturating_mul(2).clamp(end, BLOCK);
-            return crate::reserve(&mut self.newest, capacity);
+        // No more blocks than their numbers count, nor cells than a grid
+        // may hold: the oldest rows go to make room.
+        let most = MAX_CELLS.saturating_sub(len.max(block));
+        while !self.rows.is_empty()
+            && (self.older.len() >= BLOCKS.saturating_sub(2) || self.room_cells > most)
+        {
+            self.pop();
         }
+        let end = self.newest.len().saturating_add(len);
+        if self.newest.capacity() > 0 && end <= block {
+            let before = self.newest.capacity();
+            let capacity = before.saturating_mul(2).clamp(end, block);
+            crate::reserve(&mut self.newest, capacity)?;
+            self.room_cells = (self.room_cells)
+                .saturating_add(self.newest.capacity())
+                .saturating_sub(before);
+            self.recount();
+            return Ok(());
+        }
+        let first = self.newest.capacity() == 0 && self.older.is_empty();
+        let capacity = if first || len > block / 2 { len } else { block };
         if self.older.len() >= BLOCKS.saturating_sub(2) {
             return Err(Error::Capacity);
         }
-        if self.spare.capacity() < len {
-            let capacity = if self.newest.capacity() == 0 && self.older.is_empty() {
-                len
-            } else {
-                len.max(BLOCK)
-            };
-            let mut block = Vec::new();
-            crate::reserve(&mut block, capacity)?;
-            self.spare = block;
-        }
-        self.start_block();
+        let mut cells = Vec::new();
+        crate::reserve(&mut cells, capacity)?;
+        self.start_block(cells);
         Ok(())
     }
 
@@ -418,7 +542,7 @@ impl History {
     #[inline(always)]
     pub(crate) fn push(&mut self, row: Arriving<'_>) -> Result<(), Error> {
         let len = row.cells.len();
-        if self.rows.len() == self.rows.capacity() || !self.fits(len) {
+        if !self.rows.has_room() || !self.fits(len) {
             self.make_room(len)?;
         }
         work!(rows, 1);
@@ -436,12 +560,59 @@ impl History {
         Ok(())
     }
 
-    /// Lets the oldest row go, and its links; and, once
-    /// a row goes from a later block than the oldest, the blocks before
-    /// that, which no row is in now.
+    /// Lets the oldest rows go up to the first whose going may change what
+    /// history holds, and it: one with text or links, the last with cells
+    /// in its block, one in a later block, or the last of its chunk. As
+    /// `pop` a row at a time, in a loop that reads each row once.
+    fn pop_run(&mut self) {
+        let first_block = self.first_block;
+        let first_end = self.older.front().map(Vec::len);
+        let (mut n, mut let_go, mut cells, mut leave) = (0usize, self.let_go, 0usize, None);
+        for kept in self.rows.front_run() {
+            if kept.flags() & (TEXT | LINKED) != 0 {
+                break;
+            }
+            n = n.saturating_add(1);
+            let_go = let_go.max(kept.version);
+            cells = cells.saturating_add(kept.len());
+            // A row with no cells is in no block: its number is the newest's
+            // when it came.
+            if kept.len() == 0 {
+                continue;
+            }
+            if kept.block() != first_block {
+                leave = Some(kept.block());
+                break;
+            }
+            if first_end == Some(kept.start().saturating_add(kept.len())) {
+                leave = Some(first_block.wrapping_add(1));
+                break;
+            }
+        }
+        if n == 0 {
+            self.pop();
+            return;
+        }
+        work!(rows, n);
+        self.first_row = self
+            .first_row
+            .wrapping_add(u64::try_from(n).unwrap_or(u64::MAX));
+        self.let_go = let_go;
+        self.cells = self.cells.saturating_sub(cells);
+        let freed = self.rows.advance(n);
+        match leave {
+            Some(block) => self.leave_blocks(block),
+            None if freed => self.recount(),
+            None => {}
+        }
+    }
+
+    /// Lets the oldest row go, and its links; and the blocks no row's
+    /// cells are in now: before its own, or its own too if its cells were
+    /// the last there.
     #[inline]
     fn pop(&mut self) {
-        let Some(gone) = self.rows.pop_front() else {
+        let Some((gone, freed)) = self.rows.pop_front() else {
             return;
         };
         work!(rows, 1);
@@ -452,16 +623,26 @@ impl History {
         if gone.flags() & (TEXT | LINKED) != 0 {
             self.forget(number, gone.flags());
         }
-        if gone.block() != self.first_block {
+        let ended = (gone.len() > 0)
+            .then(|| gone.start().saturating_add(gone.len()))
+            .is_some_and(|end| {
+                gone.block() == self.first_block
+                    && self.older.front().is_some_and(|first| first.len() == end)
+            });
+        if ended {
+            self.leave_blocks(gone.block().wrapping_add(1));
+        } else if gone.len() > 0 && gone.block() != self.first_block {
             self.leave_blocks(gone.block());
+        } else if freed {
+            // Its chunk of the ring went with it.
+            self.recount();
         }
     }
 
-    /// Starts a block, the spare, after the newest, if there is one; the
-    /// spare has room for the row to come (`make_room`).
-    fn start_block(&mut self) {
-        let mut block = std::mem::take(&mut self.spare);
-        block.clear();
+    /// Starts `block`, empty, after the newest, if there is one; it has
+    /// room for the row to come (`make_room`).
+    fn start_block(&mut self, block: Vec<Compact>) {
+        self.room_cells = self.room_cells.saturating_add(block.capacity());
         // The newest goes before it, if it was a block; if not, the new
         // block takes its number, which rows with no cells have.
         let last = std::mem::replace(&mut self.newest, block);
@@ -469,6 +650,7 @@ impl History {
             self.older.push_back(last);
             self.newest_block = self.newest_block.wrapping_add(1);
         }
+        self.recount();
     }
 
     /// The text and links of row `number`, which `flags` says it has, let
@@ -484,22 +666,43 @@ impl History {
         if flags & LINKED != 0 {
             self.linked.remove(&number);
         }
+        self.maps_changed();
     }
 
-    /// Lets the blocks before block `block` go, the largest kept as the
-    /// spare: a row of that block has gone, and rows go oldest first.
+    /// After a map's entries changed: each gives back its room when it
+    /// holds room for more than four times its entries and 64, so that a
+    /// map that grows by doubling as rows come and go doesn't shrink back
+    /// at once (`threats.md` B17); and what history holds is counted again.
+    fn maps_changed(&mut self) {
+        let shrink = |capacity: usize, len: usize| capacity > most_room(len);
+        if shrink(self.texts.capacity(), self.texts.len()) {
+            self.texts.shrink_to(self.texts.len());
+        }
+        if shrink(self.linked.capacity(), self.linked.len()) {
+            self.linked.shrink_to(self.linked.len());
+        }
+        if self.maps_bytes() != self.maps {
+            self.recount();
+        }
+    }
+
+    /// Lets the blocks before block `block` go: no row is in them, as
+    /// rows go oldest first.
     #[cold]
     #[inline(never)]
     fn leave_blocks(&mut self, block: u16) {
         let left = usize::from(block.wrapping_sub(self.first_block));
-        for _ in 0..left.min(self.older.len()) {
+        // A block before the first is none to leave.
+        if left > self.older.len() {
+            return;
+        }
+        for _ in 0..left {
             if let Some(block) = self.older.pop_front() {
                 self.first_block = self.first_block.wrapping_add(1);
-                if block.capacity() > self.spare.capacity() {
-                    self.spare = block;
-                }
+                self.room_cells = self.room_cells.saturating_sub(block.capacity());
             }
         }
+        self.recount();
     }
 
     /// Gives the row pushed last its text, if it keeps any, and its links,
@@ -523,6 +726,10 @@ impl History {
             self.linked.insert(number, links);
             kept.set(LINKED, true);
         }
+        // Inserting only grows a map.
+        if self.maps_bytes() != self.maps {
+            self.recount();
+        }
     }
 
     /// Row `index` loses its links, if it has any, and takes `version`.
@@ -534,16 +741,18 @@ impl History {
             kept.set(LINKED, false);
             kept.version = version;
             self.linked.remove(&number);
+            self.maps_changed();
         }
     }
 
-    /// The heap bytes held, for a test of how storage plateaus.
-    #[cfg(test)]
+    /// The heap bytes held, counted from the storage itself: what `bytes`
+    /// counts less what is charged.
+    #[cfg(any(test, feature = "checks"))]
     pub(crate) fn heap(&self) -> usize {
         let cell = std::mem::size_of::<Compact>();
         self.older
             .iter()
-            .chain([&self.newest, &self.spare])
+            .chain([&self.newest])
             .map(|block| block.capacity().saturating_mul(cell))
             .sum::<usize>()
             .saturating_add(
@@ -551,14 +760,17 @@ impl History {
                     .capacity()
                     .saturating_mul(std::mem::size_of::<Kept>()),
             )
+            .saturating_add(self.maps_bytes())
+            .saturating_add(self.text)
     }
 
     /// Forgets every row's links: RIS.
     pub(crate) fn reset_links(&mut self) {
         self.linked.clear();
-        for kept in &mut self.rows {
+        for kept in self.rows.iter_mut() {
             kept.set(LINKED, false);
         }
+        self.maps_changed();
     }
 }
 
@@ -575,8 +787,12 @@ impl History {
         report.record("history.capacities", which, self.check_capacities());
     }
 
-    /// 17: the cells and text counted are those the rows keep.
+    /// 17: the cells and text counted are those the rows keep, and the
+    /// storage counted is the storage held.
     fn check_counts(&self) -> Result<(), String> {
+        crate::check::ensure(self.rows_bytes() == self.heap(), || {
+            format!("{} bytes counted, {} held", self.rows_bytes(), self.heap())
+        })?;
         let cells = self
             .rows
             .iter()
@@ -657,16 +873,26 @@ impl History {
         )
     }
 
-    /// 21: the ring and the maps hold at most twice what they keep, and 64
-    /// more (threats.md B17).
+    /// 21: the ring holds room for at most two chunks more than it keeps,
+    /// and the maps at most four times what they keep and 64 (threats.md
+    /// B17).
     fn check_capacities(&self) -> Result<(), String> {
-        let most = |len: usize| len.saturating_mul(2).saturating_add(64);
+        let ring = self
+            .rows
+            .len()
+            .saturating_add(self.rows.chunk().saturating_mul(2));
+        crate::check::ensure(self.rows.capacity() < ring, || {
+            format!(
+                "the ring holds room for {}, keeping {}",
+                self.rows.capacity(),
+                self.rows.len()
+            )
+        })?;
         for (name, capacity, len) in [
-            ("ring", self.rows.capacity(), self.rows.len()),
             ("texts", self.texts.capacity(), self.texts.len()),
             ("links", self.linked.capacity(), self.linked.len()),
         ] {
-            crate::check::ensure(capacity <= most(len), || {
+            crate::check::ensure(capacity <= most_room(len), || {
                 format!("the {name} holds room for {capacity}, keeping {len}")
             })?;
         }
@@ -729,6 +955,6 @@ mod faults {
             }
         });
         shows("history.budget", |h| h.budget = 0);
-        shows("history.capacities", |h| h.rows.reserve(1000));
+        shows("history.capacities", |h| h.rows.reserve_more(1000));
     }
 }

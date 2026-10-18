@@ -18,11 +18,17 @@ use fux_vt::{Event, Feature, Options, Parser, Sink, Size, Work};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// The empty rows 8 MiB of history holds: 682 of its ring's chunks of 512
+/// rows (12,288 bytes each, `threats.md` B17), the newest filling and the
+/// oldest let go once all its rows have gone.
+const FULL: std::ops::RangeInclusive<usize> = 681 * 512 + 1..=682 * 512;
+
 /// What a seed is fed after: nothing, or history filled first.
 #[derive(Clone, Copy)]
 enum Prefix {
     None,
-    /// 349,600 line feeds: 8 MiB of empty history rows.
+    /// 349,600 line feeds: 8 MiB of empty history rows, as many as its
+    /// ring's chunks of 512 hold (`FULL`).
     EmptyHistory,
     /// This many full rows of `x`, as wide as the screen.
     FullRows(usize),
@@ -232,7 +238,7 @@ fn seeds() -> Vec<Seed> {
             reaches: |r| {
                 let s = r.parser.screen();
                 ensure(
-                    s.history_len() > 349_000 && s.pictures().count() >= 1,
+                    FULL.contains(&s.history_len()) && s.pictures().count() >= 1,
                     || format!("{} history rows", s.history_len()),
                 )
             },
@@ -482,7 +488,7 @@ fn seeds() -> Vec<Seed> {
             // Late marks with a full history behind them.
             reaches: |r| {
                 let s = r.parser.screen();
-                ensure(s.history_len() == 349_525, || {
+                ensure(FULL.contains(&s.history_len()), || {
                     format!("{} rows", s.history_len())
                 })
             },
@@ -639,7 +645,9 @@ fn seeds() -> Vec<Seed> {
                 let s = r.parser.screen();
                 let top = s.window().row(0).map(|row| row.id());
                 let found = top.is_some_and(|id| s.row_by_id(id).is_some());
-                ensure(found && s.history_len() == 349_525, || "not found".into())
+                ensure(found && FULL.contains(&s.history_len()), || {
+                    "not found".into()
+                })
             },
             fuzz: Fuzz::None,
         },

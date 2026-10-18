@@ -14,8 +14,9 @@ fn heap(grid: &Grid) -> [usize; 4] {
         grid.history.heap(),
     ]
 }
-/// A full history's storage, metadata included, stops growing: as much
-/// after 20,000 scrolls as after 10,000. The peak a resize reaches, with
+/// A full history's storage, metadata included, stops growing: the
+/// screen's as much after 20,000 scrolls as after 10,000, and history's
+/// within its budget. The peak a resize reaches, with
 /// both screens' replacements built before either is assigned, is printed
 /// (`MEMORY-BOUNDS`), not asserted.
 #[test]
@@ -32,8 +33,14 @@ fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> R
     for version in 10_001..=20_000 {
         primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version)?;
     }
-    assert_eq!(heap(&primary), plateau);
-    assert_eq!(primary.history_len(), 10_000);
+    // The screen's storage as it was, and history's within its budget.
+    let now = heap(&primary);
+    assert_eq!(now.get(..3), plateau.get(..3));
+    assert!(now.iter().zip(plateau).skip(3).all(|(h, _)| *h <= 240_000));
+    // 240,000 bytes hold 19 of the ring's chunks of 512 empty rows (12,288
+    // bytes each, threats.md B17): the newest of them filling, and the
+    // oldest let go only once all its rows have gone.
+    assert!((18 * 512 + 1..=19 * 512).contains(&primary.history_len()));
     let resized_primary = primary.resized(Size::of(60, 120), &mut next, 20_001)?;
     let resized_alternate = alternate.resized(Size::of(60, 120), &mut next, 20_001)?;
     let new_primary = heap(&resized_primary);

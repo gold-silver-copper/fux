@@ -261,12 +261,16 @@ row's slot, and history.
 - **Scrolling** the whole screen turns the ring and moves no cells. Each
   row records how far it may differ from blank, so erasing, recycling and
   taking a row into history touch only that far.
-- **History** holds at most `history_bytes` (0: none): 24 bytes a row, 8 a
-  cell, and its text. A row scrolled off keeps its cells up to its last that
-  is not a default blank, packed after the rows before it in blocks of 4,096
-  cells (`history.rs`), with its text and links; past them it reads blank, at
-  its original width. At its budget, the oldest rows go, and scrolling
-  reuses the blocks they leave.
+- **History** holds at most `history_bytes` (0: none) of memory, counted
+  as what it holds: the rows' 24-byte records in chunks of up to 512 rows,
+  the blocks of cells as their room (8 bytes a cell), the rows' text, and
+  the maps of the rows with text or links, by their room. A row scrolled
+  off keeps its cells up to its last that is not a default blank, packed
+  after the rows before it in blocks of 4,096 cells, or one of its own
+  past 2,048 (`history.rs`), with its text and links; past them it reads
+  blank, at its original width. At its budget, the oldest rows go: a
+  chunk's or a block's worth as one is made, so history keeps at most
+  that much less than its budget's worth of rows.
 - **The alternate screen** has no history, and no cells until first shown;
   RIS and resizes keep an unmade one unmade.
 - **Identity.** Every row has a `RowId`, kept through edits and scrolling
@@ -349,6 +353,10 @@ fux-vt's work counters and a counting allocator against it.
   and read as the picture is shown. Placing a picture fills its cells, at
   most about 2,300 cells a byte at a 10 by 20 cell and 7,600 at the
   smallest cell a host may give, 2 by 6.
+- **History** (B17) takes at most `history_bytes` of memory, its rows'
+  records, blocks and maps included, and at most half as much again
+  while its storage grows; a lowered budget keeps the newest rows that
+  fit, in storage made for it.
 - **Listing pictures** (B09) doesn't search history: each picture's top
   row is followed into history as it scrolls there, by its number in the
   order rows came, so `Screen::pictures` reads at most the screen's rows

@@ -1,11 +1,8 @@
 # The bound rows known to fail at BASE (9a38df95): a row and a scale a
 # line, then why, as measured. tests/bounds.rs reads it; a fix takes its
 # rows off (a row on it that passes fails the suite).
-B11 1x  the ring keeps its room as the style table trims history: room for 126 rows, keeping 16, past 2 × its length + 64 (history.capacities; SCR-6)
 B14 1x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
 B14 10x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
-B17 1x  a 2,049-cell row takes a 4,096-cell block: history past 1.1 × its budget (SCR-6)
-B17 10x  a 2,049-cell row takes a 4,096-cell block: history past 1.1 × its budget (SCR-6)
 B29 1x  a late 133;C walks every history row (SCR-4)
 B29 10x  a late 133;C walks every history row (SCR-4)
 B35 1x  DECCRA stores each copied cluster with a compaction of the row (SCR-5)
@@ -18,10 +15,7 @@ B39 1x  Cells::new(usize::MAX) panics (SCR-11)
 B39 10x  Cells::new(usize::MAX) panics (SCR-11)
 B40 1x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
 B40 10x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
-B11 100x  the ring and maps keep their room as the style table trims history, uncounted: 8.1 MB at the peak, past the formula's 7.06 MB (SCR-6, SCR-14)
 B14 100x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
-B15 100x  history's link runs are counted by no budget (SCR-3)
-B17 100x  a 2,049-cell row takes a 4,096-cell block: history past 1.1 × its budget (SCR-6)
 B29 100x  a late 133;C walks every history row (SCR-4)
 B35 100x  DECCRA stores each copied cluster with a compaction of the row (SCR-5)
 B36 100x  IL's count is not clamped to the region: 16.8 M slots for 7 bytes (SCR-8)
