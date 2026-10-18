@@ -937,20 +937,6 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
     mouse::event(code, x, y, release)
 }
 
-/// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
-/// A CSI ended unfinished by an ESC among `params`, its bytes after
-/// `ESC [`.
-#[cold]
-#[inline(never)]
-fn unfinished(params: &[u8]) -> Step {
-    let at = params.iter().position(|&b| b == 0x1b).unwrap_or(0);
-    if at == 0 {
-        Step::Done(2, press(Key::Char('['), Modifiers::ALT))
-    } else {
-        Step::Done(at.saturating_add(2), None)
-    }
-}
-
 /// A `CSI ?` answer longer than any answer, `body` its bytes after `ESC [`:
 /// dropped through its final byte once that is here, as an over-long OSC
 /// or DCS answer is dropped to its end; held until then, up to
@@ -972,6 +958,7 @@ fn long_answer(body: &[u8], flush: bool) -> Step {
     }
 }
 
+/// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
 fn csi(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
     // A mouse report in the default encoding: `ESC [ M` and three raw
@@ -991,7 +978,22 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // A sequence with no final byte within the limit is dropped as far as
     // one byte past it, whatever follows.
     let window = body.get(..=limit).unwrap_or(body);
-    let Some(end) = window.iter().position(|b| (0x40..=0x7e).contains(b)) else {
+    // A byte that can be no part of a control sequence (ECMA-48 5.4:
+    // parameters 03/00 to 03/15, intermediates 02/00 to 02/15, the final
+    // 04/00 to 07/14), an ESC (5.5) among them, ends it unfinished there:
+    // `ESC [` alone is Alt-[, a sequence with parameters is dropped, and the
+    // byte begins the next key.
+    let first = window.iter().position(|b| !(0x20..=0x3f).contains(b));
+    if let Some(at) = first
+        && window.get(at).is_some_and(|b| !(0x40..=0x7e).contains(b))
+    {
+        return if at == 0 {
+            Step::Done(2, press(Key::Char('['), Modifiers::ALT))
+        } else {
+            Step::Done(at.saturating_add(2), None)
+        };
+    }
+    let Some(end) = first else {
         if window.len() > limit {
             return if answer {
                 long_answer(body, flush)
@@ -1014,13 +1016,6 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // `ESC [`, the parameters and the final byte; within `bytes`, so exact.
     let consumed = end.saturating_add(3);
     let params = body.get(..end).unwrap_or_default();
-    // An ESC among them ended the sequence unfinished there (ECMA-48,
-    // 5.5): `ESC [` alone is Alt-[, a sequence with parameters is dropped,
-    // and the ESC begins the next key. The byte taken for the final one
-    // then follows the ESC, so the byte before it is the one looked at.
-    if params.last() == Some(&0x1b) {
-        return unfinished(params);
-    }
     let last = body.get(end).copied().unwrap_or(0);
     if params.first() == Some(&b'<') {
         // An SGR mouse report: `CSI < code ; column ; row M`, `m` a release.
@@ -1732,6 +1727,30 @@ mod tests {
     fn an_escape_inside_a_csi_ends_it_and_begins_the_next_key() {
         assert_eq!(all(b"\x1b[\x1b[A"), vec![key("M-["), key("Up")]);
         assert_eq!(all(b"\x1b[12\x1b[A"), vec![key("Up")]);
+    }
+
+    /// A byte that can be no part of a control sequence (ECMA-48 5.4: its
+    /// parameter bytes are 03/00 to 03/15, intermediates 02/00 to 02/15, the
+    /// final 04/00 to 07/14) ends a CSI unfinished there, as an ESC does
+    /// (5.5): `ESC [` alone is Alt-[, with parameters it is dropped, and the
+    /// byte begins the next key, at once, not at the deadline.
+    #[test]
+    fn a_byte_no_control_sequence_holds_ends_a_csi_and_begins_the_next_key() {
+        assert_eq!(
+            all("\x1b[\u{e9}a".as_bytes()),
+            vec![key("M-["), key("\u{e9}"), key("a")]
+        );
+        assert_eq!(all(b"\x1b[12\ra"), vec![key("Enter"), key("a")]);
+        assert_eq!(all(b"\x1b[1;2\x7fA"), vec![key("BSpace"), key("A")]);
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\x1b[\r", &mut out);
+        assert_eq!(out, vec![key("M-["), key("Enter")], "before the deadline");
+        split_anywhere(
+            "\x1b[\u{e9}a".as_bytes(),
+            false,
+            &[key("M-["), key("\u{e9}"), key("a")],
+        );
     }
 
     /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
