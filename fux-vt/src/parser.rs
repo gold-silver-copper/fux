@@ -639,6 +639,12 @@ closed! {
     }
 }
 
+/// Whether a host's cell, its width and height in pixels, is smaller than
+/// a sixel band's 2 by 6 (`threats.md` P5).
+fn cell_too_small(cell: (u16, u16)) -> bool {
+    cell.0 < 2 || cell.1 < 6
+}
+
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The
 /// default (no feature, no identity) is fux's policy: child output causes
 /// no title, bell or clipboard side effects, OSC payloads are never
@@ -1048,8 +1054,16 @@ impl Parser {
     /// [`Feature::Pictures`]. Pictures are kept with the feature, whether
     /// the host shows them or not; what it shows of them is its own
     /// ([`Screen::pictures`]).
+    ///
+    /// A cell is taken as at least 2 by 6 pixels, a sixel's band, so that
+    /// placing a picture costs a bounded number of cells (`threats.md` P5).
     pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
         graphics.sixel &= self.options.has(Feature::Pictures);
+        if let Some(cell) = graphics.cell
+            && cell_too_small(cell)
+        {
+            graphics.cell = Some((cell.0.max(2), cell.1.max(6)));
+        }
         self.screen.set_graphics(graphics);
     }
     /// Resizes the terminal, reflowing the primary screen with

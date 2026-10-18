@@ -111,15 +111,23 @@ impl Screen {
         let Some(top) = self.cursor_mark().map(|mark| mark.row) else {
             return Ok(());
         };
+        // Each row's cells take the placeholder as a fill, not as text: no
+        // pen, mode, cluster or print reaches them (DEC STD 070-9, 11.1).
+        self.break_cluster();
+        let placeholder = PLACEHOLDER.chars().next().unwrap_or(' ');
+        let span = (col, col.saturating_add(across));
         for row in 0..rows {
             if row > 0 {
                 self.linefeed()?;
             }
             self.grid_mut().set_col(col);
             self.grid_mut().cursor.pending_wrap = false;
-            for c in std::iter::repeat_n(PLACEHOLDER, usize::from(across)).flat_map(str::chars) {
-                self.print(c)?;
-            }
+            self.with_grid(|g, _, v| {
+                let y = g.cursor.row();
+                let wrapped = g.live_wrapped(y);
+                g.fill(y, span, placeholder, 0, v);
+                g.wrap(y, wrapped, v);
+            });
         }
         self.linefeed()?;
         self.grid_mut().set_col(col);

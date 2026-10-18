@@ -20,16 +20,19 @@ const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 10
 /// A picture a program drew: its size as shown, in square pixels, and the
 /// pixels of its grid, RGBA, row by row from the top, four bytes each
 /// (red, green, blue and alpha, 0 clear), each shown over as many square
-/// pixels as the grid's aspect makes it.
+/// pixels as the grid's aspect makes it. Only what was drawn is kept: the
+/// rest of its extent reads as its background, or clear.
 #[derive(Debug)]
 pub struct Picture {
     width: u32,
     height: u32,
-    /// The grid's columns and rows, a pixel kept each.
+    /// The columns and rows of the grid drawn, a pixel kept each.
     across: u32,
     down: u32,
     /// A grid position's height to its width.
     aspect: (u32, u32),
+    /// What a pixel no sixel set reads as, if not clear.
+    background: Option<[u8; 4]>,
     rgba: Vec<u8>,
 }
 
@@ -44,6 +47,7 @@ impl Picture {
             across: width,
             down: height,
             aspect: (1, 1),
+            background: None,
             rgba,
         })
     }
@@ -65,12 +69,13 @@ impl Picture {
             return None;
         }
         let (x, y) = grid_of(self.aspect, x, y);
-        if x >= self.across || y >= self.down {
-            return None;
-        }
-        let at = offset(x, y, self.across)?;
-        let bytes = self.rgba.get(at..at.checked_add(4)?)?;
-        bytes.try_into().ok()
+        let drawn = (x < self.across && y < self.down)
+            .then(|| offset(x, y, self.across))
+            .flatten()
+            .and_then(|at| self.rgba.get(at..at.checked_add(4)?))
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .filter(|pixel| pixel[3] != 0);
+        Some(drawn.or(self.background).unwrap_or([0; 4]))
     }
 }
 
@@ -190,6 +195,9 @@ pub(crate) struct Decoder {
     down: u32,
     room: (u32, u32),
     pixels: Vec<u8>,
+    /// The raster attributes' extent, in grid positions: the least size,
+    /// which takes no pixels of its own.
+    extent: (u32, u32),
     /// A grid position's height to its width.
     aspect: (u32, u32),
     /// Pixels no sixel sets take the background (P2 0 or 2), else stay clear.
@@ -216,6 +224,7 @@ impl Decoder {
             down: 0,
             room: (0, 0),
             pixels: Vec::new(),
+            extent: (0, 0),
             aspect: (tall, 100),
             background: p2 != 1,
             begun: false,
@@ -245,7 +254,7 @@ impl Decoder {
             }
             _ => {}
         }
-        let repeat = self.end_command(room);
+        let repeat = self.end_command();
         match byte {
             b'!' => self.begin(Command::Repeat),
             b'#' => self.begin(Command::Colour),
@@ -269,7 +278,7 @@ impl Decoder {
 
     /// Carries out the command whose numbers were read: a repeat's count is
     /// for the sixel that follows.
-    fn end_command(&mut self, room: &mut impl FnMut(usize) -> bool) -> Option<u32> {
+    fn end_command(&mut self) -> Option<u32> {
         let command = std::mem::replace(&mut self.command, Command::None);
         let [a, b, c, d, e] = self.numbers;
         match command {
@@ -279,10 +288,11 @@ impl Decoder {
                 // positions, is the least size, not a clip, and "does not
                 // limit the number of pixels a device may image" (DEC STD
                 // 070, 8.1.2): past what a picture may keep, it is cut to
-                // that.
+                // that as it ends. It is kept as numbers: what no sixel
+                // draws is background, read when shown.
                 if !self.begun {
                     self.aspect = (a.max(1), b.max(1));
-                    self.grow(c, d, room);
+                    self.extent = (c, d);
                 }
                 None
             }
@@ -444,14 +454,15 @@ impl Decoder {
     }
 
     /// The picture drawn, unless it is empty; `room` as for [`Self::push`],
-    /// for a command the end completes, and for its pixels cut to its size
-    /// beside those held, without which it ends with nothing.
+    /// for its pixels cut to their size beside those held, without which it
+    /// ends with nothing.
     pub(crate) fn finish(
         mut self: Box<Self>,
         room: &mut impl FnMut(usize) -> bool,
     ) -> Option<Arc<Picture>> {
-        self.end_command(room);
-        if self.across == 0 || self.down == 0 {
+        self.end_command();
+        let (cols, rows) = self.kept(self.extent.0, self.extent.1);
+        if cols == 0 || rows == 0 {
             return None;
         }
         let rgba = if self.room == (self.across, self.down) {
@@ -461,23 +472,18 @@ impl Decoder {
         };
         // The background is colour register 0, as it ends (DEC STD 070,
         // 7.2, leaves it to the device).
-        let mut rgba = rgba;
-        if self.background {
+        let background = self.background.then(|| {
             let [r, g, b] = self.palette.first().copied().unwrap_or([0; 3]);
-            work!(pixels, rgba.len() / 4);
-            for pixel in rgba.as_chunks_mut::<4>().0 {
-                if pixel[3] == 0 {
-                    *pixel = [r, g, b, 255];
-                }
-            }
-        }
-        let (width, height) = shown_at(self.aspect, self.across, self.down);
+            [r, g, b, 255]
+        });
+        let (width, height) = shown_at(self.aspect, cols, rows);
         Some(Arc::new(Picture {
             width: width.min(MAX_SIDE),
             height: height.min(MAX_SIDE),
             across: self.across,
             down: self.down,
             aspect: self.aspect,
+            background,
             rgba,
         }))
     }
@@ -882,10 +888,17 @@ mod tests {
     #[test]
     fn growth_stays_within_what_a_picture_may_keep() {
         let mut decoder = Decoder::new(9, 1);
-        for byte in b"\"1;1;2049;4096" {
+        // A sixel at the last column, its lowest bit on row 4,095.
+        let mut data = b"!2048?".to_vec();
+        data.extend(std::iter::repeat_n(b'-', 682));
+        data.push(0x3f + (1 << 3));
+        for byte in data {
+            decoder.push(byte, &mut |_| true);
+        }
+        assert_eq!((decoder.across, decoder.down), (1, 4096));
+        for byte in b"$!2048?~" {
             decoder.push(*byte, &mut |_| true);
         }
-        decoder.push(b'~', &mut |_| true);
         assert_eq!((decoder.across, decoder.down), (2049, 4096));
         assert!(decoder.bytes() <= MAX_PIXELS * 4, "{}", decoder.bytes());
         let picture = decoder.finish(&mut |_| true);

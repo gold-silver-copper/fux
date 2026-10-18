@@ -144,10 +144,12 @@ fn seeds() -> Vec<Seed> {
                 out.extend(b"\x1b\\");
                 out
             },
-            // Grown one pixel wider each raster, to the widest.
+            // An extent one pixel wider each raster, to the widest: kept
+            // as numbers since SIX-3, so it reaches the widest picture.
             reaches: |r| {
-                ensure(r.work.pixels >= 4096 * 2160, || {
-                    format!("{} pixels of growth", r.work.pixels)
+                let (width, height, _) = shown(r);
+                ensure((width, height) == (4096, 2160), || {
+                    format!("a picture {width}x{height}")
                 })
             },
             fuzz: Fuzz::Terminal,

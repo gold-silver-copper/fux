@@ -327,31 +327,36 @@ fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
     Ok(())
 }
 
-/// However large their data says they are, the pictures hold at most
-/// `PICTURE_BYTES` of pixels, the one being drawn included (`threats.md`
-/// B01): 64 pictures of one pixel whose raster attributes claim the
-/// largest size, 4096 by 2160, and one more left unfinished.
+/// The pictures hold at most `PICTURE_BYTES` of pixels, the one being
+/// drawn included (`threats.md` B01): 64 pictures of the largest size,
+/// 4096 by 2160, drawn to their last pixel, and one more left unfinished.
 #[test]
 fn pictures_hold_no_more_than_their_budget() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
     let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
-    let hostile = b"\x1bP0;1q\"1;1;4096;2160#1;2;100;0;0@";
+    let mut hostile = picture(4096, 2160);
+    hostile.truncate(hostile.len().saturating_sub(2));
     for _ in 0..64 {
-        p.process(hostile)?;
+        p.process(&hostile)?;
         assert!(p.picture_bytes() <= PICTURE_BYTES, "while drawing");
         p.process(b"\x1b\\")?;
         assert!(p.screen().picture_bytes() <= PICTURE_BYTES);
     }
     assert_eq!(p.screen().pictures().count(), 2, "two of the largest fit");
-    p.process(hostile)?;
+    p.process(&hostile)?;
     assert!(p.picture_bytes() <= PICTURE_BYTES, "one more being drawn");
     Ok(())
 }
 
 /// A sixel picture `width` by `height` pixels, square ones, of one red
-/// pixel and the rest clear: its pixels take `width × height × 4` bytes.
+/// pixel drawn at its bottom right and the rest clear: its pixels take
+/// `width × height × 4` bytes.
 fn picture(width: u32, height: u32) -> Vec<u8> {
-    format!("\x1bP0;1q\"1;1;{width};{height}#1;2;100;0;0@\x1b\\").into_bytes()
+    let last = height.saturating_sub(1);
+    let bands: String = std::iter::repeat_n('-', usize::try_from(last / 6).unwrap_or(0)).collect();
+    let bit = char::from(0x3f_u8.saturating_add(1 << (last % 6)));
+    let left = width.saturating_sub(1);
+    format!("\x1bP0;1q\"1;1#1;2;100;0;0{bands}!{left}?{bit}\x1b\\").into_bytes()
 }
 
 /// The numbers of the pictures the screen shows.
@@ -421,11 +426,94 @@ fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
     p.process(&one)?;
     p.set_picture_bytes(48_000);
     assert_eq!(shown(&p), [2], "one fits");
-    p.process(b"\x1b[10;1H\x1bP0;1q\"1;1;100;120#1~")?;
+    let mut unfinished = picture(100, 120);
+    unfinished.truncate(unfinished.len().saturating_sub(2));
+    p.process(b"\x1b[10;1H")?;
+    p.process(&unfinished)?;
     p.set_picture_bytes(47_999);
     assert_eq!(shown(&p), [], "the kept one went first");
     assert!(p.picture_bytes() <= 47_999, "the one being drawn let go");
     p.process(b"\x1b\\")?;
     assert_eq!(shown(&p), [], "with nothing drawn");
+    Ok(())
+}
+
+/// A picture that only declares its size keeps no pixels for it, however
+/// large (`threats.md` B05): its extent reads as the background (colour
+/// register 0 for P2 0 and 2) or clear (P2 1), when shown.
+#[test]
+fn a_declared_extent_keeps_no_pixels() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    for (p2, pixel) in [(0, [0, 0, 0, 255]), (1, [0, 0, 0, 0]), (2, [0, 0, 0, 255])] {
+        let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+        p.process(format!("\x1bP0;{p2}q\"1;1;4096;2160\x1b\\").as_bytes())?;
+        assert_eq!(p.screen().picture_bytes(), 0, "P2 {p2}");
+        let shown = p.screen().pictures().next().ok_or(Error::InvalidRange)?;
+        let size = (shown.picture.width(), shown.picture.height());
+        assert_eq!(size, (4096, 2160), "P2 {p2}");
+        assert_eq!(shown.picture.pixel(4095, 2159), Some(pixel), "P2 {p2}");
+    }
+    Ok(())
+}
+
+/// A picture's cells take the placeholder as a fill, not as text (DEC STD
+/// 070-9, 11.1: "No other information is carried from the ANSI text
+/// state"): insert mode shifts nothing, the pen and protection don't reach
+/// them, a cluster before doesn't take the first, and no print records
+/// them.
+#[test]
+fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    // 20 by 20 pixels: 2 cells by 1 at 10 by 20.
+    let two = picture(20, 20);
+    let row = |p: &crate::Parser| {
+        p.screen()
+            .primary
+            .live_row(0)
+            .map(|r| r.cells_text())
+            .unwrap_or_default()
+    };
+    let ph = PLACEHOLDER;
+    let mut p = crate::Parser::with_options(Size::of(4, 10), 0, options)?;
+    p.record_prints(true);
+    p.process(b"abcdef\r\x1b[4h\x1b[1;7m\x1b[1\"q")?;
+    p.process(&two)?;
+    // A picture's cells read as blanks.
+    assert_eq!(row(&p).trim_end(), "  cdef", "insert mode");
+    let first = p.screen().primary.live_row(0).and_then(|r| r.cell(0));
+    assert_eq!(first.map(|c| c.contents() == ph), Some(true));
+    let attributes = first.map(|c| c.attributes());
+    assert_eq!(attributes, Some(crate::Attributes::default()), "no pen");
+    let prints = p.take_prints();
+    assert!(
+        !prints.iter().any(|run| run.text.contains(ph)),
+        "no print of a placeholder"
+    );
+    let mut p = crate::Parser::with_options(Size::of(4, 10), 0, options)?;
+    p.process("\u{600}".as_bytes())?;
+    p.process(&two)?;
+    assert_eq!(p.screen().pictures().count(), 1, "after a prepend");
+    Ok(())
+}
+
+/// A host's cell is taken as at least a sixel band, 2 by 6 pixels (P5).
+#[test]
+fn a_host_cell_is_at_least_a_sixel_band() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    for (cell, taken) in [
+        ((1, 5), (2, 6)),
+        ((2, 6), (2, 6)),
+        ((3, 7), (3, 7)),
+        ((1, 9), (2, 9)),
+    ] {
+        let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+        p.set_host_graphics(crate::Graphics {
+            cell: Some(cell),
+            sixel: true,
+        });
+        p.process(&picture(6, 12))?;
+        let shown = p.screen().pictures().next().ok_or(Error::InvalidRange)?;
+        assert_eq!(shown.cell, taken, "{cell:?}");
+    }
     Ok(())
 }

@@ -190,32 +190,42 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 }
 
 // B05: a declared extent with nothing drawn allocates and paints nothing,
-// and its placement is a row fill: cells at most 2,201 a byte at a 10×20
-// cell.
+// and its placement is a row fill: cells at most 2,271 a byte at a 10×20
+// cell and 7,577 at the smallest, 2×6 (P5), the line feeds' copies into
+// history included (decision 11; measured at SIX-3's fix).
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    const BOUND: Bound = Bound {
-        work: &[("cells", 2201, 0, 0), ("pixels", 0, 0, 0)],
-        heap: 0,
-    };
-    let bound = Bound {
-        heap: steady(&setup).saturating_add(PICTURE_BYTES),
-        ..BOUND
-    };
     let one = repeat(b"\x1bPq\"1;1;4096;2160\x1b\\", 215);
     let input = repeat(&one, scale.times());
-    let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
-    probe.parser.set_host_graphics(Graphics {
-        cell: Some((10, 20)),
-        sixel: true,
-    });
-    probe.feed(&input)?;
-    // Each picture covers 200 columns of 108 rows.
-    let placed = u64::try_from(scale.times())
-        .unwrap_or(0)
-        .saturating_mul(215 * 200 * 108);
-    probe.at_least("cells", placed)?;
-    probe.finish()
+    for (cell, per_byte, rows) in [((10, 20), 2271, 108), ((2, 6), 7577, 360)] {
+        let bound = Bound {
+            work: &[("pixels", 0, 0, 0)],
+            heap: steady(&setup),
+        };
+        let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
+        probe.parser.set_host_graphics(Graphics {
+            cell: Some(cell),
+            sixel: true,
+        });
+        probe.feed(&input)?;
+        let most = u64::try_from(input.len())
+            .unwrap_or(0)
+            .saturating_mul(per_byte);
+        if probe.counted("cells") > most {
+            return Err(format!(
+                "{} cells past {most} at a {cell:?} cell",
+                probe.counted("cells")
+            ));
+        }
+        // Each picture covers 200 columns of its rows.
+        let placed = u64::try_from(scale.times())
+            .unwrap_or(0)
+            .saturating_mul(215 * 200)
+            .saturating_mul(rows);
+        probe.at_least("cells", placed)?;
+        probe.finish()?;
+    }
+    Ok(())
 }
 
 // B06: a parser cloned mid-picture copies the picture being drawn: the
