@@ -219,12 +219,21 @@ impl Compact {
             let len = usize::from(at != 0);
             return ASCII.get(at..at.saturating_add(len)).unwrap_or("");
         }
+        str::from_utf8(self.inline_bytes()).unwrap_or("")
+    }
+    /// The inline text's bytes, unread as UTF-8; none for a spilled cell.
+    #[inline]
+    fn inline_bytes(&self) -> &[u8] {
+        if self.is_spilled() {
+            return &[];
+        }
         // The bytes up to the last that is not zero: text has none inside.
-        let len = usize::try_from(32u32.saturating_sub(word.leading_zeros()).div_ceil(8));
-        len.ok()
+        let word = u32::from_le_bytes(self.text);
+        let len = 32u32.saturating_sub(word.leading_zeros()).div_ceil(8);
+        usize::try_from(len)
+            .ok()
             .and_then(|len| self.text.get(..len))
-            .and_then(|s| str::from_utf8(s).ok())
-            .unwrap_or("")
+            .unwrap_or_default()
     }
     /// The first character of the inline text; none for a spilled cell.
     #[inline]
@@ -314,6 +323,28 @@ impl Text {
             .and_then(|end| held.get(start..end))
             .and_then(|s| str::from_utf8(s).ok())
             .unwrap_or("")
+    }
+    /// `of`'s bytes, unread as UTF-8: what an append copies.
+    #[inline]
+    fn bytes_of<'a>(&'a self, cell: &'a Compact) -> &'a [u8] {
+        let Some((start, len)) = cell.locator() else {
+            return cell.inline_bytes();
+        };
+        let held = if len > SHORT { &self.long } else { &self.short };
+        start
+            .checked_add(len)
+            .and_then(|end| held.get(start..end))
+            .unwrap_or_default()
+    }
+    /// The bytes an append to `cell` follows: its text, or a space for an
+    /// empty cell.
+    #[inline]
+    fn followed<'a>(&'a self, cell: &'a Compact) -> &'a [u8] {
+        if cell.has_contents() {
+            self.bytes_of(cell)
+        } else {
+            b" "
+        }
     }
     /// Bytes of long clusters kept, live or left behind: the row's
     /// `text_len`, at most `long_limit` of its cells. The short clusters are
@@ -431,12 +462,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         let Some(&cell) = self.cells.get(i).map(AsRef::as_ref) else {
             return false;
         };
-        let current = if cell.has_contents() {
-            self.text.of(&cell)
-        } else {
-            " "
-        };
-        let Some(end) = current
+        let Some(end) = (self.text.followed(&cell))
             .len()
             .checked_add(c.len_utf8())
             .filter(|end| *end <= CLUSTER_CAPACITY)
@@ -447,23 +473,6 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         work!(text, end);
         let mut encoded = [0; 4];
         let encoded = c.encode_utf8(&mut encoded).as_bytes();
-        // Whole UTF-8 then a character's encoding is whole UTF-8.
-        let mut buffer = [0u8; CLUSTER_CAPACITY];
-        let Some((head, tail)) = buffer
-            .get_mut(..end)
-            .and_then(|joined| joined.split_at_mut_checked(current.len()))
-        else {
-            return false;
-        };
-        if crate::copy_from(head, current.as_bytes())
-            .and_then(|()| crate::copy_from(tail, encoded))
-            .is_none()
-        {
-            return false;
-        }
-        let Some(joined) = buffer.get(..end) else {
-            return false;
-        };
         let long = end > SHORT;
         let limit = Text::long_limit(self.cells.len());
         // In place, when the cluster is the last text of its length the
@@ -484,10 +493,21 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             }
             return true;
         }
+        // Else joined in a buffer as long as a cluster of its kind is:
+        // whole UTF-8 then a character's encoding is whole UTF-8.
+        let current = self.text.followed(&cell);
         if !long {
+            let mut buffer = [0u8; SHORT];
+            let Some(joined) = join(&mut buffer, current, encoded) else {
+                return false;
+            };
             self.store_short(i, cell, joined);
             return true;
         }
+        let mut buffer = [0u8; CLUSTER_CAPACITY];
+        let Some(joined) = join(&mut buffer, current, encoded) else {
+            return false;
+        };
         // Unlike `set`, the cell keeps what it has if the row has no room,
         // even compacted: an append never loses text.
         self.store_long(i, cell, joined, false)
@@ -687,6 +707,15 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             .get(i)
             .map_or("", |cell| self.text.of(cell.as_ref()))
     }
+}
+
+/// `head` then `tail` in `buffer`, if they fit: the bytes it holds.
+fn join<'a>(buffer: &'a mut [u8], head: &[u8], tail: &[u8]) -> Option<&'a [u8]> {
+    let end = head.len().checked_add(tail.len())?;
+    let (first, second) = buffer.get_mut(..end)?.split_at_mut_checked(head.len())?;
+    crate::copy_from(first, head)?;
+    crate::copy_from(second, tail)?;
+    buffer.get(..end)
 }
 
 #[cfg(test)]
