@@ -285,10 +285,6 @@ enum State {
     /// A DECRQSS (`DCS $ q Pt ST`) with [`Feature::SettingReports`]: its
     /// request so far, `None` once it ran past any setting fux-vt knows.
     Request(Option<Bytes<REQUEST_LIMIT>>),
-    /// An XTGETTCAP (`DCS + q Pt ST`) with [`Feature::SettingReports`]: read
-    /// to its end and nothing kept, as fux-vt names no capability; answered
-    /// then as an invalid request.
-    Termcap,
     /// An OSC string, its payload the parser's: `whole` until it ran past
     /// what is kept of one.
     Osc { whole: bool },
@@ -964,6 +960,11 @@ pub struct Parser {
     params: Parameters,
     /// The picture sixel data is drawing, in `State::Sixel`.
     sixel: Option<Box<crate::sixel::Decoder>>,
+    /// The string being ignored (`State::IgnoreString`) is an XTGETTCAP
+    /// (`DCS + q Pt ST`) with [`Feature::SettingReports`]: read to its end
+    /// and nothing kept, as fux-vt names no capability, and answered then
+    /// as an invalid request.
+    termcap: bool,
     /// The work `process_until_stop` spent since it last stopped at the
     /// budget ([`Stop::Budget`]), over as many calls as that took: so a
     /// host that cuts its reads small still stops at the budget.
@@ -1006,6 +1007,7 @@ impl Parser {
             state: State::Ground,
             params: Parameters::default(),
             sixel: None,
+            termcap: false,
             spent: 0,
             end: u64::MAX,
             refused: 0,
@@ -1684,6 +1686,7 @@ impl Parser {
         }
         self.state = State::Ground;
         self.sixel = None;
+        self.termcap = false;
         if byte == 0x1a && !matches!(state, State::Sixel) {
             let done = self.substitute();
             self.kept(done);
@@ -1725,7 +1728,9 @@ impl Parser {
                 State::Request(request) => self.dispatch_request(request, sink),
                 // ctlseqs, XTGETTCAP: "DCS 0 + r ST for invalid requests";
                 // fux-vt knows no capability names.
-                State::Termcap => sink.reply(b"\x1bP0+r\x1b\\"),
+                State::IgnoreString if std::mem::take(&mut self.termcap) => {
+                    sink.reply(b"\x1bP0+r\x1b\\");
+                }
                 State::Sixel => {
                     let screen = &mut self.screen;
                     let picture = (self.sixel.take())
@@ -1781,7 +1786,7 @@ impl Parser {
                 self.state = State::Request(request.and_then(|r| r.push(byte)));
                 return None;
             }
-            State::IgnoreString | State::Termcap => return None,
+            State::IgnoreString => return None,
             State::Sixel => {
                 // BEL rings as in text (DEC STD 070, sixel graphics, 9.1).
                 if byte == 0x07 {
@@ -1873,7 +1878,8 @@ impl Parser {
                     self.state = if decrqss {
                         State::Request(Some(Bytes::default()))
                     } else if termcap {
-                        State::Termcap
+                        self.termcap = true;
+                        State::IgnoreString
                     } else if sixel {
                         self.sixel = Some(crate::sixel::Decoder::new(
                             self.params.first(0, 0),
