@@ -363,7 +363,7 @@ fn an_identity_answers_device_attributes_and_version_queries() -> Result {
     // Without one, fux-vt's own answers, and XTVERSION goes unanswered.
     let mut p = Parser::new(Size::new(5, 20)?, 0)?;
     let record = run(&mut p, b"\x1b[c\x1b[>c\x1b[>q01234567890123456789\x1b[6n")?;
-    assert_eq!(record.replies, ["\x1b[?1;2c", "\x1b[1;21R"]);
+    assert_eq!(record.replies, ["\x1b[?1;2c", "\x1b[1;20R"]);
     // A missing parameter is reported as 0.
     assert_eq!(record.unhandled, ["CSI >0c", "CSI >0q"]);
     Ok(())

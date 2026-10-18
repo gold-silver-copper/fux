@@ -642,9 +642,11 @@ fn replies(rows: u16, cols: u16, identity: bool, bytes: &[u8]) -> Result<Vec<Str
 /// algorithms, pages 5-53 to 5-56; the VT100 User Guide, chapter 3, CPR:
 /// "The numbering of lines depends on the state of the Origin Mode";
 /// xterm's charproc.c, `CASE_CPR`). Without left and right margins the
-/// column is the screen's (with them, see `margins.rs`). A cursor waiting to wrap keeps its column
-/// rule, one past the last column, or the last with an identity, in
-/// either mode. Expected values are xterm's (`fux-vt-compare replay
+/// column is the screen's (with them, see `margins.rs`). A cursor waiting
+/// to wrap reports its column, the last, with an identity or without:
+/// CPR reports "the active presentation position" (ECMA-48 8.3.14), "the
+/// Active Line and Active Column" (DEC STD 070, CPR, p. 5-53), and the Last
+/// Column Flag is a flag, not a column (Appendix D.6.1). Expected values are xterm's (`fux-vt-compare replay
 /// --engines all --size 12x10 '\e[6;11r\e[?6h\e[2d\e[6n'`: Ghostty,
 /// WezTerm and avt agree; alacritty, libvterm, xterm.js and tmux report
 /// from the screen's top).
@@ -666,7 +668,7 @@ fn cursor_reports_count_lines_from_the_top_margin_in_origin_mode() -> Result {
     }
     // At the last column, waiting to wrap, in the region's second line.
     let wrap = b"\x1b[6;11r\x1b[?6h\x1b[2;1H0123456789\x1b[6n";
-    assert_eq!(replies(12, 10, false, wrap)?, ["\x1b[2;11R"]);
+    assert_eq!(replies(12, 10, false, wrap)?, ["\x1b[2;10R"]);
     assert_eq!(replies(12, 10, true, wrap)?, ["\x1b[2;10R"]);
     // DECSC kept the cursor above where the margins now begin: its line
     // would be negative. xterm's subtraction wraps (it reports 65532),

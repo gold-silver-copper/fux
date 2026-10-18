@@ -830,18 +830,12 @@ impl Screen {
     /// is counted as CUP addresses it: from the top margin with DECOM set
     /// (DEC STD 070, CPR and DECXCPR, pages 5-53 to 5-56; xterm's
     /// `CASE_CPR`), and a cursor above the margin, should one be, on the
-    /// first line. A cursor waiting to wrap is reported one past
-    /// the last column, as the vt100 crate did; with an identity it is
-    /// reported at the last column, as xterm does.
-    pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
+    /// first line. A cursor waiting to wrap is reported at its column, the
+    /// last: the Last Column Flag is a flag (DEC STD 070, D.6.1), and CPR
+    /// reports the active position (ECMA-48 8.3.14; DEC STD 070, CPR).
+    pub(crate) fn reported_cursor(&self) -> (u32, u32) {
         let g = self.grid();
-        let col = if options.identity().is_some() {
-            g.cursor.col()
-        } else {
-            g.cursor
-                .col()
-                .saturating_add(u16::from(self.pending_wrap()))
-        };
+        let col = g.cursor.col();
         // In origin mode the column counts from the left margin, as xterm
         // reports it.
         let col = col.saturating_sub(g.addressed().1.first());
@@ -2941,7 +2935,7 @@ impl Screen {
             b'n' => match p.first(0, 0) {
                 5 => return Ok(Dispatch::Reply(reply!("\x1b[0n"))),
                 6 => {
-                    let (row, col) = self.reported_cursor(options);
+                    let (row, col) = self.reported_cursor();
                     let reply = reply!("\x1b[{row};{col}R");
                     return Ok(Dispatch::Reply(reply));
                 }
@@ -3011,7 +3005,7 @@ impl Screen {
             }
             (b"?", b'n') if extended => match n {
                 6 => {
-                    let (row, col) = self.reported_cursor(options);
+                    let (row, col) = self.reported_cursor();
                     Some(reply!("\x1b[?{row};{col}R"))
                 }
                 // The DSRs of DEC's other devices, which fux-vt has none
