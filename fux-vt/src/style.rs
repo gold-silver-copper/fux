@@ -154,6 +154,29 @@ impl Styles {
         self.table.len()
     }
 
+    /// The bytes the table takes: its entries' room and its map's buckets.
+    pub(crate) fn bytes(&self) -> usize {
+        table_bytes(self.table.capacity(), self.places.capacity())
+    }
+
+    /// Whether one more style grows its room, the entries' or the map's.
+    pub(crate) fn full(&self) -> bool {
+        self.table.len() == self.table.capacity() || self.places.len() == self.places.capacity()
+    }
+
+    /// The bytes it takes once one more style is in: each room doubled if
+    /// full.
+    pub(crate) fn bytes_after_insert(&self) -> usize {
+        let grown = |len: usize, room: usize| match len < room {
+            true => room,
+            false => room.saturating_mul(2).max(4),
+        };
+        table_bytes(
+            grown(self.table.len(), self.table.capacity()),
+            grown(self.places.len(), self.places.capacity()),
+        )
+    }
+
     /// The number of the style with `attributes`, if the table has it.
     pub(crate) fn find(&self, attributes: Attributes) -> Option<u32> {
         self.places.get(&attributes).map(|place| place | TABLE)
@@ -186,7 +209,20 @@ impl Styles {
     /// style's number becomes; a style let go becomes 0.
     pub(crate) fn retain(&mut self, used: &[bool]) -> Vec<u32> {
         let table = std::mem::take(&mut self.table);
-        self.places.clear();
+        // Room for twice the styles kept, as many as the next sweep lets in
+        // past the floor: a map with more is made anew, as one cleared
+        // keeps its buckets, and its bytes count (B11).
+        let room = used
+            .iter()
+            .filter(|used| **used)
+            .count()
+            .saturating_mul(2)
+            .max(FLOOR);
+        if self.places.capacity() > room {
+            self.places = HashMap::with_capacity_and_hasher(room, Keyed);
+        } else {
+            self.places.clear();
+        }
         let used = used.iter().chain(std::iter::repeat(&false));
         let renumber = (table.iter().zip(used))
             .map(|(attributes, used)| match used {
@@ -197,6 +233,27 @@ impl Styles {
         self.live = self.table.len();
         renumber
     }
+}
+
+/// The bytes of a table of `entries` entries' room and a map of `room`
+/// places' room: the entries, and each bucket's place and control byte, a
+/// map's buckets being its room's power of two past 8 for each 7.
+fn table_bytes(entries: usize, room: usize) -> usize {
+    let buckets = match room {
+        0 => 0,
+        1..=7 => room.saturating_add(1).next_power_of_two(),
+        _ => (room.saturating_mul(8) / 7).next_power_of_two(),
+    };
+    let bucket = size_of::<(Attributes, u32)>().saturating_add(1);
+    (entries.saturating_mul(size_of::<Attributes>())).saturating_add(buckets.saturating_mul(bucket))
+}
+
+/// The bytes a screen of `cells` cells may keep in its style table beside
+/// history's budget: a table of twice its cells' styles, or the floor's
+/// (`threats.md` B11, S(2N)).
+pub(crate) fn screen_share(cells: usize) -> usize {
+    let entries = cells.saturating_mul(2).max(FLOOR).next_power_of_two();
+    table_bytes(entries, entries.saturating_mul(7) / 8)
 }
 
 /// The table's part of the invariant checker (threats.md section 6).

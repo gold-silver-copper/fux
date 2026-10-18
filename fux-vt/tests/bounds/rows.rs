@@ -403,29 +403,13 @@ fn history_peak(history: usize) -> usize {
     term.saturating_add(term / 2)
 }
 
-/// The screens' share of the style tables (`threats.md` B11), both grids.
-fn styles_term(setup: &Setup) -> usize {
-    let entries = setup
-        .cells()
-        .saturating_mul(2)
-        .next_power_of_two()
-        .max(4096);
-    entries
-        .saturating_mul(43)
-        .saturating_add(16)
-        .saturating_mul(2)
-}
-
-// B11: the style table's bytes count in history's budget.
+// B11: the style table's bytes count in history's budget: the heap within
+// the formula, less the links, which this input opens none of.
 pub fn b11(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().history(1 << 20);
-    let terms = [
-        styles_term(&setup),
-        history_term(setup.history),
-        history_term(setup.history) / 2,
-        171_072,
-    ];
-    let bound = heap(terms.into_iter().fold(0, usize::saturating_add));
+    let runs = usize::from(setup.rows).saturating_mul(2 * 256 * 48);
+    let links = runs.saturating_add(2 * (4 << 20));
+    let bound = heap(steady(&setup).saturating_sub(links));
     let count = u32::try_from(scale.times())
         .unwrap_or(0)
         .saturating_mul(150_000);

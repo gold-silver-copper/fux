@@ -346,6 +346,10 @@ fux-vt's work counters and a counting allocator against it.
 - **Styles** (B12): a program can't choose colours that collide in the
   style table: its hash takes both of a style's words, keyed once a
   process from std's random keys.
+- **The style table** (B11): its bytes past what the screen alone may
+  need (twice its cells' styles) count in `history_bytes`, so the oldest
+  history rows go as it grows, and when they all have, the styles no cell
+  shows go.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.

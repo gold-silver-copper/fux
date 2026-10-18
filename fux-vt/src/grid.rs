@@ -850,20 +850,45 @@ impl Grid {
             None => {
                 work!(inserts, 1);
                 let cells = self.cells.len().saturating_add(self.history.kept_cells());
-                if self.styles.wants_sweep(cells) {
+                let mut swept = self.styles.wants_sweep(cells);
+                if swept {
                     self.sweep();
+                }
+                // Its bytes change only as its room grows, or a sweep:
+                // history makes room for them first, and if it can't, the
+                // styles only it held go too.
+                let grows = self.styles.full();
+                if grows && !self.make_style_room() {
+                    self.sweep();
+                    swept = true;
                 }
                 // After a sweep there is room: the styles in use are at
                 // most the cells, far fewer than the table holds.
-                Arc::make_mut(&mut self.styles)
+                let id = Arc::make_mut(&mut self.styles)
                     .insert(attributes)
-                    .unwrap_or(0)
+                    .unwrap_or(0);
+                if grows || swept {
+                    let share = crate::style::screen_share(self.cells.len());
+                    self.history
+                        .charge(self.styles.bytes().saturating_sub(share));
+                }
+                id
             }
         };
         if let Some(slot) = self.recent.get_mut(at) {
             *slot = (attributes, id);
         }
         id
+    }
+
+    /// Charges the style table's bytes, one more style in it, beyond the
+    /// screen's share to history's budget, the oldest rows going to fit
+    /// (`threats.md` B11); whether they fit, with no rows if need be.
+    fn make_style_room(&mut self) -> bool {
+        let share = crate::style::screen_share(self.cells.len());
+        let after = self.styles.bytes_after_insert().saturating_sub(share);
+        self.history.charge(after);
+        !(after > self.history.budget())
     }
 
     /// Keeps only the styles cells have, numbered anew, and gives every

@@ -187,6 +187,11 @@ pub(crate) struct History {
     text: usize,
     /// The most bytes the rows hold (`bytes`) once trimmed.
     budget: usize,
+    /// Bytes counted in the budget beside the rows': the grid's style
+    /// table's beyond the screen's share (`threats.md` B11).
+    charged: usize,
+    /// What the rows may hold: the budget less what is charged.
+    room: usize,
     /// The newest version of a row let go past the budget.
     pub(crate) let_go: u64,
 }
@@ -195,6 +200,7 @@ impl History {
     pub(crate) fn new(budget: usize) -> Self {
         Self {
             budget,
+            room: budget,
             ..Self::default()
         }
     }
@@ -204,11 +210,24 @@ impl History {
     pub(crate) fn budget(&self) -> usize {
         self.budget
     }
-    /// The bytes the rows hold: each one's record, its cells and its text.
+    /// The bytes the rows hold: each one's record, its cells and its text;
+    /// and the bytes charged to it.
+    #[cfg(any(test, feature = "checks"))]
     pub(crate) fn bytes(&self) -> usize {
+        self.rows_bytes().saturating_add(self.charged)
+    }
+    /// The bytes the rows hold.
+    fn rows_bytes(&self) -> usize {
         (self.rows.len().saturating_mul(size_of::<Kept>()))
             .saturating_add(self.cells.saturating_mul(size_of::<Compact>()))
             .saturating_add(self.text)
+    }
+    /// Counts `bytes` in the budget beside the rows, in place of what was
+    /// charged before, and lets the oldest rows go to fit.
+    pub(crate) fn charge(&mut self, bytes: usize) {
+        self.charged = bytes;
+        self.room = self.budget.saturating_sub(bytes);
+        self.trim();
     }
     /// The most rows the budget holds, and one more, as a row comes in
     /// before the oldest goes.
@@ -223,7 +242,9 @@ impl History {
     #[inline]
     pub(crate) fn trim(&mut self) {
         while !self.rows.is_empty()
-            && (self.bytes() > self.budget || self.rows.len() > MAX_ROWS || self.cells > MAX_CELLS)
+            && (self.rows_bytes() > self.room
+                || self.rows.len() > MAX_ROWS
+                || self.cells > MAX_CELLS)
         {
             self.pop();
         }
@@ -232,6 +253,7 @@ impl History {
     /// go at once if it holds more.
     pub(crate) fn set_budget(&mut self, budget: usize) {
         self.budget = budget;
+        self.room = budget.saturating_sub(self.charged);
         self.trim();
         self.rows.shrink_to(self.most_rows());
     }
