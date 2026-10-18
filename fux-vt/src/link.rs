@@ -17,7 +17,7 @@
 //! counted again, and the oldest history rows lose theirs if need be
 //! (`Grid::make_room`).
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -39,25 +39,52 @@ const LINK_COST: usize = 64;
 const STALL: u32 = 256;
 
 /// A cell's hyperlink: where it points, the program's `id` for it, if it
-/// gave one, and a number that tells links apart. Cloning it is cheap: the
-/// URI and `id` are shared.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// gave one, and a number that tells links apart. Cloning it is cheap: its
+/// URI and `id` are one shared string, made with one allocation.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Hyperlink {
-    pub(crate) key: u64,
-    pub(crate) uri: Arc<str>,
-    pub(crate) id: Option<Arc<str>>,
+    key: u64,
+    /// The URI, after the `id` between two NULs if it has one: neither
+    /// holds a NUL (`parse` keeps them printable ASCII), and a URI is never
+    /// empty, so a link without an `id` costs no search to read its URI.
+    text: Arc<str>,
 }
 
 impl Hyperlink {
+    /// The link numbered `key` to `uri`, with `id` if it has one.
+    pub(crate) fn new(key: u64, uri: &str, id: Option<&str>) -> Self {
+        let text = match id {
+            Some(id) => {
+                let len = id.len().saturating_add(uri.len()).saturating_add(2);
+                let mut text = String::with_capacity(len);
+                for part in ["\0", id, "\0", uri] {
+                    text.push_str(part);
+                }
+                Arc::from(text)
+            }
+            None => Arc::from(uri),
+        };
+        Self { key, text }
+    }
+    /// The `id` and the URI.
+    fn parts(&self) -> (Option<&str>, &str) {
+        match self.text.strip_prefix('\0') {
+            Some(rest) => match rest.split_once('\0') {
+                Some((id, uri)) => (Some(id), uri),
+                None => (None, rest),
+            },
+            None => (None, &self.text),
+        }
+    }
     /// The URI, as the program sent it: at most [`URI_LIMIT`] bytes, each a
     /// printable ASCII character.
     pub fn uri(&self) -> &str {
-        &self.uri
+        self.parts().1
     }
     /// The `id` parameter the program gave the link, if it gave a nonempty
     /// one: at most [`ID_LIMIT`] printable ASCII bytes.
     pub fn id(&self) -> Option<&str> {
-        self.id.as_deref()
+        self.parts().0
     }
     /// A number that identifies the link among the parser's links, never
     /// given to another: cells with the same key are one link, as the spec
@@ -68,38 +95,118 @@ impl Hyperlink {
     pub fn key(&self) -> u64 {
         self.key
     }
-    /// What the link costs its grid.
+    /// What the link costs its grid: its URI and `id`, and `LINK_COST`.
     fn cost(&self) -> usize {
-        (self.uri.len())
-            .saturating_add(self.id.as_deref().map_or(0, str::len))
+        let (id, uri) = self.parts();
+        (uri.len())
+            .saturating_add(id.map_or(0, str::len))
             .saturating_add(LINK_COST)
     }
 }
 
+/// As its fields: the key, the URI and the `id`.
+impl std::fmt::Debug for Hyperlink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hyperlink")
+            .field("key", &self.key())
+            .field("uri", &self.uri())
+            .field("id", &self.id())
+            .finish()
+    }
+}
+
+/// A link with an `id`, found by its `id` and URI (`Links::ids`).
+#[derive(Clone, Debug)]
+struct ById(Hyperlink);
+
+impl PartialEq for ById {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.text == other.0.text
+    }
+}
+
+impl Eq for ById {}
+
+impl std::hash::Hash for ById {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.text.hash(state);
+    }
+}
+
 /// A row's links: runs of cells with one link each, left to right and
-/// apart; a cell in no run has none.
+/// apart; a cell in no run has none. A row of the screen keeps its list's
+/// memory for the slot's next row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RowLinks(Vec<Run>);
 
+/// A history row's links, as `RowLinks` keeps them, in the memory they
+/// need: one run, as a row with one link has, in place, with no memory of
+/// its own, and more in a list of their own size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum KeptLinks {
+    One(Run),
+    Many(Box<[Run]>),
+}
+
+/// A row's links to read: its runs, left to right.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Runs<'a>(&'a [Run]);
+
 /// Cells `start..end` of a row, and their link.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Run {
+pub(crate) struct Run {
     start: u16,
     end: u16,
     link: Hyperlink,
 }
 
-impl RowLinks {
-    /// The bytes its runs take.
-    pub(crate) fn heap(&self) -> usize {
-        self.0.capacity().saturating_mul(size_of::<Run>())
-    }
-    /// Gives back its room past twice its runs: a row going into history
-    /// keeps about what it has, without a copy for each row.
-    pub(crate) fn shrink(&mut self) {
-        if self.0.capacity() > self.0.len().saturating_mul(2) {
-            self.0.shrink_to_fit();
+const _: () = assert!(size_of::<Run>() == 32 && size_of::<KeptLinks>() == 32);
+
+impl KeptLinks {
+    /// The links `links` has, taken out of it, which keeps its memory;
+    /// `None` if it has none.
+    pub(crate) fn take(links: &mut RowLinks) -> Option<Self> {
+        match links.0.len() {
+            0 => None,
+            1 => links.0.pop().map(Self::One),
+            n => {
+                // Moved out, last first, into a list of their own size.
+                let mut runs = Vec::with_capacity(n);
+                runs.extend(std::iter::from_fn(|| links.0.pop()));
+                runs.reverse();
+                Some(Self::Many(runs.into_boxed_slice()))
+            }
         }
+    }
+    /// A copy of `runs`; `None` if there are none.
+    pub(crate) fn of(runs: Runs<'_>) -> Option<Self> {
+        match runs.0 {
+            [] => None,
+            [run] => Some(Self::One(run.clone())),
+            runs => Some(Self::Many(runs.into())),
+        }
+    }
+    /// Its runs.
+    pub(crate) fn runs(&self) -> Runs<'_> {
+        match self {
+            Self::One(run) => Runs(std::slice::from_ref(run)),
+            Self::Many(runs) => Runs(runs),
+        }
+    }
+    /// The bytes its runs take beyond itself.
+    pub(crate) fn heap(&self) -> usize {
+        match self {
+            Self::One(_) => 0,
+            Self::Many(runs) => runs.len().saturating_mul(size_of::<Run>()),
+        }
+    }
+}
+
+impl RowLinks {
+    /// Its runs.
+    #[inline]
+    pub(crate) fn runs(&self) -> Runs<'_> {
+        Runs(&self.0)
     }
     /// Whether no cell has a link.
     pub(crate) fn is_empty(&self) -> bool {
@@ -108,32 +215,6 @@ impl RowLinks {
     /// Drops every link, keeping the memory for the slot's next row.
     pub(crate) fn clear(&mut self) {
         self.0.clear();
-    }
-    /// The link of the cell at `col`.
-    pub(crate) fn get(&self, col: usize) -> Option<&Hyperlink> {
-        let col = u16::try_from(col).ok()?;
-        let at = self.0.partition_point(|run| run.end <= col);
-        self.0
-            .get(at)
-            .filter(|run| run.start <= col)
-            .map(|run| &run.link)
-    }
-    /// Each link of the cells `cells`, with the cells that have it there,
-    /// counted from the first of `cells`.
-    pub(crate) fn within(
-        &self,
-        cells: Range<usize>,
-    ) -> impl Iterator<Item = (Range<usize>, &Hyperlink)> {
-        self.0.iter().filter_map(move |run| {
-            let start = usize::from(run.start).max(cells.start);
-            let end = usize::from(run.end).min(cells.end);
-            let at = start.saturating_sub(cells.start);
-            (start < end).then(|| (at..at.saturating_add(end.saturating_sub(start)), &run.link))
-        })
-    }
-    /// Every link of the row, once a run.
-    pub(crate) fn links(&self) -> impl Iterator<Item = &Hyperlink> {
-        self.0.iter().map(|run| &run.link)
     }
     /// Gives the cells `span` link `link`, or none; whether a cell's link
     /// changed. A span past what a row holds changes nothing. Inlined for
@@ -262,10 +343,39 @@ impl RowLinks {
         });
         self.tidy();
     }
+}
+
+impl<'a> Runs<'a> {
+    /// The link of the cell at `col`.
+    pub(crate) fn get(self, col: usize) -> Option<&'a Hyperlink> {
+        let col = u16::try_from(col).ok()?;
+        let at = self.0.partition_point(|run| run.end <= col);
+        self.0
+            .get(at)
+            .filter(|run| run.start <= col)
+            .map(|run| &run.link)
+    }
+    /// Each link of the cells `cells`, with the cells that have it there,
+    /// counted from the first of `cells`.
+    pub(crate) fn within(
+        self,
+        cells: Range<usize>,
+    ) -> impl Iterator<Item = (Range<usize>, &'a Hyperlink)> {
+        self.0.iter().filter_map(move |run| {
+            let start = usize::from(run.start).max(cells.start);
+            let end = usize::from(run.end).min(cells.end);
+            let at = start.saturating_sub(cells.start);
+            (start < end).then(|| (at..at.saturating_add(end.saturating_sub(start)), &run.link))
+        })
+    }
+    /// Every link of the row, once a run.
+    pub(crate) fn links(self) -> impl Iterator<Item = &'a Hyperlink> {
+        self.0.iter().map(|run| &run.link)
+    }
     /// The links of the cells before `width`.
-    pub(crate) fn clipped(&self, width: usize) -> RowLinks {
+    pub(crate) fn clipped(self, width: usize) -> RowLinks {
         let width = u16::try_from(width).unwrap_or(u16::MAX);
-        let mut links = self.clone();
+        let mut links = RowLinks(self.0.to_vec());
         links.remake(|run| [(run.start, run.end.min(width)), (0, 0), (0, 0)]);
         links.tidy();
         links
@@ -281,7 +391,7 @@ pub(crate) struct Links {
     held: usize,
     /// The links with an `id`, by `id` and URI, until the rows are counted
     /// without them.
-    ids: HashMap<(Arc<str>, Arc<str>), Hyperlink>,
+    ids: HashSet<ById>,
     /// Links still to refuse before making room is tried again.
     stalled: u32,
     /// The link the program has open (`Screen::link`), as the grid has it.
@@ -296,22 +406,21 @@ impl Links {
         self.held == 0
     }
     /// The held link with this `id` and URI.
-    pub(crate) fn find(&self, uri: &Arc<str>, id: &Arc<str>) -> Option<&Hyperlink> {
-        self.ids.get(&(Arc::clone(id), Arc::clone(uri)))
+    pub(crate) fn find(&self, opened: &Hyperlink) -> Option<&Hyperlink> {
+        let found = self.ids.get(&ById(opened.clone()));
+        found.map(|link| &link.0)
     }
-    /// A new link, sharing the strings of the link opened; `None` if it
-    /// does not fit without making room.
+    /// A new link, the link opened shared; `None` if it does not fit
+    /// without making room.
     pub(crate) fn insert(&mut self, opened: &Hyperlink) -> Option<Hyperlink> {
         let link = opened.clone();
-        let (uri, id) = (&link.uri, link.id.as_ref());
         let held = self.held.saturating_add(link.cost());
         if held > LINK_BYTES {
             return None;
         }
         self.held = held;
-        if let Some(id) = id {
-            self.ids
-                .insert((Arc::clone(id), Arc::clone(uri)), link.clone());
+        if link.id().is_some() {
+            self.ids.replace(ById(link.clone()));
         }
         Some(link)
     }
@@ -323,7 +432,7 @@ impl Links {
     /// held, and the links with an `id` that no row is left with go.
     pub(crate) fn sweep<'a>(
         &mut self,
-        rows: impl Iterator<Item = (Option<usize>, &'a RowLinks)>,
+        rows: impl Iterator<Item = (Option<usize>, Runs<'a>)>,
         len: usize,
     ) -> usize {
         // Each link once, with the newest row that has it, a row of the
@@ -332,7 +441,7 @@ impl Links {
         let mut seen: Vec<(u64, usize, usize)> = Vec::new();
         for (row, links) in rows {
             let row = row.unwrap_or(usize::MAX);
-            seen.extend(links.links().map(|link| (link.key, row, link.cost())));
+            seen.extend(links.links().map(|link| (link.key(), row, link.cost())));
         }
         // Each run, each history row's share, each `id` and the sort's
         // steps, ⌈log2 runs⌉ × runs ÷ 16 (threats.md B16).
@@ -372,8 +481,8 @@ impl Links {
             lose = lose.saturating_add(1);
         }
         self.held = live;
-        self.ids.retain(|_, link| {
-            let at = seen.binary_search_by_key(&link.key, |&(key, _, _)| key);
+        self.ids.retain(|ById(link)| {
+            let at = seen.binary_search_by_key(&link.key(), |&(key, _, _)| key);
             at.ok()
                 .and_then(|at| seen.get(at))
                 .is_some_and(|&(_, row, _)| row >= lose)
@@ -399,19 +508,20 @@ impl Links {
     /// links the rows have, which are held.
     #[cfg(test)]
     pub(crate) fn costs<'a>(&self, live: impl Iterator<Item = &'a Hyperlink>) -> (usize, usize) {
-        let live: HashMap<u64, usize> = live.map(|link| (link.key, link.cost())).collect();
+        let live: std::collections::HashMap<u64, usize> =
+            live.map(|link| (link.key(), link.cost())).collect();
         (self.held, live.values().sum())
     }
 }
 
 /// The links' part of the invariant checker (threats.md section 6).
 #[cfg(feature = "checks")]
-impl RowLinks {
+impl Runs<'_> {
     /// 24: the runs lie inside a row `width` wide, each of a cell or more,
     /// left to right and apart, with links within the spec's limits.
-    pub(crate) fn check(&self, width: usize) -> Result<(), String> {
+    pub(crate) fn check(self, width: usize) -> Result<(), String> {
         let mut end = 0u16;
-        for run in &self.0 {
+        for run in self.0 {
             crate::check::ensure(
                 end <= run.start && run.start < run.end && usize::from(run.end) <= width,
                 || {
@@ -422,9 +532,9 @@ impl RowLinks {
                 },
             )?;
             end = run.end;
-            let id = run.link.id.as_deref().map_or(0, str::len);
-            crate::check::ensure(run.link.uri.len() <= URI_LIMIT && id <= ID_LIMIT, || {
-                format!("a link of {} and {id} bytes", run.link.uri.len())
+            let (uri, id) = (run.link.uri().len(), run.link.id().map_or(0, str::len));
+            crate::check::ensure(uri <= URI_LIMIT && id <= ID_LIMIT, || {
+                format!("a link of {uri} and {id} bytes")
             })?;
         }
         Ok(())
@@ -436,15 +546,15 @@ impl Links {
     /// 23 and 24: what the links held cost is at most the bound, and at
     /// least what the links `rows` have cost, each link once; each with an
     /// `id` is found by it.
-    pub(crate) fn check<'a>(&self, rows: impl Iterator<Item = &'a RowLinks>) -> Result<(), String> {
-        let mut costs = HashMap::new();
+    pub(crate) fn check<'a>(&self, rows: impl Iterator<Item = Runs<'a>>) -> Result<(), String> {
+        let mut costs = std::collections::HashMap::new();
         for links in rows {
             for link in links.links() {
-                costs.insert(link.key, link.cost());
-                if let Some(id) = &link.id {
-                    let found = self.find(&link.uri, id).map(|l| l.key);
-                    crate::check::ensure(found == Some(link.key), || {
-                        format!("link {} with an id is not found by it", link.key)
+                costs.insert(link.key(), link.cost());
+                if link.id().is_some() {
+                    let found = self.find(link).map(Hyperlink::key);
+                    crate::check::ensure(found == Some(link.key()), || {
+                        format!("link {} with an id is not found by it", link.key())
                     })?;
                 }
             }
@@ -539,11 +649,7 @@ mod faults {
     use super::*;
 
     fn link(key: u64, id: Option<&str>) -> Hyperlink {
-        Hyperlink {
-            key,
-            uri: Arc::from("http://a"),
-            id: id.map(Arc::from),
-        }
+        Hyperlink::new(key, "http://a", id)
     }
 
     #[test]
@@ -551,10 +657,10 @@ mod faults {
         let mut row = RowLinks::default();
         assert!(row.set(0..2, Some(&link(1, None))));
         assert!(row.set(3..4, Some(&link(2, None))));
-        assert_eq!(row.check(4), Ok(()));
-        assert!(row.check(3).is_err(), "past the row");
+        assert_eq!(row.runs().check(4), Ok(()));
+        assert!(row.runs().check(3).is_err(), "past the row");
         row.0.reverse();
-        assert!(row.check(4).is_err(), "out of order");
+        assert!(row.runs().check(4).is_err(), "out of order");
     }
 
     #[test]
@@ -566,11 +672,17 @@ mod faults {
         };
         let mut row = RowLinks::default();
         assert!(row.set(0..1, Some(&held)));
-        assert_eq!(links.check([&row].into_iter()), Ok(()));
+        assert_eq!(links.check([row.runs()].into_iter()), Ok(()));
         links.held = 0;
-        assert!(links.check([&row].into_iter()).is_err(), "held too little");
+        assert!(
+            links.check([row.runs()].into_iter()).is_err(),
+            "held too little"
+        );
         links.held = held.cost();
         links.ids.clear();
-        assert!(links.check([&row].into_iter()).is_err(), "an id not found");
+        assert!(
+            links.check([row.runs()].into_iter()).is_err(),
+            "an id not found"
+        );
     }
 }

@@ -126,8 +126,8 @@ impl Grid {
         let history = (0..self.history_len()).filter_map(|index| self.history.get(index));
         history
             .filter_map(|row| row.links)
-            .chain(&self.linked)
-            .flat_map(RowLinks::links)
+            .chain(self.linked.iter().map(RowLinks::runs))
+            .flat_map(Runs::links)
     }
     /// What a reader sees of every retained row, in order.
     pub(crate) fn seen(&self) -> Vec<Seen> {
@@ -277,11 +277,7 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
                 }
             }
             3 => {
-                let link = grid.links.insert(&Hyperlink {
-                    key: 0,
-                    uri: Arc::from("poked"),
-                    id: None,
-                });
+                let link = grid.links.insert(&Hyperlink::new(0, "poked", None));
                 if let Some(links) = grid.linked.get_mut(slot) {
                     links.set(col..col.saturating_add(1), link.as_ref());
                 }

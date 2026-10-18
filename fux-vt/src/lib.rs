@@ -290,7 +290,7 @@ pub struct Row<'a> {
     pub(crate) width: usize,
     pub(crate) text: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
-    pub(crate) links: Option<&'a link::RowLinks>,
+    pub(crate) links: Option<link::Runs<'a>>,
 }
 
 impl fmt::Debug for Row<'_> {

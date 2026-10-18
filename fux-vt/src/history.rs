@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
 use crate::grid::{MAX_CELLS, MAX_ROWS};
-use crate::link::RowLinks;
+use crate::link::{KeptLinks, Runs};
 use crate::{Error, LineRendition, RowId};
 
 /// The cells a block holds, unless one row needs more. Small, as a block
@@ -50,7 +50,7 @@ const BLOCKS: usize = 1 << 16;
 /// control byte (`threats.md` B17's 57 and 33 bytes), and a map has 8
 /// buckets for 7 of capacity.
 const TEXT_BUCKET: usize = (size_of::<(u64, Text)>() + 1) * 8 / 7 + 1;
-const LINK_BUCKET: usize = (size_of::<(u64, RowLinks)>() + 1) * 8 / 7 + 1;
+const LINK_BUCKET: usize = (size_of::<(u64, KeptLinks)>() + 1) * 8 / 7 + 1;
 /// The bytes `History::renditions` takes for each row of its capacity.
 const RENDITION: usize = size_of::<(u64, LineRendition)>();
 
@@ -194,7 +194,7 @@ pub(crate) struct Found<'a> {
     pub(crate) flags: u8,
     pub(crate) cells: &'a [Compact],
     pub(crate) text: &'a Text,
-    pub(crate) links: Option<&'a RowLinks>,
+    pub(crate) links: Option<Runs<'a>>,
 }
 
 /// A number noted while it is read (`Screen::track_pictures`),
@@ -253,7 +253,7 @@ pub(crate) struct History {
     /// The bytes the rows' links' runs take (`threats.md` B15).
     runs: usize,
     texts: ByRow<Text>,
-    linked: ByRow<RowLinks>,
+    linked: ByRow<KeptLinks>,
     /// The rows that are not single width, by number, oldest first: most
     /// histories have none, and a row's record has no bit to spare.
     renditions: VecDeque<(u64, LineRendition)>,
@@ -417,7 +417,7 @@ impl History {
             })?;
             let text = (!found.text.is_empty()).then(|| found.text.exact());
             if text.is_some() || found.links.is_some() {
-                self.attach(text, found.links.cloned());
+                self.attach(text, found.links.and_then(KeptLinks::of));
             }
             self.trim();
         }
@@ -481,7 +481,7 @@ impl History {
         let text = (kept.flags() & TEXT != 0).then(|| self.texts.get(&number));
         let text = text.flatten().unwrap_or(&NO_TEXT);
         let links = (kept.flags() & LINKED != 0).then(|| self.linked.get(&number));
-        let links = links.flatten();
+        let links = links.flatten().map(KeptLinks::runs);
         let mut flags = kept.flags() & (WRAPPED | PROMPT);
         if !self.renditions.is_empty() {
             flags |= self.rendition_of(number).bits() << RENDITION_SHIFT;
@@ -510,13 +510,13 @@ impl History {
         at
     }
     /// The links of each row that has any, with its index, oldest first.
-    pub(crate) fn links(&self) -> impl Iterator<Item = (usize, &RowLinks)> {
+    pub(crate) fn links(&self) -> impl Iterator<Item = (usize, Runs<'_>)> {
         // The link sweep walks every row for those with links.
         spend!(links, self.rows.len());
         let linked = self.rows.iter().enumerate();
         linked
             .filter(|(_, kept)| kept.flags() & LINKED != 0)
-            .filter_map(|(index, _)| Some((index, self.linked.get(&self.number(index)?)?)))
+            .filter_map(|(index, _)| Some((index, self.linked.get(&self.number(index)?)?.runs())))
     }
     /// Calls `f` with every cell the rows keep (not those of rows gone,
     /// which a block keeps until every row in it has gone): to mark the
@@ -829,7 +829,7 @@ impl History {
     /// if it has any.
     #[cold]
     #[inline(never)]
-    pub(crate) fn attach(&mut self, text: Option<Text>, links: Option<RowLinks>) {
+    pub(crate) fn attach(&mut self, text: Option<Text>, links: Option<KeptLinks>) {
         let last = self.rows.len().checked_sub(1);
         let Some(number) = last.and_then(|last| self.number(last)) else {
             return;
@@ -842,8 +842,7 @@ impl History {
             self.texts.insert(number, text);
             kept.set(TEXT, true);
         }
-        if let Some(mut links) = links {
-            links.shrink();
+        if let Some(links) = links {
             self.runs = self.runs.saturating_add(links.heap());
             self.linked.insert(number, links);
             kept.set(LINKED, true);
@@ -897,7 +896,7 @@ impl History {
                     .saturating_mul(std::mem::size_of::<Kept>()),
             )
             .saturating_add(self.maps_bytes())
-            .saturating_add(self.linked.values().map(RowLinks::heap).sum::<usize>())
+            .saturating_add(self.linked.values().map(KeptLinks::heap).sum::<usize>())
             .saturating_add(self.text)
     }
 

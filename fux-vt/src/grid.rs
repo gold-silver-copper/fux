@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::compact::{BLANK, Compact, Line, PROTECTED, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
-use crate::link::{Held, Hyperlink, Links, RowLinks};
+use crate::link::{Held, Hyperlink, KeptLinks, Links, RowLinks, Runs};
 use crate::screen::Saved;
 use crate::style::Styles;
 use crate::{Attributes, CellRef, Error, LineRendition, Row, RowId, reserve};
@@ -554,6 +554,7 @@ impl Grid {
         self.history.push(meta.arriving(kept, width))?;
         // A row with neither text nor links, as most are, attaches none.
         let text = text.filter(|text| !text.is_empty());
+        let links = links.and_then(|mut links| KeptLinks::take(&mut links));
         if text.is_some() || links.is_some() {
             self.history.attach(text.map(|text| text.exact()), links);
         }
@@ -655,7 +656,7 @@ impl Grid {
             cells: self.slice(slot),
             width: usize::from(self.size.cols()),
             text: self.texts.get(slot)?,
-            links: self.linked.get(slot).filter(|links| !links.is_empty()),
+            links: (self.linked.get(slot).filter(|links| !links.is_empty())).map(RowLinks::runs),
         })
     }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
@@ -1040,9 +1041,8 @@ impl Grid {
     /// no room for it, room is made (`make_room`), at most once in a while
     /// after that fails; `None` if there is still none.
     pub fn intern(&mut self, opened: &Hyperlink, version: u64) -> Option<Hyperlink> {
-        let (uri, id) = (&opened.uri, opened.id.as_ref());
-        if let Some(id) = id
-            && let Some(link) = self.links.find(uri, id)
+        if opened.id().is_some()
+            && let Some(link) = self.links.find(opened)
         {
             return Some(link.clone());
         }
@@ -1075,7 +1075,7 @@ impl Grid {
         let screen = self
             .order
             .iter()
-            .filter_map(|slot| Some((None, linked.get(*slot)?)));
+            .filter_map(|slot| Some((None, linked.get(*slot)?.runs())));
         let lose = self.links.sweep(history.chain(screen), self.history.len());
         for index in 0..lose {
             self.history.unlink(index, version);
@@ -1745,7 +1745,7 @@ impl Grid {
         let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
         if linked {
             for at in span {
-                let link = links.as_ref().and_then(|l| l.get(at));
+                let link = links.as_ref().and_then(|l| l.runs().get(at));
                 self.set_link(to, at..at.saturating_add(1), link, version);
             }
         }
@@ -1896,9 +1896,10 @@ impl Grid {
         work!(cells, usize::from(m.used).saturating_sub(cells.len()));
         self.history.push(m.arriving(cells, self.size.cols()))?;
         // The row's text and links, which history has just taken, go with
-        // it: a copy of the text, and the links themselves.
+        // it: a copy of the text, and the links themselves, the slot keeping
+        // their list's memory for its next row.
         let text = self.texts.get(slot).map(Text::exact);
-        let links = (self.linked.get_mut(slot).map(std::mem::take)).filter(|l| !l.is_empty());
+        let links = self.linked.get_mut(slot).and_then(KeptLinks::take);
         self.history.attach(text, links);
         Ok(())
     }
@@ -2609,7 +2610,7 @@ impl Grid {
     /// read without the work counters seeing them.
     fn checked_rows(
         &self,
-    ) -> impl Iterator<Item = (&[Compact], usize, &Text, Option<&RowLinks>)> + '_ {
+    ) -> impl Iterator<Item = (&[Compact], usize, &Text, Option<Runs<'_>>)> + '_ {
         let history = (0..self.history.len()).filter_map(|i| {
             let found = self.history.get(i)?;
             let width = usize::from(found.kept.width());
@@ -2618,7 +2619,12 @@ impl Grid {
         let cols = usize::from(self.size.cols());
         let screen = (self.order.iter()).filter_map(move |&slot| {
             let links = self.linked.get(slot).filter(|l| !l.is_empty());
-            Some((self.slice(slot), cols, self.texts.get(slot)?, links))
+            Some((
+                self.slice(slot),
+                cols,
+                self.texts.get(slot)?,
+                links.map(RowLinks::runs),
+            ))
         });
         history.chain(screen)
     }

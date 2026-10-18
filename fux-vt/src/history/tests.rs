@@ -180,3 +180,36 @@ fn block_numbers_wrap() -> Result<(), Error> {
     assert!(history.len() > 1);
     Ok(())
 }
+
+/// A row with one link keeps its run in place: its links cost history
+/// nothing beyond its share of the map (`threats.md` B15), however the row
+/// came by them; one with two links costs the room of its runs.
+#[test]
+fn a_row_with_one_link_holds_no_memory_for_it() -> Result<(), Error> {
+    use crate::link::{Hyperlink, KeptLinks, RowLinks, Run};
+    let (a, b) = (
+        Hyperlink::new(1, "http://a", None),
+        Hyperlink::new(2, "http://b", Some("b")),
+    );
+    let cells = row(3, b'a', 0);
+    let mut history = History::new(1 << 20);
+    // Printed in one run; and in two runs of one link, which join.
+    for (id, ends) in [(0, &[3][..]), (1, &[1, 3][..])] {
+        let mut links = RowLinks::default();
+        let mut start = 0;
+        for &end in ends {
+            links.set(start..end, Some(&a));
+            start = end;
+        }
+        history.push(arriving(id, &cells, 4))?;
+        history.attach(None, KeptLinks::take(&mut links));
+        assert_eq!(history.runs, 0, "row {id}");
+    }
+    let mut links = RowLinks::default();
+    links.set(0..1, Some(&a));
+    links.set(2..3, Some(&b));
+    history.push(arriving(2, &cells, 4))?;
+    history.attach(None, KeptLinks::take(&mut links));
+    assert_eq!(history.runs, 2 * size_of::<Run>());
+    Ok(())
+}

@@ -367,7 +367,7 @@ impl Grid {
 
 /// The links of a run of cells: their row's, if it has any, and where the
 /// cells are in it.
-type RunLinks<'a> = Option<(&'a RowLinks, Range<usize>)>;
+type RunLinks<'a> = Option<(Runs<'a>, Range<usize>)>;
 
 /// Where a reflow's rows go: `Layout` only counts them; `Fill` writes the
 /// ones kept into the replacement grid.

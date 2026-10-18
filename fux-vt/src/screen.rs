@@ -1110,11 +1110,7 @@ impl Screen {
             let key = self.next_link;
             // Keys never run out in practice: one a link opened.
             self.next_link = key.checked_add(1)?;
-            Some(Hyperlink {
-                uri: uri.into(),
-                id: id.map(Into::into),
-                key,
-            })
+            Some(Hyperlink::new(key, uri, id))
         });
         // Neither grid has made a link of the one open now.
         self.primary.links.open = Held::Pending;

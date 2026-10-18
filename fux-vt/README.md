@@ -279,7 +279,9 @@ row's slot, and history.
   as what it holds: the rows' 24-byte records in chunks of up to 512 rows,
   the blocks of cells as their room (8 bytes a cell), the rows' text, and
   the maps of the rows with text or links, by their room, and the links'
-  runs (B15). A row scrolled
+  runs (B15): none for a row with one link, which keeps its run in its
+  place in the map, and 32 bytes a run for a row with more. A row
+  scrolled
   off keeps its cells up to its last that is not a default blank, packed
   after the rows before it in blocks of 4,096 cells, or one of its own
   past 2,048 (`history.rs`), with its text and links; past them it reads
