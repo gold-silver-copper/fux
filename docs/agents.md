@@ -18,17 +18,17 @@ then answers with what happened: you never choose a wait or sleep to read.
 
 ```sh
 fux opts str web name str './app --fast' command run    # start: answers %2 reading, then its output
-fux %2 str y text str Enter key send-keys               # type: answers as run does
+fux %2 str y text str Enter key send-keys               # type (or str T paste): answers as run does
 fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
 fux %2 wait                                             # settle again (30s), what came since your input
-fux %2 str 'listening on' wait-text wait                # wait for a text (case ignored)
+fux %2 str 'listening on' wait-text wait                # wait for a text (case ignored); also wait-gone, wait-bell
 fux %2 all-history capture                              # read: the screen once settled
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
 fux %2 capture json                                     # also: main-screen, last-output, styles, marks
 fux %2 str C-c key send-keys                            # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as a capture counts
-fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: %2 vertical split
+fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: %2 horizontal split
 fux %2 str TERM signal; fux %2 respawn                  # stop; start again on a new terminal
 fux str agent workspace kill                            # at the end: everything run started, at once
 fux ls                                                  # what there is: workspaces, tabs, panes
