@@ -14,7 +14,6 @@ use crate::view::{Mode, View};
 use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
 use std::borrow::Cow;
 use std::io::Write;
-use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Debug)]
 pub struct Grid {
@@ -697,11 +696,10 @@ fn cell_count(rows: u16, cols: u16) -> usize {
     usize::from(rows).saturating_mul(usize::from(cols))
 }
 
-/// A char's display width in cells.
+/// A char's display width in cells, as fux-vt lays out what it holds
+/// (`fux_vt::char_width`: 0, 1 or 2), so the painter and the screen agree.
 fn cells(c: char) -> u16 {
-    // Widths are 0, 1 or 2; a larger one could never fit, so it saturates.
-    c.width()
-        .map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
+    fux_vt::char_width(c).map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
 }
 
 /// Display width of a string, controls dropped.
@@ -1514,7 +1512,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
                     ascii = false;
                     u32::from(ch) < 0x1_F000
                         && !('\u{1F1E6}'..='\u{1F1FF}').contains(&ch)
-                        && UnicodeWidthChar::width(ch) == Some(1)
+                        && fux_vt::char_width(ch) == Some(1)
                 }
                 _ => false,
             }

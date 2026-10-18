@@ -2194,7 +2194,6 @@ impl Grid {
         report.record("grid.slots", which, self.check_slots());
         report.record("grid.blank_past_used", which, self.check_blank_past_used());
         report.record("grid.wide_pairs", which, self.check_wide_pairs());
-        report.record("grid.glyphs", which, self.check_glyphs());
         report.record("grid.text", which, self.check_text());
         report.record("grid.style_numbers", which, self.check_style_numbers());
         report.record("grid.recent", which, self.check_recent());
@@ -2296,23 +2295,6 @@ impl Grid {
                 };
                 if !paired {
                     return Err(format!("row {row}, column {i}: half a wide glyph"));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 12: no character of a cell is wider than 2 columns.
-    fn check_glyphs(&self) -> Result<(), String> {
-        use unicode_width::UnicodeWidthChar;
-        for (row, (cells, _, text, _)) in self.checked_rows().enumerate() {
-            for (i, cell) in cells.iter().enumerate() {
-                if let Some(c) = text
-                    .of(cell)
-                    .chars()
-                    .find(|c| c.width().is_some_and(|w| w > 2))
-                {
-                    return Err(format!("row {row}, column {i}: {c:?} is wider than 2"));
                 }
             }
         }
@@ -2498,12 +2480,6 @@ mod faults {
         shows("grid.wide_pairs", |g| {
             if let Some(cell) = g.cells.get_mut(0) {
                 *cell = Compact::glyph('一', 2, 0);
-            }
-            g.meta.iter_mut().for_each(|m| m.used = 4);
-        })?;
-        shows("grid.glyphs", |g| {
-            if let Some(cell) = g.cells.get_mut(0) {
-                *cell = Compact::glyph('\u{17d8}', 1, 0);
             }
             g.meta.iter_mut().for_each(|m| m.used = 4);
         })?;

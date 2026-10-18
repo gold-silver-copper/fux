@@ -127,7 +127,7 @@ pub use screen::{
     CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,
     PICTURE_BYTES, PLACEHOLDER, Report, Reported, Screen, Shown,
 };
-pub use unicode::{UNICODE_VERSION, continues_cluster};
+pub use unicode::{UNICODE_VERSION, char_width, continues_cluster, str_width};
 #[cfg(feature = "checks")]
 pub use work::Work;
 

@@ -13,7 +13,6 @@ use crate::{
     parser::Parameters,
 };
 use std::{collections::VecDeque, mem, ops::Range};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The blank style (`Screen::blank_style`) not asked for since the pen
 /// changed. The pen's own style is found at once (`pen_changed`).
@@ -1367,7 +1366,7 @@ impl Screen {
         };
         // A control character (C0, DEL or C1, the only ones of no width)
         // is not printed.
-        let Some(width) = c.width().and_then(|w| u16::try_from(w).ok()) else {
+        let Some(width) = crate::char_width(c).and_then(|w| u16::try_from(w).ok()) else {
             return Ok(());
         };
         // Nor where it fits nowhere, but for a pending wrap, which xterm
@@ -1538,7 +1537,7 @@ impl Screen {
         let g = self.grid();
         let (row, col) = (g.cursor.row(), g.next_column());
         let anchor = self.last_print.or_else(|| {
-            if c.width() != Some(0) {
+            if crate::char_width(c) != Some(0) {
                 return None;
             }
             // The cell before the cursor, on the cursor's row: on the row
@@ -1587,7 +1586,7 @@ impl Screen {
                     return false;
                 }
                 // Width is kept once wide; the last column has no room to widen.
-                if narrow && fits && line.text(at).width() >= 2 {
+                if narrow && fits && crate::str_width(line.text(at)) >= 2 {
                     if let Some(cell) = line.cells.get_mut(at) {
                         cell.widen();
                     }
@@ -1648,7 +1647,7 @@ impl Screen {
             return Ok(());
         };
         let g = self.grid();
-        let width = c.width().unwrap_or(1).max(1);
+        let width = crate::char_width(c).unwrap_or(1).max(1);
         // Copies to a row, between the margins once the copies wrap: a wide
         // glyph leaves an odd last column blank.
         let line = g.columns().len();

@@ -355,6 +355,9 @@ fux-vt's work counters and a counting allocator against it.
   it records nothing more and says so (`Prints::lost`).
 - **Finding a frame's end** (B19): `FrameScan::end` reads each byte once,
   however the frame comes split, a sequence left unfinished included.
+- **A glyph** (B32) takes at most 2 columns: U+17D8, the one character
+  unicode-width makes 3 wide, takes 1, as in xterm 411 and glibc
+  (`char_width`, `str_width`, which fux's painter uses too).
 - **An OSC string** (B20) keeps at most `OSC_PAYLOAD_LIMIT` (65,536)
   bytes, read to its end however long; its buffer holds at most 65,537,
   and 81,921 while it grows.

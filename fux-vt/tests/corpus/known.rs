@@ -10,14 +10,6 @@ pub const KNOWN_AT_BASE: &[(&str, &str)] = &[
         "B17: trim shrinks the ring and the maps (SCR-6)",
     ),
     (
-        "grid.glyphs",
-        "B32: every glyph is capped at 2 columns (TXT-1)",
-    ),
-    (
-        "parser.osc",
-        "B20: the OSC buffer's room is reserved exactly (PAR-6)",
-    ),
-    (
         "keys.held",
         "B24: the key decoder holds at most 258 bytes (KEY-3)",
     ),

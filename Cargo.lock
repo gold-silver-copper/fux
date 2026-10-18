@@ -22,7 +22,6 @@ dependencies = [
  "libc",
  "seccompiler",
  "signal-hook",
- "unicode-width",
 ]
 
 [[package]]

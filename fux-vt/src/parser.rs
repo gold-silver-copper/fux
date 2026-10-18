@@ -2054,7 +2054,6 @@ mod faults {
             "grid.slots",
             "grid.blank_past_used",
             "grid.wide_pairs",
-            "grid.glyphs",
             "grid.text",
             "grid.style_numbers",
             "grid.recent",

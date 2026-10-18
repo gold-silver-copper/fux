@@ -124,19 +124,31 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
 }
 
 /// U+17D8 KHMER SIGN BEYYAL, three columns wide by unicode-width, takes one
-/// narrow cell and the two after it blank: what follows lands where
-/// unicode-width lays it out, as it did in 0.1.5.
+/// column, as in xterm 411 and glibc (threats.md B32: a cell holds 1 or 2):
+/// over text, it leaves none of it stale, and in a region of 2 columns
+/// it is printed, the cursor 1 on.
 #[test]
-fn a_three_column_character_takes_a_cell_and_two_blanks() -> Result {
+fn the_three_column_character_takes_one_column() -> Result {
     let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
     parser.process("a\u{17D8}b".as_bytes())?;
     let screen = parser.screen();
     let cell = |col| screen.cell(0, col).map(|c| (c.contents(), c.is_wide()));
     assert_eq!(cell(1), Some(("\u{17D8}", false)));
-    assert_eq!(cell(2), Some(("", false)));
-    assert_eq!(cell(3), Some(("", false)));
-    assert_eq!(cell(4), Some(("b", false)));
-    assert_eq!(screen.cursor_position(), (0, 5));
+    assert_eq!(cell(2), Some(("b", false)));
+    assert_eq!(screen.cursor_position(), (0, 3));
+    let mut parser = Parser::new(Size::new(1, 10)?, 0)?;
+    parser.process("XYZW\r\u{17D8}".as_bytes())?;
+    assert_eq!(
+        parser.screen().window().row(0).map(|r| r.cells_text()),
+        Some("\u{17D8}YZW      ".into())
+    );
+    assert_eq!(parser.screen().cursor_position(), (0, 1));
+    let mut parser = Parser::new(Size::new(1, 10)?, 0)?;
+    parser.process("\x1b[?69h\x1b[1;2s\u{17D8}x".as_bytes())?;
+    assert_eq!(
+        parser.screen().window().row(0).map(|r| r.cells_text()),
+        Some("\u{17D8}x        ".into())
+    );
     Ok(())
 }
 

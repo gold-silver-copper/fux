@@ -13,6 +13,39 @@ mod tables;
 
 pub use tables::UNICODE_VERSION;
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// The one character unicode-width makes 3 columns wide: U+17D8 KHMER SIGN
+/// BEYYAL.
+const THREE: char = '\u{17d8}';
+
+/// The columns `c` takes as fux-vt prints it, `None` for a control: its
+/// width by unicode-width, but that a cell holds 1 column or 2, so U+17D8,
+/// the one character unicode-width makes 3, takes 1, as in xterm 411 and
+/// glibc (UAX #11 leaves a terminal's widths to it). A host that lays out
+/// what fux-vt holds (fux's painter) takes its widths from here.
+#[inline]
+pub fn char_width(c: char) -> Option<usize> {
+    // U+17D8 is the only character unicode-width says 3 for.
+    match c.width() {
+        Some(3) => Some(1),
+        width => width,
+    }
+}
+
+/// The columns `text` takes, as [`char_width`] counts its characters:
+/// unicode-width's, with U+17D8 at 1.
+#[inline]
+pub fn str_width(text: &str) -> usize {
+    let width = text.width();
+    // Text narrower than 3 holds no U+17D8: it is looked for only past that.
+    if width < 3 {
+        return width;
+    }
+    let threes = text.chars().filter(|c| *c == THREE).count();
+    width.saturating_sub(threes.saturating_mul(2))
+}
+
 /// Whether `c`, printed right after the grapheme cluster `cluster`, would
 /// continue it rather than start the next one, as fux-vt joins what is
 /// printed (UAX #29): an emoji modifier after an emoji, a combining mark

@@ -164,3 +164,23 @@ fn continues_cluster_answers_as_the_state_machine() {
     assert!(continues_cluster("a", '\u{301}'));
     assert!(!continues_cluster("\u{1F44D}", 'x'));
 }
+
+/// fux-vt's widths (threats.md B32): no character takes more than 2
+/// columns, U+17D8 KHMER SIGN BEYYAL, the one unicode-width makes 3,
+/// takes 1, as in xterm 411; every other is unicode-width's, alone and in
+/// text.
+#[test]
+fn no_character_is_wider_than_two_columns() {
+    use unicode_width::UnicodeWidthChar;
+    for c in (0..=0x10_ffff).filter_map(char::from_u32) {
+        let width = crate::char_width(c);
+        assert!(width.is_none_or(|w| w <= 2), "{c:?} is {width:?} wide");
+        if c != '\u{17d8}' {
+            assert_eq!(width, c.width(), "{c:?}");
+        }
+    }
+    assert_eq!(crate::char_width('\u{17d8}'), Some(1));
+    assert_eq!(crate::str_width("\u{17d8}"), 1);
+    assert_eq!(crate::str_width("a\u{17d8}b\u{17d8}"), 4);
+    assert_eq!(crate::str_width("一e\u{301}"), 3);
+}
