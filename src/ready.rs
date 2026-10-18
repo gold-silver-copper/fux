@@ -88,8 +88,18 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     if !pane.input_written() || child.master.output_unread() {
         return State::Busy;
     }
-    // Quiet since the screen last changed and input last went in.
+    // Quiet since the screen last changed and input last went in; and
+    // since a relay's report that stands for the probe came: what the
+    // program drew before the report says it reads may come just after it
+    // (a relay holds output a moment, and the network carries the two
+    // apart), as a local program's drawing before its read is in once
+    // quiet a moment.
+    let report = reported(pane);
     let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
+    let since = match (report, pane.reported_at) {
+        (Some(_), Some((_, at))) => since.max(at),
+        _ => since,
+    };
     let quiet = now.saturating_duration_since(since);
     // The command the input typed still runs and does not read: at work
     // until it ends or asks. One that took the full screen since it began
@@ -117,7 +127,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
             && quiet >= SETTLE
             && !child.master.keys_unread()
     };
-    match reported(pane).unwrap_or_else(|| activity(pane, child, now)) {
+    match report.unwrap_or_else(|| activity(pane, child, now)) {
         Activity::Reading if quiet >= SETTLE && !child.master.keys_unread() => State::Reading,
         // A program that redraws on its own (a clock, `top`) is never
         // quiet: it took the keys once it read them all and the
@@ -159,6 +169,16 @@ fn activity(pane: &Pane, child: &Child, now: Instant) -> Activity {
     let prompt = !commands.running() && commands.finished > 0;
     let leader = child.leader.pid();
     fuxix::process::terminal_activity(&child.master, leader, since_key, answered, prompt)
+}
+
+/// Whether the program in `pane` is blocked off its terminal by `now`, on
+/// something else (the network, a pipe), as a relay's report or the probe
+/// says: a read of its terminal would show whether it waits for keys.
+pub fn elsewhere(pane: &Pane, now: Instant) -> bool {
+    let Process::Reading(child) = &pane.process else {
+        return false;
+    };
+    reported(pane).unwrap_or_else(|| activity(pane, child, now)) == Activity::Waiting
 }
 
 /// What the program a relay in `pane` runs does, as its last state report

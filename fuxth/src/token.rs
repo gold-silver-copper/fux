@@ -125,6 +125,7 @@ fn open_quote(place: Place, quote: char) -> Error {
         place: Some(place),
         word: None,
         cause: None,
+        made_by: None,
     }
 }
 

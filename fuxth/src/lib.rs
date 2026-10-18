@@ -42,7 +42,7 @@ pub mod token;
 mod value;
 mod vocabulary;
 
-pub use compile::{Compiler, Parsing, Program, Vocabulary};
+pub use compile::{Compiler, Parsing, Program, Vocabulary, distance};
 pub use error::{Code, Error, Failure};
 pub use machine::{Args, BUILT, Builtin, Done, Host, LONGEST, Limits, Machine, Outcome};
 pub use token::{Place, Token};

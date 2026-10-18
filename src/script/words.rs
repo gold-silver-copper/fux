@@ -609,9 +609,11 @@ fn modify(
         "key" => {
             let word = string(&next()?)?;
             let press = word.parse().map_err(|_| {
+                let closest = closest_key(&word)
+                    .map_or_else(String::new, |k| format!("; the closest is `{k}`"));
                 fail(
                     Code::NotAKey,
-                    format!("{word:?} is no key's name (key-names lists them)"),
+                    format!("{word:?} is no key's name{closest} (key-names lists them)"),
                 )
             })?;
             built.inputs.push(Input::Key(press));
@@ -695,6 +697,43 @@ fn finished(word: &str, value: Value<Fux>) -> Result<Opts, Failure> {
         | Value::Str(_)
         | Value::List(_)
         | Value::App(_)) => Err(wrong("options (from opts): opts … run", &other)),
+    }
+}
+
+/// The key name nearest `word`, its modifiers kept (`C-Bakspace`:
+/// `C-BSpace`), if one is near enough to be what was meant.
+fn closest_key(word: &str) -> Option<String> {
+    let mut rest = word;
+    while let Some((prefix, tail)) = rest.split_at_checked(2)
+        && !tail.is_empty()
+        && ["C-", "M-", "S-"]
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(prefix))
+    {
+        rest = tail;
+    }
+    let mods = word.get(..word.len().saturating_sub(rest.len()))?;
+    let lower = rest.to_lowercase();
+    // An alias near it is said by the name it stands for.
+    let aliases = crate::keys::aliases().filter_map(|alias| {
+        let press: crate::keys::KeyPress = alias.parse().ok()?;
+        Some((alias.to_owned(), press.to_string()))
+    });
+    let names = crate::keys::all_names().into_iter().map(|n| (n.clone(), n));
+    let (far, name) = (names.chain(aliases))
+        .map(|(spelt, name)| (fuxth::distance(&lower, &spelt.to_lowercase()), name))
+        .min()?;
+    (far <= lower.chars().count().div_ceil(2)).then(|| format!("{}{name}", mods.to_uppercase()))
+}
+
+/// What a finding word was likely meant as, given among a start's
+/// options (`opts str web workspace … run`), where it is no option.
+pub fn misplaced(word: &str) -> Option<&'static str> {
+    match word {
+        "workspace" | "tab" | "pane" => Some(
+            "among options, the tab's name is `str NAME name`, the workspace it opens in `str NAME in`",
+        ),
+        _ => None,
     }
 }
 

@@ -38,12 +38,13 @@ fux ls                                                  # what there is: workspa
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
 %2 waiting                     quiet 1s, but it may go on alone (`· redraws on its own`: a clock, `top`)
-%2 waiting · may be at work: `%2 wait-exit wait` waits for its end
+%2 waiting · not reading its terminal, so fux cannot tell when it waits for input: `%2 wait-exit wait` waits for its end
                                not a full-screen program, blocked on the network or a pipe (`koh exec`, a download)
-%2 busy · `%2 wait` waits on   still at work at the time limit (status 124); a shell command: `wait-done`
+%2 busy · `%2 wait` waits for it to settle
+                               still at work at the time limit (status 124); a shell command: `wait-done`
 %2 exited 3                    the program ended; what it printed since your input follows
 · highlight 6,16-25 "1761.5"   what your keys highlighted anew (a selection, reverse video), row,cols from 0
-· cursor 3,7                   the cursor, when text goes on right of it (an editor, a line edited)
+· cursor 3,7                   the cursor, when text goes on under or right of it (an editor, a line edited), or the keys moved it alone
 ```
 
 - **Wait longer:** `%2 300 timeout wait`; a shell command of unknown length
@@ -89,14 +90,16 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
 A note on the state line says what plain text hides. `· may be at work:
 `PANE wait-exit wait` waits for its end` (`wait-done` while a marked
 command runs): a pane `waiting` whose program is not a full-screen one, so
-probably at work (a build over `koh exec`, a download), not waiting for
-keys. After keys or a mouse event, `· highlight ROW,COL-END "TEXT"` names up
+probably at work, not waiting for keys; `· not reading its terminal, so fux
+cannot tell when it waits for input: …` when it is blocked on something
+else (a build over `koh exec`, a download, a remote program reading a
+pipe): what it prints is all there, but whether it waits is not known. After keys or a mouse event, `· highlight ROW,COL-END "TEXT"` names up
 to three runs the input highlighted anew (reverse video, or a background
 other than the screen's: a selection, a menu's choice), as a mouse event
 counts cells; one that stays where it was is not said again. `· cursor
-ROW,COL` gives the cursor when text shows right of it on its row (a line
-editor after Left or Home, an editor): at the end of what was typed it is
-not said. A program that exited runs no command: its state is `exited N`
+ROW,COL` gives the cursor when text shows under or right of it on its row
+(a line editor after Left or Home, an editor), or the keys moved the cursor
+and nothing else (End): at the end of what was typed it is not said. A program that exited runs no command: its state is `exited N`
 alone.
 
 ## start: Starting programs
@@ -113,8 +116,9 @@ alone.
 ## keys: Keys, the mouse and stopping
 
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
-  `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; no keypad keys; a typo
-  is refused), always after `str`. Between the pane and `send-keys`: `str T text`, `str NAME key`, `str T
+  `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; common spellings
+  too: `Backspace`, `Esc`, `Return`, `Del`, `PgUp`, `PgDn`; no keypad keys;
+  a typo is refused, naming the closest name), always after `str`. Between the pane and `send-keys`: `str T text`, `str NAME key`, `str T
   paste` (bracketed if the program turned that on, an end-of-paste mark in T
   then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too
   (text its bytes, a key its name's, each input after the first 5 more). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
@@ -329,7 +333,8 @@ remote program says what it does, `ESC ] 133 ; S ; activity=STATE ;
 nonce=N BEL` (STATE `reading`, `polling`, `waiting`, `busy`, `idle` or
 `unknown`, as fux's own probe has them; the nonce as for its marks), as
 `koh connect` does: its last report stands for fux's probe while no mark
-came after it and it came after your last input, so a remote `less`,
+came after it and it came after your last input, the screen quiet a moment
+after it (what the program drew before it may come just after), so a remote `less`,
 `sudo` or REPL answers `reading` as a local one does, its `line` too.
 Without one, fux cannot tell a remote command that waits for input there
 (through ssh) from a slow one: its `line` answers `busy` at the limit.
