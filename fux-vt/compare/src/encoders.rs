@@ -1018,7 +1018,7 @@ mod tests {
             ctrl_alt,
             b"\x1b[27;8;95~"
         ));
-        assert_eq!(pasted("a\nb", false), b"a\nb");
+        assert_eq!(pasted("a\nb", false), b"a\rb");
         assert_eq!(pasted("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
         assert_eq!(pasted("\x1b[20\x1b[201~1~x", true), b"\x1b[200~x\x1b[201~");
         assert_eq!(pasted("a\u{9b}201~b", true), b"\x1b[200~ab\x1b[201~");
