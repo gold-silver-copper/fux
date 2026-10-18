@@ -111,12 +111,21 @@ pub const PASTE_START: &[u8] = b"\x1b[200~";
 /// What a bracketed paste ends with (`CSI 201 ~`).
 pub const PASTE_END: &[u8] = b"\x1b[201~";
 
-/// Appends a paste as the pane should receive it to `out`: framed if it
-/// asked for bracketed paste, with every end marker inside the text removed
-/// (`CSI 201 ~`, ESC `[` or the C1 CSI, U+009B), as often as removing one
-/// makes another, so the text cannot end the paste early. Unbracketed, the
-/// text goes as it is: the program asked for no frame to break.
+/// Appends a paste as the pane should receive it to `out`: each line end
+/// a CR, as xterm 411 sends a paste (`button.c`: every `\n` becomes `\r`,
+/// its `pasteLiteralNL` resource off by default); framed if
+/// it asked for bracketed paste, with every end marker inside the text
+/// removed (`CSI 201 ~`, ESC `[` or the C1 CSI, U+009B), as often as
+/// removing one makes another, so the text cannot end the paste early.
+/// Unbracketed, the program asked for no frame to break.
 pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
+    let crs;
+    let text = if text.contains('\n') {
+        crs = text.replace('\n', "\r");
+        crs.as_str()
+    } else {
+        text
+    };
     if !bracketed {
         return out.extend_from_slice(text.as_bytes());
     }
@@ -1251,6 +1260,23 @@ mod tests {
 
     /// Whatever the text, a bracketed paste holds no end marker before its
     /// own, and keeps all of it that is no marker.
+    /// ctlseqs is silent on a paste's text, so xterm 411 decides: it sends
+    /// each line end as CR (`button.c`, `\n` to `\r` unless
+    /// `pasteLiteralNL`), bracketed or not, a CR before it kept.
+    #[test]
+    fn a_pastes_line_ends_go_as_cr() {
+        for bracketed in [false, true] {
+            let mut out = Vec::new();
+            paste("a\nb\r\nc\rd\n", bracketed, &mut out);
+            let text: &[u8] = b"a\rb\r\rc\rd\r";
+            let expected = match bracketed {
+                true => [PASTE_START, text, PASTE_END].concat(),
+                false => text.to_vec(),
+            };
+            assert_eq!(out, expected, "bracketed {bracketed}");
+        }
+    }
+
     #[test]
     fn no_text_ends_a_bracketed_paste() {
         let pieces = ["\x1b", "[", "2", "0", "1", "~", "\u{9b}", "x", "\x1b[201~"];

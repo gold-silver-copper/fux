@@ -77,13 +77,16 @@ pub const VERDICTS: &[(&str, &str)] = &[
     (
         "paste-controls",
         "a paste holding NUL, BS, ENQ, EOT, ESC, DEL or the tty's special characters (^C ^\\ ^U \
-         ^Z ^Q ^S ^W ^V ^R ^O): ghostty, as xterm, makes each a space; fux-vt passes the text as \
-         pasted, removing only what would end a bracketed paste",
+         ^Z ^Q ^S ^W ^V ^R ^O): ghostty, as xterm 411 (`removeControls`, `button.c`), makes each \
+         a space; fux-vt passes them as pasted, removing only what would end a bracketed paste: \
+         xterm's set depends on the pane's tty, and a host's paste comes from its own terminal, \
+         which filtered it",
     ),
     (
         "paste-newline",
-        "an unbracketed paste holding LF: ghostty, as xterm, sends CR; fux-vt passes the text as \
-         pasted",
+        "a bracketed paste holding LF: fux-vt sends it as CR, as xterm 411 sends every paste \
+         (`button.c`: each `\\n` a `\\r` unless `pasteLiteralNL`); ghostty keeps the LF inside \
+         the brackets (as it sends CR unbracketed)",
     ),
     (
         "paste-c1-end",
@@ -647,10 +650,12 @@ fn modified_other_key(key: Key, mods: Modifiers, ours: &[u8]) -> bool {
 /// again until none is left. Written apart from fux-vt's encoder, so the
 /// verdicts check what fux-vt sends.
 fn pasted(text: &str, bracketed: bool) -> Vec<u8> {
+    // Each LF a CR, as xterm 411 sends a paste.
+    let text = text.replace('\n', "\r");
     if !bracketed {
-        return text.as_bytes().to_vec();
+        return text.into_bytes();
     }
-    let mut body = text.to_owned();
+    let mut body = text;
     loop {
         let removed = body.replace("\x1b[201~", "").replace("\u{9b}201~", "");
         if removed == body {
@@ -924,35 +929,28 @@ fn compare_pastes(
         let n = paste::encode(&mut data, bracketed, &mut buf).map_err(err("paste encode"))?;
         let theirs = buf.get(..n).unwrap_or_default().to_vec();
         // ghostty's paste as fux-vt would make it of the text ghostty sees.
-        let mut seen: Vec<u8> = text
+        let seen: Vec<u8> = text
             .bytes()
             .map(|b| if STRIPPED.contains(&b) { b' ' } else { b })
             .collect();
         let controls = seen.as_slice() != text.as_bytes();
-        let newline = !bracketed && seen.contains(&b'\n');
-        if newline {
-            for b in &mut seen {
-                if *b == b'\n' {
-                    *b = b'\r';
-                }
-            }
-        }
+        // ghostty keeps a bracketed paste's LF, which fux-vt sends as CR.
+        let newline = bracketed && seen.contains(&b'\n');
         let modelled = {
             let mut out = Vec::new();
             fux_vt::keys::encode::paste(&String::from_utf8_lossy(&seen), bracketed, &mut out);
             out
         };
         // A verdict says what fux-vt sends: it must send it.
+        let theirs_cr: Vec<u8> = (theirs.iter())
+            .map(|&b| if b == b'\n' { b'\r' } else { b })
+            .collect();
         let verdict = if ours != pasted(&text, asked) {
             None
+        } else if newline && modelled == theirs_cr {
+            Some("paste-newline")
         } else if modelled == theirs {
-            if controls {
-                Some("paste-controls")
-            } else if newline {
-                Some("paste-newline")
-            } else {
-                None
-            }
+            controls.then_some("paste-controls")
         } else if bracketed && without_c1_ends(&theirs) == modelled {
             Some("paste-c1-end")
         } else {
