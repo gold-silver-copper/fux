@@ -85,7 +85,6 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
     let quiet = now.saturating_duration_since(since);
     let tty = child.master.slave_path();
-    let report = reported(pane);
     // The command the input typed still runs and does not read: at work
     // until it ends or asks. One that took the full screen since it began
     // (an editor, a pager, polling there) is not at work; one whose output
@@ -97,17 +96,17 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     let command = commands.running()
         && typed.is_some_and(|n| commands.started != n)
         && (commands.full_screen || !screen.mode(fux_vt::Mode::AlternateScreen));
-    // What the command does is seen: a relay's report says, or the probe
-    // sees it, a command of the shell fux marks. A relay's marks without a
-    // report (ssh's, a nested multiplexer's) leave the probe the relay's.
-    let seen = report.is_some() || (pane.nonce.is_some() && !screen.relayed());
-    match report.unwrap_or_else(|| activity(pane, child, now)) {
+    // A line editor reading a line takes pastes (bracketed paste on, as
+    // Python's REPL turns it on while it reads): a program polling its
+    // terminal then waits for keys, not a pause that watches for them.
+    let editing = || screen.mode(fux_vt::Mode::BracketedPaste) && !keys_unread(tty);
+    match reported(pane).unwrap_or_else(|| activity(pane, child, now)) {
         Activity::Reading if quiet >= SETTLE && !keys_unread(tty) => State::Reading,
         // Blocked elsewhere (a download, a pipe): the command is at work.
         Activity::Waiting if command => State::Busy,
-        // Polling its terminal (a REPL with a timer, Python's): it waits for
+        // Polling its terminal, editing a line (Python's REPL): it waits for
         // keys once quiet with every key read, the command running on.
-        Activity::Polling if command && (!seen || keys_unread(tty)) => State::Busy,
+        Activity::Polling if command && !editing() => State::Busy,
         // Polling for keys with a time limit: it may draw again on its own
         // (a pause, a clock), so never surely waiting for the agent.
         Activity::Polling | Activity::Waiting if quiet >= QUIET => State::Waiting,

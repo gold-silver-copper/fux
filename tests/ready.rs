@@ -80,21 +80,30 @@ fn bash(server: &Server) -> Result<String, String> {
         .to_owned())
 }
 
-/// A shell command that polls its terminal with a time limit (a REPL with
-/// a timer) waits for keys once quiet: `line` answers `waiting · command
-/// running` in a second or so, not at the limit, and the line typed next
-/// is what it reads.
+/// A shell command that polls its terminal with a time limit is at work
+/// until it ends, as a pause that watches for keys is: `line` answers with
+/// its end. One that takes pastes as it polls (bracketed paste on: a line
+/// editor reading, as Python's REPL) waits for keys once quiet: `line`
+/// answers `waiting · command running` in a second or so, and the line
+/// typed next is what it reads.
 #[test]
-fn a_shell_command_that_polls_its_terminal_waits_for_keys() -> Outcome {
+fn a_shell_command_that_polls_its_terminal_waits_for_keys_while_editing() -> Outcome {
     if !PROBED {
         return Ok(());
     }
     let server = Server::start("")?;
     let pane = bash(&server)?;
     let p = ["str", pane.as_str(), "pane"];
-    let poll = "python3 -c 'import select,sys; print(\"ask>\", flush=True)\n\
+    let pause = "python3 -c 'import select,sys; print(\"start\", flush=True); \
+                 [select.select([sys.stdin], [], [], 0.1) for _ in range(25)]; \
+                 print(\"end\")'; (exit 5)";
+    let answer = server.ok(&[&p[..], &["str", pause, "line"]].concat())?;
+    let first = answer.lines().next().unwrap_or_default();
+    assert_eq!(first, format!("{pane} reading · done 5"), "{answer}");
+    assert!(answer.contains("\nend\n"), "{answer}");
+    let poll = "python3 -c 'import select,sys; print(\"\\x1b[?2004hask>\", flush=True)\n\
                 while not select.select([sys.stdin], [], [], 0.1)[0]: pass\n\
-                print(\"got\", input())'; (exit 5)";
+                print(\"\\x1b[?2004lgot\", input())'; (exit 5)";
     let began = std::time::Instant::now();
     let answer = server.ok(&[&p[..], &["str", poll, "line"]].concat())?;
     assert!(began.elapsed() < std::time::Duration::from_secs(10));
@@ -107,8 +116,10 @@ fn a_shell_command_that_polls_its_terminal_waits_for_keys() -> Outcome {
     assert!(answer.contains("\nask>\n"), "{answer}");
     let answer = server.ok(&[&p[..], &["str", "bob", "line"]].concat())?;
     assert!(answer.contains("got bob\n"), "{answer}");
-    let answer = server.ok(&[&p[..], &["opts", "wait"]].concat())?;
-    assert!(answer.starts_with(&format!("{pane} reading")), "{answer}");
+    assert!(
+        answer.starts_with(&format!("{pane} reading · done 5")),
+        "{answer}"
+    );
     Ok(())
 }
 

@@ -124,13 +124,6 @@ impl Screen {
         self.commands
     }
 
-    /// Whether the running command's marks are a program's the shell's
-    /// command runs (the nested nonce's: a remote shell's, relayed), not
-    /// the shell's own: what runs is the relay's to say.
-    pub fn relayed(&self) -> bool {
-        self.outer.is_some()
-    }
-
     /// `C [; late]`, the output of the command just typed begins (`late`:
     /// began after its prompt's line), or `D [; status]`, it ended: called
     /// with the mark's payload after `133;`.
