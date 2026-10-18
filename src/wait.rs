@@ -431,7 +431,12 @@ impl Wait {
                     limit.as_secs_f64(),
                     self.describe()
                 );
-                let end = failed(Code::Timeout, why(reason, hint));
+                // How to wait longer, which the limit's 30s often is not.
+                let longer = format!(
+                    "to wait longer, the same with SECS timeout among its options \
+                     (`{id} opts … 300 timeout wait`)"
+                );
+                let end = failed(Code::Timeout, format!("{}; {longer}", why(reason, hint)));
                 (state(), None, last(1), end)
             }
         };
@@ -687,7 +692,7 @@ impl Watch {
                     }
                 }
                 Until::Exit => exit = pane.process.exit_status().map(Found::Exit),
-                Until::Settled => settled = self.settled(pane, (began, now), more),
+                Until::Settled => settled = self.settled(pane, (began, now), (fresh, more)),
                 Until::Bell => bell = self.bell.clone(),
             }
         }
@@ -849,19 +854,27 @@ impl Watch {
         &mut self,
         pane: &Pane,
         (began, now): (Instant, Instant),
-        more: bool,
+        (fresh, more): (bool, bool),
     ) -> Option<Found> {
         let state = self.state(pane, now);
         // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
         // with nothing known) waits for something new, what it waits on or
         // a change, for `MORE` at most.
         let more = more && now < after(began, MORE) && pane.revision == self.revision;
+        // A program just started that reads its terminal before it printed
+        // anything (ssh, `koh connect`: they take keys while they connect)
+        // has yet to show what it is: it settles once it prints, or once
+        // quiet as long as a program that waits on something else.
+        let blank = fresh
+            && pane.record.printed_after(self.start.from).next().is_none()
+            && now < after(pane.changed_at, ready::QUIET);
         let unsettled = match state {
             State::Busy => true,
             State::Waiting | State::Settled => more,
             // An exit settles at once.
             State::Exited(_) => return Some(Found::Settled(state)),
-            State::Reading | State::Absent => false,
+            State::Reading => blank,
+            State::Absent => false,
         };
         if unsettled {
             self.settled_since = None;
@@ -1187,6 +1200,48 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
     first
 }
 
+/// Where what came since a wait began starts on a full screen drawn as a
+/// shell's scrolls (a relayed shell's, `koh connect`'s or mosh's): if the
+/// line typed on was the screen's last with text, it reads now as it did
+/// then and more (a prompt, and the line typed at it), and every row above
+/// it shows as it did, moved up as far as the screen scrolled: that line,
+/// where it is now. Else a full-screen program's whole screen is what came.
+fn scrolled_on(pane: &Pane, watch: &Watch) -> Option<usize> {
+    let screen = pane.screen();
+    let window = screen.window();
+    let typed = usize::from(watch.start.row);
+    let mut was = vec![None; usize::from(window.rows())];
+    for (cells, (y, shows)) in watch.before.values() {
+        if let Some(row) = was.get_mut(usize::from(*y)) {
+            *row = Some((cells, *shows));
+        }
+    }
+    let below = was.get(typed.saturating_add(1)..).unwrap_or_default();
+    if below
+        .iter()
+        .any(|row| row.is_some_and(|(cells, _)| !cells.blank()))
+    {
+        return None;
+    }
+    let (line, _) = (*was.get(typed)?)?;
+    if line.blank() {
+        return None;
+    }
+    let now: Vec<Option<u64>> = (0..window.rows())
+        .map(|y| window.row(y).map(|row| crate::pane::shows(&row)))
+        .collect();
+    let up = (0..=typed).find(|up| {
+        (0..typed.saturating_sub(*up)).all(|y| {
+            let then = was.get(y.saturating_add(*up)).copied().flatten();
+            then.map(|(_, shows)| shows) == now.get(y).copied().flatten()
+        })
+    })?;
+    let row = window.row(u16::try_from(typed.saturating_sub(up)).ok()?)?;
+    crate::pane::row_cells(&row)
+        .starts_with(line)
+        .then(|| screen.row_index(crate::pane::line_top(row).id()))?
+}
+
 /// What came since a wait began: the pane's lines from the first that
 /// changed since (on the screen or in history) to its last line with text.
 /// A full-screen program's whole screen; keys that went in on a full screen
@@ -1195,7 +1250,10 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
 fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
     let (screen, start) = (pane.screen(), watch.start);
     if screen.mode(fux_vt::Mode::AlternateScreen) {
-        return text(pane, marks, false);
+        return match start.on_full.then(|| scrolled_on(pane, watch)).flatten() {
+            Some(from) => lines_from(pane, from),
+            None => text(pane, marks, false),
+        };
     }
     // A row changed since, or moved (`Print`).
     let moved: HashSet<RowId> = (pane.record.printed_after(start.from))

@@ -654,14 +654,27 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
 /// first, as a remote program waiting for input shows its screen, and
 /// ends with status 4; `full` takes the full screen first, as a remote
 /// pager does, and ends with status 5; `forge` answers with marks that
-/// carry no nonce or the wrong one, and anything else with `hi` and status
-/// 1. Its marks carry `FUX_MARK_NONCE` if it was given one.
+/// carry no nonce or the wrong one, and anything else with `hi` and
+/// status 1. Its marks carry `FUX_MARK_NONCE` if it was given one. Like
+/// `koh connect`, it reports what the remote program does (`OSC 133 ; S`):
+/// `less` reports `reading` after its `C`, as a remote pager would, and
+/// `unsigned` the same with no nonce, each ending with status 6 once the
+/// FIFO answers, taking keys meanwhile while it polls the terminal and
+/// FIFO with a time limit; `busy` reports `busy` and waits on both with no
+/// limit, which fux's own probe takes as reading, and ends with status 7.
 const RELAY: &str = r#"
-import os, sys
+import os, select, sys
 nonce = os.environ.get("FUX_MARK_NONCE")
 out = sys.stdout
-def mark(m):
-    out.write("\x1b]133;" + m + (";nonce=" + nonce if nonce else "") + "\x07")
+def mark(m, signed=True):
+    out.write("\x1b]133;" + m + (";nonce=" + nonce if nonce and signed else "") + "\x07")
+def held(limit):
+    while True:
+        ready, _, _ = select.select([0, far], [], [], limit)
+        if far in ready:
+            return os.read(far, 100).decode()
+        if 0 in ready:
+            os.read(0, 100)
 def prompt():
     mark("A"); out.write("r$ "); out.flush()
 far = os.open(sys.argv[1], os.O_RDWR) if len(sys.argv) > 1 else None
@@ -681,6 +694,12 @@ while True:
     elif line == "hang":
         out.write("hanging\n"); out.flush()
         out.write(os.read(far, 100).decode()); mark("D;4")
+    elif line in ("less", "unsigned"):
+        out.write("pager\n"); mark("S;activity=reading", line == "less"); out.flush()
+        out.write(held(0.2)); mark("D;6")
+    elif line == "busy":
+        mark("S;activity=busy"); out.flush()
+        out.write(held(None)); mark("D;7")
     elif line == "full":
         out.write("\x1b[?1049hfull\n"); out.flush()
         out.write("\x1b[?1049l" + os.read(far, 100).decode()); mark("D;5")
@@ -782,6 +801,147 @@ fn a_command_that_takes_the_full_screen_is_not_waited_for() -> Outcome {
     std::fs::write(&fifo, "back\n").map_err(e)?;
     let ended = server.ok(&["str", &pane, "pane", "opts", "wait"])?;
     assert_eq!(done(&ended), Some("done 5"), "{ended}");
+    Ok(())
+}
+
+/// A relay that reports `reading` (`OSC 133 ; S`) after a command's `C`,
+/// as `koh connect` does for a remote pager or REPL, ends `line`'s wait
+/// at once, though the relay is on the full screen from its start and
+/// polls the network meanwhile: the answer is `reading · command running`,
+/// the pager shown.
+/// Keys sent after it are not answered by that report, from before them:
+/// they settle on quiet, as with no report.
+#[test]
+fn a_relayed_report_of_reading_ends_a_lines_wait() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let (relay, fifo) = relay(&server)?;
+    let far = fifo.to_string_lossy().into_owned();
+    let pane = id(&server.ok(&run(&[], &["python3", &relay, &far]))?);
+    let began = std::time::Instant::now();
+    let shown = line(&server, &pane, "less")?;
+    assert!(began.elapsed() < PATIENCE, "{shown}");
+    assert_eq!(head(&shown), format!("{pane} reading · command running"));
+    assert!(body(&shown).contains("pager\n"), "{shown}");
+    let typed = server.ok(&["str", &pane, "pane", "str", "x", "type"])?;
+    assert_eq!(head(&typed), format!("{pane} waiting · command running"));
+    std::fs::write(&fifo, "back\n").map_err(e)?;
+    let ended = server.ok(&["str", &pane, "pane", "opts", "wait"])?;
+    assert_eq!(done(&ended), Some("done 6"), "{ended}");
+    Ok(())
+}
+
+/// A relay's report that its program is busy holds `line`'s wait to the
+/// command's end, though fux's own probe of the relay finds it reading.
+#[test]
+fn a_relayed_busy_report_holds_the_wait() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let (relay, fifo) = relay(&server)?;
+    let far = fifo.to_string_lossy().into_owned();
+    let pane = id(&server.ok(&run(&[], &["python3", &relay, &far]))?);
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::fs::write(&fifo, "back\n")
+    });
+    let answer = line(&server, &pane, "busy")?;
+    writer
+        .join()
+        .map_err(|_| "the writer panicked")?
+        .map_err(e)?;
+    assert_eq!(done(&answer), Some("done 7"), "{answer}");
+    Ok(())
+}
+
+/// In a shell pane, a relay's report counts with the nested nonce alone,
+/// as its marks do: one without it is output, and `line` waits on.
+#[test]
+fn a_relayed_report_without_the_nonce_is_ignored() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let (relay, fifo) = relay(&server)?;
+    let far = fifo.to_string_lossy().into_owned();
+    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
+    line(&server, "sh", &format!("python3 '{relay}' '{far}'"))?;
+    let shown = line(&server, "sh", "less")?;
+    assert!(
+        head(&shown).ends_with(" reading · command running"),
+        "{shown}"
+    );
+    std::fs::write(&fifo, "back\n").map_err(e)?;
+    let ended = server.ok(&["str", "sh", "pane", "opts", "wait"])?;
+    assert_eq!(done(&ended), Some("done 6"), "{ended}");
+    let held = server.fux(&[
+        "str", "sh", "pane", "2", "timeout", "str", "unsigned", "line",
+    ])?;
+    assert_eq!(held.status, 124, "{}", held.stdout);
+    assert!(head(&held.stdout).contains(" busy"), "{}", held.stdout);
+    std::fs::write(&fifo, "back\n").map_err(e)?;
+    let ended = server.ok(&["str", "sh", "pane", "opts", "wait"])?;
+    assert_eq!(done(&ended), Some("done 6"), "{ended}");
+    Ok(())
+}
+
+/// A program that reads its terminal before it prints anything, as ssh
+/// and `koh connect` do while they connect, is not taken to have settled
+/// with nothing shown: `run` answers once it prints.
+#[test]
+fn run_answers_once_a_program_reading_from_its_start_prints() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let connect = r#"
+import os, select, sys, time
+r, w = os.pipe()
+if os.fork() == 0:
+    os.setsid(); time.sleep(0.4); os.write(w, b"x"); os._exit(0)
+select.select([0, r], [], [])
+print("connected", flush=True)
+sys.stdin.readline()
+"#;
+    let started = server.ok(&run(&[], &["python3", "-c", connect]))?;
+    assert_eq!(body(&started), "connected\n", "{started}");
+    Ok(())
+}
+
+/// A full-screen program that scrolls as a shell does (a relayed shell,
+/// `koh connect`'s or mosh's, drawn on the alternate screen) answers from
+/// the line typed on, as a shell on the main screen does, not with the
+/// whole screen again; one whose rows above changed otherwise answers its
+/// whole screen.
+#[test]
+fn a_full_screen_shell_answers_from_the_line_typed_on() -> Outcome {
+    let server = Server::start("")?;
+    let relay = r#"
+import sys
+out = sys.stdout
+out.write("\x1b[?1049hfirst\nsecond\nr$ "); out.flush()
+while True:
+    line = sys.stdin.readline().strip()
+    if line == "menu":
+        out.write("\x1b[H\x1b[2Jpicked\nr$ ")
+    else:
+        out.write("out-" + line + "\nr$ ")
+    out.flush()
+"#;
+    let pane = id(&server.ok(&run(&["40", "6", "size"], &["python3", "-c", relay]))?);
+    for word in ["a", "b", "c", "d"] {
+        let answer = line(&server, &pane, word)?;
+        assert_eq!(
+            body(&answer),
+            format!("r$ {word}\nout-{word}\nr$\n"),
+            "{answer}"
+        );
+    }
+    let menu = line(&server, &pane, "menu")?;
+    assert_eq!(body(&menu), "picked\nr$\n", "{menu}");
     Ok(())
 }
 

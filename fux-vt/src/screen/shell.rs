@@ -10,6 +10,11 @@
 //! shell's, or with the nested one while the shell's command runs: then the
 //! program that command started (a remote shell's marks, relayed) says what
 //! runs within it, until the shell marks again.
+//!
+//! `S ; activity=STATE`, a state report, says what the program a relay runs
+//! does (a remote one, which the host cannot probe): `reading`, `polling`,
+//! `waiting`, `busy`, `idle` or `unknown`. It counts as a mark does, and
+//! holds until the next mark ([`Commands::report`]).
 
 use super::Screen;
 use crate::RowId;
@@ -47,12 +52,68 @@ pub struct Commands {
     /// The shell drew a prompt (`A`) and has started no command since
     /// (`C`): it is reading its command line.
     pub prompt: bool,
+    /// How many marks have counted (a report among them): one that grows
+    /// came since.
+    pub marks: u64,
+    /// The last state report that counted (`S`), if any.
+    pub report: Option<Report>,
+}
+
+/// What a relay said the program it runs does (`OSC 133 ; S ;
+/// activity=STATE`): the states of a terminal's foreground group, as a host
+/// probes them for a program of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reported {
+    /// Blocked reading its terminal, with no time limit.
+    Reading,
+    /// Waiting on its terminal with a time limit: it may draw again alone.
+    Polling,
+    /// Blocked on something else: the network, a pipe, another program.
+    Waiting,
+    /// Running, sleeping on a timer, or starting.
+    Busy,
+    /// Every thread waits, on what the system does not name (macOS).
+    Idle,
+    /// The system does not say.
+    Unknown,
+}
+
+impl Reported {
+    /// The state a report's `activity=` names; `None` for one unknown.
+    pub fn named(name: &[u8]) -> Option<Reported> {
+        Some(match name {
+            b"reading" => Reported::Reading,
+            b"polling" => Reported::Polling,
+            b"waiting" => Reported::Waiting,
+            b"busy" => Reported::Busy,
+            b"idle" => Reported::Idle,
+            b"unknown" => Reported::Unknown,
+            _ => return None,
+        })
+    }
+}
+
+/// A state report that counted, and where it came among the marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Report {
+    /// The state it said.
+    pub activity: Reported,
+    /// [`Commands::marks`] as it came: while that is the same, no mark has
+    /// come since.
+    pub mark: u64,
 }
 
 impl Commands {
     /// Whether a command's output began (`C`) and has not ended (`D`).
     pub fn running(&self) -> bool {
         self.output_start.is_some()
+    }
+
+    /// The state the last report said, if no mark came after it.
+    pub fn reported(&self) -> Option<Reported> {
+        (self.report)
+            .filter(|r| r.mark == self.marks)
+            .map(|r| r.activity)
     }
 }
 
@@ -98,6 +159,19 @@ impl Screen {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// `S ; activity=STATE`, a state report, given its options after
+    /// `S`, that counted: one naming no state it knows is none.
+    pub(crate) fn report(&mut self, options: &[u8]) {
+        let activity = (options.split(|b| *b == b';'))
+            .find_map(|o| o.strip_prefix(b"activity="))
+            .and_then(Reported::named);
+        if let Some(activity) = activity {
+            self.commands.marks = self.commands.marks.wrapping_add(1);
+            let mark = self.commands.marks;
+            self.commands.report = Some(Report { activity, mark });
         }
     }
 

@@ -517,7 +517,9 @@ pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// The most OSC payload bytes retained with [`Feature::PromptMarks`] alone:
 /// enough to tell a prompt mark, `133;A`, a prompt's kind, `133;P;k=i`, or
-/// a status and a nonce, `133;D;-2147483648;nonce=` and 32 bytes of it.
+/// a status and a nonce, `133;D;-2147483648;nonce=` and 32 bytes of it,
+/// or a state report and its nonce, `133;S;activity=unknown;nonce=` and
+/// fux's 16 hex digits.
 const OSC_PREFIX: usize = 64;
 
 /// The most bytes of a DECRQSS request kept: xterm's longest are two

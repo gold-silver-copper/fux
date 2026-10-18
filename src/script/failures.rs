@@ -72,6 +72,8 @@ const ROWS: &[Fails] = &[
     fails("timeout", Cli, "%1 opts str never wait-text 1 timeout wait", "fails timeout 124"),
     fails("not_here", Key, "str c1 client 10 10 headless", "fails not_here 1"),
     fails("unused", Cli, "%1 opts str x wait-text capture", "fails unused 1"),
+    // 0.28: a wait word on the pane is as one among the options after it.
+    fails("unused", Cli, "%1 str x wait-text opts capture", "fails unused 1"),
     fails("unused", Cli, "%1 opts main-screen alt-screen capture", "fails unused 1"),
     fails("unused", Cli, "%1 opts str /bin/cat program str hi typed split", "fails unused 1"),
     fails("not_a_key", Cli, "%1 keys str Nope key send-keys", "fails not_a_key 1"),
@@ -96,6 +98,9 @@ const ROWS: &[Fails] = &[
     fails("call_depth", Cli, "define f f 1 end f", "fails call_depth 1"),
     fails("type", Cli, "str a 1 add", "fails type 1"),
     fails("type", Cli, "5 70000 0 mouse", "fails type 1"),
+    // 0.28: a pane given a wait is for what acts on it, and refused elsewhere.
+    fails("type", Cli, "%1 1 timeout str state get", "fails type 1"),
+    fails("type", Cli, "%1 opts str x line", "fails type 1"),
     fails("too_long", Cli, "define deep let x list x end deep end 0 deep", "fails too_long 1"),
     fails("div_by_zero", Cli, "1 0 div", "fails div_by_zero 1"),
     fails("overflow", Cli, "9223372036854775807 1 add", "fails overflow 1"),

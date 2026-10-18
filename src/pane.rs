@@ -475,6 +475,9 @@ pub struct Pane {
     /// it at first, even while still blocked reading (the kernel has yet
     /// to wake it).
     pub written_at: Option<Instant>,
+    /// The last state report its program relayed (`OSC 133 ; S`), by where
+    /// it came among the marks, and when fux read it.
+    pub reported_at: Option<(u64, Instant)>,
     /// What happened in it, in order, and what each piece of output
     /// printed: its journal (`crate::log`), which waits read.
     pub record: log::Log,
@@ -539,6 +542,8 @@ pub struct Start {
     pub started: u64,
     pub finished: u64,
     pub on_full: bool,
+    /// The row the cursor was on.
+    pub row: u16,
 }
 
 impl Start {
@@ -549,6 +554,7 @@ impl Start {
             started: screen.commands().started,
             finished: screen.commands().finished,
             on_full: screen.mode(fux_vt::Mode::AlternateScreen),
+            row: screen.cursor_position().0,
         }
     }
 }
@@ -655,6 +661,7 @@ impl Pane {
             shown: (mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
+            reported_at: None,
             record: log::Log::new(log::JOURNAL_BYTES),
             since: Start::default(),
             before: Rc::default(),
@@ -763,6 +770,11 @@ impl Pane {
             }
         };
         self.input.heard(Instant::now);
+        // A report read now, which came after any input written before.
+        let report = self.screen().commands().report.map(|r| r.mark);
+        if report.is_some() && report != self.reported_at.map(|(mark, _)| mark) {
+            self.reported_at = report.map(|mark| (mark, now));
+        }
         begun
     }
 
@@ -1296,6 +1308,16 @@ pub struct Cells {
 }
 
 impl Cells {
+    /// Whether the row holds blanks alone.
+    pub fn blank(&self) -> bool {
+        self.text.trim().is_empty()
+    }
+
+    /// Whether the row reads as `before` did, and maybe more after it.
+    pub fn starts_with(&self, before: &Cells) -> bool {
+        self.text.starts_with(before.text.trim_end())
+    }
+
     /// Reads `row` into these cells, in the room they have.
     fn read(&mut self, row: &Row<'_>) {
         self.text.clear();

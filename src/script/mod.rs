@@ -45,6 +45,9 @@ pub enum Fux {
     Keys(Box<Keys>),
     /// A mouse event being built, for `send-mouse`.
     Mouse(Box<MouseEvent>),
+    /// A pane, tab or workspace given a wait (`%2 0 timeout`), for the
+    /// action, `wait` or `capture` that follows.
+    Awaited(Box<Awaited>),
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
     /// What the server said: a capture, a listing, a wait's outcome.
@@ -61,6 +64,7 @@ impl AppValue for Fux {
             Fux::Opts(_) => "options (from opts)",
             Fux::Keys(_) => "keys (from keys)",
             Fux::Mouse(_) => "a mouse event (from mouse)",
+            Fux::Awaited(_) => "a pane given a wait (from timeout or wait-text on it)",
             Fux::Extent(_) => "a size (from percent)",
             Fux::Answer(answer) => answer.said.kind(),
         }
@@ -75,6 +79,7 @@ impl AppValue for Fux {
             Fux::Opts(_) => "opts",
             Fux::Keys(_) => "keys",
             Fux::Mouse(_) => "mouse",
+            Fux::Awaited(_) => "awaited",
             Fux::Extent(_) => "size",
             Fux::Answer(_) => "answer",
         }
@@ -89,7 +94,9 @@ impl AppValue for Fux {
             Fux::Answer(answer) => answer.text.clone(),
             Fux::Extent(Extent::Cells(n)) => n.to_string(),
             Fux::Extent(Extent::Percent(n)) => format!("{}%", n.get()),
-            Fux::Opts(_) | Fux::Keys(_) | Fux::Mouse(_) => format!("({})", self.kind()),
+            Fux::Opts(_) | Fux::Keys(_) | Fux::Mouse(_) | Fux::Awaited(_) => {
+                format!("({})", self.kind())
+            }
         }
     }
 }
@@ -129,6 +136,18 @@ pub struct Opts {
 pub struct Keys {
     pub inputs: Vec<Input>,
     pub waits: Waits,
+}
+
+/// A pane, tab or workspace and the wait words given on it, before the
+/// options, keys or mouse event of the word that acts on it: they wait as
+/// if given there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Awaited {
+    pub target: AnyRef,
+    pub waits: Waits,
+    /// The wait words given, for the word they go on to refuse any it
+    /// would not use.
+    pub given: Vec<&'static str>,
 }
 
 /// A mouse event, as words give it.
@@ -1102,6 +1121,7 @@ fn code(values: &[Value<Fux>]) -> Option<Code> {
             | Fux::Opts(_)
             | Fux::Keys(_)
             | Fux::Mouse(_)
+            | Fux::Awaited(_)
             | Fux::Extent(_),
         ) => None,
     })

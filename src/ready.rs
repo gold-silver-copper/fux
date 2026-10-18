@@ -10,8 +10,15 @@
 //!   program is settled, as it cannot be said to read.
 //! - Where the system does not say (a probe that failed), a quiet screen
 //!   is taken as settled after a longer while, and said to be a guess.
+//!
+//! A relay (`koh connect`) runs a program fux cannot probe, on another
+//! machine; the relay can, and says what it does in a state report (`OSC
+//! 133 ; S ; activity=STATE`). Its last report stands in for the probe
+//! while no mark came after it and it came after the last input fux
+//! wrote; the rules below then apply to it as they do to the probe's.
 use crate::pane::{Pane, Process};
 use crate::process::{Child, Ended, told};
+use fux_vt::Reported;
 use fuxix::process::Activity;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -78,7 +85,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
     let quiet = now.saturating_duration_since(since);
     let tty = child.master.slave_path();
-    let activity = activity(pane, child, now);
+    let activity = reported(pane).unwrap_or_else(|| activity(pane, child, now));
     // The command the input typed still runs and does not read: at work
     // until it ends or asks. One that took the full screen since it began
     // (an editor, a pager, polling there) is not at work; one whose output
@@ -110,58 +117,38 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
 }
 
 /// What the foreground group of `child`'s terminal is blocked in, as
-/// `pane`'s last key and its screen since say by `now`. With no foreground
-/// group (its program dropped its terminal, or is gone, its end not yet
-/// heard), its first process's own group: busy once none is left in it. A
-/// shell back at its prompt, reading, reads.
+/// `pane`'s last key and its screen since say by `now`
+/// (`fuxix::process::terminal_activity`): a shell back at its prompt,
+/// reading, reads.
 fn activity(pane: &Pane, child: &Child, now: Instant) -> Activity {
-    // How long ago the last key went to the program: forever, if none has
-    // (a read timed from a key waits with no limit before one); and whether
-    // the screen changed after it: the program answered it.
+    // How long ago the last key went to the program: forever, if none has;
+    // and whether the screen changed after it: the program answered it.
     let since_key = (pane.written_at).map_or(Duration::MAX, |at| now.saturating_duration_since(at));
     let answered = pane.written_at.is_some_and(|at| pane.changed_at > at);
-    let leader = child.leader.pid();
-    let group = fuxix::terminal::foreground_group(&child.master).unwrap_or(leader);
-    // A read timed from a key (`VMIN` and `VTIME`) times the gap after the
-    // first key it took: once the program wrote after the last key (and
-    // the terminal echoes nothing), the read that took it returned, and
-    // the one it is in has taken no key yet, so it waits with no limit.
-    let timed = |t: &fuxix::terminal::Termios| {
-        let since = match answered && !t.modes().echo {
-            true => Duration::MAX,
-            false => since_key,
-        };
-        t.timed_reads(since)
-    };
-    let tty = child.master.slave_path();
-    let activity = match fuxix::process::activity(group, tty, leader) {
-        // A read with a time limit is a poll: the program goes on alone
-        // when it runs out.
-        Activity::Reading
-            if fuxix::terminal::attributes(&child.master).is_ok_and(|t| timed(&t)) =>
-        {
-            Activity::Polling
-        }
-        activity @ (Activity::Reading
-        | Activity::Polling
-        | Activity::Waiting
-        | Activity::Busy
-        | Activity::Idle
-        | Activity::Unknown) => activity,
-    };
-    // A shell back at its prompt, reading, its last command ended: what
-    // else runs in its group is a job it left there (job control off, or
-    // fish's disowned start-up work), not the agent's command.
     let commands = pane.screen().commands();
-    let left = match activity {
-        Activity::Busy | Activity::Polling | Activity::Waiting => {
-            !commands.running()
-                && commands.finished > 0
-                && fuxix::process::reads_terminal(leader, tty)
-        }
-        Activity::Reading | Activity::Idle | Activity::Unknown => false,
-    };
-    if left { Activity::Reading } else { activity }
+    let prompt = !commands.running() && commands.finished > 0;
+    let leader = child.leader.pid();
+    fuxix::process::terminal_activity(&child.master, leader, since_key, answered, prompt)
+}
+
+/// What the program a relay in `pane` runs does, as its last state report
+/// says (`OSC 133 ; S`), while that holds: no mark came after it, and it
+/// came after the last input fux wrote, so it answers that input. The
+/// pane's own program runs still, as `state` has found.
+fn reported(pane: &Pane) -> Option<Activity> {
+    let reported = pane.screen().commands().reported()?;
+    let (_, at) = pane.reported_at?;
+    if pane.written_at.is_some_and(|written| written >= at) {
+        return None;
+    }
+    Some(match reported {
+        Reported::Reading => Activity::Reading,
+        Reported::Polling => Activity::Polling,
+        Reported::Waiting => Activity::Waiting,
+        Reported::Busy => Activity::Busy,
+        Reported::Idle => Activity::Idle,
+        Reported::Unknown => Activity::Unknown,
+    })
 }
 
 /// What the program of `child`, `pane`'s, is blocked in by `now`
