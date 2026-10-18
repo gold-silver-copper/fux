@@ -212,6 +212,8 @@ fn count_all(
 ) -> Vec<Counted> {
     let next = AtomicUsize::new(0);
     let corpus = corpus.to_string_lossy();
+    let payloads = crate::census::data(&root());
+    let payloads = payloads.to_string_lossy();
     let done = AtomicUsize::new(0);
     let mut results: Vec<(usize, Counted)> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..jobs.max(1))
@@ -224,7 +226,8 @@ fn count_all(
                             break;
                         };
                         let name = names.get(task.workload).map_or("", String::as_str);
-                        let mut args = vec!["run", name, "--corpus", &corpus];
+                        let mut args =
+                            vec!["run", name, "--corpus", &corpus, "--payloads", &payloads];
                         if task.baseline {
                             args.push("--baseline");
                         }

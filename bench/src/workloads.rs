@@ -6,6 +6,10 @@
 //!   feeds it: the synthetic workloads on a 50×200 screen, each recording
 //!   at its own size (`vt/corpus:NAME`), and every recording in turn
 //!   (`vt/corpus`).
+//! - `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`,
+//!   `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`,
+//!   `vt/sixel:frames`: fux-vt alone on each of the census's speed
+//!   payloads (`census`), 8 MiB at 50×200, each alone.
 //! - `pane/NAME`: the same through `fux::pane::Pane::output`, in the 64 KiB
 //!   reads fux's server makes of a pane.
 //! - `paint/corpus`: a session (`fux::session::Session`, without
@@ -38,6 +42,7 @@
 //! Each workload has a baseline: the same run without the part measured.
 //! For most that is making the bytes; for `paint/*` it is also feeding the
 //! session, so the difference is composition and paint alone.
+use crate::census;
 use crate::corpus::{self, Recording};
 use crate::synthetic;
 use std::hint::black_box;
@@ -118,6 +123,18 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
             ),
         ));
     }
+    for p in census::PAYLOADS {
+        out.push(spec(
+            format!("vt/{}", p.name),
+            format!(
+                "{}, {} MiB at {}x{}",
+                p.about,
+                census::SIZE >> 20,
+                census::ROWS,
+                census::COLS
+            ),
+        ));
+    }
     out.push(spec(
         "paint/corpus".into(),
         format!(
@@ -185,16 +202,30 @@ pub struct Done {
 
 /// Runs the named workload once, or its baseline, on the recordings in
 /// `dir`.
-pub fn run(name: &str, dir: &Path, baseline: bool) -> Result<Done, String> {
-    run_shrunk(name, dir, baseline, 1)
+pub fn run(name: &str, dir: &Path, payloads: &Path, baseline: bool) -> Result<Done, String> {
+    run_shrunk(name, dir, payloads, baseline, 1)
 }
 
 /// [`run`], every size divided by `shrink`: for the tests, in a debug
 /// build.
-fn run_shrunk(name: &str, dir: &Path, baseline: bool, shrink: usize) -> Result<Done, String> {
+fn run_shrunk(
+    name: &str,
+    dir: &Path,
+    payloads: &Path,
+    baseline: bool,
+    shrink: usize,
+) -> Result<Done, String> {
     let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
     let recordings = corpus::recordings(dir)?;
     if let Some(rest) = name.strip_prefix("vt/") {
+        if let Some(bytes) = census::make(rest, payloads, size(census::SIZE)) {
+            let load = Load {
+                rows: census::ROWS,
+                cols: census::COLS,
+                bytes: bytes?,
+            };
+            return Ok(vt(&[load], baseline));
+        }
         let loads = loads(rest, &recordings, size(RECORDING), shrink)?;
         return Ok(vt(&loads, baseline));
     }
@@ -785,6 +816,10 @@ mod tests {
         crate::corpus::dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
     }
 
+    fn payloads() -> std::path::PathBuf {
+        crate::census::data(&Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+    }
+
     /// Every workload listed runs, and its baseline too.
     #[test]
     fn every_workload_runs() {
@@ -796,7 +831,7 @@ mod tests {
             !s.name.starts_with("vt/corpus:") || s.name.ends_with(":vim")
         }) {
             for baseline in [true, false] {
-                let done = super::run_shrunk(&spec.name, &dir(), baseline, 64);
+                let done = super::run_shrunk(&spec.name, &dir(), &payloads(), baseline, 64);
                 assert!(
                     done.as_ref().is_ok_and(|d| d.units > 0),
                     "{} {baseline}: {:?}",
@@ -811,15 +846,15 @@ mod tests {
     /// paints none.
     #[test]
     fn the_paint_workload_paints() {
-        let done = super::run_shrunk("paint/corpus", &dir(), false, 16);
+        let done = super::run_shrunk("paint/corpus", &dir(), &payloads(), false, 16);
         assert!(done.is_ok_and(|d| d.frames > 100 && d.painted > d.frames));
-        let base = super::run_shrunk("paint/corpus", &dir(), true, 16);
+        let base = super::run_shrunk("paint/corpus", &dir(), &payloads(), true, 16);
         assert!(base.is_ok_and(|d| d.frames == 0));
     }
 
     #[test]
     fn an_unknown_workload_is_an_error() {
-        assert!(super::run("vt/nothing", &dir(), false).is_err());
-        assert!(super::run("nothing", &dir(), false).is_err());
+        assert!(super::run("vt/nothing", &dir(), &payloads(), false).is_err());
+        assert!(super::run("nothing", &dir(), &payloads(), false).is_err());
     }
 }

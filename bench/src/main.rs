@@ -4,6 +4,7 @@
 //! temporary worktree (`against`); and what a person feels through real
 //! servers beside tmux, zellij and herdr (`feel`).
 mod against;
+mod census;
 mod corpus;
 mod count;
 mod feel;
@@ -21,8 +22,8 @@ const USAGE: &str = "\
 usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--threshold PERCENT]
                  [--only TEXT]... [--json FILE]
        fux-bench list
-       fux-bench run WORKLOAD [--baseline] [--corpus DIR]
-       fux-bench time [--corpus DIR] [WORKLOAD...]
+       fux-bench run WORKLOAD [--baseline] [--corpus DIR] [--payloads DIR]
+       fux-bench time [--corpus DIR] [--payloads DIR] [WORKLOAD...]
        fux-bench info [--json FILE]
        fux-bench feel [--muxes LIST] [--parts LIST] [--keys N] [--json FILE]
 
@@ -105,6 +106,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         _ => "against".to_owned(),
     };
     let mut corpus = corpus::dir(&against::root());
+    let mut payloads = census::data(&against::root());
     let mut options = against::Options {
         reference: "master".into(),
         repeats: 5,
@@ -139,6 +141,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             "--only" => options.only.push(value(&mut args, &arg)?),
             "--json" => options.json = value(&mut args, &arg)?.into(),
             "--corpus" => corpus = value(&mut args, &arg)?.into(),
+            "--payloads" => payloads = value(&mut args, &arg)?.into(),
             "--baseline" => baseline = true,
             "--muxes" => feel.muxes = list(value(&mut args, &arg)?),
             "--parts" => feel.parts = list(value(&mut args, &arg)?),
@@ -162,11 +165,11 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             let [name] = names.as_slice() else {
                 return Err(format!("run takes one workload\n{USAGE}"));
             };
-            let done = workloads::run(name, &corpus, baseline)?;
+            let done = workloads::run(name, &corpus, &payloads, baseline)?;
             println!("{name} {} {} {}", done.units, done.frames, done.painted);
             Ok(true)
         }
-        "time" => time(&corpus, &names),
+        "time" => time(&corpus, &payloads, &names),
         "info" => info::run(&options.json),
         "feel" => {
             feel.json = options.json;
@@ -182,7 +185,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
 }
 
 /// Each workload's best thread CPU time of three, here.
-fn time(corpus: &Path, names: &[String]) -> Result<bool, String> {
+fn time(corpus: &Path, payloads: &Path, names: &[String]) -> Result<bool, String> {
     let cpu = || fuxix::process::thread_cpu_time().map_err(|e| e.to_string());
     println!(
         "{:<26} {:>10} {:>10}   thread CPU, best of 3",
@@ -196,10 +199,10 @@ fn time(corpus: &Path, names: &[String]) -> Result<bool, String> {
         let mut units = 0;
         for _ in 0..3 {
             let base_start = cpu()?;
-            workloads::run(&spec.name, corpus, true)?;
+            workloads::run(&spec.name, corpus, payloads, true)?;
             let base = cpu()?.saturating_sub(base_start);
             let start = cpu()?;
-            units = workloads::run(&spec.name, corpus, false)?.units;
+            units = workloads::run(&spec.name, corpus, payloads, false)?.units;
             best = best.min(cpu()?.saturating_sub(start).saturating_sub(base));
         }
         let secs = best.as_secs_f64().max(1e-9);
