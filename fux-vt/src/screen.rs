@@ -1369,6 +1369,8 @@ impl Screen {
     /// question mark (U+2426), placed at the active position as a glyph is,
     /// in no character set: a single shift waits on for the next graphic
     /// character.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn substitute(&mut self) -> Result<(), Error> {
         let single = self.charsets.single;
         self.print('\u{2426}')?;
@@ -1843,6 +1845,8 @@ impl Screen {
             // SO puts G1 in GL, SI G0.
             14 => self.charsets.gl = Set::G1,
             15 => self.charsets.gl = Set::G0,
+            // SUB: its error character (DEC STD 070, p. 5-132).
+            0x1a => self.substitute()?,
             _ => {}
         }
         Ok(())

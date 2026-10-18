@@ -1639,13 +1639,10 @@ impl Parser {
         Ok(())
     }
 
-    /// Execute a C0 control. BEL becomes an event when events are enabled;
-    /// SUB displays the error character (DEC STD 070, p. 5-132).
+    /// Execute a C0 control. BEL becomes an event when events are enabled.
     fn control(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
-        match byte {
-            7 if self.options.has(Feature::Events) => sink.event(Event::Bell),
-            0x1a => return self.substitute(),
-            _ => {}
+        if byte == 7 && self.options.has(Feature::Events) {
+            sink.event(Event::Bell);
         }
         self.screen.control(byte)
     }
@@ -1657,15 +1654,6 @@ impl Parser {
     fn bell(&mut self, sink: &mut impl Sink) {
         let done = self.control(0x07, sink);
         self.kept(done);
-    }
-
-    /// SUB carried out: its error character (DEC STD 070, p. 5-132). Out
-    /// of line, as programs send it seldom and every C0 control comes
-    /// through `control`.
-    #[cold]
-    #[inline(never)]
-    fn substitute(&mut self) -> Result<(), Error> {
-        self.screen.substitute()
     }
 
     /// CAN or SUB, `byte`, in `state`, any but ground: what is in progress
@@ -1688,7 +1676,7 @@ impl Parser {
         self.sixel = None;
         self.termcap = false;
         if byte == 0x1a && !matches!(state, State::Sixel) {
-            let done = self.substitute();
+            let done = self.screen.substitute();
             self.kept(done);
         }
         self.screen.forget_repeat();
