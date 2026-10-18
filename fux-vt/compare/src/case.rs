@@ -302,13 +302,32 @@ fn outvoted(verdicts: &[Verdict]) -> bool {
     !outvoted_on(verdicts).is_empty()
 }
 
-/// What a panic said, from its payload.
+std::thread_local! {
+    /// Where this thread last panicked, as the panic hook saw it.
+    static PANICKED_AT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The panic hook compare runs with: it prints nothing (an engine's panic
+/// costs its vote and is reported where it is caught, `guarded`), but
+/// keeps where it happened, so the report names its file and line.
+pub fn note_panic(info: &std::panic::PanicHookInfo<'_>) {
+    let at = info
+        .location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+    let _ = PANICKED_AT.try_with(|cell| cell.replace(at));
+}
+
+/// What a panic said, from its payload, and where it was.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
+    let said = payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a panic".to_owned())
+        .unwrap_or_else(|| "a panic".to_owned());
+    match PANICKED_AT.try_with(|cell| cell.take()).ok().flatten() {
+        Some(at) => format!("{said} (at {at})"),
+        None => said,
+    }
 }
 
 /// Calls into an engine, turning a panic into an error, so one engine's
@@ -594,6 +613,12 @@ impl Case {
     /// then snippets, then bytes, and making the screen smaller, as long as
     /// it keeps differing; at most `budget` runs.
     pub fn shrink(&self, panel: &[usize], budget: usize) -> Case {
+        self.shrink_while(budget, |c| c.differs(panel))
+    }
+
+    /// The case shrunk as [`Case::shrink`] does, keeping each cut while
+    /// `keep` holds of it (it still differs; it still fails with an error).
+    pub fn shrink_while(&self, budget: usize, keep: impl Fn(&Case) -> bool) -> Case {
         let mut best = self.clone();
         let runs = std::cell::Cell::new(0usize);
         let try_it = |candidate: Case, best: &mut Case| -> bool {
@@ -601,7 +626,7 @@ impl Case {
                 return false;
             }
             runs.set(runs.get().saturating_add(1));
-            if candidate.differs(panel) {
+            if keep(&candidate) {
                 *best = candidate;
                 true
             } else {
@@ -1139,6 +1164,45 @@ mod tests {
         assert_eq!(failures, ["synchronized output"]);
         assert!(!last);
         Ok(())
+    }
+
+    /// A caught panic says where it was, the hook keeping its location (at
+    /// the parent the hook dropped it); a case shrinks while what it is
+    /// kept for still holds of it, as for a case that errs.
+    #[test]
+    fn a_panic_names_its_place_and_a_failing_case_shrinks() {
+        std::panic::set_hook(Box::new(super::note_panic));
+        // A panic as an engine's would be: an assertion that fails.
+        let caught = super::guarded(|| -> Result<(), String> {
+            let one = "a".len();
+            assert!(one == 2, "boom");
+            Ok(())
+        });
+        assert!(caught.is_err_and(|e| e.contains("boom (at ") && e.contains(".rs:")));
+        let text = |bytes: &[u8]| Snippet {
+            family: usize::MAX,
+            bytes: bytes.to_vec(),
+        };
+        let case = Case {
+            rows: 1,
+            cols: 4,
+            history: 0,
+            reflow: true,
+            newline_before_resize: false,
+            steps: vec![
+                Step::Output(vec![text(b"abc"), text(b"X")]),
+                Step::Output(vec![text(b"defgh")]),
+            ],
+            subject: FUX_VT,
+        };
+        let has_x = |c: &Case| {
+            c.steps.iter().any(|s| match s {
+                Step::Output(snippets) => snippets.iter().any(|n| n.bytes.contains(&b'X')),
+                Step::Resize(..) => false,
+            })
+        };
+        let small = case.shrink_while(100, has_x);
+        assert_eq!(small.steps, vec![Step::Output(vec![text(b"X")])]);
     }
 
     /// A one-step case of `rows` by `cols` with `subject` judged.

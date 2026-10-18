@@ -967,7 +967,18 @@ pub fn run(
         let case = recording.case();
         let expected = status(&recording.name);
         let exceptions = expected.unwrap_or_default();
-        let run = judge_excepted(recording, &case, panel, exceptions)?;
+        // An error (an engine or the subject failing) fails the recording,
+        // named; the run goes on to the others.
+        let run = match judge_excepted(recording, &case, panel, exceptions) {
+            Ok(run) => run,
+            Err(e) => {
+                ok = false;
+                differ = differ.saturating_add(1);
+                println!("ERROR    {}: {e}", recording.name);
+                results.push(serde_json::json!({ "recording": recording.name, "error": e }));
+                continue;
+            }
+        };
         let outcome = &run.outcome;
         let stale = run.stale(exceptions);
         let label = format!(
@@ -1142,7 +1153,15 @@ fn run_subject(
             subject,
             ..recording.case()
         };
-        let (points, outcome) = judge_both(recording, &case, panel)?;
+        let (points, outcome) = match judge_both(recording, &case, panel) {
+            Ok(both) => both,
+            Err(e) => {
+                whole = false;
+                println!("ERROR    {}: {e}", recording.name);
+                results.push(serde_json::json!({ "recording": recording.name, "error": e }));
+                continue;
+            }
+        };
         let mine: Vec<Option<&[(String, Field)]>> =
             points.iter().map(|p| Some(p.subject.as_slice())).collect();
         let fux: Vec<Option<&[(String, Field)]>> =

@@ -511,7 +511,23 @@ fn random(
             subject,
             ..case::random(&mut r, families, args.reflow)
         };
-        let outcome = case.run(panel)?;
+        // An error (the subject refused, failed or panicked on the case) is
+        // a failure of its own, shrunk while it still errs and shown with
+        // its replay; the run goes on.
+        let outcome = match case.run(panel) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                failed = failed.saturating_add(1);
+                if shown.len() < show {
+                    let small = case.shrink_while(4000, |c| c.run(panel).is_err());
+                    let why = small.run(panel).err().unwrap_or(e);
+                    println!("ERROR    {why}");
+                    println!("  replay:   {}", small.command(panel));
+                    shown.push(small);
+                }
+                continue;
+            }
+        };
         if outcome.agrees() {
             continue;
         }
@@ -1269,7 +1285,7 @@ fn main() -> ExitCode {
     }
     // An engine's panic is caught and costs it its vote (`case::guarded`),
     // and reported there; the default hook would print each one again.
-    std::panic::set_hook(Box::new(|_| {}));
+    std::panic::set_hook(Box::new(case::note_panic));
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if let Some((first, rest)) = argv.split_first()
         && first == instructions::CHILD

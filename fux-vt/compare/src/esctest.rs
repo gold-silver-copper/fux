@@ -1051,7 +1051,8 @@ struct Runs {
 type UnitResult = Result<(Tests, bool), String>;
 
 /// Runs every test of `areas` on its own ([`isolated`]), `jobs` at a time,
-/// with `run`, at `place`.
+/// with `run`, at `place`. A test whose run fails or panics has no result
+/// (infrastructure), and the rest go on.
 fn run_all(
     areas: &[Area],
     jobs: usize,
@@ -1070,7 +1071,10 @@ fn run_all(
                     let Some(unit) = units.get(i) else {
                         break;
                     };
-                    let result = run(unit).map(|ran| results(unit, &ran, limit, place));
+                    // A run that errs or panics is the harness's failure:
+                    // its tests have no result, and the others go on.
+                    let result = crate::case::guarded(|| run(unit))
+                        .map(|ran| results(unit, &ran, limit, place));
                     if let Ok(mut done) = done.lock() {
                         done.insert(i, result);
                     }
@@ -1078,7 +1082,9 @@ fn run_all(
             });
         }
     });
-    let mut done = done.into_inner().map_err(|_| "a run panicked")?;
+    let mut done = done
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut runs = Runs {
         results: Vec::new(),
         observed: BTreeSet::new(),
@@ -1086,10 +1092,30 @@ fn run_all(
     let mut i = 0usize;
     for area in areas {
         let mut tests = Tests::new();
-        for _ in &area.tests {
-            let (unit, observed) = done
-                .remove(&i)
-                .unwrap_or(Err("a test did not run".into()))?;
+        for name in &area.tests {
+            let (unit, observed) = match done.remove(&i) {
+                Some(Ok(ran)) => ran,
+                Some(Err(why)) => {
+                    let why = format!("no result: the run failed: {why}");
+                    (
+                        vec![(
+                            name.clone(),
+                            Outcome::Unavailable(Limit::Infrastructure, why),
+                        )],
+                        false,
+                    )
+                }
+                None => {
+                    let why = "no result: the test did not run".to_owned();
+                    (
+                        vec![(
+                            name.clone(),
+                            Outcome::Unavailable(Limit::Infrastructure, why),
+                        )],
+                        false,
+                    )
+                }
+            };
             if observed {
                 runs.observed
                     .extend(unit.iter().map(|(name, _)| name.clone()));
@@ -2654,6 +2680,46 @@ a
             stale
                 .iter()
                 .all(|m| m.starts_with("A.t1: listed as xterm-too"))
+        );
+        Ok(())
+    }
+
+    /// A test whose run errs or panics has no result (infrastructure), and
+    /// the others still come back (at the parent one area's error or a
+    /// worker's panic ended esctest with no table and no JSON).
+    #[test]
+    fn a_failed_run_costs_its_test_alone() -> Result<(), String> {
+        use super::{Limit, Place, Ran, Subject};
+        let area = super::Area {
+            name: "A".into(),
+            tests: vec!["A.t1".into(), "A.t2".into(), "A.t3".into()],
+        };
+        let run = |unit: &super::Area| -> Result<Ran, String> {
+            match unit.tests.first().map(String::as_str) {
+                Some("A.t1") => Ok(Ran {
+                    log: "Run test: A.t1\nPassed.\n\n".into(),
+                    ..Ran::default()
+                }),
+                Some("A.t2") => Err("the engine went away".into()),
+                _ => {
+                    let one = "a".len();
+                    assert!(one == 2, "a worker's bug");
+                    Err("unreachable".into())
+                }
+            }
+        };
+        let place = Place::Direct(Subject::FuxVt);
+        let runs = super::run_all(&[area], 2, std::time::Duration::from_secs(60), place, &run)?;
+        let tests: Vec<&Outcome> = runs.results.iter().flatten().map(|(_, o)| o).collect();
+        let [first, second, third] = tests.as_slice() else {
+            return Err(format!("{tests:?}"));
+        };
+        assert!(matches!(first, Outcome::Pass { .. }));
+        assert!(
+            matches!(second, Outcome::Unavailable(Limit::Infrastructure, why) if why.contains("went away"))
+        );
+        assert!(
+            matches!(third, Outcome::Unavailable(Limit::Infrastructure, why) if why.contains("a worker's bug"))
         );
         Ok(())
     }
