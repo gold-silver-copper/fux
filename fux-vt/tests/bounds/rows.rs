@@ -1568,7 +1568,7 @@ pub fn b43(scale: Scale, chunk: usize) -> Found {
 }
 
 // B44: a refused allocation loses only what it was for, and every later
-// byte is read (PAR-3; each site's own degrade is SCR-10's).
+// byte is read (PAR-3), each site by its degrade (SCR-10).
 pub fn b44(_: Scale, chunk: usize) -> Found {
     // A prompt mark's fresh line, and a picture's placement, scroll the
     // row into history, whose first block is refused. At BASE the parser
@@ -1612,8 +1612,73 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
     let _ = parser.process(b"\x1b[?1049h");
     fux_vt::refuse_next(0);
     match parser.refused() {
-        2 => Ok(()),
-        n => Err(format!("two refusals counted as {n}")),
+        2 => {}
+        n => return Err(format!("two refusals counted as {n}")),
+    }
+    degrades(chunk)
+}
+
+/// Each site's degrade (SCR-10), the checker clean after it and the bytes
+/// after it read: a row history has no room for goes as with no history,
+/// the screen scrolling still; a RIS with no room for grids made anew
+/// blanks them in place, history gone, and resets the rest; a refused
+/// alternate screen leaves the primary shown, the mode reset.
+fn degrades(chunk: usize) -> Found {
+    let lines = |parser: &Parser| -> Vec<String> {
+        let rows = parser.screen().rows();
+        rows.map(|r| r.cells_text().trim_end().to_owned()).collect()
+    };
+    let fed = |n: u32, before: &[u8], after: &[u8]| -> Result<Parser, String> {
+        let options = Feature::ALL.into_iter().collect();
+        let size = Size::new(2, 10).map_err(|e| e.to_string())?;
+        let mut parser = Parser::with_options(size, 1 << 20, options).map_err(|e| e.to_string())?;
+        parser.process(before).map_err(|e| e.to_string())?;
+        fux_vt::refuse_next(n);
+        for piece in pieces(after, chunk) {
+            let _ = parser.process(piece);
+        }
+        fux_vt::refuse_next(0);
+        let report = parser.check();
+        match report.is_clean() {
+            true => Ok(parser),
+            false => Err(format!(
+                "{}: the checker found: {report}",
+                after.escape_ascii()
+            )),
+        }
+    };
+    let want = |parser: &Parser, rows: &[&str], refused: u64, what: &str| -> Result<(), String> {
+        let got = lines(parser);
+        match (got == rows, parser.refused() == refused) {
+            (true, true) => Ok(()),
+            _ => Err(format!(
+                "{what}: rows {got:?} and {} refusals, not {rows:?} and {refused}",
+                parser.refused()
+            )),
+        }
+    };
+    // History's first block refused: `a` goes as with no history, and the
+    // screen scrolls for `c` (at BASE the line feed was lost, `c` over `b`).
+    let parser = fed(1, b"a\r\nb", b"\r\nc")?;
+    want(&parser, &["b", "c"], 1, "a row history had no room for")?;
+    // A RIS with history held: grids made anew, then made again for the
+    // clear, refused; both blanked in place, history gone, and the modes
+    // reset, autowrap among them (at BASE the RIS was lost whole).
+    let parser = fed(2, b"a\r\nb\r\nc\x1b[?7l", b"\x1bcz")?;
+    want(&parser, &["z", ""], 1, "a RIS with no room")?;
+    if !parser.screen().mode(fux_vt::Mode::Autowrap) {
+        return Err("a RIS with no room left autowrap off".into());
+    }
+    // The alternate screen refused: the primary stays shown, the mode
+    // reset, and what follows is printed there.
+    let parser = fed(1, b"a", b"\x1b[?1049hz")?;
+    want(&parser, &["az", ""], 1, "a refused alternate screen")?;
+    match parser
+        .screen()
+        .mode(fux_vt::Mode::AlternateScreenSaveCursor)
+    {
+        false => Ok(()),
+        true => Err("a refused alternate screen reads set".into()),
     }
 }
 

@@ -260,6 +260,7 @@ fn scalar(
     }
     parser.screen.begin();
     let (start, refused) = (crate::budget::spent(), parser.refused);
+    let degrades = crate::degrades();
     parser.end = match until_stop {
         true => start.saturating_add(crate::budget::LIMIT.saturating_sub(parser.spent)),
         false => u64::MAX,
@@ -268,12 +269,14 @@ fn scalar(
         let framed = parser.byte(byte, sink).or_else(|| parser.over::<true>());
         if until_stop && let Some(stop) = framed {
             parser.spend_since(start, stop);
+            parser.count_degrades(degrades);
             return Ok(Some((i.saturating_add(1), stop)));
         }
     }
     if until_stop {
         parser.spend_since(start, Stop::Ended);
     }
+    parser.count_degrades(degrades);
     match parser.refused == refused {
         true => Ok(None),
         false => Err(Error::Capacity),

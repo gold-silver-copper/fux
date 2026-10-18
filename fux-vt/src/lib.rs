@@ -146,6 +146,26 @@ pub(crate) fn split_semicolon(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((halves.next()?, halves.next()?))
 }
 
+thread_local! {
+    /// How many refusals of room this thread's calls have met and gone on
+    /// past, each with its defined degrade (threats.md 1.3, SCR-10).
+    static DEGRADED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a refusal of room that was met by its degrade, not an error: a
+/// row let go rather than kept in history, a grid blanked in place rather
+/// than made anew. A call into the parser counts what its calls met
+/// ([`Parser::refused`]), as it counts what it spent (`budget`).
+#[cold]
+pub(crate) fn degraded() {
+    DEGRADED.with(|n| n.set(n.get().saturating_add(1)));
+}
+
+/// What `degraded` has counted on this thread.
+pub(crate) fn degrades() -> u64 {
+    DEGRADED.with(std::cell::Cell::get)
+}
+
 /// Makes room in `v` for `len` items in all, or says there is none.
 pub(crate) fn reserve<T>(v: &mut Vec<T>, len: usize) -> Result<(), Error> {
     #[cfg(feature = "checks")]

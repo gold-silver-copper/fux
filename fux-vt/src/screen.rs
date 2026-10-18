@@ -2009,20 +2009,25 @@ impl Screen {
                 let size = self.size();
                 let mut next = self.next_id;
                 // Both grids start again: in the storage they have, if both
-                // hold only their live rows at this size, else afresh. Either
-                // way nothing changes unless both can.
+                // hold only their live rows at this size, else afresh. With
+                // no room for them afresh, each is cleared, which blanks it
+                // in place if it must (`Grid::clear`, SCR-10).
                 let recycle = [&self.primary, &self.alternate]
                     .iter()
                     .all(|g| g.recyclable() && g.size() == size);
-                if recycle {
-                    self.primary.clear(&mut next, self.version)?;
-                    self.alternate.clear(&mut next, self.version)?;
-                } else {
-                    let history = self.primary.history_bytes();
-                    let primary = Grid::new(size, history, &mut next, self.version)?;
-                    let alternate = Grid::unmade(size, &mut next, self.version)?;
+                let history = self.primary.history_bytes();
+                let fresh = (!recycle)
+                    .then(|| {
+                        let primary = Grid::new(size, history, &mut next, self.version).ok()?;
+                        Some((primary, Grid::unmade(size, &mut next, self.version).ok()?))
+                    })
+                    .flatten();
+                if let Some((primary, alternate)) = fresh {
                     self.primary = primary;
                     self.alternate = alternate;
+                } else {
+                    self.primary.clear(&mut next, self.version)?;
+                    self.alternate.clear(&mut next, self.version)?;
                 }
                 self.next_id = next;
                 // No cell has a link now, and none is open.

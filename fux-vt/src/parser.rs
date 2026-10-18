@@ -1281,6 +1281,7 @@ impl Parser {
         }
         self.screen.begin();
         let (start, refused) = (crate::budget::spent(), self.refused);
+        let degrades = crate::degrades();
         self.end = match UNTIL_STOP {
             true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
             false => u64::MAX,
@@ -1327,6 +1328,7 @@ impl Parser {
             // right after it.
             if UNTIL_STOP && let Some(stop) = framed {
                 self.spend_since(start, stop);
+                self.count_degrades(degrades);
                 let taken = bytes.len().saturating_sub(remaining.len());
                 work!(bytes, taken);
                 return Ok(Some((taken, stop)));
@@ -1336,10 +1338,19 @@ impl Parser {
             self.spend_since(start, Stop::Ended);
         }
         work!(bytes, bytes.len());
+        self.count_degrades(degrades);
         match self.refused == refused {
             true => Ok(None),
             false => Err(Error::Capacity),
         }
+    }
+    /// Counts in [`Parser::refused`] the refusals this call met and went on
+    /// past by their degrades (`crate::degraded`), since `degrades`. Out of
+    /// line, so that `run` stays as small as before.
+    #[inline(never)]
+    fn count_degrades(&mut self, degrades: u64) {
+        let met = crate::degrades().saturating_sub(degrades);
+        self.refused = self.refused.saturating_add(met);
     }
     /// Keeps what was spent since `start`, in a call that stopped as `stop`
     /// says (or ended, as for a frame's end): all of it, until a stop at the

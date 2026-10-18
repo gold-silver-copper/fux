@@ -1497,13 +1497,43 @@ impl Grid {
             && region == self.size.lines()
             && self.history_bytes() > 0
         {
-            for _ in 0..count.min(self.size.rows()) {
-                self.scroll_into_history(blank, next, version)?;
+            let count = count.min(self.size.rows());
+            for done in 0..count {
+                if self.scroll_into_history(blank, next, version).is_err() {
+                    let rest = count.saturating_sub(done);
+                    self.scroll_past_history(rest, blank, next, version);
+                    break;
+                }
             }
             return Ok(());
         }
         self.scroll_region(region, count, direction, blank, next, version);
         Ok(())
+    }
+
+    /// No room in history for the rows a scroll of the screen takes into
+    /// it: these `count` go as with no history (threats.md 1.3, SCR-10),
+    /// counted. Out of line, as no scroll but a refused one comes here.
+    #[cold]
+    #[inline(never)]
+    fn scroll_past_history(&mut self, count: u16, blank: u32, next: &mut u64, version: u64) {
+        crate::degraded();
+        if !self.links.none() {
+            self.unlink_rows(self.size.lines(), count, false);
+        }
+        // Each top row goes, its slot a new blank row under the screen's
+        // last, as `scroll_into_history` makes one.
+        for _ in 0..count {
+            let Some(&slot) = self.order.get(0) else {
+                return;
+            };
+            let id = next_id(next);
+            self.recycle(slot, id, version);
+            if blank != 0 {
+                self.colour(slot, blank);
+            }
+            self.order.turn();
+        }
     }
 
     /// A scroll inside left and right margins (DEC STD 070, 5.4.3; xterm's
@@ -1921,13 +1951,35 @@ impl Grid {
         if !self.recyclable() {
             // The links' table is kept, which counts the link the program
             // has open (`Screen::link_cells`), and finds it by its `id`.
-            let mut grid = Self::made(self.size, self.history_bytes(), next, version, self.unmade)?;
-            grid.links = std::mem::take(&mut self.links);
-            *self = grid;
-            return Ok(());
+            match Self::made(self.size, self.history_bytes(), next, version, self.unmade) {
+                Ok(mut grid) => {
+                    grid.links = std::mem::take(&mut self.links);
+                    *self = grid;
+                    return Ok(());
+                }
+                // No room for a grid made anew: history goes, and the rows
+                // the grid holds are blanked in place (threats.md 1.3,
+                // SCR-10), counted.
+                Err(refused) => {
+                    if !self.holds_its_rows() {
+                        return Err(refused);
+                    }
+                    self.history = History::new(self.history_bytes());
+                    crate::degraded();
+                }
+            }
         }
         self.renew(next, version);
         Ok(())
+    }
+
+    /// Whether the grid's storage holds a slot for each of its live rows,
+    /// each as wide as the grid (none for an unmade grid's cells), as
+    /// `renew` blanks them.
+    fn holds_its_rows(&self) -> bool {
+        let rows = usize::from(self.size.rows());
+        let cells = if self.unmade { 0 } else { self.size.cells() };
+        self.order.len() == rows && self.meta.len() == rows && self.cells.len() >= cells
     }
 
     /// Whether `clear` can start the grid again in the storage it has: it
