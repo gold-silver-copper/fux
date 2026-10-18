@@ -626,6 +626,8 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
             }
         }
     }
+    // Read at most once each.
+    work!(pixels, u64::from(width).saturating_mul(u64::from(height)));
     let (reds, greens, blues) = CUBE;
     let steps = |c: u8, of: usize| usize::from(c).saturating_mul(of) >> 8;
     let cube = |[r, g, b]: [u8; 3]| {
@@ -670,51 +672,89 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
         let share = |c: u8| u32::from(c).saturating_mul(100) / 255;
         let _ = write!(out, "#{i};2;{};{};{}", share(*r), share(*g), share(*b));
     }
-    // Each colour's sixels of a band, set in one walk over its pixels.
-    let columns = usize::try_from(width).unwrap_or(0);
-    let mut bands = vec![vec![0u8; columns]; palette.len()];
+    // Each colour's sixels of a band, in one walk over its pixels: for each
+    // colour, the columns it has a sixel in and the sixel's bits, in order,
+    // so that a colour costs its own sixels, never the band's width.
+    let mut sixels: Vec<Vec<(u32, u8)>> = vec![Vec::new(); palette.len()];
+    let mut used = Vec::new();
     let mut top = 0;
     while top < height {
-        bands.iter_mut().for_each(|band| band.fill(0));
-        for (px, column) in (0..width).zip(0..) {
-            for bit in 0..6u32 {
-                let py = top.saturating_add(bit);
-                if py < height
-                    && let Some([r, g, b, a]) = at(px, py)
-                    && a >= 128
-                    && let Some(band) = bands.get_mut(index([r, g, b]))
-                    && let Some(sixel) = band.get_mut(column)
-                {
-                    *sixel |= 1 << bit;
-                }
-            }
-        }
-        // Each colour of the band in turn, from its left, `$` between.
-        let mut first = true;
-        for (colour, band) in bands.iter().enumerate() {
-            if band.iter().all(|sixel| *sixel == 0) {
-                continue;
-            }
-            if !first {
-                out.push(b'$');
-            }
-            first = false;
-            let _ = write!(out, "#{colour}");
-            for run in band.chunk_by(|a, b| a == b) {
-                let ch = run.first().copied().unwrap_or(0).saturating_add(0x3f);
-                match run.len() {
-                    1..=3 => out.extend(std::iter::repeat_n(ch, run.len())),
-                    n => {
-                        let _ = write!(out, "!{n}");
-                        out.push(ch);
+        let rows = height.saturating_sub(top).min(6);
+        for px in 0..width {
+            for bit in 0..rows {
+                let Some([r, g, b, a]) = at(px, top.saturating_add(bit)) else {
+                    continue;
+                };
+                let colour = index([r, g, b]);
+                let Some(columns) = sixels.get_mut(colour).filter(|_| a >= 128) else {
+                    continue;
+                };
+                match columns.last_mut() {
+                    Some((column, sixel)) if *column == px => *sixel |= 1 << bit,
+                    _ => {
+                        if columns.is_empty() {
+                            used.push(colour);
+                        }
+                        columns.push((px, 1 << bit));
                     }
                 }
             }
         }
+        work!(pixels, u64::from(width).saturating_mul(u64::from(rows)));
+        // Each colour of the band in turn, from its left, `$` between: its
+        // sixels, the blanks between them run together, and the blanks to
+        // the band's right.
+        used.sort_unstable();
+        for (n, &colour) in used.iter().enumerate() {
+            let Some(columns) = sixels.get_mut(colour) else {
+                continue;
+            };
+            work!(pixels, columns.len());
+            if n > 0 {
+                out.push(b'$');
+            }
+            let _ = write!(out, "#{colour}");
+            let mut next = 0;
+            let mut run = (0u8, 0u32);
+            for &(column, sixel) in columns.iter() {
+                if column > next {
+                    sixels_run(out, &mut run, 0, column.saturating_sub(next));
+                }
+                sixels_run(out, &mut run, sixel, 1);
+                next = column.saturating_add(1);
+            }
+            sixels_run(out, &mut run, 0, width.saturating_sub(next));
+            sixels_run(out, &mut run, 0, 0);
+            columns.clear();
+        }
+        used.clear();
         out.push(b'-');
         top = top.saturating_add(6);
     }
     out.extend_from_slice(b"\x1b\\");
+}
+
+/// Adds `n` of `sixel` to `run`, the sixels of one value written last but
+/// not yet put in `out`: a different value puts `run` in `out` first, three
+/// or fewer as themselves, more as a repeat. `n` 0 of a value never in a run
+/// (0 after 0 is) ends one: `sixels_run(out, &mut run, 0, 0)` after the
+/// last puts the last in.
+fn sixels_run(out: &mut Vec<u8>, run: &mut (u8, u32), sixel: u8, n: u32) {
+    let (value, count) = *run;
+    if value == sixel && n > 0 {
+        *run = (value, count.saturating_add(n));
+        return;
+    }
+    let ch = value.saturating_add(0x3f);
+    match count {
+        0 => {}
+        1..=3 => out.extend(std::iter::repeat_n(ch, usize::try_from(count).unwrap_or(0))),
+        _ => {
+            let _ = write!(out, "!{count}");
+            out.push(ch);
+        }
+    }
+    *run = (sixel, n);
 }
 
 #[cfg(test)]

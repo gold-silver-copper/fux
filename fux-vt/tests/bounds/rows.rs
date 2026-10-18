@@ -297,7 +297,8 @@ pub fn b07(scale: Scale, _: usize) -> Found {
 }
 
 // B08: `encode`: at most 12 bytes a crop pixel and 6 a colour a band,
-// besides its colours' definitions.
+// besides its colours' definitions, and at most C_ENC units of work a crop
+// pixel, however many colours a band has.
 pub fn b08(scale: Scale, _: usize) -> Found {
     let (width, height) = (2000u32, 1000u32);
     let mut rgba = Vec::new();
@@ -318,15 +319,56 @@ pub fn b08(scale: Scale, _: usize) -> Found {
     let mut out = Vec::new();
     for _ in 0..scale.times() {
         out.clear();
+        let before = Work::now();
         fux_vt::sixel::encode(&picture, (0, 0, width, height), &mut out);
+        encoded(pixels, Work::now().since(before))?;
         let len = u64::try_from(out.len()).unwrap_or(u64::MAX);
         if len > most {
             return Err(format!("{len} bytes encoded, past {most}"));
         }
     }
-    (!out.is_empty())
-        .then_some(())
-        .ok_or("nothing encoded".to_owned())
+    if out.is_empty() {
+        return Err("nothing encoded".to_owned());
+    }
+    // 256 colours a band, each only in the band's first and last columns:
+    // the work is the pixels', not each colour's across the width.
+    let mut rgba = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            let ends = x < 128 || x >= width.saturating_sub(128);
+            let [grey, ..] = (x % 128)
+                .saturating_mul(2)
+                .saturating_add(y % 2)
+                .to_le_bytes();
+            rgba.extend(if ends {
+                [grey, grey, grey, 255]
+            } else {
+                [0; 4]
+            });
+        }
+    }
+    let picture = Picture::new(width, height, rgba).ok_or("2000 by 1000")?;
+    let before = Work::now();
+    fux_vt::sixel::encode(&picture, (0, 0, width, height), &mut out);
+    encoded(pixels, Work::now().since(before))
+}
+
+/// The work `encode` may do a crop pixel (`threats.md` B08): it reads each
+/// pixel twice, for its colours and for its band, and sets at most one
+/// sixel of it.
+const C_ENC: u64 = 3;
+
+/// Whether `done`, an `encode` of `pixels` crop pixels, kept to C_ENC a
+/// pixel, and counted no less than it read.
+fn encoded(pixels: u64, done: Work) -> Found {
+    let most = pixels.saturating_mul(C_ENC);
+    if done.pixels > most || done.pixels < pixels {
+        return Err(format!(
+            "encode did {} units for {pixels} pixels, past {most}, or fewer than its pixels",
+            done.pixels
+        ));
+    }
+    Ok(())
 }
 
 /// `\n` enough times to fill 8 MiB of history with empty rows: 349,525.
