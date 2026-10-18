@@ -345,6 +345,11 @@ fux-vt's work counters and a counting allocator against it.
   picture being drawn and its growth included. Past it, pictures no longer
   shown go first (covered, scrolled away, or on the other screen), then the
   oldest.
+- **A host's pictures** (B06): a picture the host keeps, as its
+  `Arc<Picture>` from `Screen::pictures`, keeps its memory, outside the
+  budget, until the host lets it go; fux keeps a paint's worth a client.
+  A parser cloned while a picture is being drawn copies it, the clone's
+  own.
 - **A sixel picture** (B03, B04) keeps at most 4096 by 2160 positions of
   its grid, 4096 a side, and is shown at its aspect, at most 4096 pixels a
   side; what is past that is not painted. Its room grows by doubling each

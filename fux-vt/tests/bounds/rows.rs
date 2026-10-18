@@ -241,6 +241,21 @@ pub fn b06(scale: Scale, chunk: usize) -> Found {
         drop(std::hint::black_box(clone));
     }
     probe.feed(b"\x1b\\")?;
+    // A picture the host keeps (its `Arc`) outlives its eviction, outside
+    // the parser's budget: the parser counts none, and its pixels live on.
+    let kept = (probe.parser.screen().pictures().next()).map(|shown| shown.picture.clone());
+    let kept = kept.ok_or("no picture shown")?;
+    probe.host(0, |p| p.set_picture_bytes(0))?;
+    if probe.parser.screen().pictures().count() != 0 {
+        return Err("a lowered budget kept the picture".into());
+    }
+    let held = probe.live();
+    drop(kept);
+    if probe.live() >= held {
+        return Err(format!(
+            "{held} bytes live, the host's picture not among them"
+        ));
+    }
     probe.finish()
 }
 
