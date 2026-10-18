@@ -2058,6 +2058,7 @@ mod faults {
             "grid.style_numbers",
             "grid.recent",
             "styles.table",
+            "styles.spread",
             "grid.versions",
             "grid.cursor",
             "grid.margins",

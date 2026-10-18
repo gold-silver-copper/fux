@@ -285,7 +285,38 @@ impl Styles {
             format!("{} styles live of {}", self.live, self.table.len())
         })
     }
+
+    /// 15: no more than [`SPREAD`] styles share a place in `places` by
+    /// `hash` (the table's own hash, [`Keyed`]): a program that can't see
+    /// the keys can't make styles collide (`threats.md` B12), so the most
+    /// a place gets is a few, as for random hashes, where one fold of
+    /// both words, unkeyed, gave every style of a chosen family one place.
+    pub(crate) fn check_spread(&self, hash: impl Fn(&Attributes) -> u64) -> Result<(), String> {
+        // The places a table of them holds: 8 for each 7 it has room for.
+        let places = (self.places.capacity().saturating_mul(8) / 7)
+            .max(1)
+            .next_power_of_two();
+        let mask = u64::try_from(places.saturating_sub(1)).unwrap_or(u64::MAX);
+        let mut shared = vec![0u32; places];
+        let mut most = 0;
+        for attributes in &self.table {
+            let at = usize::try_from(hash(attributes) & mask).unwrap_or(0);
+            if let Some(count) = shared.get_mut(at) {
+                *count = count.saturating_add(1);
+                most = most.max(*count);
+            }
+        }
+        crate::check::ensure(most <= SPREAD, || {
+            format!("{most} styles share a place of {places}")
+        })
+    }
 }
+
+/// The most styles a place of the table may get by the hash
+/// (`Styles::check_spread`): random hashes of a table's styles give a few,
+/// and the chance of more than 64 is nil.
+#[cfg(feature = "checks")]
+const SPREAD: u32 = 64;
 
 #[cfg(test)]
 mod tests {
@@ -481,5 +512,17 @@ mod faults {
         assert!(styles.check().is_err());
         styles.places.clear();
         assert!(styles.check().is_err());
+    }
+
+    /// Styles that hash alike are a fault of the spread: 65 at one place.
+    #[test]
+    fn styles_that_hash_alike_are_a_fault() {
+        let mut styles = Styles::default();
+        for n in 0..65u8 {
+            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
+            assert!(styles.insert(attributes).is_some());
+        }
+        assert_eq!(styles.check_spread(|a| Keyed.hash_one(a)), Ok(()));
+        assert!(styles.check_spread(|_| 7).is_err());
     }
 }

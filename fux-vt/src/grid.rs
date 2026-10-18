@@ -2223,6 +2223,10 @@ impl Grid {
         report.record("grid.style_numbers", which, self.check_style_numbers());
         report.record("grid.recent", which, self.check_recent());
         report.record("styles.table", which, self.styles.check());
+        let keyed = |attributes: &Attributes| {
+            std::hash::BuildHasher::hash_one(&crate::style::Keyed, attributes)
+        };
+        report.record("styles.spread", which, self.styles.check_spread(keyed));
         report.record("grid.versions", which, self.check_versions(version));
         report.record("grid.cursor", which, self.check_cursor());
         report.record("grid.margins", which, self.check_margins());

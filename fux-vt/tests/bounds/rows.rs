@@ -456,32 +456,25 @@ fn colliding(count: usize) -> Vec<u8> {
 }
 
 // B12: style inserts expected O(1) under chosen collisions: the family
-// at twice the size takes at most 2.3 times as long (probabilistic, the
-// keyed hash's; the deterministic ceiling is the probes, which std's map
-// keeps to itself).
+// that hashed alike at BASE, 8 Ki, 16 Ki and 32 Ki of it, spread over the
+// table's places by its keyed hash, at most 64 styles to a place (the
+// checker's `styles.spread`, which `finish` runs), and each new style an
+// insert. Deterministic: no wall time.
 pub fn b12(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    let small = match scale {
-        Scale::Once => 8 << 10,
-        Scale::Ten | Scale::Hundred => 16 << 10,
+    let sizes: &[usize] = match scale {
+        Scale::Once => &[8 << 10],
+        Scale::Ten => &[16 << 10],
+        Scale::Hundred => &[32 << 10],
     };
-    let time = |count: usize| -> Result<f64, String> {
-        let mut best = f64::MAX;
-        for _ in 0..3 {
-            let input = colliding(count);
-            let mut probe = Probe::new(&setup, heap(steady(&setup)), chunk.max(4096), 1)?;
-            let started = Instant::now();
-            probe.feed(&input)?;
-            best = best.min(started.elapsed().as_secs_f64());
-            probe.at_least("inserts", u64::try_from(count).unwrap_or(0))?;
-        }
-        Ok(best)
-    };
-    let (once, twice) = (time(small)?, time(small.saturating_mul(2))?);
-    let ratio = twice / once.max(1e-9);
-    (ratio <= 2.3).then_some(()).ok_or(format!(
-        "twice the colliding styles took {ratio:.2} times as long"
-    ))
+    for &count in sizes {
+        let input = colliding(count);
+        let mut probe = Probe::new(&setup, heap(steady(&setup)), chunk.max(4096), 1)?;
+        probe.feed(&input)?;
+        probe.at_least("inserts", u64::try_from(count).unwrap_or(0))?;
+        probe.finish()?;
+    }
+    Ok(())
 }
 
 // B13: the style sweep: at most 7 cells visited a byte, amortized.
