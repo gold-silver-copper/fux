@@ -6,8 +6,9 @@
 //! `size `), which is how the oracle's own random cases seed the fuzzer
 //! (`fux-vt-oracle --seeds DIR`); or five header bytes, then operations.
 //!
-//! - Header: rows (1 to 16), columns (1 to 24), history (one of ten sizes,
-//!   0 to 100, so it fills), then two bytes of options: the first's bits
+//! - Header: rows (1 to 16), columns (1 to 24), history's budget (one of
+//!   ten, 0 to 8 MiB, fux's: the small ones fill), then two bytes of
+//!   options: the first's bits
 //!   turn on events, extended replies, mode reports, in-band resize, size
 //!   reports, colour-scheme updates, the kitty keyboard protocol and
 //!   reflow; the second's, hyperlinks, prompt marks, rectangle checksums,
@@ -27,7 +28,20 @@ use fux_vt_oracle::model::{IDENTITIES, Selection, Setup};
 use fux_vt_oracle::{Case, Step, check};
 use libfuzzer_sys::fuzz_target;
 
-const HISTORIES: [usize; 10] = [0, 1, 2, 3, 5, 8, 13, 20, 40, 100];
+/// History's budgets, in bytes: none, a row or a few, a block or more, and
+/// fux's 8 MiB.
+const HISTORIES: [usize; 10] = [
+    0,
+    64,
+    256,
+    1 << 10,
+    4 << 10,
+    16 << 10,
+    64 << 10,
+    256 << 10,
+    1 << 20,
+    8 << 20,
+];
 
 fn bit(byte: u8, n: u8) -> bool {
     byte.checked_shr(u32::from(n)).is_some_and(|b| b & 1 == 1)
@@ -70,7 +84,7 @@ fn case(data: &[u8]) -> Option<Case> {
     let mut case = Case {
         rows: 1 + u16::from(rows % 16),
         cols: 1 + u16::from(cols % 24),
-        history: HISTORIES
+        history_bytes: HISTORIES
             .get(usize::from(history % 10))
             .copied()
             .unwrap_or(0),

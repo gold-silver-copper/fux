@@ -25,7 +25,8 @@ pub enum Step {
 pub struct Case {
     pub rows: u16,
     pub cols: u16,
-    pub history: usize,
+    /// History's budget, in bytes, as `Parser::with_options` takes it.
+    pub history_bytes: usize,
     pub setup: Setup,
     pub steps: Vec<Step>,
 }
@@ -179,27 +180,26 @@ pub fn check(case: &Case) -> Result<Count, Difference> {
     run::<base::Terminal, work::Terminal>(case)
 }
 
-/// The most cells a case may make a grid able to hold, unless fux-vt is
-/// sure to refuse the size (`grid::MAX_CELLS`, `MAX_ROWS`): so that no
-/// generated or shrunk case allocates gigabytes before it is compared.
+/// The most cells a case may make a screen of, unless fux-vt is sure to
+/// refuse the size (`grid::MAX_CELLS`): so that no generated or shrunk
+/// case allocates gigabytes before it is compared.
 pub const SAFE_CELLS: usize = 2 << 20;
 const MAX_CELLS: usize = 64 << 20;
-const MAX_ROWS: usize = 1 << 20;
 
-/// Whether a grid of this size and history is small, or certain to be
-/// refused.
-pub fn safe(rows: u16, cols: u16, history: usize) -> bool {
-    let retained = history.saturating_add(usize::from(rows));
-    let cells = retained.saturating_mul(usize::from(cols));
-    cells <= SAFE_CELLS || cells > MAX_CELLS || retained > MAX_ROWS
+/// Whether a screen of this size is small, or certain to be refused.
+/// History needs no such care: its budget is bytes, which fux-vt keeps to
+/// and fills only as the case's output comes.
+pub fn safe(rows: u16, cols: u16) -> bool {
+    let cells = usize::from(rows).saturating_mul(usize::from(cols));
+    cells <= SAFE_CELLS || cells > MAX_CELLS
 }
 
 impl Case {
     /// Whether every size the case asks for is safe to try.
     pub fn is_safe(&self) -> bool {
-        safe(self.rows, self.cols, self.history)
+        safe(self.rows, self.cols)
             && self.steps.iter().all(|step| match step {
-                Step::Resize(rows, cols) => safe(*rows, *cols, self.history),
+                Step::Resize(rows, cols) => safe(*rows, *cols),
                 Step::Output(_) | Step::Frame(_) | Step::Copy(_) => true,
             })
     }
@@ -219,8 +219,8 @@ impl Case {
 /// The two parsers made as the case says; `Ok(None)` if both refused
 /// alike.
 fn make<A: Side, B: Side>(case: &Case) -> Result<Option<(A, B)>, Difference> {
-    let a = A::new(case.rows, case.cols, case.history, &case.setup);
-    let b = B::new(case.rows, case.cols, case.history, &case.setup);
+    let a = A::new(case.rows, case.cols, case.history_bytes, &case.setup);
+    let b = B::new(case.rows, case.cols, case.history_bytes, &case.setup);
     match (a, b) {
         (Ok(a), Ok(b)) => Ok(Some((a, b))),
         (a, b) => {
@@ -365,7 +365,7 @@ impl Case {
     pub fn to_text(&self) -> String {
         let mut out = format!(
             "size {} {}\nhistory {}\nsetup {}\n",
-            self.rows, self.cols, self.history, self.setup
+            self.rows, self.cols, self.history_bytes, self.setup
         );
         for step in &self.steps {
             match step {
@@ -386,7 +386,7 @@ impl Case {
         let mut case = Case {
             rows: 1,
             cols: 1,
-            history: 0,
+            history_bytes: 0,
             setup: Setup::default(),
             steps: Vec::new(),
         };
@@ -408,7 +408,9 @@ impl Case {
                     case.rows = small(n.first())?;
                     case.cols = small(n.get(1))?;
                 }
-                "history" => case.history = *numbers()?.first().ok_or(at("no history".into()))?,
+                "history" => {
+                    case.history_bytes = *numbers()?.first().ok_or(at("no history".into()))?;
+                }
                 "setup" => case.setup = setup_from(rest).map_err(at)?,
                 "output" => case.steps.push(Step::Output(unescape(rest).map_err(at)?)),
                 "frame" => case.steps.push(Step::Frame(unescape(rest).map_err(at)?)),
@@ -469,7 +471,7 @@ mod tests {
         let case = Case {
             rows: 3,
             cols: 7,
-            history: 20,
+            history_bytes: 20,
             setup: Setup::pane(),
             steps: vec![
                 Step::Output(b"a\\b\x1b[1m\xff\n".to_vec()),
@@ -532,7 +534,7 @@ mod tests {
         let case = Case {
             rows: 4,
             cols: 10,
-            history: 5,
+            history_bytes: 5,
             setup: Setup::pane(),
             steps: vec![
                 Step::Output(b"hello\r\nworld \x1b[31mred\x1b[0m\r\n\x1b[6n".to_vec()),

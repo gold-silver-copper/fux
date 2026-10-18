@@ -70,8 +70,8 @@ fn simpler(case: &Case) -> Vec<Case> {
             out.push(c);
         }
     };
-    push(&|c| c.history = 0);
-    push(&|c| c.history /= 2);
+    push(&|c| c.history_bytes = 0);
+    push(&|c| c.history_bytes /= 2);
     push(&|c| c.rows = (c.rows / 2).max(1));
     push(&|c| c.cols = (c.cols / 2).max(1));
     push(&|c| c.rows = c.rows.saturating_sub(1).max(1));
@@ -207,7 +207,7 @@ mod tests {
         let case = Case {
             rows: 4,
             cols: 10,
-            history: 0,
+            history_bytes: 0,
             setup,
             steps: vec![Step::Output(b"xxbxxxxaxx".to_vec())],
         };

@@ -229,11 +229,11 @@ macro_rules! side {
                     side!(@faults $($checked)?, self)
                 }
 
-                fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error> {
+                fn new(rows: u16, cols: u16, history_bytes: usize, setup: &Setup) -> Result<Self, Error> {
                     // A size of none is no `Size`: refused as such.
                     let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
                     let parser =
-                        vt::Parser::with_options(size, history, options(setup)).map_err(error)?;
+                        vt::Parser::with_options(size, history_bytes, options(setup)).map_err(error)?;
                     Ok(Terminal {
                         parser,
                         marks: Vec::new(),

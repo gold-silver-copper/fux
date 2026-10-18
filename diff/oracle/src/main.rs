@@ -272,11 +272,11 @@ fn run(o: &Options) -> Result<bool, String> {
         for recording in inputs::corpus()? {
             jobs.push((
                 format!("corpus {} as a pane", recording.name),
-                recording.case(inputs::PANE_HISTORY, Setup::pane(), PIECE),
+                recording.case(inputs::PANE_HISTORY_BYTES, Setup::pane(), PIECE),
             ));
             jobs.push((
                 format!("corpus {} with every option off", recording.name),
-                recording.case(inputs::PANE_HISTORY, Setup::default(), PIECE),
+                recording.case(inputs::PANE_HISTORY_BYTES, Setup::default(), PIECE),
             ));
         }
         alike &= cases_part("corpus", jobs, o);

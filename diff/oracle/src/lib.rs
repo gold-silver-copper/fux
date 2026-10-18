@@ -49,8 +49,8 @@ use model::{Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State, St
 pub trait Side: Clone {
     /// `work` or `base`.
     const NAME: &'static str;
-    /// A parser of `rows` by `cols` with `history` rows of history.
-    fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error>;
+    /// A parser of `rows` by `cols` with `history_bytes` of history.
+    fn new(rows: u16, cols: u16, history_bytes: usize, setup: &Setup) -> Result<Self, Error>;
     /// `Parser::process_with`, with what it gave the host.
     fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error>;
     /// `Parser::process_until_stop`: how many bytes it took if it
