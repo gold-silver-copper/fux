@@ -205,8 +205,10 @@ deep() {
   full_s=480
   # The ledger's subjects: six named-case runs and five corpus runs.
   local subjects=150
-  local estimate=$((full_s + seeds * verdicts + esctest + subjects + muxes + feel + info + fuzz_minutes * 60 + 60))
-  echo "deep: about $((estimate / 60)) minutes (full, $seeds verdict seeds at ${verdicts}s, esctest in fux, in xterm and on each engine, the cases and corpus with each engine the subject and the ledger, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
+  local today_s
+  today_s=$(last_seconds random-wide 60)
+  local estimate=$((full_s + today_s + seeds * verdicts + esctest + subjects + muxes + feel + info + fuzz_minutes * 60 + 60))
+  echo "deep: about $((estimate / 60)) minutes (full, 20,000 random cases at the day's seed, $seeds verdict seeds at ${verdicts}s, esctest in fux, in xterm and on each engine, the cases and corpus with each engine the subject and the ledger, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
   full
   echo "deep: verdicts beside xterm, seeds 1-$seeds"
   local seed
@@ -214,6 +216,14 @@ deep() {
     ran+=("verdicts-$seed")
     step "verdicts-$seed" "$compare" verdicts --seed "$seed"
   done
+  # Seed 1 is the gate, in quick and full; deep explores beyond it with a
+  # seed that changes each day, printed, so a failure found is replayed by
+  # its seed.
+  local today
+  today=$(date -u +%Y%m%d)
+  echo "deep: 20,000 random cases at today's seed, $today"
+  ran+=("random-$today")
+  step "random-$today" "$compare" run --seed "$today" --cases 20000
   echo "deep: esctest in a fux pane, in real xterm and on each engine; tmux and zellij; feel; MB/s (each alone)"
   ran+=(esctest-in-fux esctest-xterm multiplexers feel info)
   step esctest-in-fux "$compare" esctest --in-fux ${jobs:+--jobs "$jobs"} --json "$out/esctest-in-fux.json"

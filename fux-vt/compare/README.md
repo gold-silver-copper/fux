@@ -30,7 +30,7 @@ its arguments, or one of the harness commands in `harness.sh`:
 | --- | --- | --- | --- |
 | `run.sh quick` | before a commit | 60 s | `corpus` beside xterm and the panel; `corpus --subject ghostty`; `transparency`; `run --cases 2000`; `cases`; `encoders`; the oracle (`diff/oracle.sh`, see [`diff/README.md`](../../diff/README.md)) |
 | `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against REF`; `footprint`; `bench --instructions` |
-| `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`, `--xterm`, and `--terminal E --unlisted` for every other engine; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
+| `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; 20,000 random cases at the day's seed (`run --seed YYYYMMDD`, printed; seed 1 stays the gate); `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`, `--xterm`, and `--terminal E --unlisted` for every other engine; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
 | `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | the oracle's pin, then each fuzz directory built on its own, then every target `cargo fuzz list` names in those that built, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
 | `run.sh scoreboard` | after any of them | seconds | the last results, gathered (see "The scoreboard") |
 
