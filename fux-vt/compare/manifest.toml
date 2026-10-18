@@ -405,10 +405,16 @@ why = "the translator is not fixed yet (libvterm passes 379 of its own)"
 [[check]]
 name = "ci-bounds"
 schedule = "ci"
-command = "the property and bounds tests at 1x and 10x"
+command = "cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds (ci.yml, under an 8 GiB data limit)"
+needs = []
+
+[[check]]
+name = "ci-properties"
+schedule = "ci"
+command = "the UTF-8 property against String::from_utf8_lossy, and ECMA-48 2.3.3's default forms"
 needs = []
 wired = false
-why = "the bounds suite does not exist yet"
+why = "not written yet (HAR-70)"
 
 [[check]]
 name = "ci-libtermkey"

@@ -79,6 +79,24 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/clippy.log"
           cargo test --workspace --locked 2>&1 | tee "$CI_LOGS/test.log"
 
+      # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
+      # in release, as debug is too slow for the step's 5 minutes; built in
+      # a step of its own, and run under an 8 GiB data limit, so a bound
+      # that stops holding fails here instead of taking the runner. A row
+      # known to fail is listed in fux-vt/tests/bounds/known-failing.txt,
+      # and the suite fails when one starts holding.
+      - name: fux-vt bounds and seeds build
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds --no-run 2>&1 | tee "$CI_LOGS/bounds-build.log"
+
+      - name: fux-vt bounds and seeds
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          ulimit -d $((8 * 1024 * 1024))
+          cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds 2>&1 | tee "$CI_LOGS/bounds.log"
+
       - name: Minimum Rust version
         # Every manifest says rust-version = "1.95"; the pinned toolchain is
         # newer, so nothing else would notice a newer feature creeping in.
