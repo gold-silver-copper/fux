@@ -33,10 +33,17 @@ fn the_tables_are_the_version_unicode_segmentation_implements() {
 }
 
 /// Every case of the Unicode conformance test, GraphemeBreakTest.txt, as
-/// UAX #29 has it.
+/// UAX #29 has it: the file of the version the tables are generated at,
+/// as its header names it.
 #[test]
 fn every_conformance_case_breaks_where_uax_29_says() {
     let cases = include_str!("../../tests/data/GraphemeBreakTest.txt");
+    let (major, minor, update) = UNICODE_VERSION;
+    let header = format!("# GraphemeBreakTest-{major}.{minor}.{update}.txt");
+    assert!(
+        cases.lines().next().is_some_and(|l| l.starts_with(&header)),
+        "GraphemeBreakTest.txt is not {header}"
+    );
     let mut checked = 0u32;
     for case in cases.lines().filter(|line| !line.starts_with('#')) {
         let mut text = String::new();
