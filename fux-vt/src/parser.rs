@@ -285,6 +285,10 @@ enum State {
     /// A DECRQSS (`DCS $ q Pt ST`) with [`Feature::SettingReports`]: its
     /// request so far, `None` once it ran past any setting fux-vt knows.
     Request(Option<Bytes<REQUEST_LIMIT>>),
+    /// An XTGETTCAP (`DCS + q Pt ST`) with [`Feature::SettingReports`]: read
+    /// to its end and nothing kept, as fux-vt names no capability; answered
+    /// then as an invalid request.
+    Termcap,
     /// An OSC string, its payload the parser's: `whole` until it ran past
     /// what is kept of one.
     Osc { whole: bool },
@@ -1702,6 +1706,9 @@ impl Parser {
                     self.kept(done);
                 }
                 State::Request(request) => self.dispatch_request(request, sink),
+                // ctlseqs, XTGETTCAP: "DCS 0 + r ST for invalid requests";
+                // fux-vt knows no capability names.
+                State::Termcap => sink.reply(b"\x1bP0+r\x1b\\"),
                 State::Sixel => {
                     let screen = &mut self.screen;
                     let picture = (self.sixel.take())
@@ -1757,7 +1764,7 @@ impl Parser {
                 self.state = State::Request(request.and_then(|r| r.push(byte)));
                 return None;
             }
-            State::IgnoreString => return None,
+            State::IgnoreString | State::Termcap => return None,
             State::Sixel => {
                 // BEL rings as in text (DEC STD 070, sixel graphics, 9.1).
                 if byte == 0x07 {
@@ -1834,17 +1841,22 @@ impl Parser {
                 Next::Ignore => self.state = State::IgnoreString,
                 Next::Control => {}
                 Next::Final(read) => {
-                    // DECRQSS: `$ q` with no parameters.
-                    let decrqss = self.options.has(Feature::SettingReports)
-                        && byte == b'q'
-                        && read.as_slice() == b"$"
-                        && self.params.is_empty();
+                    // DECRQSS: `$ q` with no parameters; XTGETTCAP, `+ q`.
+                    let request = |marker: &[u8]| {
+                        self.options.has(Feature::SettingReports)
+                            && byte == b'q'
+                            && read.as_slice() == marker
+                            && self.params.is_empty()
+                    };
+                    let (decrqss, termcap) = (request(b"$"), request(b"+"));
                     // Sixel: `q` with no intermediates.
                     let sixel = self.options.has(Feature::Pictures)
                         && byte == b'q'
                         && read.as_slice().is_empty();
                     self.state = if decrqss {
                         State::Request(Some(Bytes::default()))
+                    } else if termcap {
+                        State::Termcap
                     } else if sixel {
                         self.sixel = Some(crate::sixel::Decoder::new(
                             self.params.first(0, 0),

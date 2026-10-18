@@ -509,11 +509,9 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
             "{request:?}"
         );
     }
-    // Not DECRQSS: parameters, another intermediate, XTGETTCAP, a string
-    // cancelled.
+    // Not DECRQSS: parameters, another intermediate, a string cancelled.
     for other in [
         "\x1bP1$qm\x1b\\",
-        "\x1bP+q536d756c78\x1b\\",
         "\x1bP$pm\x1b\\",
         "\x1bP$qm\x18",
         "\x1bPqm\x1b\\",
@@ -547,6 +545,31 @@ fn c0_controls_inside_a_setting_request_are_ignored() -> Result {
         let expected: &[u8] = b"\x1bP1$r0m\x1b\\";
         assert_eq!(replies, [expected.to_vec()], "{request:?}");
     }
+    Ok(())
+}
+
+/// XTGETTCAP, `DCS + q Pt ST` (xterm's ctlseqs): "xterm responds with DCS
+/// 1 + r Pt ST for valid requests ... or DCS 0 + r ST for invalid
+/// requests". fux-vt knows no capability names, so with
+/// `Feature::SettingReports` every request is answered invalid, its names
+/// not echoed, a request of any length once; one cancelled, or with
+/// parameters, is not answered, nor any without the option.
+#[test]
+fn xtgettcap_is_answered_as_an_invalid_request() -> Result {
+    let ask = |options: Options, input: &[u8]| -> Result<Vec<Vec<u8>>> {
+        Ok(run(options, input)?.replies)
+    };
+    let invalid: &[u8] = b"\x1bP0+r\x1b\\";
+    for request in [&b"544e"[..], b"536d756c78;544e", b"", b"not hex"] {
+        let input = [b"\x1bP+q", request, b"\x1b\\"].concat();
+        assert_eq!(ask(SETTINGS, &input)?, [invalid.to_vec()], "{request:?}");
+    }
+    let long = [&b"\x1bP+q"[..], &vec![b'4'; 100 << 10], b"\x1b\\"].concat();
+    assert_eq!(ask(SETTINGS, &long)?, [invalid.to_vec()]);
+    for other in [&b"\x1bP+q544e\x18"[..], b"\x1bP1+q544e\x1b\\"] {
+        assert!(ask(SETTINGS, other)?.is_empty(), "{other:?}");
+    }
+    assert!(ask(Options::new(), b"\x1bP+q544e\x1b\\")?.is_empty());
     Ok(())
 }
 
