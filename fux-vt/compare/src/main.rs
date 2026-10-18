@@ -32,7 +32,7 @@ mod transparency;
 
 use case::{Case, Snippet, Step};
 use engine::{ENGINES, FUX_VT};
-use families::{Authority, FAMILIES, Status};
+use families::{FAMILIES, Status};
 use rng::Rng;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -146,9 +146,11 @@ engines  every engine: whether it can run here, whether it votes, and what
 --list   the families, what each covers, and its status.
 
 LIST is engine names joined by commas, or `panel` (the default for run,
-survey, matrix and replay: the voters that can run here), `all` (every
-engine that can run here, the default for cases and bench), `in-process`
-or `xterm`.
+survey, matrix and replay: the voters), `all` (every engine, the default
+for cases and bench), `in-process` or `xterm`. Every engine a LIST means
+must be able to run here, so a check is judged by the same engines
+wherever it runs; --missing-ok lets `panel`, `all` and `in-process` leave
+out one that cannot.
 
 --subject NAME judges another engine in fux-vt's place (run, cases, corpus,
 replay): ghostty or any engine in this process. It is judged as fux-vt is,
@@ -289,6 +291,7 @@ fn parse() -> Result<Args, String> {
             "--repeats" => args.repeats = number("--repeats", &value("--repeats")?)?,
             "--instructions" => args.instructions = true,
             "--subject" => args.subject = Some(value("--subject")?),
+            "--missing-ok" => MISSING_OK.store(true, std::sync::atomic::Ordering::Relaxed),
             "--" => {
                 args.rest.extend(words.by_ref());
                 break;
@@ -308,27 +311,40 @@ fn dimensions(text: &str) -> Result<(u16, u16), String> {
     Ok((n(rows)?, n(cols)?))
 }
 
-/// The engines a LIST names, as indices into [`ENGINES`]. Named engines
-/// must be able to run; `panel`, `all` and `in-process` skip those that
-/// cannot, saying so once.
+/// Whether `--missing-ok` was given: `panel`, `all` and `in-process` then
+/// leave out an engine that cannot run here.
+static MISSING_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The engines a LIST names, as indices into [`ENGINES`]. Every engine
+/// named, or meant by `panel`, `all` or `in-process`, must be able to run,
+/// so the judge is the same wherever a check runs; with `--missing-ok`
+/// those three leave out one that cannot, saying so once.
 fn engines(list: &str) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
-    let pick = |test: fn(&engine::Kind) -> bool, out: &mut Vec<usize>| {
+    let missing_ok = MISSING_OK.load(std::sync::atomic::Ordering::Relaxed);
+    let pick = |test: fn(&engine::Kind) -> bool, out: &mut Vec<usize>| -> Result<(), String> {
         for (i, kind) in ENGINES.iter().enumerate() {
             if !test(kind) {
                 continue;
             }
             match (kind.available)() {
                 Ok(()) => out.push(i),
-                Err(why) => eprintln!("({} cannot run here: {why})", kind.name),
+                Err(why) if missing_ok => eprintln!("({} cannot run here: {why})", kind.name),
+                Err(why) => {
+                    return Err(format!(
+                        "{} cannot run here ({why}); --missing-ok leaves it out",
+                        kind.name
+                    ));
+                }
             }
         }
+        Ok(())
     };
     for name in list.split(',').filter(|n| !n.is_empty()) {
         match name {
-            "panel" => pick(|k| k.panel, &mut out),
-            "all" => pick(|_| true, &mut out),
-            "in-process" => pick(|k| k.in_process, &mut out),
+            "panel" => pick(|k| k.panel, &mut out)?,
+            "all" => pick(|_| true, &mut out)?,
+            "in-process" => pick(|k| k.in_process, &mut out)?,
             name => {
                 let i = engine::find(name).ok_or(format!("no engine {name:?} (see engines)"))?;
                 let kind = ENGINES.get(i).ok_or("no such engine")?;
@@ -753,11 +769,17 @@ fn cases(args: &Args) -> Result<bool, String> {
                 _ => format!("{authority} decides, beside {}", by.join(", ")),
             };
             // Judged by the section's expected fields and the deciders'
-            // vote on the rest; a family xterm decides needs xterm to run,
-            // and one a standard decides its cited test.
+            // vote on the rest: deciders named must have given a verdict,
+            // but in a standard's family one that could not read the case
+            // (an adapter's limit, xterm's SGR 58) leaves the section's
+            // fields to judge; a standard's family needs its cited test.
+            let limited = outcome.abstained.iter().any(|(i, why)| {
+                by.contains(&engine::name(*i)) && engine::abstention(why) == "adapter-limited"
+            });
+            let standard = matches!(authority, families::Authority::Standard { .. });
             let checked = authority.check(by).and_then(|()| {
-                if authority == Authority::Xterm && !heard(&outcome.verdicts, by) {
-                    Err("xterm did not run".to_owned())
+                if !by.is_empty() && !heard(&outcome.verdicts, by) && !(standard && limited) {
+                    Err(format!("none of {} gave a verdict", by.join(", ")))
                 } else {
                     case::judged(index, name, subject, &outcome.fux, &outcome.verdicts)
                 }

@@ -96,7 +96,7 @@
 //! - ZWJ and VS16 are not kept, so emoji sequences are cells of their own
 //!   (`--size 1x8 '👨\u{200d}👩❤\u{fe0f}'`); a skin tone and a second
 //!   regional indicator are cells of their own.
-use crate::engine::{Blanks, Can, Engine, Kind, Setup};
+use crate::engine::{Blanks, CANNOT, Can, Engine, Kind, Setup};
 use crate::engines::pane::{self, Glyphs, Pane, Reader};
 use crate::snapshot::{Line, Snapshot};
 use std::fs::{self, File};
@@ -662,10 +662,14 @@ impl Xterm {
 impl Engine for Xterm {
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         if sets_underline_colour(bytes) {
-            return Err("xterm has no SGR 58, and reads its colour as attributes".into());
+            return Err(format!(
+                "{CANNOT}xterm has no SGR 58, and reads its colour as attributes"
+            ));
         }
         if self.asked && repeats_before_printing(bytes) {
-            return Err("the harness's queries came between a character and REP".into());
+            return Err(format!(
+                "{CANNOT}the harness's queries came between a character and REP"
+            ));
         }
         self.asked = false;
         self.owed = owed_after(self.owed, bytes);
@@ -699,7 +703,9 @@ impl Engine for Xterm {
 
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String> {
         if self.owed > 0 {
-            return Err("the harness's queries would split a UTF-8 character".into());
+            return Err(format!(
+                "{CANNOT}the harness's queries would split a UTF-8 character"
+            ));
         }
         self.asked = true;
         self.read(history_rows)

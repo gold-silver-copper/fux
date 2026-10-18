@@ -147,7 +147,16 @@ only on the parts it makes as xterm does (`Blanks` in `src/engine.rs`;
 `engines` lists the rest). Its differences there are still shown.
 
 An engine that fails or panics abstains for the rest of the case. The
-report says why, and the run goes on.
+report says why, and the run goes on. An abstention has a class
+(`engine::abstention`): *adapter-limited*, where the adapter cannot read
+what it was given (its error begins `cannot tell:`, as xterm's for SGR
+58), *engine*, a panic, or *infrastructure*, anything else (a reply or a
+print that never came). Every engine a LIST means must be able to run
+here, so a check is judged by the same engines wherever it runs;
+`--missing-ok` lets `panel`, `all` and `in-process` leave one out. A
+decided family's named case fails when none of its deciders gives a
+verdict, unless the family is a standard's and they could not read the
+case (an adapter's limit): its section's expected fields judge it then.
 
 **The default panel** is every voter that runs here: ghostty, alacritty,
 libvterm, avt and wezterm, all in this process and fast.
@@ -423,9 +432,12 @@ with fux's 10000 rows of history.
   from fux-vt fails the step.
 - **The panel decides the rest**: fields xterm cannot tell (underline
   colour, pending wrap, the kitty flags), and every field once xterm
-  abstains (from SGR 58 on). A field the panel outvotes fux-vt on while
-  xterm agrees with fux-vt is shown in the marks (`-alacritty`), not
-  failed.
+  abstains for a limit of its adapter's (from SGR 58 on). A field the
+  panel outvotes fux-vt on while xterm agrees with fux-vt is shown in the
+  marks (`-alacritty`), not failed. If xterm abstains for anything else
+  (infrastructure), the recording is *unjudged*, and the run fails: the
+  vote alone would judge the rest. Each recording's abstentions, with
+  their classes, are in the JSON.
 - **A resize is judged by the program's answer to it.** A resized step is
   two steps of the case: the resize, then the program's output. Only the
   second is judged, because right after a resize each engine shows its
@@ -563,8 +575,11 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
 - **Options passed to esctest:** `--expected-terminal=xterm` (fux-vt
   follows xterm), `--max-vt-level=4` (a VT420, xterm's default and the
   level with DECRQCRA), `--xterm-reverse-wrap=383` (reverse wraparound as
-  xterm has it since patch 383), and no `--options` (UTF-8, no window
-  operations, like a default xterm). VT520 tests are skipped. esctest2 is
+  xterm has it since patch 383), and no `--options` for fux-vt and the
+  engines (UTF-8, no window operations for programs). Real xterm's column
+  gets `--options xtermWinopsEnabled`, with every window operation
+  allowed and `precompose: false`, as esctest's README sets it up. VT520
+  tests are skipped. esctest2 is
   pinned at 2798f121, and a checkout at another commit is refused.
 - **One denominator:** every terminal is scored over the tests esctest
   runs (it skips the same ones for all). Each result is a pass; a failure

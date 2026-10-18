@@ -780,6 +780,28 @@ impl Excepted {
     }
 }
 
+/// Each engine that abstained in `outcome`, with its class
+/// (`engine::abstention`) and why, for the JSON; and why the recording
+/// went unjudged, if xterm, which decides, abstained for anything but a
+/// limit of its adapter's (from then on the vote alone would judge, so the
+/// run is not whole).
+fn abstentions(outcome: &case::Outcome) -> (Vec<serde_json::Value>, Option<String>) {
+    let xterm = engine::find("xterm");
+    let mut unjudged = None;
+    let each = outcome
+        .abstained
+        .iter()
+        .map(|(i, why)| {
+            let class = engine::abstention(why);
+            if Some(*i) == xterm && class != "adapter-limited" {
+                unjudged = Some(format!("xterm, which decides, abstained ({class}): {why}"));
+            }
+            serde_json::json!({ "engine": engine::name(*i), "class": class, "why": why })
+        })
+        .collect();
+    (each, unjudged)
+}
+
 /// Sorts the failures after the recorded step `step` by the exception
 /// covering each, noting each covered one in `covered`: whether any is
 /// covered by none.
@@ -864,7 +886,10 @@ pub fn run(
             recording.bytes().len()
         );
         let reasons: BTreeSet<&str> = exceptions.iter().map(|e| e.reason).collect();
+        let (abstained, unjudged) = abstentions(outcome);
         results.push(serde_json::json!({
+            "abstained": abstained,
+            "unjudged": unjudged,
             "recording": recording.name,
             "agrees": run.agrees(),
             "excepted": outcome.agrees() && stale.is_empty(),
@@ -875,6 +900,10 @@ pub fn run(
             agree = agree.saturating_add(1);
         } else {
             differ = differ.saturating_add(1);
+        }
+        if let Some(why) = &unjudged {
+            ok = false;
+            println!("UNJUDGED {label}: {why}");
         }
         match (expected, outcome.agrees(), stale.is_empty()) {
             (None, ..) => {
@@ -953,7 +982,8 @@ pub fn run(
 /// The recordings judged with another engine as the subject, as fux-vt is
 /// judged: xterm decides what it can tell, the panel (where fux-vt now
 /// votes) the rest. The statuses are fux-vt's, so none is applied: each
-/// recording's outcome is reported, and only an error fails.
+/// recording's outcome is reported, and only an error, or a recording
+/// xterm could not judge (see `abstentions`), fails.
 ///
 /// Every recording runs to its end, and at each judged point fux-vt is
 /// judged too, on the same screens, with the subject voting in its place:
@@ -973,6 +1003,8 @@ fn run_subject(
     println!("engines: {}", names_of.join(" "));
     let started = Instant::now();
     let mut scores = [Score::default(), Score::default()];
+    // Whether xterm judged every recording (see `abstentions`).
+    let mut whole = true;
     let mut results = Vec::new();
     let (mut fux_ahead, mut subject_ahead) = (Vec::new(), Vec::new());
     for recording in &recordings {
@@ -1026,10 +1058,17 @@ fn run_subject(
             p.fux.as_ref().map(|f| alone(f, &p.subject))
         });
         let [jm, jf] = &judged;
+        let (abstained, unjudged) = abstentions(&outcome);
+        if let Some(why) = &unjudged {
+            whole = false;
+            println!("UNJUDGED {}: {why}", recording.name);
+        }
         results.push(serde_json::json!({
             "recording": recording.name,
             "points": points.len(),
             "subject": jm.json(recording),
+            "abstained": abstained,
+            "unjudged": unjudged,
             "fux-vt": jf.json(recording),
         }));
         fux_ahead.extend(alone_mine);
@@ -1101,7 +1140,7 @@ fn run_subject(
         text.push('\n');
         std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
     }
-    Ok(true)
+    Ok(whole)
 }
 
 /// One judged comparison of a recording: the case's step (as
@@ -1318,6 +1357,39 @@ fn listed(keys: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// xterm, which decides, abstaining for a limit of its adapter's (SGR
+    /// 58) leaves the vote to judge, as the module says; abstaining for
+    /// anything else (a print that never came) leaves the recording
+    /// unjudged. At the parent both left the vote to judge, marked only
+    /// `!xterm`. Another engine's abstention unjudges nothing.
+    #[test]
+    fn a_recording_xterm_could_not_judge_is_unjudged() -> Result<(), String> {
+        let xterm = crate::engine::find("xterm").ok_or("no xterm")?;
+        let ghostty = crate::engine::find("ghostty").ok_or("no ghostty")?;
+        let outcome = |abstained: Vec<(usize, String)>| crate::case::Outcome {
+            step: None,
+            fux: crate::snapshot::Snapshot::default(),
+            verdicts: Vec::new(),
+            abstained,
+        };
+        let limited = format!("{}xterm has no SGR 58", crate::engine::CANNOT);
+        let (each, unjudged) = super::abstentions(&outcome(vec![(xterm, limited)]));
+        assert_eq!(unjudged, None);
+        assert_eq!(
+            each.first()
+                .and_then(|e| e.get("class"))
+                .and_then(|c| c.as_str()),
+            Some("adapter-limited")
+        );
+        let late = "xterm: the print did not arrive".to_owned();
+        let (_, unjudged) = super::abstentions(&outcome(vec![(xterm, late.clone())]));
+        assert!(unjudged.is_some_and(|u| u.contains("infrastructure")));
+        let (_, unjudged) = super::abstentions(&outcome(vec![(ghostty, late)]));
+        assert_eq!(unjudged, None);
+        assert_eq!(crate::engine::abstention("panicked: at the edge"), "engine");
+        Ok(())
+    }
+
     /// zsh-resize's points as its exceptions read them: the reflow's
     /// differences at steps 3, 4 and 8, and its history at 8 and 9, are
     /// covered, and the run goes on past them; a difference on another
