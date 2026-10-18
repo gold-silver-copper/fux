@@ -1,7 +1,9 @@
 //! fux's words: each a name, how many values it takes, what it does to the
 //! stack, and a line of help; and what each does, run by the program's
 //! [`Host`].
-use super::{Answer, Ask, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits};
+use super::{
+    Answer, Ask, Awaited, Bound, Fux, Host, Keys, Local, MouseEvent, Opts, Said, Then, Waits,
+};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
@@ -86,11 +88,11 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", 1, "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", 2, "pane opts -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew, not on the line typed (options, keys or a mouse event)"),
+    word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew, not on the line typed (options, keys, a mouse event, or the pane itself)"),
     word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
     word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
     word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once"),
+    word("Waiting", "timeout", 2, "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once; on options, keys, a mouse event, or the pane itself: %2 0 timeout str ls line"),
     word("Waiting", "wait", 2, "x opts -- answer", "wait for the pane to settle, or as the options say, in a pane, or each pane of a tab or workspace"),
     // Input
     word("Input", "keys", 0, "-- keys", "empty input, for send-keys"),
@@ -110,7 +112,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "joined", 1, "opts -- opts", "capture: wrapped rows joined into their lines"),
     word("Reading", "full", 1, "opts -- opts", "capture: every row and cell, untrimmed"),
     word("Reading", "styles", 1, "opts -- opts", "capture: colours and attributes"),
-    word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys or a mouse event)"),
+    word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys, a mouse event, or the pane itself)"),
     word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
     word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
@@ -436,11 +438,73 @@ fn with(
         change(&mut keys.waits);
     } else if let Value::App(Fux::Mouse(mouse)) = &mut value {
         change(&mut mouse.waits);
+    } else if let Value::App(Fux::Awaited(awaited)) = &mut value {
+        awaited.given.push(word);
+        change(&mut awaited.waits);
+    } else if let Ok(target) = target(&value) {
+        // On the pane itself, for the word that acts on it after:
+        // `%2 0 timeout str ls line`.
+        let mut awaited = Awaited {
+            target,
+            waits: Waits::default(),
+            given: vec![word],
+        };
+        change(&mut awaited.waits);
+        value = Value::App(Fux::Awaited(Box::new(awaited)));
     } else {
-        return Err(wrong("options, keys or a mouse event", &value));
+        return Err(wrong(
+            "options, keys, a mouse event, or a pane, tab or workspace",
+            &value,
+        ));
     }
     out.push(value);
     Ok(Done::Now)
+}
+
+/// The pane, tab or workspace an action, `wait` or `capture` acts on, and
+/// the wait words given on it (`%2 0 timeout`), if any.
+fn awaited(value: &Value<Fux>) -> Result<(AnyRef, Option<&Awaited>), Failure> {
+    match value {
+        Value::App(Fux::Awaited(awaited)) => Ok((awaited.target, Some(awaited))),
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Ok((target(other)?, None)),
+    }
+}
+
+/// The pane an action acts on, and the wait words given on it.
+fn awaited_pane(value: &Value<Fux>) -> Result<(PaneId, Option<&Awaited>), Failure> {
+    match awaited(value) {
+        Ok((AnyRef::Pane(p), on)) => Ok((p, on)),
+        Ok((AnyRef::Tab(_) | AnyRef::Workspace(_), _)) | Err(_) => {
+            Err(wrong("a pane (from pane, run or split)", value))
+        }
+    }
+}
+
+/// `later`, the waits given after a pane, with those given on it first
+/// (`early`): its texts first, its time limit unless one follows.
+fn merged(early: Option<&Awaited>, later: &mut Waits) {
+    let Some(early) = early else {
+        return;
+    };
+    let mut until = early.waits.until.clone();
+    until.append(&mut later.until);
+    later.until = until;
+    later.timeout = later.timeout.or(early.waits.timeout);
+    later.marks |= early.waits.marks;
+}
+
+/// `value`, options, with the wait words given on the pane before them
+/// (`%2 0 timeout opts capture`), which they are then refused as.
+fn merged_opts(early: Option<&Awaited>, mut value: Value<Fux>) -> Value<Fux> {
+    if let (Some(early), Value::App(Fux::Opts(opts))) = (early, &mut value) {
+        opts.given.extend(&early.given);
+        merged(Some(early), &mut opts.waits);
+    }
+    value
 }
 
 fn opts(value: &mut Value<Fux>) -> Result<&mut Opts, Failure> {
@@ -852,8 +916,9 @@ impl fuxth::Host for Host<'_> {
                 later(ask(split, Then::Handle(Kind::Pane)))
             }
             "respawn" => {
-                let p = pane(&next()?)?;
-                let built = finished(name, next()?)?;
+                let on = next()?;
+                let (p, early) = awaited_pane(&on)?;
+                let built = finished(name, merged_opts(early, next()?))?;
                 let respawn = Command::Respawn {
                     target: p,
                     kill: built.kill,
@@ -894,8 +959,9 @@ impl fuxth::Host for Host<'_> {
                 with(name, next()?, out, |w| w.until.push(until))
             }
             "wait" => {
-                let p = target(&next()?)?;
-                let built = finished(name, next()?)?;
+                let on = next()?;
+                let (p, early) = awaited(&on)?;
+                let built = finished(name, merged_opts(early, next()?))?;
                 // With a wait's time either way: on a tab or workspace, for
                 // each of its panes.
                 let wait = Request::Wait(p, waited(&built.waits));
@@ -945,7 +1011,19 @@ impl fuxth::Host for Host<'_> {
             "send-keys" => {
                 let to = next()?;
                 let mut k = next()?;
-                let built = keys(&mut k)?.clone();
+                let mut built = keys(&mut k)?.clone();
+                if let Value::App(Fux::Opts(_)) = &to {
+                    return Err(fail(
+                        Lang::Type,
+                        "takes the pane, then keys: options between them reach no word \
+                         (each takes a set number of values); give the wait words on the pane \
+                         or on the keys: `%2 0 timeout str ls line`, \
+                         `%2 keys str y text str T wait-text send-keys`",
+                    ));
+                }
+                if let Value::App(Fux::Awaited(early)) = &to {
+                    merged(Some(early), &mut built.waits);
+                }
                 if built.inputs.is_empty() {
                     return Err(fail(Code::NoKeys, "needs keys: keys str hello text"));
                 }
@@ -987,8 +1065,8 @@ impl fuxth::Host for Host<'_> {
                     return later(ask(typed, Then::Outcome));
                 }
                 let then = wait(&built.waits, self.settle);
-                let target =
-                    target(&to).map_err(|_| wrong("a pane, tab, workspace or client", &to))?;
+                let (target, _) =
+                    awaited(&to).map_err(|_| wrong("a pane, tab, workspace or client", &to))?;
                 let keys = Command::SendKeys {
                     target,
                     inputs: built.inputs,
@@ -1021,12 +1099,15 @@ impl fuxth::Host for Host<'_> {
                 )
             }
             "send-mouse" => {
-                let p = pane(&next()?)?;
+                let on = next()?;
+                let (p, early) = awaited_pane(&on)?;
                 let m = next()?;
                 let Value::App(Fux::Mouse(m)) = &m else {
                     return Err(wrong("a mouse event (from mouse)", &m));
                 };
-                let then = wait(&m.waits, self.settle);
+                let mut waits = m.waits.clone();
+                merged(early, &mut waits);
+                let then = wait(&waits, self.settle);
                 let mouse = Command::SendMouse {
                     target: p,
                     mouse: m.mouse,
@@ -1036,18 +1117,22 @@ impl fuxth::Host for Host<'_> {
                 later(ask(followed(mouse, then), Then::Outcome))
             }
             "signal" => {
-                let p = pane(&next()?)?;
+                let on = next()?;
+                let (p, early) = awaited_pane(&on)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
                 // From a command line: answers once the program exited or settled.
-                let then = wait(&Waits::default(), self.settle);
+                let mut waits = Waits::default();
+                merged(early, &mut waits);
+                let then = wait(&waits, self.settle);
                 let signal = followed(Command::Signal { target: p, signal }, then);
                 later(ask(signal, Then::Outcome))
             }
             // ----------------------------------------------------- reading
             "capture" => {
-                let p = pane(&next()?)?;
-                let built = finished(name, next()?)?;
+                let on = next()?;
+                let (p, early) = awaited_pane(&on)?;
+                let built = finished(name, merged_opts(early, next()?))?;
                 // From a command line, or given a timeout, read once the pane
                 // settles.
                 let (history, timeout) = (built.history, built.waits.timeout);

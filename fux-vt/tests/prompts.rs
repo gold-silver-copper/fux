@@ -239,6 +239,43 @@ fn a_nested_programs_marks_count_within_the_shells_command() -> Result {
     Ok(())
 }
 
+/// A state report (`133;S;activity=STATE`) counts under the marks' nonce
+/// rule, the nested nonce's only within the shell's command, and holds
+/// until the next mark; one naming no state it knows is none, and a
+/// report changes no command.
+#[test]
+fn a_state_report_holds_until_the_next_mark() -> Result {
+    use fux_vt::Reported;
+    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
+    p.require_mark_nonce(Some(b"k3y"), Some(b"n3st"));
+    p.process(b"\x1b]133;A;nonce=k3y\x07$ \x1b]133;S;activity=reading;nonce=n3st\x07")?;
+    assert_eq!(
+        p.screen().commands().reported(),
+        None,
+        "no shell command runs"
+    );
+    p.process(b"koh\r\n\x1b]133;C;nonce=k3y\x07\x1b[?1049h\x1b]133;C;nonce=n3st\x07")?;
+    let before = p.screen().commands();
+    p.process(b"\x1b]133;S;activity=reading\x07\x1b]133;S;activity=dozing;nonce=n3st\x07")?;
+    assert_eq!(p.screen().commands().reported(), None, "unsigned, unknown");
+    p.process(b"\x1b]133;S;nonce=n3st;activity=reading\x1b\\")?;
+    let commands = p.screen().commands();
+    assert_eq!(commands.reported(), Some(Reported::Reading));
+    assert_eq!(
+        (commands.started, commands.running()),
+        (before.started, true)
+    );
+    p.process(b"\x1b]133;D;0;nonce=n3st\x07")?;
+    assert_eq!(
+        p.screen().commands().reported(),
+        None,
+        "a mark came after it"
+    );
+    p.process(b"\x1b]133;S;activity=busy;nonce=n3st\x07")?;
+    assert_eq!(p.screen().commands().reported(), Some(Reported::Busy));
+    Ok(())
+}
+
 /// A `C` while a command runs (a relay placing that command's start anew)
 /// moves its start but begins no command: `started` counts those begun.
 #[test]

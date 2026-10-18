@@ -22,7 +22,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
 | `program` | what runs in its foreground, `null` if unknown |
-| `state` | what it is doing: `reading` (blocked on its terminal, every key read), `waiting` (quiet 1s, but it may go on alone: the network, a poll with a time limit; a program asleep is `busy`), `busy`, `settled` (quiet; nothing else known), `exited N`, `killed by SIGTERM` (`killed by signal N` for a signal fux has no name for), or `empty` |
+| `state` | what it is doing: `reading` (blocked on its terminal, every key read), `waiting` (quiet 1s, but it may go on alone: the network, a poll with a time limit; a program asleep is `busy`), `busy`, `settled` (quiet; nothing else known), `exited N`, `killed by SIGTERM` (`killed by signal N` for a signal fux has no name for), or `empty`; for a relay's remote program (`koh connect`), as the relay's last state report says (`OSC 133 ; S ; activity=STATE`), while no mark came after it and it came after the last input |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `exited` | the status its program exited with (a pane `run` started), else `null` |
 | `signal` | the signal that killed it (its number), else `null` |

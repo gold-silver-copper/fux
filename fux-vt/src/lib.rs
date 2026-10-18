@@ -91,7 +91,7 @@ pub use parser::{
 };
 pub use screen::{
     CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,
-    PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
+    PICTURE_BYTES, PLACEHOLDER, Report, Reported, Screen, Shown,
 };
 pub use unicode::{UNICODE_VERSION, continues_cluster};
 

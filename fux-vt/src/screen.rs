@@ -457,7 +457,7 @@ pub struct Screen {
 mod pictures;
 mod shell;
 pub use pictures::{Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
-pub use shell::{Commands, Mark as CommandMark};
+pub use shell::{Commands, Mark as CommandMark, Report, Reported};
 #[cfg(test)]
 mod tests;
 
@@ -835,7 +835,8 @@ impl Screen {
     /// column, as the semantic prompt proposal and Ghostty have it. `N` is
     /// `A` that first ends the command running, as a `D` with no status.
     /// `C` and `D` mark a command (`command_mark`), `P` a prompt where it
-    /// is; the rest (`B` and others) change nothing.
+    /// is; the rest (`B` and others) change nothing. `S` reports a state
+    /// (`report`). Every mark that counts is counted (`Commands::marks`).
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
         let carries = |nonce: &[u8]| {
@@ -843,6 +844,16 @@ impl Screen {
         };
         let shell = self.mark_nonce.as_deref().is_none_or(carries);
         let nested = !shell && self.nested_nonce.as_deref().is_some_and(carries);
+        // A state report counts as the marks around it do, and changes
+        // none of what they say: the shell's, or the nested nonce's while
+        // a command the shell started runs.
+        if let Some(options) = payload.strip_prefix(b"S") {
+            let within = self.outer.is_some() || self.commands.running();
+            if (options.is_empty() || options.starts_with(b";")) && (shell || (nested && within)) {
+                self.report(options);
+            }
+            return Ok(());
+        }
         if shell {
             self.unnest();
         } else if !(nested && self.nest()) {
@@ -851,6 +862,7 @@ impl Screen {
             return Ok(());
         }
         let command = parts.next().unwrap_or_default();
+        self.commands.marks = self.commands.marks.wrapping_add(1);
         if matches!(command, b"C" | b"D") {
             self.command_mark(command, parts.next());
             return Ok(());

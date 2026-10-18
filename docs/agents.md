@@ -28,7 +28,7 @@ fux str agent workspace kill                            # at the end: everything
 The answer's first line is the pane and its **state**; then what came since
 you acted, from the line typed on if it changed (its prompt and your echo too;
 else, as after a lone Enter or keys not echoed, from the first line that changed),
-or the whole screen of a full-screen program (an editor, a menu, a form); one that redraws in place on the main screen answers from the top row it changed (its text or colours):
+or the whole screen of a full-screen program (an editor, a menu, a form; one that scrolls as a shell, `koh connect`'s or mosh's, from the line typed on); one that redraws in place on the main screen answers from the top row it changed (its text or colours):
 
 ```
 %2 reading                     it waits for you: blocked reading its terminal, every key read
@@ -40,7 +40,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
 ```
 
 - **Time:** an action, a `capture` and a `wait` all wait 30s at most (the server's
-  `wait-seconds`); `SECS timeout` changes it for one. `0 timeout` acts and answers
+  `wait-seconds`); `SECS timeout` changes it for one, on its options, keys or mouse event or on the pane before them (`%2 0 timeout str ls line`). `0 timeout` acts and answers
   at once, the state as it is (start many programs so, then one `wait` on their tab or
   workspace waits for each pane, a line each, the first failing status). Busy at the limit: status 124; `PANE opts wait` waits on.
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
@@ -49,7 +49,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form); one th
   and the program: `str 'prog -x a' command` (split as a shell splits), or
   `str PROG program` and `str A arg` per argument. The answer's first word is
   the pane: use it. Each `fux` is a fresh program (a `let` name lasts only
-  within one). The pane stays after the program ends. A word refuses options it would not use (`capture` a wait): `unused`.
+  within one). The pane stays after the program ends. A word refuses options it would not use (`capture` a wait): `unused`. `run` answers once the program prints, or reads quiet a second having printed nothing (ssh and `koh connect` read as they connect).
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; no keypad keys; a typo
   is refused). Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T
@@ -233,10 +233,16 @@ too) answers once it reads or is quiet, its screen shown. One that a
 full-screen program marks itself (its `C` came on the alternate screen, as
 a remote shell's relayed by `koh connect` do) is waited for to its end,
 though the program waits on the network meanwhile: `line` answers
-`· done STATUS`, or `busy` at the time limit. fux cannot tell a remote
-command that waits for input there (`sudo`, `less`, `python3 -i` through
-koh; a REPL over ssh) from a slow one: its `line` answers `busy` at the
-limit. Type such a command with `0 timeout`, or wait for its prompt with
+`· done STATUS`, or `busy` at the time limit. A relay that can see the
+remote program says what it does, `ESC ] 133 ; S ; activity=STATE ;
+nonce=N BEL` (STATE `reading`, `polling`, `waiting`, `busy`, `idle` or
+`unknown`, as fux's own probe has them; the nonce as for its marks), as
+`koh connect` does: its last report stands for fux's probe while no mark
+came after it and it came after your last input, so a remote `less`,
+`sudo` or REPL answers `reading` as a local one does, its `line` too.
+Without one, fux cannot tell a remote command that waits for input there
+(through ssh) from a slow one: its `line` answers `busy` at the limit.
+Type such a command with `0 timeout`, or wait for its prompt with
 `wait-text`; the keys you send it next settle at once.
 
 ## Sizes

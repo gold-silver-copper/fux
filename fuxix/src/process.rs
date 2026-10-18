@@ -619,6 +619,69 @@ pub enum Activity {
     Unknown,
 }
 
+/// What the programs in the foreground group of the terminal whose master
+/// is `master` do, as fux decides it: [`activity`] of its foreground group
+/// (with none, `leader`'s own group: busy once none is left in it), with a
+/// read that may return on a timer (`VMIN` and `VTIME`) counted as
+/// [`Activity::Polling`], and a shell back at its prompt counted as
+/// [`Activity::Reading`] whatever jobs it left running in its group.
+/// - `since_key`: how long ago input was last written to the terminal;
+///   `Duration::MAX` if none was (a read timed from a key waits with no
+///   limit before one).
+/// - `answered`: whether the screen changed after that input: the program
+///   answered it.
+/// - `prompt`: whether the shell `leader` runs has ended its last command
+///   and is back at its prompt, as its marks say (OSC 133 `D`, and no `C`
+///   since). Then a shell that reads the terminal itself reads, though its
+///   group is busy, polling or waiting.
+///
+/// On macOS, as [`activity`] there, it gives only `Busy`, `Idle` or
+/// `Unknown`.
+pub fn terminal_activity(
+    master: &crate::pty::Master,
+    leader: Pid,
+    since_key: std::time::Duration,
+    answered: bool,
+    prompt: bool,
+) -> Activity {
+    let group = crate::terminal::foreground_group(master).unwrap_or(leader);
+    // A read timed from a key (`VMIN` and `VTIME`) times the gap after the
+    // first key it took: once the program wrote after the last key (and
+    // the terminal echoes nothing), the read that took it returned, and
+    // the one it is in has taken no key yet, so it waits with no limit.
+    let timed = |t: &crate::terminal::Termios| {
+        let since = match answered && !t.modes().echo {
+            true => std::time::Duration::MAX,
+            false => since_key,
+        };
+        t.timed_reads(since)
+    };
+    let tty = master.slave_path();
+    let found = match activity(group, tty, leader) {
+        // A read with a time limit is a poll: the program goes on alone
+        // when it runs out.
+        Activity::Reading if crate::terminal::attributes(master).is_ok_and(|t| timed(&t)) => {
+            Activity::Polling
+        }
+        found @ (Activity::Reading
+        | Activity::Polling
+        | Activity::Waiting
+        | Activity::Busy
+        | Activity::Idle
+        | Activity::Unknown) => found,
+    };
+    // A shell back at its prompt, reading, its last command ended: what
+    // else runs in its group is a job it left there (job control off, or
+    // fish's disowned start-up work), not the command typed.
+    let left = match found {
+        Activity::Busy | Activity::Polling | Activity::Waiting => {
+            prompt && reads_terminal(leader, tty)
+        }
+        Activity::Reading | Activity::Idle | Activity::Unknown => false,
+    };
+    if left { Activity::Reading } else { found }
+}
+
 /// What a blocked thread waits in, by its system call.
 #[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
