@@ -828,7 +828,37 @@ pub fn b23(scale: Scale, chunk: usize) -> Found {
         5461usize.saturating_mul(scale.times()),
     );
     let most = (PASTE_LIMIT + 5).saturating_add(3 * PASTE_LIMIT);
-    decoded(&input, chunk, 258, most, false).map(|_| ())
+    decoded(&input, chunk, 258, most, false)?;
+    // At the limit and one past it (KEY-5): delivered, then refused whole.
+    for (len, delivered) in [(PASTE_LIMIT, true), (PASTE_LIMIT + 1, false)] {
+        let mut one = b("\x1b[200~");
+        one.extend(repeat(b"p", len));
+        one.extend(b("\x1b[201~"));
+        let (mut decoder, mut out) = (Decoder::default(), Vec::new());
+        let (mut pasted, mut refused) = (0usize, 0usize);
+        for piece in super::probe::pieces(&repeat(&one, scale.times()), chunk) {
+            decoder.bytes(piece, &mut out);
+            for input in std::mem::take(&mut out) {
+                match input {
+                    Input::Paste(p) if p.len() == len => pasted = pasted.saturating_add(1),
+                    Input::PasteTooLong => refused = refused.saturating_add(1),
+                    Input::Paste(_)
+                    | Input::Key(_)
+                    | Input::FocusIn
+                    | Input::FocusOut
+                    | Input::Mouse(_)
+                    | Input::Reply(_) => {}
+                }
+            }
+        }
+        let want = scale.times();
+        if (pasted, refused) != if delivered { (want, 0) } else { (0, want) } {
+            return Err(format!(
+                "a paste of {len}: {pasted} delivered, {refused} refused"
+            ));
+        }
+    }
+    Ok(())
 }
 
 // B24: the key decoder holds at most 258 bytes of an unfinished sequence.
@@ -858,9 +888,48 @@ pub fn b25(scale: Scale, chunk: usize) -> Found {
             whole.inputs, split.inputs
         ));
     }
-    (split.keys == 0)
-        .then_some(())
-        .ok_or(format!("{} keys typed from an answer", split.keys))
+    if split.keys != 0 {
+        return Err(format!("{} keys typed from an answer", split.keys));
+    }
+    // Each window one past its limit (KEY-5): an OSC answer of 129 bytes,
+    // a DCS of 257 while answers are expected, a key CSI of 33, a `CSI ?`
+    // of 257, each then `x`: decoded alike whole and in pieces, and of it
+    // only the `x` typed.
+    let past = |head: &str, n: usize, end: &str| {
+        let mut one = b(head);
+        one.extend(repeat(b"1", n.saturating_sub(head.len())));
+        one.extend(b(end));
+        one.extend(b"x");
+        repeat(&one, scale.times())
+    };
+    for (input, expect) in [
+        (past("\x1b]11;", 129, "\x07"), false),
+        (past("\x1bP1+r", 257, "\x1b\\"), true),
+        (past("\x1b[", 33, "u"), false),
+        (past("\x1b[?", 257, "c"), false),
+    ] {
+        let decode = |size: usize| {
+            let mut decoder = Decoder::default();
+            if expect {
+                decoder.expect(Instant::now());
+            }
+            let mut out = Vec::new();
+            for piece in super::probe::pieces(&input, size) {
+                decoder.bytes(piece, &mut out);
+            }
+            decoder.timeout(&mut out);
+            out
+        };
+        let whole = decode(input.len());
+        let typed = whole.iter().filter(|i| matches!(i, Input::Key(_))).count();
+        if typed != scale.times() || decode(chunk) != whole {
+            return Err(format!(
+                "{}: {typed} keys typed whole, or decoded otherwise in pieces of {chunk}",
+                input.get(..8).unwrap_or_default().escape_ascii()
+            ));
+        }
+    }
+    Ok(())
 }
 
 // B26: each input byte makes at most one `Input`.
