@@ -506,6 +506,24 @@ fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
     Ok(())
 }
 
+/// A kept picture holds just its pixels, though its room grew by doubling
+/// as it was drawn (threats.md B03; REB-11): the budget counts its room,
+/// which is then its size. Drawn a column further right a sixel at a
+/// time, to 101 columns of one band (6 positions down).
+#[test]
+fn a_kept_picture_holds_just_its_pixels() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut rightward = b"\x1bPq~".to_vec();
+    for n in 1..=100 {
+        rightward.extend(format!("$!{n}?~").bytes());
+    }
+    rightward.extend(b"\x1b\\");
+    p.process(&rightward)?;
+    assert_eq!(p.screen().picture_bytes(), 101 * 6 * 4);
+    Ok(())
+}
+
 /// A picture that only declares its size keeps no pixels for it, however
 /// large (`threats.md` B05): its extent reads as the background (colour
 /// register 0 for P2 0 and 2) or clear (P2 1), when shown.
