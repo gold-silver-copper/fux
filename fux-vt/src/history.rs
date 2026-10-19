@@ -261,6 +261,12 @@ pub(crate) struct History {
     runs: usize,
     texts: ByRow<Text>,
     linked: ByRow<KeptLinks>,
+    /// The room each map's table was made with, its buckets as allocated:
+    /// `HashMap::capacity` counts out the entries removed since, whose
+    /// buckets the table keeps (FA-RE-F-9), so it is noted when the table
+    /// grows or is made anew, and read for what the maps hold.
+    texts_room: usize,
+    linked_room: usize,
     /// The rows that are not single width, by number, oldest first: most
     /// histories have none, and a row's record has no bit to spare.
     renditions: VecDeque<(u64, LineRendition)>,
@@ -309,6 +315,8 @@ impl Clone for History {
             runs: self.runs,
             texts: self.texts.clone(),
             linked: self.linked.clone(),
+            texts_room: self.texts_room,
+            linked_room: self.linked_room,
             renditions: self.renditions.clone(),
             ended: self.ended.clone(),
             cells: self.cells,
@@ -375,8 +383,8 @@ impl History {
     }
     /// The bytes the maps' buckets take.
     fn maps_bytes(&self) -> usize {
-        (self.texts.capacity().saturating_mul(TEXT_BUCKET))
-            .saturating_add(self.linked.capacity().saturating_mul(LINK_BUCKET))
+        (self.texts_room.saturating_mul(TEXT_BUCKET))
+            .saturating_add(self.linked_room.saturating_mul(LINK_BUCKET))
             .saturating_add(self.renditions.capacity().saturating_mul(RENDITION))
             .saturating_add(self.ended.capacity().saturating_mul(size_of::<u64>()))
     }
@@ -435,6 +443,7 @@ impl History {
         self.room_cells = 0;
         self.texts = ByRow::default();
         self.linked = ByRow::default();
+        (self.texts_room, self.linked_room) = (0, 0);
         self.renditions = VecDeque::new();
         self.ended = VecDeque::new();
         self.recount();
@@ -873,11 +882,13 @@ impl History {
     /// at once (`threats.md` B17); and what history holds is counted again.
     fn maps_changed(&mut self) {
         let shrink = |capacity: usize, len: usize| capacity > most_room(len);
-        if shrink(self.texts.capacity(), self.texts.len()) {
+        if shrink(self.texts_room, self.texts.len()) {
             self.texts.shrink_to(self.texts.len());
+            self.texts_room = self.texts.capacity();
         }
-        if shrink(self.linked.capacity(), self.linked.len()) {
+        if shrink(self.linked_room, self.linked.len()) {
             self.linked.shrink_to(self.linked.len());
+            self.linked_room = self.linked.capacity();
         }
         if shrink(self.renditions.capacity(), self.renditions.len()) {
             self.renditions.shrink_to(self.renditions.len());
@@ -924,11 +935,13 @@ impl History {
         if let Some(text) = text.filter(|text| !text.is_empty()) {
             self.text = self.text.saturating_add(text.bytes());
             self.texts.insert(number, text);
+            self.texts_room = self.texts_room.max(self.texts.capacity());
             kept.set(TEXT, true);
         }
         if let Some(links) = links {
             self.runs = self.runs.saturating_add(links.heap());
             self.linked.insert(number, links);
+            self.linked_room = self.linked_room.max(self.linked.capacity());
             kept.set(LINKED, true);
             self.recount();
         } else if self.maps_bytes() != self.maps {
@@ -1155,9 +1168,17 @@ impl History {
                 self.rows.len()
             )
         })?;
+        for (name, room, capacity) in [
+            ("texts", self.texts_room, self.texts.capacity()),
+            ("links", self.linked_room, self.linked.capacity()),
+        ] {
+            crate::check::ensure(room >= capacity, || {
+                format!("the {name}' table counted as {room}, where it has room for {capacity}")
+            })?;
+        }
         for (name, capacity, len) in [
-            ("texts", self.texts.capacity(), self.texts.len()),
-            ("links", self.linked.capacity(), self.linked.len()),
+            ("texts", self.texts_room, self.texts.len()),
+            ("links", self.linked_room, self.linked.len()),
             (
                 "renditions",
                 self.renditions.capacity(),
