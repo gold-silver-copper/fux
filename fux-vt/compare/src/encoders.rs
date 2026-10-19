@@ -45,24 +45,21 @@ pub const VERDICTS: &[(&str, &str)] = &[
          ; m R, as fux-vt does; ghostty sends kitty's CSI 13 ; m ~",
     ),
     (
-        "ctrl-backspace",
-        "Ctrl-Backspace outside the kitty protocol: fux-vt sends DEL, as for Backspace; ghostty \
-         sends BS (a choice no reference decides)",
-    ),
-    (
         "ctrl-backspace-bs",
-        "open: Backspace with Ctrl and another modifier is BS (8) in fux-vt, a port of xterm's \
-         input.c (ESC BS for Ctrl-Alt-Shift outside any protocol, `CSI 27 ; m ; 8 ~` under \
-         modifyOtherKeys 2), where ghostty sends DEL (127); plain Ctrl-Backspace is DEL in both \
-         (ctrl-backspace). Which real xterm sends is not checked here: its key bytes through \
-         XTest would decide it",
+        "Backspace with Ctrl and another modifier is BS (8): real xterm 411 sends ESC BS for \
+         Ctrl-Alt and Ctrl-Alt-Shift (KEY-13, `tests/data/keys/xterm-keys.txt` lines 420 and \
+         422: `C-M-BSpace \\e\\x08`, `C-M-S-BSpace \\e\\x08`), and under modifyOtherKeys 2 \
+         `CSI 27 ; m ; 8 ~` (lines 1659, 1660 and 1662: C-S `\\e[27;6;8~`, C-M \
+         `\\e[27;7;8~`, C-M-S `\\e[27;8;8~`), as fux-vt does; ghostty sends DEL (127). Plain \
+         Ctrl-Backspace is BS in all three (lines 417 and 1657: `\\x08`)",
     ),
     (
         "modify-other-keys",
-        "modifyOtherKeys 2: xterm sends every modified key as CSI 27 ; m ; k ~, Ctrl-letters and \
-         Alt-Escape included, but a printable key with Shift alone as its character, as fux-vt \
-         (a port of xterm's input.c) does; ghostty keeps the legacy bytes of the first and \
-         escapes the second",
+        "modifyOtherKeys 2: xterm sends every modified key as CSI 27 ; m ; k ~, Ctrl-letters, \
+         Shift-letters and Alt-Escape included, but Ctrl alone on Backspace and Shift alone on a \
+         character Ctrl makes no control of (`!`, `)`, `+`), which types its text, as real xterm \
+         411 sends them (`tests/data/keys/xterm-keys.txt`) and fux-vt does; ghostty keeps the \
+         legacy bytes of the first and escapes the second",
     ),
     (
         "ctrl-alt-question",
@@ -564,7 +561,7 @@ fn key_verdict(
     {
         return Some("f3");
     }
-    // BS, where ghostty has DEL: open (see the verdict).
+    // BS, where ghostty has DEL, as real xterm 411 sends it (see the verdict).
     let bs_form = ours == b"\x1b\x08"
         || String::from_utf8_lossy(ours)
             .strip_prefix("\x1b[27;")
@@ -573,11 +570,6 @@ fn key_verdict(
         (mods.alt || mods.shift) && theirs.ends_with(b"\x7f") || theirs.ends_with(b";127~");
     if key == Key::Backspace && mods.ctrl && bs_form && ghostty_del {
         return Some("ctrl-backspace-bs");
-    }
-    // DEL, as for Backspace, after an Escape for Alt.
-    let del: &[u8] = if mods.alt { b"\x1b\x7f" } else { b"\x7f" };
-    if key == Key::Backspace && mods.ctrl && flags & 9 == 0 && ours == del {
-        return Some("ctrl-backspace");
     }
     // xterm 411's bytes (KEY-13).
     let plain = flags == 0;
@@ -621,8 +613,9 @@ fn key_verdict(
 /// `mods`: `CSI 27 ; M ; K ~`, M one more than Shift (1), Alt (2) and Ctrl
 /// (4), with Shift held for a character typed with it (an upper-case
 /// letter, or one of `SHIFTED`), and K the key's code (a character's own,
-/// or 27, 13, 9 and 127 for Escape, Enter, Tab and Backspace); or a
-/// printable key with Shift alone as its character.
+/// or 27, 13, 9 and 127 for Escape, Enter, Tab and Backspace); or, with
+/// Shift alone, the character itself, which xterm sends for one Ctrl makes
+/// no control of (`!`, `)`, `+`: fux-vt's `keys::encode`).
 fn modified_other_key(key: Key, mods: Modifiers, ours: &[u8]) -> bool {
     let (code, shifted) = match key {
         Key::Char(c) => (
@@ -1001,15 +994,15 @@ mod tests {
     };
 
     /// A verdict passes only on the bytes its reason says fux-vt sends (at
-    /// the parent each passed on whatever fux-vt sent): DEL for
-    /// Ctrl-Backspace, not ESC; the legacy bytes, not some other form;
+    /// the parent each passed on whatever fux-vt sent): BS for Backspace
+    /// with Ctrl and another modifier, where ghostty sends DEL, and no
+    /// verdict for plain Ctrl-Backspace, BS everywhere; the legacy bytes;
     /// modifyOtherKeys' `CSI 27 ; M ; K ~` with the key's modifiers and
     /// code; a paste as pasted, its ends removed.
     #[test]
     fn a_verdict_holds_only_on_what_fux_vt_should_send() {
         let bs = |ours: &[u8]| key_verdict("", Key::Backspace, CTRL, ours, b"\x08", b"\x7f");
-        assert_eq!(bs(b"\x7f"), Some("ctrl-backspace"));
-        assert_eq!(bs(b"\x1b"), None);
+        assert_eq!(bs(b"\x7f"), None);
         let all = Modifiers {
             alt: true,
             shift: true,
