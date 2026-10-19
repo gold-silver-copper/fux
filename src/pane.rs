@@ -1506,6 +1506,13 @@ impl Pane {
         if !REMOTE.contains(&name.as_str()) {
             return None;
         }
+        // One blocked reading its terminal alone (not watching it beside
+        // its socket) asks at a prompt of its own, here: a password, a
+        // host key. It reads as any program does (Linux; macOS does not
+        // say, and takes it for the client).
+        if fuxix::process::blocked_reading(&child.master, child.leader.pid()) {
+            return None;
+        }
         let modes = fuxix::terminal::attributes(&child.master).ok()?.modes();
         Some(Remote {
             name,
