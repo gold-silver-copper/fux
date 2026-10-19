@@ -43,11 +43,14 @@ thread_local! {
     static SPENT: Cell<u64> = const { Cell::new(0) };
 }
 
+/// The most weighted work one call may do: U, 50,000,000 units (threats.md
+/// 4.4, P14), in twentieths of a unit; `Work::CEILING` under `checks`.
+pub(crate) const CEILING: u64 = 50_000_000 * 20;
+
 /// The most a call of `process_until_stop` spends before it stops, in
-/// twentieths of a unit: half the ceiling U (threats.md 4.4), so that the
-/// sequence that crosses it, and the work no site spends, fit in the other
-/// half.
-pub(crate) const LIMIT: u64 = 25_000_000 * 20;
+/// twentieths of a unit: half the ceiling U, so that the sequence that
+/// crosses it, and the work no site spends, fit in the other half.
+pub(crate) const LIMIT: u64 = CEILING / 2;
 
 /// Each counter's weight, in twentieths of a unit: threats.md 4.4's frozen
 /// weights (P23), in ns per unit for this machine, times 20. Named as the
