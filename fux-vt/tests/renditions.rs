@@ -221,6 +221,16 @@ fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
     assert_eq!(rendition(&p, 0), Some(DoubleWidth), "ED around SPA's glyph");
     let p = run(2, 10, b"\x1b#6\x1b[2J")?;
     assert_eq!(rendition(&p, 0), Some(Single), "ED");
+    // ED once protection was used, sparing nothing on the line: single
+    // width (FA-RE-B-2).
+    let p = run(2, 10, b"\x1b#6\x1b[1\"q\x1b[2J")?;
+    assert_eq!(rendition(&p, 0), Some(Single), "ED after DECSCA 1");
+    let p = run(2, 10, b"\x1bVx\x1bW\r\n\x1b#6\x1b[2J")?;
+    assert_eq!(
+        rendition(&p, 1),
+        Some(Single),
+        "ED of a line with no guarded glyph"
+    );
     Ok(())
 }
 

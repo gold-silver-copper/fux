@@ -285,9 +285,17 @@ fn a_row_erased_whole_ends_the_line_above() -> Result {
 fn a_top_row_erased_whole_ends_the_line_in_history() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 1000)?;
     p.process(b"$ echo 0123456789abcde")?;
-    assert!(above(&p, 1)?.row(0).is_some_and(|r| r.wrapped() && r.continues()));
+    assert!(
+        above(&p, 1)?
+            .row(0)
+            .is_some_and(|r| r.wrapped() && r.continues())
+    );
     p.process(b"\x1b[H\x1b[2J$ ")?;
-    assert!(above(&p, 1)?.row(0).is_some_and(|r| r.wrapped() && !r.continues()));
+    assert!(
+        above(&p, 1)?
+            .row(0)
+            .is_some_and(|r| r.wrapped() && !r.continues())
+    );
     Ok(())
 }
 

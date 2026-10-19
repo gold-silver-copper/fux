@@ -353,7 +353,9 @@ impl Grid {
         let Some(row) = index.checked_sub(self.history.len()) else {
             let kept = self.history.kept(index);
             let goes_on = self.history.continues(index);
-            return kept.map_or((false, 0, 0), |k| (goes_on, usize::from(k.width()), k.len()));
+            return kept.map_or((false, 0, 0), |k| {
+                (goes_on, usize::from(k.width()), k.len())
+            });
         };
         let width = usize::from(self.size.cols());
         let Some((slot, m)) =
