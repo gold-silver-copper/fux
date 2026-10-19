@@ -21,11 +21,11 @@ refused for its order says the order that works.
 you never sleep or poll.
 
 ```sh
-fux opts str web name str './app --fast' command run    # start: answers %2 reading, then its output
+fux opts str web name 100 30 size str ./app program str --fast arg run  # start: answers %2 reading, then its output
 fux %2 str y text str Enter key send-keys               # keys, then send-keys (str T paste send-keys pastes): answers as run does
 fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
-fux %2 wait                                             # settle again (30s), what came since your input
+fux %2 wait                                             # settle again (30s; `%2 300 timeout wait` longer), what came since your input
 fux %2 str 'listening on' wait-text wait                # wait for a text (case ignored); also wait-gone, wait-bell
 fux %2 all-history capture                              # read: the screen once settled
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
