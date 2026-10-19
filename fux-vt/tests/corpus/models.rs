@@ -64,14 +64,27 @@ pub fn append(text: &mut String, c: char) -> bool {
 /// or trailing jamo after a break) has no cell of its own, as the README's
 /// departure from UAX #29 says ("A character of no width that joins no
 /// cluster"): it joins the cell before, with what UAX #29 joins to it, the
-/// cell widening if they make it two columns; at the line's start its
-/// characters of no width are dropped, and the rest starts afresh.
+/// cell widening if they make it two columns, but for a zero-width Prepend
+/// character, which joins it alone, what follows segmented afresh; at the
+/// line's start its characters of no width are dropped, and the rest
+/// starts afresh.
 pub fn cells_of(text: &str) -> Vec<(String, bool)> {
     let mut cells: Vec<(String, bool)> = Vec::new();
     let mut queue: VecDeque<String> = clusters(text).into();
     while let Some(cluster) = queue.pop_front() {
         let mut chars = cluster.chars();
         let Some(first) = chars.next() else { continue };
+        // Prepend: UAX #29 joins it to a letter after it (GB9b).
+        let prepend = width(first) == Some(0) && clusters(&format!("{first}a")).len() == 1;
+        if prepend && let Some((text, wide)) = cells.last_mut() {
+            if append(text, first) {
+                *wide |= text_width(text) >= 2;
+            }
+            for next in clusters(chars.as_str()).into_iter().rev() {
+                queue.push_front(next);
+            }
+            continue;
+        }
         if width(first) == Some(0) {
             if let Some((text, wide)) = cells.last_mut() {
                 for c in cluster.chars() {

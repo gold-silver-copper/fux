@@ -122,6 +122,12 @@ impl Properties {
         Break::of(self.bits)
     }
 
+    /// Whether the character is a Prepend character (UAX #29).
+    #[inline]
+    pub(crate) fn is_prepend(self) -> bool {
+        self.kind() == Break::Prepend
+    }
+
     /// Extended_Pictographic.
     #[inline]
     fn pictographic(self) -> bool {
