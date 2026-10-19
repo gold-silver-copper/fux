@@ -745,6 +745,22 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
         return Err(report.to_string());
     }
     probe.at_least("scanned", u64::try_from(n).unwrap_or(0))?;
+    probe.finish()?;
+    // A long DECRST that ends the frame, its parameter's leading zeros read
+    // as they come and once (FA-CODEX-5): found at its final byte.
+    let mut probe = Probe::new(&setup, bound, chunk, 1)?;
+    let _ = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut Sinkless))?;
+    let decrst = [b("\x1b[?"), repeat(b"0", n), b("2026l")].concat();
+    let mut held = Vec::with_capacity(decrst.len());
+    let mut scan = probe.parser.frame_scan();
+    let mut found = None;
+    for piece in super::probe::pieces(&decrst, chunk) {
+        held.extend_from_slice(piece);
+        found = found.or(probe.host(piece.len(), |_| scan.end(&held))?);
+    }
+    if found != Some(decrst.len()) {
+        return Err(format!("a long DECRST ended the frame at {found:?}"));
+    }
     probe.finish()
 }
 
