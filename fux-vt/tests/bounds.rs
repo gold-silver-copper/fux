@@ -352,6 +352,32 @@ mod budget {
         Ok(())
     }
 
+    /// How many of the REPs of `glyph` in `input` a call carries out
+    /// before the budget stops it, on a screen small enough that each
+    /// prints only a few of its copies, all of which are spent.
+    fn reps_before_the_budget(glyph: &str) -> Result<usize> {
+        let each = format!("{glyph}\x1b[65535b");
+        let input: String = std::iter::repeat_n(each.as_str(), 4000).collect();
+        let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
+        match parser.process_until_stop(input.as_bytes(), &mut Deaf)? {
+            Some((taken, Stop::Budget)) => Ok(taken.checked_div(each.len()).unwrap_or(0)),
+            other => Err(format!("{glyph}: stopped as {other:?}").into()),
+        }
+    }
+
+    /// A wide glyph's copy writes two cells, and REP spends it as two: the
+    /// budget stops a call after half as many REPs of it.
+    #[test]
+    fn rep_spends_a_copy_by_its_width() -> Result {
+        let _one = one_at_a_time();
+        let (narrow, wide) = (reps_before_the_budget("é")?, reps_before_the_budget("一")?);
+        assert!(
+            wide.abs_diff(narrow / 2) <= 1,
+            "{wide} REPs of a wide glyph before the budget, {narrow} of a narrow one"
+        );
+        Ok(())
+    }
+
     #[test]
     fn column_edits_stop_at_the_budget() -> Result {
         for each in ["\x1b[9'}", "\x1b[9'~", "\x1b[9 @", "\x1b[9 A"] {

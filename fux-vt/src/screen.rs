@@ -877,6 +877,31 @@ fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
             .is_some_and(|c| *c == Compact::continuation())
 }
 
+/// `Screen::fill`'s sweep of copies of `unit` over `cells`, which hold no
+/// half of a wide glyph: writes the copies that change cells, only the
+/// first stretch of them while `recording`, as `run` records, and says how
+/// many copies it covered and which of them it changed.
+fn sweep<const N: usize>(
+    cells: &mut [Compact],
+    unit: [Compact; N],
+    recording: bool,
+) -> (usize, Option<Range<usize>>) {
+    let (copies, _) = cells.as_chunks_mut::<N>();
+    let all = copies.len();
+    let Some(first) = copies.iter().position(|c| *c != unit) else {
+        return (all, None);
+    };
+    let last = match recording {
+        true => (copies.iter().skip(first).position(|c| *c == unit))
+            .map_or(all, |same| first.saturating_add(same)),
+        false => all,
+    };
+    for copy in copies.iter_mut().take(last).skip(first) {
+        *copy = unit;
+    }
+    (if recording { last } else { all }, Some(first..last))
+}
+
 impl Screen {
     pub(crate) fn new(size: Size, history: usize) -> Result<Self, Error> {
         let mut next_id = 1;
@@ -1998,6 +2023,120 @@ impl Screen {
         stopped
     }
 
+    /// REP's copies of `c`, whose properties are `properties`, as `run`
+    /// writes text: up to `copies` of them along the cursor's row from the
+    /// cursor, while each fits and joins nothing and lands on no half of a
+    /// wide glyph; says how many, none where `print` must write the next.
+    /// The glyph is the same each time, so it is looked up and made once.
+    /// `text` is the copies' text while the host records prints, as long
+    /// as a row's worth of them; the copies it records are one span, as
+    /// `run` records, so it stops before one changed past one left as it
+    /// was.
+    fn fill(&mut self, c: char, properties: Properties, copies: usize, text: &str) -> usize {
+        let g = self.grid();
+        let (row, start) = g.cursor.at();
+        let end = g.line_end();
+        let cluster = self.last_print.map(|p| p.cluster).unwrap_or_default();
+        let fits = (!g.cursor.pending_wrap)
+            .then(|| run_width(properties, start, end, cluster))
+            .flatten();
+        let Some(width) = fits else {
+            return 0;
+        };
+        let room = usize::from(end.saturating_sub(start).checked_div(width).unwrap_or(0));
+        let copies = copies.min(room);
+        let recording = self.prints.is_some();
+        let cell = Compact::glyph(c, usize::from(width), self.pen_style() | self.protect);
+        let wide = width == 2;
+        // The column copy `k` is written at.
+        let at = move |k: usize| {
+            u16::try_from(k)
+                .ok()
+                .and_then(|k| k.checked_mul(width))
+                .map_or(end, |cols| start.saturating_add(cols))
+        };
+        let (mut made, mut span) = (0, None::<Range<usize>>);
+        self.with_grid(|g, _, version| {
+            g.mutate_row_to(row, version, |cells| {
+                let from = usize::from(start);
+                let to = from.saturating_add(copies.saturating_mul(usize::from(width)));
+                // On no half of a wide glyph, as on a row the copies have
+                // just scrolled onto, every copy lands: those that change
+                // cells are written in one sweep.
+                if let Some(cells) = cells.get_mut(from..to)
+                    && !Compact::any_halves(cells)
+                {
+                    let changed;
+                    (made, changed) = match wide {
+                        false => sweep(cells, [cell], recording),
+                        true => sweep(cells, [cell, Compact::continuation()], recording),
+                    };
+                    let changed = changed?;
+                    let end = from.saturating_add(changed.end.saturating_mul(usize::from(width)));
+                    span = recording.then_some(changed);
+                    return u16::try_from(end).ok();
+                }
+                let half = |cell: Option<&Compact>| {
+                    cell.is_none_or(|c| c.is_wide() || c.is_wide_continuation())
+                };
+                let mut changed = None;
+                for k in 0..copies {
+                    let i = usize::from(start).saturating_add(k.saturating_mul(usize::from(width)));
+                    // As `run`: on no half of a wide glyph, or a wide glyph
+                    // on the first half of one, and so on both its halves.
+                    let over = if wide {
+                        (!half(cells.get(i)) && !half(cells.get(i.saturating_add(1))))
+                            || cells.get(i).is_some_and(Compact::is_wide)
+                    } else {
+                        !half(cells.get(i))
+                    };
+                    if !over {
+                        break;
+                    }
+                    if cells.get(i) != Some(&cell) || !whole(cells, i, width) {
+                        match &mut span {
+                            _ if !recording => {}
+                            None => span = Some(k..k.saturating_add(1)),
+                            Some(copies) if copies.end == k => copies.end = k.saturating_add(1),
+                            Some(_) => break,
+                        }
+                        if let Some(slot) = cells.get_mut(i) {
+                            *slot = cell;
+                        }
+                        if wide && let Some(slot) = cells.get_mut(i.saturating_add(1)) {
+                            *slot = Compact::continuation();
+                        }
+                        changed = u16::try_from(i).ok().and_then(|i| i.checked_add(width));
+                    }
+                    made = k.saturating_add(1);
+                }
+                changed
+            });
+            if made > 0 {
+                g.advance_within(at(made), end);
+            }
+        });
+        let Some(last) = made.checked_sub(1) else {
+            return 0;
+        };
+        work!(cells, at(made).saturating_sub(start));
+        if self.links_seen {
+            self.link_cells(row, usize::from(start)..usize::from(at(made)), true);
+        }
+        self.repeat = Some(c);
+        self.last_print = Some(Printed::of((row, at(last)), properties));
+        if let Some(copies) = span {
+            let bytes =
+                copies.start.saturating_mul(c.len_utf8())..copies.end.saturating_mul(c.len_utf8());
+            self.printed(
+                row,
+                at(copies.start)..at(copies.end),
+                text.get(bytes).unwrap_or_default(),
+            );
+        }
+        made
+    }
+
     /// The cell before the cursor, which a mark joins: the one left of it,
     /// or else the last of the soft-wrapped row above; of a wide glyph, its
     /// first half.
@@ -2200,7 +2339,8 @@ impl Screen {
     /// whole rows' worth past that are skipped: no more than a screen and
     /// its history's worth is ever printed, and what shows is exactly what
     /// printing them all would show. An ASCII character is printed in runs,
-    /// as text is.
+    /// as text is; another that joins nothing is written a row's worth at
+    /// a time, looked up and made once (`fill`).
     fn repeat(&mut self, count: u16) -> Result<(), Error> {
         let Some(c) = self.repeat else {
             return Ok(());
@@ -2227,8 +2367,12 @@ impl Screen {
             count = full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0));
         }
         // The copies skipped cost nothing (threats.md B33); printing counts
-        // the ones made. Every copy is spent from the call's budget here.
-        crate::budget::spend(crate::budget::units(asked), crate::budget::weight::cells);
+        // the ones made. Every copy is spent from the call's budget here, a
+        // cell for each it writes: two for a wide glyph.
+        crate::budget::spend(
+            crate::budget::units(asked.saturating_mul(width)),
+            crate::budget::weight::cells,
+        );
         if let Ok(byte) = u8::try_from(c)
             && (0x20..=0x7e).contains(&byte)
         {
@@ -2240,8 +2384,21 @@ impl Screen {
                 count = count.saturating_sub(n);
             }
         } else {
-            for _ in 0..count {
-                self.print(c)?;
+            let properties = Properties::of(c);
+            // The copies' text, as the host that records prints is given it.
+            let text: String = match self.prints {
+                Some(_) => std::iter::repeat_n(c, per_row).collect(),
+                None => String::new(),
+            };
+            while count > 0 && !self.stopped {
+                let filled = self.fill(c, properties, count, &text);
+                count = match filled.checked_sub(1) {
+                    Some(_) => count.saturating_sub(filled),
+                    None => {
+                        self.print_as(c, properties)?;
+                        count.saturating_sub(1)
+                    }
+                };
                 // A glyph that joins its own cluster, once the cluster is
                 // full, drops every copy after: they change nothing, and are
                 // skipped (threats.md B34a).
