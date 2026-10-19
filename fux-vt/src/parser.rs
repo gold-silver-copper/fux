@@ -466,9 +466,9 @@ impl FrameScan {
                 };
                 work!(scanned, esc);
                 let at = self.from.checked_add(esc)?;
-                // A sequence held whole is read at once; one the bytes end
-                // in the middle of, a byte at a time from its ESC, so that
-                // the next call goes on where it stopped.
+                // A sequence is read at once, as far as the bytes go; where
+                // one they end in the middle of got to is kept (`pending`),
+                // so that the next call goes on from there.
                 if let Some((len, ended)) = self.sequence(held.get(at..)?) {
                     work!(scanned, len);
                     self.from = at.checked_add(len)?;
@@ -476,10 +476,8 @@ impl FrameScan {
                         return Some(self.from);
                     }
                 } else {
-                    // Its bytes are counted as the steps below take them.
-                    work!(scanned, 1);
-                    self.from = at.checked_add(1)?;
-                    self.pending = Pending::Escape { plain: true };
+                    work!(scanned, held.len().saturating_sub(at));
+                    self.from = held.len();
                 }
                 continue;
             }
@@ -493,9 +491,9 @@ impl FrameScan {
     }
 
     /// Reads the sequence `bytes` begins with, at its ESC, as `Parser::byte`
-    /// does: how many bytes it takes (up to an ESC or past CAN or SUB that
-    /// cut it short), and whether it ends the frame; `None` if it goes on
-    /// past them.
+    /// does, each byte once: how many bytes it takes (up to an ESC or past
+    /// CAN or SUB that cut it short), and whether it ends the frame; `None`
+    /// if it goes on past them, where it got to kept in `pending`.
     fn sequence(&mut self, bytes: &[u8]) -> Option<(usize, bool)> {
         let mut plain = true;
         for (i, &byte) in bytes.iter().enumerate().skip(1) {
@@ -509,23 +507,15 @@ impl FrameScan {
                 _ => {}
             }
         }
+        self.pending = Pending::Escape { plain };
         None
     }
 
     /// Reads the CSI whose parameters begin at `start` of `bytes`, as
-    /// `sequence` does. Its parameters and intermediates are 0x20 to 0x3f;
-    /// only DECRST's, XTRESTORE's, XTSAVE's and DECSTR's need reading: the
-    /// others are passed at their final byte at once.
+    /// `sequence` does, each byte once: its parameters as `Phase::next`
+    /// reads them, for DECRST, XTRESTORE, XTSAVE and DECSTR to be told by
+    /// them (`ends`).
     fn csi(&mut self, bytes: &[u8], start: usize) -> Option<(usize, bool)> {
-        let csi = bytes.get(start..)?;
-        let end = csi.iter().position(|b| !(0x20..0x40).contains(b))?;
-        // Every final byte but `l`, `p`, `r` and `s`.
-        if matches!(
-            csi.get(end),
-            Some(0x40..=0x6b | 0x6d..=0x6f | 0x71 | 0x74..=0x7e)
-        ) {
-            return Some((start.checked_add(end)?.checked_add(1)?, false));
-        }
         let (mut phase, mut ignored) = (Phase::Entry, false);
         self.params.clear();
         for (i, &byte) in bytes.iter().enumerate().skip(start) {
@@ -545,6 +535,7 @@ impl FrameScan {
                 }
             }
         }
+        self.pending = Pending::Csi { phase, ignored };
         None
     }
 
