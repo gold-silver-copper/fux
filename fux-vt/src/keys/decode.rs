@@ -1157,12 +1157,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         // Answers fux does not use are dropped.
         return Step::Done(consumed, csi_reply(params, last).map(Input::Reply));
     }
-    // Each parameter with its colon-separated parts; an empty part is none.
-    let groups: Vec<Vec<Option<u32>>> = str::from_utf8(params)
-        .unwrap_or("")
-        .split(';')
-        .map(|p| p.split(':').map(|n| n.parse().ok()).collect())
-        .collect();
+    let groups = parts(params);
     let part = |group: usize, i: usize| groups.get(group)?.get(i).copied().flatten();
     let first = part(0, 0).unwrap_or(0);
     let modifier = part(1, 0).unwrap_or(1);
@@ -1245,6 +1240,37 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         other => other,
     };
     Step::Done(consumed, input)
+}
+
+/// The first three parts of each of the first three parameters of a CSI
+/// key, `params`, its parameters `;`-separated and their parts
+/// `:`-separated, each as `str::parse::<u32>` reads it (an empty part, or
+/// one that is no number, is none); all none if `params` is not UTF-8.
+/// No key reads more, and nothing is allocated.
+fn parts(params: &[u8]) -> [[Option<u32>; 3]; 3] {
+    let mut groups = [[None; 3]; 3];
+    if str::from_utf8(params).is_err() {
+        return groups;
+    }
+    for (group, text) in groups.iter_mut().zip(params.split(|&b| b == b';')) {
+        for (part, text) in group.iter_mut().zip(text.split(|&b| b == b':')) {
+            *part = number(text);
+        }
+    }
+    groups
+}
+
+/// `text` as `str::parse::<u32>` reads it: an optional `+`, then decimal
+/// digits, at least one, that fit.
+fn number(text: &[u8]) -> Option<u32> {
+    let digits = text.strip_prefix(b"+").unwrap_or(text);
+    if digits.is_empty() {
+        return None;
+    }
+    digits.iter().try_fold(0u32, |n, &b| {
+        let digit = b.checked_sub(b'0').filter(|d| *d < 10)?;
+        n.checked_mul(10)?.checked_add(u32::from(digit))
+    })
 }
 
 /// The key that `code` names in both forms that carry one, xterm's
@@ -1393,6 +1419,49 @@ mod tests {
                 | Input::Reply(_) => None,
             })
             .collect()
+    }
+
+    /// A CSI key's parts read as `str::parse::<u32>` reads each part of
+    /// its `;` and `:` splits: every short string of the bytes that matter
+    /// (digits, the separators, signs, a letter, a byte not UTF-8 alone),
+    /// and numbers at and past `u32::MAX`.
+    #[test]
+    fn parts_read_as_str_parse_reads_them() {
+        let reference = |params: &[u8]| -> Vec<Vec<Option<u32>>> {
+            str::from_utf8(params)
+                .unwrap_or("")
+                .split(';')
+                .map(|p| p.split(':').map(|n| n.parse().ok()).collect())
+                .collect()
+        };
+        let alphabet = [b'0', b'7', b'9', b';', b':', b'+', b'-', b'a', 0xff];
+        let mut cases: Vec<Vec<u8>> = vec![
+            b"4294967295".to_vec(),
+            b"4294967296".to_vec(),
+            b"+4294967295:1;99999999999".to_vec(),
+            b"1:2:3:4;5:6:7:8;9:10:11:12;13".to_vec(),
+        ];
+        for len in 0..=5u32 {
+            for n in 0..alphabet.len().pow(len) {
+                let mut case = Vec::new();
+                let mut rest = n;
+                for _ in 0..len {
+                    case.extend(alphabet.get(rest % alphabet.len()));
+                    rest /= alphabet.len();
+                }
+                cases.push(case);
+            }
+        }
+        for case in cases {
+            let want = reference(&case);
+            let got = parts(&case);
+            for (g, group) in got.iter().enumerate() {
+                for (i, part) in group.iter().enumerate() {
+                    let expected = want.get(g).and_then(|p| p.get(i)).copied().flatten();
+                    assert_eq!(*part, expected, "{:?} part {g}.{i}", case.escape_ascii());
+                }
+            }
+        }
     }
 
     #[test]
