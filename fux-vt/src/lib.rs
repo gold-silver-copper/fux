@@ -359,6 +359,15 @@ impl<'a> Row<'a> {
     pub fn wrapped(&self) -> bool {
         self.flags & history::WRAPPED != 0
     }
+    /// Whether the row's line goes on in the row below: it is soft-wrapped
+    /// ([`Row::wrapped`]) and that row was not erased whole since, as a
+    /// line editor erases the row its prompt wrapped onto to draw it again
+    /// there (bash after a resize). xterm keeps the soft wrap through such
+    /// an erase, and so does `wrapped`; a host joining rows into lines
+    /// reads this.
+    pub fn continues(&self) -> bool {
+        self.flags & (history::WRAPPED | history::ENDS) == history::WRAPPED
+    }
     /// The row's line rendition: whether the host draws it double width,
     /// or as half of double height (DECDWL, DECDHL).
     pub fn rendition(&self) -> LineRendition {

@@ -352,9 +352,8 @@ impl Grid {
     fn facts_at(&self, index: usize) -> (bool, usize, usize) {
         let Some(row) = index.checked_sub(self.history.len()) else {
             let kept = self.history.kept(index);
-            return kept.map_or((false, 0, 0), |k| {
-                (k.wrapped(), usize::from(k.width()), k.len())
-            });
+            let goes_on = self.history.continues(index);
+            return kept.map_or((false, 0, 0), |k| (goes_on, usize::from(k.width()), k.len()));
         };
         let width = usize::from(self.size.cols());
         let Some((slot, m)) =
@@ -369,7 +368,7 @@ impl Grid {
             .iter()
             .rposition(|c| !c.is_blank(0))
             .map_or(0, |last| last.saturating_add(1));
-        (m.wrapped(), width, text)
+        (m.continues(), width, text)
     }
 }
 

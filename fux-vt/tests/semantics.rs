@@ -255,31 +255,39 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
 
 /// A row erased whole no longer goes on the line above: bash, resized,
 /// erases the row its prompt wrapped onto and draws the prompt there again.
+/// The row above keeps its soft wrap, as xterm keeps it (`ClearRight`,
+/// `ScrnClearLines` clear only the rows they erase), and its line ends
+/// with it (`Row::continues`).
 #[test]
 fn a_row_erased_whole_ends_the_line_above() -> Result {
     let mut p = Parser::new(Size::new(3, 10)?, 0)?;
+    let continues = |p: &Parser, y: u16| p.screen().window().row(y).is_some_and(|r| r.continues());
     p.process(b"bench:~/quill$ ")?;
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_wrapped(0) && continues(&p, 0));
     p.process(b"\r\x1b[K\rbench:~/quill$ ")?;
-    assert!(!p.screen().row_wrapped(0));
-    assert!(p.screen().row_wrapped(1));
+    assert!(p.screen().row_wrapped(0) && !continues(&p, 0));
+    assert!(continues(&p, 1));
     // An erase that leaves the row's start leaves the line whole.
     p.process(b"\x1b[3;3H\x1b[K")?;
-    assert!(p.screen().row_wrapped(1));
+    assert!(continues(&p, 1));
+    // A glyph wrapping off the row again goes on in the next.
+    p.process(b"\x1b[1;10Hxy")?;
+    assert!(continues(&p, 0));
     Ok(())
 }
 
 /// Above the top row is history's newest: a line that went on from there
 /// ends once the top row is erased whole (a screen cleared, as `koh
 /// connect` and bash do after a resize), and the next prompt there is a
-/// line of its own.
+/// line of its own; the row keeps its soft wrap, as xterm's scrollback
+/// keeps it.
 #[test]
 fn a_top_row_erased_whole_ends_the_line_in_history() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 1000)?;
     p.process(b"$ echo 0123456789abcde")?;
-    assert!(above(&p, 1)?.row(0).is_some_and(|r| r.wrapped()));
+    assert!(above(&p, 1)?.row(0).is_some_and(|r| r.wrapped() && r.continues()));
     p.process(b"\x1b[H\x1b[2J$ ")?;
-    assert!(!above(&p, 1)?.row(0).is_some_and(|r| r.wrapped()));
+    assert!(above(&p, 1)?.row(0).is_some_and(|r| r.wrapped() && !r.continues()));
     Ok(())
 }
 
