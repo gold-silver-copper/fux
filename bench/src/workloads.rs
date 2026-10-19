@@ -834,7 +834,8 @@ fn encode(
     })
 }
 
-/// A session whose shell pane is real, with `panes` panes in all.
+/// A session of `panes` panes in all, none running a process
+/// (`Session::new(.., false)`): their output is what the workload feeds.
 fn session(panes: usize) -> Result<fux::session::Session, String> {
     let config = fux::config::Config {
         history_bytes: HISTORY,
