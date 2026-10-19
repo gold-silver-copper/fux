@@ -2,7 +2,9 @@
 //! (Mattias Engdegård, `wraptest.c` and `results.txt` at 5409c251) has no
 //! licence, so nothing of it is copied; each check here is the bytes it
 //! writes and the answer DEC STD 070 gives, as a cursor position report
-//! and the screen, where wraptest prints a yes or a no.
+//! and the screen, where wraptest prints a yes or a no. The checks keep
+//! wraptest's numbers, so that each can be found in its report; their
+//! names are this file's own, each saying what DEC STD 070 has happen.
 //!
 //! The authority is DEC STD 070, Appendix D.6.1, "Auto Wrap Mode (Last
 //! Column Flag)", p. D-13 to D-14 (wraptest's `DEC` column): a glyph
@@ -56,8 +58,8 @@ fn run(bytes: &str) -> Result<(Vec<Position>, Vec<String>)> {
     Ok((reports, lines(&parser)))
 }
 
-/// One check: its number and name in wraptest's report, the bytes, the
-/// position the last CPR reports, and the screen's first rows.
+/// One check: its number in wraptest's report and what it checks, the
+/// bytes, the position the last CPR reports, and the screen's first rows.
 struct Check {
     number: u8,
     name: &'static str,
@@ -71,7 +73,7 @@ const CHECKS: &[Check] = &[
     // A glyph past the last column wraps to the next line's first column.
     Check {
         number: 1,
-        name: "wrap works",
+        name: "a glyph past the last column goes to the next line",
         bytes: "\x1b[1;9HABC\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
@@ -79,7 +81,7 @@ const CHECKS: &[Check] = &[
     // The glyph in the last column leaves the cursor there, the flag set.
     Check {
         number: 2,
-        name: "wrap is deferred",
+        name: "a glyph in the last column leaves the cursor there",
         bytes: "\x1b[1;9HAB\x1b[6n",
         cursor: (1, 10),
         screen: &["        AB"],
@@ -88,21 +90,21 @@ const CHECKS: &[Check] = &[
     // last column (D.6.1; CPR, p. 5-53): never column 11.
     Check {
         number: 3,
-        name: "CPR beyond last column (no)",
+        name: "CPR reports the last column, never past it",
         bytes: "\x1b[1;9HAB\x1b[6n",
         cursor: (1, 10),
         screen: &["        AB"],
     },
     Check {
         number: 4,
-        name: "CR works at margin",
+        name: "CR from the last column goes to the first",
         bytes: "\x1b[1;9HAB\r\x1b[6n",
         cursor: (1, 1),
         screen: &["        AB"],
     },
     Check {
         number: 5,
-        name: "BS works at margin",
+        name: "BS from the last column goes back one",
         bytes: "\x1b[1;9HAB\x08\x1b[6n",
         cursor: (1, 9),
         screen: &["        AB"],
@@ -110,7 +112,7 @@ const CHECKS: &[Check] = &[
     // HT from the last column finds no stop and stays (DEC STD 070, HT).
     Check {
         number: 6,
-        name: "TAB wraps at margin (no)",
+        name: "HT from the last column stays on its line",
         bytes: "\x1b[1;9HAB\t\x1b[6n",
         cursor: (1, 10),
         screen: &["        AB"],
@@ -119,14 +121,14 @@ const CHECKS: &[Check] = &[
     // keep it, and print C on the next line.
     Check {
         number: 7,
-        name: "TAB cancels wrap",
+        name: "HT ends the pending wrap",
         bytes: "\x1b[1;9HAB\tC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
     },
     Check {
         number: 8,
-        name: "NL cancels wrap",
+        name: "LF ends the pending wrap",
         bytes: "\x1b[1;9HAB\nC\x1b[6n",
         cursor: (2, 10),
         screen: &["        AB", "         C"],
@@ -134,21 +136,21 @@ const CHECKS: &[Check] = &[
     // NUL and BEL move nothing, so the flag stays and C wraps.
     Check {
         number: 9,
-        name: "NUL cancels wrap (no)",
+        name: "NUL leaves the pending wrap",
         bytes: "\x1b[1;9HAB\0C\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
     },
     Check {
         number: 10,
-        name: "BEL cancels wrap (no)",
+        name: "BEL leaves the pending wrap",
         bytes: "\x1b[1;9HAB\x07C\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
     },
     Check {
         number: 11,
-        name: "RI cancels wrap",
+        name: "RI ends the pending wrap",
         bytes: "\x1b[2;9HAB\x1bMC\x1b[6n",
         cursor: (1, 10),
         screen: &["         C", "        AB"],
@@ -156,14 +158,14 @@ const CHECKS: &[Check] = &[
     // SGR and SM are no cursor controls: the flag stays.
     Check {
         number: 12,
-        name: "SGR cancels wrap (no)",
+        name: "SGR leaves the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[mC\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
     },
     Check {
         number: 13,
-        name: "SM cancels wrap (no)",
+        name: "SM leaves the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[hC\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
@@ -171,49 +173,49 @@ const CHECKS: &[Check] = &[
     // CUP to the very same position resets it all the same.
     Check {
         number: 14,
-        name: "CUP cancels wrap",
+        name: "CUP ends the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[1;10HC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
     },
     Check {
         number: 15,
-        name: "CUF cancels wrap",
+        name: "CUF ends the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[CC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
     },
     Check {
         number: 16,
-        name: "EL cancels wrap",
+        name: "EL ends the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[KC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
     },
     Check {
         number: 17,
-        name: "ED cancels wrap",
+        name: "ED ends the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[JC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
     },
     Check {
         number: 18,
-        name: "DCH cancels wrap",
+        name: "DCH ends the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[PC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
     },
     Check {
         number: 19,
-        name: "ICH cancels wrap",
+        name: "ICH ends the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[@C\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
     },
     Check {
         number: 20,
-        name: "ECH cancels wrap",
+        name: "ECH ends the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[XC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
@@ -221,14 +223,14 @@ const CHECKS: &[Check] = &[
     // DSR moves nothing: the first report is the last column, and C wraps.
     Check {
         number: 21,
-        name: "CPR cancels wrap (no)",
+        name: "DSR, answered by CPR, leaves the pending wrap",
         bytes: "\x1b[1;9HAB\x1b[6nC\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
     },
     Check {
         number: 22,
-        name: "DECSC cancels wrap (no)",
+        name: "DECSC leaves the pending wrap",
         bytes: "\x1b[1;9HAB\x1b7C\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
@@ -236,7 +238,7 @@ const CHECKS: &[Check] = &[
     // DECRC brings the flag back with the position, so X wraps.
     Check {
         number: 23,
-        name: "DECRC restores wrap",
+        name: "DECRC brings the pending wrap back",
         bytes: "\x1b[1;9HAB\x1b7\x1b[3;10HQ\x1b8X\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "X", "         Q"],
@@ -245,7 +247,7 @@ const CHECKS: &[Check] = &[
     // leaves it reset, and C overwrites the last column.
     Check {
         number: 24,
-        name: "DECRC restores decawm=on (no)",
+        name: "DECRC leaves DECAWM reset",
         bytes: "\x1b[1;1H\x1b7\x1b[?7l\x1b8\x1b[1;9HABC\x1b[6n",
         cursor: (1, 10),
         screen: &["        AC"],
@@ -253,7 +255,7 @@ const CHECKS: &[Check] = &[
     // Nor does DECRC reset it: C wraps.
     Check {
         number: 25,
-        name: "DECRC restores decawm=off (no)",
+        name: "DECRC leaves DECAWM set",
         bytes: "\x1b[1;1H\x1b[?7l\x1b7\x1b[?7h\x1b8\x1b[1;9HABC\x1b[6n",
         cursor: (2, 2),
         screen: &["        AB", "C"],
