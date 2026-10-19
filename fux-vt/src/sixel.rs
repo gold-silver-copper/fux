@@ -259,8 +259,9 @@ impl Decoder {
     /// ignored in it (DEC STD 070, 8.1 and its coding section): one inside a
     /// command does not end it. Before the picture's pixels grow, `room`
     /// is asked for the bytes they then hold at once, the old and the new
-    /// (`threats.md` B01): false keeps them as they are.
-    pub(crate) fn push(&mut self, byte: u8, room: &mut impl FnMut(usize) -> bool) {
+    /// (`threats.md` B01), and whether it may let pictures go for them:
+    /// false keeps them as they are.
+    pub(crate) fn push(&mut self, byte: u8, room: &mut impl FnMut(usize, bool) -> bool) {
         // C0 controls, space and DEL change nothing: 0x08 to 0x0d have "no
         // effect", and the rest "are ignored" (DEC STD 070, sixel graphics,
         // 9.1), BEL ringing as in text (the parser's) and CAN, SUB and ESC
@@ -352,7 +353,7 @@ impl Decoder {
     /// across, in the current colour: a run along each row a bit sets, of
     /// the positions the picture may keep (DEC STD 070, 11.2.2: sixels
     /// past its edge "are not printed").
-    fn sixel(&mut self, bits: u8, count: u32, room: &mut impl FnMut(usize) -> bool) {
+    fn sixel(&mut self, bits: u8, count: u32, room: &mut impl FnMut(usize, bool) -> bool) {
         let right = self.x.saturating_add(count);
         // Down to its lowest pixel painted: the highest bit set.
         let lowest = 6u32.saturating_sub(bits.leading_zeros().saturating_sub(2));
@@ -391,7 +392,7 @@ impl Decoder {
         &mut self,
         right: u32,
         bottom: u32,
-        room: &mut impl FnMut(usize) -> bool,
+        room: &mut impl FnMut(usize, bool) -> bool,
     ) -> (u32, u32) {
         let (right, bottom) = self.kept(right, bottom);
         if !self.needs_growth(right, bottom) {
@@ -414,7 +415,14 @@ impl Decoder {
             usize::try_from(u64::from(c).saturating_mul(u64::from(r)))
                 .is_ok_and(|pixels| pixels <= MAX_PIXELS)
         });
-        let Some((cols, rows)) = tries.find(|&(c, r)| self.room_for(c, r, room)) else {
+        // The first that fits beside the pictures kept, else the first
+        // that fits once pictures are let go: none is let go for a try
+        // not taken (B01).
+        let kept = tries
+            .clone()
+            .find(|&(c, r)| self.room_for(c, r, false, room));
+        let chosen = kept.or_else(|| tries.find(|&(c, r)| self.room_for(c, r, true, room)));
+        let Some((cols, rows)) = chosen else {
             return (self.across, self.down);
         };
         let pixels = usize::try_from(u64::from(cols).saturating_mul(u64::from(rows))).unwrap_or(0);
@@ -461,14 +469,18 @@ impl Decoder {
 
     /// Whether `room` has the bytes for pixels `cols` by `rows` beside
     /// those held now.
-    fn room_for(&self, cols: u32, rows: u32, room: &mut impl FnMut(usize) -> bool) -> bool {
+    fn room_for(
+        &self,
+        cols: u32,
+        rows: u32,
+        evict: bool,
+        room: &mut impl FnMut(usize, bool) -> bool,
+    ) -> bool {
         let bytes = u64::from(cols)
             .saturating_mul(u64::from(rows))
             .saturating_mul(4);
-        room(
-            self.bytes()
-                .saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX)),
-        )
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        room(self.bytes().saturating_add(bytes), evict)
     }
 
     /// The bytes of pixels drawn so far.
@@ -486,7 +498,7 @@ impl Decoder {
     /// ends with nothing.
     pub(crate) fn finish(
         mut self: Box<Self>,
-        room: &mut impl FnMut(usize) -> bool,
+        room: &mut impl FnMut(usize, bool) -> bool,
     ) -> Option<Arc<Picture>> {
         self.end_command();
         let (cols, rows) = self.kept(self.extent.0, self.extent.1);
@@ -520,8 +532,8 @@ impl Decoder {
     }
 
     /// The pixels drawn, a copy just their size, if `room` has the bytes.
-    fn exact(&self, room: &mut impl FnMut(usize) -> bool) -> Option<Vec<u8>> {
-        if !self.room_for(self.across, self.down, room) {
+    fn exact(&self, room: &mut impl FnMut(usize, bool) -> bool) -> Option<Vec<u8>> {
+        if !self.room_for(self.across, self.down, true, room) {
             return None;
         }
         let (row, stride) = (
@@ -795,8 +807,8 @@ mod tests {
     fn decode(data: &[u8]) -> Option<Arc<Picture>> {
         // P1 9: square pixels; P2 1: pixels no sixel sets stay clear.
         let mut decoder = Decoder::new(9, 1);
-        data.iter().for_each(|b| decoder.push(*b, &mut |_| true));
-        decoder.finish(&mut |_| true)
+        data.iter().for_each(|b| decoder.push(*b, &mut |_, _| true));
+        decoder.finish(&mut |_, _| true)
     }
 
     /// A sixel before any colour is selected is drawn in a colour that
@@ -809,8 +821,8 @@ mod tests {
         let picture = decode(b"~").ok_or("no picture")?;
         assert_eq!(picture.pixel(0, 0), Some([51, 204, 51, 255]));
         let mut decoder = Decoder::new(0, 0);
-        b"~".iter().for_each(|b| decoder.push(*b, &mut |_| true));
-        let picture = decoder.finish(&mut |_| true).ok_or("no picture")?;
+        b"~".iter().for_each(|b| decoder.push(*b, &mut |_, _| true));
+        let picture = decoder.finish(&mut |_, _| true).ok_or("no picture")?;
         assert_ne!(picture.pixel(0, 0), picture.background);
         Ok(())
     }
@@ -980,15 +992,15 @@ mod tests {
         data.extend(std::iter::repeat_n(b'-', 682));
         data.push(0x3f + (1 << 3));
         for byte in data {
-            decoder.push(byte, &mut |_| true);
+            decoder.push(byte, &mut |_, _| true);
         }
         assert_eq!((decoder.across, decoder.down), (1, 4096));
         for byte in b"$!2048?~" {
-            decoder.push(*byte, &mut |_| true);
+            decoder.push(*byte, &mut |_, _| true);
         }
         assert_eq!((decoder.across, decoder.down), (2049, 4096));
         assert!(decoder.bytes() <= MAX_PIXELS * 4, "{}", decoder.bytes());
-        let picture = decoder.finish(&mut |_| true);
+        let picture = decoder.finish(&mut |_, _| true);
         assert_eq!(picture.map(|p| (p.width(), p.height())), Some((2049, 4096)));
     }
 
@@ -999,10 +1011,10 @@ mod tests {
     fn a_grid_is_kept_at_its_resolution_and_shown_at_its_aspect() {
         let mut decoder = Decoder::new(0, 1);
         for byte in b"#1;2;100;0;0!4096~" {
-            decoder.push(*byte, &mut |_| true);
+            decoder.push(*byte, &mut |_, _| true);
         }
         assert_eq!(decoder.bytes(), 4096 * 6 * 4);
-        let picture = decoder.finish(&mut |_| true);
+        let picture = decoder.finish(&mut |_, _| true);
         let picture = picture.as_deref();
         assert_eq!(picture.map(|p| (p.width(), p.height())), Some((4096, 12)));
         let red = Some([255, 0, 0, 255]);
@@ -1018,7 +1030,7 @@ mod faults {
     fn a_picture_past_what_one_may_be_is_a_fault() {
         let mut decoder = super::Decoder::new(0, 0);
         for byte in b"#1~~" {
-            decoder.push(*byte, &mut |_| true);
+            decoder.push(*byte, &mut |_, _| true);
         }
         assert_eq!(decoder.check(), Ok(()));
         decoder.across = super::MAX_SIDE.saturating_add(1);

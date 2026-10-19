@@ -281,9 +281,13 @@ impl Screen {
         hidden.or_else(|| (!self.pictures.is_empty()).then_some(0))
     }
 
-    /// Lets pictures go, [`Self::victim`] first, until `bytes` more fit in
-    /// the budget beside them; false if they don't with none kept.
-    pub(crate) fn make_room(&mut self, bytes: usize) -> bool {
+    /// Whether `bytes` more fit in the budget beside the pictures kept; if
+    /// `evict`, letting pictures go, [`Self::victim`] first, until they do.
+    /// False, with none let go, if they don't with none kept.
+    pub(crate) fn make_room(&mut self, bytes: usize, evict: bool) -> bool {
+        if !evict || bytes > self.picture_budget {
+            return !self.over_budget(bytes);
+        }
         self.track_pictures();
         while self.over_budget(bytes) {
             let Some(victim) = self.victim() else {
@@ -299,7 +303,7 @@ impl Screen {
     /// alone is past it.
     pub(crate) fn set_picture_bytes(&mut self, bytes: usize, drawing: usize) -> bool {
         self.picture_budget = bytes;
-        self.make_room(drawing)
+        self.make_room(drawing, true)
     }
 
     /// The pictures the screen shows: on the screen in use, every cell they
