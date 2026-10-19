@@ -18,8 +18,8 @@ cargo run --manifest-path fux-vt/gen/Cargo.toml -- references/unicode
 `ucd/emoji/`). compare.yml fetches them at the pinned version, by SHA-256,
 runs `gen` and fails if what it writes differs from what is committed.
 
-Then pin `unicode-segmentation`, in fux-vt's dev-dependencies and in
-`fux-vt/fuzz`, and `unicode-width` in fux-vt's dev-dependencies, to
+Then pin `unicode-segmentation` and `unicode-width`, each exactly
+(`=`), in fux-vt's dev-dependencies and in `fux-vt/fuzz`, to
 releases of the same Unicode version (and check `src/unicode/width.rs`
 against unicode-width's `width_in_str` for rules it added): `unicode::tests`
 checks every conformance case, every code point and many clusters against
