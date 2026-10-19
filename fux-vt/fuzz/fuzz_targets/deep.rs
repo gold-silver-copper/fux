@@ -39,9 +39,7 @@
 use fux_vt::{Feature, Graphics, Identity, Options, Parser, Rgb, Size, Work};
 use libfuzzer_sys::fuzz_target;
 mod common;
-use common::{
-    Record, marks_sound, pick, places, prints_bounded, rows, until_stops, versions_follow,
-};
+use common::{Record, Rows, marks_sound, pick, prints_bounded, until_stops, versions_follow};
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
@@ -121,7 +119,7 @@ impl Run {
             .unwrap_or_default();
         self.fed = self.fed.saturating_add(bytes.len());
         let (mut a, mut b) = (Record::default(), Record::default());
-        let (at, mark) = (places(&self.whole), self.whole.screen().mark());
+        let (at, mark) = (Rows::of(&self.whole), self.whole.screen().mark());
         let mut last = Work::now();
         let mut rest = bytes;
         while !rest.is_empty() {
@@ -138,22 +136,26 @@ impl Run {
                 );
             });
         }
-        marks_sound(&at, mark, &self.whole);
+        marks_sound(&at, mark, &self.whole, &Rows::of(&self.whole));
         if self.split_fed.saturating_add(bytes.len()) > SPLIT {
             self.split_fed = usize::MAX;
             return;
         }
         self.split_fed = self.split_fed.saturating_add(bytes.len());
+        // The rows after a byte are those before the next.
+        let mut kept = None;
         for byte in bytes {
             let few = self.split.screen().rows().len() <= SPLIT_ROWS;
-            let before = few.then(|| rows(&self.split));
+            let before = few.then(|| kept.take().unwrap_or_else(|| Rows::of(&self.split)));
             assert!(
                 (self.split)
                     .process_with(std::slice::from_ref(byte), &mut b)
                     .is_ok()
             );
             if let Some(before) = before {
-                versions_follow(&before, &self.split);
+                let after = Rows::of(&self.split);
+                versions_follow(&before, &after);
+                kept = Some(after);
             }
         }
         assert_eq!(a, b);

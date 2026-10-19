@@ -110,8 +110,9 @@ impl Fnv {
 /// collision could only hide a change, with odds of 2^-64.
 fn cells_hash(row: fux_vt::Row<'_>) -> u64 {
     let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    let links = row.has_links();
     for (col, cell) in row.cells().enumerate() {
-        if let Some(link) = row.link(col) {
+        if let Some(link) = links.then(|| row.link(col)).flatten() {
             h.bytes(link.uri().as_bytes());
             h.bytes(&link.key().to_le_bytes());
         }
@@ -149,61 +150,68 @@ fn cells_hash(row: fux_vt::Row<'_>) -> u64 {
 /// hash.
 pub type Kept = (RowId, u64, bool, bool, u64);
 
-/// Every retained row of the screen in use, sorted by identity.
-pub fn rows(p: &Parser) -> Vec<Kept> {
-    let mut rows: Vec<Kept> = (p.screen().rows())
-        .map(|row| {
-            let (id, version, wrapped) = (row.id(), row.version(), row.wrapped());
-            (id, version, wrapped, row.starts_prompt(), cells_hash(row))
-        })
-        .collect();
-    rows.sort_unstable_by_key(|r| r.0);
-    rows
+/// Every retained row of the screen in use, top first, each hashed once,
+/// and how many of them are history.
+pub struct Rows {
+    all: Vec<Kept>,
+    history: usize,
+}
+
+impl Rows {
+    pub fn of(p: &Parser) -> Self {
+        let screen = p.screen();
+        let all = (screen.rows())
+            .map(|row| {
+                let (id, version, wrapped) = (row.id(), row.version(), row.wrapped());
+                (id, version, wrapped, row.starts_prompt(), cells_hash(row))
+            })
+            .collect();
+        Self {
+            all,
+            history: screen.history_len(),
+        }
+    }
+
+    /// The screen's rows by place, top first, as fux's painter reads them
+    /// (`src/pane.rs`, `(y, row)`).
+    fn places(&self) -> &[Kept] {
+        self.all.get(self.history..).unwrap_or_default()
+    }
 }
 
 /// A row whose cells, wrap flag or prompt mark changed has a newer version:
 /// a change is never missed (`threats.md` section 6, 28).
-pub fn versions_follow(before: &[Kept], after: &Parser) {
-    for (id, version, wrapped, prompt, cells) in rows(after) {
-        if let Ok(at) = before.binary_search_by_key(&id, |r| r.0)
+pub fn versions_follow(before: &Rows, after: &Rows) {
+    let mut before = before.all.clone();
+    before.sort_unstable_by_key(|r| r.0);
+    for (id, version, wrapped, prompt, cells) in &after.all {
+        if let Ok(at) = before.binary_search_by_key(id, |r| r.0)
             && let Some((_, was, was_wrapped, was_prompt, was_cells)) = before.get(at)
-            && (wrapped != *was_wrapped || prompt != *was_prompt || cells != *was_cells)
+            && (wrapped != was_wrapped || prompt != was_prompt || cells != was_cells)
         {
-            assert!(version > *was, "{id:?} changed without a new version");
+            assert!(version > was, "{id:?} changed without a new version");
         }
     }
 }
 
-/// The screen's rows by place, top first, as fux's painter reads them
-/// (`src/pane.rs`, `(y, row)`): each one's identity, version, wrap flag,
-/// prompt mark and cells' hash.
-pub fn places(p: &Parser) -> Vec<Kept> {
-    let screen = p.screen();
-    (screen.rows().skip(screen.history_len()))
-        .map(|row| {
-            let (id, version, wrapped) = (row.id(), row.version(), row.wrapped());
-            (id, version, wrapped, row.starts_prompt(), cells_hash(row))
-        })
-        .collect()
-}
-
 /// The change marks are sound by place (`threats.md` section 6, 28): read
-/// from `mark`, taken when the screen's places were `before`, a reader is
-/// told to redraw everything, or `dirty_live_rows_since` names every place
-/// whose row, cells, wrap or prompt mark changed, as fux redraws.
-pub fn marks_sound(before: &[Kept], mark: fux_vt::Mark, after: &Parser) {
+/// from `mark`, taken when the screen's rows were `before`, a reader of
+/// `after`, whose rows are `now`, is told to redraw everything, or
+/// `dirty_live_rows_since` names every place whose row, cells, wrap or
+/// prompt mark changed, as fux redraws.
+pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows) {
     let screen = after.screen();
-    let now = places(after);
     if screen.full_refresh_since(mark) {
         return;
     }
+    let (now, before) = (now.places(), before.places());
     assert_eq!(
         now.len(),
         before.len(),
         "the screen's height changed with no full refresh"
     );
     let dirty: Vec<u16> = screen.dirty_live_rows_since(mark).map(|(y, _)| y).collect();
-    for ((y, now), was) in (0u16..).zip(&now).zip(before) {
+    for ((y, now), was) in (0u16..).zip(now).zip(before) {
         let (id, _, wrapped, prompt, cells) = now;
         let (was_id, _, was_wrapped, was_prompt, was_cells) = was;
         if (id, wrapped, prompt, cells) != (was_id, was_wrapped, was_prompt, was_cells) {
