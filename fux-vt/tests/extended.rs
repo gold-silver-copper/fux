@@ -933,24 +933,39 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
 /// A picture placed on the bottom margin between left and right margins
 /// scrolls their cells, not the rows (DEC STD 070, 5.4.3), as text there
 /// does: its first band goes up a row with the cells, and the picture is
-/// listed where its cells are, its last row the cursor's (FA-SIX-1).
+/// listed where its cells are, its last row the cursor's (FA-SIX-1). So
+/// too when the graphics new lines after its last band scroll them
+/// (FA-RE-B-6).
 #[test]
 fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are() -> Result {
-    let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: Some((4, 8)),
-        sixel: true,
-    });
-    p.process(b"\x1b[?69h\x1b[1;5s\x1b[4;3H\x1bPq\"1;1#1;2;100;0;0!8~-!8~\x1b\\")?;
-    let shown: Vec<_> = p
-        .screen()
-        .pictures()
-        .map(|s| (s.row, s.col, s.cols, s.rows))
-        .collect();
-    assert_eq!(shown, [(2, 2, 2, 2)]);
-    let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
-    for row in [2, 3] {
-        assert_eq!(lines(&p).get(row).map(|l| l.trim()), Some(covered.as_str()));
+    for (at, end, top) in [(4, "", 2), (3, "-", 1), (3, "---", 0)] {
+        let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
+        p.set_host_graphics(fux_vt::Graphics {
+            cell: Some((4, 8)),
+            sixel: true,
+        });
+        let sixel = format!("\x1bPq\"1;1#1;2;100;0;0!8~-!8~{end}\x1b\\");
+        p.process(format!("\x1b[?69h\x1b[1;5s\x1b[{at};3H{sixel}").as_bytes())?;
+        let shown: Vec<_> = p
+            .screen()
+            .pictures()
+            .map(|s| (s.row, s.col, s.cols, s.rows))
+            .collect();
+        assert_eq!(shown, [(top, 2, 2, 2)], "{sixel:?} at row {at}");
+        let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
+        let row = usize::try_from(top)?;
+        for row in [row, row.saturating_add(1)] {
+            assert_eq!(
+                lines(&p).get(row).map(|l| l.trim()),
+                Some(covered.as_str()),
+                "{sixel:?} at row {at}"
+            );
+        }
+        #[cfg(feature = "checks")]
+        {
+            let report = p.check();
+            assert!(report.is_clean(), "{report}");
+        }
     }
     Ok(())
 }
