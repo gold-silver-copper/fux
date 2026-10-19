@@ -11,9 +11,10 @@
 //! channel one to four hex digits scaled to 16 bits (`f` is `ffff`), and
 //! `#RGB`, `#RRGGBB`, `#RRRGGGBBB` and `#RRRRGGGGBBBB`, the digits the
 //! channel's high bits (`#fff` is `f000`); of the 16 bits the high byte is
-//! kept, so `#fff` reports `f0f0`, as xterm does. Colour names and the
-//! device-independent spaces (`rgbi:`, `CIEXYZ:` and the rest) are not
-//! read: a specification fux-vt cannot read changes nothing.
+//! kept, so `#fff` reports `f0f0`, as xterm does. XParseColor's
+//! device-independent spaces (`rgbi:`, `CIEXYZ:` and the rest) are read as
+//! its Xcms reads them on a screen of its defaults (`xcms`). Colour names
+//! are not read: a specification fux-vt cannot read changes nothing.
 //!
 //! What fux-vt keeps is what the program set, and what the host says its
 //! terminal shows for palette entries 0 to 15 ([`crate::Parser::set_host_palette`]):
@@ -26,6 +27,8 @@
 //! default being the terminal's foreground, which fux-vt does not know.
 use crate::parser::{Event, Sink};
 use crate::{Reply, Rgb};
+
+mod xcms;
 
 /// How many special colours xterm has (ctlseqs, OSC 5): bold, underline,
 /// blink, reverse and italic.
@@ -203,12 +206,11 @@ impl Rgb {
                 value.checked_shl(16u32.checked_sub(shift)?)
             };
             [channel(0)?, channel(1)?, channel(2)?]
-        } else {
+        } else if spec
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"rgb:"))
+        {
             // `rgb:`, its prefix in either case.
-            let prefix = spec.get(..4)?;
-            if !prefix.eq_ignore_ascii_case(b"rgb:") {
-                return None;
-            }
             let mut channels = spec.get(4..)?.split(|b| *b == b'/');
             let colour = [
                 scaled(channels.next()?)?,
@@ -219,6 +221,8 @@ impl Rgb {
                 return None;
             }
             colour
+        } else {
+            xcms::parse(spec)?
         };
         Some(Rgb::from(sixteen.map(|c| {
             let [high, _] = c.to_be_bytes();
@@ -431,6 +435,33 @@ mod tests {
     use super::{atoi, default};
     use crate::Rgb;
 
+    /// XParseColor's device-independent spaces, which ctlseqs names for a
+    /// colour: esctest2's expectations (`tests/change_color.py`), which
+    /// xterm 411 meets on Xvfb, a screen with no colour characterization
+    /// of its own.
+    #[test]
+    fn device_independent_spaces_are_read_as_xparsecolor_reads_them() {
+        for (spec, want) in [
+            ("rgbi:1/1/1", [0xff, 0xff, 0xff]),
+            ("rgbi:0.5/0.5/0.5", [0xc1, 0xbb, 0xbb]),
+            ("CIEXYZ:1/1/1", [0xff, 0xff, 0xff]),
+            ("CIEXYZ:0.5/0.5/0.5", [0xdd, 0xb5, 0xa0]),
+            ("CIEuvY:1/1/1", [0xff, 0xff, 0xff]),
+            ("CIEuvY:0.5/0.5/0.5", [0xff, 0xa3, 0xae]),
+            ("CIExyY:1/1/1", [0xff, 0xff, 0xff]),
+            ("CIExyY:0.5/0.5/0.5", [0xf7, 0xb3, 0x0e]),
+            ("CIELab:1/1/1", [0x6c, 0x67, 0x67]),
+            ("CIELab:0.5/0.5/0.5", [0x52, 0x4f, 0x4f]),
+            ("CIELuv:1/1/1", [0x16, 0x14, 0x0e]),
+            ("CIELuv:0.5/0.5/0.5", [0x0e, 0x13, 0x0e]),
+            ("TekHVC:1/1/1", [0x1a, 0x13, 0x0f]),
+            ("TekHVC:0.5/0.5/0.5", [0x11, 0x13, 0x0e]),
+        ] {
+            let got = Rgb::parse(spec.as_bytes()).map(<[u8; 3]>::from);
+            assert_eq!(got, Some(want), "{spec}");
+        }
+    }
+
     #[test]
     fn specifications_are_read_as_xterm_reads_them() {
         let parse = |spec: &[u8]| Rgb::parse(spec).map(<[u8; 3]>::from);
@@ -459,7 +490,7 @@ mod tests {
             b"rgb:1/2/3/4",
             b"rgb:12345/0/0",
             b"rgb:/0/0",
-            b"rgbi:1/1/1",
+            b"rgbi:1/1",
             b"red",
             b"?",
         ] {
