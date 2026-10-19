@@ -9,7 +9,7 @@
 //! wheel; 128 and 129 the back and forward buttons), plus 4 for Shift, 8 for
 //! Alt and 16 for Ctrl, plus 32 for motion. Positions count from one.
 use crate::keys::Modifiers;
-use crate::{MouseProtocolEncoding, MouseProtocolMode};
+use crate::{Mode, MouseProtocolEncoding, MouseProtocolMode};
 use std::io::Write;
 
 closed! {
@@ -97,19 +97,84 @@ const DEFAULT_LIMIT: u32 = 223;
 /// more is the largest two-byte character.
 const UTF8_LIMIT: u32 = 2015;
 
+/// The lines a wheel turn scrolls, as xterm 411's default translations
+/// have it (`scroll-back(5,line,m)`, charproc.c): with Ctrl, half the
+/// screen's (`scroll-back(1,halfpage,m)`).
+const WHEEL_LINES: u16 = 5;
+
 impl crate::Screen {
     /// Appends `event`'s report to `out` as the program on this screen asked
-    /// for mouse reports (`CSI ? 9 / 1000 / 1002 / 1003 h`, encoded as
-    /// `CSI ? 1005 / 1006 h` say), and returns whether there was one
-    /// ([`mouse_bytes`]).
+    /// for mouse reports (`CSI ? 9 / 1000 / 1001 / 1002 / 1003 h`, encoded
+    /// as `CSI ? 1005 / 1006 / 1015 / 1016 h` say), and returns whether there
+    /// was one ([`mouse_bytes`]). SGR with pixels (1016) reports the middle
+    /// of the event's cell, the host's cell size (`Parser::set_host_graphics`)
+    /// or else 10 by 20 pixels: a host that knows the pointer's pixel gives
+    /// it to [`Self::encode_mouse_at_pixel`]. With no mouse reporting asked
+    /// for, on the alternate screen, with alternate scroll set (`CSI ? 1007
+    /// h`), a wheel turn sends the cursor keys instead (xterm 411's
+    /// `AlternateScroll`, scrollbar.c): Up or Down, in the cursor key mode,
+    /// 5 times, or half the screen's rows with Ctrl.
     pub fn encode_mouse(&self, event: MouseEvent, out: &mut Vec<u8>) -> bool {
-        mouse_bytes(
+        let (width, height) = self.cell_pixels();
+        self.encode_mouse_at_pixel(
             event,
-            self.mouse_protocol_mode(),
-            self.mouse_protocol_encoding(),
+            (middle(event.col, width), middle(event.row, height)),
             out,
         )
     }
+
+    /// [`Self::encode_mouse`] with the pointer at `pixel` (column, row, from
+    /// zero at the screen's top left), which SGR with pixels (1016) reports.
+    pub fn encode_mouse_at_pixel(
+        &self,
+        event: MouseEvent,
+        pixel: (u32, u32),
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let mode = self.mouse_protocol_mode();
+        if mode == MouseProtocolMode::None && self.alternate_scroll(event, out) {
+            return true;
+        }
+        mouse_bytes_at(event, pixel, mode, self.mouse_protocol_encoding(), out)
+    }
+
+    /// A wheel turn as cursor keys, with alternate scroll set and the
+    /// alternate screen shown; whether it was one.
+    fn alternate_scroll(&self, event: MouseEvent, out: &mut Vec<u8>) -> bool {
+        let last = match event.action {
+            MouseAction::Press(MouseButton::WheelUp) => b'A',
+            MouseAction::Press(MouseButton::WheelDown) => b'B',
+            MouseAction::Press(_) | MouseAction::Release(_) | MouseAction::Motion(_) => {
+                return false;
+            }
+        };
+        if !self.mode(Mode::AlternateScroll) || !self.mode(Mode::AlternateScreenSaveCursor) {
+            return false;
+        }
+        let lines = if event.mods.ctrl {
+            self.size().rows() / 2
+        } else {
+            WHEEL_LINES
+        };
+        let key: &[u8] = if self.mode(Mode::ApplicationCursor) {
+            b"\x1bO"
+        } else {
+            b"\x1b["
+        };
+        for _ in 0..lines {
+            out.extend_from_slice(key);
+            out.push(last);
+        }
+        true
+    }
+}
+
+/// The pixel in the middle of cell `n`, cells `size` pixels apart, from
+/// zero.
+fn middle(n: u16, size: u16) -> u32 {
+    u32::from(n)
+        .saturating_mul(u32::from(size))
+        .saturating_add(u32::from(size / 2))
 }
 
 /// Appends `event`'s report to `out` in `mode` and `encoding`, as xterm
@@ -123,14 +188,32 @@ impl crate::Screen {
 /// - `AnyMotion` (1003) also reports motion with none held;
 /// - a press names its button; motion over a cell is the host's to tell
 ///   from motion within it (xterm reports a move to another cell only);
+/// - highlight tracking (1001) reports as `PressRelease` does;
 /// - the default encoding sends `CSI M` and three bytes, each value plus
 ///   32, and a 0 byte for a position past 223; UTF-8 (1005) sends each
 ///   value plus 32 as a UTF-8 character, the button code too, and a 0 byte
 ///   for a position past 2015 (xterm 411's past-end marker); SGR (1006) sends
 ///   `CSI < code ; column ; row M`, or `m` for a release, which names its
-///   button, for any position.
+///   button, for any position; urxvt (1015) `CSI code ; column ; row M`, the
+///   code plus 32 and a release unnamed (xterm 411's `EditorButton`); SGR
+///   with pixels (1016) SGR's form, the position the middle of the cell in
+///   10 by 20 pixels ([`mouse_bytes_at`] takes another).
 pub fn mouse_bytes(
     event: MouseEvent,
+    mode: MouseProtocolMode,
+    encoding: MouseProtocolEncoding,
+    out: &mut Vec<u8>,
+) -> bool {
+    let (width, height) = crate::screen::CELL;
+    let pixel = (middle(event.col, width), middle(event.row, height));
+    mouse_bytes_at(event, pixel, mode, encoding, out)
+}
+
+/// [`mouse_bytes`] with the pointer at `pixel` (column, row, from zero),
+/// which SGR with pixels (1016) reports, from one.
+pub fn mouse_bytes_at(
+    event: MouseEvent,
+    pixel: (u32, u32),
     mode: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
     out: &mut Vec<u8>,
@@ -142,7 +225,10 @@ pub fn mouse_bytes(
         (_, MouseAction::Press(_)) => true,
         (MouseProtocolMode::Press, _) => false,
         (_, MouseAction::Release(button)) => !button.is_some_and(MouseButton::is_wheel),
-        (MouseProtocolMode::PressRelease, MouseAction::Motion(_)) => false,
+        (
+            MouseProtocolMode::PressRelease | MouseProtocolMode::Highlight,
+            MouseAction::Motion(_),
+        ) => false,
         (MouseProtocolMode::ButtonMotion, MouseAction::Motion(held)) => {
             held.is_some_and(|b| !b.is_wheel())
         }
@@ -154,7 +240,10 @@ pub fn mouse_bytes(
         return false;
     }
     // The button the report names, its motion bit, and SGR's final byte.
-    let names_release = encoding == MouseProtocolEncoding::Sgr;
+    let names_release = matches!(
+        encoding,
+        MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels
+    );
     let (button, motion, last) = match event.action {
         MouseAction::Press(button) => (Some(button), 0, 'M'),
         MouseAction::Release(button) => (button.filter(|_| names_release), 0, 'm'),
@@ -169,9 +258,17 @@ pub fn mouse_bytes(
         u32::from(event.row).saturating_add(1),
     );
     match encoding {
+        // Writing to a Vec cannot fail.
         MouseProtocolEncoding::Sgr => {
-            // Writing to a Vec cannot fail.
             let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
+        }
+        MouseProtocolEncoding::SgrPixels => {
+            let (x, y) = (pixel.0.saturating_add(1), pixel.1.saturating_add(1));
+            let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
+        }
+        MouseProtocolEncoding::Urxvt => {
+            let code = code.saturating_add(32);
+            let _ = write!(out, "\x1b[{code};{x};{y}M");
         }
         // A position past the encoding's limit is clamped to it and sent as
         // a 0 byte, "a past-end marker", as xterm 411 does

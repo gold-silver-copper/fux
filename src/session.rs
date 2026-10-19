@@ -2427,6 +2427,7 @@ impl Session {
                             }
                             Asked::Press
                             | Asked::PressRelease
+                            | Asked::Highlight
                             | Asked::ButtonMotion
                             | Asked::AnyMotion => match event.action {
                                 Motion(_) => format!(

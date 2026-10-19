@@ -7,7 +7,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | ECMA-48 | 67 | 1 | 3 | 3 | 88 | 162 |
 | DEC STD 070 | 87 | 4 | 2 | 22 | 25 | 140 |
 | ctlseqs | 108 | 16 | 2 | 27 | 92 | 245 |
-| fux-vt | 42 | 1 | 0 | 5 | 2 | 50 |
+| fux-vt | 45 | 2 | 0 | 1 | 2 | 50 |
 
 ## ECMA-48
 
@@ -593,15 +593,15 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | DECSET 67 | DECBKM (Backarrow key sends backspace) | implemented | `keys::encode::tests::decbkm_makes_backspace_send_bs` |  |
 | DECSET 69 | DECLRMM (Left and right margin mode) | implemented | `margins::declrmm_lets_decslrm_set_the_margins` |  |
 | DECSET 1000 | Normal mouse tracking (Send the mouse position on press and release) | implemented | `keys::mouse::tests::normal_tracking_reports_presses_releases_and_the_wheel_with_modifiers` |  |
-| DECSET 1001 | Hilite mouse tracking (Use hilite mouse tracking) | not implemented |  | not implemented |
+| DECSET 1001 | Hilite mouse tracking (Use hilite mouse tracking) | partial | `mouse_modes::each_mode_is_kept_and_reported`, `mouse_modes::highlight_tracking_reports_as_normal_tracking` | kept and reported as 1000 is (ctlseqs, "Highlight tracking": "On button press, the same information as for normal tracking is generated"); the highlight it then asks of the program (`CSI func ; x ; y ; first ; last T`) and the release it reports (`CSI t`, `CSI T`) are the host's selection's, which fux-vt does not drive |
 | DECSET 1002 | Button-event tracking (Use cell motion mouse tracking) | implemented | `keys::mouse::tests::button_event_tracking_reports_motion_while_a_button_is_held` |  |
 | DECSET 1003 | Any-event tracking (Use all motion mouse tracking) | implemented | `keys::mouse::tests::any_event_tracking_reports_motion_with_no_button_held` |  |
 | DECSET 1004 | Focus events (Send focus in and out) | implemented | `keys::encode::tests::a_screen_reports_focus_as_its_program_asked` |  |
 | DECSET 1005 | UTF-8 mouse (Enable UTF-8 mouse mode) | implemented | `keys::mouse::tests::a_position_past_the_encodings_limit_is_sent_as_a_0_byte` |  |
 | DECSET 1006 | SGR mouse (Enable SGR mouse mode) | implemented | `keys::mouse::tests::sgr_names_the_button_released_and_ends_a_release_with_m` |  |
-| DECSET 1007 | Alternate scroll (Enable alternate scroll mode) | not implemented |  | not implemented: the wheel is the host's |
-| DECSET 1015 | urxvt mouse (Enable urxvt mouse mode) | not implemented |  | not implemented (ctlseqs: "not recommended") |
-| DECSET 1016 | SGR-Pixels mouse (Enable SGR-Pixels mouse mode) | not implemented |  | not implemented: positions are in cells |
+| DECSET 1007 | Alternate scroll (Enable alternate scroll mode) | implemented | `mouse_modes::each_mode_is_kept_and_reported`, `mouse_modes::alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen` |  |
+| DECSET 1015 | urxvt mouse (Enable urxvt mouse mode) | implemented | `mouse_modes::each_mode_is_kept_and_reported`, `mouse_modes::urxvt_sends_the_code_plus_32_and_decimal_positions` |  |
+| DECSET 1016 | SGR-Pixels mouse (Enable SGR-Pixels mouse mode) | implemented | `mouse_modes::each_mode_is_kept_and_reported`, `mouse_modes::sgr_pixels_reports_the_pointers_pixel` | the pixel the host gives (`Screen::encode_mouse_at_pixel`), else the middle of the cell |
 | DECSET 1045 | Extended reverse-wraparound (Extended reverse-wraparound mode) | implemented | `modes::reverse_wraparound_moves_as_xterm_moves` |  |
 | DECSET 1047 | Alternate screen, cleared (Use the alternate screen buffer, clearing it on leaving) | implemented | `conformance::modes_1047_and_1048` |  |
 | DECSET 1048 | Save cursor (Save cursor as in DECSC) | implemented | `conformance::modes_1047_and_1048` |  |

@@ -22,7 +22,7 @@ const UNKNOWN: u32 = u32::MAX;
 const TABLED: u32 = u32::MAX - 1;
 
 /// The mouse reporting a program asked for, the latest set winning
-/// (`CSI ? 9 / 1000 / 1002 / 1003 h`). fux-vt sends no report of its own;
+/// (`CSI ? 9 / 1000 / 1001 / 1002 / 1003 h`). fux-vt sends no report of its own;
 /// the host encodes one with `Screen::encode_mouse`, which reads this.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseProtocolMode {
@@ -33,6 +33,13 @@ pub enum MouseProtocolMode {
     Press,
     /// Mode 1000: presses and releases.
     PressRelease,
+    /// Mode 1001, highlight tracking (ctlseqs, "Highlight tracking"):
+    /// reported as 1000 is, as ctlseqs has the press ("the same
+    /// information as for normal tracking"). The highlight it then asks of
+    /// the program (`CSI func ; x ; y ; first ; last T`) and the release
+    /// it reports (`CSI t`, `CSI T`) are the host's selection's, which
+    /// fux-vt does not drive.
+    Highlight,
     /// Mode 1002: also motion while a button is down.
     ButtonMotion,
     /// Mode 1003: also motion with no button down.
@@ -100,7 +107,8 @@ impl CursorShape {
     }
 }
 
-/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 h`).
+/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 / 1015 / 1016
+/// h`), the latest set winning, as xterm 411's `extend_coords`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseProtocolEncoding {
     /// The legacy encoding: coordinates as single bytes.
@@ -110,6 +118,12 @@ pub enum MouseProtocolEncoding {
     Utf8,
     /// Mode 1006, SGR: `CSI < b ; x ; y M`, or `m` for a release.
     Sgr,
+    /// Mode 1015, urxvt: `CSI b ; x ; y M`, `b` the code plus 32 and a
+    /// release unnamed, as the default encoding has them.
+    Urxvt,
+    /// Mode 1016, SGR with pixels: SGR's form, the pointer's position in
+    /// pixels from one.
+    SgrPixels,
 }
 
 /// The cell printed last, the state of its grapheme cluster, and what a
@@ -772,6 +786,7 @@ impl Screen {
 
 mod pictures;
 mod shell;
+pub(crate) use pictures::CELL;
 pub use pictures::{Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
 pub use shell::{Commands, Mark as CommandMark, Report, Reported};
 #[cfg(test)]

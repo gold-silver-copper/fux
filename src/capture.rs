@@ -340,6 +340,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
                 MouseProtocolMode::None => Json::Null,
                 MouseProtocolMode::Press => Json::str("press"),
                 MouseProtocolMode::PressRelease => Json::str("press_release"),
+                MouseProtocolMode::Highlight => Json::str("highlight"),
                 MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
                 MouseProtocolMode::AnyMotion => Json::str("any_motion"),
             },

@@ -1673,7 +1673,7 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
     use fux_vt::MouseProtocolMode as M;
     match mode {
         M::None => 0,
-        M::Press | M::PressRelease => 1000,
+        M::Press | M::PressRelease | M::Highlight => 1000,
         M::ButtonMotion => 1002,
         M::AnyMotion => 1003,
     }

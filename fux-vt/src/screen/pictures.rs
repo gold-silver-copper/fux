@@ -40,7 +40,7 @@ pub struct Graphics {
 
 /// The cell a picture is laid out in when the host does not say: a common
 /// terminal font's.
-const CELL: (u16, u16) = (10, 20);
+pub(crate) const CELL: (u16, u16) = (10, 20);
 
 /// A picture placed on a grid.
 #[derive(Clone, Debug)]
@@ -93,6 +93,12 @@ pub struct Shown<'a> {
 }
 
 impl Screen {
+    /// A cell's size in pixels, the host's (`Parser::set_host_graphics`),
+    /// else the one pictures are laid out in.
+    pub(crate) fn cell_pixels(&self) -> (u16, u16) {
+        self.graphics.cell.unwrap_or(CELL)
+    }
+
     /// What the host's terminal draws, as [`crate::Parser::set_host_graphics`]
     /// says.
     pub(crate) fn set_graphics(&mut self, graphics: Graphics) {
