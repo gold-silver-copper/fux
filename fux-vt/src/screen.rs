@@ -562,6 +562,14 @@ enum Level {
 pub struct Screen {
     primary: Grid,
     alternate: Grid,
+    /// Where the call under way stops at its budget (`Parser::run`'s
+    /// `end`; `u64::MAX` for none), and whether a scroll inside left and
+    /// right margins, which a printed glyph's wrap can make, found it
+    /// spent: the text being printed stops after that glyph, `left` bytes
+    /// of it unprinted, for the parser to stop at (decision 831).
+    pub(crate) stop_at: u64,
+    pub(crate) stopped: bool,
+    pub(crate) left: usize,
     /// Pictures placed on either grid (`pictures`), the last one's number,
     /// and what the host's terminal draws.
     pictures: VecDeque<pictures::Placement>,
@@ -873,6 +881,9 @@ impl Screen {
     pub(crate) fn new(size: Size, history: usize) -> Result<Self, Error> {
         let mut next_id = 1;
         Ok(Self {
+            stop_at: u64::MAX,
+            stopped: false,
+            left: 0,
             primary: Grid::new(size, history, &mut next_id, 1)?,
             // Its cells are made when a program first shows it.
             alternate: Grid::unmade(size, &mut next_id, 1)?,
@@ -1504,6 +1515,9 @@ impl Screen {
         let blank = self.blank_style();
         let up = direction != Scroll::Down;
         self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
+        // It copies the region's cells, as much as a few bytes of text can
+        // ask for at each wrap (decision 831).
+        self.stopped |= crate::budget::spent() >= self.stop_at;
     }
     /// IND, and LF, VT and FF: down a line, scrolling at the bottom margin;
     /// with left and right margins only while the cursor is between them,
@@ -1840,7 +1854,9 @@ impl Screen {
         if self.print(first).is_err() {
             refused = refused.saturating_add(1);
         }
-        while let Some(next) = chars.next() {
+        while !self.stopped
+            && let Some(next) = chars.next()
+        {
             // A glyph begins a run; a mark, and what the run stops at, take
             // the general path, looked up once.
             let (mut c, mut properties) = (next, Properties::of(next));
@@ -2283,9 +2299,21 @@ impl Screen {
     #[inline(always)]
     fn ascii_runs<const RECORDING: bool>(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
         while let Some((&first, tail)) = bytes.split_first() {
+            if self.stopped {
+                self.left = bytes.len();
+                return Ok(());
+            }
             let Some(line) = self.wrap_for(1)? else {
                 return Ok(());
             };
+            // A wrap that scrolled inside margins past the budget: the
+            // glyph it was for is written, as `print` writes it, and the
+            // rest left for the parser to stop before.
+            if self.stopped {
+                self.print(char::from(first))?;
+                self.left = tail.len();
+                return Ok(());
+            }
             let (row, col) = self.grid().cursor.at();
             // `wrap_for` left room for at least one cell, before the right
             // margin or the screen's edge; without it, the run could not

@@ -1350,11 +1350,12 @@ impl Parser {
     /// rectangle or a column edit, a scroll, REP, a search of history. It
     /// runs over calls, from one budget stop to the next, so it stops a
     /// host that cuts its reads small as well. The call looks at it after
-    /// each sequence or string, and after each line feed; a host stopped
+    /// each sequence or string, after each line feed, and after a glyph
+    /// whose wrap scrolled inside left and right margins; a host stopped
     /// this way has had at most that much work done since the last stop,
-    /// plus what the sequence or line feed that crossed it did, plus the
-    /// text and other C0 controls before it, which do a few units a byte
-    /// and at most one style sweep (decision 820).
+    /// plus what the sequence, line feed or wrap that crossed it did, plus
+    /// the text and other C0 controls before it, which do a few units a
+    /// byte and at most one style sweep (decisions 820 and 831).
     ///
     /// [`Parser::process_with`] is this call given the rest again until
     /// none is left: its work has no ceiling but the bytes it is given. As
@@ -1400,6 +1401,7 @@ impl Parser {
             true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
             false => u64::MAX,
         };
+        (self.screen.stop_at, self.screen.stopped) = (self.end, false);
         // A string the last call left open goes on at once.
         let mut remaining = match matches!(self.state, State::Osc { .. } | State::IgnoreString) {
             true => self.string(bytes),
@@ -1418,7 +1420,19 @@ impl Parser {
                     self.refuse();
                 }
                 remaining = rest;
-                None
+                // A wrap scrolled inside margins past the budget: the rest
+                // of the run is for the next call (decision 831).
+                if UNTIL_STOP && self.screen.stopped {
+                    let taken = length.saturating_sub(std::mem::take(&mut self.screen.left));
+                    remaining = (bytes.len().saturating_sub(remaining.len()))
+                        .checked_sub(length)
+                        .and_then(|at| bytes.get(at.saturating_add(taken)..))
+                        .unwrap_or_default();
+                    self.screen.stopped = false;
+                    Some(Stop::Budget)
+                } else {
+                    None
+                }
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // A C0 control, as `ground` carries it out.
                 if self.control(byte, sink).is_err() {
@@ -1437,7 +1451,9 @@ impl Parser {
                 && let Some(length) = self.text(remaining)
             {
                 remaining = remaining.get(length..).unwrap_or_default();
-                None
+                // As for ASCII: the text stopped after a glyph whose wrap
+                // scrolled inside margins past the budget.
+                (UNTIL_STOP && std::mem::take(&mut self.screen.stopped)).then_some(Stop::Budget)
             } else if ground && byte == 0x1b {
                 let (length, framed) = self.sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
@@ -1453,6 +1469,7 @@ impl Parser {
             // taken, and so does one that spent the budget (`over`): stop
             // right after it.
             if UNTIL_STOP && let Some(stop) = framed {
+                (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
                 self.spend_since(start, stop);
                 self.count_degrades(degrades);
                 let taken = bytes.len().saturating_sub(remaining.len());
@@ -1461,6 +1478,7 @@ impl Parser {
             }
         }
         if UNTIL_STOP {
+            (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
             self.spend_since(start, Stop::Ended);
         }
         work!(bytes, bytes.len());

@@ -1527,6 +1527,48 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
                 .finish()
                 .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
         }
+        // Scrolls inside left and right margins, set up once: each copies
+        // the region's span of every row, with its clusters' text, and the
+        // wrap of text printed at the bottom margin makes one too, which
+        // no sequence does (decision 831). A line feed, one byte: at most
+        // 2 x the screen's cells and R rows of span text.
+        let n = u64::try_from(setup.cells()).unwrap_or(u64::MAX);
+        let r = u64::from(rows);
+        let wide = format!("\x1b[?69h\x1b[1;{}s\x1b[{rows};2H", cols.saturating_sub(1));
+        let narrow = format!("\x1b[?69h\x1b[1;2s\x1b[{rows};1H");
+        let times = if largest { 1 } else { scale.times().min(10) };
+        // The span's text, at most 49 bytes a cell (32 long, 17 short): the
+        // whole width less a column, or the narrow margins' 2 cells, one
+        // scroll for every 2 glyphs printed.
+        let span_text = c.saturating_sub(1).saturating_mul(49).saturating_add(128);
+        for (name, setup_bytes, each, text) in [
+            ("bare LF", &wide, &b"\n"[..], r.saturating_mul(span_text)),
+            ("bare SU", &wide, b"\x1b[S", r.saturating_mul(span_text)),
+            ("wrapping text", &narrow, b"x", r.saturating_mul(49 + 128)),
+        ] {
+            let work: &'static [(&'static str, u64, u64, u64)] = Box::leak(Box::new([
+                ("cells", n.saturating_mul(2), 0, 0),
+                ("text", text, 0, 0),
+            ]));
+            let margins = Bound { work, ..bound };
+            let input = repeat(
+                each,
+                4096usize
+                    .checked_div(each.len())
+                    .unwrap_or(0)
+                    .saturating_mul(times),
+            );
+            let mut probe = Probe::new(&setup, margins, chunk.max(16), 1)?;
+            probe.feed(&prefix)?;
+            probe.feed(setup_bytes.as_bytes())?;
+            probe.restart(margins, 1);
+            probe
+                .feed(&input)
+                .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
+            probe
+                .finish()
+                .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
+        }
     }
     Ok(())
 }

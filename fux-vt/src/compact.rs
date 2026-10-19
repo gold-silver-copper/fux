@@ -177,14 +177,14 @@ impl Compact {
     pub(crate) fn is_protected(&self) -> bool {
         self.word & PROTECTED != 0
     }
-    /// Whether the cell, of a row whose text is `text`, holds what `other`,
-    /// of a row whose text is `other_text`, holds: the same text, halves,
-    /// style and protection, wherever each row keeps its text.
-    pub(crate) fn same_as(&self, text: &Text, other: &Self, other_text: &Text) -> bool {
+    /// Whether the cell, of a row whose text is `text`, holds what `other`
+    /// holds, its text being `held`: the same text, halves, style and
+    /// protection.
+    pub(crate) fn holds(&self, text: &Text, other: &Self, held: &str) -> bool {
         if !self.is_spilled() && !other.is_spilled() {
             return self == other;
         }
-        self.word == other.word && text.of(self) == other_text.of(other)
+        self.word == other.word && text.of(self) == held
     }
     /// Whether the cell is `blank(style)`: no text, neither half of a wide
     /// glyph, and that style.
@@ -648,6 +648,38 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             .fold(0, usize::saturating_add)
     }
 
+    /// Whether cell `i` holds text of `len` bytes in the row's text, which
+    /// a cluster as long can take over where it lies (`replace`).
+    pub(crate) fn replaces(&self, i: usize, len: usize) -> bool {
+        (self.cells.get(i))
+            .and_then(|c| c.as_ref().locator())
+            .is_some_and(|(_, held)| held == len)
+    }
+    /// Sets cell `i` to `cell`'s halves and style holding `text`, written
+    /// over the text the cell holds, as long (`replaces`): no room taken,
+    /// so no compaction, as a copy of clusters over clusters of their size
+    /// would otherwise need (B35).
+    pub(crate) fn replace(&mut self, i: usize, cell: Compact, text: &str) {
+        let Some((start, len)) = (self.cells.get(i)).and_then(|c| c.as_ref().locator()) else {
+            return;
+        };
+        let store = if len > SHORT {
+            &mut self.text.long
+        } else {
+            &mut self.text.short
+        };
+        let held = start
+            .checked_add(len)
+            .and_then(|end| store.get_mut(start..end));
+        if let (Some(held), Ok(at), Ok(n)) = (held, u32::try_from(start), u8::try_from(len))
+            && held.len() == text.len()
+            && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut)
+        {
+            work!(text, text.len());
+            held.copy_from_slice(text.as_bytes());
+            *slot = cell.with_spilled(at, n);
+        }
+    }
     /// Blanks cells `span` and keeps only the text the others hold, for
     /// the span to be written cell by cell: what is written then is all the
     /// row's text holds that is dead, and no write compacts the row again

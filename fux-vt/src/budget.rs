@@ -27,13 +27,17 @@
 //! calls of several parsers on one thread don't mix.
 //!
 //! The parser looks at it after each escape sequence or string it carries
-//! out, and after each line feed (LF, VT, FF) it carries out, whose scroll
-//! can copy up to a row's text, a few thousand units, for one byte
-//! (`Parser::run`, decision 820). Not after text or another C0 control:
-//! what they spend between two looks is at most one style sweep, for the
-//! one new style an SGR before them gave the pen (B13, at most 4 M units,
-//! P21), and a scroll of the row a wrap leaves, which the row's own
-//! printed cells pay for.
+//! out, after each line feed (LF, VT, FF) it carries out, whose scroll can
+//! copy a row's text into history for one byte, and after a printed
+//! glyph whose wrap scrolled inside left and right margins, which copies
+//! the region's span of every row (`Parser::run`, decisions 820 and 831).
+//! Not after other text or C0 controls: what they spend between two looks
+//! is at most one style sweep, for the one new style an SGR before them
+//! gave the pen (B13, at most 4 M units, P21), and a scroll into history
+//! of the row a wrap leaves, which the row's own printed cells pay for.
+//! One margin scroll can itself cost up to 2 cells and a cell's text for
+//! every cell of the region, which at fux's largest pane is past U / 2
+//! (decision 831).
 
 use std::cell::Cell;
 
