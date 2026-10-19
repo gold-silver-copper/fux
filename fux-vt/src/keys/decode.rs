@@ -1589,6 +1589,21 @@ mod tests {
         d.bytes(b"\xe4\xb8", &mut out);
         d.bytes(b"A", &mut out);
         assert_eq!(out, vec![key("\u{fffd}"), key("A")]);
+        // So a mouse report's ESC, after the deadline, ends it: its U+FFFD,
+        // then the report, which is still one.
+        out.clear();
+        d.bytes(b"\xe9", &mut out);
+        d.timeout(&mut out);
+        d.bytes(b"\x1b[<0;10;5M", &mut out);
+        let press = crate::keys::mouse::MouseAction::Press(crate::keys::mouse::MouseButton::Left);
+        let (mods, row, col) = (Modifiers::NONE, 4, 9);
+        let click = Input::Mouse(MouseEvent {
+            action: press,
+            mods,
+            row,
+            col,
+        });
+        assert_eq!(out, vec![key("\u{fffd}"), click]);
     }
 
     /// xterm's modifyOtherKeys form names a key by the code `CSI code ;

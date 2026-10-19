@@ -22,7 +22,7 @@ use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
 use fux::keymap::{Held, Keymap};
-use fux::keys::Keystroke;
+use fux::keys::{Key, Keystroke};
 use fux::outer;
 use fux::protocol::{Asked, Context, Reply, ToAttached};
 use fux::render::{Grid, compose_view, paint_into};
@@ -397,9 +397,7 @@ impl Run {
                 self.outgoing(outgoing);
             }
         }
-        for pane in self.s.panes.values_mut() {
-            pane.input.drain_all();
-        }
+        self.drain_panes();
         self.check_memo();
     }
 
@@ -606,9 +604,7 @@ impl Run {
         let steps = keys.screen.key(&self.keymap, stroke, read_only);
         self.keys.insert(client, keys);
         if repeating {
-            for pane in self.s.panes.values_mut() {
-                pane.input.drain_all();
-            }
+            self.drain_panes();
         }
         let mut writes = false;
         for step in steps {
@@ -634,14 +630,37 @@ impl Run {
     }
 
     /// Types a mouse report in pieces of `piece` bytes (whole for 0), its
-    /// client's held input flushed first so that the report is one: no pane may hear it but the focused pane of a
-    /// client with nothing of fux's open, whose program asked for the mouse.
+    /// client's held input flushed first so that the report is one: no pane
+    /// may hear it but the focused pane of a client with nothing of fux's
+    /// open, whose program asked for the mouse. A character begun before it
+    /// outlasts the flush, as no deadline cuts a character short (fux-vt's
+    /// README, FA-KEY-10), and the report's ESC ends it as one U+FFFD
+    /// (Unicode 17.0, 3.9, maximal subparts): that key, the first input, is
+    /// typed before the report, and what panes hear of it is not the
+    /// report's.
     fn mouse(&mut self, client: ClientId, report: &[u8], piece: usize) {
         self.escape(client);
-        for pane in self.s.panes.values_mut() {
-            pane.input.drain_all();
+        self.drain_panes();
+        let chunks: Vec<&[u8]> = match NonZeroUsize::new(piece) {
+            Some(piece) => pieces(report, piece).collect(),
+            None => vec![report],
+        };
+        let mut first = true;
+        for chunk in chunks {
+            let mut inputs = Vec::new();
+            if let Some(keys) = self.keys.get_mut(&client) {
+                keys.decoder.bytes(chunk, &mut inputs);
+            }
+            for input in inputs {
+                let ended = first
+                    && matches!(&input, Input::Key(k) if k.press.key == Key::Char(char::REPLACEMENT_CHARACTER));
+                first = false;
+                self.inputs(client, vec![input]);
+                if ended {
+                    self.drain_panes();
+                }
+            }
         }
-        self.type_in(client, report, piece);
         let view = self.s.views.get(&client);
         let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
         let focus = self.s.focused(client).filter(|_| normal);
@@ -652,6 +671,12 @@ impl Run {
                 heard.is_empty() || (Some(*id) == focus && asked),
                 "{id} heard {heard:?} from {report:?}"
             );
+        }
+    }
+
+    fn drain_panes(&mut self) {
+        for pane in self.s.panes.values_mut() {
+            pane.input.drain_all();
         }
     }
 
