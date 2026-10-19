@@ -1716,8 +1716,12 @@ impl Screen {
                     self.mark_joined(row, col, blank, c);
                 }
                 // While text is being printed, what follows is segmented
-                // after the mark, as UAX #29 segments the cell's text.
-                if joined && self.last_print.is_some() {
+                // after the mark, as UAX #29 segments the cell's text; but
+                // after a Prepend character of no width, which joins no
+                // cluster here (README), afresh, as at a cell of its own.
+                if joined && properties.is_prepend() {
+                    self.break_cluster();
+                } else if joined && self.last_print.is_some() {
                     self.last_print = Some(Printed {
                         kept: Kept::Unknown,
                         ..Printed::of((row, col), properties)

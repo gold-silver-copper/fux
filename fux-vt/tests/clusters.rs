@@ -324,3 +324,21 @@ fn what_follows_a_character_joined_at_no_width_is_segmented_after_it() -> Result
     );
     Ok(())
 }
+
+/// A zero-width Prepend character joins the cell before it, and stays
+/// apart from what UAX #29's GB9b would join it to, as the README's
+/// departure says: `x\u{605}A` is `x\u{605}` and `A`, and
+/// `x\u{605}\u{4e00}` three columns (FA-TXT-1).
+#[test]
+fn a_zero_width_prepend_character_joins_nothing_after_it() -> Result {
+    let mut p = Parser::new(Size::new(1, 6)?, 0)?;
+    p.process("x\u{605}A".as_bytes())?;
+    let cells: Vec<String> = (0..3)
+        .filter_map(|x| p.screen().cell(0, x).map(|c| c.contents().to_string()))
+        .collect();
+    assert_eq!(cells, ["x\u{605}", "A", ""]);
+    let mut p = Parser::new(Size::new(1, 6)?, 0)?;
+    p.process("x\u{605}\u{4e00}".as_bytes())?;
+    assert_eq!(p.screen().cursor_position(), (0, 3));
+    Ok(())
+}
