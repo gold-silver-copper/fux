@@ -50,7 +50,9 @@ jobs:
               -runs=0 -rss_limit_mb=2048 -timeout=25 $options </dev/null || failed+=("$target")
           done <fux-vt/compare/fuzz-options.txt
           # A target with no line there is not left out unseen.
-          for target in $(cargo +nightly fuzz list --fuzz-dir fuzz); do
+          # Listed apart, so a list that fails fails the job.
+          targets=$(cargo +nightly fuzz list --fuzz-dir fuzz)
+          for target in $targets; do
             awk -v t="$target" '$1 == t && $2 == "fuzz" { found = 1 } END { exit !found }' \
               fux-vt/compare/fuzz-options.txt || failed+=("$target (not in fux-vt/compare/fuzz-options.txt)")
           done
