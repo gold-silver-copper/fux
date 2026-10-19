@@ -260,12 +260,15 @@ pub enum Outcome {
 /// The suites' results: by suite, engine and check id.
 pub type Results = BTreeMap<String, BTreeMap<String, BTreeMap<String, Outcome>>>;
 
-/// Reads every result JSON in `dir` of a check that ran and passed, as
-/// its stamp (`harness.sh`'s NAME.stamp.json) says: esctest's columns,
-/// cases' and the corpus's subjects. One without such a stamp is no
-/// check's result (or a failed one's), and is left out; one that can't be
-/// read fails the reading.
-pub fn results(dir: &Path) -> Result<Results, String> {
+/// Reads every result JSON in `dir` of a check that ran, as its stamp
+/// (`harness.sh`'s NAME.stamp.json) says: esctest's columns, cases' and
+/// the corpus's subjects. A check that failed (its exit not 0: esctest and
+/// cases fail on any mismatch) is scored from what it wrote, and named; a
+/// JSON without a stamp is no check's result, and is left out, named too.
+/// One that can't be read fails the reading. The second list says what was
+/// scored so or left out.
+pub fn results(dir: &Path) -> Result<(Results, Vec<String>), String> {
+    let mut notes = Vec::new();
     let mut out = Results::new();
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
@@ -275,12 +278,23 @@ pub fn results(dir: &Path) -> Result<Results, String> {
         .collect();
     files.sort();
     for path in files {
-        let passed = std::fs::read_to_string(path.with_extension("stamp.json"))
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let exit = std::fs::read_to_string(path.with_extension("stamp.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .is_some_and(|s| s.get("exit").and_then(Value::as_u64) == Some(0));
-        if !passed {
-            continue;
+            .and_then(|s| s.get("exit").and_then(Value::as_u64));
+        match exit {
+            Some(0) => {}
+            Some(code) => notes.push(format!(
+                "{name}: scored, though its check failed (exit {code})"
+            )),
+            None => {
+                notes.push(format!("{name}: no stamp, not scored"));
+                continue;
+            }
         }
         let text =
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -290,7 +304,7 @@ pub fn results(dir: &Path) -> Result<Results, String> {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         }
     }
-    Ok(out)
+    Ok((out, notes))
 }
 
 fn read_one(d: &Map<String, Value>, out: &mut Results) {
@@ -657,15 +671,34 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     let Some(dir) = dir else {
         return Ok(true);
     };
-    let (md, value) = report(&ledger, &results(Path::new(dir))?);
+    let (results, notes) = results(Path::new(dir))?;
+    for note in &notes {
+        eprintln!("ledger: {note}");
+    }
+    let (md, value) = report(&ledger, &results);
     print!("{md}");
+    // Every suite the ledger has checks of must have fux-vt's results.
+    let suites: BTreeSet<&str> = ledger.checks.iter().map(|c| c.suite.as_str()).collect();
+    let missing: Vec<&str> = (suites.into_iter())
+        .filter(|s| {
+            results
+                .get(*s)
+                .is_none_or(|columns| !columns.contains_key("fux-vt"))
+        })
+        .collect();
     if let Some(path) = out {
         let mut text =
             serde_json::to_string_pretty(&value).map_err(|e| format!("the scores: {e}"))?;
         text.push('\n');
         std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
     }
-    Ok(true)
+    if !missing.is_empty() {
+        eprintln!(
+            "ledger: no results of fux-vt for {} in {dir}",
+            missing.join(", ")
+        );
+    }
+    Ok(missing.is_empty())
 }
 
 #[cfg(test)]
@@ -765,10 +798,11 @@ mod tests {
         Ok(())
     }
 
-    /// Results are read only from a check that ran and passed, as its
-    /// stamp says (`harness.sh`'s NAME.stamp.json): a failed check's JSON
-    /// is not scored; and a result that can't be read fails the reading,
-    /// never skipped unseen.
+    /// Results are read from every check that ran, as its stamp says
+    /// (`harness.sh`'s NAME.stamp.json): a failed check's JSON (esctest and
+    /// cases fail on any mismatch) is scored and named; an unstamped one is
+    /// left out and named; one that can't be read fails the reading, never
+    /// skipped unseen.
     #[test]
     fn results_are_read_from_checks_that_ran() -> Result<(), String> {
         let dir = fuxix::file::scratch()
@@ -789,13 +823,20 @@ mod tests {
         write("cases-subject-x.json", &cases("x"))?;
         write("cases-subject-x.stamp.json", r#"{"exit": 1}"#)?;
         write("unstamped.json", &cases("y"))?;
-        let read = results(&dir)?;
+        let (read, notes) = results(&dir)?;
         let engines: Vec<&String> = read
             .get("cases")
             .into_iter()
             .flat_map(|c| c.keys())
             .collect();
-        assert_eq!(engines, ["fux-vt"]);
+        assert_eq!(engines, ["fux-vt", "x"]);
+        assert_eq!(
+            notes,
+            [
+                "cases-subject-x.json: scored, though its check failed (exit 1)",
+                "unstamped.json: no stamp, not scored"
+            ]
+        );
         write("broken.json", "{ not json")?;
         write("broken.stamp.json", r#"{"exit": 0}"#)?;
         assert!(results(&dir).is_err());
