@@ -5,4 +5,3 @@
 B40 1x  `past its bound 138` row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
 B40 10x  `past its bound 138` row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
 B40 100x  `past its bound 138` row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
-B25 100x  `the decoder held` at 4 KiB reads the decoder's heap peaks at 4,160 bytes, 64 past the probe's 4 KiB: not yet explained (KEY-5)
