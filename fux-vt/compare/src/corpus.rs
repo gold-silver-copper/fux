@@ -135,7 +135,6 @@ const HELIX_UNICODE_AT: &[Exception] = &[
     },
 ];
 
-/// nvim-unicode's clusters, from its start: the cells and the styles they move.
 /// neovim pushes the kitty keyboard flags 1 and 2 (report event types)
 /// and reads them back; fux-vt keeps only the flags it honours, not 2, as
 /// the kitty spec's "Detection of support" asks (KEY-22, 84fd3fc3), where
@@ -226,6 +225,7 @@ const NVIM_WIDE_AT: &[Exception] = &[Exception {
     reason: KITTY_FLAGS_KEPT,
 }];
 
+/// nvim-unicode's clusters, from its start: the cells and the styles they move.
 const NVIM_UNICODE_AT: &[Exception] = &[
     Exception {
         steps: (1, 12),
