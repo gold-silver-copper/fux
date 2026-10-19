@@ -260,23 +260,35 @@ pub enum Outcome {
 /// The suites' results: by suite, engine and check id.
 pub type Results = BTreeMap<String, BTreeMap<String, BTreeMap<String, Outcome>>>;
 
-/// Reads every result JSON in `dir`: esctest's columns, cases' and the
-/// corpus's subjects.
+/// Reads every result JSON in `dir` of a check that ran and passed, as
+/// its stamp (`harness.sh`'s NAME.stamp.json) says: esctest's columns,
+/// cases' and the corpus's subjects. One without such a stamp is no
+/// check's result (or a failed one's), and is left out; one that can't be
+/// read fails the reading.
 pub fn results(dir: &Path) -> Result<Results, String> {
     let mut out = Results::new();
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter(|p| !p.to_string_lossy().ends_with(".stamp.json"))
         .collect();
     files.sort();
     for path in files {
+        let passed = std::fs::read_to_string(path.with_extension("stamp.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .is_some_and(|s| s.get("exit").and_then(Value::as_u64) == Some(0));
+        if !passed {
+            continue;
+        }
         let text =
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let Ok(Value::Object(d)) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        read_one(&d, &mut out);
+        match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(d)) => read_one(&d, &mut out),
+            Ok(_) => return Err(format!("{}: not a JSON object", path.display())),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
     }
     Ok(out)
 }
@@ -414,9 +426,17 @@ pub struct Scores {
 }
 
 /// Whether `engine`, with `outcome`, does what the authority says on `c`.
+/// An engine follows the text by failing the suite there: one listed in
+/// `follows`, or whose failure's message holds `follows_when`; a pass or
+/// no result is never following it.
 fn by_standard(c: &Check, engine: &str, outcome: &Outcome) -> bool {
-    let follows = c.follows.iter().any(|e| e == engine)
-        || matches!((outcome, &c.follows_when), (Outcome::Fail(m), Some(w)) if m.contains(w.as_str()));
+    let follows = match (outcome, &c.follows_when) {
+        (Outcome::Fail(m), Some(w)) => {
+            c.follows.iter().any(|e| e == engine) || m.contains(w.as_str())
+        }
+        (Outcome::Fail(_), None) => c.follows.iter().any(|e| e == engine),
+        (Outcome::Pass | Outcome::Unavailable, _) => false,
+    };
     match c.verdict.as_str() {
         "departs" => follows,
         "allows" => *outcome == Outcome::Pass || follows,
@@ -650,7 +670,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ledger, Outcome, Results, load, parse, problems, score};
+    use super::{Ledger, Outcome, Results, load, parse, problems, results, score};
     use std::collections::BTreeMap;
 
     /// The committed ledger has no tag without its definition or evidence,
@@ -742,6 +762,68 @@ mod tests {
             (other.raw, other.standard, other.unavailable),
             ((1, 3), (0, 2), 1)
         );
+        Ok(())
+    }
+
+    /// Results are read only from a check that ran and passed, as its
+    /// stamp says (`harness.sh`'s NAME.stamp.json): a failed check's JSON
+    /// is not scored; and a result that can't be read fails the reading,
+    /// never skipped unseen.
+    #[test]
+    fn results_are_read_from_checks_that_ran() -> Result<(), String> {
+        let dir = fuxix::file::scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("fux-ledger-results-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let write = |name: &str, text: &str| {
+            std::fs::write(dir.join(name), text).map_err(|e| e.to_string())
+        };
+        let cases = |subject: &str| {
+            serde_json::json!({"check": "cases", "subject": subject,
+                "results": [{"case": "a", "failures": []}]})
+            .to_string()
+        };
+        write("cases.json", &cases("fux-vt"))?;
+        write("cases.stamp.json", r#"{"exit": 0}"#)?;
+        write("cases-subject-x.json", &cases("x"))?;
+        write("cases-subject-x.stamp.json", r#"{"exit": 1}"#)?;
+        write("unstamped.json", &cases("y"))?;
+        let read = results(&dir)?;
+        let engines: Vec<&String> = read
+            .get("cases")
+            .into_iter()
+            .flat_map(|c| c.keys())
+            .collect();
+        assert_eq!(engines, ["fux-vt"]);
+        write("broken.json", "{ not json")?;
+        write("broken.stamp.json", r#"{"exit": 0}"#)?;
+        assert!(results(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// An engine said to follow the text on a check the suite departs
+    /// from passes by the standard only by failing the suite there: one
+    /// that passes the suite, or has no result, does not.
+    #[test]
+    fn follows_turns_only_a_failure_into_a_pass() -> Result<(), String> {
+        let mut ledger = ledger()?;
+        let b = ledger
+            .checks
+            .iter_mut()
+            .find(|c| c.id == "b")
+            .ok_or("no b")?;
+        b.follows = vec!["listed".into()];
+        b.follows_when = None;
+        let check = ledger.checks.iter().find(|c| c.id == "b").ok_or("no b")?;
+        assert!(super::by_standard(
+            check,
+            "listed",
+            &Outcome::Fail("got 73".into())
+        ));
+        assert!(!super::by_standard(check, "listed", &Outcome::Pass));
+        assert!(!super::by_standard(check, "listed", &Outcome::Unavailable));
         Ok(())
     }
 }
