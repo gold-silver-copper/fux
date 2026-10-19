@@ -159,16 +159,16 @@ jobs:
         run: |
           set -euo pipefail
           diff/oracle.sh --pin HEAD
-          cargo clippy --manifest-path diff/Cargo.toml -p fux-vt-oracle --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/oracle.log"
+          cargo clippy --manifest-path diff/Cargo.toml -p fux-vt-oracle -p fux-vt-oracle-fuzz --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/oracle.log"
           # The families it shares with fux-vt-compare check their own
           # citations wherever they are built (families.rs, `fux_vt_dir`).
           cargo test --manifest-path diff/Cargo.toml -p fux-vt-oracle --locked families:: 2>&1 | tee -a "$CI_LOGS/oracle.log"
 
       - name: fux-diff builds
         # It builds the last release beside this code, so a deliberate API
-        # change can break it until its baseline is bumped (diff/README.md).
+        # change breaks it until its baseline is bumped (diff/README.md):
+        # then the bump is part of that change.
         if: runner.os == 'Linux'
-        continue-on-error: true
         run: |
           set -euo pipefail
           cargo fmt --manifest-path diff/Cargo.toml --all --check
