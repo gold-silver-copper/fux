@@ -1759,7 +1759,9 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     // another glyph of one column is written too, and the cursor put where
     // it is after, should the terminal draw it at another width. Nothing
     // that may join a neighbour: one character, not a regional indicator
-    // (two make a flag), and short of the emoji's planes.
+    // (two make a flag), short of the emoji's planes, and none that joins
+    // what is before it (an Extend or SpacingMark character alone, ZWJ),
+    // which the terminal would join to the cell on its left.
     let mut ascii = true;
     let mut printable = |c: Option<CellRef<'_>>| {
         c.is_some_and(|c| {
@@ -1777,6 +1779,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
                     u32::from(ch) < 0x1_F000
                         && !('\u{1F1E6}'..='\u{1F1FF}').contains(&ch)
                         && fux_vt::char_width(ch) == Some(1)
+                        && !fux_vt::continues_cluster("a", ch)
                 }
                 _ => false,
             }
@@ -2155,6 +2158,29 @@ mod tests {
             }
         }
         assert!(short > 500, "{short} echoes painted the short way");
+        Ok(())
+    }
+
+    /// A lone mark that joins what is before it (a spacing mark after a
+    /// cursor move, U+0CCB, U+09BE) is no echo:
+    /// written raw, the terminal joins it to the cell on its left, which
+    /// draws that glyph wrong. A letter there is one.
+    #[test]
+    fn a_mark_that_joins_its_neighbour_is_not_echoed() -> Result<(), String> {
+        for (typed, echoed) in [("\u{ccb}", false), ("\u{9be}", false), ("x", true)] {
+            let (mut s, c) = crate::session::testing::attached(10, 40)?;
+            let id = *s.panes.keys().next().ok_or("no pane")?;
+            let mut placement = Placement::default();
+            let (mut before, mut after) = (Grid::new(0, 0), Grid::new(0, 0));
+            s.output(id, b"$ ab");
+            compose_into(&s, c, &mut before, &mut placement);
+            s.output(id, format!("\x1b[C{typed}").as_bytes());
+            compose_into(&s, c, &mut after, &mut placement);
+            let alone =
+                (0..after.cols).any(|x| after.get(0, x).is_some_and(|c| c.contents() == typed));
+            assert!(alone, "{typed:?} is no cell of its own");
+            assert_eq!(echo(&before, &after, &mut Vec::new()), echoed, "{typed:?}");
+        }
         Ok(())
     }
 
