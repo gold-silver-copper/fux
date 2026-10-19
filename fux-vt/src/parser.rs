@@ -2090,11 +2090,16 @@ impl Parser {
         if intermediates.is_empty() && byte == b'Z' {
             let reply = self.screen.primary_attributes(&self.options);
             sink.reply(reply.as_bytes());
-        } else if !self.screen.escape(intermediates, byte)? {
-            sink.unhandled(Unhandled::Escape {
-                intermediates,
-                action: byte,
-            });
+        } else {
+            // A refusal loses only what it was for: a RIS still ends the
+            // frame it resets.
+            let done = self.screen.escape(intermediates, byte);
+            if !self.kept(done.map(Some)).unwrap_or(true) {
+                sink.unhandled(Unhandled::Escape {
+                    intermediates,
+                    action: byte,
+                });
+            }
         }
         let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
         Ok(ended.then_some(Stop::Ended))
@@ -2114,16 +2119,16 @@ impl Parser {
             self.screen.frames_begun(),
             self.screen.mode(Mode::SynchronizedOutput),
         );
-        let dispatch = self
-            .screen
-            .csi(&self.params, intermediates, byte, &self.options)?;
+        let dispatch = (self.screen).csi(&self.params, intermediates, byte, &self.options);
+        // A frame begun or ended is told even if room was refused on the
+        // way: the refusal loses only what it was for.
         let framed = if self.screen.frames_begun() != begun {
             Some(Stop::Begun)
         } else {
             let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
             ended.then_some(Stop::Ended)
         };
-        match dispatch {
+        match self.kept(dispatch.map(Some)).unwrap_or(Dispatch::Done) {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
             Dispatch::Unhandled => {

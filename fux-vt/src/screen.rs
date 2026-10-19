@@ -2633,8 +2633,13 @@ impl Screen {
                     self.primary = primary;
                     self.alternate = alternate;
                 } else {
-                    self.primary.clear(&mut next, self.version)?;
-                    self.alternate.clear(&mut next, self.version)?;
+                    // A grid that can be neither made anew nor blanked in
+                    // place stays as it was, and the rest is reset.
+                    for g in [&mut self.primary, &mut self.alternate] {
+                        if g.clear(&mut next, self.version).is_err() {
+                            crate::degraded();
+                        }
+                    }
                 }
                 self.next_id = next;
                 // No cell has a link now, and none is open.
@@ -3218,7 +3223,12 @@ impl Screen {
                 None if mode.fixed().is_none() => self.saved_modes.contains(mode),
                 None => continue,
             };
-            report |= self.set_mode(mode, on)?;
+            // A mode refused room is left as it was, and the rest are set
+            // (`Parser::refused` counts it).
+            match self.set_mode(mode, on) {
+                Ok(reports) => report |= reports,
+                Err(_) => crate::degraded(),
+            }
         }
         Ok(match (handled, report) {
             (_, true) => Dispatch::Reply(self.size_report()),
