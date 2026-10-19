@@ -717,40 +717,18 @@ impl Grid {
             .to_owned()
     }
 
-    /// Writes `text` from (y, x), clipped at `limit`, wide glyphs whole; the
-    /// column after it is returned.
+    /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
+    /// `limit`, wide glyphs whole; the column after it is returned.
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         let mut x = x;
-        // The cell last written, where its cluster starts in `text`, and
-        // whether it is wide: a char of no width joins that cell's cluster,
-        // as fux-vt's `Screen::print` appends one to the cell before the
-        // cursor, on a wide glyph's first half.
-        let mut last: Option<(u16, usize, bool)> = None;
-        for (at, c) in text.char_indices() {
-            if c.is_control() {
-                last = None;
-                continue;
-            }
-            let width = cells(c);
-            if width == 0 {
-                let end = at.saturating_add(c.len_utf8());
-                if let Some((x, start, wide)) = last
-                    && let Some(cluster) = text.get(start..end)
-                {
-                    self.set(y, x, CellRef::new(cluster, wide, style));
-                }
-                continue;
-            }
+        for (cluster, width) in clusters(text).filter(|(_, width)| *width > 0) {
             let Some(end) = x
                 .checked_add(width)
                 .filter(|end| *end <= limit.min(self.cols))
             else {
                 break;
             };
-            let mut buffer = [0u8; 4];
-            let cell = CellRef::new(c.encode_utf8(&mut buffer), width == 2, style);
-            self.set(y, x, cell);
-            last = Some((x, at, width == 2));
+            self.set(y, x, CellRef::new(cluster, width == 2, style));
             if width == 2
                 && let Some(second) = x.checked_add(1)
             {
@@ -819,11 +797,46 @@ fn cells(c: char) -> u16 {
     fux_vt::char_width(c).map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
 }
 
-/// Display width of a string, controls dropped.
+/// The grapheme clusters (UAX #29) of fux's own text, as fux-vt joins
+/// what is printed (`fux_vt::continues_cluster`), controls dropped: each
+/// with the columns it takes by fux-vt's width rule (`fux_vt::str_width`),
+/// at most 2, as a cell holds, so that fux lays its text out as a pane
+/// would. Of a cluster longer than a cell keeps
+/// (`fux_vt::CLUSTER_CAPACITY`), the characters past it are dropped, as a
+/// pane drops them; it is looked at no further, so a long one costs no more
+/// than one a cell keeps.
+fn clusters(text: &str) -> impl Iterator<Item = (&str, u16)> {
+    let mut chars = text
+        .char_indices()
+        .filter(|(_, c)| !c.is_control())
+        .peekable();
+    std::iter::from_fn(move || {
+        let (start, first) = chars.next()?;
+        // Where the cluster's kept text ends, and its last character.
+        let mut kept = start.saturating_add(first.len_utf8());
+        let mut last = kept;
+        while let Some(&(at, c)) = chars.peek() {
+            // A control between ends the cluster, as one does in a pane.
+            let cluster = text.get(start..kept).unwrap_or_default();
+            if at != last || !fux_vt::continues_cluster(cluster, c) {
+                break;
+            }
+            chars.next();
+            last = at.saturating_add(c.len_utf8());
+            if last.saturating_sub(start) <= fux_vt::CLUSTER_CAPACITY {
+                kept = last;
+            }
+        }
+        let cluster = text.get(start..kept).unwrap_or_default();
+        let width = fux_vt::str_width(cluster).min(2);
+        Some((cluster, u16::try_from(width).unwrap_or(2)))
+    })
+}
+
+/// Display width of a string, controls dropped: its clusters' (`clusters`).
 pub fn width(text: &str) -> u16 {
-    text.chars()
-        .filter(|c| !c.is_control())
-        .map(cells)
+    clusters(text)
+        .map(|(_, width)| width)
         .fold(0, u16::saturating_add)
         .min(4096)
 }
@@ -839,12 +852,12 @@ pub fn fit(text: &str, cols: u16) -> Cow<'_, str> {
         return Cow::Borrowed("");
     };
     let mut out = String::new();
-    for c in text.chars().filter(|c| !c.is_control()) {
-        let Some(left) = room.checked_sub(cells(c)) else {
+    for (cluster, width) in clusters(text) {
+        let Some(left) = room.checked_sub(width) else {
             break;
         };
         room = left;
-        out.push(c);
+        out.push_str(cluster);
     }
     out.push('…');
     Cow::Owned(out)
@@ -1056,15 +1069,15 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
     if width(&line) <= room {
         return line;
     }
-    let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
-    let bar = before.chars().filter(|c| !c.is_control()).count();
+    let chars: Vec<(&str, u16)> = clusters(&line).collect();
+    let bar = clusters(before).count();
     // An ellipsis each side, at most.
     let inner = room.saturating_sub(2);
     let ahead = inner / 4;
     let (mut start, mut end) = (bar, bar.saturating_add(1));
     let mut used: u16 = 1;
-    let fits = |used: u16, c: Option<&char>| {
-        c.and_then(|c| used.checked_add(cells(*c)))
+    let fits = |used: u16, c: Option<&(&str, u16)>| {
+        c.and_then(|(_, width)| used.checked_add(*width))
             .filter(|n| *n <= inner)
     };
     // A little of what follows, then what comes before, then the rest after.
@@ -1086,7 +1099,13 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
     if start > 0 {
         out.push('…');
     }
-    out.extend(chars.get(start..end).unwrap_or_default());
+    out.extend(
+        chars
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|(c, _)| *c),
+    );
     if end < chars.len() {
         out.push('…');
     }
@@ -2286,6 +2305,29 @@ mod tests {
             assert_eq!(other, fresh, "{rows}x{cols}");
         }
         Ok(())
+    }
+
+    /// fux's own text (the bar, titles, panels) takes the columns a pane
+    /// gives the same text, cluster by cluster (fux-vt's width rule): an
+    /// emoji presentation sequence, U+2764 U+FE0F, takes two, though its
+    /// characters alone take one and none.
+    #[test]
+    fn fux_text_takes_a_cluster_s_columns() {
+        let heart = "\u{2764}\u{FE0F}";
+        assert_eq!(width(heart), 2);
+        let mut grid = Grid::new(1, 10);
+        let end = grid.text(0, 0, &format!("{heart}x"), Attributes::default(), 10);
+        assert_eq!(end, 3);
+        let at = |x| {
+            grid.get(0, x)
+                .map(|c| (c.contents().to_owned(), c.is_wide()))
+        };
+        assert_eq!(at(0), Some((heart.to_owned(), true)));
+        assert_eq!(at(2), Some(("x".to_owned(), false)));
+        assert_eq!(
+            fit(&format!("{heart}{heart}{heart}"), 4),
+            format!("{heart}…")
+        );
     }
 
     /// At the widest a terminal can be, the last column is u16::MAX - 1:
