@@ -487,6 +487,13 @@ done
 if [[ -n $jobs ]]; then
   export CARGO_BUILD_JOBS=$jobs
 fi
+# Without --against, the latest master, fetched once and named by its
+# commit here: the oracle and the counts compare with the same commit
+# however long the run takes, and the logs say which.
+if [[ -z $against && $command != scoreboard ]]; then
+  git -C "$root" fetch --quiet origin master || echo "harness.sh: master not fetched; the last fetched is used" >&2
+  against=$(git -C "$root" rev-parse --verify "origin/master^{commit}")
+fi
 started=$(date +%s)
 case $command in
   quick) quick; summary quick 60 "$started" ;;
