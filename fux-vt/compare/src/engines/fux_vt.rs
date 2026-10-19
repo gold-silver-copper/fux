@@ -78,15 +78,20 @@ fn cell(c: &CellRef<'_>) -> Cell {
 /// The bytes of history's budget beside its rows, with any history.
 const HISTORY_ROOM: usize = 1 << 16;
 
+/// History's budget for `rows` full rows of `cols`: 24 bytes a row and 8
+/// a cell, and, with any history, room beside them for what else history's
+/// budget holds (its maps' buckets, the style table past the screen's
+/// share): so fux-vt keeps at least the rows, and a row lost is seen. The
+/// adapter's and `bench`'s fux-vt+prints'.
+pub fn history_bytes(rows: usize, cols: u16) -> usize {
+    let row = usize::from(cols).saturating_mul(8).saturating_add(24);
+    let room = if rows == 0 { 0 } else { HISTORY_ROOM };
+    rows.saturating_mul(row).saturating_add(room)
+}
+
 pub fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
     let size = crate::vt_size(setup.rows, setup.cols)?;
-    // Bytes for `setup.history` full rows, 24 a row and 8 a cell, and,
-    // with any history, room beside them for what else history's budget
-    // holds (its maps' buckets, the style table past the screen's share):
-    // so fux-vt keeps at least the case's rows, and a row lost is seen.
-    let row = usize::from(setup.cols).saturating_mul(8).saturating_add(24);
-    let room = if setup.history == 0 { 0 } else { HISTORY_ROOM };
-    let history = setup.history.saturating_mul(row).saturating_add(room);
+    let history = history_bytes(setup.history, setup.cols);
     let parser = Parser::with_options(size, history, options(setup.reflow))
         .map_err(|e| format!("fux-vt: {e}"))?;
     Ok(Box::new(Vt {
