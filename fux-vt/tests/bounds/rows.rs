@@ -868,8 +868,19 @@ fn decoded(
     most: usize,
     keep: bool,
 ) -> Result<Decoded, String> {
+    decoded_by(Decoder::default(), input, chunk, per_read, most, keep)
+}
+
+/// `decoded`, by `decoder`.
+fn decoded_by(
+    mut decoder: Decoder,
+    input: &[u8],
+    chunk: usize,
+    per_read: u64,
+    most: usize,
+    keep: bool,
+) -> Result<Decoded, String> {
     let heap = Heap::begin();
-    let mut decoder = Decoder::default();
     let (mut out, mut kept, mut room) = (Vec::new(), Vec::new(), 0usize);
     let mut made = Decoded {
         inputs: 0,
@@ -994,10 +1005,34 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     ]
     .concat();
     decoded(&quiet, 4096, 258, 1 << 10, false)?;
+    // Answers held while they are expected (FA-KEY-4): a DCS answer at
+    // its limit; an OSC answer one past it, its last byte an ESC that may
+    // begin ST; and a `CSI ?` answer at its limit after an Escape (FA-KEY-1).
+    // A read scans and copies what is held: 2 × 258 a read (decision 821).
+    let expecting = || {
+        let mut decoder = Decoder::default();
+        decoder.expect(Instant::now());
+        decoder
+    };
     let mut answer = b("\x1bP1+r");
     answer.extend(repeat(b"6", 258 - 7));
     answer.extend(b"\x1b\\");
-    decoded(&repeat(&answer, scale.times()), 1, 258, 4 << 10, false).map(|_| ())
+    for decoder in [Decoder::default(), expecting()] {
+        decoded_by(
+            decoder,
+            &repeat(&answer, scale.times()),
+            1,
+            516,
+            4 << 10,
+            false,
+        )?;
+    }
+    let osc = [b("\x1b]1"), repeat(b"a", 255), b("\x1b")].concat();
+    let csi = [b("\x1b\x1b[?"), repeat(b"1", 255)].concat();
+    for input in [osc, csi] {
+        decoded_by(expecting(), &input, chunk, 516, 4 << 10, false)?;
+    }
+    Ok(())
 }
 
 // B25: an answer longer than any real one is dropped whole, however it
