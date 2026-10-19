@@ -23,6 +23,11 @@ pub type Found = Result<(), String>;
 /// A row's probe at one scale and chunking.
 pub type Row = fn(Scale, usize) -> Found;
 
+/// A link run's bytes: its columns and its link (`link.rs` asserts it).
+/// A row of 200 columns, the probes' width, holds at most 200 runs, in a
+/// list with room for 256: hence `256 * RUN` a row, twice for both grids.
+const RUN: usize = 32;
+
 /// The most pixels a picture may have (`sixel.rs`, `MAX_PIXELS`).
 const MAX_PIXELS: u64 = 4096 * 2160;
 
@@ -479,7 +484,7 @@ fn history_peak(history: usize) -> usize {
 // the formula, less the links, which this input opens none of.
 pub fn b11(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().history(1 << 20);
-    let runs = usize::from(setup.rows).saturating_mul(2 * 256 * 48);
+    let runs = usize::from(setup.rows).saturating_mul(2 * 256 * RUN);
     let links = runs.saturating_add(2 * (4 << 20));
     let bound = heap(steady(&setup).saturating_sub(links));
     let count = u32::try_from(scale.times())
@@ -595,7 +600,7 @@ fn link(id: &str, uri_len: usize) -> Vec<u8> {
 pub fn b14(scale: Scale, chunk: usize) -> Found {
     // A screen large enough to keep every link on it, with no history.
     let setup = Setup::defaults().sized(300, 200).history(0);
-    let runs = usize::from(setup.rows).saturating_mul(256 * 48);
+    let runs = usize::from(setup.rows).saturating_mul(256 * RUN);
     let bound = heap((4usize << 20).saturating_add(runs).saturating_add(171_072));
     let long = repeat(&link("", 2083), 2000);
     fed(
@@ -621,7 +626,7 @@ pub fn b15(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().history(1 << 20);
     let bound = heap(
         history_peak(setup.history)
-            .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * 48))
+            .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * RUN))
             .saturating_add(171_072),
     );
     let mut row = Vec::new();
@@ -634,7 +639,7 @@ pub fn b15(scale: Scale, chunk: usize) -> Found {
     // the screen's runs (two grids of 50 rows of at most 256 runs, room
     // for twice that) and `Prints`.
     let most = history_term(setup.history)
-        .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * 48))
+        .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * RUN))
         .saturating_add(prints(&setup));
     fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
         (p.live() <= most)
@@ -674,11 +679,11 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
         return Err("no link sweep".into());
     }
     // The links' own memory, 4 MiB and 64 bytes each, their map slots and
-    // headers, and their runs, 32 bytes each (`link.rs` asserts it): one a
+    // headers, and their runs, `RUN` bytes each: one a
     // link printed, the short ones' 1,000 a scale.
     let runs = scale.times().saturating_mul(1000).saturating_add(2000);
     let links: usize = (4 << 20) + (64 + 24 + 16) * 2000 + (64 << 10);
-    let most = links.saturating_add(runs.saturating_mul(32));
+    let most = links.saturating_add(runs.saturating_mul(RUN));
     match transient.peak() {
         peak if peak <= most => Ok(()),
         peak => Err(format!(
