@@ -976,3 +976,15 @@ fn a_read_of_259_bytes_that_ends_on_a_dropped_answer_s_escape_returns() -> Resul
     assert_eq!((dropped, after, typed), (0, 1, true));
     Ok(())
 }
+
+/// B03, `next_side`'s clamp (sixel.rs, `>` to `<`): a small sixel's
+/// buffer grows by doubling to what it draws, not at once to the most a
+/// side may be (4096 by 2160 pixels, 35 MB).
+#[test]
+fn a_small_sixel_being_drawn_holds_a_small_buffer() -> Result {
+    let mut p = picturing(4, 10)?;
+    // Ten columns of a band, unfinished: the buffer is held while it draws.
+    let held = grown(|| Ok(p.process(b"\x1bPq#0~~~~~~~~~~")?))?;
+    assert!(held < 64 << 10, "{held} bytes held for 10 by 6 pixels");
+    Ok(())
+}
