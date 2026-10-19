@@ -1392,12 +1392,20 @@ impl Parser {
                 remaining = rest;
                 None
             } else if ground && byte < 0x20 && byte != 0x1b {
-                // A C0 control, as `ground` carries it out.
-                if self.control(byte, sink).is_err() {
-                    self.refuse();
+                // A C0 control, as `ground` carries it out; CR LF, which
+                // ends most lines, as one.
+                if let [b'\r', b'\n', after @ ..] = remaining {
+                    if self.screen.carriage_return_line_feed().is_err() {
+                        self.refuse();
+                    }
+                    remaining = after;
+                } else {
+                    if self.control(byte, sink).is_err() {
+                        self.refuse();
+                    }
+                    remaining = tail;
                 }
                 self.screen.forget_repeat();
-                remaining = tail;
                 None
             } else if ground
                 && byte >= 0x80

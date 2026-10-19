@@ -2345,6 +2345,20 @@ impl Screen {
         true
     }
 
+    /// CR then LF, as `control` carries out the one and then the other:
+    /// the pair that ends most lines, in one call.
+    pub(crate) fn carriage_return_line_feed(&mut self) -> Result<(), Error> {
+        self.break_cluster();
+        let new_line = self.mode(Mode::NewLine);
+        let g = self.grid_mut();
+        g.cursor.pending_wrap = false;
+        g.carriage_return();
+        match new_line {
+            true => self.new_line(),
+            false => self.linefeed(),
+        }
+    }
+
     pub(crate) fn control(&mut self, byte: u8) -> Result<(), Error> {
         if (8..=13).contains(&byte) {
             self.break_cluster();
