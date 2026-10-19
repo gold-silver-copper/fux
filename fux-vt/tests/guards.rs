@@ -988,3 +988,98 @@ fn a_small_sixel_being_drawn_holds_a_small_buffer() -> Result {
     assert!(held < 64 << 10, "{held} bytes held for 10 by 6 pixels");
     Ok(())
 }
+
+/// B19, `FrameScan::csi`'s `0x40..=0x7e if ignored` (parser.rs, the
+/// guard with `false`): a frame scan resumes, so a frame that comes in
+/// two reads is scanned for what one read of it is, no byte again.
+#[cfg(feature = "checks")]
+#[test]
+fn a_frame_in_two_reads_is_scanned_as_in_one() -> Result {
+    let p = Parser::new(Size::new(2, 10)?, 0)?;
+    let frame = b"\x1b[1?l\x1b[?2026l";
+    let mut whole = p.frame_scan();
+    let before = fux_vt::Work::now();
+    assert_eq!(whole.end(frame), Some(frame.len()));
+    let once = fux_vt::Work::now().since(before).scanned;
+    let mut split = p.frame_scan();
+    let before = fux_vt::Work::now();
+    assert_eq!(split.end(frame.get(..5).unwrap_or_default()), None);
+    assert_eq!(split.end(frame), Some(frame.len()));
+    let twice = fux_vt::Work::now().since(before).scanned;
+    assert_eq!(twice, once);
+    Ok(())
+}
+
+/// B39, `Cells::resize`'s `len < was` (cell.rs, `<=`): a resize to the
+/// same length changes nothing, its store's text included.
+#[test]
+fn a_resize_to_the_same_length_changes_nothing() -> Result {
+    let (first, second) = (times("a", 21), times("b", 21));
+    let mut cells = Cells::new(1)?;
+    assert!(cells.set(0, cell(&first)));
+    assert!(cells.set(0, cell(&second)));
+    let text = cells.text_len();
+    cells.resize(1, CellRef::default())?;
+    assert_eq!(cells.text_len(), text);
+    assert_eq!(cells.get(0).map(|c| c.contents()), Some(second.as_str()));
+    Ok(())
+}
+
+/// B25, `answer`'s `body.len() > limit` (decode.rs, `>=`): an OSC
+/// answer exactly at its 128 bytes, not ended yet, is held whole: its 130
+/// bytes decoded once and copied once to be held.
+#[cfg(feature = "checks")]
+#[test]
+fn an_osc_answer_at_its_limit_is_held_whole() {
+    let mut d = Decoder::default();
+    let mut out = Vec::new();
+    let mut read = b"\x1b]".to_vec();
+    read.extend([b'1'; 128]);
+    let before = fux_vt::Work::now();
+    d.bytes(&read, &mut out);
+    let keys = fux_vt::Work::now().since(before).keys;
+    assert!(out.is_empty());
+    assert_eq!(keys, 2 * 130);
+}
+
+/// B24, `Decoder::bytes`'s `bytes.len() > HELD` (decode.rs, `>=`): a
+/// read of exactly 258 bytes behind a held Escape is fed whole once: the
+/// 259 bytes decoded once, and copied once behind the Escape.
+#[cfg(feature = "checks")]
+#[test]
+fn a_read_of_258_bytes_behind_an_escape_is_fed_once() {
+    let mut d = Decoder::default();
+    let mut out = Vec::new();
+    d.bytes(b"\x1b", &mut out);
+    let mut read = vec![b'a'; 257];
+    read.push(0x1b);
+    let before = fux_vt::Work::now();
+    d.bytes(&read, &mut out);
+    let keys = fux_vt::Work::now().since(before).keys;
+    assert_eq!(out.len(), 257);
+    assert_eq!(keys, 2 * 259);
+}
+
+/// B33, `copies_needed`'s `per_row` filter (screen.rs, `>=`): REP where
+/// no copy fits a row (a wide glyph on a double-width row of a 3-column
+/// screen, below the scroll region) still makes its one copy, and spends
+/// it: a call of such REPs, each after a DECALN that spends the same,
+/// stops at the budget sooner than one without them.
+#[test]
+fn a_repeat_with_no_room_for_a_copy_spends_its_one_copy() -> Result {
+    let size = Size::new(1000, 3)?;
+    let round = "\x1b#8\x1b[1;2r\x1b[3;1H\x1b#6\u{4e2d}";
+    let stop_after = |rep: &str| -> Result<usize> {
+        let one = format!("{round}{rep}");
+        let input = times(&one, 100_000);
+        let mut p = Parser::new(size, 0)?;
+        match p.process_until_stop(input.as_bytes(), &mut Deaf)? {
+            Some((taken, Stop::Budget)) => Ok(taken.checked_div(one.len()).unwrap_or(0)),
+            other => Err(format!("stopped as {other:?}").into()),
+        }
+    };
+    let with = stop_after("\x1b[b")?;
+    let without = stop_after("")?;
+    assert!(with < without, "{with} rounds with REP, {without} without");
+    Ok(())
+}
