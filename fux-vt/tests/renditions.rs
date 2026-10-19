@@ -244,3 +244,17 @@ fn rectangles_stop_at_a_double_width_lines_end() -> Result {
     assert_eq!(replies, b"\x1bP1!~FE48\x1b\\");
     Ok(())
 }
+
+/// The cursor stays on its line's columns when the lines move under it:
+/// SU brings a double-width line to the cursor's row, and leaving the
+/// alternate screen comes back to one, and the cursor goes back to its
+/// last column, as setting the rendition takes it there (DECDWL, note 2).
+#[test]
+fn the_cursor_stays_on_a_double_width_line_brought_under_it() -> Result {
+    let p = run(4, 80, b"\x1b[2H\x1b#6\x1b[1;71H\x1b[S")?;
+    assert_eq!(rendition(&p, 0), Some(DoubleWidth));
+    assert_eq!(p.screen().cursor_position(), (0, 39), "SU");
+    let p = run(4, 80, b"\x1b#6\x1b[?47h\x1b[1;71H\x1b[?47l")?;
+    assert_eq!(p.screen().cursor_position(), (0, 39), "the primary screen");
+    Ok(())
+}
