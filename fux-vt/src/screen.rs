@@ -363,9 +363,12 @@ fn special_graphics(c: char) -> char {
 
 /// What a cell adds to a DECRQCRA checksum (`Screen::rectangle_checksum`),
 /// as xterm counts it by default (`xtermCheckRect`, `xtermCharSetDec`):
-/// its character, a DEC Special Graphics glyph as the code it was drawn
-/// with (0x60 to 0x7e), any other past Latin-1 or below a space as ESC; its
-/// combining marks as they are; and its VT100 attributes.
+/// its character, a DEC Special Graphics glyph past Latin-1 as the code it
+/// is drawn with (0x60 to 0x7e), any other past Latin-1 or below a space as
+/// ESC; its combining marks as they are; and its VT100 attributes. The
+/// cell keeps the character, not the set it came from (README): Special
+/// Graphics' °, ± and · count as Latin-1, DEC Supplemental's Œ, Ÿ and œ as
+/// ESC.
 fn checksum_of(cell: &CellRef<'_>) -> u16 {
     const ESC: u16 = 0x1b;
     let mut chars = cell.contents().chars();
