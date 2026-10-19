@@ -1835,21 +1835,50 @@ impl Grid {
             .unwrap_or_default()
             .to_vec();
         spend!(cells, cells.len().saturating_mul(2));
-        let text = self.texts.get(source).map(Text::exact).unwrap_or_default();
+        // The span's own text, each spilled cell's, not the whole row's:
+        // a row of long clusters holds far more than a few cells copy.
+        let mut held = String::new();
+        let texts: Vec<std::ops::Range<usize>> = {
+            let source = self.texts.get(source);
+            (cells.iter())
+                .map(|cell| {
+                    let start = held.len();
+                    if cell.is_spilled() {
+                        held.push_str(source.map_or("", |t| t.of(cell)));
+                    }
+                    start..held.len()
+                })
+                .collect()
+        };
+        spend!(text, held.len());
+        let text_of = |i: usize| texts.get(i).and_then(|r| held.get(r.clone())).unwrap_or("");
         let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let mut changed = false;
         if let Some(mut line) = self.line(target) {
             let olds = line.cells.get(span.clone()).unwrap_or_default();
-            changed =
-                (cells.iter().zip(olds)).any(|(cell, old)| !old.same_as(line.text, cell, &text));
-            if changed {
+            changed = (cells.iter().zip(olds).enumerate())
+                .any(|(i, (cell, old))| !old.holds(line.text, cell, text_of(i)));
+            // Clusters over clusters of their size take over their text
+            // where it lies, which needs no room.
+            let in_place = (cells.iter().enumerate())
+                .zip(span.clone())
+                .all(|((i, cell), at)| !cell.is_spilled() || line.replaces(at, text_of(i).len()));
+            if changed && in_place {
+                for (i, (at, cell)) in span.clone().zip(&cells).enumerate() {
+                    if cell.is_spilled() {
+                        line.replace(at, *cell, text_of(i));
+                    } else if let Some(slot) = line.cells.get_mut(at) {
+                        *slot = *cell;
+                    }
+                }
+            } else if changed {
                 // Written a cell at a time into a row whose text is full,
                 // each spilled cell would compact the row (B35): the span
                 // is blanked and the row compacted once first, as DECCRA's.
                 line.clear_for(span.clone());
-                for (at, cell) in span.clone().zip(&cells) {
+                for (i, (at, cell)) in span.clone().zip(&cells).enumerate() {
                     if cell.is_spilled() {
-                        line.set(at, *cell, text.of(cell));
+                        line.set(at, *cell, text_of(i));
                     } else if let Some(slot) = line.cells.get_mut(at) {
                         *slot = *cell;
                     }
