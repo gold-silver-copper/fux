@@ -52,11 +52,52 @@ pub fn read() -> Result<Reading, String> {
             .map(|kib| kib.saturating_mul(1024))
             .ok_or(format!("/proc/self/status: no {name}"))
     };
+    #[cfg(target_env = "gnu")]
+    let malloc = Some(glibc::malloc_in_use());
+    #[cfg(not(target_env = "gnu"))]
+    let malloc = None;
     Ok(Reading {
         footprint: field("RssAnon:")?,
         resident: field("VmRSS:")?,
-        malloc: None,
+        malloc,
     })
+}
+
+/// glibc's malloc, read as macOS's zones are: what the pages of RssAnon
+/// can't say (they are whole pages, and keep what is freed).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[expect(
+    unsafe_code,
+    reason = "glibc's allocator is read through its C interface, and only here"
+)]
+mod glibc {
+    /// The bytes malloc has handed out and not taken back, every arena's
+    /// and those mapped alone (`mallinfo2`'s `uordblks` and `hblkhd`).
+    pub fn malloc_in_use() -> u64 {
+        // SAFETY: mallinfo2 takes no argument and returns its counts by
+        // value; it only reads the allocator's state, under its locks.
+        let info = unsafe { libc::mallinfo2() };
+        u64::try_from(info.uordblks.saturating_add(info.hblkhd)).unwrap_or(u64::MAX)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// malloc counts what it hands out in small pieces, which whole
+        /// pages read only roughly: 64 MiB in 1 KiB allocations reads as
+        /// at least 0.9 of that, and freed, falls back.
+        #[test]
+        fn small_allocations_show_in_malloc() {
+            let before = super::malloc_in_use();
+            let blocks: Vec<Vec<u8>> = (0..65_536).map(|_| vec![1u8; 1024]).collect();
+            let during = super::malloc_in_use();
+            assert!(
+                during.saturating_sub(before) >= (64 << 20) / 10 * 9,
+                "{before} {during}"
+            );
+            drop(blocks);
+            assert!(super::malloc_in_use() < during, "freed, it falls back");
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
