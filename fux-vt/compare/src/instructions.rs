@@ -85,6 +85,24 @@ struct Task {
     engine: usize,
     workload: usize,
     baseline: bool,
+    /// The paired round it is of.
+    round: usize,
+}
+
+/// A column's counts of one workload, runs and baselines, each by its
+/// round.
+type Rounds = [Vec<(usize, i64)>; 2];
+
+/// A column's counts of one workload by round, runs and baselines, as
+/// pairs of the rounds whose run and baseline were both counted: a round
+/// with either failed is left out, so no run is paired with another
+/// round's baseline.
+fn paired([runs, baselines]: &Rounds) -> [Vec<i64>; 2] {
+    let base: std::collections::BTreeMap<usize, i64> = baselines.iter().copied().collect();
+    (runs.iter())
+        .filter_map(|(round, run)| Some((*run, *base.get(round)?)))
+        .unzip::<i64, i64, Vec<i64>, Vec<i64>>()
+        .into()
 }
 
 /// An engine's count of one workload, by paired rounds, as fux-bench
@@ -176,7 +194,7 @@ pub fn run(
         })
         .collect::<Result<_, String>>()?;
     let mut tasks = Vec::new();
-    for _ in 0..repeats.max(1) {
+    for round in 0..repeats.max(1) {
         for workload in 0..workloads.len() {
             for engine in 0..columns.len() {
                 for baseline in [false, true] {
@@ -184,6 +202,7 @@ pub fn run(
                         engine,
                         workload,
                         baseline,
+                        round,
                     });
                 }
             }
@@ -240,7 +259,8 @@ pub fn run(
     results.sort_by_key(|(i, _)| *i);
 
     // Each engine's and workload's counts, runs and baselines.
-    let mut counts = vec![vec![[Vec::new(), Vec::new()]; workloads.len()]; columns.len()];
+    let mut counts: Vec<Vec<Rounds>> =
+        vec![vec![[Vec::new(), Vec::new()]; workloads.len()]; columns.len()];
     // The rows each column's engine held after a feed, read back.
     let mut held = vec![vec![None; workloads.len()]; columns.len()];
     let mut failed = Vec::new();
@@ -273,7 +293,10 @@ pub fn run(
                     .and_then(|c| c.get_mut(task.workload))
                     .and_then(|c| c.get_mut(usize::from(task.baseline)))
                 {
-                    list.push(i64::try_from(run.instructions).unwrap_or(i64::MAX));
+                    list.push((
+                        task.round,
+                        i64::try_from(run.instructions).unwrap_or(i64::MAX),
+                    ));
                 }
             }
             Err(e) => failed.push(format!(
@@ -327,7 +350,8 @@ pub fn run(
             let mut per_engine = serde_json::Map::new();
             let mut held_line = String::new();
             for (c, kind) in &here {
-                let counted = counts.get(*c).and_then(|v| v.get(w));
+                let counted = counts.get(*c).and_then(|v| v.get(w)).map(paired);
+                let counted = counted.as_ref();
                 let cell = counted.and_then(|[full, base]| side(full, base));
                 let rows_held = held.get(*c).and_then(|h| h.get(w)).cloned().flatten();
                 let _ = write!(held_line, " {:>10}", rows_held.as_deref().unwrap_or("-"));
@@ -446,6 +470,9 @@ mod tests {
         assert_eq!(super::side(&[100, 104], &[100, 101]), None);
         assert_eq!(super::side(&[90], &[100]), None);
         assert_eq!(super::side(&[], &[100]), None);
+        // Round 1's run and round 0's baseline failed: round 2 pairs alone.
+        let paired = super::paired(&[vec![(0, 50), (2, 70)], vec![(1, 10), (2, 20)]]);
+        assert_eq!(paired, [vec![70], vec![20]]);
     }
 
     /// A workload made alone is the one `bench` makes among all of them.

@@ -22,7 +22,7 @@
 # mouse menus, VT52's level-3 check, xterm's DECRQSS menu; and at level 2,
 # DECCIR (11.2.5.3.1) and DECRQUPSS (11.2.5.5), which vttest offers from
 # level 3. Real xterm 411 at level 4 passes 70 of its 83
-# (results/final/f/vttest-xterm.txt).
+# (`release/vttest.sh xterm OUT` lists them).
 
 fux-vt count 54
 

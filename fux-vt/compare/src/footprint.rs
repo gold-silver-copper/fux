@@ -264,6 +264,10 @@ fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
         // longer found it full.
         let now = vt.history_len().unwrap_or(0);
         if count > 1 && now <= held && held > 0 {
+            eprintln!(
+                "footprint: {name} at {cols} columns fills its history's budget at {held} \
+                 rows, before {HISTORY}: measured there"
+            );
             break;
         }
         held = now;
