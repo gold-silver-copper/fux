@@ -525,18 +525,14 @@ needs = ["libvterm 0.3.3's source (compare's run.sh fetches it into ~/.cache/fux
 [[check]]
 name = "release-vttest"
 schedule = "release"
-command = "vttest at 24x80.80 per engine, its 48 self-check lines from its log, beside vttest-expected.txt"
-needs = ["vttest 20251205 (references/fetch.sh)", "a PTY host in compare"]
-wired = false
-why = "compare has no PTY host for it yet"
+command = "fux-vt/compare/release/vttest.sh fux OUT, then vttest.sh xterm OUT: vttest 2.7 live at 24x80.80 in a fux pane (FUX's build) and in real xterm 411 under Xvfb, walked by release/vttest.keys through vttest's own command file, its self-checks counted from its log by release/vttest.py; fux-vt's beside fux-vt/compare/vttest-expected.txt (about 5 minutes each)"
+needs = ["vttest 20251205 (references/fetch.sh, or VTTEST_TGZ)", "a C compiler", "fux built in release (FUX)", "xterm 411", "Xvfb"]
 
 [[check]]
 name = "release-ucs-detect"
 schedule = "release"
-command = "ucs-detect in a pane, scored per category"
-needs = ["ucs-detect under $S"]
-wired = false
-why = "not wired yet"
+command = "fux-vt/compare/release/ucs-detect.sh OUT fux 81: ucs-detect 2.3.8 in a fux pane (FUX's build), each category scored beside its authority, the failing languages with why; exit 1 below 81 of 85 languages (about 1 minute)"
+needs = ["ucs-detect 2.3.8 and wcwidth 0.9.2 by pip install --target (UCS_DETECT_PY)", "fux built in release (FUX)"]
 
 [[check]]
 name = "release-census-payloads"
@@ -547,10 +543,8 @@ needs = ["perf (instructions:u)", "the census payload data (bench/payloads)"]
 [[check]]
 name = "release-alacritty-ref"
 schedule = "release"
-command = "alacritty's ref tests and JediTerm's data, against real xterm"
-needs = ["xterm 411"]
-wired = false
-why = "not wired yet"
+command = "fux-vt/compare/release/refs.sh OUT: alacritty's ref tests (54214706) and JediTerm's test data (1b354a63), fetched pinned into references/suites/, in a fux pane and in real xterm 411, scored beside each suite's own screens and xterm's; exit 1 on a difference from xterm that release/refs-expected.txt does not list (about 1 minute)"
+needs = ["xterm 411", "Xvfb", "git and the network for the first fetch", "fux built in release (FUX)"]
 
 [[check]]
 name = "release-xterm-keys"
