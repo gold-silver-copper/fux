@@ -1785,18 +1785,23 @@ impl Session {
 
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
+    /// What a program wrote as it exited may still be on its terminal, or
+    /// read and waiting for the pane's next turns (`Pane::has_unread`): it
+    /// is told exited once all of it is on its screen, from the turn that
+    /// reads the last of it (`Session::fire`).
     pub fn exited(&mut self, id: PaneId, ended: Ended) {
         let status = process::shell_status(ended);
-        // What a program wrote as it exited may still be on its terminal,
-        // unread: its last screen is read whole before it is kept.
         let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
-        let left = program.map(|p| unread(&p.process)).unwrap_or_default();
-        if !left.is_empty() {
+        let (program, left) = (program.is_some(), program.map(|p| unread(&p.process)));
+        if let Some(left) = left.filter(|left| !left.is_empty()) {
             self.output(id, &left);
         }
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
+        if program && pane.has_unread() {
+            return;
+        }
         match pane.runs {
             Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
             Runs::Program(_) => {
@@ -1840,7 +1845,15 @@ impl Session {
                 .into_iter()
                 .for_each(|p| p.input.type_now()),
             Timer::Frame(id) => self.read_with(id, Pane::release_frame),
-            Timer::Unread(id) => self.read_with(id, Pane::read_unread),
+            Timer::Unread(id) => {
+                self.read_with(id, Pane::read_unread);
+                // A program that exited with output unread exits now, if
+                // the last of it is read.
+                let pane = self.panes.get(&id).filter(|p| !p.has_unread());
+                if let Some(ended) = pane.and_then(|p| p.process.child()?.leader.exited()) {
+                    self.exited(id, ended);
+                }
+            }
             Timer::Pace(id) => (self.panes.get_mut(&id))
                 .into_iter()
                 .for_each(|p| p.release_paced(Instant::now())),
@@ -3922,6 +3935,58 @@ mod tests {
         s.buffers.push_front("x".into());
         let pasted = run(&mut s, "%2 0 paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
+        Ok(())
+    }
+
+    /// A program that exits with output past a read budget still unread
+    /// (`Pane::has_unread`) is at work until it is read, and exited only
+    /// then, its last screen whole: a wait is never told it exited on a
+    /// screen of before. Each REP is spent as 65,535 copies: 2,000 of them
+    /// spend a budget.
+    #[test]
+    fn a_program_exits_once_its_output_is_read() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        let argv = ["/bin/true".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+        (s.panes.get_mut(&id).ok_or("the pane")?).process = Process::Reading(child);
+        let exited = |s: &Session| {
+            (s.panes.get(&id))
+                .and_then(|p| p.process.child()?.leader.exited())
+                .is_some()
+        };
+        let until = crate::after(Instant::now(), Duration::from_secs(10));
+        while !exited(&s) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut flood: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
+            .flatten()
+            .copied()
+            .collect();
+        flood.extend_from_slice(b"\x1b[2J\x1b[HDONE");
+        s.output(id, &flood);
+        s.exited(id, Ended::Exited(0));
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert!(pane.has_unread(), "the budget stopped no call");
+        let state = crate::ready::state(pane, Instant::now(), None);
+        assert_eq!(state, crate::ready::State::Busy);
+        let mut turns = 0u32;
+        while s.panes.get(&id).is_some_and(Pane::has_unread) && turns < 100 {
+            s.fire(crate::session::Timer::Unread(id));
+            turns = turns.saturating_add(1);
+        }
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert_eq!(
+            crate::ready::state(pane, Instant::now(), None),
+            crate::ready::State::Exited(Ended::Exited(0))
+        );
+        let text = pane
+            .screen()
+            .rows()
+            .map(|r| r.cells_text())
+            .collect::<String>();
+        assert!(text.contains("DONE"), "{text:?}");
         Ok(())
     }
 
