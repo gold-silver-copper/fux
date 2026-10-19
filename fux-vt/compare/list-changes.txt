@@ -7,6 +7,10 @@
 # test added to a list also says which engines pass it (--esctest DIR
 # names them from esctest's JSON) and why neither a standard nor xterm
 # decides it.
+#
+# cases-differing, corpus-replies-differ and corpus-reply-changes were
+# judged lists at checkpoint 0 that its freeze left out; lists-c0.json has
+# them as c7f4b338's source had them, so only their changes since are here.
 corpus-statuses nvim-diagnostics a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
 corpus-statuses nvim-diff a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
 corpus-statuses nvim-help a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
@@ -61,3 +65,33 @@ ledger corpus:nvim-visual decision 874 (KEY-22, decision 400): retagged allows b
 ledger corpus:nvim-wide decision 874 (KEY-22, decision 400): retagged allows by the kitty keyboard protocol, "Detection of support for this protocol": "applications can detect such implementations by first setting the desired progressive enhancements and then querying for the current progressive enhancement"; the recording differs only in the kitty keyboard flags (its one corpus exception covers that field alone), and fux-vt follows; counterexample: a terminal that implements no event types and reports flag 2 claims what it does not send
 ledger esctest:DECSETTests.test_DECSET_MoreFix decision 911 (agent K): retagged departs by DEC STD 070, Appendix D.6.1 (p. D-13/D-14): "The Last Column Flag should also be reset by executing any control which potentially changes the Active Position from the end-of-line position. These controls include the following: ... HORIZONTAL_TAB"; the test's mode-41-reset half expects HT to keep the pending wrap; counterexample: a terminal that follows D.6.1 prints the glyph after HT in the last column, failing "At Point(x=1, y=5) expected '2'"
 ledger esctest:DECRQSSTests.test_DECRQSS_DECSCL decision 911 (agent K): retagged allows by DEC STD 070, DECSCL note 4: "Attempts to select conformance levels that are unsupported by the device will be ignored."; the test selects level 5 and expects the maximum level, true only of a level-4 device; counterexample: a VT320 (level 3, with DECRQSS) ignores DECSCL 65 and answers 63;1"p
+corpus-replies-differ fish a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ fish-complete a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ fish-history a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ fish-small a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ lazygit a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ lazygit-small a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ lazygit-stage a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-diagnostics a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-diff a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-help a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-insert a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-netrw a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-resize a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-scroll a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-search a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-small a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-split a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-tabs a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-terminal a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-unicode a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-visual a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ nvim-wide a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim-diff a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim-help a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim-insert a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim-resize a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim-small a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim-terminal a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
+corpus-replies-differ vim-unicode a871f47d (KEY-14, PAR-15): XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded
