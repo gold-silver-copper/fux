@@ -20,7 +20,9 @@ Runs the working tree's fux-vt beside fux-vt at the commit Cargo.lock pins
 (diff/oracle.sh pins it for the run, to the latest master unless told another),
 comparing everything its API shows after every step: over every corpus
 recording (as fux sets up a pane, and with every option off; each step in
-pieces of up to 2048 bytes), --cases random cases (default 10000), --streams
+pieces of up to 2048 bytes; and the working tree's worst 4 KiB read and a
+resize of a full history, in work units, held to the ceiling U), --cases
+random cases (default 10000), --streams
 resize-heavy streams with history full (default 50), the limits, and
 --cells runs of the standalone types (default 300). A difference is shrunk
 for up to --shrink seconds (default 60) and written to diff/target/oracle/
@@ -280,6 +282,7 @@ fn run(o: &Options) -> Result<bool, String> {
             ));
         }
         alike &= cases_part("corpus", jobs, o);
+        alike &= part("ceiling", Instant::now(), fux_vt_oracle::ceiling::check());
     }
     let jobs = inputs::random_cases(o.seed ^ 0x5241_4e44, o.cases)
         .into_iter()

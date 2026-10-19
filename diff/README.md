@@ -175,6 +175,13 @@ compared by number); `process` and `process_with_replies`, which are
 - **The corpus:** every recording in `fux-vt/compare/corpus/`, set up as a
   fux pane and with every option off, each step cut into pieces of 1 to
   2,048 bytes.
+- **The ceiling,** with the corpus: the working tree's fux-vt alone, as a
+  pane, each recording read 4 KiB at a time as fux reads a pane's output
+  (`process_until_stop` until the read is taken): the call that does the
+  most work, in fux-vt's work units (`Work::cost`); and a resize of a full
+  history at 50×200 to 80 columns, and back. Each is printed as a share of
+  the per-call ceiling U (`Work::CEILING`, 50 ms where the weights were
+  measured), and past it the run fails.
 - **Random cases** from fux-vt-compare's families
   (`fux-vt/compare/src/families.rs`, included by path, so a new family is
   drawn here too) at random sizes, histories and options, with resizes,

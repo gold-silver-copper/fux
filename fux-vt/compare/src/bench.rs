@@ -27,6 +27,9 @@
 //! Every heading and the JSON carry the fairness record: the input's
 //! SHA-256, the chunk size, the setup, reflow and recording, that no read is
 //! timed, in or out of process, the CPU set and the repeats.
+//!
+//! `NAME@N` is workload NAME fed N bytes a call instead of [`CHUNK`]
+//! (`bench ascii@1 ascii@64 ascii@16384 ascii@65536`).
 use crate::engine::{ENGINES, Kind, SUBJECT, Setup};
 use crate::rng::Rng;
 use std::fmt::Write;
@@ -227,6 +230,8 @@ pub struct Load {
     /// Where in `bytes` the terminal is resized, and to what: a recording's
     /// resizes, and each recording's own size in the corpus all in turn.
     pub resizes: Vec<(usize, u16, u16)>,
+    /// The bytes an engine is given a call: [`CHUNK`], or the name's `@N`.
+    pub chunk: usize,
 }
 
 /// A part of a load's bytes, and the size, rows and columns, the terminal
@@ -247,13 +252,14 @@ impl Load {
         out
     }
 
-    /// Feeds it to `engine` `chunk` bytes at a time, resized where it is.
-    pub fn feed(&self, engine: &mut dyn crate::engine::Engine, chunk: usize) -> Result<(), String> {
+    /// Feeds it to `engine` [`Load::chunk`] bytes at a time, resized where
+    /// it is.
+    pub fn feed(&self, engine: &mut dyn crate::engine::Engine) -> Result<(), String> {
         for (size, bytes) in self.parts() {
             if let Some((rows, cols)) = size {
                 engine.resize(rows, cols)?;
             }
-            engine.feed(bytes, chunk)?;
+            engine.feed(bytes, self.chunk)?;
         }
         Ok(())
     }
@@ -341,6 +347,35 @@ pub fn names() -> Result<Vec<(String, String)>, String> {
 /// fux-bench feeds it) or `corpus:NAME` (one recording at its size, with
 /// its resizes).
 pub fn load(name: &str, total: usize) -> Result<Load, String> {
+    let (base, chunk) = chunked(name)?;
+    let mut load = unchunked(base, total)?;
+    if chunk != CHUNK {
+        load.about = format!("{}, {chunk} bytes a call", load.about);
+    }
+    load.name = name.to_owned();
+    load.chunk = chunk;
+    Ok(load)
+}
+
+/// A workload's name without its `@N`, and the N bytes a call it names
+/// (else [`CHUNK`]); an `@` with no N of at least 1 is an error.
+fn chunked(name: &str) -> Result<(&str, usize), String> {
+    match name.rsplit_once('@') {
+        None => Ok((name, CHUNK)),
+        Some((base, n)) => match n.parse::<usize>() {
+            Ok(n) if n > 0 => Ok((base, n)),
+            _ => Err(format!("{name:?}: @N takes bytes a call, at least 1")),
+        },
+    }
+}
+
+/// The bytes a call the named workload is fed.
+pub fn chunk_of(name: &str) -> usize {
+    chunked(name).map_or(CHUNK, |(_, n)| n)
+}
+
+/// [`load`] of a name without `@N`.
+fn unchunked(name: &str, total: usize) -> Result<Load, String> {
     if let Some((_, about, make)) = WORKLOADS.iter().find(|(n, _, _)| *n == name) {
         return Ok(Load {
             name: name.to_owned(),
@@ -349,6 +384,7 @@ pub fn load(name: &str, total: usize) -> Result<Load, String> {
             cols: COLS,
             bytes: make(&mut Rng::new(1), total),
             resizes: Vec::new(),
+            chunk: CHUNK,
         });
     }
     if let Some(bytes) = census::make(name, &payloads(), total) {
@@ -364,6 +400,7 @@ pub fn load(name: &str, total: usize) -> Result<Load, String> {
             cols: census::COLS,
             bytes: bytes?,
             resizes: Vec::new(),
+            chunk: CHUNK,
         });
     }
     let recordings = crate::corpus::recordings(&[])?;
@@ -386,6 +423,7 @@ pub fn load(name: &str, total: usize) -> Result<Load, String> {
             cols: first.cols,
             bytes,
             resizes,
+            chunk: CHUNK,
         });
     }
     let one = name
@@ -401,20 +439,33 @@ pub fn load(name: &str, total: usize) -> Result<Load, String> {
         cols: one.cols,
         bytes,
         resizes,
+        chunk: CHUNK,
     })
 }
 
 /// The workloads `names` asks for, by name: with none, the synthetic ones
 /// and the corpus all together; `corpus` names every recording, all
-/// together and each alone; `census` every census payload.
+/// together and each alone; `census` every census payload; `NAME@N` that
+/// one fed N bytes a call, after the others.
 pub fn chosen(names: &[String]) -> Result<Vec<String>, String> {
+    let (chunked, names): (Vec<String>, Vec<String>) =
+        names.iter().cloned().partition(|n| n.contains('@'));
+    for n in &chunked {
+        let (base, _) = self::chunked(n)?;
+        if !self::names()?.iter().any(|(name, _)| name == base) {
+            return Err(format!("no workload {base:?} (in {n:?})"));
+        }
+    }
+    if names.is_empty() && !chunked.is_empty() {
+        return Ok(chunked);
+    }
     let every = self::names()?;
     let picks = |n: &str, name: &str| {
         n == name
             || (n == "corpus" && name.starts_with("corpus"))
             || (n == "census" && census::PAYLOADS.iter().any(|p| p.name == name))
     };
-    for n in names {
+    for n in &names {
         if !every.iter().any(|(name, _)| picks(n, name)) {
             let known: Vec<&str> = every.iter().map(|(name, _)| name.as_str()).collect();
             return Err(format!(
@@ -433,6 +484,7 @@ pub fn chosen(names: &[String]) -> Result<Vec<String>, String> {
                 names.iter().any(|n| picks(n, name))
             }
         })
+        .chain(chunked)
         .collect())
 }
 
@@ -539,7 +591,7 @@ fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Meas
         for _ in 0..RUNS {
             let mut engine = retention.make(kind, &setup).ok_or("no setup")??;
             let started = Instant::now();
-            load.feed(engine.as_mut(), CHUNK)?;
+            load.feed(engine.as_mut())?;
             let feed = started.elapsed();
             let started = Instant::now();
             std::hint::black_box(engine.snapshot(0)?);
@@ -587,7 +639,7 @@ fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String>
             let mut rest = part;
             while !rest.is_empty() {
                 let (now, later) = rest
-                    .split_at_checked(CHUNK.min(rest.len()))
+                    .split_at_checked(load.chunk.min(rest.len()))
                     .unwrap_or((rest, &[]));
                 parser
                     .process_with_replies(now, |r| {
@@ -729,6 +781,7 @@ pub fn run_to(
         inputs.push(serde_json::json!({
             "name": load.name, "about": load.about, "bytes": load.bytes.len(),
             "sha256": sha256(&load.bytes)?, "rows": load.rows, "cols": load.cols,
+            "chunk_bytes": load.chunk,
         }));
         for ((retention, in_process), out) in tables.iter().zip(&mut results) {
             let mut columns: Vec<Column> = Vec::new();
@@ -770,7 +823,7 @@ pub fn run_to(
         };
         println!(
             "\n{} ({}), {place}: MB/s, the best of {RUNS} feeds, the timer around the feed alone \
-             (no read timed); {CHUNK}-byte chunks; {mb} MiB per workload; {ROWS}x{COLS} \
+             (no read timed); {CHUNK}-byte chunks (NAME@N: N); {mb} MiB per workload; {ROWS}x{COLS} \
              (recordings at their size); fux-vt reflow on, print recording off but in \
              fux-vt+prints; CPUs {cpus}; ! = the contract failed (not ranked)",
             retention.name(),
@@ -899,6 +952,21 @@ pub fn run_to(
 mod tests {
     use super::Retention;
     use crate::engine::{ENGINES, SUBJECT, Setup};
+
+    /// `NAME@N` is NAME fed N bytes a call, chosen after the others; a bad
+    /// N or an unknown NAME is refused.
+    #[test]
+    fn a_workload_at_a_chunk_size_is_fed_that_many_bytes_a_call() -> Result<(), String> {
+        let names = ["ascii".to_owned(), "ascii@1".to_owned()];
+        assert_eq!(super::chosen(&names)?, names);
+        let load = super::load("ascii@64", 1 << 10)?;
+        assert_eq!((load.name.as_str(), load.chunk), ("ascii@64", 64));
+        assert_eq!(super::load("ascii", 1 << 10)?.chunk, super::CHUNK);
+        for wrong in ["ascii@0", "ascii@x", "nothing@64"] {
+            assert!(super::chosen(&[wrong.to_owned()]).is_err(), "{wrong}");
+        }
+        Ok(())
+    }
 
     /// A short recording that resizes is repeated only until it has
     /// resized [`super::RESIZES_AT_MOST`] times, as fux-bench repeats it.

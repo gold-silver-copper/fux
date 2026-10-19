@@ -17,7 +17,10 @@
 //!   fux-vt-compare, a resize-heavy stream with history full, and the
 //!   limits.
 //! - `shrink`: the smallest case that still differs.
+//! - `ceiling`: the working tree's worst call over the corpus, and a resize
+//!   of a full history, in fux-vt's work units, held to the ceiling U.
 pub mod case;
+pub mod ceiling;
 pub mod cells;
 pub mod inputs;
 pub mod model;
