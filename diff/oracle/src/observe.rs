@@ -17,7 +17,9 @@
 //!   accessor does, read after each: every query's reply (DECRQM for every
 //!   mode, DSR, DA1/2/3, XTVERSION, DECXCPR, DECRQSS, DECRQCRA, kitty's
 //!   flags, the size reports, colour queries); the saved cursor (DECRC)
-//!   and the character sets (G0 and G1 drawn); the tab stops; the cluster
+//!   and the character sets (G0 and G1 drawn); the tab stops; each row's
+//!   end (a line rendition halves it); what a selective erase leaves (the
+//!   protected cells, DECSEL and DECSED); the cluster
 //!   the next character would join and the character REP repeats; the
 //!   kitty keyboard stack, popped, and the alternate screen's.
 use crate::Side;
@@ -340,6 +342,32 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
     let _ = copy.process(b"\x1b[3Z", &mut heard);
     let _ = write!(stops, "back {}", copy.state().cursor.1);
     out.push(format!("tab stops: {stops} {heard:?}"));
+    // Each row's end, where the cursor stops going right, which a line
+    // rendition halves (HAR-46): with origin mode off, row by row.
+    let mut ends = String::new();
+    let mut copy = s.clone();
+    let _ = copy.process(b"\x1b[?6l\x1b[?69l", &mut heard);
+    let (rows, _) = copy.state().size;
+    for y in 0..rows.min(400) {
+        let at = format!("\x1b[{};65535H", y.saturating_add(1));
+        let _ = copy.process(at.as_bytes(), &mut heard);
+        let _ = write!(ends, "{} ", copy.state().cursor.1);
+    }
+    out.push(format!("row ends: {ends}"));
+    // The protected cells: what a selective erase of the screen leaves
+    // (DECSED), and of the cursor's line (DECSEL).
+    let mut copy = s.clone();
+    out.push(poke(&mut copy, "DECSEL", b"\x1b[?2K"));
+    let _ = copy.process(b"\x1b[?2J", &mut heard);
+    let mut kept = String::new();
+    let mut row = Row::default();
+    let history = copy.state().history_len;
+    for y in 0..usize::from(rows.min(400)) {
+        if copy.row(history.saturating_add(y), &mut row) {
+            let _ = write!(kept, "{:?} ", row.text);
+        }
+    }
+    out.push(format!("after DECSED: {kept}"));
     for _ in 0..3 {
         out.push(poke(&mut copy, "kitty pop", b"\x1b[<u"));
     }

@@ -90,7 +90,7 @@ pub const KIND: Kind = Kind {
         synchronized_output: false,
         in_band_resize: false,
         link_group: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -382,6 +382,7 @@ impl Tmux {
             reports: self.pane.reports(),
             screen: lines,
             history,
+            device: Default::default(),
         })
     }
 }

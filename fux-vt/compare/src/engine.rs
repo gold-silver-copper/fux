@@ -120,6 +120,14 @@ pub struct Can {
     pub title: bool,
     pub reports: bool,
     pub history: bool,
+    /// The cursor's shape (DECSCUSR's Ps).
+    pub cursor_shape: bool,
+    /// The tab stops.
+    pub tab_stops: bool,
+    /// Each screen row's line rendition (DECSWL, DECDWL, DECDHL).
+    pub renditions: bool,
+    /// Which cells DECSCA or SPA protects from selective erase.
+    pub protection: bool,
 }
 
 impl Can {
@@ -157,6 +165,20 @@ impl Can {
         title: true,
         reports: true,
         history: true,
+        cursor_shape: true,
+        tab_stops: true,
+        renditions: true,
+        protection: true,
+    };
+
+    /// What only fux-vt's adapter reads of the device's state (HAR-46):
+    /// for an engine to set where it tells none of it.
+    pub const NO_DEVICE: Can = Can {
+        cursor_shape: false,
+        tab_stops: false,
+        renditions: false,
+        protection: false,
+        ..Can::ALL
     };
 
     /// What both can tell. A field the subject cannot tell is masked on
@@ -196,6 +218,10 @@ impl Can {
             title: self.title && other.title,
             reports: self.reports && other.reports,
             history: self.history && other.history,
+            cursor_shape: self.cursor_shape && other.cursor_shape,
+            tab_stops: self.tab_stops && other.tab_stops,
+            renditions: self.renditions && other.renditions,
+            protection: self.protection && other.protection,
         }
     }
 
@@ -234,6 +260,10 @@ impl Can {
             (self.title, "title"),
             (self.reports, "reports"),
             (self.history, "history"),
+            (self.cursor_shape, "cursor shape"),
+            (self.tab_stops, "tab stops"),
+            (self.renditions, "line renditions"),
+            (self.protection, "protection"),
         ];
         fields
             .iter()
@@ -307,6 +337,10 @@ impl Blanks {
             | Field::Wrapped
             | Field::Text
             | Field::Width
+            | Field::CursorShape
+            | Field::TabStops
+            | Field::Rendition
+            | Field::Protected
             | Field::Bg
             | Field::History
             | Field::HistoryWrapped => true,

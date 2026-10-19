@@ -112,7 +112,7 @@ pub const KIND: Kind = Kind {
     about: "Ghostty's terminal core, libghostty-vt, built from source by Zig",
     can: Can {
         link_group: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -249,6 +249,7 @@ impl Ghostty {
             reports: snapshot::reports(&self.replies.borrow()),
             screen,
             history,
+            device: Default::default(),
         })
     }
 }

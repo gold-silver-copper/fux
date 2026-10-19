@@ -287,8 +287,37 @@ impl Snapshot {
         for (_, wrapped) in &mut s.history {
             *wrapped &= can.wrapped;
         }
+        let d = &mut s.device;
+        if !can.cursor_shape {
+            d.cursor_shape = 0;
+        }
+        if !can.tab_stops {
+            d.tab_stops.clear();
+        }
+        if !can.renditions {
+            d.renditions.clear();
+        }
+        if !can.protection {
+            d.protected.clear();
+        }
         s
     }
+}
+
+/// What a terminal keeps that DA claims and a screen's text doesn't show
+/// (HAR-46): the cursor's shape, the tab stops, each screen row's line
+/// rendition and the cells protected from selective erase.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Device {
+    /// DECSCUSR's Ps for the shape: 0 and 1 as 1, the terminal's own as 7.
+    pub cursor_shape: u16,
+    /// The columns with a tab stop, zero-based.
+    pub tab_stops: Vec<u16>,
+    /// Each screen row's rendition: 0 single width, 1 double width, 2 the
+    /// top half of double height, 3 its bottom half.
+    pub renditions: Vec<u8>,
+    /// The protected cells, row and column.
+    pub protected: Vec<(u16, u16)>,
 }
 
 /// Everything compared, read from one terminal.
@@ -321,6 +350,7 @@ pub struct Snapshot {
     /// fux-vt's whole history, oldest first, and as many of Ghostty's most
     /// recent history rows: Ghostty bounds history in bytes, not rows.
     pub history: Vec<(String, bool)>,
+    pub device: Device,
 }
 
 /// Keeps the replies both terminals give alike: DSR 5n's `CSI 0 n` and
@@ -397,6 +427,10 @@ pub enum Field {
     Strikeout,
     History,
     HistoryWrapped,
+    CursorShape,
+    TabStops,
+    Rendition,
+    Protected,
 }
 
 impl Field {
@@ -437,6 +471,10 @@ impl Field {
             Field::Strikeout => can.strikeout,
             Field::History => can.history,
             Field::HistoryWrapped => can.history && can.wrapped,
+            Field::CursorShape => can.cursor_shape,
+            Field::TabStops => can.tab_stops,
+            Field::Rendition => can.renditions,
+            Field::Protected => can.protection,
         }
     }
 }
@@ -562,6 +600,36 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         Field::Reports,
         format!("{:?}", fux.reports),
         format!("{:?}", other.reports),
+    );
+    let (a, b) = (&fux.device, &other.device);
+    // fux-vt's own shape (7) is the terminal's, which it doesn't know.
+    if a.cursor_shape != 7 {
+        field(
+            "cursor shape".into(),
+            Field::CursorShape,
+            a.cursor_shape.to_string(),
+            b.cursor_shape.to_string(),
+        );
+    }
+    field(
+        "tab stops".into(),
+        Field::TabStops,
+        format!("{:?}", a.tab_stops),
+        format!("{:?}", b.tab_stops),
+    );
+    for (y, (ra, rb)) in a.renditions.iter().zip(&b.renditions).enumerate() {
+        field(
+            format!("row {y} rendition"),
+            Field::Rendition,
+            ra.to_string(),
+            rb.to_string(),
+        );
+    }
+    field(
+        "protected cells".into(),
+        Field::Protected,
+        format!("{:?}", a.protected),
+        format!("{:?}", b.protected),
     );
     // Which cells share a link, compared among the cells both give a link
     // with the same URI (a cell where they differ on it differs on its
@@ -826,6 +894,56 @@ pub fn side_by_side_beside(
 #[cfg(test)]
 mod tests {
     use super::{Cell, Field, Line, Snapshot, Style, Width};
+
+    /// The device's state DA claims is compared where an engine can tell
+    /// it, and with no one where it can't (HAR-46): a double-width row, a
+    /// tab stop, the cursor's shape and a protected cell.
+    #[test]
+    fn the_device_state_is_compared_where_it_is_told() {
+        let fux = Snapshot {
+            device: super::Device {
+                cursor_shape: 3,
+                tab_stops: vec![4, 8],
+                renditions: vec![1],
+                protected: vec![(0, 0)],
+            },
+            ..Snapshot::default()
+        };
+        let other = Snapshot {
+            device: super::Device {
+                cursor_shape: 1,
+                tab_stops: vec![8],
+                renditions: vec![0],
+                protected: vec![],
+            },
+            ..Snapshot::default()
+        };
+        let all = crate::engine::Can::ALL;
+        let fields: Vec<Field> = super::differences(&fux.masked(&all), &other.masked(&all))
+            .into_iter()
+            .map(|d| d.field)
+            .collect();
+        for f in [
+            Field::CursorShape,
+            Field::TabStops,
+            Field::Rendition,
+            Field::Protected,
+        ] {
+            assert!(fields.contains(&f), "{f:?} not compared: {fields:?}");
+        }
+        let none = crate::engine::Can::NO_DEVICE;
+        assert!(super::differences(&fux.masked(&none), &other.masked(&none)).is_empty());
+        // fux-vt's own shape, the terminal's (7), is compared with no one.
+        let own = Snapshot {
+            device: super::Device {
+                cursor_shape: 7,
+                ..super::Device::default()
+            },
+            ..Snapshot::default()
+        };
+        let shapes = super::differences(&own, &Snapshot::default());
+        assert!(shapes.iter().all(|d| d.field != Field::CursorShape));
+    }
 
     fn row(links: &[Option<(&str, &str)>]) -> Snapshot {
         let cells = links

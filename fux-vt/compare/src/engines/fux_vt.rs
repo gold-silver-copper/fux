@@ -1,6 +1,6 @@
 //! fux-vt, the subject, read into a snapshot.
 use crate::engine::{Engine, Setup};
-use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
+use crate::snapshot::{self, Cell, Color, Device, Line, Snapshot, Style, Width};
 use fux_vt::{Blink, CellRef, Event, Feature, Identity, Mode, Options, Parser, Sink};
 
 /// How the parser is set up: as ratty sets it up (reflow, an identity), with
@@ -177,10 +177,63 @@ impl Engine for Vt {
             reports: snapshot::reports(&self.heard.replies),
             screen,
             history,
+            device: device(&self.parser),
         })
     }
 
     fn replies(&mut self) -> Result<Vec<u8>, String> {
         Ok(self.heard.replies.clone())
+    }
+}
+
+/// The device's state fux-vt's API shows, and what only its answers to
+/// input do, read on copies: the tab stops by HT from the first column,
+/// and the protected cells by what a selective erase of the whole screen
+/// leaves (DECSED, `CSI ? 2 J`): those holding text (HAR-46).
+fn device(parser: &Parser) -> Device {
+    struct Deaf;
+    impl fux_vt::Sink for Deaf {}
+    let s = parser.screen();
+    let (rows, cols) = s.size().into();
+    let renditions = (0..rows)
+        .map(|y| match s.line_rendition(y) {
+            fux_vt::LineRendition::Single => 0,
+            fux_vt::LineRendition::DoubleWidth => 1,
+            fux_vt::LineRendition::DoubleHeightTop => 2,
+            fux_vt::LineRendition::DoubleHeightBottom => 3,
+        })
+        .collect();
+    let mut tabs = parser.clone();
+    let mut tab_stops = Vec::new();
+    // Margins and origin mode off first, as the stops are the screen's,
+    // and the row made single width, whose end would stop the tabs.
+    let _ = tabs.process_with(b"\x1b[?6l\x1b[?69l\x1b[r\x1b#5\r", &mut Deaf);
+    for _ in 0..cols {
+        let before = tabs.screen().cursor_position().1;
+        let _ = tabs.process_with(b"\t", &mut Deaf);
+        let at = tabs.screen().cursor_position().1;
+        if at <= before || at.saturating_add(1) >= cols {
+            break;
+        }
+        tab_stops.push(at);
+    }
+    let mut erased = parser.clone();
+    let _ = erased.process_with(b"\x1b[?2J", &mut Deaf);
+    let e = erased.screen();
+    let protected = (0..rows)
+        .flat_map(|y| (0..cols).map(move |x| (y, x)))
+        .filter(|&(y, x)| e.cell(y, x).is_some_and(|c| !c.contents().is_empty()))
+        .collect();
+    Device {
+        // Ps 0 and 1 are one shape, a blinking block, as 1; the terminal's
+        // own, which fux-vt doesn't know, as 7 (DECSCUSR 7 restores it),
+        // compared with no one.
+        cursor_shape: match s.cursor_shape().number() {
+            0 => 1,
+            n => n,
+        },
+        tab_stops,
+        renditions,
+        protected,
     }
 }

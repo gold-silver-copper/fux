@@ -17,7 +17,7 @@ const fn kind(name: &'static str, panel: bool) -> Kind {
     Kind {
         name,
         about: "not built",
-        can: Can::ALL,
+        can: Can::NO_DEVICE,
         blanks: Blanks::XTERM,
         panel,
         in_process: true,

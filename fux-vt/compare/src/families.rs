@@ -294,6 +294,24 @@ fn renditions(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+fn protection(r: &mut Rng) -> Vec<u8> {
+    match r.below(4) {
+        0 => pick(
+            r,
+            &["\x1b[1\"q", "\x1b[0\"q", "\x1b[2\"q", "\x1bV", "\x1bW"],
+        ),
+        1 => pick(
+            r,
+            &[
+                "\x1b[?J", "\x1b[?1J", "\x1b[?2J", "\x1b[?K", "\x1b[?1K", "\x1b[?2K",
+            ],
+        ),
+        2 => pick(r, &["\x1b[J", "\x1b[K", "\x1b[1K", "\x1b[3X"]),
+        _ => format!("\x1b[{};{}H", number(r), number(r)),
+    }
+    .into_bytes()
+}
+
 fn edit(r: &mut Rng) -> Vec<u8> {
     csi(r, &["@", "P", "L", "M"]).into_bytes()
 }
@@ -874,6 +892,20 @@ pub const FAMILIES: &[Family] = &[
         },
         ratty_only: false,
         generate: renditions,
+    },
+    Family {
+        name: "protection",
+        about: "DECSCA and SPA/EPA, then DECSED and DECSEL, ED, EL and ECH",
+        status: Status::Decided {
+            why: "DECSCA protects a glyph from DECSED and DECSEL, and SPA/EPA from ED, EL and ECH too (ISO 6429's protection), each glyph keeping its own, and a selective erase leaves each position its rendition (DEC STD 070, DECSCA, DECSED and DECSEL; ECMA-48 8.3.112 and 8.3.48), as fux-vt does; xterm gives the erased positions the pen's colours, and no engine of the panel but xterm keeps protection, so the test alone checks it (HAR-46, so that the oracle draws it)",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, DECSEL and DECSED",
+                test: "protection::selective_erase_leaves_each_position_its_rendition",
+            },
+        },
+        ratty_only: false,
+        generate: protection,
     },
     Family {
         name: "edit",

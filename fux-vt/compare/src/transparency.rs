@@ -104,6 +104,12 @@ pub const SHOWN: Can = Can {
     title: false,
     reports: false,
     history: false,
+    // The device's state is the pane's, which fux keeps for it; the
+    // client's terminal shows none of it but the cursor's shape.
+    cursor_shape: false,
+    tab_stops: false,
+    renditions: false,
+    protection: false,
 };
 
 /// The most the server reads from a pane at once (its read buffer).

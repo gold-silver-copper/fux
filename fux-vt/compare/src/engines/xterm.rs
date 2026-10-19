@@ -97,7 +97,7 @@
 //!   regional indicator are cells of their own.
 use crate::engine::{Blanks, CANNOT, Can, Engine, Kind, Setup};
 use crate::engines::pane::{self, Glyphs, Pane, Reader};
-use crate::snapshot::{Line, Snapshot};
+use crate::snapshot::{Device, Line, Snapshot};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -118,6 +118,9 @@ pub const KIND: Kind = Kind {
         link_uri: false,
         link_group: false,
         prompt: false,
+        // The shape by DECRQSS, the stops by DECTABSR, the renditions in the
+        // print; protection it can't tell.
+        protection: false,
         ..Can::ALL
     },
     blanks: Blanks::XTERM,
@@ -277,7 +280,8 @@ const ARRIVE: Duration = Duration::from_secs(10);
 /// Everything a snapshot asks, ending with the print.
 const QUERY: &[u8] = b"\x1b[?4h\x1b[?4l\x1b[6n\
 \x1b[?1$p\x1b[?6$p\x1b[?7$p\x1b[?25$p\x1b[?66$p\x1b[?1004$p\x1b[?2004$p\
-\x1b[?1049$p\x1b[?1047$p\x1b[?47$p\x1b[21t\x1bP$qr\x1b\\\x1bP$qs\x1b\\\x1b[?11i";
+\x1b[?1049$p\x1b[?1047$p\x1b[?47$p\x1b[21t\x1bP$qr\x1b\\\x1bP$qs\x1b\\\
+\x1bP$q q\x1b\\\x1b[2$w\x1b[?11i";
 
 /// The first patch with `printRawChars` (xterm's changelog, patch #397).
 /// An older xterm's print drops the second half of a wide character and
@@ -584,6 +588,7 @@ impl Xterm {
             }
         };
         let (top, left) = (margin('r'), margin('s'));
+
         // Rows end with CR; a row that is not soft-wrapped, with LF after.
         let mut rows: Vec<(Vec<u8>, bool)> = Vec::new();
         let mut rest = printed.as_slice();
@@ -607,7 +612,11 @@ impl Xterm {
         let mut reader = Reader::new(Glyphs::Xterm);
         let mut screen = Vec::new();
         let mut history = Vec::new();
+        let mut renditions = Vec::new();
         for (i, (text, wrapped)) in rows.iter().enumerate() {
+            if i >= first_screen {
+                renditions.push(rendition(text));
+            }
             let cells = reader.row(text, self.cols, &|_| 1);
             let line = Line {
                 cells,
@@ -646,6 +655,12 @@ impl Xterm {
             reports: self.pane.reports(),
             screen,
             history: history.into_iter().skip(skip).collect(),
+            device: Device {
+                cursor_shape: cursor_shape(&replies),
+                tab_stops: tab_stops(&replies, self.cols),
+                renditions,
+                protected: Vec::new(),
+            },
         })
     }
 }
@@ -723,6 +738,54 @@ impl Drop for Xterm {
         let _ = fs::remove_file(&self.print);
         pane::tidy();
     }
+}
+
+/// A printed row's line rendition, as xterm's print gives it (`ESC # 6`,
+/// `ESC # 3`, `ESC # 4` before the row's text), as fux-vt's adapter
+/// numbers them.
+fn rendition(row: &[u8]) -> u8 {
+    let has =
+        |code: &[u8]| (0..row.len()).any(|i| row.get(i..).is_some_and(|r| r.starts_with(code)));
+    if has(b"\x1b#6") {
+        1
+    } else if has(b"\x1b#3") {
+        2
+    } else if has(b"\x1b#4") {
+        3
+    } else {
+        0
+    }
+}
+
+/// DECSCUSR's Ps, from xterm's DECRQSS answer (`DCS 1 $ r Ps SP q ST`),
+/// 0 and 1, both a blinking block, as 1, as fux-vt's adapter gives them.
+fn cursor_shape(replies: &[u8]) -> u16 {
+    let text = String::from_utf8_lossy(replies);
+    let shape = text
+        .split("\x1bP1$r")
+        .find_map(|answer| answer.split_once(" q").map(|(ps, _)| ps.to_owned()))
+        .and_then(|ps| ps.parse::<u16>().ok())
+        .unwrap_or(0);
+    match shape {
+        0 => 1,
+        n => n,
+    }
+}
+
+/// The tab stops, from xterm's DECTABSR (`DCS 2 $ u Pc / Pc … ST`, one-
+/// based), as fux-vt's adapter reads them by HT: past the first column and
+/// before the last.
+fn tab_stops(replies: &[u8], cols: u16) -> Vec<u16> {
+    let text = String::from_utf8_lossy(replies);
+    let Some((_, after)) = text.split_once("\x1bP2$u") else {
+        return Vec::new();
+    };
+    let list = after.split('\x1b').next().unwrap_or_default();
+    list.split('/')
+        .filter_map(|c| c.parse::<u16>().ok())
+        .map(|c| c.saturating_sub(1))
+        .filter(|&c| c > 0 && c.saturating_add(1) < cols)
+        .collect()
 }
 
 #[cfg(test)]

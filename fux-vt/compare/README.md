@@ -283,7 +283,14 @@ After creation and after every step, each engine is read into one
 - the title;
 - cursor position and status reports (`CSI r;c R`, `CSI 0 n`);
 - history: the text and wrap flag of every row fux-vt keeps, against the
-  engine's most recent rows.
+  engine's most recent rows;
+- the device's state DA claims (HAR-46), where an engine tells it: the
+  cursor's shape (DECSCUSR's Ps; fux-vt's own, the terminal's, is compared
+  with no one), the tab stops, each screen row's line rendition, and the
+  cells DECSCA or SPA protects. fux-vt's adapter reads all four (the stops
+  by HT and the protected cells by what DECSED leaves, on copies); xterm's
+  the first three (DECRQSS, DECTABSR and its print's `ESC # n`); the other
+  engines none.
 
 Normalized away:
 

@@ -106,7 +106,7 @@ pub const KIND: Kind = Kind {
         kitty_keyboard_flags: false,
         in_band_resize: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -493,6 +493,7 @@ fn read(v: &Value) -> Result<Snapshot, String> {
             .iter()
             .map(history_row)
             .collect::<Result<_, _>>()?,
+        device: Default::default(),
     })
 }
 

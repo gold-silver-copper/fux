@@ -299,7 +299,7 @@ pub const KIND: Kind = Kind {
         in_band_resize: false,
         link_group: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -474,6 +474,7 @@ impl Engine for Wezterm {
             reports,
             screen,
             history,
+            device: Default::default(),
         })
     }
 }

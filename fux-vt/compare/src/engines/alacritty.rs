@@ -107,7 +107,7 @@ pub const KIND: Kind = Kind {
         synchronized_output: false,
         in_band_resize: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -441,6 +441,7 @@ impl Alacritty {
             reports: snapshot::reports(&heard.replies),
             screen,
             history,
+            device: Default::default(),
         })
     }
 }

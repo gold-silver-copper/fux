@@ -156,7 +156,7 @@ pub const KIND: Kind = Kind {
         link_uri: false,
         link_group: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks::XTERM,
     panel: true,
@@ -293,6 +293,7 @@ impl Engine for Libvterm {
             reports: snapshot::reports(t.replies()),
             screen,
             history,
+            device: Default::default(),
         })
     }
 
