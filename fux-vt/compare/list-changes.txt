@@ -9,8 +9,11 @@
 # decides it.
 #
 # cases-differing, corpus-replies-differ and corpus-reply-changes were
-# judged lists at checkpoint 0 that its freeze left out; lists-c0.json has
-# them as c7f4b338's source had them, so only their changes since are here.
+# judged lists at checkpoint 0 that the freeze omitted; lists-c0.json has
+# them filled from c7f4b338 unchanged (cases::DIFFERING and
+# corpus::REPLY_CHANGES are the same in source there as now, and
+# REPLIES_DIFFER held the two zellij recordings), so only their changes
+# since are here (decision 803).
 corpus-statuses nvim-diagnostics a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
 corpus-statuses nvim-diff a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
 corpus-statuses nvim-help a871f47d (KEY-22): fux-vt keeps only the kitty flags fux honours, not 2, as the kitty spec's "Detection of support" asks; the panel keeps 2
