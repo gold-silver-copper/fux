@@ -2548,6 +2548,89 @@ a
         Ok(())
     }
 
+    /// A `not-implemented:` line says the corpus sends its sequence when it
+    /// does: the kind reads as "no program in the corpus sends it" unless
+    /// the line says otherwise, so a line whose sequence a recording sends
+    /// (corpus/INVENTORY.md, which the_inventory_regenerates_unchanged
+    /// keeps current) cites the inventory and denies nothing. Each such
+    /// line names what its test sends, as inventory keys (a prefix and a
+    /// suffix); every line is named, so none goes unchecked (HAR-44).
+    #[test]
+    fn no_not_implemented_reason_denies_a_sequence_the_corpus_sends() -> Result<(), String> {
+        const SENDS: &[(&str, &[(&str, &str)])] = &[
+            ("DECDSRTests.test_DECDSR_DECCKSR", &[("CSI ? 63;", " n")]),
+            ("DECDSRTests.test_DECDSR_DECMSR", &[("CSI ? 62 n", "")]),
+            ("DECDSRTests.test_DECDSR_DECXCPR", &[("CSI ? 6 n", "")]),
+            (
+                "DECDSRTests.test_DECDSR_DSRDECLocatorStatus",
+                &[("CSI ? 55 n", "")],
+            ),
+            ("DECDSRTests.test_DECDSR_DSRKeyboard", &[("CSI ? 26 n", "")]),
+            (
+                "DECDSRTests.test_DECDSR_DSRMultipleSessionStatus",
+                &[("CSI ? 85 n", "")],
+            ),
+            (
+                "DECDSRTests.test_DECDSR_DSRPrinterPort",
+                &[("CSI ? 15 n", "")],
+            ),
+            ("DECDSRTests.test_DECDSR_LocatorType", &[("CSI ? 56 n", "")]),
+            ("DECRQMTests.test_DECRQM_DEC_DECNRCM", &[("CSI ? 42 ", "")]),
+            ("DECRQMTests.test_DECRQM_DEC_DECPEX", &[("CSI ? 19 ", "")]),
+            ("DECRQMTests.test_DECRQM_DEC_DECPFF", &[("CSI ? 18 ", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSASD", &[("DCS $ q $}", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSLPP", &[("DCS $ q t", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSNLS", &[("DCS $ q *|", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSSDT", &[("DCS $ q $~", "")]),
+            (
+                "ResetSpecialColorTests.test_ResetSpecialColor_Multiple",
+                &[("DCS + q", "")],
+            ),
+            (
+                "ResetSpecialColorTests.test_ResetSpecialColor_Single",
+                &[("DCS + q", "")],
+            ),
+        ];
+        let compare = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let inventory = std::fs::read_to_string(crate::corpus::dir().join("INVENTORY.md"))
+            .map_err(|e| e.to_string())?;
+        // Each table row's first column, a sequence as the inventory keys it.
+        let sent: Vec<String> = inventory
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `"))
+            .filter_map(|l| l.split_once("` |"))
+            .map(|(key, _)| key.replace("\\|", "|"))
+            .collect();
+        assert!(sent.iter().any(|k| k == "CSI ? 25 l"), "no keys read");
+        let list = super::read_list(&compare.join("esctest-expected.txt"))?;
+        let unnamed: Vec<&String> = (list.iter())
+            .filter(|(_, l)| l.reason.starts_with("not-implemented:"))
+            .map(|(name, _)| name)
+            .filter(|name| !SENDS.iter().any(|(n, _)| n == name))
+            .collect();
+        assert!(unnamed.is_empty(), "say what these send: {unnamed:?}");
+        for (name, keys) in SENDS {
+            let reason = list
+                .get(*name)
+                .map(|l| l.reason.as_str())
+                .filter(|r| r.starts_with("not-implemented:"))
+                .ok_or(format!("{name} is not listed not-implemented"))?;
+            let Some(key) = sent.iter().find(|k| {
+                keys.iter()
+                    .any(|(pre, post)| k.starts_with(pre) && k.ends_with(post))
+            }) else {
+                continue;
+            };
+            assert!(
+                reason.contains("corpus/INVENTORY.md")
+                    && !reason.contains("no program in the corpus")
+                    && !reason.contains("no real program"),
+                "{name}: the corpus sends {key:?}, and its reason does not say so: {reason}"
+            );
+        }
+        Ok(())
+    }
+
     /// Two terminals' results side by side: each area's tallies, the
     /// tests only one passes with the failing one's reason, and those run
     /// in one only.
