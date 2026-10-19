@@ -921,13 +921,17 @@ impl Screen {
     /// alone, which erasing, scrolling and inserting fill cells with (`bce`).
     #[inline]
     fn blank_style(&mut self) -> u32 {
-        let attributes = self.attributes.erased();
-        if self.blank_style == UNKNOWN {
-            self.blank_style = attributes.inline_style().unwrap_or(TABLED);
-        }
+        // Known, and inline: as most often.
         let style = self.blank_style;
         if style < TABLED {
             return style;
+        }
+        let attributes = self.attributes.erased();
+        if style == UNKNOWN {
+            self.blank_style = attributes.inline_style().unwrap_or(TABLED);
+            if self.blank_style < TABLED {
+                return self.blank_style;
+            }
         }
         self.grid_mut().table_style(attributes)
     }
