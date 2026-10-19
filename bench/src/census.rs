@@ -196,7 +196,14 @@ pub const PAYLOADS: &[Payload] = &[
         name: "sixel:frames",
         about: "sixel-bench's shape: whole-screen 16-colour sixel frames of moving stripes \
                 (an engine without sixel discards them: for it, ignored-protocol throughput)",
-        make: |_, size| Ok(sixel(size)),
+        make: |_, size| Ok(sixel(size, 800, 600, 16)),
+    },
+    Payload {
+        name: "sixel:256",
+        about: "whole-screen 1920x1080 sixel frames in 256 colours, of moving stripes: sixel \
+                decode (an engine without sixel discards them: for it, ignored-protocol \
+                throughput)",
+        make: |_, size| Ok(sixel(size, 1920, 1080, 256)),
     },
 ];
 
@@ -576,19 +583,17 @@ fn foot(size: usize) -> Vec<u8> {
     out
 }
 
-/// Whole-screen sixel frames, 800×600 pixels in 16 colours, of diagonal
-/// stripes that move a little each frame; to at least `size` bytes. Each
-/// frame homes the cursor and is one DCS: raster attributes, the palette,
-/// then each six-pixel band as one run-length-encoded row per colour.
-fn sixel(size: usize) -> Vec<u8> {
-    const WIDTH: usize = 800;
-    const HEIGHT: usize = 600;
-    const COLOURS: usize = 16;
+/// Whole-screen sixel frames, `width` by `height` pixels in `colours`
+/// colours, of diagonal stripes that move a little each frame; to at least
+/// `size` bytes. Each frame homes the cursor and is one DCS: raster
+/// attributes, the palette, then each six-pixel band as one
+/// run-length-encoded row per colour it has.
+fn sixel(size: usize, width: usize, height: usize, colours: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let mut frame = 0usize;
     while out.len() < size {
-        let _ = write!(out, "\x1b[H\x1bP0;1;0q\"1;1;{WIDTH};{HEIGHT}");
-        for c in 0..COLOURS {
+        let _ = write!(out, "\x1b[H\x1bP0;1;0q\"1;1;{width};{height}");
+        for c in 0..colours {
             let level = |k: usize| c.saturating_mul(k).checked_rem(101).unwrap_or(0);
             let _ = write!(out, "#{c};2;{};{};{}", level(7), level(13), level(29));
         }
@@ -596,23 +601,35 @@ fn sixel(size: usize) -> Vec<u8> {
             x.saturating_add(y)
                 .saturating_add(frame.saturating_mul(8))
                 .checked_div(25)
-                .and_then(|band| band.checked_rem(COLOURS))
+                .and_then(|band| band.checked_rem(colours))
                 .unwrap_or(0)
         };
-        for band in 0..HEIGHT.div_ceil(6) {
+        // Each band's sixels by colour, made in one pass over its pixels;
+        // a colour no pixel of the band has is left out.
+        let mut bits = vec![0u8; colours.saturating_mul(width)];
+        for band in 0..height.div_ceil(6) {
             let top = band.saturating_mul(6);
-            for c in 0..COLOURS {
+            bits.fill(0);
+            for x in 0..width {
+                for dy in 0..6u8 {
+                    let y = top.saturating_add(usize::from(dy));
+                    let at = colour(x, y).saturating_mul(width).saturating_add(x);
+                    if let (true, Some(b)) = (y < height, bits.get_mut(at)) {
+                        *b |= 1u8.checked_shl(dy.into()).unwrap_or(0);
+                    }
+                }
+            }
+            for c in 0..colours {
+                let row = bits
+                    .get(c.saturating_mul(width)..c.saturating_add(1).saturating_mul(width))
+                    .unwrap_or_default();
+                if row.iter().all(|&b| b == 0) {
+                    continue;
+                }
                 let _ = write!(out, "#{c}");
                 let mut run: Option<(u8, usize)> = None;
-                for x in 0..WIDTH {
-                    let mut bits = 0u8;
-                    for dy in 0..6u8 {
-                        let y = top.saturating_add(usize::from(dy));
-                        if y < HEIGHT && colour(x, y) == c {
-                            bits |= 1u8.checked_shl(dy.into()).unwrap_or(0);
-                        }
-                    }
-                    let glyph = b'?'.saturating_add(bits);
+                for &b in row {
+                    let glyph = b'?'.saturating_add(b);
                     run = match run {
                         Some((g, n)) if g == glyph => Some((g, n.saturating_add(1))),
                         Some(done) => {

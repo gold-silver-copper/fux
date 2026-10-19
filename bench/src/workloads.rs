@@ -14,6 +14,10 @@
 //!   `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`,
 //!   `vt/sixel:frames`: fux-vt alone on each of the census's speed
 //!   payloads (`census`), 8 MiB at 50×200, each alone.
+//! - `encode/sixel`: a 1920×1080 picture in 256 colours (one frame of
+//!   `vt/sixel:256`) encoded as sixel whole, [`ENCODES`] times, as fux's
+//!   renderer encodes a picture it shows (`fux_vt::sixel::encode`); the
+//!   baseline decodes it alone.
 //! - `pane/NAME`: the same through `fux::pane::Pane::output`, 16 KiB at a
 //!   time, as fux's server gives a pane what it reads.
 //! - `paint/corpus`: a session (`fux::session::Session`, without
@@ -60,6 +64,8 @@ const CHUNK: usize = 4096;
 const CHUNKS: [usize; 4] = [1, 64, 16 << 10, 64 << 10];
 /// `vt/resize-history`'s resizes to 80 columns and back.
 const RESIZES: usize = 4;
+/// `encode/sixel`'s encodings of its picture.
+const ENCODES: usize = 8;
 /// The columns `vt/resize-history` resizes to.
 const NARROW: u16 = 80;
 /// The `vt/ascii` bytes that fill its history: a pane's 8 MiB holds some
@@ -142,6 +148,10 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
             ));
         }
     }
+    out.push(spec(
+        "encode/sixel".into(),
+        format!("a 1920x1080 256-colour picture encoded as sixel, {ENCODES} times"),
+    ));
     out.push(spec(
         "vt/resize-history".into(),
         format!(
@@ -237,6 +247,8 @@ pub fn fed(name: &str) -> String {
     } else if name.starts_with("vt/") {
         let chunk = chunked(name).map_or(CHUNK, |(_, n)| n);
         format!("fux-vt::Parser::process_with, {chunk} bytes a call")
+    } else if name == "encode/sixel" {
+        format!("{NO_STREAM}: fux_vt::sixel::encode of the whole picture, {ENCODES} times")
     } else if name.starts_with("pane/") {
         "fux::pane::Pane::output, 16384 bytes a call".into()
     } else if name.starts_with("paint/") || name == "wait/text" {
@@ -289,6 +301,13 @@ fn run_shrunk(
     let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
     if name == "vt/resize-history" {
         return resize_history(baseline, size(FILL), size(HISTORY));
+    }
+    if name == "encode/sixel" {
+        return encode_sixel(
+            payloads,
+            baseline,
+            ENCODES.checked_div(shrink).unwrap_or(1).max(1),
+        );
     }
     let (name, chunk) = chunked(name)?;
     if chunk != CHUNK && !name.starts_with("vt/") {
@@ -491,6 +510,43 @@ fn full_history(fill: usize, history: usize) -> Result<fux_vt::Parser, String> {
         let _ = parser.process_with(piece, &mut Sink);
     }
     Ok(parser)
+}
+
+/// The picture `encode/sixel` encodes: one frame of `vt/sixel:256`,
+/// decoded by a pane's parser.
+fn sixel_picture(payloads: &Path) -> Result<std::sync::Arc<fux_vt::sixel::Picture>, String> {
+    let frame = census::make("sixel:256", payloads, 1).ok_or("no sixel:256 payload")??;
+    let size = fux_vt::Size::new(census::ROWS, census::COLS).map_err(|e| e.to_string())?;
+    let mut parser = fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS)
+        .map_err(|e| format!("a parser of {size:?}: {e}"))?;
+    parser.process(&frame).map_err(|e| e.to_string())?;
+    let shown = parser
+        .screen()
+        .pictures()
+        .next()
+        .map(|p| std::sync::Arc::clone(p.picture));
+    shown.ok_or_else(|| "sixel:256 showed no picture".to_owned())
+}
+
+/// `encode/sixel`: its picture encoded whole `times` times; the baseline
+/// only decodes it. Its units are the bytes encoded.
+fn encode_sixel(payloads: &Path, baseline: bool, times: usize) -> Result<Done, String> {
+    let picture = sixel_picture(payloads)?;
+    let mut units = 0usize;
+    if !baseline {
+        let mut out = Vec::new();
+        for _ in 0..times {
+            out.clear();
+            let whole = (0, 0, picture.width(), picture.height());
+            fux_vt::sixel::encode(black_box(&picture), whole, &mut out);
+            units = units.saturating_add(black_box(&out).len());
+        }
+    }
+    Ok(Done {
+        units: units.max(1),
+        frames: 0,
+        painted: 0,
+    })
 }
 
 /// `vt/resize-history`: a full history (`full_history`) resized to
@@ -1070,6 +1126,17 @@ mod tests {
             resizes > 0 && resizes <= super::RESIZES_AT_MOST + 4,
             "{resizes}"
         );
+        Ok(())
+    }
+
+    /// `encode/sixel` encodes the whole 1920x1080 picture `vt/sixel:256`
+    /// decodes.
+    #[test]
+    fn the_sixel_picture_encoded_is_the_whole_frame() -> Result<(), String> {
+        let picture = super::sixel_picture(&payloads())?;
+        assert_eq!((picture.width(), picture.height()), (1920, 1080));
+        let done = super::encode_sixel(&payloads(), false, 1)?;
+        assert!(done.units > 1000, "{}", done.units);
         Ok(())
     }
 
