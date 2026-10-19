@@ -10,6 +10,10 @@ use crate::wire::wire;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// The longest one `pause` may be, in milliseconds, and so the longest
+/// pause before a piece of input, pauses in a row added up.
+pub const PAUSE_MOST_MS: i64 = 10_000;
+
 wire! {
     /// A workspace named on the command line: `+N` or its name.
     #[derive(Clone, Debug, PartialEq, Eq)]
