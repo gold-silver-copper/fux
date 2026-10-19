@@ -365,6 +365,18 @@ fn floor(aa: &Paired) -> f64 {
     FLOOR_MIN.max(aa.change.abs()).max(3.0 * aa.spread)
 }
 
+/// The floor `p` is judged against, and whether it was calibrated: the
+/// floors file's, if it has one for the workload; a calibration's own
+/// (`floor`); else this run's, max(0.25%, 3 x its spread), which its own
+/// change takes no part in, or no change would ever be slower.
+fn floor_of(p: &Paired, from_file: Option<f64>, calibrating: bool) -> (f64, bool) {
+    match from_file {
+        Some(floor) => (floor, true),
+        None if calibrating => (floor(p), true),
+        None => (FLOOR_MIN.max(3.0 * p.spread), false),
+    }
+}
+
 /// `p` judged against `floor`; `calibrated` if the floor came from an
 /// A/A run apart from this one.
 fn verdict(p: &Paired, floor: f64, calibrated: bool) -> Verdict {
@@ -633,10 +645,8 @@ pub fn run(options: &Options) -> Result<bool, String> {
             continue;
         };
         let p = paired([old_full, old_base], [new_full, new_base]);
-        let (floor, calibrated) = match floors.as_ref().and_then(|f| f.get(&spec.name)) {
-            Some(&f) => (f, true),
-            None => (floor(&p), calibrating),
-        };
+        let from_file = floors.as_ref().and_then(|f| f.get(&spec.name)).copied();
+        let (floor, calibrated) = floor_of(&p, from_file, calibrating);
         let verdict = if calibrating {
             if floor > FLOOR_BROKEN {
                 Verdict::Broken
@@ -789,7 +799,7 @@ fn hash(path: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Verdict, paired, signs, tail, verdict};
+    use super::{FLOOR_MIN, Verdict, floor_of, paired, signs, tail, verdict};
     use std::path::Path;
     use std::process::Command;
 
@@ -857,6 +867,19 @@ mod tests {
         assert!((p.change - 0.01).abs() < 1e-12, "{p:?}");
         assert!((p.spread - 1.0 / 1100.0).abs() < 1e-12, "{p:?}");
         assert!((p.old - 1000.0).abs() < 1e-9 && (p.new - 1020.0).abs() < 1e-9);
+    }
+
+    /// Without a floor from a file, a run is judged by its own spread:
+    /// max(0.25%, 3 x spread), never by its own change, so a steady +2% is
+    /// slower; only a calibration counts the A/A change in the floor.
+    #[test]
+    fn a_workload_with_no_floor_is_judged_by_its_spread() {
+        let p = paired([&[1000; 5], &[0; 5]], [&[1020; 5], &[0; 5]]);
+        let (floor, calibrated) = floor_of(&p, None, false);
+        assert_eq!((floor, calibrated), (FLOOR_MIN, false));
+        assert_eq!(verdict(&p, floor, calibrated), Verdict::Slower);
+        assert_eq!(floor_of(&p, Some(0.03), false), (0.03, true));
+        assert!((floor_of(&p, None, true).0 - 0.02).abs() < 1e-12);
     }
 
     #[test]
