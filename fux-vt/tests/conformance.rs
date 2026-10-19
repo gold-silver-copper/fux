@@ -736,6 +736,27 @@ fn replies(rows: u16, cols: u16, identity: bool, bytes: &[u8]) -> Result<Vec<Str
     Ok(replies)
 }
 
+/// DECREQTPARM (the VT100 User Guide, chapter 3, DECREQTPARM): the
+/// VT100 that DA claims without an identity answers a request, `sol` 0 or
+/// none and 1, with DECREPTPARM, a report, `sol` 2 or 3, of xterm's fixed
+/// parameters (ctlseqs, `CSI Ps x`: no parity, 8 bits, 128 for each
+/// speed, clock multiplier 1, no flags). Another `sol` is no request. With
+/// an identity, DA's VT220 does not answer it: xterm answers "if ... xterm
+/// is emulating VT100" alone.
+#[test]
+fn decreqtparm_is_answered_as_a_vt100_answers_it() -> Result {
+    assert_eq!(
+        replies(2, 8, false, b"\x1b[x\x1b[0x\x1b[1x\x1b[2x\x1b[3x")?,
+        [
+            "\x1b[2;1;1;128;128;1;0x",
+            "\x1b[2;1;1;128;128;1;0x",
+            "\x1b[3;1;1;128;128;1;0x"
+        ]
+    );
+    assert!(replies(2, 8, true, b"\x1b[x\x1b[1x")?.is_empty());
+    Ok(())
+}
+
 /// CPR and DECXCPR count the line as CUP addresses it: from the top
 /// margin with DECOM set, "relative to the origin of the current
 /// scrolling region (the Top and Left Margin)", from the screen's top

@@ -4246,6 +4246,15 @@ impl Screen {
                 self.change_attributes(p, byte == b't');
                 return Some(Dispatch::Done);
             }
+            // DECREQTPARM (`CSI Ps x`; the VT100 User Guide, chapter 3,
+            // DECREQTPARM and DECREPTPARM), which the VT100 that DA claims
+            // without an identity answers: a request, 0 or 1, is answered
+            // with a report, 2 or 3, of fixed parameters, xterm's (ctlseqs:
+            // no parity, 8 bits, the fastest speed, clock multiplier 1, no
+            // flags). With an identity, a VT220, unanswered, as in xterm.
+            (b"", b'x') if identity.is_none() && n <= 1 => {
+                Some(reply!("\x1b[{};1;1;128;128;1;0x", n.saturating_add(2)))
+            }
             // DECSACE (`CSI Ps * x`; DEC STD 070, DECSACE): 0 and 1 a
             // stream, 2 a rectangle; another Ps is none of them, ignored.
             (b"*", b'x') => {
