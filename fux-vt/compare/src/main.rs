@@ -1416,7 +1416,12 @@ fn main() -> ExitCode {
         "replay" => replay(&args),
         "record" => record(&args),
         "inventory" => inventory::run(&args.rest),
+        #[cfg(feature = "engines")]
         "encoders" => encoders::run(args.seed, args.cases.unwrap_or(2000)),
+        #[cfg(not(feature = "engines"))]
+        "encoders" => Err("encoders compares with libghostty-vt, which is not built \
+                           (--no-default-features)"
+            .to_owned()),
         "corpus" => corpus::run(
             subject(&args)?,
             &panel_beside(&args, "xterm,panel", subject(&args)?)?,

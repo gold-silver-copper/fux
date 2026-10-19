@@ -17,9 +17,13 @@ No engine is the truth. When the panel outvotes fux-vt, the difference says
 where to look. xterm and the standards decide who is right, and fux-vt's
 deliberate choices are recorded with each family.
 
-fux's own gates and CI don't build or run it. It needs Zig, a Ghostty
-checkout and libvterm's source, which `run.sh` fetches, and, for the
-engines in their own processes, Node, tmux, xterm and Xvfb.
+It needs Zig, a Ghostty checkout and libvterm's source, which `run.sh`
+fetches, and, for the engines in their own processes, Node, tmux, xterm
+and Xvfb. Built without its default feature `engines`
+(`cargo build --release --no-default-features`), it links no other engine
+and needs only cargo: what needs none runs (`esctest` against fux-vt), and
+the others say they were not built. CI runs that `esctest` on every PR;
+`compare.yml`, on request, runs the rest beside every engine.
 
 ## Running it
 

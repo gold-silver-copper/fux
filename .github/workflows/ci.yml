@@ -135,6 +135,21 @@ jobs:
           set -euo pipefail
           cargo fmt --manifest-path fux-vt/compare/Cargo.toml --all --check
           DOCS_RS=1 cargo clippy --manifest-path fux-vt/compare/Cargo.toml --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/compare.log"
+          cargo clippy --manifest-path fux-vt/compare/Cargo.toml --all-targets --locked --no-default-features -- -D warnings 2>&1 | tee -a "$CI_LOGS/compare.log"
+
+      - name: esctest against fux-vt
+        # fux-vt-compare built without the engines it links (Ghostty's
+        # core needs Zig): esctest2, at the commit references/fetch.sh pins,
+        # against fux-vt alone. A test failing that esctest-expected.txt
+        # does not list fails, and so does one listed that passes.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          commit=$(sed -n 's/^esctest_commit=//p' references/fetch.sh)
+          git init -q references/xterm/esctest2
+          git -C references/xterm/esctest2 fetch -q --depth 1 https://github.com/ThomasDickey/esctest2 "$commit"
+          git -C references/xterm/esctest2 -c advice.detachedHead=false checkout -q FETCH_HEAD
+          cargo run --release --locked --quiet --no-default-features --manifest-path fux-vt/compare/Cargo.toml -- esctest 2>&1 | tee "$CI_LOGS/esctest.log"
 
       - name: fux-vt oracle builds
         # Against this very commit, so both sides share one API and it
