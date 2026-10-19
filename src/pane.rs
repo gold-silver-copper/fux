@@ -870,7 +870,7 @@ impl Pane {
             self.unread.0.extend_from_slice(bytes);
             return;
         }
-        self.read(bytes, now);
+        self.read(bytes, now, now);
     }
 
     /// Whether output waits to be read on the pane's next turn
@@ -900,18 +900,19 @@ impl Pane {
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
     pub fn read_unread(&mut self) {
-        // As of when it came: the kernel's echo is looked for then.
-        let now = self.unread.1;
+        // Told as of when it came, as the kernel's echo is looked for then;
+        // a frame it begins is timed from now.
+        let came = self.unread.1;
         let unread = std::mem::take(&mut self.unread.0);
         let frame_left = std::mem::take(&mut self.frame_left);
         let at = frame_left.min(unread.len());
         let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
-        if let Some((taken, _)) = self.feed(frame, false, now) {
+        if let Some((taken, _)) = self.feed(frame, false, came) {
             self.frame_left = frame.len().saturating_sub(taken);
-            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec(), now);
+            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec(), came);
             return;
         }
-        self.read(after, now);
+        self.read(after, Instant::now(), came);
     }
 
     /// `left` waits to be read on the pane's next turn, from `now`.
@@ -919,11 +920,13 @@ impl Pane {
         self.unread = (left, now);
     }
 
-    /// Reads `bytes` as [`Pane::output_at`] does, with no output waiting.
-    fn read(&mut self, bytes: &[u8], now: Instant) {
+    /// Reads `bytes`, which came at `came`, as [`Pane::output_at`] does at
+    /// `now`, with no output waiting.
+    fn read(&mut self, bytes: &[u8], now: Instant, came: Instant) {
         let mut rest = bytes;
         loop {
-            if let Some((held, _, scan)) = &mut self.frame {
+            if let Some((held, since, scan)) = &mut self.frame {
+                let since = *since;
                 let read = held.len();
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
@@ -937,21 +940,21 @@ impl Pane {
                 frame.truncate(end);
                 // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-                if let Some((taken, _)) = self.feed(&frame, false, now) {
+                if let Some((taken, _)) = self.feed(&frame, false, since) {
                     let left = frame.get(taken..).unwrap_or_default();
                     self.frame_left = left.len();
-                    self.wait_unread([left, rest].concat(), now);
+                    self.wait_unread([left, rest].concat(), since);
                     return;
                 }
             } else {
-                match self.feed(rest, true, now) {
+                match self.feed(rest, true, came) {
                     None => return,
                     Some((end, fux_vt::Stop::Begun)) => {
                         self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
                         rest = rest.get(end..).unwrap_or_default();
                     }
                     Some((end, _)) => {
-                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec(), now);
+                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec(), came);
                         return;
                     }
                 }
@@ -2151,6 +2154,29 @@ mod tests {
             .map(|(_, echo)| echo)
             .collect();
         assert_eq!(echoes, [Echo::Is]);
+        Ok(())
+    }
+
+    /// A frame begun in output read a turn after it came is held its full
+    /// timeout from when it is read, not from when the output came.
+    #[test]
+    fn a_frame_begun_in_output_read_later_is_held_its_timeout() -> Result<(), Error> {
+        let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
+            .flatten()
+            .copied()
+            .collect();
+        out.extend_from_slice(b"\x1b[?2026hY");
+        let mut pane = pane(2, 10)?;
+        pane.output(&out);
+        assert!(pane.has_unread(), "the budget stopped no call");
+        std::thread::sleep(FRAME_TIMEOUT.saturating_add(Duration::from_millis(100)));
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        let due = pane.frame_deadline();
+        assert!(due.is_some_and(|due| due > Instant::now()), "{due:?}");
         Ok(())
     }
 
