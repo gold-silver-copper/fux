@@ -281,7 +281,7 @@ fn time(corpus: &Path, payloads: &Path, names: &[String]) -> Result<bool, String
         let secs = best.as_secs_f64().max(1e-9);
         // MB/s only of a workload fed bytes: another's units (keys, waits)
         // are no bytes.
-        let mbs = match workloads::fed(&spec.name) == "not a stream of bytes" {
+        let mbs = match workloads::fed(&spec.name).starts_with(workloads::NO_STREAM) {
             true => "-".to_owned(),
             false => format!("{:.1}", (units as f64) / secs / 1e6),
         };

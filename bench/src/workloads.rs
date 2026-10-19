@@ -5,7 +5,11 @@
 //!   (`fux::pane::OPTIONS`), fed in 4 KiB pieces as `compare`'s `bench`
 //!   feeds it: the synthetic workloads on a 50×200 screen, each recording
 //!   at its own size (`vt/corpus:NAME`), and every recording in turn
-//!   (`vt/corpus`).
+//!   (`vt/corpus`). `vt/ascii@N` and `vt/corpus@N`: the same fed N bytes
+//!   a call, for each N of [`CHUNKS`] (any N runs by name).
+//! - `vt/resize-history`: a pane's parser, its history full at 50×200,
+//!   resized to 80 columns and back, [`RESIZES`] times: every row of
+//!   history reflowed, both ways.
 //! - `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`,
 //!   `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`,
 //!   `vt/sixel:frames`: fux-vt alone on each of the census's speed
@@ -52,6 +56,15 @@ use std::path::Path;
 
 /// fux-vt is fed this much at a time, as `compare`'s `bench` feeds it.
 const CHUNK: usize = 4096;
+/// The other call sizes `vt/ascii@N` and `vt/corpus@N` are listed at.
+const CHUNKS: [usize; 4] = [1, 64, 16 << 10, 64 << 10];
+/// `vt/resize-history`'s resizes to 80 columns and back.
+const RESIZES: usize = 4;
+/// The columns `vt/resize-history` resizes to.
+const NARROW: u16 = 80;
+/// The `vt/ascii` bytes that fill its history: a pane's 8 MiB holds some
+/// 6,000 of its rows, a quarter of these.
+const FILL: usize = 4 << 20;
 /// fux's server reads up to this much of a pane's output a tick
 /// (`PANE_READ`, src/server.rs) ...
 const PANE_READ: usize = 64 * 1024;
@@ -121,6 +134,21 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
             ),
         ));
     }
+    for name in ["ascii", "corpus"] {
+        for n in CHUNKS {
+            out.push(spec(
+                format!("vt/{name}@{n}"),
+                format!("vt/{name} fed {n} bytes a call"),
+            ));
+        }
+    }
+    out.push(spec(
+        "vt/resize-history".into(),
+        format!(
+            "a full history ({} MiB) at 50x200 resized to {NARROW} columns and back, {RESIZES} times",
+            HISTORY >> 20
+        ),
+    ));
     for r in recordings {
         out.push(spec(
             format!("vt/corpus:{}", r.name),
@@ -201,16 +229,35 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
 }
 
 /// How a workload is fed, for its fairness record: the bytes a call
-/// gives the code measured.
-pub fn fed(name: &str) -> &'static str {
-    if name.starts_with("vt/") {
-        "fux-vt::Parser::process_with, 4096 bytes a call"
+/// gives the code measured. A workload that is no stream of bytes says
+/// `NO_STREAM`.
+pub fn fed(name: &str) -> String {
+    if name == "vt/resize-history" {
+        format!("{NO_STREAM}: fux-vt::Parser::resize, its history filled 4096 bytes a call")
+    } else if name.starts_with("vt/") {
+        let chunk = chunked(name).map_or(CHUNK, |(_, n)| n);
+        format!("fux-vt::Parser::process_with, {chunk} bytes a call")
     } else if name.starts_with("pane/") {
-        "fux::pane::Pane::output, 16384 bytes a call"
+        "fux::pane::Pane::output, 16384 bytes a call".into()
     } else if name.starts_with("paint/") || name == "wait/text" {
-        "fux::session::Session::output, 16384 bytes a call, 65536 a tick"
+        "fux::session::Session::output, 16384 bytes a call, 65536 a tick".into()
     } else {
-        "not a stream of bytes"
+        NO_STREAM.into()
+    }
+}
+
+/// What [`fed`] says of a workload that is no stream of bytes.
+pub const NO_STREAM: &str = "not a stream of bytes";
+
+/// A workload's name without its `@N`, and the N bytes a call it names
+/// (else [`CHUNK`]); an `@` with no N of at least 1 is an error.
+fn chunked(name: &str) -> Result<(&str, usize), String> {
+    match name.rsplit_once('@') {
+        None => Ok((name, CHUNK)),
+        Some((base, n)) => match n.parse::<usize>() {
+            Ok(n) if n > 0 => Ok((base, n)),
+            _ => Err(format!("{name:?}: @N takes bytes a call, at least 1")),
+        },
     }
 }
 
@@ -240,6 +287,13 @@ fn run_shrunk(
     shrink: usize,
 ) -> Result<Done, String> {
     let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
+    if name == "vt/resize-history" {
+        return resize_history(baseline, size(FILL), size(HISTORY));
+    }
+    let (name, chunk) = chunked(name)?;
+    if chunk != CHUNK && !name.starts_with("vt/") {
+        return Err(format!("{name:?}: only a vt/ workload takes @N"));
+    }
     // A census payload needs no recordings: reading them is most of a
     // light workload's baseline, and of its noise.
     if let Some(bytes) = name
@@ -251,12 +305,12 @@ fn run_shrunk(
             cols: census::COLS,
             bytes: bytes?,
         };
-        return vt(&[load], baseline);
+        return vt(&[load], baseline, chunk);
     }
     let recordings = corpus::recordings(dir)?;
     if let Some(rest) = name.strip_prefix("vt/") {
         let loads = loads(rest, &recordings, size(RECORDING), shrink)?;
-        return vt(&loads, baseline);
+        return vt(&loads, baseline, chunk);
     }
     if let Some(rest) = name.strip_prefix("pane/") {
         let loads = loads(rest, &recordings, 0, shrink)?;
@@ -385,11 +439,11 @@ fn pieces(bytes: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// The parser fed `loads`, each at its size. A size or a parser that
-/// can't be made fails the run: it would measure nothing. What the parser
-/// refuses as it reads (an allocation past its limits) is the workload's,
-/// as fux's pane takes it, and goes on.
-fn vt(loads: &[Load], baseline: bool) -> Result<Done, String> {
+/// The parser fed `loads`, each at its size, `chunk` bytes a call. A size
+/// or a parser that can't be made fails the run: it would measure
+/// nothing. What the parser refuses as it reads (an allocation past its
+/// limits) is the workload's, as fux's pane takes it, and goes on.
+fn vt(loads: &[Load], baseline: bool, chunk: usize) -> Result<Done, String> {
     let units = loads.iter().map(|l| l.bytes.len()).sum();
     if baseline {
         black_box(loads);
@@ -414,13 +468,50 @@ fn vt(loads: &[Load], baseline: bool) -> Result<Done, String> {
                     .map_err(|e| format!("a parser of {size:?}: {e}"))?,
             ),
         };
-        for piece in pieces(&load.bytes, CHUNK) {
+        for piece in pieces(&load.bytes, chunk) {
             let _ = p.process_with(black_box(piece), &mut Sink);
         }
     }
     black_box(parser.as_ref().map(|p| p.screen().cursor_position()));
     Ok(Done {
         units,
+        frames: 0,
+        painted: 0,
+    })
+}
+
+/// A pane's parser at 50x200 with `history` bytes of history, given
+/// `fill` bytes of `vt/ascii`, 4 KiB a call: enough to fill its history.
+fn full_history(fill: usize, history: usize) -> Result<fux_vt::Parser, String> {
+    let size = fux_vt::Size::new(synthetic::ROWS, synthetic::COLS).map_err(|e| e.to_string())?;
+    let mut parser = fux_vt::Parser::with_options(size, history, fux::pane::OPTIONS)
+        .map_err(|e| format!("a parser of {size:?}: {e}"))?;
+    let bytes = synthetic::make("ascii", fill).ok_or("no ascii workload")?;
+    for piece in pieces(&bytes, CHUNK) {
+        let _ = parser.process_with(piece, &mut Sink);
+    }
+    Ok(parser)
+}
+
+/// `vt/resize-history`: a full history (`full_history`) resized to
+/// [`NARROW`] columns and back, [`RESIZES`] times, each reflowing every
+/// row; the baseline fills it and resizes nothing.
+fn resize_history(baseline: bool, fill: usize, history: usize) -> Result<Done, String> {
+    let mut parser = full_history(fill, history)?;
+    let wide = parser.screen().size();
+    let narrow = fux_vt::Size::new(wide.rows(), NARROW).map_err(|e| e.to_string())?;
+    if !baseline {
+        for _ in 0..RESIZES {
+            for size in [narrow, wide] {
+                parser
+                    .resize(black_box(size))
+                    .map_err(|e| format!("resize to {size:?}: {e}"))?;
+            }
+        }
+    }
+    black_box(parser.screen().history_len());
+    Ok(Done {
+        units: RESIZES.saturating_mul(2),
         frames: 0,
         painted: 0,
     })
@@ -958,7 +1049,7 @@ mod tests {
             cols: 80,
             bytes: b"x".to_vec(),
         };
-        assert!(super::vt(&[load], false).is_err());
+        assert!(super::vt(&[load], false, super::CHUNK).is_err());
     }
 
     /// A short recording that resizes is repeated only until it has
@@ -977,6 +1068,33 @@ mod tests {
         assert!(
             resizes > 0 && resizes <= super::RESIZES_AT_MOST + 4,
             "{resizes}"
+        );
+        Ok(())
+    }
+
+    /// `@N` names the bytes a call, and is refused where it means nothing.
+    #[test]
+    fn a_workload_says_how_many_bytes_a_call_it_is_fed() {
+        assert!(super::fed("vt/ascii@1").contains(" 1 bytes a call"));
+        assert!(super::fed("vt/corpus").contains(" 4096 bytes a call"));
+        assert!(super::fed("vt/resize-history").starts_with(super::NO_STREAM));
+        for wrong in ["vt/ascii@0", "vt/ascii@x", "pane/ascii@64"] {
+            assert!(super::run_shrunk(wrong, &dir(), &payloads(), false, 64).is_err());
+        }
+    }
+
+    /// `vt/resize-history` resizes a history that is full: twice the fill
+    /// keeps about as many rows, the budget dropping the oldest.
+    #[test]
+    fn the_history_resized_is_full() -> Result<(), String> {
+        let (fill, history) = (super::FILL / 16, super::HISTORY / 16);
+        let rows = super::full_history(fill, history)?.screen().history_len();
+        let more = super::full_history(fill * 2, history)?
+            .screen()
+            .history_len();
+        assert!(
+            rows > 300 && rows.abs_diff(more) <= rows / 20,
+            "{rows} {more}"
         );
         Ok(())
     }

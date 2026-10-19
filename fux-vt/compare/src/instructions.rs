@@ -70,7 +70,7 @@ pub fn child(args: &[String]) -> Result<(), String> {
         .ok_or(format!("{engine}: no {} setup", retention.name()))??;
     let vt = Box::leak(made);
     if !baseline {
-        load.feed(vt, CHUNK)?;
+        load.feed(vt)?;
     }
     let rows = vt
         .history_len()
@@ -306,7 +306,7 @@ pub fn run(
             "\n{} ({}), in process: instructions per byte, the median of {} paired \
              rounds, each run less its round's baseline (making the bytes and the engine), no \
              read counted; \
-             {mb} MiB per workload, {CHUNK}-byte chunks, {ROWS}x{COLS} (recordings at their \
+             {mb} MiB per workload, {CHUNK}-byte chunks (NAME@N: N), {ROWS}x{COLS} (recordings at their \
              size); fux-vt reflow on, print recording off; counted by {} on CPUs {cpus} \
              (the counter's own set is in the JSON)\n{:<34}",
             retention.name(),
@@ -382,6 +382,7 @@ pub fn run(
                 "about": about,
                 "bytes": bytes,
                 "sha256": hash,
+                "chunk_bytes": bench::chunk_of(workload),
                 "engines": per_engine,
             }));
         }

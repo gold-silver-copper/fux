@@ -99,7 +99,8 @@ replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          the screens.
 bench    each engine's speed on the same workloads, in MB/s (default: the
          synthetic ones and the corpus all together; `corpus` adds each
-         recording alone). --instructions: instructions retired per
+         recording alone; NAME@N is NAME fed N bytes a call, not 4096).
+         --instructions: instructions retired per
          byte instead, each engine in this process and workload in a
          child process of its own, less the same child without the
          feeding, the median of --repeats (3) paired rounds, --jobs
