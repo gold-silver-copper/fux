@@ -16,12 +16,14 @@
 //!   xterm 411's (`GetChecksum` in `disallowedWindowOps`), does not answer.
 //! - It marks `CSI ? 6 n` "XXX?"; DEC STD 070 defines it (DECXCPR, 5-55).
 //!
-//! What the authority leaves to fux-vt, it says so too: DECREQTPARM is
-//! answered by "xterm emulating VT100" (ctlseqs), and without an identity
-//! fux-vt answers DA as a VT100 but leaves DECREQTPARM unanswered
-//! (CONFORMANCE.md: not implemented). So bare, either is accepted, no
-//! reply or ctlseqs' VT100 one; as a level-2 terminal there is none, as
-//! xterm 411 answers only below a VT220 (`terminal_id < 200`).
+//! What the authority leaves to fux-vt, it says so too: which terminal
+//! DA and DA2 claim to be is fux's choice, not an authority's (a bare
+//! VT100, or with an identity a level-2 terminal of fux's version); the
+//! authorities give only each reply's form and the meaning of its codes,
+//! which the expected values here follow. DECREQTPARM is answered by
+//! "xterm ... emulating VT100" (ctlseqs), so the bare VT100 answers it with
+//! ctlseqs' parameters, and the level-2 terminal does not, as xterm 411
+//! answers only below a VT220 (`terminal_id < 200`).
 
 use fux_vt::{Feature, Identity, Options, Parser, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -88,17 +90,20 @@ const VECTORS: &[Vector] = &[
         default: NONE,
         every: &[b"\x1b[?1;1R", b"\x1b[?1;1;1R"],
     },
-    // DECREQTPARM: see the module's note.
+    // DECREQTPARM (ctlseqs, `CSI Ps x`): the bare VT100 reports, Ps 0 + 2,
+    // no parity (1), eight bits (1), 38.4k baud each way (128), clock
+    // multiplier 1, no flags (0); the level-2 terminal does not answer.
     Vector {
         name: "DECREQTPARM",
         bytes: b"\x1b[x",
-        default: &[b"", b"\x1b[2;1;1;128;128;1;0x"],
+        default: &[b"\x1b[2;1;1;128;128;1;0x"],
         every: NONE,
     },
-    // Primary DA (DEC STD 070, DA; ctlseqs' codes): bare, a VT100 with the
-    // advanced video option (`? 1 ; 2`); with an identity, level 2 (62)
-    // with selective erase (6), horizontal scrolling (21), colour text
-    // (22) and rectangular editing (28), no sixel (4) as no host shows it.
+    // Primary DA: what it claims is fux's choice (the module's note); the
+    // codes are ctlseqs' and DEC STD 070's. Bare, a VT100 with the advanced
+    // video option (`? 1 ; 2`); with an identity, level 2 (62) with
+    // selective erase (6), horizontal scrolling (21), colour text (22) and
+    // rectangular editing (28), no sixel (4) as no host shows it.
     Vector {
         name: "DA",
         bytes: b"\x1b[c",
@@ -106,7 +111,8 @@ const VECTORS: &[Vector] = &[
         every: &[b"\x1b[?62;6;21;22;28c"],
     },
     // Secondary DA (ctlseqs: `CSI > Pp ; Pv ; Pc c`, Pp 1 a VT220, Pv the
-    // firmware version, Pc 0): 0.10.0 in base 100 is 1000. An opt-in.
+    // firmware version, Pc 0): the VT220 and the version are fux's choice
+    // (the identity's), 0.10.0 in base 100 being 1000. An opt-in.
     Vector {
         name: "DA2",
         bytes: b"\x1b[>c",
