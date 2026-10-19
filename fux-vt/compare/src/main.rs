@@ -64,7 +64,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
        fux-vt-compare corpus [--engines LIST] [--show] [--json FILE] [--subject NAME]
-                             [NAME...]
+                             [--chunk N] [NAME...]
        fux-vt-compare inventory [NAME...]
        fux-vt-compare encoders [--seed N] [--cases N]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
@@ -125,7 +125,9 @@ corpus   the recordings in corpus/ (default: all), each replayed through
          compared after every step. xterm decides the fields it can tell;
          the panel's vote the rest, and all once xterm abstains. Exit 1 if
          a recording expected to agree does not. --show prints fux-vt's
-         screen at the end of each; --json writes the results to FILE.
+         screen at the end of each; --json writes the results to FILE;
+         --chunk N gives each step's output N bytes at a time, compared
+         after each piece too, the exceptions still by recorded step.
 inventory every sequence the recordings (default: all) send, normalized,
          with how often, from which programs, and what fux-vt does with
          it, as Markdown (corpus/INVENTORY.md is its output).
@@ -197,6 +199,8 @@ struct Args {
     note: String,
     /// Where `corpus` writes its results.
     json: Option<String>,
+    /// `corpus --chunk N`: each step's output judged N bytes at a time.
+    chunk: Option<usize>,
     /// How many children `footprint` and `bench --instructions` run at once.
     jobs: Option<usize>,
     /// `bench`: instructions retired, not MB/s.
@@ -240,6 +244,7 @@ fn parse() -> Result<Args, String> {
         scrub: Vec::new(),
         note: String::new(),
         json: None,
+        chunk: None,
         jobs: None,
         instructions: false,
         repeats: 3,
@@ -285,6 +290,7 @@ fn parse() -> Result<Args, String> {
             }
             "--history" => args.history = number("--history", &value("--history")?)?,
             "--mb" => args.mb = number("--mb", &value("--mb")?)?,
+            "--chunk" => args.chunk = Some(number("--chunk", &value("--chunk")?)?),
             "--out" => args.out = Some(value("--out")?),
             "--keys" => args.keys = Some(value("--keys")?),
             "--program" => args.program = Some(value("--program")?),
@@ -1423,6 +1429,7 @@ fn main() -> ExitCode {
             &args.rest,
             args.show,
             args.json.as_deref(),
+            args.chunk,
         ),
         "bench" if args.instructions => instructions::run(
             &panel(&args, "in-process")?,

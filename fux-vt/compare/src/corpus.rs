@@ -633,6 +633,9 @@ pub struct Recording {
     /// than typing: the step's index and the new size, rows and columns.
     /// The step's output is what the program wrote after the resize.
     pub resizes: Vec<(usize, u16, u16)>,
+    /// `--chunk N`: each step's output given, and judged, N bytes at a
+    /// time, not whole (none: whole).
+    pub chunk: Option<usize>,
 }
 
 impl Recording {
@@ -670,14 +673,34 @@ impl Recording {
             .map(|&(_, rows, cols)| (rows, cols))
     }
 
+    /// Step `index`'s output in the pieces the case gives it: whole, or
+    /// [`Recording::chunk`] bytes at a time; one, empty, for none.
+    fn pieces(&self, index: usize) -> Vec<Vec<u8>> {
+        let output = self.steps.get(index).map_or(&[][..], |(_, b)| b.as_slice());
+        match self.chunk.filter(|&n| n > 0 && output.len() > n) {
+            None => vec![output.to_vec()],
+            Some(n) => {
+                let (mut out, mut rest) = (Vec::new(), output);
+                while !rest.is_empty() {
+                    let (piece, later) = rest.split_at_checked(n).unwrap_or((rest, &[]));
+                    out.push(piece.to_vec());
+                    rest = later;
+                }
+                out
+            }
+        }
+    }
+
     /// The step recorded (counted from 0) that the case's step `index`
     /// belongs to, as `Outcome::step` counts them: none for 0, before any
     /// step, the program's start for 1. A step that resized is two in the
-    /// case, the resize and the output after it.
+    /// case, the resize and the output after it (or more, one for each
+    /// piece of its output under `--chunk`).
     pub fn recorded_step(&self, index: usize) -> Option<usize> {
         let mut case_steps = 0usize;
         for i in 0..self.steps.len() {
-            let these = if self.resize_at(i).is_some() { 2 } else { 1 };
+            let resized = usize::from(self.resize_at(i).is_some());
+            let these = resized.saturating_add(self.pieces(i).len());
             case_steps = case_steps.saturating_add(these);
             if index > 0 && case_steps >= index {
                 return Some(i);
@@ -694,7 +717,9 @@ impl Recording {
         std::iter::once(true)
             .chain((0..self.steps.len()).flat_map(|i| {
                 let resized = self.resize_at(i).map(|_| false);
-                resized.into_iter().chain([true])
+                resized
+                    .into_iter()
+                    .chain(std::iter::repeat_n(true, self.pieces(i).len()))
             }))
             .collect()
     }
@@ -712,14 +737,18 @@ impl Recording {
                 .steps
                 .iter()
                 .enumerate()
-                .flat_map(|(i, (_, bytes))| {
+                .flat_map(|(i, _)| {
                     let resize = self
                         .resize_at(i)
                         .map(|(rows, cols)| Step::Resize(rows, cols));
-                    resize.into_iter().chain([Step::Output(vec![Snippet {
-                        family: usize::MAX,
-                        bytes: bytes.clone(),
-                    }])])
+                    resize
+                        .into_iter()
+                        .chain(self.pieces(i).into_iter().map(|bytes| {
+                            Step::Output(vec![Snippet {
+                                family: usize::MAX,
+                                bytes,
+                            }])
+                        }))
                 })
                 .collect(),
             subject: FUX_VT,
@@ -805,6 +834,7 @@ fn load(path: &Path) -> Result<Recording, String> {
             .map_err(|e| format!("{}: replies: {e}", path.display()))?,
         steps,
         resizes,
+        chunk: None,
     })
 }
 
@@ -1095,11 +1125,14 @@ pub fn run(
     names: &[String],
     show: bool,
     json: Option<&str>,
+    chunk: Option<usize>,
 ) -> Result<bool, String> {
+    let recordings: Vec<Recording> = (recordings(names)?.into_iter())
+        .map(|r| Recording { chunk, ..r })
+        .collect();
     if subject != FUX_VT {
-        return run_subject(subject, panel, names, show, json);
+        return run_subject(subject, panel, &recordings, !names.is_empty(), show, json);
     }
-    let recordings = recordings(names)?;
     let names_of: Vec<&str> = panel.iter().map(|&i| engine::name(i)).collect();
     println!("engines: {}", names_of.join(" "));
     let started = Instant::now();
@@ -1278,11 +1311,11 @@ pub fn run(
 fn run_subject(
     subject: usize,
     panel: &[usize],
-    names: &[String],
+    recordings: &[Recording],
+    named: bool,
     show: bool,
     json: Option<&str>,
 ) -> Result<bool, String> {
-    let recordings = recordings(names)?;
     let name = engine::name(subject);
     let names_of: Vec<&str> = panel.iter().map(|&i| engine::name(i)).collect();
     println!("subject: {name}, judged as fux-vt is (fux-vt's statuses are not applied)");
@@ -1293,7 +1326,7 @@ fn run_subject(
     let mut whole = true;
     let mut results = Vec::new();
     let (mut fux_ahead, mut subject_ahead) = (Vec::new(), Vec::new());
-    for recording in &recordings {
+    for recording in recordings {
         let case = Case {
             subject,
             ..recording.case()
@@ -1341,7 +1374,7 @@ fn run_subject(
                     listed(keys),
                     marks(&outcome)
                 );
-                if !names.is_empty() {
+                if named {
                     let first = judge_excepted(recording, &case, panel, &[])?;
                     print!("{}", report(recording, subject, &first.outcome));
                 }
@@ -1898,6 +1931,32 @@ mod tests {
     /// A step that resized is two steps of the case: the resize, then the
     /// output after it.
     #[test]
+    fn a_step_chunked_is_judged_after_each_piece() {
+        let recording = super::Recording {
+            name: "r".into(),
+            program: "p".into(),
+            version: "v".into(),
+            rows: 4,
+            cols: 10,
+            steps: vec![
+                (String::new(), b"abcde".to_vec()),
+                ("j".into(), b"f".to_vec()),
+            ],
+            replies: Vec::new(),
+            resizes: vec![(1, 3, 8)],
+            chunk: Some(2),
+        };
+        // Before any step; "ab", "cd", "e"; the resize; "f".
+        assert_eq!(recording.case().steps.len(), 5);
+        assert_eq!(recording.judged(), [true, true, true, true, false, true]);
+        let recorded: Vec<Option<usize>> = (0..=5).map(|s| recording.recorded_step(s)).collect();
+        assert_eq!(
+            recorded,
+            [None, Some(0), Some(0), Some(0), Some(1), Some(1)]
+        );
+    }
+
+    #[test]
     fn a_resize_is_its_own_step_of_the_case() {
         let recording = super::Recording {
             name: "r".into(),
@@ -1913,6 +1972,7 @@ mod tests {
             ],
             replies: Vec::new(),
             resizes: vec![(2, 3, 8)],
+            chunk: None,
         };
         let case = recording.case();
         assert_eq!(case.steps.len(), 5);
