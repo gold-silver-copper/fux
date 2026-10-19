@@ -36,8 +36,13 @@ impl Scale {
 }
 
 /// The chunkings every probe feeds its input at (`threats.md` section 2),
-/// in bytes a call.
-pub const CHUNKS: [usize; 3] = [1, 16, 4096];
+/// in bytes a call: and `WHOLE`, all of it in one piece, given again from
+/// each stop.
+pub const CHUNKS: [usize; 4] = [1, 16, 4096, WHOLE];
+
+/// The input in one piece, as a host reading all a program wrote at once
+/// gives it.
+pub const WHOLE: usize = usize::MAX;
 
 /// `bytes` `times` times over.
 pub fn repeat(bytes: &[u8], times: usize) -> Vec<u8> {
@@ -272,13 +277,18 @@ impl Probe {
         self.fed = self
             .fed
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+        // U is the ceiling of a call of 4 KiB, as fux makes them (threats.md
+        // 4.4): a call given more, as `WHOLE` gives it, may do U for each
+        // 4 KiB, as that many calls would.
         let cost = done.cost();
-        if cost > Work::CEILING {
+        let pieces = u64::try_from(bytes.div_ceil(4096).max(1)).unwrap_or(u64::MAX);
+        let ceiling = Work::CEILING.saturating_mul(pieces);
+        if cost > ceiling {
             return Err(format!(
-                "a call of {} bytes did {} weighted units, past U = {} ({:?})",
+                "a call of {} bytes did {} weighted units, past {pieces} U = {} ({:?})",
                 bytes,
                 cost / 20,
-                Work::CEILING / 20,
+                ceiling / 20,
                 nonzero(done)
             ));
         }
