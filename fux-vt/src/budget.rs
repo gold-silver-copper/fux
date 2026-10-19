@@ -17,16 +17,23 @@
 //! a line moves, REP's copies; and, where it is done, by the `spend!`
 //! sites: DECCRA's copy, scrolls inside margins, the alignment pattern,
 //! checksums, a screen made anew, the searches and sweeps of history's
-//! rows. The work at most a row's a sequence, or a few units a byte, is
-//! not, as the call's length bounds it (threats.md 4.2's rows that hold):
-//! examining bytes, printing, joining a cluster, a line feed, EL, ICH and
-//! DCH, recording prints, finding a style, decoding sixel. The spending is
-//! kept per thread, as the `checks` counters are, so the grid and history
-//! spend without being handed anything; a call compares what was spent
-//! before and after, so calls of several parsers on one thread don't mix.
+//! rows, and a line feed's copy of the row it scrolls into history. The
+//! work at most a row's a sequence, or a few units a byte, is not, as the
+//! call's length bounds it (threats.md 4.2's rows that hold): examining
+//! bytes, printing, joining a cluster, EL, ICH and DCH, recording prints,
+//! finding a style, decoding sixel. The spending is kept per thread, as
+//! the `checks` counters are, so the grid and history spend without being
+//! handed anything; a call compares what was spent before and after, so
+//! calls of several parsers on one thread don't mix.
+//!
 //! The parser looks at it after each escape sequence or string it carries
-//! out (`Parser::run`), not after text or a C0 control, which spend
-//! nothing.
+//! out, and after each line feed (LF, VT, FF) it carries out, whose scroll
+//! can copy up to a row's text, a few thousand units, for one byte
+//! (`Parser::run`, decision 820). Not after text or another C0 control:
+//! what they spend between two looks is at most one style sweep, for the
+//! one new style an SGR before them gave the pen (B13, at most 4 M units,
+//! P21), and a scroll of the row a wrap leaves, which the row's own
+//! printed cells pay for.
 
 use std::cell::Cell;
 

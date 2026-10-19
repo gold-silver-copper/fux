@@ -372,6 +372,26 @@ fn scalar(
     }
 }
 
+/// A line feed carried out in text is a place `process_until_stop` looks
+/// at the budget, as its scroll can move a row's text into history
+/// (decision 820): with the budget spent, a run of LF, VT or FF stops
+/// after the first, and one of CR, which moves no row, does not stop.
+#[test]
+fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
+    let mut parser = Parser::new(Size::of(2, 4), 8)?;
+    for feeds in [b"\n\n\n", b"\x0b\x0b\x0b", b"\x0c\x0c\x0c"] {
+        parser.spent = crate::budget::LIMIT;
+        let stop = parser.process_until_stop(feeds, &mut Log::default())?;
+        assert_eq!(stop, Some((1, Stop::Budget)), "{}", feeds.escape_ascii());
+    }
+    parser.spent = crate::budget::LIMIT;
+    assert_eq!(
+        parser.process_until_stop(b"\r\r\r", &mut Log::default())?,
+        None
+    );
+    Ok(())
+}
+
 /// Random options, each on or off.
 fn options(r: &mut Rng) -> Options {
     let features = Feature::ALL.into_iter().filter(|_| r.chance(50));
