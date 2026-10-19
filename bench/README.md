@@ -38,17 +38,20 @@ bench/target/release/fux-bench feel          # latency, throughput and footprint
 | `--only TEXT` | only workloads whose names contain TEXT; repeatable |
 | `--json FILE` | where the JSON goes (default `bench/target/fux-bench/against.json`, `info.json` or `feel.json`) |
 | `run WORKLOAD [--baseline]` | one workload, or its baseline, once |
-| `time [WORKLOAD...]` | thread CPU time, best of 3, and MB/s; names match by substring |
+| `time [WORKLOAD...]` | thread CPU time, best of 3, and MB/s of a workload fed bytes; names match by substring |
 | `--corpus DIR` | for `run` and `time`: recordings other than `fux-vt/compare/corpus/` |
+| `--payloads DIR` | for `run` and `time`: the census's speed payloads other than `bench/payloads/` |
 | `feel --muxes LIST --parts LIST --keys N` | see [`feel`](#feel-what-a-person-at-the-terminal-feels) |
 
-Exit status: 1 if `--against` flags a workload, 2 on an error.
+Exit status: 1 if `--against` finds a workload slower past its floor, or a
+broad loss by program; 2 on an error, a workload the tool cannot judge
+(broken) among them.
 
 ## The workloads
 
 | Workload | What runs | Fed |
 | --- | --- | --- |
-| `vt/NAME` | fux-vt alone, set up as fux sets up a pane (`fux::pane::OPTIONS`), 10,000 rows of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
+| `vt/NAME` | fux-vt alone, set up as fux sets up a pane (`fux::pane::OPTIONS`), 8 MiB of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
 | `pane/NAME` | `fux::pane::Pane::output` | 16 KiB at a time, as fux's server gives a pane what it reads (up to 64 KiB a tick) |
 | `vt/corpus:NAME` | fux-vt alone on one recording at its size, repeated to 4 MiB | 4 KiB at a time |
 | `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`, `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`, `vt/sixel:frames` | fux-vt alone on each of the census's speed payloads (`src/census.rs`; vendored data in `payloads/` with its licences; kitty's GPL payloads re-made by our own code), 8 MiB at 50×200 | 4 KiB at a time |

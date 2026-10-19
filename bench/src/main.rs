@@ -1,7 +1,8 @@
 //! `fux-bench`: fux's speed against another commit, in instructions
 //! retired, on fixed workloads run in this process (`workloads`), each
-//! counted in a child process of its own (`count`), REF's built in a
-//! temporary worktree (`against`); and what a person feels through real
+//! counted in a child process of its own (`count`), REF's and the working
+//! tree's built by one recipe from their trees (`git archive`, `against`);
+//! and what a person feels through real
 //! servers beside tmux, zellij and herdr (`feel`).
 mod against;
 mod census;
@@ -270,12 +271,13 @@ fn time(corpus: &Path, payloads: &Path, names: &[String]) -> Result<bool, String
             best = best.min(cpu()?.saturating_sub(start).saturating_sub(base));
         }
         let secs = best.as_secs_f64().max(1e-9);
-        println!(
-            "{:<26} {:>10.2} {:>10.1}",
-            spec.name,
-            secs * 1e3,
-            (units as f64) / secs / 1e6
-        );
+        // MB/s only of a workload fed bytes: another's units (keys, waits)
+        // are no bytes.
+        let mbs = match workloads::fed(&spec.name) == "not a stream of bytes" {
+            true => "-".to_owned(),
+            false => format!("{:.1}", (units as f64) / secs / 1e6),
+        };
+        println!("{:<26} {:>10.2} {mbs:>10}", spec.name, secs * 1e3);
     }
     Ok(true)
 }

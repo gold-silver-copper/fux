@@ -246,12 +246,12 @@ fn run_shrunk(
             cols: census::COLS,
             bytes: bytes?,
         };
-        return Ok(vt(&[load], baseline));
+        return vt(&[load], baseline);
     }
     let recordings = corpus::recordings(dir)?;
     if let Some(rest) = name.strip_prefix("vt/") {
         let loads = loads(rest, &recordings, size(RECORDING), shrink)?;
-        return Ok(vt(&loads, baseline));
+        return vt(&loads, baseline);
     }
     if let Some(rest) = name.strip_prefix("pane/") {
         let loads = loads(rest, &recordings, 0, shrink)?;
@@ -371,41 +371,45 @@ fn pieces(bytes: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-fn vt(loads: &[Load], baseline: bool) -> Done {
+/// The parser fed `loads`, each at its size. A size or a parser that
+/// can't be made fails the run: it would measure nothing. What the parser
+/// refuses as it reads (an allocation past its limits) is the workload's,
+/// as fux's pane takes it, and goes on.
+fn vt(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let units = loads.iter().map(|l| l.bytes.len()).sum();
     if baseline {
         black_box(loads);
-        return Done {
+        return Ok(Done {
             units,
             frames: 0,
             painted: 0,
-        };
+        });
     }
     let mut parser: Option<fux_vt::Parser> = None;
     for load in loads {
-        let Ok(size) = fux_vt::Size::new(load.rows, load.cols) else {
-            continue;
-        };
-        match &mut parser {
+        let size = fux_vt::Size::new(load.rows, load.cols)
+            .map_err(|e| format!("{}x{}: {e}", load.rows, load.cols))?;
+        let p = match &mut parser {
             Some(p) => {
-                let _ = p.resize(size);
+                p.resize(size)
+                    .map_err(|e| format!("resize to {size:?}: {e}"))?;
+                p
             }
-            None => {
-                parser = fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS).ok();
-            }
-        }
-        if let Some(p) = &mut parser {
-            for piece in pieces(&load.bytes, CHUNK) {
-                let _ = p.process_with(black_box(piece), &mut Sink);
-            }
+            None => parser.insert(
+                fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS)
+                    .map_err(|e| format!("a parser of {size:?}: {e}"))?,
+            ),
+        };
+        for piece in pieces(&load.bytes, CHUNK) {
+            let _ = p.process_with(black_box(piece), &mut Sink);
         }
     }
     black_box(parser.as_ref().map(|p| p.screen().cursor_position()));
-    Done {
+    Ok(Done {
         units,
         frames: 0,
         painted: 0,
-    }
+    })
 }
 
 fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
@@ -820,7 +824,10 @@ fn ready(baseline: bool, probes: usize) -> Result<Done, String> {
     let pid = fuxix::process::Pid::of(&child).ok_or("no pid")?;
     // Asleep before the probes, and before the baseline kills it: the
     // count includes the child's own start, which a child killed early
-    // had not finished (7.8 million instructions of 15 to 23).
+    // had not finished (7.8 million instructions of 15 to 23). The wait,
+    // up to 2 s of 1 ms looks, is counted in the run and its baseline
+    // alike, so the baseline takes it away; how many looks it takes moves
+    // with the machine's load, and so the workload's spread.
     let wchan = format!("/proc/{}/wchan", pid.as_raw());
     for _ in 0..if cfg!(target_os = "linux") { 2000 } else { 0 } {
         if std::fs::read_to_string(&wchan).is_ok_and(|w| w.contains("nanosleep")) {
