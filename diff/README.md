@@ -23,15 +23,13 @@ cargo build --release --manifest-path diff/Cargo.toml
 diff/target/release/fux-diff                                # every area
 diff/target/release/fux-diff --scale 10 --seed 7 terminal layout
 diff/target/release/fux-diff --list                         # what each area compares
-diff/target/release/fux-diff --speed                        # fux-vt's parse time beside its last release
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `AREA...` | the areas to run; all if none |
 | `--seed N` | the seed (default 1). Each area derives its own from it, so one area run alone replays exactly |
-| `--scale N` | multiplies each area's number of cases (default 1); with `--speed`, lengthens the streams |
-| `--speed` | times fux-vt beside its last release instead of comparing |
+| `--scale N` | multiplies each area's number of cases (default 1) |
 
 Each area prints how much it found alike, or stops at its first difference
 and prints the seed, both sides and what led to it (a session's last 40
@@ -50,14 +48,10 @@ area differed, 2 for a bad argument.
 | `text` | random words and key names | `split`, `quote`, `join`, `shell_line`, key names, JSON strings, base64 |
 | `system` | errnos, nonblocking requests on pipes, sockets and PTYs | fuxix's results, and the config file's path for every mix of `XDG_CONFIG_HOME` and `HOME` |
 
-`--speed` parses five synthetic streams (ASCII, SGR, CJK, emoji, cursor
-movement) and the recordings in `fux-vt/compare/corpus/` with both fux-vts
-in turn, best of nine, by the thread's CPU time, so a busy machine slows
-neither.
-
 Not covered: the server's connection handling in `server.rs` (the walk,
-`walk/`, and the integration tests cover it), and performance beyond
-`--speed` (see `bench/`). Nor, since fuxth, whole sessions, command
+`walk/`, and the integration tests cover it), and performance (see
+`bench/`: `fux-bench --against REF` counts fux-vt's instructions against
+any commit, in paired rounds). Nor, since fuxth, whole sessions, command
 lines, copy mode's errors in a session, or config files: the command line
 and the config are fuxth programs and keys are read by each client, so the
 baseline (0.20.0) and the current fux take different inputs there. Areas

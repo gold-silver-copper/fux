@@ -24,7 +24,7 @@ cargo run --release --manifest-path bench/Cargo.toml -- --calibrate --json FLOOR
 bench/target/release/fux-bench list          # the workloads
 bench/target/release/fux-bench time          # each one's thread CPU time here, and MB/s
 bench/target/release/fux-bench run vt/ascii  # one workload once, as --against counts it
-bench/target/release/fux-bench info          # MB/s beside Ghostty and alacritty, and fux-diff --speed
+bench/target/release/fux-bench info          # MB/s beside Ghostty and alacritty
 bench/target/release/fux-bench feel          # latency, throughput and footprint beside tmux, zellij and herdr
 ```
 
@@ -117,8 +117,8 @@ For fux-vt beside other engines in instructions per byte, see
 Figures not compared against REF: `fux-vt/compare/run.sh bench --engines
 ghostty,alacritty --mb 4 --json` (MB/s by wall time, best of 3; its first
 run builds Ghostty, which takes minutes), read from its JSON (kept beside
-info.json as `info.compare.json`), and `fux-diff --speed`. `info` exits 1
-when either fails or its figures can't be read.
+info.json as `info.compare.json`). `info` exits 1 when it fails or its
+figures can't be read.
 
 ## `feel`: what a person at the terminal feels
 
