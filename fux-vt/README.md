@@ -122,7 +122,7 @@ discard by default.
 | `PromptMarks` | OSC 133 (see its row). | `prompts::*` |
 | `Palette` | The colours a program sets, as xterm 411 keeps them. OSC 4 sets or queries palette entries (pairs of number and specification; 256–260 are the special colours, OSC 5's 0–4); OSC 10–19 the dynamic colours, each parameter the next; OSC 104, 105, 110–119 reset them. Specifications: `rgb:R/G/B` (1–4 hex digits a channel) and `#RGB` to `#RRRRGGGGBBBB`; names and other colour spaces are not read. Kept at 8 bits a channel; answered `OSC 4 ; n ; rgb:RRRR/GGGG/BBBB`, each byte twice, ended as asked. OSC 4 and 5 stop at the first bad number or specification; OSC 10–19 skip a bad one; OSC 104 and 105 stop at the first non-number; OSC 110–119 with a parameter do nothing; OSC 105 alone resets every special colour (ctlseqs; xterm 411 resets none). Unset entries are answered with the host's colour for them, where it gave one (`Parser::set_host_palette`, entries 0 to 15, which no reset clears and which change nothing drawn), else with xterm's defaults (16 colours, 6×6×6 cube, grey ramp); unset dynamic colours become `ColorQuery` events with `Events`; unset special colours are not answered. RIS and DECSTR reset the palette only. Read with `Screen::palette_color`, `dynamic_color`, `colors_changed`; the host draws them. | `palette::*`, `palette::an_entry_not_set_is_answered_with_the_hosts_colour` |
 | `Pictures` | Sixel (see its row) for a host that draws pictures. Off, a sixel string is read and dropped: nothing is decoded or allocated, its cells hold what the program wrote around it (no `PLACEHOLDER`), the cursor stays, and DA1 and XTSMGRAPHICS say no sixel whatever `Parser::set_host_graphics` says. | `extended::*sixel*`, `screen::tests::pictures_*` |
-| `RectangleChecksums` | DECRQCRA → `DCS Pi ! ~ xxxx ST`, xterm's default sum, the VT520's: each cell's character plus 0x08 hidden, 0x10 underline, 0x20 inverse, 0x40 blink, 0x80 bold, summed in 16 bits and negated. A character past Latin-1 or below a space, and a wide glyph's second half, count as ESC; a Special Graphics glyph past Latin-1 as its code; combining marks are added; an empty cell is a space. A cell keeps the character it shows, not the set it was drawn from, a departure from a terminal that keeps the code drawn: Special Graphics' °, ± and · count as their Latin-1 codes (0xB0, 0xB1, 0xB7, not 0x66, 0x67, 0x7E), and DEC Supplemental's Œ, Ÿ and œ, past Latin-1, as ESC. `Pp` is ignored. The rectangle is one-based, relative to and clamped by the margins in origin mode, the screen otherwise; 0 is its whole extent; an inverted one has no reply (DEC STD 070, DECRQCRA: the sequence is ignored). It lets a program read the screen, so fux leaves it off; esctest needs it. | `opt_in::rectangle_checksums_*` |
+| `RectangleChecksums` | DECRQCRA → `DCS Pi ! ~ xxxx ST`, xterm's default sum, the VT520's: each cell's character plus 0x08 hidden, 0x10 underline, 0x20 inverse, 0x40 blink, 0x80 bold, summed in 16 bits and negated. A character past Latin-1 or below a space, and a wide glyph's second half, count as ESC; a Special Graphics glyph past Latin-1 as its code; combining marks are added; an empty cell is a space. A cell keeps the character it shows, not the set it was drawn from, a departure from a terminal that keeps the code drawn: the five Special Graphics glyphs within Latin-1, its blank, °, ±, £ and ·, count as their Latin-1 codes (0x20, 0xB0, 0xB1, 0xA3, 0xB7, not 0x5F, 0x66, 0x67, 0x7D, 0x7E), and DEC Supplemental's Œ, Ÿ and œ, past Latin-1, as ESC. `Pp` is ignored. The rectangle is one-based, relative to the top and left margins in origin mode, and clamped to the screen whatever the margins (DEC STD 070, 5.12.1); 0 is its whole extent; an inverted one has no reply (DEC STD 070, DECRQCRA: the sequence is ignored). It lets a program read the screen, so fux leaves it off; esctest needs it. | `opt_in::rectangle_checksums_*` |
 
 ## Keys
 
@@ -415,10 +415,14 @@ fux-vt's work counters and a counting allocator against it.
   history rows go as it grows, and when they all have, the styles no cell
   shows go.
 - **`Prints`** (B10) keeps at most 4 bytes of text a screen cell (16 KiB
-  at least) and 4,096 runs between takes. Past that, or after a resize,
-  it records nothing more and says so (`Prints::lost`).
-- **Finding a frame's end** (B19): `FrameScan::end` reads each byte once,
-  however the frame comes split, a sequence left unfinished included.
+  at least) and 4,096 runs between takes. Past that, or after a resize
+  while it holds something, it records nothing more and says so
+  (`Prints::lost`); a resize while it holds nothing gives it the new
+  size's room.
+- **Finding a frame's end** (B19): `FrameScan::end` reads each byte at
+  most twice (a CSI's are searched for its final byte, then those of the
+  few that may end a frame read), however the frame comes split, a
+  sequence left unfinished included.
 - **A cluster** (B30, B31) keeps at most `CLUSTER_CAPACITY` (128) bytes,
   and a row's text at most 32 bytes a column and 128 (long clusters) and
   17 a column (short); joining a character reads its cluster again, at

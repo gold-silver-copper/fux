@@ -366,9 +366,9 @@ fn special_graphics(c: char) -> char {
 /// its character, a DEC Special Graphics glyph past Latin-1 as the code it
 /// is drawn with (0x60 to 0x7e), any other past Latin-1 or below a space as
 /// ESC; its combining marks as they are; and its VT100 attributes. The
-/// cell keeps the character, not the set it came from (README): Special
-/// Graphics' °, ± and · count as Latin-1, DEC Supplemental's Œ, Ÿ and œ as
-/// ESC.
+/// cell keeps the character, not the set it came from (README): the five
+/// Special Graphics glyphs within Latin-1, its blank, °, ±, £ and ·, count
+/// as Latin-1, DEC Supplemental's Œ, Ÿ and œ as ESC.
 fn checksum_of(cell: &CellRef<'_>) -> u16 {
     const ESC: u16 = 0x1b;
     let mut chars = cell.contents().chars();
@@ -3204,10 +3204,10 @@ impl Screen {
     /// one; xterm skips cells nothing was ever written to, a difference
     /// esctest allows. The page `Pp` is ignored, as xterm ignores it (DEC
     /// has 0 mean all pages): there is one. The rectangle's coordinates are
-    /// one-based and relative to the margins in origin mode, clamped to the
-    /// screen (to the margins in origin mode), with absent or 0 meaning
-    /// its whole extent; one whose top is below its bottom, or left past
-    /// its right, has no reply.
+    /// one-based and relative to the top and left margins in origin mode,
+    /// clamped to the screen whatever the margins (`page_position`), with
+    /// absent or 0 meaning its whole extent; one whose top is below its
+    /// bottom, or left past its right, has no reply.
     pub(crate) fn rectangle_checksum(&self, p: &Parameters) -> Option<Reply> {
         let g = self.grid();
         let mut sum = 0u16;
