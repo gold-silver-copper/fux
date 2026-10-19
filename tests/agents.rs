@@ -310,6 +310,14 @@ fn input_reaches_the_program_as_a_person_sends_it() -> Outcome {
         sent(&["str", "a b", "paste"])?,
         "1b5b3230307e6120621b5b3230317e"
     );
+    // Bytes as they are, in pieces a pause apart: half a character, then
+    // the rest, each read alone, the second written once the pause is up.
+    let began = std::time::Instant::now();
+    assert_eq!(
+        sent(&["str", "c3", "bytes", "300", "pause", "str", "a9", "bytes"])?,
+        "c3 a9"
+    );
+    assert!(began.elapsed() >= std::time::Duration::from_millis(300));
     let repeated = sent(&["str", "BSpace", "key", "3", "times", "str", "x", "text"])?;
     assert_eq!(repeated.replace(' ', ""), "7f7f7f78", "x once");
     let menu = sent(&["str", "Down", "key", "2", "times", "str", "Enter", "key"])?;
@@ -563,7 +571,7 @@ fn answers_say_what_the_program_does() -> Outcome {
         (at_work.status, at_work.stdout.as_str()),
         (
             if PROBED { 124 } else { 0 },
-            format!("{pane} {}\nlater\n", asleep(&pane)).as_str()
+            format!("{pane} {}\nlater\n", asleep(&pane, 1)).as_str()
         )
     );
     let since = server.ok(&[&p[..], &["str", "later", "wait-text", "wait"]].concat())?;
@@ -571,7 +579,7 @@ fn answers_say_what_the_program_does() -> Outcome {
     let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
     assert_eq!(
         (now.status, now.stdout.as_str()),
-        (0, format!("{pane} {}\nlater\n", asleep(&pane)).as_str()),
+        (0, format!("{pane} {}\nlater\n", asleep(&pane, 0)).as_str()),
         "what came since the keys"
     );
     assert_eq!(
@@ -1714,7 +1722,9 @@ fn the_rechecks_hold() -> Outcome {
         // A marked command at work: `wait-done` waits as long as it runs.
         true => (
             124,
-            "busy · `%2 wait-done wait` waits for its command to end".to_owned(),
+            "busy · still at work at the 1s limit, not failed: `%2 wait-done wait` waits for its \
+             command to end"
+                .to_owned(),
         ),
         false => (0, format!("{ASLEEP} · command running")),
     };
@@ -2048,6 +2058,86 @@ fn escape_alone_and_full_screens() -> Outcome {
         saved.starts_with(&format!("{editor} exited 0\n")) && saved.contains("saved"),
         "{saved}"
     );
+    Ok(())
+}
+
+/// A program that tells a lone Escape from a key's sequence on a timer fux
+/// cannot see (an alarm, 250ms), drawing only once it runs out, has its
+/// Escape answered by what it drew then, not taken as having drawn nothing;
+/// the key after it waits for that too, not read with it as Alt.
+#[test]
+fn an_escape_is_given_the_time_a_program_waits_for_more() -> Outcome {
+    let server = Server::start("")?;
+    let modes = "import os, signal, tty\n\
+                 tty.setraw(0); mode = ['normal']\n\
+                 def draw(): os.write(1, ('\\x1b[H\\x1b[2Jmode: ' + mode[0] + '\\r\\n').encode())\n\
+                 def alone(*_): mode[0] = 'normal'; draw()\n\
+                 signal.signal(signal.SIGALRM, alone); draw()\n\
+                 while True:\n\
+                 \x20   try: b = os.read(0, 64)\n\
+                 \x20   except InterruptedError: continue\n\
+                 \x20   if b == b'\\x1b': signal.setitimer(signal.ITIMER_REAL, 0.25); continue\n\
+                 \x20   signal.setitimer(signal.ITIMER_REAL, 0)\n\
+                 \x20   mode[0] = 'insert' if b == b'i' else 'read ' + b.hex(); draw()\n";
+    let pane = id(&server.ok(&run(
+        &["str", "mode:", "wait-text"],
+        &["python3", "-c", modes],
+    ))?);
+    let keys = |keys: &[&str]| {
+        let send = [&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]];
+        server.ok(&send.concat())
+    };
+    assert!(keys(&["str", "i", "text"])?.ends_with("mode: insert\n"));
+    let escape = keys(&["str", "Escape", "key"])?;
+    assert_eq!(escape, format!("{pane} {READING}\nmode: normal\n"));
+    let then = keys(&[
+        "str", "i", "text", "str", "Escape", "key", "str", "x", "text",
+    ])?;
+    assert!(then.ends_with("mode: read 78\n"), "{then}");
+    Ok(())
+}
+
+/// A remote client that reports nothing of what it runs (here a stand-in
+/// named `ssh`, reading its terminal as ssh does while its command runs
+/// there) is no program waiting for keys: once quiet it is `waiting`, the
+/// answer says fux cannot tell and how to wait, and a text wait runs to
+/// its limit, never told it cannot come (7).
+#[test]
+fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("")?;
+    let ssh = server.dir.join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\necho connected\nread line\n").map_err(e)?;
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).map_err(e)?;
+    let ssh = ssh.to_string_lossy().into_owned();
+    let started = server.ok(&run(&[], &[&ssh, "bench", "make"]))?;
+    let pane = id(&started);
+    if PROBED {
+        assert_eq!(
+            head(&started),
+            format!(
+                "{pane} waiting · ssh runs its command on another machine, so fux cannot tell \
+                 whether it waits or works: `{pane} wait-exit wait` waits for its end"
+            )
+        );
+        let json = server.ok(&["str", &pane, "pane", "wait", "json"])?;
+        assert!(
+            json.contains(r#""remote":"ssh","wait_with":"wait-exit""#),
+            "{json}"
+        );
+    }
+    let built = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "str",
+        "built",
+        "wait-text",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(built.status, 124, "{}", built.stderr);
     Ok(())
 }
 

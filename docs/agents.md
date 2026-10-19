@@ -7,11 +7,14 @@ explain` one.)
 A fux command line is a fuxth program: words run left to right, each taking
 what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
 a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
-`FUX_SOCKET`'s; `fux start` starts one if none runs. What an action takes
-(keys, a wait, what to read) goes on the pane before the word that acts; only
-`run`, `new-tab` and `new-workspace` start from `opts`, and only `run` takes a
-program (`command`): the other two start a shell (`str 'CMD' typed` types a
-line into it).
+`FUX_SOCKET`'s; `fux start` starts one if none runs. **The word that acts
+comes last:** what it takes (keys, a wait, what to read) goes on the pane
+before it (`%2 wrapped capture`, `%2 str y text send-keys`), and `json`
+after it (`%2 capture json`); only `run`, `new-tab` and `new-workspace`
+start from `opts`, which comes first, its options next (`opts str web name
+str 'CMD' command run`), and only `run` takes a program (`command`): the
+other two start a shell (`str 'CMD' typed` types a line into it). A line
+refused for its order says the order that works.
 
 **Act, then read the answer.** Every action waits until the pane settles
 (30s at most), then answers with its state and what came since your input:
@@ -19,7 +22,7 @@ you never sleep or poll.
 
 ```sh
 fux opts str web name str './app --fast' command run    # start: answers %2 reading, then its output
-fux %2 str y text str Enter key send-keys               # type (or str T paste): answers as run does
+fux %2 str y text str Enter key send-keys               # keys, then send-keys (str T paste send-keys pastes): answers as run does
 fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
 fux %2 wait                                             # settle again (30s), what came since your input
@@ -28,6 +31,8 @@ fux %2 all-history capture                              # read: the screen once 
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
 fux %2 capture json                                     # also: main-screen, last-output, styles, marks
 fux %2 str C-c key send-keys                            # a key: Enter, C-c, Up, F5 (`fux key-names`)
+fux %2 str 1b bytes 30 pause str '[A' text send-keys    # bytes in hex, split by a pause: input that arrives in pieces
+fux opts str 'ssh -n host make' command run             # a remote command: then `%2 wait-exit wait` waits for its end
 fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as `wrapped capture` counts
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: %2 horizontal split
 fux %2 str TERM signal; fux %2 respawn                  # stop; start again on a new terminal
@@ -43,8 +48,10 @@ fux ls                                                  # what there is: workspa
 %2 waiting                     quiet 1s, but it may go on alone (`· redraws on its own`: a clock, `top`)
 %2 waiting · not reading its terminal, so fux cannot tell when it waits for input: `%2 wait-exit wait` waits for its end
                                not a full-screen program, blocked on the network or a pipe (`koh exec`, a download)
-%2 busy · `%2 wait` waits for it to settle
-                               still at work at the time limit (status 124); a shell command: `wait-done`
+%2 busy · still at work at the 30s limit, not failed: `%2 wait` waits on
+                               the time ran out (status 124); a shell command: `wait-done`
+%2 waiting · ssh runs its command on another machine, so fux cannot tell whether it waits or works: …
+                               a remote client that reports nothing: its state is the client's, not the program's there
 %2 exited 3                    the program ended; what it printed since your input follows
 %2 exited 0 · it exited before reading C-q, which went nowhere
                                keys it never read (sent on after the one that quit it)
@@ -55,18 +62,27 @@ fux ls                                                  # what there is: workspa
 - **Wait longer:** `%2 300 timeout wait`; a shell command of unknown length
   (a build): `%2 wait-done wait` waits as long as it runs; a program to its
   end: `%2 wait-exit wait`. A text: `%2 str 'ready' wait-text wait`.
-- **Start:** `run` OPTIONS: `str web name`, `100 30 size`, `str "$PWD" cwd`,
-  `str K str V env`, `str 'prog -x a' command` (or `str PROG program` and
-  `str A arg` each). The answer's first word is the pane: use it. The pane stays after the program ends.
-- **Keys:** tmux's names (`Enter`, `Escape`, `C-c`, `M-s`, `Up`, `F5`), each
-  after `str`; `str T text`, `str NAME key`, `str T paste`, `N times`.
+- **Start:** `opts`, then its options, then `run`: `fux opts str web name
+  100 30 size str "$PWD" cwd str K str V env str 'prog -x a' command run`
+  (or `str PROG program` and `str A arg` each). The answer's first word is
+  the pane: use it. The pane stays after the program ends.
+- **Keys:** the pane, its inputs, then `send-keys`: `str T text`, `str NAME
+  key` (tmux's names, `Enter`, `Escape`, `C-c`, `M-s`, `Up`, `F5`), `str T
+  paste`, `str HEX bytes`, `MS pause` between two, `N times`.
+- **Remote:** fux sees a remote client (plain `ssh`), not what it runs
+  there: its `reading` or `waiting` says nothing of that, and `line` gives
+  no `done`; the answer says so. A remote command: `fux opts str 'ssh -n
+  host make' command run`, then `%2 wait-exit wait` (ssh ends with it;
+  `-n`: it reads nothing of the pane). A terminal there: wait for the text
+  you expect (`%2 str '$ ' wait-text wait`). `koh connect` reports its
+  program's state, and answers as a local program does.
 - **Read:** `capture` joins a line wrapped at the pane's width, as answers
   print it; `wrapped` keeps the screen's rows (the cells a mouse event
   counts); `all-history`, `last-output`, `styles`, `marks` (highlights as
   `⟦this⟧`), `json`.
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
   program exited before the wait; 7 it reads its terminal and the text has
-  not come; 124 busy at the limit.
+  not come; 124 still at work at the limit, no failure (`%2 wait` waits on).
 - **Clean up:** `fux str agent workspace kill`; stop what you start by its
   pid, never `pkill -f`.
 
@@ -105,7 +121,18 @@ ended: …` for a relay (`koh connect`) that owes a report of its program
 (below, `shells`) and was quiet 5s, not 1s, to give its end the time. After keys or a mouse event, `· highlight ROW,COL-END "TEXT"` names up
 to three runs the input highlighted anew (reverse video, or a background
 other than the screen's: a selection, a menu's choice), as a mouse event
-counts cells; one that stays where it was is not said again. `· cursor
+counts cells; one that stays where it was is not said again. Keys
+ending in an Escape alone (or a sequence begun, `str 1b5b bytes`) settle
+once the program drew after them, else 750ms on: a program telling a
+lone Escape from a key's sequence waits for the rest that long at most,
+maybe on a timer fux cannot see (an alarm). A remote client in front that
+reports nothing of what it runs (plain `ssh`, `mosh`, `telnet`: not
+`koh connect`) says so: `· ssh runs its command on another machine, so
+fux cannot tell whether it waits or works: `%2 wait-exit wait` waits for
+its end` (a command on a pipe there, which ssh ends with), or `· ssh
+shows another machine's terminal, …: `%2 str TEXT wait-text wait` waits
+for a text it shows`; it is `waiting` once quiet a second, never
+`reading`, and a text wait runs to its limit, never status 7. `· cursor
 ROW,COL` gives the cursor, from 0 as a mouse event counts cells, wherever it
 matters: after keys that edited a line a program reads (text typed, Left,
 Up, Backspace; at its end too), when text shows under or right of it on its
@@ -142,8 +169,17 @@ likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
   too: `Backspace`, `Esc`, `Return`, `Del`, `PgUp`, `PgDn`; no keypad keys;
   a typo is refused, naming the closest name), always after `str`. Between the pane and `send-keys`: `str T text`, `str NAME key`, `str T
   paste` (bracketed if the program turned that on, an end-of-paste mark in T
-  then dropped), `str FILE paste-file`; 900 KiB at most in all, repeats too
-  (text its bytes, a key its name's, each input after the first 5 more). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
+  then dropped), `str FILE paste-file`, `str HEX bytes` (bytes as they are,
+  two hex digits each: `1b5b41`, `c3`; a piece of their own); 900 KiB at
+  most in all, repeats too (text its bytes, a key its name's, each input
+  after the first 5 more).
+- **Timed pieces:** `MS pause` (1 to 10000 milliseconds) between two inputs
+  writes the one after it MS after the one before, whatever the program
+  did meanwhile, with no settling between: input that arrives split (part
+  of an escape sequence, `str 1b bytes 30 pause str '[A' text`; part of a
+  character, `str c3 bytes 50 pause str a9 bytes`). The answer comes once
+  the last went in and the pane settled. Elsewhere each input goes in once
+  the program took the one before (`echo`). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Mouse:** `%2 str click ROW COL mouse send-mouse` (`right`, `wheel-up`,
   `press`, `release`, `move`), a cell counted from 0 as `wrapped capture` counts:
   a program's own "row 22" hint is usually counted from 1.
@@ -372,10 +408,15 @@ quiet 5s before it is taken as `waiting` (its program may have ended
 there, `exit`, the relay closing its link): its end is told, `exited 0`
 (`koh connect` run in a pane of its own), or `done 0` (typed in a
 shell).
-Without one, fux cannot tell a remote command that waits for input there
-(through ssh) from a slow one: its `line` answers `busy` at the limit.
-Type such a command with `0 timeout`, or wait for its prompt with
-`wait-text`; the keys you send it next settle at once.
+Without one (plain ssh), fux sees the client, not what it runs: the
+answer says so (`answers`), a pane is `waiting` once quiet a second, and a
+remote shell's `line` gives no `done`. Wait for the text you expect
+(`%2 str 'build ok' wait-text wait`, its prompt), or run a remote command
+in a pane of its own so its end is ssh's: `fux opts str 'ssh -n HOST make'
+command run`, then `%2 wait-exit wait` (status 0, its status in `exited
+N`; `-n` keeps ssh from reading the pane). A command typed into a local
+shell (`%3 str 'ssh HOST make' line`) is waited for to its end, `· done
+STATUS`, as any other.
 
 ## sizes: Sizes
 

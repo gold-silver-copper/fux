@@ -83,8 +83,8 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("workspace", "workspace string", "a workspace, or its name"),
 ];
 pub const STRINGS: &str =
-    "name dir key path line id file field setting socket way action code keys word";
-pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
+    "name dir key path line id file field setting socket way action code keys word hex";
+pub const INTEGERS: &str = "cols rows secs n row col lines from to cells ms";
 
 /// Every word of fux's, under its heading, in help's order.
 #[rustfmt::skip]
@@ -131,6 +131,8 @@ pub const WORDS: &[Word] = &[
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", "x text -- x", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
     word("Input", "paste-file", "x file -- x", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
+    word("Input", "bytes", "x hex -- x", "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character"),
+    word("Input", "pause", "x ms -- x", "between two inputs, ms milliseconds (1 to 10000), the one after written then whatever the program did: str c3 bytes 50 pause str a9 bytes"),
     word("Input", "times", "x n -- x", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", "target -- answer", "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", "x action row col -- x", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
@@ -538,6 +540,14 @@ fn modify(
         "wait-done" => waits.until.push(Until::Done),
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
+        "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
+        "pause" => {
+            let ms: u64 = within(&next()?, 1..=10_000)?;
+            if built.inputs.is_empty() {
+                return Err(fail(Code::NoKeys, PAUSE));
+            }
+            built.inputs.push(Input::Pause(Duration::from_millis(ms)));
+        }
         "command" => {
             let line = string(&next()?)?;
             let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
@@ -826,6 +836,36 @@ pub fn unacted(word: &str) -> Option<String> {
     Some(format!(
         "nothing acts on it: {word} goes before {takers}, which do: {end}"
     ))
+}
+
+/// Where a pause goes, for one that is not between two inputs.
+const PAUSE: &str =
+    "a pause goes between two inputs: %2 str 1b bytes 50 pause str [A text send-keys";
+
+/// The bytes `hex` spells, two digits each (`1b5b41`, `c3 a9`; blanks
+/// between bytes ignored).
+fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
+    let bad = || {
+        fail(
+            Code::BadValue,
+            format!("{hex:?}: bytes in hex, two digits each: 1b5b41"),
+        )
+    };
+    let mut digits = hex
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_digit(16));
+    let mut bytes = Vec::new();
+    while let Some(high) = digits.next() {
+        let (Some(high), Some(Some(low))) = (high, digits.next()) else {
+            return Err(bad());
+        };
+        bytes.extend(u8::try_from(high.saturating_mul(16).saturating_add(low)).ok());
+    }
+    match bytes.is_empty() {
+        true => Err(bad()),
+        false => Ok(bytes),
+    }
 }
 
 /// The most input one send-keys sends: a request holds it whole.
@@ -1148,6 +1188,9 @@ impl fuxth::Host for Host<'_> {
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
+                if matches!(built.inputs.last(), Some(Input::Pause(_))) {
+                    return Err(fail(Code::NoKeys, PAUSE));
+                }
                 // As the request carries them, which must fit in one frame:
                 // text and pastes their bytes, keys their names' (`C-M-F12`
                 // 7), and each input after the first 5 bytes more.
@@ -1155,6 +1198,8 @@ impl fuxth::Host for Host<'_> {
                     .map(|input| match input {
                         Input::Text(text) | Input::Paste(text) => text.len(),
                         Input::Key(key) => key.to_string().len(),
+                        Input::Bytes(bytes) => bytes.len(),
+                        Input::Pause(_) => 0,
                     })
                     .fold(0usize, |sum, n| sum.saturating_add(n))
                     .saturating_add(built.inputs.len().saturating_sub(1).saturating_mul(5));
@@ -1178,6 +1223,13 @@ impl fuxth::Host for Host<'_> {
                             return Err(fail(
                                 Lang::Unused,
                                 "to a client takes no wait: wait on the pane after (PANE … wait)",
+                            ));
+                        }
+                        let raw = |i: &Input| matches!(i, Input::Bytes(_) | Input::Pause(_));
+                        if built.inputs.iter().any(raw) {
+                            return Err(fail(
+                                Lang::Unused,
+                                "to a client takes keys, text and pastes: bytes and pause go to a pane",
                             ));
                         }
                         let keys = ClientAction::Keys(built.inputs);
@@ -1732,6 +1784,57 @@ mod tests {
                 !name.chars().any(|c| ";|&<>()$`*?[{!~#'\"\\".contains(c)),
                 "{name}: a character a shell treats specially"
             );
+        }
+    }
+
+    /// A command line refused for its order says the order that works,
+    /// the words to type: an acting word moved after what it takes, or
+    /// `opts` first; never a line that still fails as it runs.
+    #[test]
+    fn a_line_out_of_order_says_the_order_that_works() {
+        let refused = |words: &[&str]| match crate::script::compile(&fuxth::token::arguments(words))
+        {
+            Ok(_) => "compiled".to_owned(),
+            Err(failed) => failed.message,
+        };
+        for (words, order) in [
+            (&["%2", "json", "capture"][..], "fux %2 capture json"),
+            (
+                &["json", "%2", "wrapped", "capture"],
+                "fux %2 wrapped capture json",
+            ),
+            (
+                &["run", "opts", "str", "./app -x", "command"],
+                "fux opts str './app -x' command run",
+            ),
+            (
+                &["opts", "run", "str", "app", "command"],
+                "fux opts str app command run",
+            ),
+            (
+                &["str", "app", "command", "opts", "run"],
+                "fux opts str app command run",
+            ),
+            (&["%2", "capture", "wrapped"], "fux %2 wrapped capture"),
+            (
+                &["%2", "send-keys", "str", "y", "text"],
+                "fux %2 str y text send-keys",
+            ),
+        ] {
+            let said = refused(words);
+            assert!(
+                said.ends_with(&format!("; in this order: `{order}`")),
+                "{said}"
+            );
+        }
+        // Moved, `capture` would refuse the text it is given: no order is
+        // said, nor where nothing acts at all.
+        for words in [
+            &["%2", "capture", "str", "y", "text"][..],
+            &["%2", "str", "y", "paste"],
+        ] {
+            let said = refused(words);
+            assert!(!said.contains("in this order"), "{said}");
         }
     }
 

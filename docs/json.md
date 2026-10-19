@@ -119,7 +119,12 @@ itself read the keys and drew after them; what it draws later may
 differ), `wait_with` (`"wait-exit"` or `"wait-done"`: a pane `waiting`
 that is no full-screen program, maybe at work, blocked off its
 terminal, or a relay that said nothing since the input, and the wait word
-that waits for its end), `cursor` (`[ROW,COL]` of the screen
+that waits for its end; with `remote`, `"wait-exit"` or `"wait-text"`),
+`remote` (the name of a remote client in front, `"ssh"`, that reports
+nothing of what it runs: its state is the client's, not that program's;
+`wait_with` says how to wait for it: `"wait-exit"` for a command run on
+a pipe there, which the client ends with, `"wait-text"` for a terminal
+there), `cursor` (`[ROW,COL]` of the screen
 after keys or a mouse event: after a line edited where a program reads
 it, when text shows under or right of the cursor on its row, or when the
 input moved the cursor alone; never while it is hidden or its program

@@ -493,12 +493,21 @@ impl Wait {
             Some(met) => notes.push(met),
             // A marked shell command: as long as it runs (a `line` at its
             // limit, a build quiet for minutes).
-            None if state == State::Busy && pane.command_running() => {
-                let note = format!("`{id} wait-done wait` waits for its command to end");
-                notes.push((note, Vec::new()));
-            }
+            // At the limit it is still at work, which is no failure: the
+            // status (124) says only that the time ran out.
             None if state == State::Busy => {
-                notes.push((format!("`{id} wait` waits for it to settle"), Vec::new()));
+                let (word, what) = match pane.command_running() {
+                    true => ("wait-done wait", "waits for its command to end"),
+                    false => ("wait", "waits for it to settle"),
+                };
+                let at = match limit.is_zero() {
+                    true => String::new(),
+                    false => format!(
+                        "still at work at the {}s limit, not failed: ",
+                        limit.as_secs()
+                    ),
+                };
+                notes.push((format!("{at}`{id} {word}` {what}"), Vec::new()));
             }
             None => {}
         }
@@ -568,7 +577,39 @@ impl Wait {
         let waiting = matches!(state, State::Waiting | State::Redrawing);
         let screen = pane.screen();
         let keys = [fux_vt::Mode::AlternateScreen, fux_vt::Mode::BracketedPaste];
-        if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
+        // A remote client that reports nothing of what it runs: fux sees
+        // the client, not that, and says so, with the wait that is right.
+        let remote = (!matches!(state, State::Exited(_) | State::Absent))
+            .then(|| pane.remote())
+            .flatten();
+        if let Some(remote) = &remote {
+            let (id, name) = (pane.id, &remote.name);
+            let (said, word) = match remote.terminal {
+                true => (
+                    format!(
+                        "{name} shows another machine's terminal, so fux cannot tell whether \
+                         what runs there waits or works: `{id} str TEXT wait-text wait` waits \
+                         for a text it shows"
+                    ),
+                    "wait-text",
+                ),
+                // Ended with its command: the client's end, or the shell
+                // command's that runs it.
+                false => {
+                    let word = if running { "wait-done" } else { "wait-exit" };
+                    let said = format!(
+                        "{name} runs its command on another machine, so fux cannot tell whether \
+                         it waits or works: `{id} {word} wait` waits for its end"
+                    );
+                    (said, word)
+                }
+            };
+            let fields = vec![
+                ("remote", Json::str(name.clone())),
+                ("wait_with", Json::str(word)),
+            ];
+            notes.push((said, fields));
+        } else if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
             let word = if running { "wait-done" } else { "wait-exit" };
             let id = pane.id;
             let why = if crate::ready::owed(pane) {

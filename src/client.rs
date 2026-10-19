@@ -764,6 +764,8 @@ impl Keyboard {
                     self.waiting.extend(keys);
                 }
                 crate::command::Input::Paste(text) => self.waiting.push_back(Input::Paste(text)),
+                // A pane's alone: `send-keys` refuses them for a client.
+                crate::command::Input::Bytes(_) | crate::command::Input::Pause(_) => {}
             }
         }
     }
