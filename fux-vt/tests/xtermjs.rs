@@ -11,10 +11,12 @@
 //! against the standard or real xterm and given its reason, and the test
 //! fails when a listed fixture starts to match, as when one not listed
 //! fails. Each listed fixture's screen as its authority has it is kept
-//! beside it (`fux-vt/NAME.text`), and asserted: xterm's `.text` but for
-//! the rows the reason names, each such row checked by hand against the
-//! section the reason cites (for HT, HTS, CHT and DECSTBM, replaying the
-//! bytes with xterm's rule gives xterm's `.text` again).
+//! beside it (`fux-vt/NAME.text`), and asserted. Those screens were
+//! written from the cited sections alone (DEC STD 070's SUBSTITUTE,
+//! DECSTBM and Appendix D.6.1, ECMA-48 8.3.7 and 8.3.159, xterm's ctlseqs
+//! for CSI ? 45) and the fixtures' bytes, by a model that saw no
+//! terminal's output, each traced by hand too; fux-vt's screens agree
+//! with them byte for byte.
 
 use fux_vt::{Parser, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
