@@ -502,8 +502,10 @@ impl<'a> Row<'a> {
 ///
 /// It keeps at most [`Prints::cap`] bytes of text, 4 a screen cell and
 /// 16 KiB at least, and [`PRINT_RUNS`] runs, between takes (`threats.md`
-/// B10). Past either, and after a resize, it records nothing more and says
-/// so ([`Prints::lost`]): a host then takes everything as changed.
+/// B10). Past either, and after a resize while it holds something, it
+/// records nothing more and says so ([`Prints::lost`]): a host then takes
+/// everything as changed. A resize while it holds nothing makes it anew,
+/// with the new size's room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prints {
     runs: Vec<(RowId, Range<u16>, Range<usize>)>,

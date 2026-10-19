@@ -325,8 +325,9 @@ impl Screen {
         }
     }
 
-    /// The pictures the screen shows: on the screen in use, every cell they
-    /// cover that the grid still keeps holding the placeholder.
+    /// The pictures the screen shows: those of the screen in use whose
+    /// every cell holds the placeholder, but the rows cropped off the top
+    /// of a screen or region that keeps no history (`shown`).
     pub fn pictures(&self) -> impl Iterator<Item = Shown<'_>> {
         self.track_pictures();
         self.pictures

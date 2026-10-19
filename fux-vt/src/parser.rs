@@ -415,7 +415,8 @@ enum Phase {
 /// `Parser::byte` reads an escape sequence or a CSI (`Phase::next`, the
 /// parameters, controls within, CAN and SUB cancelling). Made by
 /// [`Parser::frame_scan`]; it goes on from where it stopped, so each
-/// sequence is read once however the frame comes split.
+/// byte is read at most twice however the frame comes split (a CSI's,
+/// searched for its final byte, then read: `csi`).
 #[derive(Clone, Debug)]
 pub struct FrameScan {
     /// Where in the held bytes it goes on: past what it has read.
@@ -457,7 +458,7 @@ impl FrameScan {
     /// synchronized output, as the parser carries it out (DECRST naming
     /// it, XTRESTORE of it saved reset, DECSTR, DECSCL, RIS); `None` if none
     /// does.
-    /// Each byte is read once, however the frame comes split.
+    /// Each byte is read at most twice, however the frame comes split.
     pub fn end(&mut self, held: &[u8]) -> Option<usize> {
         loop {
             let rest = held.get(self.from..)?;
@@ -495,7 +496,7 @@ impl FrameScan {
     }
 
     /// Reads the sequence `bytes` begins with, at its ESC, as `Parser::byte`
-    /// does, each byte once: how many bytes it takes (up to an ESC or past
+    /// does, each byte at most twice (`csi`): how many bytes it takes (up to an ESC or past
     /// CAN or SUB that cut it short), and whether it ends the frame; `None`
     /// if it goes on past them, where it got to kept in `pending`.
     fn sequence(&mut self, bytes: &[u8]) -> Option<(usize, bool)> {
