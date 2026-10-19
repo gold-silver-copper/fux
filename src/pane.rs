@@ -528,6 +528,9 @@ pub struct Pane {
     /// server reads no more from the program; see [`Pane::read_unread`].
     /// With it, since when it waits: its turn is due then.
     unread: (Vec<u8>, Instant),
+    /// How many of the unread bytes are the rest of a frame being read
+    /// (`Pane::mid_frame`).
+    frame_left: usize,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
@@ -798,6 +801,7 @@ impl Pane {
             runs,
             frame: None,
             unread: (Vec::new(), Instant::now()),
+            frame_left: 0,
             colours: Colours::default(),
             bell: false,
             copied: None,
@@ -876,11 +880,30 @@ impl Pane {
         self.has_unread().then_some(self.unread.1)
     }
 
+    /// Whether the screen is part way through a frame drawn in
+    /// synchronized output, the rest of it waiting for the pane's next
+    /// turns: a client is not painted it till it is whole, and keeps the
+    /// last frame painted ("keep rendering the last rendered state",
+    /// `references/modern/mode_2026_synchronized_output.md`).
+    pub fn mid_frame(&self) -> bool {
+        self.frame_left > 0
+    }
+
     /// Reads the output waiting since a call of the parser did all the work
-    /// one may, until the next call does.
+    /// one may, until the next call does: the rest of a frame first, as
+    /// the frame was read.
     pub fn read_unread(&mut self) {
+        let now = Instant::now();
         let unread = std::mem::take(&mut self.unread.0);
-        self.read(&unread, Instant::now());
+        let frame_left = std::mem::take(&mut self.frame_left);
+        let at = frame_left.min(unread.len());
+        let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
+        if let Some((taken, _)) = self.feed(frame, false) {
+            self.frame_left = frame.len().saturating_sub(taken);
+            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec(), now);
+            return;
+        }
+        self.read(after, now);
     }
 
     /// `left` waits to be read on the pane's next turn, from `now`.
@@ -908,6 +931,7 @@ impl Pane {
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
                 if let Some((taken, _)) = self.feed(&frame, false) {
                     let left = frame.get(taken..).unwrap_or_default();
+                    self.frame_left = left.len();
                     self.wait_unread([left, rest].concat(), now);
                     return;
                 }
@@ -940,10 +964,9 @@ impl Pane {
             && let Some((taken, _)) = self.feed(&held, false)
         {
             // No output waits while a frame is held: it is the first.
-            self.wait_unread(
-                held.get(taken..).unwrap_or_default().to_vec(),
-                Instant::now(),
-            );
+            let left = held.get(taken..).unwrap_or_default().to_vec();
+            self.frame_left = left.len();
+            self.wait_unread(left, Instant::now());
         }
     }
 
@@ -2042,6 +2065,27 @@ mod tests {
         let rows = |p: &fux_vt::Screen| p.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
         assert_eq!(rows(pane.screen()), rows(whole.screen()));
         assert_eq!(first_row(&pane), "ZXXXXXXXXX");
+        Ok(())
+    }
+
+    /// A frame whose reading spends a parser call's budget is read on over
+    /// the next turns, its rest first, and the pane says it is part way
+    /// through one till it ends; what came after it is read after.
+    #[test]
+    fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size(2, 8), 0)?;
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");
+        pane.output(&frame);
+        assert!(pane.mid_frame(), "the budget stopped no call in the frame");
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        assert!(!pane.mid_frame());
+        assert_eq!(first_row(&pane), "DONEZ");
         Ok(())
     }
 

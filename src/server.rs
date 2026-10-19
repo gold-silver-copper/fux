@@ -415,8 +415,10 @@ impl Conn {
         let dirty = session.views.get(&attached.client)?.dirty;
         let sent = self.out.is_empty() && attached.tty.as_ref().is_none_or(|t| t.out.is_empty());
         // A screen not known is painted whole, whether or not the view
-        // changed: forgetting it is asking for that paint.
-        ((dirty || !attached.known) && sent).then_some(attached.clock.due)
+        // changed: forgetting it is asking for that paint. None is painted
+        // half of a frame.
+        let ready = sent && !session.mid_frame(attached.client);
+        ((dirty || !attached.known) && ready).then_some(attached.clock.due)
     }
 
     /// Whether `client` is attached here.

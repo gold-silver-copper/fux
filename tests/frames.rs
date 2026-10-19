@@ -82,3 +82,36 @@ fn a_frame_that_never_ends_is_shown_after_its_timeout() -> Outcome {
     );
     Ok(())
 }
+
+/// A frame whose reading takes several turns, as one spending more than a
+/// parser call's work budget does (threats.md P24), is shown only once
+/// read whole: the client keeps the last frame shown meanwhile ("keep
+/// rendering the last rendered state", the spec's "Rendering"). Each REP
+/// is spent as 65,535 copies: 4,000 of them spend two budgets. A row of
+/// eight X's is the frame half read: the line typed has none.
+#[test]
+fn a_frame_read_over_several_turns_is_shown_only_whole() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    type_now(
+        &server,
+        "%1",
+        "printf '\\033[?2026h'; printf 'X\\033[65535b%.0s' $(seq 4000); \
+         printf '\\033[2J\\033[HDO%sNE\\033[?2026l' ''",
+    )?;
+    let deadline = after(Duration::from_secs(60));
+    loop {
+        client.pump()?;
+        let text = client.text();
+        assert!(
+            !text.contains("XXXXXXXX"),
+            "half a frame was shown:\n{text}"
+        );
+        if text.contains("DONE") {
+            return Ok(());
+        }
+        assert!(Instant::now() < deadline, "no frame shown:\n{text}");
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}

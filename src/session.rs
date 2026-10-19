@@ -1761,6 +1761,18 @@ impl Session {
         ws.flat_map(|w| w.tabs().iter().map(|t| t.id)).collect()
     }
 
+    /// Whether a pane client `client` shows is part way through a frame
+    /// (`Pane::mid_frame`): its paint waits for the frame's end.
+    pub fn mid_frame(&self, client: ClientId) -> bool {
+        let mut mid = false;
+        if let Some(root) = self.shown_tab(client).and_then(Tab::root) {
+            root.for_each_pane(&mut |id| {
+                mid |= self.panes.get(&id).is_some_and(Pane::mid_frame);
+            });
+        }
+        mid
+    }
+
     /// The clients showing tab `tab`.
     fn viewers(&self, tab: Option<TabId>) -> Vec<ClientId> {
         let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
