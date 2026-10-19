@@ -1102,6 +1102,40 @@ fn seeds() -> Vec<Seed> {
             },
             fuzz: Fuzz::None,
         },
+        Seed {
+            name: "b46-tekhvc-colours",
+            row: "B46",
+            size: defaults,
+            prefix: Prefix::None,
+            // A 64 KiB OSC 4 of colours that each run TekHVC's chroma
+            // search to its end (tests/bounds/colours.rs).
+            bytes: || {
+                let mut out = b"\x1b]4".to_vec();
+                while out.len() < (64 << 10) - 20 {
+                    out.extend_from_slice(b";1;TekHVC:266/48/99");
+                }
+                out.push(0x07);
+                out
+            },
+            // The arithmetic ran, and stopped at the OSC's allowance, a
+            // quarter of U in `colours` steps, with one specification's
+            // steps past it. No defect at BASE: a guard (BASE read no
+            // device-independent colour; the arithmetic came, and was
+            // bounded, on vt-best: decision 912).
+            reaches: |r| {
+                let weight = (Work::WEIGHTS.iter())
+                    .find(|(name, _)| *name == "colours")
+                    .map_or(0, |(_, w)| *w);
+                let allowance = (Work::CEILING.checked_div(4))
+                    .and_then(|u| u.checked_div(weight))
+                    .map(|a| a.saturating_add(20_000));
+                let done = r.work.colours;
+                ensure(done >= 1 && allowance.is_some_and(|a| done <= a), || {
+                    format!("{done} colours steps, the allowance {allowance:?}")
+                })
+            },
+            fuzz: Fuzz::Terminal,
+        },
     ]
 }
 
