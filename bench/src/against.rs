@@ -48,7 +48,10 @@ pub struct Options {
     /// An A/A run of the working tree against itself, writing floors.
     pub calibrate: bool,
     pub only: Vec<String>,
-    pub json: PathBuf,
+    /// Where the JSON goes; by default `bench/target/fux-bench/` with the
+    /// two commits in its name (`against-REF-TREE.json`, a calibration
+    /// `calibration-TREE.json`), so a run never overwrites another's.
+    pub json: Option<PathBuf>,
 }
 
 /// The checkout this binary was built from.
@@ -559,6 +562,14 @@ pub fn run(options: &Options) -> Result<bool, String> {
     )?;
     let head = git(&root, &["rev-parse", "HEAD"])?;
     let dirty = !git(&root, &["status", "--porcelain"])?.is_empty();
+    let json_path = options.json.clone().unwrap_or_else(|| {
+        let short = |c: &str| c.get(..12).unwrap_or(c).to_owned();
+        let tree = format!("{}{}", short(&head), if dirty { "-dirty" } else { "" });
+        crate::results(&match options.calibrate {
+            true => format!("calibration-{tree}.json"),
+            false => format!("against-{}-{tree}.json", short(&reference)),
+        })
+    });
     let (counter, counter_setup) = Counter::detect()?;
     // Read before the counts, so a floors file that can't be used stops
     // the run at once.
@@ -680,11 +691,11 @@ pub fn run(options: &Options) -> Result<bool, String> {
             "counter": counter.name(),
             "failed": failed,
         });
-        crate::save_json(&options.json, &json)?;
+        crate::save_json(&json_path, &json)?;
         return Err(format!(
             "{} runs failed, the first: {first} (all in {})",
             failed.len(),
-            options.json.display()
+            json_path.display()
         ));
     }
     for (i, (task, result)) in tasks.iter().zip(&results).enumerate() {
@@ -877,14 +888,10 @@ pub fn run(options: &Options) -> Result<bool, String> {
         "seconds": { "build": build_secs, "count": measure_secs, "total": total_secs },
         "workloads": rows,
     });
-    crate::save_json(&options.json, &json)?;
-    let raw_path = options.json.with_extension("perf.txt");
+    crate::save_json(&json_path, &json)?;
+    let raw_path = json_path.with_extension("perf.txt");
     std::fs::write(&raw_path, raw).map_err(|e| format!("{}: {e}", raw_path.display()))?;
-    eprintln!(
-        "wrote {} and {}",
-        options.json.display(),
-        raw_path.display()
-    );
+    eprintln!("wrote {} and {}", json_path.display(), raw_path.display());
     if !named(Verdict::Broken).is_empty() {
         return Err("the tool cannot judge every workload: see broken above".into());
     }

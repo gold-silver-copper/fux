@@ -350,6 +350,10 @@ pub fn run(
                                 "per_byte": per_byte,
                                 "noise_percent": s.noise * 100.0,
                                 "rows_held": rows_held,
+                                // Every round's counts, run and baseline,
+                                // in order: the figures are made from them.
+                                "runs": counted.map(|[full, _]| full),
+                                "baselines": counted.map(|[_, base]| base),
                             }),
                         );
                     }

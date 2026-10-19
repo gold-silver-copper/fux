@@ -57,8 +57,9 @@ feel       real servers on sockets of their own, each with a client on a
            installed), parts latency,throughput,footprint; N keys per
            latency run (default 2000). Wall time; reported, not gated.
 
-The JSON goes to FILE, by default bench/target/fux-bench/against.json
-(info.json for info, feel.json for feel).";
+The JSON goes to FILE, by default in bench/target/fux-bench/:
+against-REF-TREE.json by the two commits compared (calibration-TREE.json
+for --calibrate), info.json for info, feel.json for feel.";
 
 /// The threads a run counts on, and the jobs its cargo builds take,
 /// unless `--jobs` says: CARGO_BUILD_JOBS, as a shared machine's limit sets
@@ -167,11 +168,13 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         floors_here: false,
         calibrate: false,
         only: Vec::new(),
-        json: results(match command.as_str() {
-            "info" => "info.json",
-            "feel" => "feel.json",
-            _ => "against.json",
-        }),
+        // `--against`'s default names the two commits it compares, so a
+        // run never overwrites another's (`against::Options::json`).
+        json: match command.as_str() {
+            "info" => Some(results("info.json")),
+            "feel" => Some(results("feel.json")),
+            _ => None,
+        },
     };
     let mut feel = feel::Options {
         muxes: ["direct", "fux", "tmux", "zellij", "herdr"]
@@ -181,7 +184,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             .map(str::to_owned)
             .to_vec(),
         keys: 2000,
-        json: options.json.clone(),
+        json: results("feel.json"),
     };
     let list = |text: String| text.split(',').map(str::to_owned).collect::<Vec<_>>();
     let mut baseline = false;
@@ -202,7 +205,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             }
             "--calibrate" => options.calibrate = true,
             "--only" => options.only.push(value(&mut args, &arg)?),
-            "--json" => options.json = value(&mut args, &arg)?.into(),
+            "--json" => options.json = Some(value(&mut args, &arg)?.into()),
             "--corpus" => corpus = value(&mut args, &arg)?.into(),
             "--payloads" => payloads = value(&mut args, &arg)?.into(),
             "--baseline" => baseline = true,
@@ -233,9 +236,9 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             Ok(true)
         }
         "time" => time(&corpus, &payloads, &names),
-        "info" => info::run(&options.json),
+        "info" => info::run(&options.json.unwrap_or_else(|| results("info.json"))),
         "feel" => {
-            feel.json = options.json;
+            feel.json = options.json.unwrap_or_else(|| results("feel.json"));
             feel::run(&feel)
         }
         _ => {

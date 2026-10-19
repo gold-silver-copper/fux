@@ -37,7 +37,7 @@ bench/target/release/fux-bench feel          # latency, throughput and footprint
 | `--floors-here FILE` | the same if FILE was calibrated here; else said, and each workload judged by this run's spread |
 | `--calibrate` | an A/A run of the working tree built twice: each workload's floor, written to the JSON |
 | `--only TEXT` | only workloads whose names contain TEXT; repeatable |
-| `--json FILE` | where the JSON goes (default `bench/target/fux-bench/against.json`, `info.json` or `feel.json`) |
+| `--json FILE` | where the JSON goes (default in `bench/target/fux-bench/`: `against-REF-TREE.json` by the two commits, `calibration-TREE.json`, `info.json` or `feel.json`) |
 | `run WORKLOAD [--baseline]` | one workload, or its baseline, once |
 | `time [WORKLOAD...]` | thread CPU time, best of 3, and MB/s of a workload fed bytes; names match by substring |
 | `--corpus DIR` | for `run` and `time`: recordings other than `fux-vt/compare/corpus/` |
