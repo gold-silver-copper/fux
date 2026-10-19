@@ -517,9 +517,10 @@ pub struct Pane {
     pub input: InputQueue,
     pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
-    /// from BSU on, since when, and where the parser will end it; see
-    /// [`Pane::output`].
-    frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan)>,
+    /// from BSU on, since when (its timeout's start), where the parser will
+    /// end it, and when its first bytes came from the program (what its
+    /// output is told as of, `classify`); see [`Pane::output`].
+    frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan, Instant)>,
     /// Output read from the program but not yet given to the screen: a
     /// call of the parser did as much work as one may
     /// (`fux_vt::Stop::Budget`), and the rest waits for the pane's next
@@ -925,8 +926,8 @@ impl Pane {
     fn read(&mut self, bytes: &[u8], now: Instant, came: Instant) {
         let mut rest = bytes;
         loop {
-            if let Some((held, since, scan)) = &mut self.frame {
-                let since = *since;
+            if let Some((held, _, scan, began)) = &mut self.frame {
+                let began = *began;
                 let read = held.len();
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
@@ -940,17 +941,17 @@ impl Pane {
                 frame.truncate(end);
                 // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-                if let Some((taken, _)) = self.feed(&frame, false, since) {
+                if let Some((taken, _)) = self.feed(&frame, false, began) {
                     let left = frame.get(taken..).unwrap_or_default();
                     self.frame_left = left.len();
-                    self.wait_unread([left, rest].concat(), since);
+                    self.wait_unread([left, rest].concat(), began);
                     return;
                 }
             } else {
                 match self.feed(rest, true, came) {
                     None => return,
                     Some((end, fux_vt::Stop::Begun)) => {
-                        self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
+                        self.frame = Some((Vec::new(), now, self.parser.frame_scan(), came));
                         rest = rest.get(end..).unwrap_or_default();
                     }
                     Some((end, _)) => {
@@ -966,18 +967,18 @@ impl Pane {
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.frame
             .as_ref()
-            .map(|(_, since, _)| after(*since, FRAME_TIMEOUT))
+            .map(|(_, since, ..)| after(*since, FRAME_TIMEOUT))
     }
 
     /// Reads the held frame now, ended or not.
     pub fn release_frame(&mut self) {
-        if let Some((held, since, _)) = self.frame.take()
-            && let Some((taken, _)) = self.feed(&held, false, since)
+        if let Some((held, _, _, began)) = self.frame.take()
+            && let Some((taken, _)) = self.feed(&held, false, began)
         {
             // No output waits while a frame is held: it is the first.
             let left = held.get(taken..).unwrap_or_default().to_vec();
             self.frame_left = left.len();
-            self.wait_unread(left, since);
+            self.wait_unread(left, began);
         }
     }
 
@@ -2143,6 +2144,48 @@ mod tests {
             .copied()
             .collect();
         out.extend_from_slice(b"\x1b[Habc");
+        pane.output_at(&out, now);
+        assert!(pane.has_unread(), "the budget stopped no call");
+        std::thread::sleep(Duration::from_millis(1100));
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        let echoes: Vec<Echo> = (pane.record.printed_after(log::Seq(0)))
+            .flat_map(|(_, printed)| {
+                printed
+                    .runs()
+                    .map(|(p, e, _)| (p.text.to_owned(), e.clone()))
+            })
+            .filter(|(text, _)| text == "abc")
+            .map(|(_, echo)| echo)
+            .collect();
+        assert_eq!(echoes, [Echo::Is]);
+        Ok(())
+    }
+
+    /// The echo of what was typed, inside a frame begun in output read a
+    /// turn after it came, is looked for as of when it came, as outside
+    /// one: the frame read more than the second it is looked for after.
+    #[test]
+    fn an_echo_in_a_frame_read_late_is_an_echo() -> Result<(), String> {
+        let terminal = fuxix::terminal::Size::new(2, 10).ok_or("a size")?;
+        let (_master, slave) = fuxix::pty::open(terminal).map_err(|e| e.to_string())?;
+        let modes = fuxix::terminal::attributes(&slave).map_err(|e| e.to_string())?;
+        let mut pane = pane(1000, 1000).map_err(|e| e.to_string())?;
+        let input = crate::classify::Input {
+            unit: log::Unit::Edit,
+            line: None,
+            ahead: false,
+        };
+        let now = Instant::now();
+        assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
+        let mut out: Vec<u8> = std::iter::repeat_n(b"\x1b[2J", 200)
+            .flatten()
+            .copied()
+            .collect();
+        out.extend_from_slice(b"\x1b[?2026h\x1b[Habc\x1b[?2026l");
         pane.output_at(&out, now);
         assert!(pane.has_unread(), "the budget stopped no call");
         std::thread::sleep(Duration::from_millis(1100));
