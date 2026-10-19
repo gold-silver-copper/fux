@@ -324,14 +324,10 @@ fn loads(
         let mut out = Vec::new();
         let mut made = 0usize;
         while total > 0 && made < size(CORPUS) {
-            for r in recordings {
-                let bytes = r.bytes();
+            // Each at the size it was written at, its resizes kept.
+            for (rows, cols, bytes) in recordings.iter().flat_map(Recording::segments) {
                 made = made.saturating_add(bytes.len());
-                out.push(Load {
-                    rows: r.rows,
-                    cols: r.cols,
-                    bytes,
-                });
+                out.push(Load { rows, cols, bytes });
             }
         }
         return Ok(out);
@@ -340,11 +336,21 @@ fn loads(
         && each > 0
         && let Some(r) = recordings.iter().find(|r| r.name == one)
     {
-        return Ok(vec![Load {
-            rows: r.rows,
-            cols: r.cols,
-            bytes: repeated(&r.bytes(), each),
-        }]);
+        // Over and over, whole, its resizes with it, to `each` bytes.
+        let segments = r.segments();
+        let recorded: usize = segments.iter().map(|(_, _, b)| b.len()).sum();
+        let (mut out, mut made) = (Vec::new(), 0usize);
+        while made < each && recorded > 0 {
+            for (rows, cols, bytes) in &segments {
+                made = made.saturating_add(bytes.len());
+                out.push(Load {
+                    rows: *rows,
+                    cols: *cols,
+                    bytes: bytes.clone(),
+                });
+            }
+        }
+        return Ok(out);
     }
     Err(format!("no workload {name:?}; `list` lists them"))
 }
@@ -892,6 +898,49 @@ fn unread(s: &mut fux::session::Session) {
 
 #[cfg(test)]
 mod tests {
+    /// A recording that resizes is fed at each size it was written at:
+    /// zsh-resize's loads are its size, then each resize's, in order, its
+    /// bytes whole (HAR-78).
+    #[test]
+    fn a_recording_is_fed_at_each_size_it_was_written_at() -> Result<(), String> {
+        let recordings = crate::corpus::recordings(&dir())?;
+        let zsh = recordings
+            .iter()
+            .find(|r| r.name == "zsh-resize")
+            .ok_or("no zsh-resize")?;
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir().join("zsh-resize.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let size = |v: &serde_json::Value| {
+            (
+                v.get(0).and_then(serde_json::Value::as_u64),
+                v.get(1).and_then(serde_json::Value::as_u64),
+            )
+        };
+        let mut sizes = vec![size(json.get("size").ok_or("no size")?)];
+        for step in json
+            .get("steps")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(resize) = step.get("resize") {
+                sizes.push(size(resize));
+            }
+        }
+        assert!(sizes.len() > 1, "zsh-resize resizes");
+        let loads = super::loads("corpus:zsh-resize", &recordings, zsh.bytes().len(), 1)?;
+        let made: Vec<_> = loads
+            .iter()
+            .map(|l| (Some(u64::from(l.rows)), Some(u64::from(l.cols))))
+            .collect();
+        assert_eq!(made, sizes);
+        let fed: Vec<u8> = loads.iter().flat_map(|l| l.bytes.iter().copied()).collect();
+        assert_eq!(fed, zsh.bytes());
+        Ok(())
+    }
+
     /// A vt workload whose parser can't be made (a size of no rows) fails,
     /// never counted as having fed its bytes (HAR-77).
     #[test]

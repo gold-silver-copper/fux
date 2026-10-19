@@ -644,6 +644,23 @@ impl Recording {
             .collect()
     }
 
+    /// What the program wrote, at each size the terminal had as it wrote
+    /// it: from its first size, a new one at each step that resized it.
+    /// fux-bench's `Recording::segments` makes the same.
+    pub fn segments(&self) -> Vec<(u16, u16, Vec<u8>)> {
+        let mut out = Vec::new();
+        let (mut rows, mut cols, mut bytes) = (self.rows, self.cols, Vec::new());
+        for (i, (_, output)) in self.steps.iter().enumerate() {
+            if let Some((r, c)) = self.resize_at(i) {
+                out.push((rows, cols, std::mem::take(&mut bytes)));
+                (rows, cols) = (r, c);
+            }
+            bytes.extend_from_slice(output);
+        }
+        out.push((rows, cols, bytes));
+        out
+    }
+
     /// The size the terminal is resized to before step `index`'s output,
     /// if that step resized it.
     pub fn resize_at(&self, index: usize) -> Option<(u16, u16)> {
