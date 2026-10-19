@@ -40,7 +40,8 @@ fn main() -> Result<(), String> {
     println!("cargo:rerun-if-env-changed=DOCS_RS");
     // DOCS_RS skips the native build, as it does libghostty-vt-sys's: CI
     // type-checks this crate with it (`cargo clippy`), which links nothing.
-    if env::var_os("DOCS_RS").is_some() {
+    // Built without the `engines` feature, it has no libvterm to compile.
+    if env::var_os("DOCS_RS").is_some() || env::var_os("CARGO_FEATURE_ENGINES").is_none() {
         return Ok(());
     }
     println!("cargo:rerun-if-changed={SHIM}");

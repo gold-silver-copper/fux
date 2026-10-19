@@ -2,7 +2,9 @@ name: fux-vt beside other terminals
 
 # fux-vt/compare on Linux, on request: it builds Ghostty with Zig,
 # wezterm-term from git and libvterm, and drives xterm.js, tmux and xterm,
-# too much for every push. run.sh checks Zig and libvterm by SHA-256.
+# too much for every push (ci.yml runs esctest against fux-vt alone, built
+# without them). run.sh checks Zig and libvterm by SHA-256; what it fetches,
+# Zig's build cache and cargo's are kept between runs.
 
 on:
   workflow_dispatch:
@@ -22,6 +24,19 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
+
+      # run.sh's cache: Zig, Ghostty's checkout and libvterm, as run.sh pins
+      # them; and Zig's own cache, which holds Ghostty's build.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/fux-vt-compare
+            ~/.cache/zig
+          key: fux-vt-compare-${{ hashFiles('fux-vt/compare/run.sh') }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fux-vt/compare
 
       - name: tmux, Xvfb and what xterm builds with
         run: |
@@ -73,3 +88,26 @@ jobs:
 
       - name: The input encoders, beside libghostty-vt's
         run: fux-vt/compare/run.sh encoders
+
+      - name: esctest2 against fux-vt, and against Ghostty's core beside it
+        run: |
+          set -euo pipefail
+          commit=$(sed -n 's/^esctest_commit=//p' references/fetch.sh)
+          git init -q references/xterm/esctest2
+          git -C references/xterm/esctest2 fetch -q --depth 1 https://github.com/ThomasDickey/esctest2 "$commit"
+          git -C references/xterm/esctest2 -c advice.detachedHead=false checkout -q FETCH_HEAD
+          fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt
+
+      - name: The recorded programs, beside xterm and the panel
+        run: fux-vt/compare/run.sh corpus
+
+      - name: The recorded programs through fux, beside themselves
+        run: fux-vt/compare/run.sh transparency
+
+      - name: Each engine's memory
+        run: fux-vt/compare/run.sh footprint
+
+      # On a shared runner the MB/s measure nothing; this checks that
+      # every engine in this process takes every workload.
+      - name: Each engine's speed, a short run
+        run: fux-vt/compare/run.sh bench --engines in-process --mb 2
