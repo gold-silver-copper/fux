@@ -467,6 +467,8 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
         let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
         let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
         let mut fast = Parser::with_options(Size::of(rows, cols), r.below(8), options(&mut r))?;
+        // Recording prints, which the fast paths do as the general one.
+        fast.record_prints(r.chance(50));
         let mut slow = fast.clone();
         let fragments = r.below(80).saturating_add(1);
         let input = sequences(&mut r, fragments, long);
@@ -515,6 +517,11 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
             }
             let shown = input.escape_ascii().to_string();
             assert_eq!(a.0, b.0, "case {case}: {shown}");
+            // What each recorded is let go before the states are compared:
+            // an ASCII run drawn over glyphs already there records them too,
+            // where the general path records only those that changed cells
+            // (FA-TXT-2, decision 825). Recording changes nothing else.
+            let (_, _) = (fast.take_prints(), slow.take_prints());
             let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
             assert_eq!(difference, None, "case {case}: {shown}");
         }

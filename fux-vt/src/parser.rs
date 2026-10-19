@@ -1110,6 +1110,7 @@ impl Parser {
             report.record("parser.params", "", self.check_params());
             report.record("parser.sixel", "", self.check_sixel());
             report.record("parser.utf8", "", self.check_utf8());
+            report.record("parser.termcap", "", self.check_termcap());
             report.wait("parser.refused", "B44: Parser::refused");
             report.merge(self.screen.check());
             report
@@ -1154,6 +1155,15 @@ impl Parser {
         };
         decoder.check()?;
         self.screen.check_picture_bytes(decoder.bytes())
+    }
+    /// 3a: an XTGETTCAP is being answered only while its string is read
+    /// (`State::IgnoreString`), so that no other string's end answers it.
+    #[cfg(feature = "checks")]
+    fn check_termcap(&self) -> Result<(), String> {
+        let string = matches!(self.state, State::IgnoreString);
+        crate::check::ensure(!self.termcap || string, || {
+            format!("an XTGETTCAP answered in {:?}", self.state)
+        })
     }
     /// 4: a character's first bytes are fewer than its lead byte says.
     #[cfg(feature = "checks")]
@@ -2307,6 +2317,7 @@ mod faults {
         })?;
         shows("parser.params", |p| p.params.len = 0)?;
         shows("parser.sixel", |p| p.state = State::Sixel)?;
+        shows("parser.termcap", |p| p.termcap = true)?;
         shows("parser.utf8", |p| {
             p.state = State::Utf8(Bytes {
                 bytes: [0xc3, 0xa9, 0, 0],
@@ -2329,6 +2340,7 @@ mod faults {
             "parser.params",
             "parser.sixel",
             "parser.utf8",
+            "parser.termcap",
             "grid.order",
             "grid.slots",
             "grid.blank_past_used",
