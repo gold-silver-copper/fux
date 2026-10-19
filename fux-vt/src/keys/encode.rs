@@ -9,7 +9,6 @@ use crate::keys::{
     CAPS_LOCK_BIT, Direction, Function, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT,
     SHIFT_BIT,
 };
-use std::io::Write;
 
 /// How a pane's program asked for its keys: one of the protocols fux
 /// speaks, with only the options that protocol reads.
@@ -219,7 +218,7 @@ fn application_keypad(stroke: Keystroke, out: &mut Vec<u8>) -> bool {
     let held = kitty.mods & !LOCKS;
     out.extend_from_slice(b"\x1bO");
     if held != 0 {
-        let _ = write!(out, "{}", u16::from(held).saturating_add(1));
+        decimal(out, u32::from(held).saturating_add(1));
     }
     out.push(final_byte);
     true
@@ -255,13 +254,15 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, backarrow: bool, ou
     // as the spec's examples have it (`CSI 0 ; ; 229 u`).
     let mods_param = |out: &mut Vec<u8>, more: bool| {
         if bits != 0 {
-            let _ = write!(out, ";{modifier}");
+            out.push(b';');
+            decimal(out, modifier.into());
         } else if more {
             out.push(b';');
         }
     };
     let csi_u = |out: &mut Vec<u8>, code: u32| {
-        let _ = write!(out, "\x1b[{code}");
+        out.extend_from_slice(b"\x1b[");
+        decimal(out, code);
         mods_param(out, false);
         out.push(b'u');
     };
@@ -273,7 +274,7 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, backarrow: bool, ou
         Form::Text(c) => {
             let types_text = held & !SHIFT_BIT == 0;
             if types_text && !all {
-                return out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+                return text(out, c);
             }
             let unshifted = if capital { c.to_ascii_lowercase() } else { c };
             let code = exact.and_then(|k| k.code).unwrap_or(u32::from(unshifted));
@@ -285,21 +286,27 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, backarrow: bool, ou
                 };
                 (u32::from(shifted) != code).then_some(u32::from(shifted))
             });
-            let _ = write!(out, "\x1b[{code}");
+            out.extend_from_slice(b"\x1b[");
+            decimal(out, code);
             if alternate {
                 let shifted = shifted.filter(|_| bits & SHIFT_BIT != 0);
                 let base = exact.and_then(|k| k.base);
-                match (shifted, base) {
-                    (Some(s), Some(b)) => drop(write!(out, ":{s}:{b}")),
-                    (Some(s), None) => drop(write!(out, ":{s}")),
-                    (None, Some(b)) => drop(write!(out, "::{b}")),
-                    (None, None) => {}
+                if shifted.is_some() || base.is_some() {
+                    out.push(b':');
+                    if let Some(shifted) = shifted {
+                        decimal(out, shifted);
+                    }
+                }
+                if let Some(base) = base {
+                    out.push(b':');
+                    decimal(out, base);
                 }
             }
             let text = (report == Report::AllKeysWithText && types_text).then_some(u32::from(c));
             mods_param(out, text.is_some());
             if let Some(text) = text {
-                let _ = write!(out, ";{text}");
+                out.push(b';');
+                decimal(out, text);
             }
             out.push(b'u');
         }
@@ -436,11 +443,41 @@ fn backspace(ctrl: bool, backarrow: bool) -> u8 {
 /// `CSI number ; modifier final`, the modifier left out when it is 1, none
 /// held, and then the number too if it is 1 (`CSI A`).
 fn numbered(out: &mut Vec<u8>, number: u8, modifier: u16, final_byte: char) {
-    let _ = match (number, modifier) {
-        (_, 2..) => write!(out, "\x1b[{number};{modifier}{final_byte}"),
-        (1, _) => write!(out, "\x1b[{final_byte}"),
-        (_, _) => write!(out, "\x1b[{number}{final_byte}"),
-    };
+    out.extend_from_slice(b"\x1b[");
+    if number != 1 || modifier >= 2 {
+        decimal(out, number.into());
+    }
+    if modifier >= 2 {
+        out.push(b';');
+        decimal(out, modifier.into());
+    }
+    text(out, final_byte);
+}
+
+/// Appends `c` in UTF-8, an ASCII one as its byte.
+fn text(out: &mut Vec<u8>, c: char) {
+    match u8::try_from(c) {
+        Ok(b) if b.is_ascii() => out.push(b),
+        _ => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+    }
+}
+
+/// Appends `n` in decimal, as `write!` would, without the formatter, which
+/// cost a key's legacy bytes most of their work (`encode/legacy`).
+fn decimal(out: &mut Vec<u8>, n: u32) {
+    let mut place = 1_000_000_000;
+    while place > 1 {
+        if n >= place {
+            out.push(digit(n.checked_div(place).unwrap_or(0)));
+        }
+        place = place.checked_div(10).unwrap_or(0);
+    }
+    out.push(digit(n));
+}
+
+/// The ASCII digit of `n`'s units.
+fn digit(n: u32) -> u8 {
+    b'0'.saturating_add(u8::try_from(n.checked_rem(10).unwrap_or(0)).unwrap_or(0))
 }
 
 /// F5 to F12's numbers, with xterm's gaps.
@@ -524,7 +561,11 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, backarrow: bool, out: &mut Ve
         return false;
     }
     let mods = u16::from(sent.bits()).saturating_add(1);
-    let _ = write!(out, "\x1b[27;{mods};{code}~");
+    out.extend_from_slice(b"\x1b[27;");
+    decimal(out, mods.into());
+    out.push(b';');
+    decimal(out, code);
+    out.push(b'~');
     true
 }
 
@@ -671,7 +712,8 @@ fn legacy(press: KeyPress, application: bool, backarrow: bool, out: &mut Vec<u8>
         Form::Numbered(1, final_byte)
             if modifier == 1 && (application || matches!(key, Key::F(_))) =>
         {
-            let _ = write!(out, "\x1bO{final_byte}");
+            out.extend_from_slice(b"\x1bO");
+            text(out, final_byte);
         }
         Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
         Form::Control(control) => match control {
@@ -684,9 +726,11 @@ fn legacy(press: KeyPress, application: bool, backarrow: bool, out: &mut Vec<u8>
         Form::Unnumbered(_) => return,
         // Ctrl-? is DEL by xterm's own translation, which Alt passes by:
         // Ctrl-Alt-? is ESC `?` (tests/data/keys/xterm-keys.txt).
-        Form::Text('?') if ctrl && alt => out.push(b'?'),
-        Form::Text(c) if ctrl && c.is_ascii() => out.push(control_byte(c).unwrap_or(c as u8)),
-        Form::Text(c) => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+        Form::Text(c) if ctrl && c.is_ascii() => out.push(match c {
+            '?' if alt => b'?',
+            _ => control_byte(c).unwrap_or(c as u8),
+        }),
+        Form::Text(c) => text(out, c),
     }
     // Alt is an Escape before the key, unless the key is a sequence, which
     // carries Alt in its parameter; a lone ESC (Escape, Ctrl-[) takes one
