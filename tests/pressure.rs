@@ -430,3 +430,42 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     eprintln!("slowest fux ls {slowest:?} while flooded; {memory:.0} MiB resident");
     Ok(())
 }
+
+/// Output that spends a parser call's work budget (threats.md P24) is read
+/// on the pane's next turns, the rest of it and what came after: the pane
+/// goes on to its end, and the server, with nothing more to read, rests.
+/// Each REP is spent as 65,535 copies: 2,000 of them spend a budget.
+#[test]
+fn output_past_a_read_budget_is_read_on_the_next_turns() -> Outcome {
+    let _alone = alone();
+    let server = Server::start("")?;
+    let pid = server.pid().ok_or("the server's pid")?;
+    let code = "printf 'X\\033[65535b%.0s' $(seq 2000); echo; echo DO''NE; sleep 30";
+    let pane = server
+        .ok(&[
+            "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "0", "timeout",
+            "run",
+        ])?
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let done = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "str",
+        "DONE",
+        "wait-text",
+        "10",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(done.status, 0, "{}", done.stderr);
+    std::thread::sleep(Duration::from_millis(300));
+    let before = cpu_seconds(pid)?;
+    std::thread::sleep(Duration::from_secs(1));
+    let cpu = cpu_seconds(pid)? - before;
+    assert!(cpu < 0.2, "{cpu:.2} s of server CPU in one second");
+    Ok(())
+}

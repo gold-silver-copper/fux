@@ -1828,7 +1828,7 @@ impl Session {
             let typed = pane.input.due_at().map(|at| (at, Timer::Type(pane.id)));
             let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
             let paced = pane.pace_due().map(|at| (at, Timer::Pace(pane.id)));
-            let unread = (pane.has_unread()).then(|| (Instant::now(), Timer::Unread(pane.id)));
+            let unread = pane.unread_due().map(|at| (at, Timer::Unread(pane.id)));
             typed.into_iter().chain(frame).chain(paced).chain(unread)
         })
     }
