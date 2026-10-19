@@ -268,3 +268,27 @@ fn the_cursor_stays_on_a_double_width_line_brought_under_it() -> Result {
     assert_eq!(p.screen().cursor_position(), (0, 39), "the primary screen");
     Ok(())
 }
+
+/// A wide glyph on a halved line a column long fits nowhere on it, and
+/// is not printed, as one wider than the screen is not; nothing is put
+/// past the line's end (DEC STD 070, 5.6.1), and a glyph widened by its
+/// cluster stays in the column (the oracle's case 587, seed 1: `ESC # 6`
+/// and U+1F44D at 1x2).
+#[test]
+fn a_wide_glyph_fits_no_halved_line_a_column_long() -> Result {
+    for text in ["\u{1f44d}", "\u{263a}\u{fe0f}", "a\u{1f44d}"] {
+        let p = run(1, 2, format!("\x1b#6{text}").as_bytes())?;
+        let past = p.screen().cell(0, 1).ok_or("no cell")?;
+        assert!(
+            past.contents().is_empty() && !past.is_wide_continuation(),
+            "{text:?}: {:?} past the line's end",
+            past.contents()
+        );
+        #[cfg(feature = "checks")]
+        {
+            let report = p.check();
+            assert!(report.is_clean(), "{text:?}: {report}");
+        }
+    }
+    Ok(())
+}

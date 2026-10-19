@@ -1618,7 +1618,7 @@ impl Screen {
         // margin while the cursor is not past it; a wider glyph is never
         // printed.
         let Some(room) = end.checked_sub(width) else {
-            return Ok(Some(end));
+            return Ok(self.too_wide(end, width));
         };
         // A pending wrap is carried out wherever it waits: at the line's
         // end, or where the right margin was before DECLRMM was reset (DEC
@@ -1628,6 +1628,16 @@ impl Screen {
             return Ok(Some(end));
         }
         self.wrap(end, room, width)
+    }
+    /// `wrap_for` for a glyph wider than the line: printed as it was
+    /// between left and right margins narrower than it, but not on a line
+    /// halved to less than it, which nothing past the line's end may take
+    /// (DEC STD 070, 5.6.1), as a glyph wider than the screen is not.
+    #[cold]
+    #[inline(never)]
+    fn too_wide(&self, end: u16, width: u16) -> Option<u16> {
+        let g = self.grid();
+        (width <= g.row_end(g.cursor.row())).then_some(end)
     }
     /// `wrap_for` where the glyph, `width` wide, does not fit: the cursor
     /// goes to the next line, or back to `room`, the last column the glyph
