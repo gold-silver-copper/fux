@@ -248,3 +248,25 @@ fn degenerate_reflows_keep_every_invariant() -> Result {
     }
     Ok(())
 }
+
+/// A resize, with reflow and without, makes the grid anew around the
+/// style table it shares, and its history is charged for that table as
+/// the old one's was (B11): more distinct styles than the screen's share
+/// holds, kept by history's rows, then each resize.
+#[test]
+fn a_resize_keeps_history_charged_for_the_shared_styles() -> Result {
+    for reflow in [false, true] {
+        let options = Options::default().set(Feature::Reflow, reflow);
+        let mut p = Parser::with_options(Size::new(2, 4)?, 1 << 20, options)?;
+        let mut input = String::new();
+        for i in 0..6000u32 {
+            let (g, b) = (i / 256, i % 256);
+            input.push_str(&format!("\x1b[48;2;0;{g};{b}mx\r\n"));
+        }
+        p.process(input.as_bytes())?;
+        invariants::check(&p);
+        p.resize(Size::new(3, 5)?)?;
+        invariants::check(&p);
+    }
+    Ok(())
+}
