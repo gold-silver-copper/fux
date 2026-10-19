@@ -284,7 +284,7 @@ impl Probe {
         }
         let mut sum = Work::ZERO;
         for ((name, total), (_, now)) in self.work.counters().into_iter().zip(done.counters()) {
-            sum = with(sum, name, total.saturating_add(now));
+            sum = with(sum, name, total.saturating_add(now))?;
         }
         self.work = sum;
         self.within()
@@ -297,7 +297,7 @@ impl Probe {
                 .saturating_mul(self.fed)
                 .saturating_add(per_call.saturating_mul(self.calls))
                 .saturating_add(per_copy.saturating_mul(self.copies));
-            let done = self.counted(name);
+            let done = self.counted(name)?;
             if done > most {
                 return Err(format!(
                     "{name} {done} past its bound {most} ({per_byte} a byte, {per_call} a call, \
@@ -317,20 +317,23 @@ impl Probe {
     }
 
     /// What counter `name` counted so far; `replies` the reply bytes sent.
-    pub fn counted(&self, name: &str) -> u64 {
+    /// A name no counter has is an error, so that a bound naming one
+    /// misspelled does not pass for counting nothing.
+    pub fn counted(&self, name: &str) -> Result<u64, String> {
         if name == "replies" {
-            return self.replies.0;
+            return Ok(self.replies.0);
         }
         (self.work.counters().into_iter())
             .find(|(n, _)| *n == name)
-            .map_or(0, |(_, n)| n)
+            .map(|(_, n)| n)
+            .ok_or_else(|| format!("no counter is named {name}"))
     }
 
     /// Checks that counter `name` counted at least `least`: what the probe
     /// knows was done (`threats.md` 4.3), so a counter that counts nothing
     /// shows.
     pub fn at_least(&self, name: &str, least: u64) -> Result<(), String> {
-        let done = self.counted(name);
+        let done = self.counted(name)?;
         if done < least {
             return Err(format!(
                 "{name} counted {done}, fewer than the {least} known done"
@@ -357,8 +360,9 @@ impl Probe {
     }
 }
 
-/// `work` with counter `name` set to `n`.
-fn with(mut work: Work, name: &str, n: u64) -> Work {
+/// `work` with counter `name` set to `n`; an error for a counter this
+/// does not know, as one added to `Work` would be until it is.
+fn with(mut work: Work, name: &str, n: u64) -> Result<Work, String> {
     let slot = match name {
         "bytes" => &mut work.bytes,
         "scanned" => &mut work.scanned,
@@ -373,10 +377,10 @@ fn with(mut work: Work, name: &str, n: u64) -> Work {
         "links" => &mut work.links,
         "prints" => &mut work.prints,
         "keys" => &mut work.keys,
-        _ => return work,
+        _ => return Err(format!("no counter is named {name}")),
     };
     *slot = n;
-    work
+    Ok(work)
 }
 
 /// The counters of `work` that counted something.

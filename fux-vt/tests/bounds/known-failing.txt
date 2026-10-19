@@ -1,10 +1,11 @@
 # The bound rows known to fail at BASE (9a38df95): a row and a scale a
-# line, then why, as measured. tests/bounds.rs reads it; a fix takes its
-# rows off (a row on it that passes fails the suite).
-B14 1x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
-B14 10x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
-B40 1x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
-B40 10x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
-B14 100x  a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
-B40 100x  row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
-B25 100x  at 4 KiB reads the decoder's heap peaks at 4,160 bytes, 64 past the probe's 4 KiB: not yet explained (KEY-5)
+# line, then, in backticks, what its error says at every chunking, then
+# why, as measured. tests/bounds.rs reads it: a row on it must fail so; a
+# fix takes its rows off (a row on it that passes fails the suite).
+B14 1x  `a heap peak of` a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
+B14 10x  `a heap peak of` a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
+B40 1x  `past its bound 138` row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
+B40 10x  `past its bound 138` row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
+B14 100x  `a heap peak of` a link's map slot and Arc headers are not counted: about 400 bytes of heap a short-id link (P8)
+B40 100x  `past its bound 138` row_by_id scans history for a history row: the screen's rows are looked through first since SIX-7 (SCR-34)
+B25 100x  `the decoder held` at 4 KiB reads the decoder's heap peaks at 4,160 bytes, 64 past the probe's 4 KiB: not yet explained (KEY-5)
