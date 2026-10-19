@@ -3,7 +3,7 @@
 # one of which must be generated and caught (`mutants.sh guards`).
 # Frozen at vt-best d6cbde3c from threats.md 5.2's rows (frozen at
 # faf8bf00, moved at 9a38df95, decision 8), and its names regenerated at
-# final-fix (last on 1beb667a), each by its file, function and operator (decision
+# final-fix (last on 7082ffae), each by its file, function and operator (decision
 # 893): each `#` line names the row and the guard, and where the frozen code
 # is gone or the [new] function was written otherwise, it says what
 # replaced it, and the replacement's mutants follow. Line numbers in the `#`
@@ -12,63 +12,63 @@
 # `mutants.sh check` and fixes the name here in the same commit.
 
 # B01 and B02 [now] pictures: the count guard `pictures.len() > MAX_PICTURES` (faf8bf00 :139:32 -> 9a38df95 :146), now the eviction loop's first term at pictures.rs:231
-fux-vt/src/screen/pictures.rs:293:35: replace > with == in Screen::place_picture
-fux-vt/src/screen/pictures.rs:293:35: replace > with < in Screen::place_picture
-fux-vt/src/screen/pictures.rs:293:35: replace > with >= in Screen::place_picture
+fux-vt/src/screen/pictures.rs:299:35: replace > with == in Screen::place_picture
+fux-vt/src/screen/pictures.rs:299:35: replace > with < in Screen::place_picture
+fux-vt/src/screen/pictures.rs:299:35: replace > with >= in Screen::place_picture
 # B01 and B02 [upstream new] the || joining the count and byte guards (9a38df95 :146), now pictures.rs:231
-fux-vt/src/screen/pictures.rs:293:50: replace || with && in Screen::place_picture
+fux-vt/src/screen/pictures.rs:299:50: replace || with && in Screen::place_picture
 # B01 [upstream new] Screen::picture_bytes with 0 and 1 (also what replaced [new] release, below)
-fux-vt/src/screen/pictures.rs:302:9: replace Screen::picture_bytes -> usize with 0
-fux-vt/src/screen/pictures.rs:302:9: replace Screen::picture_bytes -> usize with 1
+fux-vt/src/screen/pictures.rs:308:9: replace Screen::picture_bytes -> usize with 0
+fux-vt/src/screen/pictures.rs:308:9: replace Screen::picture_bytes -> usize with 1
 # B01 [new] over_budget(&self, extra) -> bool, `picture_bytes() + extra > picture_budget` (decision 12); it holds upstream's byte `>` from 9a38df95 :146, so that [upstream new] item is these names too
-fux-vt/src/screen/pictures.rs:309:9: replace Screen::over_budget -> bool with true
-fux-vt/src/screen/pictures.rs:309:9: replace Screen::over_budget -> bool with false
-fux-vt/src/screen/pictures.rs:309:52: replace > with == in Screen::over_budget
-fux-vt/src/screen/pictures.rs:309:52: replace > with < in Screen::over_budget
-fux-vt/src/screen/pictures.rs:309:52: replace > with >= in Screen::over_budget
+fux-vt/src/screen/pictures.rs:315:9: replace Screen::over_budget -> bool with true
+fux-vt/src/screen/pictures.rs:315:9: replace Screen::over_budget -> bool with false
+fux-vt/src/screen/pictures.rs:315:52: replace > with == in Screen::over_budget
+fux-vt/src/screen/pictures.rs:315:52: replace > with < in Screen::over_budget
+fux-vt/src/screen/pictures.rs:315:52: replace > with >= in Screen::over_budget
 # B01 limit constant PICTURE_BYTES = 96 << 20 (rule 3; decision 8 P1)
 fux-vt/src/screen/pictures.rs:28:37: replace << with >>
 # B02 MAX_PICTURES = 64 is a bare literal: no mutant. Guarded by screen/tests.rs:448 a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go (and pictures.rs faults test for the checker)
 # B01 and B02 [now] the `gone` closure (faf8bf00 :119:25 ==, :120:17 && -> 9a38df95 :125/:126), now pictures.rs:213-214; plus its keep mask at :219 that spares the new placement (`at >= placed || !gone`)
-fux-vt/src/screen/pictures.rs:275:25: replace == with != in Screen::place_picture
-fux-vt/src/screen/pictures.rs:276:17: replace && with || in Screen::place_picture
-fux-vt/src/screen/pictures.rs:281:31: replace >= with < in Screen::place_picture
-fux-vt/src/screen/pictures.rs:281:41: replace || with && in Screen::place_picture
-fux-vt/src/screen/pictures.rs:281:44: delete ! in Screen::place_picture
+fux-vt/src/screen/pictures.rs:281:25: replace == with != in Screen::place_picture
+fux-vt/src/screen/pictures.rs:282:17: replace && with || in Screen::place_picture
+fux-vt/src/screen/pictures.rs:287:31: replace >= with < in Screen::place_picture
+fux-vt/src/screen/pictures.rs:287:41: replace || with && in Screen::place_picture
+fux-vt/src/screen/pictures.rs:287:44: delete ! in Screen::place_picture
 # B01 and B02 [now] Screen::shown's placeholder test (faf8bf00 :166:57 ==, :168:16 delete ! -> 9a38df95 :180/:182), now pictures.rs:386 and :388
-fux-vt/src/screen/pictures.rs:472:57: replace == with != in Screen::shown
-fux-vt/src/screen/pictures.rs:474:16: delete ! in Screen::shown
+fux-vt/src/screen/pictures.rs:475:57: replace == with != in Screen::shown
+fux-vt/src/screen/pictures.rs:477:16: delete ! in Screen::shown
 # B01 and B02 [now] overlaps (faf8bf00 :208/:213 -> 9a38df95 :222/:227), now pictures.rs:476/:481: body, four < (cols 9, 18, 31, 41), three && (cols 13, 24, 36)
-fux-vt/src/screen/pictures.rs:559:5: replace overlaps -> bool with true
-fux-vt/src/screen/pictures.rs:559:5: replace overlaps -> bool with false
-fux-vt/src/screen/pictures.rs:564:9: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:564:9: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:564:9: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:564:18: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:564:18: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:564:18: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:564:31: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:564:31: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:564:31: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:564:41: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:564:41: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:564:41: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:564:13: replace && with || in overlaps
-fux-vt/src/screen/pictures.rs:564:24: replace && with || in overlaps
-fux-vt/src/screen/pictures.rs:564:36: replace && with || in overlaps
+fux-vt/src/screen/pictures.rs:623:5: replace overlaps -> bool with true
+fux-vt/src/screen/pictures.rs:623:5: replace overlaps -> bool with false
+fux-vt/src/screen/pictures.rs:628:9: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:628:9: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:628:9: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:628:18: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:628:18: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:628:18: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:628:31: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:628:31: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:628:31: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:628:41: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:628:41: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:628:41: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:628:13: replace && with || in overlaps
+fux-vt/src/screen/pictures.rs:628:24: replace && with || in overlaps
+fux-vt/src/screen/pictures.rs:628:36: replace && with || in overlaps
 # B01 [new] victim(&self) -> Option<usize> (hidden first, then oldest; decision 12): body, plus its hidden test (other screen || not shown) and the non-empty fallback
-fux-vt/src/screen/pictures.rs:315:9: replace Screen::victim -> Option<usize> with None
-fux-vt/src/screen/pictures.rs:315:9: replace Screen::victim -> Option<usize> with Some(0)
-fux-vt/src/screen/pictures.rs:315:9: replace Screen::victim -> Option<usize> with Some(1)
-fux-vt/src/screen/pictures.rs:316:39: replace != with == in Screen::victim
-fux-vt/src/screen/pictures.rs:316:64: replace || with && in Screen::victim
-fux-vt/src/screen/pictures.rs:317:28: delete ! in Screen::victim
+fux-vt/src/screen/pictures.rs:321:9: replace Screen::victim -> Option<usize> with None
+fux-vt/src/screen/pictures.rs:321:9: replace Screen::victim -> Option<usize> with Some(0)
+fux-vt/src/screen/pictures.rs:321:9: replace Screen::victim -> Option<usize> with Some(1)
+fux-vt/src/screen/pictures.rs:322:39: replace != with == in Screen::victim
+fux-vt/src/screen/pictures.rs:322:64: replace || with && in Screen::victim
+fux-vt/src/screen/pictures.rs:323:28: delete ! in Screen::victim
 # B01 [new] release(&mut self, bytes): not written (decision 12: kept bytes are recounted from the placements by picture_bytes, no running sum to update); replaced by Screen::picture_bytes, whose 0/1 mutants are listed above (not repeated)
 # B01 [new] set_picture_bytes: written as Parser::set_picture_bytes(&mut self, bytes) (parser.rs:1174) over Screen::set_picture_bytes(&mut self, bytes, drawing) -> bool (pictures.rs:274), which returns false if the picture being drawn alone is past the budget (decision 12). The `&&` at parser.rs:1177:13 is a let-chain (`&& let Some(decoder)`), its || form does not compile (unviable), so it is left out
 fux-vt/src/parser.rs:1201:9: replace Parser::set_picture_bytes with ()
 fux-vt/src/parser.rs:1202:12: delete ! in Parser::set_picture_bytes
-fux-vt/src/screen/pictures.rs:341:9: replace Screen::set_picture_bytes -> bool with true
-fux-vt/src/screen/pictures.rs:341:9: replace Screen::set_picture_bytes -> bool with false
+fux-vt/src/screen/pictures.rs:347:9: replace Screen::set_picture_bytes -> bool with true
+fux-vt/src/screen/pictures.rs:347:9: replace Screen::set_picture_bytes -> bool with false
 # B03 [now] MAX_PIXELS = 4096 * 2160 (faf8bf00 sixel.rs:12:32), now sixel.rs:15:32
 fux-vt/src/sixel.rs:15:32: replace * with +
 fux-vt/src/sixel.rs:15:32: replace * with /
@@ -113,8 +113,8 @@ fux-vt/src/sixel.rs:160:5: replace next_side -> u32 with 0
 fux-vt/src/sixel.rs:160:5: replace next_side -> u32 with 1
 fux-vt/src/sixel.rs:160:15: replace <= with > in next_side
 # B03 [new] may_grow(&self, bytes) -> bool: written as Screen::make_room(&mut self, bytes) -> bool (pictures.rs:260), which the decoder calls through a closure before each growth and evicts, so it cannot be &self (decision 12); plus the decoder's call to it, Decoder::room_for (sixel.rs:464), and finish's shrink to w x h x 4, charged as a transient through exact's room_for (sixel.rs:496, :524)
-fux-vt/src/screen/pictures.rs:324:9: replace Screen::make_room -> bool with true
-fux-vt/src/screen/pictures.rs:324:9: replace Screen::make_room -> bool with false
+fux-vt/src/screen/pictures.rs:330:9: replace Screen::make_room -> bool with true
+fux-vt/src/screen/pictures.rs:330:9: replace Screen::make_room -> bool with false
 fux-vt/src/sixel.rs:486:9: replace Decoder::room_for -> bool with true
 fux-vt/src/sixel.rs:486:9: replace Decoder::room_for -> bool with false
 fux-vt/src/sixel.rs:515:33: replace == with != in Decoder::finish
@@ -304,10 +304,10 @@ fux-vt/src/grid.rs:1019:29: delete ! in Grid::find_table_style
 fux-vt/src/grid.rs:1028:26: replace || with && in Grid::find_table_style
 fux-vt/src/history.rs:414:9: replace History::charge with ()
 # B11 and B13 [new] P22's memo(place, op): not written (decision 826: no per-grid memo); replaced by a 16-entry memo local to the call in Screen::change_attributes (screen.rs:3135-3154): its reset on a sweep, its hit test and its slot
-fux-vt/src/screen.rs:3639:23: replace != with == in Screen::change_attributes
-fux-vt/src/screen.rs:3643:73: replace == with != in Screen::change_attributes
-fux-vt/src/screen.rs:3650:51: replace % with / in Screen::change_attributes
-fux-vt/src/screen.rs:3650:51: replace % with + in Screen::change_attributes
+fux-vt/src/screen.rs:3644:23: replace != with == in Screen::change_attributes
+fux-vt/src/screen.rs:3648:73: replace == with != in Screen::change_attributes
+fux-vt/src/screen.rs:3655:51: replace % with / in Screen::change_attributes
+fux-vt/src/screen.rs:3655:51: replace % with + in Screen::change_attributes
 # B14 [now] Links::insert's limit (link.rs:297 -> :418); LINK_BYTES = 4 << 20 (link.rs:32)
 fux-vt/src/link.rs:449:39: replace > with == in Links::insert
 fux-vt/src/link.rs:449:39: replace > with < in Links::insert
@@ -631,44 +631,44 @@ fux-vt/src/compact.rs:441:9: replace Text::long_limit -> usize with 0
 fux-vt/src/compact.rs:441:9: replace Text::long_limit -> usize with 1
 
 # B31 [new] TXT-2 append_failed_here: not written. Replaced by `Kept::Full` in the last print's state (screen.rs:2079, `kept = known != Kept::Full`; join stops calling line.append once one failed there, :2082), cleared with the last print by break_cluster (:2152)
-fux-vt/src/screen.rs:2337:30: replace != with == in Screen::join
-fux-vt/src/screen.rs:2340:29: replace && with || in Screen::join
-fux-vt/src/screen.rs:2411:9: replace Screen::break_cluster with ()
+fux-vt/src/screen.rs:2342:30: replace != with == in Screen::join
+fux-vt/src/screen.rs:2345:29: replace && with || in Screen::join
+fux-vt/src/screen.rs:2416:9: replace Screen::break_cluster with ()
 # B31 store_long compacts only when compacting would make room, `live_long() + text.len() <= limit` (compact.rs:585, "threats.md B31")
 fux-vt/src/compact.rs:613:60: replace <= with > in Line<'_, C>::store_long
 
 # B32 to B36 [now] REP: Screen::repeat's body (faf8bf00 screen.rs:1470:9 -> 9a38df95 :1488 -> now :2176)
-fux-vt/src/screen.rs:2437:9: replace Screen::repeat -> Result<(), Error> with Ok(())
+fux-vt/src/screen.rs:2442:9: replace Screen::repeat -> Result<(), Error> with Ok(())
 # B33 and B34 [now] REP: per_row's zero filter (faf8bf00 screen.rs:1478:80 -> :1496 -> now :2184:80)
-fux-vt/src/screen.rs:2475:67: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2475:67: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2475:67: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2480:67: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2480:67: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2480:67: replace > with >= in Screen::copies_needed
 # B33 [now] REP: the ASCII run loop (faf8bf00 screen.rs:1495:25 -> :1513 -> now :2208:25, `while count > 0`)
-fux-vt/src/screen.rs:2573:25: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2573:25: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2573:25: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2578:25: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2578:25: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2578:25: replace > with >= in Screen::copies
 # B33: the other copies' loop (`while count > 0 && !self.stopped`), written since d6cbde3c
-fux-vt/src/screen.rs:2595:21: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2595:21: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2595:21: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2600:21: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2600:21: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2600:21: replace > with >= in Screen::copies
 # B33: REP's copies counted before they are made (Screen::copies_needed, B's 3e6f3c3a), its clamps for a glyph wider than the screen and for a cursor below the region, and the copies a stop leaves (Screen::copies)
-fux-vt/src/screen.rs:2456:9: replace Screen::copies_needed -> usize with 0
-fux-vt/src/screen.rs:2456:9: replace Screen::copies_needed -> usize with 1
-fux-vt/src/screen.rs:2458:18: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2458:18: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2458:18: replace > with >= in Screen::copies_needed
-fux-vt/src/screen.rs:2467:36: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2467:36: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2467:36: replace > with >= in Screen::copies_needed
-fux-vt/src/screen.rs:2564:22: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2564:22: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2564:22: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2461:9: replace Screen::copies_needed -> usize with 0
+fux-vt/src/screen.rs:2461:9: replace Screen::copies_needed -> usize with 1
+fux-vt/src/screen.rs:2463:18: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2463:18: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2463:18: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2472:36: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2472:36: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2472:36: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2569:22: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2569:22: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2569:22: replace > with >= in Screen::copies
 # B33 [new] repeat_clamp: not written as a function. The clamp is inline in Screen::repeat (screen.rs:2190-2199):
 # `full` from history's row capacity `history_bytes() / 32` (B33's budget / 32 rows), then `count.checked_sub(full)`,
 # which has no operator mutant. Its one mutable site is the `/ 32` of history's row capacity, below; the
 # clamp itself is guarded by bounds/rows.rs b33 (2x10, 1 KiB of history, count 65,535: cells <= 720).
-fux-vt/src/screen.rs:2484:40: replace / with % in Screen::copies_needed
-fux-vt/src/screen.rs:2484:40: replace / with * in Screen::copies_needed
+fux-vt/src/screen.rs:2489:40: replace / with % in Screen::copies_needed
+fux-vt/src/screen.rs:2489:40: replace / with * in Screen::copies_needed
 # B34a [new] joins_full_cluster: written as Printed::full (screen.rs:162, `self.kept == Kept::Full`), which repeat's
 # non-ASCII loop reads at screen.rs:2219 to skip copies once the cluster is full
 fux-vt/src/screen.rs:177:9: replace Printed::full -> bool with true
@@ -846,9 +846,9 @@ fux-vt/src/screen.rs:800:9: replace Screen::check_tabs -> Result<(), String> wit
 fux-vt/src/sixel.rs:568:9: replace Decoder::check -> Result<(), String> with Ok(())
 fux-vt/src/style.rs:267:9: replace Styles::check -> Result<(), String> with Ok(())
 fux-vt/src/style.rs:298:9: replace Styles::check_spread -> Result<(), String> with Ok(())
-fux-vt/src/screen/pictures.rs:508:9: replace Screen::check_picture_count -> Result<(), String> with Ok(())
-fux-vt/src/screen/pictures.rs:518:9: replace Screen::check_picture_bytes -> Result<(), String> with Ok(())
-fux-vt/src/screen/pictures.rs:529:9: replace Screen::check_pictures_shown -> Result<(), String> with Ok(())
+fux-vt/src/screen/pictures.rs:553:9: replace Screen::check_picture_count -> Result<(), String> with Ok(())
+fux-vt/src/screen/pictures.rs:563:9: replace Screen::check_picture_bytes -> Result<(), String> with Ok(())
+fux-vt/src/screen/pictures.rs:574:9: replace Screen::check_pictures_shown -> Result<(), String> with Ok(())
 # Checker [new] check(&self) -> Report with Report: Default: written as check(..) -> crate::Checked (Checked: Default),
 # on the screen, the parser, the frame scan and the key decoder
 fux-vt/src/screen.rs:721:9: replace Screen::check -> crate::Checked with Default::default()
