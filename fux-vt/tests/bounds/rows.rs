@@ -1486,7 +1486,23 @@ pub fn b36(scale: Scale, chunk: usize) -> Found {
     let input = repeat(b"\x1b[4095L", scale.times());
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
         p.at_least("slots", u64::from(rows))
-    })
+    })?;
+    // A region across the ring's end (FA-SIZE-1): a line feed at the
+    // bottom, with history, turns the ring by one, so the last two rows
+    // cross its end; each IL of both there moves at most twice their
+    // slots.
+    let setup = Setup::defaults().sized(rows, 1);
+    let times = scale.times().saturating_mul(100);
+    let crossing = Bound {
+        work: &[("slots", 0, 0, 4)],
+        heap: steady(&setup),
+    };
+    let mut probe = Probe::new(&setup, heap(steady(&setup)), chunk, times)?;
+    probe.feed(b"\x1b[4095;1H\n\x1b[4094;4095r")?;
+    probe.restart(crossing, times);
+    probe.feed(&repeat(b"\x1b[4094;1H\x1b[2L", times))?;
+    probe.at_least("slots", 2)?;
+    probe.finish()
 }
 
 // B37: a resize needs up to twice history's memory while it runs, and a
