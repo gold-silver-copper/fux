@@ -612,6 +612,17 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame decodes only from the bytes it encodes to: an `Act` whose
+    /// key is spelled otherwise (`S-.`, the key `.`) is refused, where it
+    /// decoded, and encoded as `.` (the `protocol` fuzz target's
+    /// regression-a-key-spelled-otherwise).
+    #[test]
+    fn a_frame_with_a_key_spelled_otherwise_is_refused() {
+        let mut decoder = Decoder::default();
+        decoder.push(&[0, 0, 0, 10, 3, 0, 0, 0, 0, 3, b'S', b'-', b'.', 0, 37, 39]);
+        assert!(decoder.frame::<AttachedFrame>().is_err());
+    }
     use crate::keys::Modifiers;
     use crate::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 
