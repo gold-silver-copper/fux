@@ -49,8 +49,8 @@ needs = []
 [[check]]
 name = "cases"
 schedule = "quick"
-command = "fux-vt-compare cases"
-needs = ["xterm 411", "Xvfb"]
+command = "fux-vt-compare cases --json cases.json"
+needs = ["xterm 411", "Xvfb", "node (xterm.js)", "tmux"]
 
 [[check]]
 name = "encoders"

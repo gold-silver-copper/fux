@@ -102,8 +102,8 @@ bench    each engine's speed on the same workloads, in MB/s (default: the
          recording alone). --instructions: instructions retired per
          byte instead, each engine in this process and workload in a
          child process of its own, less the same child without the
-         feeding, the fewest of --repeats (3) runs each; --json writes
-         them to FILE.
+         feeding, the fewest of --repeats (3) runs each, --jobs
+         (CARGO_BUILD_JOBS, else 4) at once; --json writes them to FILE.
 footprint
          the memory each engine in this process holds (default: all of
          them), each measured in a child process of its own: a screen
@@ -1229,6 +1229,16 @@ fn record(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+/// The children counted at once unless `--jobs` says: CARGO_BUILD_JOBS,
+/// as a shared machine's limit sets it, else 4, as fux-bench takes
+/// (speed-method.md: a count beside other work takes few cores).
+fn few_jobs() -> usize {
+    (std::env::var("CARGO_BUILD_JOBS").ok())
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(4)
+}
+
 /// Half the cores here, at least one: children measured side by side.
 fn half_the_cores() -> usize {
     std::thread::available_parallelism()
@@ -1419,8 +1429,7 @@ fn main() -> ExitCode {
             &args.rest,
             args.mb,
             args.repeats,
-            args.jobs
-                .unwrap_or_else(|| half_the_cores().saturating_mul(2)),
+            args.jobs.unwrap_or_else(few_jobs),
             args.json.as_deref(),
         ),
         "bench" if args.json.is_some() => bench::run_to(
