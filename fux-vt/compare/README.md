@@ -714,7 +714,8 @@ each with the source that decides it, printed with every run:
 | `legacy-extras`, `f3`, `modify-other-keys` | xterm: with no keyboard mode a program gets legacy bytes (ghostty sends CSI u and CSI 27 forms, and kitty's F3); at modifyOtherKeys 2 every modified key but Shift with a printable is CSI 27 ; m ; k ~ |
 | `ctrl-alt-question`, `shift-tab`, `ctrl-backspace-bs` | real xterm 411's key bytes (KEY-13, `tests/data/keys/xterm-keys.txt`): Ctrl-Alt-? is ESC ?, where ghostty sends ESC DEL; Shift-Tab at modifyOtherKeys 2 is CSI Z, where ghostty sends CSI 27 ; 2 ; 9 ~; Backspace with Ctrl and another modifier is BS (ESC BS, or CSI 27 ; m ; 8 ~ at modifyOtherKeys 2), where ghostty sends DEL |
 | `kitty-flags-without-disambiguate`, `kitty-press-type` | the kitty spec: it gives no other encoding without flag 1 or 8, and lets a press leave out its event type, as kitty does |
-| `paste-controls`, `paste-newline` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces, and an unbracketed LF a CR; fux-vt passes a paste as pasted, removing only what would end its bracket |
+| `paste-controls` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces; fux-vt passes them as pasted, removing only what would end its bracket |
+| `paste-newline` | xterm 411 (`button.c`): each LF of a paste is sent as CR, bracketed too, as fux-vt sends it; ghostty keeps a bracketed paste's LF |
 | `paste-c1-end` | fux-vt: U+009B 201 ~ ends a bracket for a terminal that reads C1, so fux-vt removes it as it removes ESC [ 201 ~ |
 
 It needs no engine but ghostty, takes a few seconds, and is part of
