@@ -9,7 +9,12 @@
 //!   a call, for each N of [`CHUNKS`] (any N runs by name).
 //! - `vt/resize-history`: a pane's parser, its history full at 50×200,
 //!   resized to 80 columns and back, [`RESIZES`] times: every row of
-//!   history reflowed, both ways.
+//!   history reflowed, both ways. `vt/resize-193`, `:no-reflow`,
+//!   `:no-history` and `:short-rows`: to 193 columns and back, as
+//!   [`RESIZINGS`] sets each up.
+//! - `vt/late-c`, `vt/direct-colours`, `vt/links`: a moment each, as
+//!   [`MOMENTS`] says: what is set up is the baseline's too, and what
+//!   follows it, 4 KiB a call, is measured.
 //! - `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`,
 //!   `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`,
 //!   `vt/sixel:frames`: fux-vt alone on each of the census's speed
@@ -68,6 +73,113 @@ const RESIZES: usize = 4;
 const ENCODES: usize = 8;
 /// The columns `vt/resize-history` resizes to.
 const NARROW: u16 = 80;
+
+/// A resize workload: its name, the columns it resizes to and back, with
+/// reflow or not, with a pane's history or none, and its history filled
+/// with `vt/ascii`'s lines or with short ones (`y`).
+struct Resizing {
+    name: &'static str,
+    narrow: u16,
+    reflow: bool,
+    history: bool,
+    short: bool,
+}
+
+const RESIZINGS: [Resizing; 5] = [
+    Resizing {
+        name: "vt/resize-history",
+        narrow: NARROW,
+        reflow: true,
+        history: true,
+        short: false,
+    },
+    Resizing {
+        name: "vt/resize-193",
+        narrow: 193,
+        reflow: true,
+        history: true,
+        short: false,
+    },
+    Resizing {
+        name: "vt/resize-193:no-reflow",
+        narrow: 193,
+        reflow: false,
+        history: true,
+        short: false,
+    },
+    Resizing {
+        name: "vt/resize-193:no-history",
+        narrow: 193,
+        reflow: true,
+        history: false,
+        short: false,
+    },
+    Resizing {
+        name: "vt/resize-193:short-rows",
+        narrow: 193,
+        reflow: true,
+        history: true,
+        short: true,
+    },
+];
+
+/// A moment's workload: its name, what it is, what sets it up and what
+/// is measured, each made for a divisor of its size (the tests' shrink).
+type Moment = (
+    &'static str,
+    &'static str,
+    fn(usize) -> Vec<u8>,
+    fn(usize) -> Vec<u8>,
+);
+
+const MOMENTS: [Moment; 3] = [
+    (
+        "vt/late-c",
+        "400,000 empty lines of history, then 290 OSC 133;C marks with no prompt anywhere in \
+         one 4 KiB call (SCR-4: each mark looks back through history for a prompt)",
+        |shrink| repeated(b"\n", 400_000_usize.checked_div(shrink).unwrap_or(1)),
+        |_| repeated(b"\x1b]133;C;late\x07", 290 * 14),
+    ),
+    (
+        "vt/direct-colours",
+        "4 MiB of cells each in a 24-bit colour none had before: the style table's inserts \
+         and its sweeps",
+        |_| Vec::new(),
+        |shrink| direct_colours((4_usize << 20).checked_div(shrink).unwrap_or(1)),
+    ),
+    (
+        "vt/links",
+        "OSC 8 hyperlinks each to a URI of its own, past the 4 MiB of held links at which \
+         the link sweep sorts every run",
+        |_| Vec::new(),
+        |shrink| links((6_usize << 20).checked_div(shrink).unwrap_or(1)),
+    ),
+];
+
+/// Cells each in a new 24-bit foreground, to `size` bytes.
+fn direct_colours(size: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(size);
+    let mut n = 0u32;
+    while out.len() < size {
+        let [_, r, g, b] = n.to_be_bytes();
+        out.extend_from_slice(format!("\x1b[38;2;{r};{g};{b}mx").as_bytes());
+        n = n.wrapping_add(1);
+    }
+    out
+}
+
+/// Words each linked to a URI of its own, to `size` bytes.
+fn links(size: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(size);
+    let mut n = 0usize;
+    while out.len() < size {
+        let link =
+            format!("\x1b]8;;https://example.com/a/longer/path/{n}\x1b\\word\x1b]8;;\x1b\\ ");
+        out.extend_from_slice(link.as_bytes());
+        n = n.saturating_add(1);
+    }
+    out
+}
 /// The `vt/ascii` bytes that fill its history: a pane's 8 MiB holds some
 /// 6,000 of its rows, a quarter of these.
 const FILL: usize = 4 << 20;
@@ -152,13 +264,24 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         "encode/sixel".into(),
         format!("a 1920x1080 256-colour picture encoded as sixel, {ENCODES} times"),
     ));
-    out.push(spec(
-        "vt/resize-history".into(),
-        format!(
-            "a full history ({} MiB) at 50x200 resized to {NARROW} columns and back, {RESIZES} times",
-            HISTORY >> 20
-        ),
-    ));
+    for r in &RESIZINGS {
+        let history = match (r.history, r.short) {
+            (false, _) => "no history".to_owned(),
+            (true, false) => format!("a full history ({} MiB)", HISTORY >> 20),
+            (true, true) => format!("a full history ({} MiB) of short rows", HISTORY >> 20),
+        };
+        let reflow = if r.reflow { "" } else { ", reflow off" };
+        out.push(spec(
+            r.name.into(),
+            format!(
+                "{history} at 50x200 resized to {} columns and back, {RESIZES} times{reflow}",
+                r.narrow
+            ),
+        ));
+    }
+    for (name, about, _, _) in MOMENTS {
+        out.push(spec(name.into(), about.into()));
+    }
     for r in recordings {
         out.push(spec(
             format!("vt/corpus:{}", r.name),
@@ -242,7 +365,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
 /// gives the code measured. A workload that is no stream of bytes says
 /// `NO_STREAM`.
 pub fn fed(name: &str) -> String {
-    if name == "vt/resize-history" {
+    if RESIZINGS.iter().any(|r| r.name == name) {
         format!("{NO_STREAM}: fux-vt::Parser::resize, its history filled 4096 bytes a call")
     } else if name.starts_with("vt/") {
         let chunk = chunked(name).map_or(CHUNK, |(_, n)| n);
@@ -299,8 +422,12 @@ fn run_shrunk(
     shrink: usize,
 ) -> Result<Done, String> {
     let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
-    if name == "vt/resize-history" {
-        return resize_history(baseline, size(FILL), size(HISTORY));
+    if let Some(r) = RESIZINGS.iter().find(|r| r.name == name) {
+        let history = if r.history { size(HISTORY) } else { 0 };
+        return resize_history(r, baseline, size(FILL), history);
+    }
+    if let Some((_, _, setup, measured)) = MOMENTS.iter().find(|(n, _, _, _)| *n == name) {
+        return moment(&setup(shrink), &measured(shrink), baseline);
     }
     if name == "encode/sixel" {
         return encode_sixel(
@@ -499,13 +626,47 @@ fn vt(loads: &[Load], baseline: bool, chunk: usize) -> Result<Done, String> {
     })
 }
 
-/// A pane's parser at 50x200 with `history` bytes of history, given
-/// `fill` bytes of `vt/ascii`, 4 KiB a call: enough to fill its history.
-fn full_history(fill: usize, history: usize) -> Result<fux_vt::Parser, String> {
+/// A pane's parser.
+fn pane_parser(history: usize, options: fux_vt::Options) -> Result<fux_vt::Parser, String> {
     let size = fux_vt::Size::new(synthetic::ROWS, synthetic::COLS).map_err(|e| e.to_string())?;
-    let mut parser = fux_vt::Parser::with_options(size, history, fux::pane::OPTIONS)
-        .map_err(|e| format!("a parser of {size:?}: {e}"))?;
-    let bytes = synthetic::make("ascii", fill).ok_or("no ascii workload")?;
+    fux_vt::Parser::with_options(size, history, options)
+        .map_err(|e| format!("a parser of {size:?}: {e}"))
+}
+
+/// A moment: a pane's parser fed `setup`, then `measured` unless
+/// `baseline`, both 4 KiB a call. Its units are the bytes measured.
+fn moment(setup: &[u8], measured: &[u8], baseline: bool) -> Result<Done, String> {
+    let mut parser = pane_parser(HISTORY, fux::pane::OPTIONS)?;
+    for piece in pieces(setup, CHUNK) {
+        let _ = parser.process_with(piece, &mut Sink);
+    }
+    if !baseline {
+        for piece in pieces(measured, CHUNK) {
+            let _ = parser.process_with(black_box(piece), &mut Sink);
+        }
+    }
+    black_box(parser.screen().cursor_position());
+    Ok(Done {
+        units: measured.len().max(1),
+        frames: 0,
+        painted: 0,
+    })
+}
+
+/// A pane's parser at 50x200 with `history` bytes of history, given
+/// `fill` bytes of `vt/ascii` (or of `y` lines, if `short`), 4 KiB a
+/// call: enough to fill its history.
+fn full_history(
+    fill: usize,
+    history: usize,
+    options: fux_vt::Options,
+    short: bool,
+) -> Result<fux_vt::Parser, String> {
+    let mut parser = pane_parser(history, options)?;
+    let bytes = match short {
+        true => repeated(b"y\r\n", fill),
+        false => synthetic::make("ascii", fill).ok_or("no ascii workload")?,
+    };
     for piece in pieces(&bytes, CHUNK) {
         let _ = parser.process_with(piece, &mut Sink);
     }
@@ -552,10 +713,22 @@ fn encode_sixel(payloads: &Path, baseline: bool, times: usize) -> Result<Done, S
 /// `vt/resize-history`: a full history (`full_history`) resized to
 /// [`NARROW`] columns and back, [`RESIZES`] times, each reflowing every
 /// row; the baseline fills it and resizes nothing.
-fn resize_history(baseline: bool, fill: usize, history: usize) -> Result<Done, String> {
-    let mut parser = full_history(fill, history)?;
+fn resize_history(
+    r: &Resizing,
+    baseline: bool,
+    fill: usize,
+    history: usize,
+) -> Result<Done, String> {
+    let options = match r.reflow {
+        true => fux::pane::OPTIONS,
+        false => (fux_vt::Feature::ALL.into_iter())
+            .filter(|&f| f != fux_vt::Feature::Reflow && fux::pane::OPTIONS.has(f))
+            .collect::<fux_vt::Options>()
+            .with_identity(fux::pane::OPTIONS.identity()),
+    };
+    let mut parser = full_history(fill, history, options, r.short)?;
     let wide = parser.screen().size();
-    let narrow = fux_vt::Size::new(wide.rows(), NARROW).map_err(|e| e.to_string())?;
+    let narrow = fux_vt::Size::new(wide.rows(), r.narrow).map_err(|e| e.to_string())?;
     if !baseline {
         for _ in 0..RESIZES {
             for size in [narrow, wide] {
@@ -1156,8 +1329,11 @@ mod tests {
     #[test]
     fn the_history_resized_is_full() -> Result<(), String> {
         let (fill, history) = (super::FILL / 16, super::HISTORY / 16);
-        let rows = super::full_history(fill, history)?.screen().history_len();
-        let more = super::full_history(fill * 2, history)?
+        let pane = fux::pane::OPTIONS;
+        let rows = super::full_history(fill, history, pane, false)?
+            .screen()
+            .history_len();
+        let more = super::full_history(fill * 2, history, pane, false)?
             .screen()
             .history_len();
         assert!(
