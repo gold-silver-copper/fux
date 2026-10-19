@@ -426,12 +426,13 @@ mod budget {
     }
 
     /// How many of the REPs of `glyph` in `input` a call carries out
-    /// before the budget stops it, on a screen small enough that each
-    /// prints only a few of its copies, all of which are spent.
+    /// before the budget stops it, on fux's default screen and history,
+    /// where none of a REP's copies is skipped: each is printed, and
+    /// spent.
     fn reps_before_the_budget(glyph: &str) -> Result<usize> {
         let each = format!("{glyph}\x1b[65535b");
         let input: String = std::iter::repeat_n(each.as_str(), 4000).collect();
-        let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
+        let mut parser = Parser::new(Size::new(50, 200)?, 8 << 20)?;
         match parser.process_until_stop(input.as_bytes(), &mut Deaf)? {
             Some((taken, Stop::Budget)) => Ok(taken.checked_div(each.len()).unwrap_or(0)),
             other => Err(format!("{glyph}: stopped as {other:?}").into()),

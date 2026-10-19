@@ -293,6 +293,33 @@ fn a_wide_glyph_fits_no_halved_line_a_column_long() -> Result {
     Ok(())
 }
 
+/// A wide glyph that wraps onto a halved line a column long is not
+/// printed there either, a double-height line's top or bottom as a
+/// double-width one (`diff/oracle.sh`, case 3453: 2x2, DECDHL's top on the
+/// second row, then `C界` on the first; the compare harness's case 1070,
+/// seed 1, with DECDHL's bottom).
+#[test]
+fn a_wide_glyph_wrapped_onto_a_halved_line_too_short_is_not_printed() -> Result {
+    for input in [
+        "\x1b[2;H\x1b#3\x1b[HC\u{754c}",
+        "\x1b[5d\x1b#4\x1b[?6lK\u{754c}",
+        "\x1b[2;H\x1b#6\x1b[HC\u{754c}",
+    ] {
+        let p = run(2, 2, input.as_bytes())?;
+        let past = p.screen().cell(1, 1).ok_or("no cell")?;
+        assert!(
+            past.contents().is_empty() && !past.is_wide_continuation(),
+            "{input:?}"
+        );
+        #[cfg(feature = "checks")]
+        {
+            let report = p.check();
+            assert!(report.is_clean(), "{input:?}: {report}");
+        }
+    }
+    Ok(())
+}
+
 /// A wide glyph a halved line a column long drops carries out a wrap
 /// waiting first, as a glyph wider than the screen does (xterm's
 /// `dotext`; DEC STD 070's Last Column Flag): on 2x2, `ESC # 6`, `a`, then

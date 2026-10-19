@@ -1738,7 +1738,13 @@ impl Screen {
         // margin (xterm's `WrapLine`).
         self.new_line()?;
         let g = self.grid();
-        Ok(Some(if g.narrow() { g.line_end() } else { end }))
+        if !g.narrow() {
+            return Ok(Some(end));
+        }
+        // The line it wrapped onto may be halved to less than the glyph:
+        // it is not printed there (`too_wide`).
+        let end = g.line_end();
+        Ok((width <= end || width <= g.row_end(g.cursor.row())).then_some(end))
     }
 
     /// SUB (DEC STD 070, p. 5-132): the error character, a reversed
@@ -2387,14 +2393,13 @@ impl Screen {
         let Some(c) = self.repeat else {
             return Ok(());
         };
-        let asked = usize::from(count);
-        let count = self.copies_needed(c, asked);
-        // The copies skipped cost nothing (threats.md B33); printing counts
-        // the ones made. Every copy is spent from the call's budget here, a
-        // cell for each it writes: two for a wide glyph.
+        let count = self.copies_needed(c, usize::from(count));
+        // The copies skipped cost nothing (threats.md B33). Every copy made
+        // is spent from the call's budget here, a cell for each it writes:
+        // two for a wide glyph.
         let width = crate::char_width(c).unwrap_or(1).max(1);
         crate::budget::spend(
-            crate::budget::units(asked.saturating_mul(width)),
+            crate::budget::units(count.saturating_mul(width)),
             crate::budget::weight::cells,
         );
         self.copies(c, count)
