@@ -104,11 +104,11 @@ in `tests/seeds.rs`: a `terminal` one past that target's 4,096 bytes in
 for the two no run of either holds (`b03-width-ladder`,
 `b11-every-cell-a-colour`, kept as `tests/seeds/*.bin`),
 which also replays each at its row's screen size and checks that it reaches
-the limit it is for. The sixel ones are slow at BASE until their fixes
-land (a width ladder, a 360:1 aspect and 215 declared extents each take
-over 25 s), and `keys/b25-long-csi-answer` fails the `keys` target's
-whole-against-split check (KEY-2), so they are not in `corpus/` yet; give
-them to a run as a second corpus directory.
+the limit it is for. They are kept apart from `corpus/`, which is cut to
+the targets' lengths: give `seeds/TARGET` to a run as a second corpus
+directory, as `fux-vt/compare/harness.sh` does. `seeds/graphemes` holds
+the inputs that target found (FA-SB-2), replayed by
+`properties::a_cell_full_of_its_cluster_drops_no_cluster_after_a_control`.
 
 Coverage, as text:
 
