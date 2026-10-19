@@ -471,3 +471,30 @@ fn output_past_a_read_budget_is_read_on_the_next_turns() -> Outcome {
     assert!(cpu < 0.2, "{cpu:.2} s of server CPU in one second");
     Ok(())
 }
+
+/// A program that prints past a read budget and exits at once is told
+/// exited with all it printed on its screen: `run`'s answer, which tells
+/// the exit once (#198), has its last line. 4,000 REPs of 65,535 spend
+/// two budgets.
+#[test]
+fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
+    let _alone = alone();
+    let server = Server::start("")?;
+    let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
+    let out = server.fux(&[
+        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "60", "timeout",
+        "run",
+    ])?;
+    assert!(
+        out.stdout.contains("exited 0"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("DONE"),
+        "no DONE in the answer: {}",
+        out.stderr
+    );
+    Ok(())
+}
