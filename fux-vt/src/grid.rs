@@ -1404,17 +1404,21 @@ impl Grid {
                 continue;
             }
             let style = restyle(self, cell.style());
+            // Making the style may have swept the table, numbering every
+            // cell's style anew, this one's too: the change is from what
+            // the cell holds now.
+            let Some(at) = self.slice_mut(slot).get_mut(col) else {
+                break;
+            };
             let new = if occupied {
-                let mut new = cell;
+                let mut new = *at;
                 new.set_style(style);
                 new
             } else {
-                let protect = if cell.is_protected() { PROTECTED } else { 0 };
+                let protect = if at.is_protected() { PROTECTED } else { 0 };
                 Compact::ascii(b' ', style | protect)
             };
-            if new != cell
-                && let Some(at) = self.slice_mut(slot).get_mut(col)
-            {
+            if new != *at {
                 *at = new;
                 changed = true;
             }
