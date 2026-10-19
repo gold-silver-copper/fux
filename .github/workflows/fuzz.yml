@@ -49,6 +49,11 @@ jobs:
             ASAN_OPTIONS=$asan cargo +nightly fuzz run "$target" --fuzz-dir fuzz -O -a "fuzz/corpus/$target" -- \
               -runs=0 -rss_limit_mb=2048 -timeout=25 $options </dev/null || failed+=("$target")
           done <fux-vt/compare/fuzz-options.txt
+          # A target with no line there is not left out unseen.
+          for target in $(cargo +nightly fuzz list --fuzz-dir fuzz); do
+            awk -v t="$target" '$1 == t && $2 == "fuzz" { found = 1 } END { exit !found }' \
+              fux-vt/compare/fuzz-options.txt || failed+=("$target (not in fux-vt/compare/fuzz-options.txt)")
+          done
           if ((${#failed[@]})); then
             echo "::error::failed: ${failed[*]}"
             exit 1

@@ -40,8 +40,8 @@ const MORE_THAN_KEPT: &str =
 /// records of one (`fux_vt::Prints::lost`): its caps are fux-vt's, said
 /// in its README (`Prints`), not again here.
 const PRINTS_LOST: &str = "… a piece of output printed more than fux records of one (fux-vt keeps \
-     a few bytes of printed text a screen cell between reads, and past that records nothing): \
-     text may have passed unseen\n";
+     a few bytes of printed text a screen cell between reads, and records nothing past that, or \
+     after many runs, or after a resize): text may have passed unseen\n";
 
 /// How long a bare `wait` on a pane that may go on alone waits for
 /// something new before it answers the pane as it is: longer than the
@@ -976,8 +976,8 @@ impl Watch {
         if self.lost {
             return Some(
                 "a piece of output printed more than fux records of one (fux-vt keeps a few \
-                 bytes of printed text a screen cell between reads, and past that records \
-                 nothing): the text may have come unseen",
+                 bytes of printed text a screen cell between reads, and records nothing past \
+                 that, or after many runs, or after a resize): the text may have come unseen",
             );
         }
         self.echo_skipped.then_some(
