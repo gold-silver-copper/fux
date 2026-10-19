@@ -333,7 +333,15 @@ impl Grid {
         if index > end {
             return None;
         }
-        self.row_at(index).map(|row| row.id)
+        // As `row_at` counts it, without making the row.
+        work!(rows, 1);
+        match index.checked_sub(self.history.len()) {
+            None => self.history.kept(index).map(|kept| kept.id),
+            Some(row) => self
+                .order
+                .get(row)
+                .and_then(|&slot| Some(self.meta.get(slot)?.id)),
+        }
     }
 
     /// Retained row `index`'s facts a line's layout reads: whether it is
