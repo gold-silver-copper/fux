@@ -2194,8 +2194,8 @@ fn an_escape_is_given_the_time_a_program_waits_for_more() -> Outcome {
 }
 
 /// A remote client that reports nothing of what it runs (here a stand-in
-/// named `ssh`, reading its terminal as ssh does while its command runs
-/// there) is no program waiting for keys: once quiet it is `waiting`, the
+/// named `ssh`, watching its terminal in a select, as ssh does beside its
+/// socket while its command runs there) is no program waiting for keys: once quiet it is `waiting`, the
 /// answer says fux cannot tell and how to wait, and a text wait runs to
 /// its limit, never told it cannot come (7).
 #[test]
@@ -2203,7 +2203,12 @@ fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
     use std::os::unix::fs::PermissionsExt;
     let server = Server::start("")?;
     let ssh = server.dir.join("ssh");
-    std::fs::write(&ssh, "#!/bin/sh\necho connected\nread line\n").map_err(e)?;
+    let watch = "import select, sys; select.select([sys.stdin], [], [])";
+    std::fs::write(
+        &ssh,
+        format!("#!/bin/sh\necho connected\nexec python3 -c '{watch}'\n"),
+    )
+    .map_err(e)?;
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).map_err(e)?;
     let ssh = ssh.to_string_lossy().into_owned();
     let started = server.ok(&run(&[], &[&ssh, "bench", "make"]))?;

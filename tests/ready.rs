@@ -627,3 +627,46 @@ fn wait_done_waits_as_long_as_the_command_runs() -> Outcome {
     assert!(took < long, "{took:?}");
     Ok(())
 }
+
+/// A remote client blocked reading its terminal alone, in line mode (ssh
+/// asking about a host key, or for a password with echo off), asks at a
+/// prompt of its own, here: `reading`, its question answered by keys, not
+/// a command at work on another machine. One watching its terminal beside
+/// its socket is the client (`agents.rs`'s
+/// `a_remote_client_is_not_taken_for_its_remote_program`). Linux says
+/// which; macOS does not.
+#[test]
+fn a_remote_client_asking_at_its_prompt_reads() -> Outcome {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    for (name, asks) in [
+        (
+            "host-key",
+            "printf 'continue connecting (yes/no)? '; read answer",
+        ),
+        ("password", "stty -echo; printf 'password: '; read answer"),
+    ] {
+        let dir = server.dir.join(name);
+        std::fs::create_dir_all(&dir).map_err(e)?;
+        let ssh = dir.join("ssh");
+        std::fs::write(&ssh, format!("#!/bin/sh\n{asks}\necho \"got $answer\"\n")).map_err(e)?;
+        std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .map_err(e)?;
+        let ssh = ssh.to_string_lossy().into_owned();
+        let answer = server.ok(&["opts", "str", &ssh, "program", "10", "timeout", "run"])?;
+        let pane = answer
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(
+            becomes(&server, &pane, &[READING])?,
+            READING,
+            "{name}: {answer}"
+        );
+        assert!(!answer.contains("another machine"), "{name}: {answer}");
+    }
+    Ok(())
+}

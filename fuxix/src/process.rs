@@ -964,25 +964,7 @@ fn process_activity(pid: Pid, tty: &Path) -> Option<Activity> {
 /// (`/proc/PID/task/TID/syscall`).
 #[cfg(not(target_os = "macos"))]
 pub fn activity(group: Pid, tty: &Path, leader: Pid) -> Activity {
-    let in_group = |pid: &Pid| {
-        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(')')
-                .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse::<i32>().ok())
-                == Some(group.as_raw())
-        })
-    };
-    // The leader's own, and the orphans of the group this process adopted
-    // (`adopt_orphans`), its children beside the panes' leaders, with
-    // theirs: a few files read, not the whole tree.
-    let adopted = children("self")
-        .into_iter()
-        .filter(|p| *p != leader && in_group(p));
-    let roots: Vec<Pid> = std::iter::once(leader).chain(adopted).collect();
-    let members: Vec<Pid> = (roots.iter())
-        .flat_map(|root| std::iter::once(*root).chain(below(*root)))
-        .filter(in_group)
-        .collect();
-    let seen: Vec<Activity> = (members.into_iter())
+    let seen: Vec<Activity> = (members(group, leader).into_iter())
         .filter_map(|p| process_activity(p, tty))
         .collect();
     // None in the group (it is changing hands: a program starting or
@@ -999,6 +981,62 @@ pub fn activity(group: Pid, tty: &Path, leader: Pid) -> Activity {
     .into_iter()
     .find(|a| seen.contains(a))
     .unwrap_or(Activity::Unknown)
+}
+
+/// The processes of foreground group `group` among `leader`'s own, else
+/// among this process's [`tree`] (`activity`'s).
+#[cfg(not(target_os = "macos"))]
+fn members(group: Pid, leader: Pid) -> Vec<Pid> {
+    let in_group = |pid: &Pid| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse::<i32>().ok())
+                == Some(group.as_raw())
+        })
+    };
+    // The leader's own, and the orphans of the group this process adopted
+    // (`adopt_orphans`), its children beside the panes' leaders, with
+    // theirs: a few files read, not the whole tree.
+    let adopted = children("self")
+        .into_iter()
+        .filter(|p| *p != leader && in_group(p));
+    let roots: Vec<Pid> = std::iter::once(leader).chain(adopted).collect();
+    (roots.iter())
+        .flat_map(|root| std::iter::once(*root).chain(below(*root)))
+        .filter(in_group)
+        .collect()
+}
+
+/// Whether a process of the foreground group of the terminal whose master
+/// is `master` (`leader`'s own group, with none) has a thread blocked in a
+/// plain read of it (read and its kind), not in a poll, select or epoll
+/// that watches it: a program asking at a prompt of its own, as ssh asks
+/// for a password or about a host key, where [`Activity::Reading`] tells
+/// neither from the other.
+#[cfg(not(target_os = "macos"))]
+pub fn blocked_reading(master: &crate::pty::Master, leader: Pid) -> bool {
+    let group = crate::terminal::foreground_group(master).unwrap_or(leader);
+    let tty = master.slave_path();
+    members(group, leader).into_iter().any(|pid| {
+        let tasks = std::fs::read_dir(format!("/proc/{pid}/task"))
+            .into_iter()
+            .flatten();
+        tasks.flatten().any(|task| {
+            let blocked = task
+                .file_name()
+                .to_str()
+                .and_then(|tid| thread_blocked(pid, tid));
+            matches!(blocked, Some(Blocked::Read(fd)) if is_terminal(pid, fd, tty))
+        })
+    })
+}
+
+/// Whether a process of the terminal's foreground group is blocked in a
+/// plain read of it: never known on macOS, which does not say what a
+/// waiting thread waits on.
+#[cfg(target_os = "macos")]
+pub fn blocked_reading(_master: &crate::pty::Master, _leader: Pid) -> bool {
+    false
 }
 
 /// Whether process `pid` itself is blocked reading the terminal at `tty`.
