@@ -728,8 +728,10 @@ It needs no engine but ghostty, takes a few seconds, and is part of
 ## Speed
 
 `bench` feeds each engine every workload in 4 KiB chunks, on a 50×200
-screen with 10000 rows of history, and prints MB/s, the best of three
-runs. The synthetic workloads follow alacritty's vtebench: ascii,
+screen with 10000 rows of history, and prints MB/s, the median of three
+rounds, each round taking every engine in turn (so a machine that drifts
+moves them alike; pin it with `taskset` to keep it on one set of cores,
+which the heading records). The synthetic workloads follow alacritty's vtebench: ascii,
 dense-cells, medium-cells, cursor-motion, scrolling, scroll-region and
 unicode. `corpus` is every recording in turn, at the first one's size
 (40x120). `bench corpus` adds each recording alone (`corpus:vim` and so
