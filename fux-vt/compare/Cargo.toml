@@ -32,7 +32,8 @@ fuxix = { path = "../../fuxix" }
 fux = { path = "../.." }
 # Reading the engines that run as their own processes.
 serde_json = "1"
-unicode-width = "0.2"
+# Pinned, as fux-vt's own tests pin it: the adapter's width rule for tmux.
+unicode-width = "=0.2.2"
 # The data limit compare sets on itself (main.rs, `limit_data`), so a
 # runaway engine fails an allocation instead of taking the machine.
 libc = "0.2"

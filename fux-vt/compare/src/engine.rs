@@ -407,6 +407,12 @@ pub const SETTINGS: &[(&str, &str)] = &[
         "the unicode-graphemes addon loaded, and reflowCursorLine on (node/engine.mjs)",
     ),
     (
+        "tmux",
+        "its widths inferred by the adapter, not read from tmux: a cluster's first character's \
+         by unicode-width 0.2.2, 2 with VS16, a modifier or a regional indicator \
+         (engines/pane.rs, tmux_width)",
+    ),
+    (
         "xterm",
         "the resources engines/xterm.rs lists: precompose off, every window operation allowed",
     ),
