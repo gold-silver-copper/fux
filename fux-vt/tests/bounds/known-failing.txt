@@ -2,4 +2,3 @@
 # line, then, in backticks, what its error says at every chunking, then
 # why, as measured. tests/bounds.rs reads it: a row on it must fail so; a
 # fix takes its rows off (a row on it that passes fails the suite).
-B25 100x  `the decoder held` at 4 KiB reads the decoder's heap peaks at 4,160 bytes, 64 past the probe's 4 KiB: not yet explained (KEY-5)

@@ -478,7 +478,7 @@ impl Decoder {
         // What is held, or an ESC that may end a dropped string, takes only
         // what decides it of a long read (`held_first`), not a copy of all;
         // and so does a sequence a long read begins, left unfinished.
-        if bytes.len() > HELD && self.may_hold() {
+        if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
             return self.held_first(bytes, out);
         }
         self.feed(bytes, false, out);
@@ -555,7 +555,7 @@ impl Decoder {
     #[cold]
     #[inline(never)]
     fn held_first(&mut self, mut bytes: &[u8], out: &mut Vec<Input>) {
-        while bytes.len() > HELD && self.may_hold() {
+        while bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
             let (head, tail) = bytes
                 .split_at_checked(HELD.saturating_add(1))
                 .unwrap_or((bytes, &[]));
