@@ -512,10 +512,25 @@ impl FrameScan {
     }
 
     /// Reads the CSI whose parameters begin at `start` of `bytes`, as
-    /// `sequence` does, each byte once: its parameters as `Phase::next`
-    /// reads them, for DECRST, XTRESTORE, XTSAVE and DECSTR to be told by
-    /// them (`ends`).
+    /// `sequence` does. Its parameters and intermediates are 0x20 to 0x3f;
+    /// only DECRST's, XTRESTORE's, XTSAVE's and DECSTR's need reading, as
+    /// `Phase::next` reads them, a second time (`ends`): the others are
+    /// passed at their final byte at once. One the bytes end in the middle
+    /// of is read again too, for the next call to go on from where it got.
+    /// Each read is counted, so a byte at most twice (threats.md B19).
     fn csi(&mut self, bytes: &[u8], start: usize) -> Option<(usize, bool)> {
+        let csi = bytes.get(start..)?;
+        let end = csi.iter().position(|b| !(0x20..0x40).contains(b));
+        // Every final byte but `l`, `p`, `r` and `s`.
+        if let Some(end) = end
+            && matches!(
+                csi.get(end),
+                Some(0x40..=0x6b | 0x6d..=0x6f | 0x71 | 0x74..=0x7e)
+            )
+        {
+            return Some((start.checked_add(end)?.checked_add(1)?, false));
+        }
+        work!(scanned, end.map_or(csi.len(), |end| end.saturating_add(1)));
         let (mut phase, mut ignored) = (Phase::Entry, false);
         self.params.clear();
         for (i, &byte) in bytes.iter().enumerate().skip(start) {
