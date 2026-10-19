@@ -1,0 +1,15 @@
+# The Unicode files fux-vt's tables are generated from (17.0.0), by their
+# SHA-256 and their path under references/unicode/ and the version's
+# directory on unicode.org: fetch.sh checks what it fetches against these,
+# and .github/workflows/compare.yml fetches by them.
+d6b51d1d2ae5c33b451b7ed994b48f1f4dc62b2272a5831e7fd418514a6bae89 ucd/auxiliary/GraphemeBreakProperty.txt
+e2d134d2c52919bace503ebb6a551c1855fe1a1faec18478c78fff254a1793ec ucd/auxiliary/GraphemeBreakTest.txt
+2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b ucd/emoji/emoji-data.txt
+bb3d09ef03f206012c7532dd52dc0a21c9efddba0135ea4cf0d9201b8b9bba7e ucd/emoji/emoji-variation-sequences.txt
+24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08 ucd/DerivedCoreProperties.txt
+ea7ce50f3444a050333448dffef1cadd9325af55cbb764b4a2280faf52170a33 ucd/EastAsianWidth.txt
+5a57450afde0d082bc5026f7458649eac3b615490cc7e3d916b0367f1593c0e3 ucd/HangulSyllableType.txt
+130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd ucd/PropList.txt
+2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c ucd/UnicodeData.txt
+5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db ucd/NormalizationTest.txt
+1d8a944f88d7952f7ef7c5167fef3c67995bcae24543949710231b03a201acda emoji/emoji-test.txt

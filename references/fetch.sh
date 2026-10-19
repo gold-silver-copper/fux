@@ -142,6 +142,14 @@ get unicode/ucd/PropList.txt $ucd/PropList.txt
 get unicode/ucd/UnicodeData.txt $ucd/UnicodeData.txt
 get unicode/ucd/NormalizationTest.txt $ucd/NormalizationTest.txt
 get unicode/emoji/emoji-test.txt https://www.unicode.org/Public/17.0.0/emoji/emoji-test.txt
+# Those the tables are generated from, by their SHA-256 (unicode.sha256,
+# which CI fetches by too).
+while read -r sum path; do
+  [[ $sum == "#"* || -z $sum ]] && continue
+  if [[ -s $here/unicode/$path && $(sha256 "$here/unicode/$path") != "$sum" ]]; then
+    failed+=("unicode/$path: not Unicode 17.0.0's (SHA-256); --force fetches it again")
+  fi
+done <"$here/unicode.sha256"
 
 # --- Modern extensions, each its own de facto specification -------------------
 get modern/kitty_keyboard_protocol.html https://sw.kovidgoyal.net/kitty/keyboard-protocol/
