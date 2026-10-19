@@ -605,7 +605,9 @@ fn takes_modifier(c: char) -> bool {
     )
 }
 
-/// The width tmux gives a cell holding `cluster`.
+/// The width tmux gives a cell holding `cluster`, as the adapter infers
+/// it: capture-pane does not say, so this is a guess, labelled so in the
+/// engine's settings (`engine::SETTINGS`).
 fn tmux_width(cluster: &str) -> usize {
     let mut chars = cluster.chars();
     let first = chars.next().and_then(UnicodeWidthChar::width).unwrap_or(1);
