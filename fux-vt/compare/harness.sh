@@ -308,9 +308,13 @@ fuzz() {
     name=fuzz-build-${dir//\//-}
     ran+=("$name")
     (cd "$root" && step "$name" cargo +nightly fuzz build --fuzz-dir "$dir" -O -a)
-    if [[ $(cut -d' ' -f1 "$out/status/$name") == 0 ]]; then
+    local listed
+    # Listed apart: a list that fails names its directory broken, as a
+    # build that fails does.
+    if [[ $(cut -d' ' -f1 "$out/status/$name") == 0 ]] &&
+      listed=$(cd "$root" && cargo +nightly fuzz list --fuzz-dir "$dir"); then
       built+=("$dir")
-      for target in $(cd "$root" && cargo +nightly fuzz list --fuzz-dir "$dir"); do
+      for target in $listed; do
         targets+=("$dir $target")
       done
     else
