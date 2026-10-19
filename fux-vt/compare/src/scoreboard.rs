@@ -203,22 +203,17 @@ fn speed(dir: &Path, rows: &mut Vec<Row>) {
         rows.push(row("Speed", "MB/s, fux-vt", &missing(dir, "info"), ""));
         return;
     };
-    let ranked = mb_per_s(&info, &floors(dir));
-    let first = ranked
-        .iter()
-        .filter(|r| r.standing == Standing::Ahead)
-        .count();
+    let measured = mb_per_s(&info).len();
     let mbs = |engine: &str| {
-        number(&info, &format!("/engines_mb_per_s/corpus/{engine}"))
-            .map_or_else(|| "?".into(), |v| format!("{v:.0}"))
+        let at = format!("/engines_mb_per_s/equal-budget, in process/corpus/{engine}");
+        number(&info, &at).map_or_else(|| "?".into(), |v| format!("{v:.0}"))
     };
     rows.push(row(
         "Speed",
-        "MB/s on the corpus",
+        "MB/s on the corpus, equal budget, in process",
         &format!(
-            "{} (first by its floor on {first} of {} workloads)",
+            "{} ({measured} workloads measured; unranked, no A/A floor for wall time)",
             mbs("fux-vt"),
-            ranked.len()
         ),
         &format!("Ghostty {}, alacritty {}", mbs("ghostty"), mbs("alacritty")),
     ));
@@ -495,40 +490,37 @@ fn passed(results: &Value, pointer: &str) -> Option<(u64, u64)> {
     Some((passed, run))
 }
 
-/// Floors measured apart from these results (`floors.json`: a share in
-/// percent for each kind, `instructions` and `mb_per_s`), if any.
-fn floors(dir: &Path) -> Value {
-    std::fs::read_to_string(dir.join("floors.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(Value::Null)
-}
+/// The least floor a share is ranked past: the speed method's
+/// (speed-method.md), however steady a run's repeats.
+const FLOOR_MIN_PERCENT: f64 = 0.25;
 
-/// The MB/s rows, from `fux-bench info`: higher is better, the floor from
-/// `floors.json` (none measured otherwise).
-fn mb_per_s(info: &Value, floors: &Value) -> Vec<Ranked> {
-    let floor = number(floors, "/mb_per_s").map_or(
-        Floor::Unknown("no A/A floor for MB/s (floors.json)"),
-        Floor::Percent,
-    );
-    let workloads = info
-        .get("engines_mb_per_s")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    workloads
-        .iter()
-        .filter_map(|(name, engines)| {
-            let figures: Vec<(String, f64)> = engines
-                .as_object()?
-                .iter()
-                .filter_map(|(e, v)| Some((e.clone(), v.as_f64()?)))
-                .collect();
-            rank(format!("MB/s: {name}"), &figures, false, floor, &|v| {
-                format!("{v:.1}")
-            })
-        })
-        .collect()
+/// The MB/s rows, from `fux-bench info` (by table, workload and engine):
+/// higher is better, and none is ranked, no A/A floor being measured for
+/// wall time.
+fn mb_per_s(info: &Value) -> Vec<Ranked> {
+    let floor = Floor::Unknown("no A/A floor measured for MB/s, a wall time");
+    let tables = (info.get("engines_mb_per_s").and_then(Value::as_object))
+        .into_iter()
+        .flatten();
+    let rows = tables.flat_map(|(table, workloads)| {
+        let workloads = workloads.as_object().into_iter().flatten();
+        workloads.map(move |(name, engines)| (table, name, engines))
+    });
+    rows.filter_map(|(table, name, engines)| {
+        let figures: Vec<(String, f64)> = (engines.as_object())
+            .into_iter()
+            .flatten()
+            .filter_map(|(e, v)| Some((e.clone(), v.as_f64()?)))
+            .collect();
+        rank(
+            format!("MB/s ({table}): {name}"),
+            &figures,
+            false,
+            floor,
+            &|v| format!("{v:.1}"),
+        )
+    })
+    .collect()
 }
 
 /// esctest's engines: each run's JSON, and where in it each terminal is.
@@ -546,7 +538,6 @@ const ESCTEST_RUNS: &[(&str, &str, &str)] = &[
 /// conformance, real programs, instructions per byte, memory, MB/s.
 fn ranked(dir: &Path) -> Vec<Ranked> {
     let mut out = Vec::new();
-    let floors = floors(dir);
     // esctest: every engine library on one denominator; xterm, the
     // reference, is not one of them.
     let runs: Vec<(&str, (u64, u64))> = ESCTEST_RUNS
@@ -601,7 +592,6 @@ fn ranked(dir: &Path) -> Vec<Ranked> {
         }
     }
     if let Some(instructions) = load(dir, "instructions") {
-        let measured = number(&floors, "/instructions");
         for workload in instructions
             .get("workloads")
             .and_then(Value::as_array)
@@ -615,8 +605,8 @@ fn ranked(dir: &Path) -> Vec<Ranked> {
                 .flatten()
                 .filter_map(|(e, v)| Some((e.clone(), number(v, "/per_byte")?)))
                 .collect();
-            // The spread of fux-vt's repeats, and of the best other's, if
-            // no floor was measured apart.
+            // The spread of fux-vt's repeats, and of the best other's, the
+            // speed method's least floor at least.
             let noise = |e: &str| {
                 engines
                     .and_then(|m| m.get(e))
@@ -632,10 +622,9 @@ fn ranked(dir: &Path) -> Vec<Ranked> {
                 continue;
             };
             let best = row.best.split_once(' ').map_or("", |(e, _)| e).to_owned();
-            let floor = match (measured, noise("fux-vt"), noise(&best)) {
-                (Some(p), _, _) => Floor::Percent(p),
-                (None, Some(a), Some(b)) => Floor::Percent(a.max(b)),
-                (None, _, _) => Floor::Unknown("no spread measured"),
+            let floor = match (noise("fux-vt"), noise(&best)) {
+                (Some(a), Some(b)) => Floor::Percent(a.max(b).max(FLOOR_MIN_PERCENT)),
+                _ => Floor::Unknown("no spread measured"),
             };
             out.extend(rank(row.measure, &figures, true, floor, &|v| {
                 format!("{v:.1}")
@@ -646,7 +635,7 @@ fn ranked(dir: &Path) -> Vec<Ranked> {
         out.extend(memory(&footprint));
     }
     if let Some(info) = load(dir, "info") {
-        out.extend(mb_per_s(&info, &floors));
+        out.extend(mb_per_s(&info));
     }
     out
 }
@@ -1057,6 +1046,36 @@ mod tests {
         );
         assert_eq!(super::missing(&dir, "esctest-ghostty"), "failed (exit 1)");
         assert_eq!(super::missing(&dir, "feel"), super::MISSING);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Instructions per byte are ranked past a floor of at least 0.25%,
+    /// whatever the repeats' own spread (0.01% here): 0.1% apart is a tie.
+    /// MB/s is read as fux-bench info writes it, by table, and is not
+    /// ranked, no A/A floor being measured for wall time.
+    #[test]
+    fn rows_are_ranked_past_the_floors_their_tools_measure() -> Result<(), String> {
+        let dir = dir("floors")?;
+        let instructions = json!({"workloads": [{"name": "ascii", "engines": {
+            "fux-vt": {"per_byte": 100.0, "noise_percent": 0.01},
+            "ghostty": {"per_byte": 100.1, "noise_percent": 0.01},
+        }}]});
+        let info = json!({"engines_mb_per_s": {"equal-budget, in process": {
+            "ascii": {"fux-vt": 210.5, "ghostty": 180.0},
+        }}});
+        for (check, value) in [("instructions", &instructions), ("info", &info)] {
+            std::fs::write(dir.join(format!("{check}.json")), value.to_string())
+                .map_err(|e| e.to_string())?;
+            stamped(&dir, check, "p", 0)?;
+        }
+        let rows = super::ranked(&dir);
+        let row = |measure: &str| rows.iter().find(|r| r.measure.contains(measure));
+        let per_byte = row("instructions per byte: ascii").ok_or("no instructions row")?;
+        assert_eq!(per_byte.standing, super::Standing::Tie);
+        let mbs = row("MB/s").ok_or("no MB/s row")?;
+        assert!(mbs.measure.contains("equal-budget, in process") && mbs.measure.contains("ascii"));
+        assert!(matches!(mbs.standing, super::Standing::Unranked(_)));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
