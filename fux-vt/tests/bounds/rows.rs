@@ -647,7 +647,26 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
     ));
     fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
         p.at_least("links", 2000)
-    })
+    })?;
+    // The sweep's transient is its links' and their rows', however many
+    // rows history holds besides (FA-SCR-H2): a full history of empty
+    // rows, then the links above.
+    let setup = Setup::defaults();
+    let mut probe = Probe::new(&setup, heap(usize::MAX), chunk.max(16), 1)?;
+    probe.feed(&repeat(b"\n", 400_000))?;
+    let (transient, before) = (Heap::begin(), probe.counted("links"));
+    probe.feed(&input)?;
+    if probe.counted("links") <= before {
+        return Err("no link sweep".into());
+    }
+    // The links' own memory, 4 MiB and 64 bytes each, and their runs.
+    let most = (4 << 20) + (64 + 24 + 16) * 3000 + (64 << 10);
+    match transient.peak() {
+        peak if peak <= most => Ok(()),
+        peak => Err(format!(
+            "links and their sweep held {peak} bytes, past {most}"
+        )),
+    }
 }
 
 // B17: history takes at most 1.1 × its budget + 64 KiB, blocks and maps
