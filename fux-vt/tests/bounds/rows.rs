@@ -616,7 +616,19 @@ pub fn b14(scale: Scale, chunk: usize) -> Found {
     // A screen large enough to keep every link on it, with no history.
     let setup = Setup::defaults().sized(300, 200).history(0);
     let runs = usize::from(setup.rows).saturating_mul(256 * RUN);
-    let bound = heap((4usize << 20).saturating_add(runs).saturating_add(171_072));
+    // The links' heap, their strings and the table of those with an id,
+    // both tables while it grows (`LINK_BYTES`, `Links::held`); the runs;
+    // the list a sweep sorts, 16 bytes a run, at most a run a cell; and
+    // what `Prints` may hold. 7,982,976 bytes; the peak measured at 1x is
+    // 6,365,240 (box2), the links holding 3.0 MB when the short-id links
+    // refuse the id table's growth to 131,072 buckets.
+    let sweep = setup.cells().saturating_mul(16);
+    let bound = heap(
+        (4usize << 20)
+            .saturating_add(runs)
+            .saturating_add(sweep)
+            .saturating_add(prints(&setup)),
+    );
     let long = repeat(&link("", 2083), 2000);
     fed(
         &setup,

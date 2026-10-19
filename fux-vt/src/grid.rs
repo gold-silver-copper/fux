@@ -1115,16 +1115,13 @@ impl Grid {
     /// never do.
     fn make_room(&mut self, version: u64) {
         // Oldest first, as links open: the screen's rows top to bottom.
-        let linked = &self.linked;
-        let history = self
-            .history
-            .links()
-            .map(|(index, links)| (Some(index), links));
-        let screen = self
-            .order
-            .iter()
-            .filter_map(|slot| Some((None, linked.get(*slot)?.runs())));
-        let lose = self.links.sweep(history.chain(screen), self.history.len());
+        let (linked, history, order) = (&self.linked, &self.history, &self.order);
+        let rows = || {
+            let history = history.links().map(|(index, links)| (Some(index), links));
+            let screen = (order.iter()).filter_map(|slot| Some((None, linked.get(*slot)?.runs())));
+            history.chain(screen)
+        };
+        let lose = self.links.sweep(rows, self.history.len());
         for index in 0..lose {
             self.history.unlink(index, version);
         }
