@@ -1975,6 +1975,12 @@ impl Screen {
             self.print(char::from(first))?;
             bytes = tail;
         }
+        // One glyph, as a short line or a cursor moved to it has.
+        if let [byte] = bytes
+            && self.ascii_glyph(*byte)
+        {
+            return Ok(());
+        }
         while let Some((&first, tail)) = bytes.split_first() {
             let Some(line) = self.wrap_for(1)? else {
                 return Ok(());
@@ -2035,6 +2041,38 @@ impl Screen {
             bytes = bytes.get(run.len()..).unwrap_or_default();
         }
         Ok(())
+    }
+
+    /// `ascii` of one glyph, `byte`, where it needs no wrap and finds no
+    /// half of a wide glyph: as the run loop writes a run of one, without
+    /// its set-up. Whether it did; if not, nothing changed.
+    #[inline]
+    fn ascii_glyph(&mut self, byte: u8) -> bool {
+        let g = self.grid();
+        let line = g.line_end();
+        let (row, col) = g.cursor.at();
+        if g.cursor.pending_wrap || col >= line {
+            return false;
+        }
+        let style = self.pen_style() | self.protect;
+        match self.with_grid(|g, _, v| g.write_ascii(row, col, &[byte], style, v)) {
+            Written::All => {
+                if self.prints.is_some() {
+                    let text = str::from_utf8(std::slice::from_ref(&byte)).unwrap_or_default();
+                    self.printed(row, col..col.saturating_add(1), text);
+                }
+            }
+            Written::Same => {}
+            Written::Before(_) => return false,
+        }
+        let end = col.saturating_add(1);
+        self.grid_mut().advance_within(end, line);
+        if self.links_seen {
+            self.link_cells(row, usize::from(col)..usize::from(end), true);
+        }
+        self.last_print = Some(Printed::new((row, col), char::from(byte)));
+        self.repeat = Some(char::from(byte));
+        true
     }
 
     pub(crate) fn control(&mut self, byte: u8) -> Result<(), Error> {
