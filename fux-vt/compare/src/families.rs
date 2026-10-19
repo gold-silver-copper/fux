@@ -1290,7 +1290,12 @@ pub const DEPARTURES: &[(&str, &str, &[Departure])] = &[
     (
         "scroll",
         "xterm",
-        &[BOTTOM_PAST_SCREEN, SCROLL_ZERO, REGION_HISTORY],
+        &[
+            BOTTOM_PAST_SCREEN,
+            SCROLL_ZERO,
+            REGION_HISTORY,
+            WRAP_BELOW_REGION,
+        ],
     ),
     ("origin", "xterm", &[BOTTOM_PAST_SCREEN, REGION_HISTORY]),
     ("alternate", "xterm", &[]),
@@ -1486,6 +1491,21 @@ const REGION_HISTORY: Departure = Departure {
     fields: &["history *"],
 };
 
+const WRAP_BELOW_REGION: Departure = Departure {
+    why: "a glyph that wraps on the screen's last row below the region overwrites that row's \
+          first column, the line going on in no row, so fux-vt leaves the row unwrapped (a soft \
+          wrap is a line going on in the next row, `Row::wrapped`); xterm 411's WrapLine sets \
+          LINEWRAPPED before xtermIndex, which cannot move there (charproc.c, cursor.c), and \
+          the flag shows once a scroll brings the row up",
+    when: |bytes, rows, _| {
+        csis(bytes).iter().any(|(p, params, last)| {
+            let bottom = params.get(1).copied().flatten().unwrap_or(u32::from(rows));
+            p.is_none() && *last == b'r' && bottom > 0 && bottom < u32::from(rows)
+        })
+    },
+    fields: &["row * soft-wrapped"],
+};
+
 /// The engine `family` is judged beside and its departures, if it is
 /// judged so.
 pub fn departures(family: &str) -> Option<(&'static str, &'static [Departure])> {
@@ -1538,6 +1558,10 @@ mod tests {
         assert!(lone("a\u{1f1fa}b".as_bytes(), 4, 10));
         assert!(!lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 10));
         assert!(lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 1));
+        let below = super::WRAP_BELOW_REGION.when;
+        assert!(below(b"\x1b[0;2r\x1b[10H@#", 6, 1));
+        assert!(!below(b"\x1b[2;6r\x1b[10H@#", 6, 1));
+        assert!(!below(b"@#", 6, 1));
         let widened = super::WIDENED_AT_THE_EDGE.when;
         assert!(widened("\u{2764}\u{fe0f}".as_bytes(), 1, 3));
         assert!(widened("\u{1f44d}\u{1f1fa}\u{1f1f8}".as_bytes(), 1, 3));
