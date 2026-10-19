@@ -422,9 +422,10 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     })?;
     // A terminal of 10 by 20 pixel cells that draws sixel.
     client.send(b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[6;20;10t\x1b[?62;4;22c")?;
-    // P1 9: square pixels (DEC STD 070, 7.1).
-    let asked =
-        r"printf '\033[c'; read -r _; printf '\033P9q#1;2;100;0;0!20~-!20~\033\\'; echo drawn";
+    // P1 9: square pixels (DEC STD 070, 7.1). The cursor stays on the
+    // picture's last row (DEC STD 070, 11.3; xterm "requires only a single
+    // newline"), so a line goes first lest the text cover it.
+    let asked = r"printf '\033[c'; read -r _; printf '\033P9q#1;2;100;0;0!20~-!20~\033\\'; echo; echo drawn";
     server.ok(&[
         "str",
         "%1",
