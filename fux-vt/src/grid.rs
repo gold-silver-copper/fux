@@ -1256,19 +1256,15 @@ impl Grid {
     /// ED (`display`) or EL of `part`, from the cursor, ending a pending
     /// wrap: `erase` erases each row's span. A row ED erases whole is no
     /// prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
-    /// leave the mark (a shell redrawing its prompt erases from it). Each
-    /// line ED erases whole becomes single width if `single`: an ED that
-    /// spares protected glyphs (DECSED, SPA's) erases no line whole, and
-    /// DECSED leaves the renditions (DEC STD 070, DECSED, note 3).
+    /// leave the mark (a shell redrawing its prompt erases from it).
     #[inline]
     pub fn erase_in(
         &mut self,
-        (display, single): (bool, bool),
+        display: bool,
         part: Erase,
         version: u64,
         mut erase: impl FnMut(&mut Self, u16, u16, u16),
     ) {
-        let single = display && single;
         self.cursor.pending_wrap = false;
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
         if display {
@@ -1287,7 +1283,7 @@ impl Grid {
                 if whole {
                     erase(self, y, 0, cols);
                     self.set_prompt(y, false, version);
-                    if single && self.doubled() {
+                    if self.doubled() {
                         self.set_rendition(y, LineRendition::Single, version);
                     }
                 }
@@ -1301,7 +1297,7 @@ impl Grid {
         erase(self, row, start, end);
         // ED makes a line it erases whole single width (DEC STD 070, ED,
         // note 1, and its algorithm); EL leaves it as it is.
-        if single && self.doubled() && start == 0 && end >= self.row_end(row) {
+        if display && self.doubled() && start == 0 && end >= self.row_end(row) {
             self.set_rendition(row, LineRendition::Single, version);
             // Every row is single width again after ED 2.
             if part == Erase::All {
