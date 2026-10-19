@@ -618,11 +618,14 @@ impl Prints {
     pub(crate) fn push(&mut self, row: RowId, cols: Range<u16>, text: &str) {
         self.add(row, cols, text.len(), |into| into.push_str(text), false);
     }
-    /// `push` of ASCII `text`, a byte a character, which needs no reading
-    /// as UTF-8 first.
+    /// `push` of ASCII `text`: a short one a byte a character, with no call
+    /// to read it as UTF-8 first, a long one read at once.
     pub(crate) fn push_ascii(&mut self, row: RowId, cols: Range<u16>, text: &[u8]) {
-        let chars = text.iter().map(|&b| char::from(b & 0x7f));
-        self.add(row, cols, text.len(), |into| into.extend(chars), false);
+        let write = |into: &mut String| match text.len() < 16 {
+            true => into.extend(text.iter().map(|&b| char::from(b & 0x7f))),
+            false => into.push_str(str::from_utf8(text).unwrap_or_default()),
+        };
+        self.add(row, cols, text.len(), write, false);
     }
     /// Adds `text` joined to the cell at `cols` of `row`'s first column (a
     /// mark, a cluster's next character): to the last run if it took that
