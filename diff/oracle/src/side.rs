@@ -137,23 +137,13 @@ macro_rules! side {
                 s.size().into()
             }
 
-            /// Every mode both sides have, by name (the base, master, has no
-            /// `Mode::ALL`): all but DECHCCM, which is permanent and which
-            /// the DECRQM probe compares.
-            #[rustfmt::skip]
+            /// Every mode (`Mode::ALL`), by name: all but DECHCCM, which is
+            /// permanent and which the DECRQM probe compares.
             fn modes(s: &vt::Screen) -> Vec<(String, bool)> {
-                use vt::Mode::*;
-                [
-                    Insert, NewLine, ApplicationCursor, SmoothScroll, ReverseVideo, Origin,
-                    Autowrap, AutoRepeat, MousePress, ShowCursor, ReverseWrap, AlternateScreen,
-                    ApplicationKeypad, BackarrowSendsBackspace, LeftRightMargins,
-                    MousePressRelease, MouseButtonMotion, MouseAnyMotion, FocusReporting,
-                    MouseUtf8, MouseSgr, ExtendedReverseWrap, AlternateScreenCleared, SaveCursor,
-                    AlternateScreenSaveCursor, BracketedPaste, SynchronizedOutput,
-                    ColorSchemeUpdates, InBandResize, GraphemeClustering,
-                ]
-                .map(|m| (format!("{m:?}"), s.mode(m)))
-                .into()
+                (vt::Mode::ALL.into_iter())
+                    .filter(|m| !matches!(m, vt::Mode::HorizontalCursorCoupling))
+                    .map(|m| (format!("{m:?}"), s.mode(m)))
+                    .collect()
             }
 
             /// FNV-1a over `bytes`, folded into `h`.
