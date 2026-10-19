@@ -79,7 +79,7 @@ impl Work {
 
     /// The most weighted work one call may do: U, 50,000,000 units
     /// (threats.md 4.4, P14), in the twentieths [`Work::cost`] counts.
-    pub const CEILING: u64 = 50_000_000 * 20;
+    pub const CEILING: u64 = crate::budget::CEILING;
 
     /// The work this thread has done in fux-vt so far.
     pub fn now() -> Self {
