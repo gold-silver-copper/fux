@@ -673,8 +673,12 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
     if probe.counted("links")? <= before {
         return Err("no link sweep".into());
     }
-    // The links' own memory, 4 MiB and 64 bytes each, and their runs.
-    let most = (4 << 20) + (64 + 24 + 16) * 3000 + (64 << 10);
+    // The links' own memory, 4 MiB and 64 bytes each, their map slots and
+    // headers, and their runs, 32 bytes each (`link.rs` asserts it): one a
+    // link printed, the short ones' 1,000 a scale.
+    let runs = scale.times().saturating_mul(1000).saturating_add(2000);
+    let links: usize = (4 << 20) + (64 + 24 + 16) * 2000 + (64 << 10);
+    let most = links.saturating_add(runs.saturating_mul(32));
     match transient.peak() {
         peak if peak <= most => Ok(()),
         peak => Err(format!(
@@ -2135,9 +2139,9 @@ pub const ROWS: &[(&str, Row)] = &[
 
 /// Runs row `name` at `scale`, at every chunking, until one finds it past
 /// its bound.
-pub fn run(row: Row, scale: Scale) -> Found {
-    // Every chunking is run, and what each found is told, so that a row
-    // known to fail is seen to fail as it is known to at each.
+pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
+    // Every chunking is run, and what each found is told apart, so that a
+    // row known to fail is seen to fail as it is known to at each.
     let found: Vec<String> = (CHUNKS.into_iter())
         .filter_map(|chunk| {
             row(scale, chunk).err().map(|e| match chunk {
@@ -2148,7 +2152,7 @@ pub fn run(row: Row, scale: Scale) -> Found {
         .collect();
     match found.is_empty() {
         true => Ok(()),
-        false => Err(found.join("; ")),
+        false => Err(found),
     }
 }
 
