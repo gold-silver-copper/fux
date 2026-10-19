@@ -236,8 +236,8 @@ impl Order {
     }
     /// Turns the slots of rows `low` to `high` by `by`: to the left (each
     /// `by` rows up, the first `by` going to the end), or to the right.
-    /// Once, whatever `by`: rows `low` to `high`, and, if they cross the
-    /// ring's end, every row first, to bring its top to the start.
+    /// Once, whatever `by`, and only rows `low` to `high`, wherever the
+    /// ring puts them (threats.md B36).
     fn rotate(&mut self, (low, high): (usize, usize), by: usize, left: bool) {
         let len = high.wrapping_sub(low).wrapping_add(1);
         if high < low || high >= self.slots.len() || by > len {
@@ -245,12 +245,15 @@ impl Order {
         }
         let (front, _) = self.as_mut_slices();
         if low < front.len() && high >= front.len() {
-            // Across the ring's end: its top to the start, as `push_back`.
-            work!(slots, self.slots.len());
-            if let Some(slots) = self.slots.get_mut(..) {
-                slots.rotate_left(self.top);
-            }
-            self.top = 0;
+            // Across the ring's end: turned where they lie, by three
+            // reversals, each slot moved about twice.
+            work!(slots, len.saturating_mul(2));
+            let by = if left { by } else { len.saturating_sub(by) };
+            let (mid, end) = (low.saturating_add(by), high.saturating_add(1));
+            self.reverse(low, mid);
+            self.reverse(mid, end);
+            self.reverse(low, end);
+            return;
         }
         let (front, back) = self.as_mut_slices();
         let split = front.len();
@@ -265,6 +268,19 @@ impl Order {
             } else {
                 run.rotate_right(by);
             }
+        }
+    }
+    /// Reverses the slots of rows `low` up to `end`, not including it,
+    /// wherever the ring puts them.
+    fn reverse(&mut self, mut low: usize, mut end: usize) {
+        while low < end {
+            end = end.wrapping_sub(1);
+            if let (Some(a), Some(b)) = (self.at(low), self.at(end))
+                && let Ok([a, b]) = self.slots.get_disjoint_mut([a, b])
+            {
+                std::mem::swap(a, b);
+            }
+            low = low.wrapping_add(1);
         }
     }
     /// The top row's slot becomes the bottom row's.
