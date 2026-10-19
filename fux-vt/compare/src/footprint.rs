@@ -314,12 +314,12 @@ fn content(
         Measure::Empty => (Vec::new(), None),
         Measure::Dense => {
             let mut out = Vec::new();
-            bench::dense_screen(&mut rng, &mut out, ROWS, cols);
+            bench::synthetic::dense_screen(&mut rng, &mut out, ROWS, cols);
             (vec![out], None)
         }
         Measure::Medium => {
             let mut out = Vec::new();
-            bench::medium_screen(&mut rng, &mut out, ROWS, cols);
+            bench::synthetic::medium_screen(&mut rng, &mut out, ROWS, cols);
             (vec![out], None)
         }
         Measure::History(name) => {
