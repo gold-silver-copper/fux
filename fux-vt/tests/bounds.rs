@@ -140,14 +140,16 @@ use probe::Scale;
 /// rows off; a row on the list that passes fails, so that it does.
 const KNOWN_FAILING: &str = include_str!("bounds/known-failing.txt");
 
-/// Whether row `row` at `scale` is on the known-failing list.
-fn known_failing(row: &str, scale: Scale) -> bool {
+/// What row `row` at `scale` is known to fail with, if it is on the
+/// known-failing list: the part of its error the line quotes in backticks.
+fn known_failing(row: &str, scale: Scale) -> Option<&'static str> {
     (KNOWN_FAILING.lines())
         .filter(|line| !line.starts_with('#'))
-        .any(|line| {
+        .find(|line| {
             let mut words = line.split_whitespace();
             words.next() == Some(row) && words.next() == Some(scale.name())
         })
+        .map(|line| line.split('`').nth(1).unwrap_or_default())
 }
 
 /// Runs row `row` at `scale` at every chunking: it passes within its
@@ -159,14 +161,41 @@ fn judge(row: &str, scale: Scale) -> Result {
         .map(|(_, probe)| *probe)
         .ok_or(format!("no row {row}"))?;
     match (rows::run(probe, scale), known_failing(row, scale)) {
-        (Ok(()), false) | (Err(_), true) => Ok(()),
-        (Err(found), false) => Err(format!("{row} at {}: {found}", scale.name()).into()),
-        (Ok(()), true) => Err(format!(
+        (Ok(()), None) => Ok(()),
+        // As known at every chunking.
+        (Err(found), Some(known))
+            if !known.is_empty() && found.matches(known).count() >= probe::CHUNKS.len() =>
+        {
+            Ok(())
+        }
+        (Err(found), Some(known)) => Err(format!(
+            "{row} at {} fails otherwise than known (`{known}`): {found}",
+            scale.name()
+        )
+        .into()),
+        (Err(found), None) => Err(format!("{row} at {}: {found}", scale.name()).into()),
+        (Ok(()), Some(_)) => Err(format!(
             "{row} at {} is within its bound now: take it off tests/bounds/known-failing.txt",
             scale.name()
         )
         .into()),
     }
+}
+
+/// A bound naming a counter there is none of fails, rather than passing
+/// for counting nothing (FA-HAR-D11).
+#[test]
+fn a_bound_naming_no_counter_fails() -> Result {
+    let _one = one_at_a_time();
+    let setup = probe::Setup::defaults().sized(2, 2).history(0);
+    let bound = probe::Bound {
+        work: &[("cell", 1, 0, 0)],
+        heap: usize::MAX,
+    };
+    let mut probe = probe::Probe::new(&setup, bound, 1, 1)?;
+    let fed = probe.feed(b"x");
+    assert!(fed.is_err_and(|e| e.contains("no counter is named cell")));
+    Ok(())
 }
 
 /// The list names rows that exist, at scales that exist.
@@ -183,6 +212,12 @@ fn the_known_failing_list_names_rows_and_scales() {
             "{line}"
         );
         assert!(matches!(scale, Some("1x" | "10x" | "100x")), "{line}");
+        assert!(
+            line.split('`')
+                .nth(1)
+                .is_some_and(|known| !known.is_empty()),
+            "{line}"
+        );
     }
 }
 
