@@ -898,12 +898,13 @@ impl Pane {
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
     pub fn read_unread(&mut self) {
-        let now = Instant::now();
+        // As of when it came: the kernel's echo is looked for then.
+        let now = self.unread.1;
         let unread = std::mem::take(&mut self.unread.0);
         let frame_left = std::mem::take(&mut self.frame_left);
         let at = frame_left.min(unread.len());
         let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
-        if let Some((taken, _)) = self.feed(frame, false) {
+        if let Some((taken, _)) = self.feed(frame, false, now) {
             self.frame_left = frame.len().saturating_sub(taken);
             self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec(), now);
             return;
@@ -934,14 +935,14 @@ impl Pane {
                 frame.truncate(end);
                 // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-                if let Some((taken, _)) = self.feed(&frame, false) {
+                if let Some((taken, _)) = self.feed(&frame, false, now) {
                     let left = frame.get(taken..).unwrap_or_default();
                     self.frame_left = left.len();
                     self.wait_unread([left, rest].concat(), now);
                     return;
                 }
             } else {
-                match self.feed(rest, true) {
+                match self.feed(rest, true, now) {
                     None => return,
                     Some((end, fux_vt::Stop::Begun)) => {
                         self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
@@ -965,13 +966,13 @@ impl Pane {
 
     /// Reads the held frame now, ended or not.
     pub fn release_frame(&mut self) {
-        if let Some((held, ..)) = self.frame.take()
-            && let Some((taken, _)) = self.feed(&held, false)
+        if let Some((held, since, _)) = self.frame.take()
+            && let Some((taken, _)) = self.feed(&held, false, since)
         {
             // No output waits while a frame is held: it is the first.
             let left = held.get(taken..).unwrap_or_default().to_vec();
             self.frame_left = left.len();
-            self.wait_unread(left, Instant::now());
+            self.wait_unread(left, since);
         }
     }
 
@@ -981,15 +982,21 @@ impl Pane {
     /// and why (`Stop::Begun` or `Stop::Budget`). They are read a
     /// piece at a time, each ending at a bell or a shell mark, so that
     /// each of those has its place among the pieces; each piece is told
-    /// (`crate::classify`), numbered as the screen took it, and recorded.
-    fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
+    /// (`crate::classify`), as of `came`, when fux read it from the
+    /// program, numbered as the screen took it, and recorded.
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        until_frame: bool,
+        came: Instant,
+    ) -> Option<(usize, fux_vt::Stop)> {
         let now = Instant::now();
         let mut done = 0usize;
         let begun = loop {
             let rest = bytes.get(done..).unwrap_or_default();
             let marked = self.nonce.is_some();
             let piece = rest.get(..cut(rest, marked)).unwrap_or_default();
-            let runs = (self.classes).classify(self.parser.screen(), marked, piece, now);
+            let runs = (self.classes).classify(self.parser.screen(), marked, piece, came);
             let mut start = 0usize;
             let mut begun = None;
             for &(end, origin) in &runs {
@@ -2101,8 +2108,9 @@ mod tests {
     /// The kernel's echo of what was typed, in the piece of output a
     /// parser call's budget stopped in, is told an echo when it is read on
     /// the next turn: the output read so far took none of the echo's bytes
-    /// the parser had yet to read. The input is written a minute ahead, for the echo to be
-    /// looked for however long an unoptimized build takes on a budget.
+    /// the parser had yet to read; and the echo is looked for as of when
+    /// the output came, though read more than the second it is looked for
+    /// after (`classify::ECHO_WITHIN`) later.
     #[test]
     fn an_echo_read_after_a_budget_stop_is_an_echo() -> Result<(), String> {
         let terminal = fuxix::terminal::Size::new(2, 10).ok_or("a size")?;
@@ -2114,11 +2122,8 @@ mod tests {
             line: None,
             ahead: false,
         };
-        let ahead = after(Instant::now(), Duration::from_secs(60));
-        assert!(
-            pane.classes
-                .wrote(input, b"abc", Some(&modes.modes()), ahead)
-        );
+        let now = Instant::now();
+        assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
         // Each ED of the screen is spent as a million cells: 200 of them,
         // 800 bytes, in one piece with the echo, spend a budget.
         let mut out: Vec<u8> = std::iter::repeat_n(b"\x1b[2J", 200)
@@ -2126,8 +2131,9 @@ mod tests {
             .copied()
             .collect();
         out.extend_from_slice(b"\x1b[Habc");
-        pane.output(&out);
+        pane.output_at(&out, now);
         assert!(pane.has_unread(), "the budget stopped no call");
+        std::thread::sleep(Duration::from_millis(1100));
         let mut turns = 0u32;
         while pane.has_unread() && turns < 100 {
             pane.read_unread();
