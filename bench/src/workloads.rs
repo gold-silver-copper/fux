@@ -183,7 +183,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         ),
         (
             "ready/probe",
-            "what a sleeping child is blocked in, 2000 times",
+            "what a sleeping child is blocked in, 2000 times: the user part (instructions:u), most of a probe being the kernel's",
         ),
         (
             "script/compile",
