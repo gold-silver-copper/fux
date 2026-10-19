@@ -595,6 +595,59 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     Ok(())
 }
 
+/// REP's copies of a glyph write what printing it again writes, and a
+/// host that records prints is told of the same cells: over blanks, over
+/// the same glyph, and over wide glyphs either half of which a copy lands
+/// on, wrapping and scrolling.
+#[test]
+fn rep_writes_what_printing_again_writes() -> Result {
+    fn fed(bytes: &[u8]) -> Result<(Parser, Vec<(String, u16)>)> {
+        let mut parser = Parser::new(Size::new(3, 7)?, 1 << 10)?;
+        parser.record_prints(true);
+        parser.process(bytes)?;
+        let mut cells: Vec<_> = (parser.take_prints().iter())
+            .flat_map(|p| {
+                let row = format!("{:?}", p.row);
+                (p.cols.0..p.cols.1).map(move |col| (row.clone(), col))
+            })
+            .collect();
+        cells.sort();
+        cells.dedup();
+        Ok((parser, cells))
+    }
+    for before in [
+        "",
+        "\x1b[H界界界界界界",
+        "\x1b[Ha界b界界界界",
+        "\x1b[Héééé",
+        "\x1b[H\x1b[1m界界",
+    ] {
+        for glyph in ["é", "界"] {
+            for at in ["\x1b[H", "\x1b[1;2H", "\x1b[2;7H"] {
+                for count in [1, 2, 5, 6, 7, 13, 40] {
+                    let start = format!("{before}{before}\x1b[m{at}{glyph}");
+                    let rep = fed(format!("{start}\x1b[{count}b").as_bytes())?;
+                    let again = {
+                        let copies: String = std::iter::repeat_n(glyph, count).collect();
+                        fed(format!("{start}{copies}").as_bytes())?
+                    };
+                    let case = format!("{start:?} REP {count}");
+                    assert_eq!(lines(&rep.0), lines(&again.0), "{case}");
+                    let (a, b) = (rep.0.screen(), again.0.screen());
+                    assert_eq!(a.cursor_position(), b.cursor_position(), "{case}");
+                    assert_eq!(a.pending_wrap(), b.pending_wrap(), "{case}");
+                    assert!(
+                        a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
+                        "{case}: the cells differ"
+                    );
+                    assert_eq!(rep.1, again.1, "{case}: the prints differ");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// DECSTBM (DEC STD 070, 5-25): margins with the top above the bottom
 /// are set and the cursor goes home, obeying DECOM: the first line with
 /// DECOM reset, the top margin with it set (note 1); other margins are
