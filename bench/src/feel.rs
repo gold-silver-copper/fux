@@ -1031,7 +1031,8 @@ pub fn run(options: &Options) -> Result<bool, String> {
     eprintln!("building fux…");
     output(
         Command::new("cargo")
-            .args(["build", "--release", "--quiet", "--bin", "fux"])
+            .args(["build", "--release", "--quiet", "--bin", "fux", "-j"])
+            .arg(crate::default_jobs().to_string())
             .current_dir(&root),
     )?;
     // Where cargo built it: CARGO_TARGET_DIR if set.

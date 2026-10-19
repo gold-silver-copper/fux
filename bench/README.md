@@ -32,7 +32,7 @@ bench/target/release/fux-bench feel          # latency, throughput and footprint
 | --- | --- |
 | (default) `--against REF` | every workload on REF (default `master`) and on the working tree, in instructions |
 | `--repeats N` | rounds (default 15) |
-| `--jobs N` | threads (default: every core) |
+| `--jobs N` | threads, and the jobs of its cargo builds (default: `CARGO_BUILD_JOBS`, else 4) |
 | `--floors FILE` | judge each workload against its floor from a calibration |
 | `--calibrate` | an A/A run of the working tree built twice: each workload's floor, written to the JSON |
 | `--only TEXT` | only workloads whose names contain TEXT; repeatable |
