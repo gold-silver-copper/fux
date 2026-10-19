@@ -129,6 +129,12 @@ command = "fux-vt-compare verdicts --seed SEED (seeds 1 to FUX_DEEP_SEEDS)"
 needs = ["xterm 411", "Xvfb"]
 
 [[check]]
+name = "random-day-*"
+schedule = "deep"
+command = "fux-vt-compare run --seed YYYYMMDD --cases 20000 (the day's seed, printed, to replay what it finds)"
+needs = []
+
+[[check]]
 name = "cases-subject-*"
 schedule = "deep"
 command = "fux-vt-compare cases --subject ENGINE --json cases-subject-ENGINE.json (ghostty, alacritty, libvterm, avt, wezterm, vt100)"
@@ -296,6 +302,12 @@ needs = ["nightly Rust", "cargo-fuzz"]
 name = "fuzz-terminal"
 schedule = "fuzz"
 command = "cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz -- -dict=fux-vt/fuzz/terminal.dict"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-deep"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run deep --fuzz-dir fux-vt/fuzz -- -max_len=65536 -dict=fux-vt/fuzz/terminal.dict -timeout=60"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
