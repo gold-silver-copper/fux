@@ -1488,6 +1488,8 @@ impl Grid {
         let (row, col) = to;
         let end = col.saturating_add(columns.len()).min(self.size.cols());
         for (y, (cells, text)) in (row..self.size.rows()).zip(source) {
+            // To a double-width line's end (DEC STD 070, 5.6.1).
+            let end = end.min(self.row_end(y)).max(col);
             self.mutate_line(y, version, end, |line| {
                 let span = usize::from(col)..usize::from(end);
                 line.clear_for(span.clone());
