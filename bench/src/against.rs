@@ -662,6 +662,31 @@ pub fn run(options: &Options) -> Result<bool, String> {
     let mut paints: Vec<[Option<(u64, u64)>; 2]> = vec![[None, None]; names.len()];
     // perf's own report of every run, kept beside the JSON.
     let mut raw = format!("{counter_setup}\n");
+    // A child that failed fails the run, with what failed written first:
+    // every count is kept for the JSON then, as it is otherwise.
+    let failed: Vec<String> = (tasks.iter().zip(&results))
+        .filter_map(|(task, result)| {
+            let name = names.get(task.workload).map_or("?", String::as_str);
+            let side = SIDES.get(task.side).unwrap_or(&"?");
+            result.as_ref().err().map(|e| format!("{side} {name}: {e}"))
+        })
+        .collect();
+    if let Some(first) = failed.first() {
+        let json = serde_json::json!({
+            "kind": "fux-bench against",
+            "ref": options.reference,
+            "ref_commit": reference,
+            "working_tree_commit": head,
+            "counter": counter.name(),
+            "failed": failed,
+        });
+        crate::save_json(&options.json, &json)?;
+        return Err(format!(
+            "{} runs failed, the first: {first} (all in {})",
+            failed.len(),
+            options.json.display()
+        ));
+    }
     for (i, (task, result)) in tasks.iter().zip(&results).enumerate() {
         let run = result.as_ref().map_err(Clone::clone)?;
         let report = run
@@ -863,7 +888,17 @@ pub fn run(options: &Options) -> Result<bool, String> {
     if !named(Verdict::Broken).is_empty() {
         return Err("the tool cannot judge every workload: see broken above".into());
     }
-    Ok(named(Verdict::Slower).is_empty() && !broad_loss)
+    Ok(passes(&judged, broad_loss))
+}
+
+/// Whether a run passes the gate: no workload slower past its floor, none
+/// too noisy to judge (inconclusive is said, never passed), and no broad
+/// loss by program.
+fn passes(judged: &[(String, Verdict)], broad_loss: bool) -> bool {
+    !broad_loss
+        && !judged
+            .iter()
+            .any(|(_, v)| matches!(v, Verdict::Slower | Verdict::Noisy))
 }
 
 /// The programs a file's SHA-256 is asked of, in turn (some systems have
@@ -904,8 +939,20 @@ fn hash_by(path: &Path, programs: &[(&str, &[&str])]) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        FLOOR_MIN, Unfit, Verdict, floor_of, floors_of, hash_by, paired, signs, tail, verdict,
+        FLOOR_MIN, Unfit, Verdict, floor_of, floors_of, hash_by, paired, passes, signs, tail,
+        verdict,
     };
+
+    /// A workload too noisy to judge fails the gate, as a slower one does:
+    /// inconclusive is said, never passed (HAR-15).
+    #[test]
+    fn a_noisy_workload_fails_the_gate() {
+        let run = |v: Verdict| vec![("w".to_owned(), Verdict::Faster), ("x".to_owned(), v)];
+        assert!(passes(&run(Verdict::Inconclusive), false));
+        assert!(!passes(&run(Verdict::Noisy), false));
+        assert!(!passes(&run(Verdict::Slower), false));
+        assert!(!passes(&run(Verdict::Inconclusive), true));
+    }
 
     /// A floors file is used only for the counter and the machine it was
     /// calibrated with: a calibration by another counter, or on CPUs or

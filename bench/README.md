@@ -44,9 +44,10 @@ bench/target/release/fux-bench feel          # latency, throughput and footprint
 | `--payloads DIR` | for `run` and `time`: the census's speed payloads other than `bench/payloads/` |
 | `feel --muxes LIST --parts LIST --keys N` | see [`feel`](#feel-what-a-person-at-the-terminal-feels) |
 
-Exit status: 1 if `--against` finds a workload slower past its floor, or a
-broad loss by program; 2 on an error, a workload the tool cannot judge
-(broken) among them.
+Exit status: 1 if `--against` finds a workload slower past its floor or
+too noisy to judge, or a broad loss by program; 2 on an error, a workload
+the tool cannot judge (broken) or a run that failed among them (the JSON
+names the runs that failed).
 
 ## The workloads
 
