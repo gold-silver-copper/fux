@@ -1541,8 +1541,15 @@ impl Grid {
             self.mutate_line(y, version, end, |line| {
                 let span = usize::from(col)..usize::from(end);
                 line.clear_for(span.clone());
+                // A cell whose text is inline, or that has none, is copied
+                // as it is stored, as `copy_span` copies it; a cluster's
+                // text goes into the row's.
                 for (at, cell) in span.zip(&cells) {
-                    line.set(at, *cell, text.of(cell));
+                    if cell.is_spilled() {
+                        line.set(at, *cell, text.of(cell));
+                    } else if let Some(slot) = line.cells.get_mut(at) {
+                        *slot = *cell;
+                    }
                 }
                 repair_wide(line.cells);
                 true
