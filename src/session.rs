@@ -1793,9 +1793,10 @@ impl Session {
         let status = process::shell_status(ended);
         let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
         let program = program.map(|p| p.exiting.is_none());
-        // Once, at the first word of the exit: its terminal drained (what
-        // a program left writing there is not waited for), a frame it held
-        // read, and the status kept till the last of it is read.
+        // Once, at the first word of the exit, its terminal drained (what
+        // a program left writing there is not waited for), and the status
+        // kept till the last of it is read; at each, a frame it holds read,
+        // one begun in output read since too.
         if program == Some(true) {
             let left = (self.panes.get(&id))
                 .map(|p| unread(&p.process))
@@ -1803,6 +1804,8 @@ impl Session {
             if !left.is_empty() {
                 self.output(id, &left);
             }
+        }
+        if program.is_some() {
             self.read_with(id, Pane::release_frame);
         }
         let Some(pane) = self.panes.get_mut(&id) else {
@@ -4067,6 +4070,45 @@ mod tests {
             .map(|r| r.cells_text())
             .collect::<String>();
         assert!(text.contains("HELD"), "{text:?}");
+        Ok(())
+    }
+
+    /// A frame begun in output read after the exit, past a read budget, is
+    /// read too before the exit is told.
+    #[test]
+    fn a_frame_begun_after_the_exit_is_on_the_last_screen() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
+            .flatten()
+            .copied()
+            .collect();
+        out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?2026hHELD");
+        s.output(id, &out);
+        s.exited(id, Ended::Exited(0));
+        let mut turns = 0u32;
+        while s
+            .panes
+            .get(&id)
+            .is_some_and(|p| p.process.exit_status().is_none())
+            && turns < 100
+        {
+            s.fire(crate::session::Timer::Unread(id));
+            turns = turns.saturating_add(1);
+        }
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert_eq!(pane.process.exit_status(), Some(Ended::Exited(0)));
+        let text = pane
+            .screen()
+            .rows()
+            .map(|r| r.cells_text())
+            .collect::<String>();
+        assert!(
+            text.contains("HELD"),
+            "no HELD in {} characters",
+            text.len()
+        );
         Ok(())
     }
 
