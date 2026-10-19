@@ -1721,11 +1721,14 @@ impl Screen {
                 // after the mark, as UAX #29 segments the cell's text; but
                 // after a Prepend character of no width, which joins no
                 // cluster here (README), afresh, as at a cell of its own.
-                if joined && properties.is_prepend() {
+                // Dropped, as its cell is full, it is still where the text
+                // is segmented from: after a control, say, a new cluster
+                // begins, which the full cell takes none of.
+                if properties.is_prepend() {
                     self.break_cluster();
-                } else if joined && self.last_print.is_some() {
+                } else if self.last_print.is_some() {
                     self.last_print = Some(Printed {
-                        kept: Kept::Unknown,
+                        kept: if joined { Kept::Unknown } else { Kept::Full },
                         ..Printed::of((row, col), properties)
                     });
                 }
