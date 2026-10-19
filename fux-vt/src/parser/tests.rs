@@ -517,11 +517,6 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
             }
             let shown = input.escape_ascii().to_string();
             assert_eq!(a.0, b.0, "case {case}: {shown}");
-            // What each recorded is let go before the states are compared:
-            // an ASCII run drawn over glyphs already there records them too,
-            // where the general path records only those that changed cells
-            // (FA-TXT-2, decision 825). Recording changes nothing else.
-            let (_, _) = (fast.take_prints(), slow.take_prints());
             let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
             assert_eq!(difference, None, "case {case}: {shown}");
         }

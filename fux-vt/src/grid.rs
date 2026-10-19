@@ -820,6 +820,79 @@ impl Grid {
             m.used = m.used.max(end);
         }
     }
+    /// `write_ascii` while the host records prints into `prints`: as
+    /// `print` records them one at a time, each stretch of the run's glyphs
+    /// that changes cells, not those there already. Each cell is read
+    /// once, and written as `write_ascii` writes it. Out of line, so that
+    /// `ascii` without recording compiles as it would without it.
+    #[inline(never)]
+    pub(crate) fn write_ascii_recorded(
+        &mut self,
+        (row, col): (u16, u16),
+        run: &[u8],
+        style: u32,
+        version: u64,
+        prints: &mut crate::Prints,
+    ) -> Written {
+        let Some(slot) = self.slot(row) else {
+            return Written::Before(0);
+        };
+        work!(cells, run.len());
+        let start = usize::from(col);
+        let (used, id) = self
+            .meta
+            .get(slot)
+            .map_or((0, RowId(0)), |m| (usize::from(m.used), m.id));
+        let Some(dst) = start
+            .checked_add(run.len())
+            .and_then(|end| self.slice_mut(slot).get_mut(start..end))
+        else {
+            return Written::Before(0);
+        };
+        let halves = if run.len() < LONG_RUN {
+            dst.iter().any(|c| c.is_wide() || c.is_wide_continuation())
+        } else {
+            Compact::any_halves(dst)
+        };
+        if halves {
+            return Written::Before(first_half(dst));
+        }
+        // Past where the row was written its cells are blank, which no
+        // glyph is.
+        let written = used.saturating_sub(start).min(run.len());
+        let there = |i: usize, cells: &[Compact]| {
+            i < written
+                && (cells.get(i).zip(run.get(i))).is_some_and(|(c, b)| c.is_ascii(*b, style))
+        };
+        let at = |i: usize| col.saturating_add(u16::try_from(i).unwrap_or(u16::MAX));
+        let (mut i, mut end) = (0, 0);
+        while i < run.len() {
+            if there(i, dst) {
+                i = i.saturating_add(1);
+                continue;
+            }
+            let first = i;
+            // Past the written end every glyph changes its cell.
+            i = match i < written {
+                true => (i..written).find(|&k| there(k, dst)).unwrap_or(run.len()),
+                false => run.len(),
+            };
+            if let (Some(cells), Some(bytes)) = (dst.get_mut(first..i), run.get(first..i)) {
+                Compact::fill_ascii(cells, bytes, style);
+                prints.push(
+                    id,
+                    at(first)..at(i),
+                    str::from_utf8(bytes).unwrap_or_default(),
+                );
+            }
+            end = i;
+        }
+        if end == 0 {
+            return Written::Same;
+        }
+        self.changed(slot, start.saturating_add(end), version);
+        Written::All
+    }
     /// Writes the ASCII `run` from column `col` of live row `row`, in style
     /// `style`, as `mutate_row` writes, taking `version` only if a cell
     /// changed; unless a cell there is half of a wide glyph, which the
