@@ -545,17 +545,28 @@ impl Engine for XtermJs {
     /// answer means all are done.
     fn feed(&mut self, bytes: &[u8], chunk: usize) -> Result<(), String> {
         with_node(|node| {
-            let mut rest = bytes;
-            while !rest.is_empty() {
-                let (now, later) = rest
-                    .split_at_checked(chunk.max(1).min(rest.len()))
-                    .unwrap_or((rest, &[]));
-                self.write(node, now, later.is_empty())?;
-                rest = later;
+            for (now, ack) in writes(bytes, chunk) {
+                self.write(node, now, ack)?;
             }
             Ok(())
         })
     }
+}
+
+/// [`XtermJs::feed`]'s writes of `bytes`: `chunk` bytes each, and whether
+/// it is answered (the last alone).
+fn writes(bytes: &[u8], chunk: usize) -> impl Iterator<Item = (&[u8], bool)> {
+    let mut rest = bytes;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (now, later) = rest
+            .split_at_checked(chunk.max(1).min(rest.len()))
+            .unwrap_or((rest, &[]));
+        rest = later;
+        Some((now, later.is_empty()))
+    })
 }
 
 #[cfg(test)]
@@ -589,5 +600,16 @@ mod tests {
         }
         assert!(exited, "node was not stopped");
         Ok(())
+    }
+
+    /// xterm.js is fed in the chunk every engine is fed, not a MiB a
+    /// write: 10 KiB at 4096 is three writes, the last alone answered.
+    #[test]
+    fn xterm_js_is_fed_in_the_chunk_every_engine_is_fed() {
+        let bytes = vec![b'x'; 10 << 10];
+        let got: Vec<(usize, bool)> = super::writes(&bytes, 4096)
+            .map(|(w, ack)| (w.len(), ack))
+            .collect();
+        assert_eq!(got, [(4096, false), (4096, false), (2048, true)]);
     }
 }
