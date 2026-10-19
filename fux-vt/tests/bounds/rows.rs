@@ -436,6 +436,65 @@ pub fn b09(scale: Scale, chunk: usize) -> Found {
             return Err("no picture shown".into());
         }
     }
+    probe.finish()?;
+    // Tall pictures (FA-SIX-3), 4,096 pixels high, at a cell of 10 by 20
+    // and of 2 by 6: each placement covers 205 or 683 rows, read when the
+    // pictures are listed. Per call, the rows each placement covers, and
+    // the term above for a screen of 700 rows.
+    for cell in [(10, 20), (2, 6)] {
+        tall_pictures(scale, cell, chunk)?;
+    }
+    Ok(())
+}
+
+/// B09 with 64 pictures 4,096 pixels high at host cells of `cell`.
+fn tall_pictures(scale: Scale, cell: (u16, u16), chunk: usize) -> Found {
+    // A screen tall enough for each picture whole, 683 rows at 2 by 6.
+    let setup = Setup::defaults().sized(700, 200);
+    let bound = heap(steady(&setup).saturating_add(PICTURE_BYTES));
+    // Side by side, a column each, from the screen's top: none scrolls.
+    let mut pictures = Vec::new();
+    for col in 1..=64 {
+        pictures.extend(b(&format!("\x1b[1;{col}H\x1bPq\"1;1;1;4096\x1b\\")));
+    }
+    let history = empty_history();
+    let mut probe = Probe::new(&setup, bound, chunk.max(4096), 1)?;
+    probe.parser.set_host_graphics(Graphics {
+        cell: Some(cell),
+        sixel: true,
+    });
+    probe.feed(&history)?;
+    probe.feed(&pictures)?;
+    let placed: u64 = (probe.parser.screen().pictures())
+        .map(|shown| u64::from(shown.rows))
+        .sum();
+    let tall = u64::from(4096u16.div_ceil(cell.1));
+    if placed < 64 * tall {
+        return Err(format!("pictures cover {placed} rows, 64 of them tall"));
+    }
+    let history = u64::try_from(probe.parser.screen().history_len()).unwrap_or(u64::MAX);
+    let log = u64::from(history.saturating_add(1).ilog2().saturating_add(1));
+    let screen = u64::from(setup.rows);
+    let per_call = placed.saturating_add(
+        128u64
+            .saturating_mul(log.saturating_add(screen))
+            .saturating_add(64),
+    );
+    let rows: &'static [(&'static str, u64, u64, u64)] =
+        Box::leak(Box::new([("rows", 0, per_call, 0)]));
+    probe.restart(
+        Bound {
+            work: rows,
+            ..bound
+        },
+        1,
+    );
+    for _ in 0..scale.times() {
+        let shown = probe.host(0, |p| p.screen().pictures().count())?;
+        if shown == 0 {
+            return Err("no picture shown".into());
+        }
+    }
     probe.finish()
 }
 
