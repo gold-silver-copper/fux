@@ -12,7 +12,7 @@ use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::log::Unit;
-use crate::pane::{self, InputQueue, Pane, Process, Runs, Sent, Typed, basename};
+use crate::pane::{self, InputQueue, Pane, Piece, Process, Runs, Sent, Typed, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{ClientKind, Mode, View};
@@ -2409,7 +2409,7 @@ impl Session {
                 }
                 p.note_input();
                 p.sent = vec![Sent::Named(report.len(), "a mouse event".into())];
-                p.send(vec![(report, Unit::Submit)], Instant::now())?;
+                p.send(vec![Piece::new(report, Unit::Submit)], Instant::now())?;
                 p.mouse_held = held;
                 Ok(Reply::default())
             }
@@ -3514,6 +3514,9 @@ pub(crate) mod testing {
                             .map(|c| Input::Key(crate::keys::KeyPress::char(c).into()))
                             .collect(),
                         crate::command::Input::Paste(text) => vec![Input::Paste(text)],
+                        crate::command::Input::Bytes(_) | crate::command::Input::Pause(_) => {
+                            Vec::new()
+                        }
                     });
                     session.inputs(client, typed.collect());
                 }
@@ -3700,20 +3703,23 @@ pub(crate) mod testing {
 
 /// `inputs` as pane `p`'s program takes them, a piece at a time
 /// (`Unit`): text typed in a row is one piece, keys that
-/// edit the line in a row another, and each other key, a lone Escape
-/// and a paste each their own. So in `%2 str msg text str Enter key` the Enter is
-/// read alone, as a submit, not as a newline pasted with the text, and
-/// what follows each piece is told apart (`crate::classify`). With them,
-/// each input as an answer names it, should its program not read it.
-fn units(p: &Pane, inputs: &[Input]) -> (Vec<(Vec<u8>, Unit)>, Vec<Sent>) {
+/// edit the line in a row another, and each other key, a lone Escape,
+/// a paste and bytes given as they are each their own. So in `%2 str msg
+/// text str Enter key` the Enter is read alone, as a submit, not as a
+/// newline pasted with the text, and what follows each piece is told
+/// apart (`crate::classify`). A pause times the piece after it. With
+/// them, each input as an answer names it, should its program not read it.
+fn units(p: &Pane, inputs: &[Input]) -> (Vec<Piece>, Vec<Sent>) {
     let (mode, bracketed) = (
         p.screen().key_mode(),
         p.screen().mode(fux_vt::Mode::BracketedPaste),
     );
-    let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
+    let mut units: Vec<Piece> = Vec::new();
     let mut sent = Vec::new();
     // Whether the last piece takes more, an edit: text, or keys.
     let mut last: Option<bool> = None;
+    // The pause the next piece is written after.
+    let mut gap = None;
     for input in inputs {
         let mut bytes = Vec::new();
         let unit = match input {
@@ -3729,15 +3735,17 @@ fn units(p: &Pane, inputs: &[Input]) -> (Vec<(Vec<u8>, Unit)>, Vec<Sent>) {
                 while let Some(at) = rest.find(['\r', '\n']) {
                     let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
                     if !part.is_empty() {
-                        push_piece(&mut units, &mut last, part.as_bytes(), true);
+                        push_piece(&mut units, &mut last, part.as_bytes(), true, gap.take());
                     }
                     let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
-                    units.push((end.as_bytes().to_vec(), Unit::Submit));
+                    let mut piece = Piece::new(end.as_bytes().to_vec(), Unit::Submit);
+                    piece.gap = gap.take();
+                    units.push(piece);
                     last = None;
                     rest = after;
                 }
                 if !rest.is_empty() {
-                    push_piece(&mut units, &mut last, rest.as_bytes(), true);
+                    push_piece(&mut units, &mut last, rest.as_bytes(), true, gap.take());
                 }
                 continue;
             }
@@ -3750,29 +3758,67 @@ fn units(p: &Pane, inputs: &[Input]) -> (Vec<(Vec<u8>, Unit)>, Vec<Sent>) {
                     true => Unit::Edit,
                     false => Unit::Submit,
                 };
-                units.push((bytes, unit));
+                let mut piece = Piece::new(bytes, unit);
+                piece.gap = gap.take();
+                units.push(piece);
+                last = None;
+                continue;
+            }
+            // A piece of its own, never joined to another: what is around
+            // a pause stays apart. Printable bytes (a character's, or part
+            // of one) edit a line; a control or Escape is a key's.
+            Input::Bytes(given) => {
+                sent.push(Sent::Named(given.len(), format!("bytes {}", hex(given))));
+                let edit = given.iter().all(|b| *b >= 0x20 && *b != 0x7f);
+                let unit = if edit { Unit::Edit } else { Unit::Submit };
+                let mut piece = Piece::new(given.clone(), unit);
+                piece.gap = gap.take();
+                units.push(piece);
+                last = None;
+                continue;
+            }
+            Input::Pause(pause) => {
+                gap = Some(*pause);
                 last = None;
                 continue;
             }
         };
         if unit == Unit::Edit && bytes != b"\x1b" {
-            push_piece(&mut units, &mut last, &bytes, false);
+            push_piece(&mut units, &mut last, &bytes, false, gap.take());
         } else {
-            units.push((bytes, unit));
+            let mut piece = Piece::new(bytes, unit);
+            piece.gap = gap.take();
+            units.push(piece);
             last = None;
         }
     }
     (units, sent)
 }
 
+/// `bytes` in hex, as `bytes` takes them.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Adds `bytes`, an edit that is `text` typed or else keys, to the last
-/// piece if that is an edit of the same kind, else as a piece of its own.
-fn push_piece(units: &mut Vec<(Vec<u8>, Unit)>, last: &mut Option<bool>, bytes: &[u8], text: bool) {
+/// piece if that is an edit of the same kind and no pause comes between,
+/// else as a piece of its own, after `gap`.
+fn push_piece(
+    units: &mut Vec<Piece>,
+    last: &mut Option<bool>,
+    bytes: &[u8],
+    text: bool,
+    gap: Option<Duration>,
+) {
     match units.last_mut() {
-        Some((piece, Unit::Edit)) if *last == Some(text) => {
-            piece.extend_from_slice(bytes);
+        Some(piece) if piece.unit == Unit::Edit && *last == Some(text) && gap.is_none() => {
+            piece.bytes.extend_from_slice(bytes);
         }
-        _ => units.push((bytes.to_vec(), Unit::Edit)),
+        _ => {
+            let mut piece = Piece::new(bytes.to_vec(), Unit::Edit);
+            piece.gap = gap;
+            units.push(piece);
+        }
     }
     *last = Some(text);
 }
@@ -4021,7 +4067,7 @@ mod tests {
         assert_eq!(
             quiet(output(&mut s, "str %2 pane capture json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[0,16],"lines":["a       b \"q\" 界"],"wrap_pending":false,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\" 界"],"wrap_pending":false,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
                 "\n"
             )
         );
@@ -4356,12 +4402,12 @@ mod tests {
         Ok(())
     }
 
-    /// A capture's cursor is where it is among the lines printed, past
-    /// them on a blank row trimmed away: none while hidden, outside the
-    /// columns taken, or on the screen not captured; past the columns cut
-    /// and the rows joined, unless `wrapped`.
+    /// A capture's cursor is the screen's row and column, as answers and
+    /// a mouse event count them, whatever its lines join or take: on a
+    /// blank row trimmed away too; none while hidden, or on the screen not
+    /// captured.
     #[test]
-    fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_captures_cursor_is_the_screens() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
             let json = output(s, &format!("%1 {read} capture json"))?;
@@ -4374,8 +4420,8 @@ mod tests {
         };
         s.output(PaneId::of(1), b"0123456789\x1b[1;6H");
         assert_eq!(cursor(&mut s, "")?, "[0,5]");
-        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,3]");
-        assert_eq!(cursor(&mut s, "0 2 cols")?, "null");
+        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,5]");
+        assert_eq!(cursor(&mut s, "0 2 cols")?, "[0,5]");
         s.output(PaneId::of(1), b"\x1b[?25l");
         assert_eq!(cursor(&mut s, "")?, "null", "hidden");
         s.output(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
@@ -4384,14 +4430,14 @@ mod tests {
             PaneId::of(1),
             &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
         );
-        assert_eq!(cursor(&mut s, "")?, "[1,2]");
+        assert_eq!(cursor(&mut s, "")?, "[2,2]");
         assert_eq!(cursor(&mut s, "wrapped")?, "[2,2]");
         s.output(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
         assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
         assert_eq!(cursor(&mut s, "main-screen")?, "null");
         s.output(PaneId::of(1), b"\x1b[?1049l");
         assert_eq!(cursor(&mut s, "alt-screen")?, "null");
-        assert_eq!(cursor(&mut s, "main-screen")?, "[1,2]");
+        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
         s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
         let json = output(&mut s, "%1 marks capture json")?;

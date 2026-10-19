@@ -84,13 +84,25 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
   once koh closes its link. A line a shell in front reads again where
   nothing marks commands (a plain `sh`, `koh connect SERVER -- sh`) says
   `· no status: nothing here marks its commands`: no `done` comes (not
-  said of a REPL's line, or a calculator's). A failure prints `fux: CODE: MESSAGE` on stderr,
+  said of a REPL's line, or a calculator's). A remote client that reports
+  nothing (plain `ssh`, `mosh`, `telnet`) reads its terminal whatever runs
+  on the other machine, so fux cannot tell whether that waits or works: it
+  is `waiting` once quiet a second, never `reading` (nor status 7), and the
+  answer says so with the wait that fits: `· ssh runs its command on another
+  machine, …: `%3 wait-exit wait` waits for its end` (a command on a pipe,
+  which ssh ends with: `fux opts str 'ssh -n HOST make' command run`, then
+  `%3 wait-exit wait`), or, for a terminal there, `str TEXT wait-text`.
+  Keys that end in an Escape alone (or a sequence begun) settle once the
+  program drew after them, or 750ms on: programs wait that long at most to
+  tell a lone Escape from a key's sequence. A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
   status is the exit status, while its answer is left (`drop` it, and it
   is 0): 3 the program exited first, 4 the pane closed, 5 the shell
   command a `wait-done` lasted for ended first,
   7 the program reads its terminal and the waited text has not come, 124
-  still busy at the time limit (`SECS timeout` on the pane,
+  still busy at the time limit, which is no failure of the program (the
+  answer says `· still at work at the 30s limit, not failed: `%3 wait` waits
+  on`; `SECS timeout` on the pane,
   `%3 0 timeout str ls line`; the `wait-seconds`
   setting, 30, by default; `0 timeout` answers at once). A wait met by its program's exit
   (`wait-exit`) exits 0: the program's own status is in the answer
@@ -290,7 +302,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
 | `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
-| `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
+| `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `MS pause` between two inputs writes the next MS milliseconds after the one before, whatever the program did (`str c3 bytes 50 pause str a9 bytes`); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
 | `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
 | `ls`, `X info`, `X str FIELD get` | everything; one pane, tab or workspace; one field of its JSON, as a number, boolean or text |

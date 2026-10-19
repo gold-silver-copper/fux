@@ -452,6 +452,8 @@ impl Run {
                         fux::command::Input::Paste(text) => {
                             self.inputs(client, vec![Input::Paste(text)]);
                         }
+                        // A pane's alone: send-keys refuses them for a client.
+                        fux::command::Input::Bytes(_) | fux::command::Input::Pause(_) => {}
                     }
                 }
             }

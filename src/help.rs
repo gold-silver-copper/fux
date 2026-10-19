@@ -63,7 +63,7 @@ no pane yet, start from opts. Only run takes a program (command): new-tab and
 new-workspace start a shell, and str 'CMD' typed types a line into it.
 
   fux opts OPTIONS run                  start a program; answers once it settles: %2 reading, then its output
-  fux %2 INPUT send-keys                type: str T text, str Enter key, …; answers as run does
+  fux %2 INPUT send-keys                type: str T text, str Enter key, str 1b bytes, 50 pause, …; answers as run does
   fux %3 str 'make test' line           a shell command: answers `%3 reading · done 0` and its output
   fux %2 [WAIT] wait                    settle, or wait for str T wait-text, wait-exit, …
   fux %2 [READ] capture                 read once settled: 100 history, marks, …; then json
@@ -229,7 +229,11 @@ pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
         false,
     ),
     ("wait", "", true),
-    ("send-keys", "text key paste paste-file times", true),
+    (
+        "send-keys",
+        "text key paste paste-file bytes pause times",
+        true,
+    ),
     ("send-mouse", "mouse", true),
     ("signal", "", true),
 ];
@@ -260,6 +264,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "wait-done" => "fux %3 str 'build ok' wait-text wait-done wait",
         "timeout" => "fux %3 0 timeout str 'make' line",
         "times" => "fux %3 str Down key 2 times str Enter key send-keys",
+        "bytes" | "pause" => "fux %3 str c3 bytes 50 pause str a9 bytes send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 str C-c key send-keys",

@@ -260,6 +260,7 @@ impl Waiting {
     fn look(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let (wait, texts, limit) = (&self.wait, self.texts.as_slice(), self.limit);
         let (window, mode) = ((self.began, now), self.follows.mode());
+        let capture = matches!(self.follows, Follows::Capture(..));
         let late = now >= self.deadline;
         for (id, look) in &mut self.watches {
             let watch = match look {
@@ -271,10 +272,10 @@ impl Waiting {
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
+                *look = Look::Told(wait.told(pane, told, limit, watch, (mode.2, capture)));
             } else if late && !watch.lasts(pane, wait) {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
+                *look = Look::Told(wait.told(pane, told, limit, watch, (mode.2, capture)));
             }
         }
         let answers: Vec<&Reply> = (self.watches.iter())
@@ -337,8 +338,15 @@ impl Wait {
     }
 
     /// The outcome of a wait that ended so in `pane`, after an action if
-    /// `action`.
-    fn told(&self, pane: &Pane, told: Told, limit: Duration, watch: &Watch, action: bool) -> Reply {
+    /// `action`, for a capture if `capture`.
+    fn told(
+        &self,
+        pane: &Pane,
+        told: Told,
+        limit: Duration,
+        watch: &Watch,
+        (action, capture): (bool, bool),
+    ) -> Reply {
         let (id, now) = (pane.id, Instant::now());
         let state = || watch.state(pane, now);
         let came = || since_text(pane, watch, self.marks);
@@ -488,20 +496,42 @@ impl Wait {
             }
         };
         let mut notes = self.notes(pane, state, watch, action);
+        let found = met.is_some();
         // What met it, or with nothing met, what waits on while it is busy.
         match met {
             Some(met) => notes.push(met),
             // A marked shell command: as long as it runs (a `line` at its
             // limit, a build quiet for minutes).
-            None if state == State::Busy && pane.command_running() => {
-                let note = format!("`{id} wait-done wait` waits for its command to end");
-                notes.push((note, Vec::new()));
-            }
+            // At the limit it is still at work, which is no failure: the
+            // status (124) says only that the time ran out.
             None if state == State::Busy => {
-                notes.push((format!("`{id} wait` waits for it to settle"), Vec::new()));
+                let (word, what) = match pane.command_running() {
+                    true => ("wait-done wait", "waits for its command to end"),
+                    false => ("wait", "waits for it to settle"),
+                };
+                let at = match limit.is_zero() {
+                    true => String::new(),
+                    false => format!(
+                        "still at work at the {}s limit, not failed: ",
+                        limit.as_secs()
+                    ),
+                };
+                notes.push((format!("{at}`{id} {word}` {what}"), Vec::new()));
             }
             None => {}
         }
+        // An exit an earlier answer told is said once: a later one says so,
+        // not what the program printed again.
+        let told_before =
+            matches!(state, State::Exited(_)) && pane.exit_told.replace(true) && !capture && !found;
+        let body = match told_before {
+            true => {
+                let note = format!("told before: `{id} capture` reads its last screen");
+                notes.push((note, vec![("told_before", Json::Bool(true))]));
+                Note::default()
+            }
+            false => body,
+        };
         said(id, state.word(), notes, body, end)
     }
 }
@@ -568,7 +598,39 @@ impl Wait {
         let waiting = matches!(state, State::Waiting | State::Redrawing);
         let screen = pane.screen();
         let keys = [fux_vt::Mode::AlternateScreen, fux_vt::Mode::BracketedPaste];
-        if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
+        // A remote client that reports nothing of what it runs: fux sees
+        // the client, not that, and says so, with the wait that is right.
+        let remote = (!matches!(state, State::Exited(_) | State::Absent))
+            .then(|| pane.remote())
+            .flatten();
+        if let Some(remote) = &remote {
+            let (id, name) = (pane.id, &remote.name);
+            let (said, word) = match remote.terminal {
+                true => (
+                    format!(
+                        "{name} shows another machine's terminal, so fux cannot tell whether \
+                         what runs there waits or works: `{id} str TEXT wait-text wait` waits \
+                         for a text it shows"
+                    ),
+                    "wait-text",
+                ),
+                // Ended with its command: the client's end, or the shell
+                // command's that runs it.
+                false => {
+                    let word = if running { "wait-done" } else { "wait-exit" };
+                    let said = format!(
+                        "{name} runs its command on another machine, so fux cannot tell whether \
+                         it waits or works: `{id} {word} wait` waits for its end"
+                    );
+                    (said, word)
+                }
+            };
+            let fields = vec![
+                ("remote", Json::str(name.clone())),
+                ("wait_with", Json::str(word)),
+            ];
+            notes.push((said, fields));
+        } else if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
             let word = if running { "wait-done" } else { "wait-exit" };
             let id = pane.id;
             let why = if crate::ready::owed(pane) {
@@ -701,7 +763,43 @@ fn cursor(pane: &Pane) -> Option<Note> {
     let shows = pane.process.child().is_some() && screen.mode(fux_vt::Mode::ShowCursor);
     let (row, col) = screen.cursor_position();
     let at = Json::Array(vec![Json::int(row), Json::int(col)]);
-    shows.then(|| (format!("cursor {row},{col}"), vec![("cursor", at)]))
+    let mut note = (format!("cursor {row},{col}"), vec![("cursor", at)]);
+    // On a line wrapped at the pane's width, which answers print joined:
+    // the screen rows it takes, as the cursor counts them.
+    if let Some((from, rows)) = wrapped_rows(screen, row) {
+        let to = from.saturating_add(u16::try_from(rows.len().saturating_sub(1)).unwrap_or(0));
+        let said: Vec<String> = rows.iter().map(|r| format!("{r:?}")).collect();
+        note.0
+            .push_str(&format!(" on rows {from}-{to} {}", said.join(" ")));
+        let texts = Json::Array(rows.into_iter().map(Json::str).collect());
+        let fields = vec![("from", Json::int(from)), ("text", texts)];
+        note.1.push(("cursor_rows", Json::Object(fields)));
+    }
+    shows.then_some(note)
+}
+
+/// The rows of the screen that the line holding `row` takes, if it is
+/// wrapped at the pane's width (four at most, around `row`): the first,
+/// and each row's text.
+fn wrapped_rows(screen: &fux_vt::Screen, row: u16) -> Option<(u16, Vec<String>)> {
+    let window = screen.window();
+    let wraps = |y: u16| window.row(y).is_some_and(|r| r.wrapped());
+    let mut from = row;
+    while from > 0 && row.saturating_sub(from) < 3 && wraps(from.saturating_sub(1)) {
+        from = from.saturating_sub(1);
+    }
+    let mut to = row;
+    while wraps(to) && to.saturating_sub(from) < 3 && to.saturating_add(1) < window.rows() {
+        to = to.saturating_add(1);
+    }
+    let text = |y: u16| {
+        let row = window.row(y)?;
+        let cells: String = (row.cells().filter(|c| !c.is_wide_continuation()))
+            .map(|c| c.shown())
+            .collect();
+        Some(cells.trim_end().to_owned())
+    };
+    (from < to).then(|| (from, (from..=to).filter_map(text).collect()))
 }
 
 /// Whether the screen shows text left of the cursor on its row: at the
