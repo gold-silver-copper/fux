@@ -54,7 +54,7 @@ calls      the inputs fux-vt's bounds suite kept in DIR of its probes whose
            calls took long with its counters on, timed again without
            them: each one's longest call, best of 3 (worst-feed.sh).
 info       MB/s beside Ghostty and alacritty (fux-vt/compare's `run.sh
-           bench`) and fux-diff's --speed: informational, not compared.
+           bench`): informational, not compared.
 feel       real servers on sockets of their own, each with a client on a
            PTY: keystroke latency idle and beside a flooding pane, throughput
            to the final screen and the bytes sent, idle CPU and memory.
