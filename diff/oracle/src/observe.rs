@@ -145,7 +145,8 @@ pub fn compare<A: Side, B: Side>(
             });
         }
     }
-    let (sa, sb) = (a.state(), b.state());
+    let (mut sa, mut sb) = (a.state(), b.state());
+    common_modes(&mut sa.modes, &mut sb.modes);
     same(step, "the screen's state", &sa, &sb)?;
     rows(step, a, b, readers, count)?;
     same_list(step, "the marks", &a.marks(), &b.marks())?;
@@ -344,4 +345,43 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
     }
     out.push(poke(&mut copy, "the other screen", b"\x1b[?1049h\x1b[?u"));
     out
+}
+
+/// Keeps of each side's modes those the other names too, by name, in one
+/// order: a mode one side's `Mode` has and the other's lacks is no
+/// difference between them, as `Mode::ALL` grows.
+fn common_modes(a: &mut Vec<(String, bool)>, b: &mut Vec<(String, bool)>) {
+    let names = |modes: &Vec<(String, bool)>| -> std::collections::BTreeSet<String> {
+        modes.iter().map(|(name, _)| name.clone()).collect()
+    };
+    let (in_a, in_b) = (names(a), names(b));
+    a.retain(|(name, _)| in_b.contains(name));
+    b.retain(|(name, _)| in_a.contains(name));
+    a.sort();
+    b.sort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::common_modes;
+
+    /// A mode only one side has, or the two sides' orders, make no
+    /// difference; a mode both have, set on one side alone, does
+    /// (FA-RE-B-11).
+    #[test]
+    fn modes_are_compared_by_name_over_those_both_sides_have() {
+        let mode = |name: &str, on: bool| (name.to_string(), on);
+        let mut a = vec![
+            mode("Origin", false),
+            mode("New", true),
+            mode("Insert", true),
+        ];
+        let mut b = vec![mode("Insert", true), mode("Origin", false)];
+        common_modes(&mut a, &mut b);
+        assert_eq!(a, b);
+        let mut a = vec![mode("Origin", true), mode("Insert", true)];
+        let mut b = vec![mode("Insert", true), mode("Origin", false)];
+        common_modes(&mut a, &mut b);
+        assert_ne!(a, b);
+    }
 }
