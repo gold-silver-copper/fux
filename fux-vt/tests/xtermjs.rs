@@ -10,7 +10,11 @@
 //! A fixture fux-vt does not match is listed in `DIFFERENT`, each checked
 //! against the standard or real xterm and given its reason, and the test
 //! fails when a listed fixture starts to match, as when one not listed
-//! fails.
+//! fails. Each listed fixture's screen as its authority has it is kept
+//! beside it (`fux-vt/NAME.text`), and asserted: xterm's `.text` but for
+//! the rows the reason names, each such row checked by hand against the
+//! section the reason cites (for HT, HTS, CHT and DECSTBM, replaying the
+//! bytes with xterm's rule gives xterm's `.text` again).
 
 use fux_vt::{Parser, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -120,6 +124,21 @@ fn xterm_js_escape_sequence_fixtures() -> Result {
         let got = screen(&std::fs::read(dir.join(format!("{name}.in")))?)?;
         let want = expected(&std::fs::read(dir.join(format!("{name}.text")))?);
         let listed = DIFFERENT.iter().any(|(listed, _)| listed == name);
+        if listed {
+            let authority = dir.join(format!("fux-vt/{name}.text"));
+            let authority = expected(&std::fs::read(authority)?);
+            if got != authority {
+                let rows = got.iter().zip(&authority).enumerate();
+                let diff: Vec<String> = rows
+                    .filter(|(_, (g, w))| g != w)
+                    .map(|(y, (g, w))| format!("  row {y}: got {g:?}\n  row {y}: kept {w:?}"))
+                    .collect();
+                wrong.push(format!(
+                    "{name}, not as its authority has it:\n{}",
+                    diff.join("\n")
+                ));
+            }
+        }
         if (got == want) == listed {
             wrong.push(if listed {
                 format!("{name}: listed as different, and matches")
