@@ -267,7 +267,8 @@ impl Decoder {
         // 9.1), BEL ringing as in text (the parser's) and CAN, SUB and ESC
         // the parser's too.
         // GR codes are errors read as GL, "the 8th bit ... set to zero" (DEC
-        // STD 070-9, 9.4). C1 codes, which there end sixel mode (9.3), are
+        // STD 070-9, 9.4), a byte at a time, a UTF-8 character's bytes too
+        // (decision 822). C1 codes, which there end sixel mode (9.3), are
         // no controls in UTF-8, as fux-vt reads its input, and are ignored
         // as C0 controls are (9.1); so are SPACE and DELETE, in GL or GR.
         let byte = match byte {
@@ -829,6 +830,14 @@ mod tests {
         assert!(three.is_some());
         assert_eq!(pixels(b"#1;2;100;0;0!3\xfe"), three, "GR");
         assert_eq!(pixels(b"#1;2;100;0;0!\x853~"), three, "C1");
+        // A UTF-8 character's bytes are GR codes each: `é` is `C` then `)`,
+        // which ends a command and does nothing (decision 822).
+        assert_eq!(
+            pixels("#1;2;100;0;0\u{e9}".as_bytes()),
+            pixels(b"#1;2;100;0;0C)"),
+            "UTF-8"
+        );
+        assert!(pixels("#1;2;100;0;0\u{e9}".as_bytes()).is_some());
     }
 
     /// A sixel before any colour is selected is drawn in a colour that
