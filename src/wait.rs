@@ -71,10 +71,12 @@ pub struct Waiting {
     follows: Follows,
 }
 
-/// A pane of a wait: still looked at, or its answer, which no look changes.
+/// A pane of a wait: still looked at, or its answer, which no look
+/// changes, and whether it tells the pane's program's exit (`Pane::
+/// exit_told`, marked once the wait's answer goes out).
 enum Look {
     Looking(Watch),
-    Told(Reply),
+    Told(Reply, bool),
 }
 
 /// What a wait follows, which decides how it reads its panes and what its
@@ -209,7 +211,7 @@ impl Waiting {
         let held = (self.watches.iter())
             .filter_map(|(_, look)| match look {
                 Look::Looking(watch) => watch.settled_since,
-                Look::Told(_) => None,
+                Look::Told(..) => None,
             })
             .map(|(since, _)| after(since, HOLD).max(now))
             .min();
@@ -260,6 +262,12 @@ impl Waiting {
                 (cursor(pane).filter(|_| live && on_text)).map(|(note, _)| format!(" · {note}"));
             outcome.text = format!("{line}{}\n{read}", cursor.unwrap_or_default());
         }
+        // The answer goes out now: the exits it tells are told.
+        for (id, look) in &self.watches {
+            if let (Look::Told(_, true), Some(pane)) = (look, session.panes.get(id)) {
+                pane.exit_told.set(true);
+            }
+        }
         Some(outcome)
     }
 
@@ -275,23 +283,25 @@ impl Waiting {
         for (id, look) in &mut self.watches {
             let watch = match look {
                 Look::Looking(watch) => watch,
-                Look::Told(_) => continue,
+                Look::Told(..) => continue,
             };
             let Some(pane) = session.panes.get(id) else {
-                *look = Look::Told(wait.gone(*id));
+                *look = Look::Told(wait.gone(*id), false);
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *look = Look::Told(wait.told(pane, told, limit, watch, (mode.2, capture)));
+                let (reply, exit) = wait.told(pane, told, limit, watch, (mode.2, capture));
+                *look = Look::Told(reply, exit);
             } else if late && !watch.lasts(pane, wait) {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *look = Look::Told(wait.told(pane, told, limit, watch, (mode.2, capture)));
+                let (reply, exit) = wait.told(pane, told, limit, watch, (mode.2, capture));
+                *look = Look::Told(reply, exit);
             }
         }
         let answers: Vec<&Reply> = (self.watches.iter())
             .map(|(_, look)| match look {
                 Look::Looking(_) => None,
-                Look::Told(reply) => Some(reply),
+                Look::Told(reply, _) => Some(reply),
             })
             .collect::<Option<_>>()?;
         if let [one] = answers.as_slice() {
@@ -356,7 +366,7 @@ impl Wait {
         limit: Duration,
         watch: &Watch,
         (action, capture): (bool, bool),
-    ) -> Reply {
+    ) -> (Reply, bool) {
         let (id, now) = (pane.id, Instant::now());
         let state = || watch.state(pane, now);
         let came = || since_text(pane, watch, self.marks);
@@ -532,8 +542,9 @@ impl Wait {
         }
         // An exit an earlier answer told is said once: a later one says so,
         // not what the program printed again.
-        let told_before =
-            matches!(state, State::Exited(_)) && pane.exit_told.replace(true) && !capture && !found;
+        // A capture tells no exit, nor does a text met.
+        let tells = matches!(state, State::Exited(_)) && !capture && !found;
+        let told_before = tells && pane.exit_told.get();
         let body = match told_before {
             true => {
                 let note = format!("told before: `{id} capture` reads its last screen");
@@ -542,7 +553,10 @@ impl Wait {
             }
             false => body,
         };
-        said(id, state.word(), notes, body, end)
+        (
+            said(id, state.word(), notes, body, end),
+            tells && !told_before,
+        )
     }
 }
 

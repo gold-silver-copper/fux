@@ -2007,6 +2007,39 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
 /// in JSON's lines and runs as in its text; plain lines trim them. The
 /// cursor is the screen's row and column in JSON as in answers, and an
 /// answer on a line wrapped at the pane's width names the rows it takes.
+/// An exit is told by the first answer that tells it, not by a capture,
+/// which reads the screen and tells no exit: a wait after a capture still
+/// tells the exit, with what came.
+#[test]
+fn a_capture_tells_no_exit() -> Outcome {
+    let server = Server::start("")?;
+    let ends = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo BYE"]))?);
+    server.ok(&[
+        "str",
+        &ends,
+        "pane",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
+    eventually("the exit", || {
+        Ok(server
+            .ok(&["str", &ends, "pane", "str", "state", "get"])?
+            .trim()
+            == "exited 0")
+    })?;
+    let read = server.ok(&["str", &ends, "pane", "capture"])?;
+    assert!(read.contains("BYE"), "{read}");
+    let told = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
+    assert!(!told.contains("told before"), "{told}");
+    let again = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
+    assert!(again.contains("told before"), "{again}");
+    Ok(())
+}
+
 /// An exit is told once: a later wait says so, not its output again.
 #[test]
 fn captures_and_answers_agree_on_the_screen() -> Outcome {
