@@ -150,11 +150,20 @@ impl Screen {
         self.break_cluster();
         let placeholder = PLACEHOLDER.chars().next().unwrap_or(' ');
         let span = (col, col.saturating_add(across));
+        // A line feed on the bottom margin between left and right margins
+        // scrolls their cells, not the rows (`Grid::scroll_columns`); one
+        // outside them does nothing. Either way the rows keep their
+        // identities while the bands move or stack.
+        let (mut lifted, mut stacked) = (false, false);
         for row in 0..rows {
             if row > 0 && display.is_some() {
                 let g = self.grid_mut();
                 g.set_row(g.cursor.row().saturating_add(1));
             } else if row > 0 {
+                let g = self.grid();
+                let at_bottom = g.lr() && g.cursor.row() == g.lines.last();
+                lifted |= at_bottom;
+                stacked |= at_bottom && !g.in_columns();
                 self.linefeed()?;
             }
             self.grid_mut().set_col(col);
@@ -167,6 +176,20 @@ impl Screen {
             });
         }
         let bottom = self.cursor_mark().map_or(top, |mark| mark.row);
+        // Moved with the cells, the picture's rows are the last `rows`
+        // down to the cursor's, if they lie inside the region; else it
+        // lost bands, and is not kept.
+        let top = match lifted {
+            false => Some(top),
+            true => {
+                let g = self.grid();
+                let first = g.cursor.row().checked_sub(rows.saturating_sub(1));
+                first
+                    .filter(|first| !stacked && *first >= g.lines.first())
+                    .and_then(|first| g.live_row(first))
+                    .map(|row| row.id())
+            }
+        };
         // "The ANSI text vertical position is updated to reflect the
         // vertical motion commands executed" (DEC STD 070-9, 11.3): the
         // cursor goes down to the row the last band ends in when that is
@@ -187,6 +210,9 @@ impl Screen {
             self.grid_mut().set_col(col);
         }
         let alternate = self.alternate_active;
+        let Some(top) = top else {
+            return Ok(());
+        };
         self.picture_ids = self.picture_ids.wrapping_add(1);
         self.pictures.push_back(Placement {
             picture,
@@ -375,7 +401,15 @@ impl Screen {
         };
         for offset in 0..usize::from(placement.rows) {
             let Some(row) = at(offset) else {
-                continue;
+                // Cropped off the top, or gone past the bottom: only the
+                // first is shown.
+                let cropped = first
+                    .checked_add(i64::try_from(offset).ok()?)
+                    .is_some_and(|index| index < 0);
+                if cropped {
+                    continue;
+                }
+                return None;
             };
             if since.is_some_and(|since| row.version() <= since) {
                 continue;
@@ -440,7 +474,8 @@ impl Screen {
     }
 
     /// 32: each picture shown has its rows, every cell it covers there
-    /// holding the placeholder, on the screen in use.
+    /// holding the placeholder, on the screen in use, but those cropped off
+    /// the top of a screen that kept no history (DEC STD 070-9, 11.2.4).
     pub(super) fn check_pictures_shown(&self) -> Result<(), String> {
         let grid = self.grid();
         for shown in self.pictures() {
@@ -449,9 +484,11 @@ impl Screen {
                 .saturating_add(shown.row);
             let across = shown.cols.min(self.size().cols().saturating_sub(shown.col));
             for offset in 0..i64::from(shown.rows) {
-                let row = usize::try_from(top.saturating_add(offset))
-                    .ok()
-                    .and_then(|i| grid.row_at(i));
+                let index = top.saturating_add(offset);
+                if index < 0 {
+                    continue;
+                }
+                let row = usize::try_from(index).ok().and_then(|i| grid.row_at(i));
                 let whole = row.is_some_and(|row| {
                     (shown.col..shown.col.saturating_add(across)).all(|c| {
                         row.cell(usize::from(c))
