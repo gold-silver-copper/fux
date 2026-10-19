@@ -734,7 +734,7 @@ the pipe, so its figure is end to end and marked `*`.
 
 `bench --instructions` counts instructions retired per byte instead,
 because load doesn't move them, for every engine in this process. Each
-engine and workload runs in a child process (`src/count.rs`: `/usr/bin/time
+engine and workload runs in a child process (`bench/src/count.rs`, fux-bench's counter, built here too: `/usr/bin/time
 -l` on macOS, `perf` or cachegrind on Linux), less a baseline child that
 does everything but the feeding. The figure is the fewest of `--repeats`
 runs (3); the spread is its noise. With no workloads named it counts the
@@ -896,7 +896,7 @@ The axes:
 | `src/encoders.rs` | `encoders`, with its recorded verdicts |
 | `src/answering.rs` | an engine as the terminal a program talks to, for `esctest --terminal` |
 | `src/bench.rs` | `bench`: the workloads and the speed table |
-| `src/instructions.rs`, `src/count.rs` | `bench --instructions`, counting a child's instructions as `bench/src/count.rs` does |
+| `src/instructions.rs` | `bench --instructions`, counting a child's instructions by fux-bench's own counter (`bench/src/count.rs`, built into this crate) |
 | `src/footprint.rs`, `src/memory.rs` | `footprint`, and the process's memory as the system and malloc count it |
 | `src/scoreboard.rs` | `scoreboard` |
 | `src/lists.rs` | `lists`: every judged list as JSON, and the list-diff report |

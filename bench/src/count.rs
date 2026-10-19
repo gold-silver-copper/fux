@@ -31,9 +31,11 @@ pub struct Run {
     pub raw: String,
 }
 
-/// The wrapper the perf counter runs.
+/// The wrapper the perf counter runs, which the crate that builds this
+/// file names (`PERF_SH`): fux-bench's own, and fux-vt-compare's, which
+/// builds this very file (`#[path]`), so the two count alike.
 fn wrapper() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("perf.sh")
+    Path::new(crate::PERF_SH).to_path_buf()
 }
 
 impl Counter {

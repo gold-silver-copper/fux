@@ -7,6 +7,8 @@ mod against;
 mod census;
 mod corpus;
 mod count;
+/// `bench/perf.sh`, the wrapper `count` runs perf through.
+const PERF_SH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf.sh");
 mod feel;
 mod helpers;
 mod info;

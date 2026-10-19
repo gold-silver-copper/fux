@@ -11,7 +11,11 @@ mod bench;
 mod case;
 mod cases;
 mod corpus;
+/// fux-bench's counter, the file itself: one way to count instructions.
+#[path = "../../../bench/src/count.rs"]
 mod count;
+/// `bench/perf.sh`, the wrapper `count` runs perf through.
+const PERF_SH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../bench/perf.sh");
 mod encoders;
 mod engine;
 mod engines;
