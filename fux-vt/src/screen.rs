@@ -2057,7 +2057,7 @@ impl Screen {
             // Back a column, stopping at the left margin unless the cursor
             // is already left of it (xterm's `CursorBack`).
             8 => g.backward(1),
-            9 => self.tab(1, true)?,
+            9 => self.forward_tab(1)?,
             // LNM: a new line, the carriage returned too.
             10..=12 if new_line => self.new_line()?,
             10..=12 => self.linefeed()?,
@@ -2090,10 +2090,7 @@ impl Screen {
     /// autowrap, forward from a wrap pending, the wrap is carried out
     /// first, as a line feed to the first column (ctlseqs, more(1)'s fix;
     /// xterm's `TabNext`), the row left not soft-wrapped.
-    fn tab(&mut self, count: u16, forward: bool) -> Result<(), Error> {
-        if forward && self.grid().cursor.pending_wrap && self.mode(Mode::MoreFix) {
-            self.more_fix()?;
-        }
+    fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
         let (mut col, mut last) = (g.cursor.col(), g.columns().last());
         if col > last || !g.lines.contains(g.cursor.row()) {
@@ -2115,6 +2112,19 @@ impl Screen {
         g.set_col(col);
         g.fit_cursor();
         g.cursor.pending_wrap = false;
+    }
+    /// HT and CHT: `tab` forward, after the wrap mode 41 carries out
+    /// (`more_fix`). The wrap's test is apart from `tab`, which stays
+    /// infallible: as one fallible function, an HT cost 11 instructions
+    /// more (vt/kitty:ascii +0.55% on desk). Out of line: inlined into
+    /// `control`, it moved what the compiler inlines around the line feed,
+    /// and scrolling a region cost 0.3% more (vt/vtebench:*_region).
+    #[inline(never)]
+    fn forward_tab(&mut self, count: u16) -> Result<(), Error> {
+        if self.mode(Mode::MoreFix) && self.grid().cursor.pending_wrap {
+            self.more_fix()?;
+        }
+        self.tab(count, true);
         Ok(())
     }
     /// `tab`'s wrap carried out with mode 41, with autowrap on. Out of line.
@@ -3397,10 +3407,10 @@ impl Screen {
             }
             b'b' => self.repeat(n)?,
             // CHT (ECMA-48 8.3.10): HT n times.
-            b'I' => self.tab(n, true)?,
+            b'I' => self.forward_tab(n)?,
             // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
             // column.
-            b'Z' => self.tab(n, false)?,
+            b'Z' => self.tab(n, false),
             // TBC (ECMA-48 8.3.154; DEC STD 070, TBC, p. 5-66): each
             // parameter in turn, 0 clearing the stop at the cursor and 3
             // every stop, the two DEC STD 070 defines; the others, for
