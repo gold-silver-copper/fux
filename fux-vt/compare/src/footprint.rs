@@ -41,7 +41,8 @@
 //! the pieces are as many as fill it that far. Ghostty's limit is in bytes, and prunes whole pages: it is
 //! given [`GHOSTTY_SCROLLBACK`], more than any measure here fills, so it
 //! keeps every row it is fed, a few more than 10,000 where the last piece
-//! pushes several. Each engine's figure per row is divided by the rows it
+//! pushes several; and, as `ghostty-default`, its own default,
+//! [`GHOSTTY_DEFAULT`], where it prunes what passes it. Each engine's figure per row is divided by the rows it
 //! says it holds.
 use crate::bench::{self, CHUNK, WORKLOADS};
 use crate::engine::{ENGINES, Engine, SUBJECT, Setup};
@@ -62,6 +63,11 @@ pub const HISTORY: usize = 10_000;
 /// Ghostty's scrollback limit, in bytes: more than 10,000 rows of any
 /// content here take (dense cells at 200 columns take under 40 MiB).
 const GHOSTTY_SCROLLBACK: usize = 1 << 30;
+/// Ghostty's own default, as its app sets it: `scrollback-limit`, 50 MB
+/// (`src/config/Config.zig` at the commit run.sh pins), measured beside the
+/// 1 GiB as `ghostty-default`: where a measure fills more, it prunes, and
+/// holds fewer rows (HAR-83).
+const GHOSTTY_DEFAULT: usize = 50_000_000;
 /// The screen's rows.
 const ROWS: u16 = 50;
 /// The screen widths measured.
@@ -74,9 +80,10 @@ const SCROLLS: [&str; 3] = ["ascii", "scrolling", "unicode"];
 const MOST: usize = 256 << 20;
 
 /// The engines measured: fux-vt, and each in-process engine named.
-const IN_PROCESS: [&str; 7] = [
+const IN_PROCESS: [&str; 8] = [
     "fux-vt",
     "ghostty",
+    "ghostty-default",
     "alacritty",
     "libvterm",
     "avt",
@@ -85,7 +92,7 @@ const IN_PROCESS: [&str; 7] = [
 ];
 
 /// How each engine is configured here, for the report.
-const CONFIGURED: [(&str, &str); 7] = [
+const CONFIGURED: [(&str, &str); 8] = [
     (
         "fux-vt",
         "history in bytes for 10,000 full rows, set up as fux sets up a pane",
@@ -93,6 +100,10 @@ const CONFIGURED: [(&str, &str); 7] = [
     (
         "ghostty",
         "max_scrollback 1 GiB (its limit is in bytes): keeps every row fed",
+    ),
+    (
+        "ghostty-default",
+        "max_scrollback 50 MB, Ghostty's own default (scrollback-limit): prunes past it",
     ),
     ("alacritty", "scrolling_history 10,000 rows"),
     (
@@ -113,6 +124,7 @@ fn make(name: &str, setup: &Setup) -> Result<Box<dyn Engine>, String> {
     match name {
         "fux-vt" => (SUBJECT.make)(&limited),
         "ghostty" => engines::ghostty::with_scrollback(setup, GHOSTTY_SCROLLBACK),
+        "ghostty-default" => engines::ghostty::with_scrollback(setup, GHOSTTY_DEFAULT),
         "alacritty" => engines::alacritty::with_history(setup, HISTORY),
         "libvterm" => engines::libvterm::with_history(setup, HISTORY),
         "avt" => engines::avt::with_history(setup, HISTORY),
@@ -497,6 +509,11 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
                 .filter(|k| k.in_process)
                 .map(|k| k.name),
         )
+        // Ghostty at its own default too, beside the 1 GiB (HAR-83).
+        .flat_map(|n| match n {
+            "ghostty" => vec![n, "ghostty-default"],
+            _ => vec![n],
+        })
         .filter(|n| IN_PROCESS.contains(n))
         .collect();
     let sources: Vec<String> = WORKLOADS
@@ -571,7 +588,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
     );
     let header = |text: &mut String, title: &str, columns: &[String]| {
         let _ = writeln!(text, "{title}");
-        let _ = write!(text, "{:<10}", "");
+        let _ = write!(text, "{:<16}", "");
         for c in columns {
             let _ = write!(text, " {c:>10}");
         }
@@ -600,7 +617,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
     ] {
         header(&mut text, &title, &screen_columns);
         for &engine in &names {
-            let _ = write!(text, "{engine:<10}");
+            let _ = write!(text, "{engine:<16}");
             for cols in WIDTHS {
                 let units = if by_row {
                     usize::from(ROWS)
@@ -651,7 +668,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
         ] {
             header(&mut text, &title, &source_columns);
             for &engine in &names {
-                let _ = write!(text, "{engine:<10}");
+                let _ = write!(text, "{engine:<16}");
                 let empty = found(engine, &Measure::Empty, cols);
                 for source in &sources {
                     let m = Measure::History(source.clone());
@@ -704,7 +721,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
     let _ = writeln!(text, "\nhow each engine is configured:");
     for (engine, how) in CONFIGURED {
         if names.contains(&engine) {
-            let _ = writeln!(text, "  {engine:<10} {how}");
+            let _ = writeln!(text, "  {engine:<16} {how}");
         }
     }
     let seconds = started.elapsed().as_secs_f64();
