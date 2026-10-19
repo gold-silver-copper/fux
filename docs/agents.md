@@ -9,7 +9,9 @@ what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
 a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 `FUX_SOCKET`'s; `fux start` starts one if none runs. What an action takes
 (keys, a wait, what to read) goes on the pane before the word that acts; only
-`run`, `new-tab` and `new-workspace` start from `opts`.
+`run`, `new-tab` and `new-workspace` start from `opts`, and only `run` takes a
+program (`command`): the other two start a shell (`str 'CMD' typed` types a
+line into it).
 
 **Act, then read the answer.** Every action waits until the pane settles
 (30s at most), then answers with its state and what came since your input:
@@ -37,6 +39,7 @@ fux ls                                                  # what there is: workspa
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
+%2 reading · no status: …      a line read again where nothing marks commands (a plain `sh`): no `done` comes
 %2 waiting                     quiet 1s, but it may go on alone (`· redraws on its own`: a clock, `top`)
 %2 waiting · not reading its terminal, so fux cannot tell when it waits for input: `%2 wait-exit wait` waits for its end
                                not a full-screen program, blocked on the network or a pipe (`koh exec`, a download)
@@ -82,6 +85,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
+%2 reading · no status: …      a line read again where nothing marks commands (a plain `sh`): no `done` comes
 %2 waiting                     quiet 1s, but it may go on alone: `PANE wait` waits up to 5s for more, then answers so (status 0); `· redraws on its own` (a clock, `top`): it read your keys and drew after them, a later capture may differ, `str TEXT wait-text` waits for a text
 %2 busy · 12 bytes unread      still running, printing or asleep on a timer (a sleep loop) at the time limit (status 124); unread: input fux holds yet
 %2 exited 3                    the program ended; what it printed since your input follows
@@ -93,7 +97,10 @@ command runs): a pane `waiting` whose program is not a full-screen one, so
 probably at work, not waiting for keys; `· not reading its terminal, so fux
 cannot tell when it waits for input: …` when it is blocked on something
 else (a build over `koh exec`, a download, a remote program reading a
-pipe): what it prints is all there, but whether it waits is not known. After keys or a mouse event, `· highlight ROW,COL-END "TEXT"` names up
+pipe): what it prints is all there, but whether it waits is not known;
+`· its relay said nothing of its program since your input, as when that
+ended: …` for a relay (`koh connect`) that owes a report of its program
+(below, `shells`) and was quiet 5s, not 1s, to give its end the time. After keys or a mouse event, `· highlight ROW,COL-END "TEXT"` names up
 to three runs the input highlighted anew (reverse video, or a background
 other than the screen's: a selection, a menu's choice), as a mouse event
 counts cells; one that stays where it was is not said again. `· cursor
@@ -111,7 +118,11 @@ alone.
   and the program: `str 'prog -x a' command` (split as a shell splits), or
   `str PROG program` and `str A arg` per argument. The answer's first word is
   the pane: use it. Each `fux` is a fresh program (a `let` name lasts only
-  within one). The pane stays after the program ends. A word refuses options it would not use (`capture` a wait): `unused`. `run` answers once the program prints, or reads quiet a second having printed nothing (ssh and `koh connect` read as they connect).
+  within one). The pane stays after the program ends. `new-tab` and
+  `new-workspace` start a shell, and take no program: `str 'koh connect
+  SERVER' typed` types a line into it, or `run` starts the program in a pane
+  of its own. A word refuses options it would not use (`capture` a wait, a
+  `command` on `new-workspace`): `unused`, saying what it takes. `run` answers once the program prints, or reads quiet a second having printed nothing (ssh and `koh connect` read as they connect).
 
 ## keys: Keys, the mouse and stopping
 
@@ -293,6 +304,11 @@ replaced, or made readonly in a startup file (before fux sets them), a
 command never ends: `line` answers `reading` with no `done`, and
 `command_running` stays true; made readonly later, they keep fux's marks.
 `str shell-marks str off set` turns marks off for shells started after.
+A shell that marks no commands (one fux did not start, as `str sh
+program` or `koh connect SERVER -- sh` runs one) gives no status: a line
+it, or a relay's program, reads again after answers `reading · no
+status: nothing here marks its commands` (`"marked":false`); `CMD; echo
+"status $?"` prints it.
 
 A shell's marks carry a nonce, so output (`cat file`) cannot pass for
 them. A program you run in it on purpose that marks commands of its own
@@ -336,6 +352,12 @@ nonce=N BEL` (STATE `reading`, `polling`, `waiting`, `busy`, `idle` or
 came after it and it came after your last input, the screen quiet a moment
 after it (what the program drew before it may come just after), so a remote `less`,
 `sudo` or REPL answers `reading` as a local one does, its `line` too.
+A relay reports after every input its program takes, as koh does: one
+that has reported and owes a report since your input, still running, is
+quiet 5s before it is taken as `waiting` (its program may have ended
+there, `exit`, the relay closing its link): its end is told, `exited 0`
+(`koh connect` run in a pane of its own), or `done 0` (typed in a
+shell).
 Without one, fux cannot tell a remote command that waits for input there
 (through ssh) from a slow one: its `line` answers `busy` at the limit.
 Type such a command with `0 timeout`, or wait for its prompt with

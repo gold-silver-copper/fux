@@ -425,6 +425,11 @@ pub(crate) fn named(argv: &[String]) -> String {
     argv.first().map(|p| basename(p)).unwrap_or_default()
 }
 
+/// Shells a pane may run, taking commands typed at them.
+const SHELLS: &[&str] = &[
+    "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
+];
+
 /// A program's file name, or the program as given if it has none.
 pub(crate) fn basename(program: &str) -> String {
     std::path::Path::new(program)
@@ -475,9 +480,13 @@ pub struct Pane {
     /// it at first, even while still blocked reading (the kernel has yet
     /// to wake it).
     pub written_at: Option<Instant>,
+    /// The last input typed ended a line (Enter, or text ending in a line
+    /// end): what came of it is a command's, if its program marks them.
+    pub line_ended: bool,
     /// The last state report its program relayed (`OSC 133 ; S`), by where
-    /// it came among the marks, and when fux read it.
-    pub reported_at: Option<(u64, Instant)>,
+    /// it came among the marks, when fux read it, and the terminal's
+    /// foreground group then: the relay's, while it runs.
+    pub reported_at: Option<(u64, Instant, Option<fuxix::process::Pid>)>,
     /// How many times in a row its program drew on its own (a clock,
     /// `top`), as of the commands its marks had begun and ended then: a
     /// change a moment after the last (`ready::SETTLE`), no input written
@@ -667,6 +676,7 @@ impl Pane {
             shown: (mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
+            line_ended: false,
             reported_at: None,
             drew_alone: (0, 0),
             record: log::Log::new(log::JOURNAL_BYTES),
@@ -779,8 +789,12 @@ impl Pane {
         self.input.heard(Instant::now);
         // A report read now, which came after any input written before.
         let report = self.screen().commands().report.map(|r| r.mark);
-        if report.is_some() && report != self.reported_at.map(|(mark, _)| mark) {
-            self.reported_at = report.map(|mark| (mark, now));
+        if let Some(mark) = report
+            && Some(mark) != self.reported_at.map(|(mark, ..)| mark)
+        {
+            let group = (self.process.child())
+                .and_then(|child| fuxix::terminal::foreground_group(&child.master));
+            self.reported_at = Some((mark, now, group));
         }
         begun
     }
@@ -1130,6 +1144,18 @@ impl Pane {
             }
     }
 
+    /// Whether it runs a shell taking commands typed at it: its own, or one
+    /// `run` started with no -c and no script (`run -- bash`).
+    pub fn runs_shell(&self) -> bool {
+        match &self.runs {
+            Runs::Shell => true,
+            Runs::Program(launch) => launch.argv.split_first().is_some_and(|(p, args)| {
+                let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
+                interactive && SHELLS.contains(&basename(p).trim_start_matches('-'))
+            }),
+        }
+    }
+
     /// Writes a piece of input, `unit` its kind, and tells the classifier
     /// of it (the terminal's modes then, the line the cursor is on, whether
     /// it is typed ahead), and sets the pace for the next. Whether what
@@ -1172,6 +1198,7 @@ impl Pane {
         let input = crate::classify::Input { unit, line, ahead };
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
+        self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
         let _ = self.input.push(&bytes);
         let gap = if reading { TAKE } else { PACE };
         self.pace.written = Some((now, after(now, gap), escape, exact));

@@ -1045,10 +1045,14 @@ impl Grid {
         // A whole row erased keeps no text, and no links: its blank cells
         // would never read them. Nor does the line above go on in it, once
         // its text is gone: a line editor that erases it to draw its prompt
-        // again (bash after a resize) starts a line of its own there.
+        // again (bash after a resize) starts a line of its own there. Above
+        // the top row is history's newest: a screen cleared after a resize
+        // that pushed a line's start into history begins anew too.
         if start == 0 && end >= cols {
-            if changed && let Some(above) = row.checked_sub(1) {
-                self.wrap(above, false, version);
+            match row.checked_sub(1) {
+                Some(above) if changed => self.wrap(above, false, version),
+                None if changed => self.history.end_newest_line(version),
+                Some(_) | None => {}
             }
             if let Some(text) = self.texts.get_mut(slot) {
                 text.release();

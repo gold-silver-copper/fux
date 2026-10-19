@@ -832,6 +832,48 @@ fn a_relayed_busy_report_holds_the_wait() -> Outcome {
     Ok(())
 }
 
+/// A relay that runs a program that marks no commands (`koh connect --
+/// sh`), as a shell fux does not mark: a line it reads again after
+/// answers `reading` (from the relay's report) and says no status can
+/// come. One it owes a report for, its program
+/// gone, closing its link a while as it polls its terminal (koh's client),
+/// is waited for to its end: `exited 0`, not `waiting`.
+#[test]
+fn a_relay_whose_program_ended_is_waited_for_to_its_end() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let relay = r#"
+import select, sys
+def prompt():
+    sys.stdout.write("r$ \x1b]133;S;activity=reading\x07"); sys.stdout.flush()
+prompt()
+while sys.stdin.readline().strip() != "exit":
+    prompt()
+for _ in range(20):
+    select.select([0], [], [], 0.1)
+"#;
+    let server = Server::start("")?;
+    // So too a shell fux does not mark, run as a program.
+    let sh = id(&server.ok(&run(&[], &["sh"]))?);
+    let read = line(&server, &sh, "true")?;
+    assert!(
+        head(&read).ends_with(" · no status: nothing here marks its commands"),
+        "{read}"
+    );
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", relay]))?);
+    let read = line(&server, &pane, "true")?;
+    assert_eq!(
+        head(&read),
+        format!("{pane} reading · no status: nothing here marks its commands")
+    );
+    let began = std::time::Instant::now();
+    let ended = line(&server, &pane, "exit")?;
+    assert_eq!(head(&ended), format!("{pane} exited 0"), "{ended}");
+    assert!(began.elapsed() < PATIENCE, "{ended}");
+    Ok(())
+}
+
 /// In a shell pane, a relay's report counts with the nested nonce alone,
 /// as its marks do: one without it is output, and `line` waits on.
 #[test]
@@ -2870,6 +2912,16 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     // A capture's refusal of a wait says what it does: settles, then reads.
     let refused = server.fux(&[&on[..], &["str", "x", "wait-text", "capture"]].concat())?;
     assert!(refused.stderr.contains("settles"), "{}", refused.stderr);
+    // A command for a new workspace says what it takes, and where a
+    // program goes: run, or typed into its shell.
+    let refused = server.fux(&["opts", "str", "make", "command", "new-workspace"])?;
+    for said in [
+        "takes name, size, cwd, env, typed and id",
+        "command run",
+        "typed",
+    ] {
+        assert!(refused.stderr.contains(said), "{said}: {}", refused.stderr);
+    }
     Ok(())
 }
 
