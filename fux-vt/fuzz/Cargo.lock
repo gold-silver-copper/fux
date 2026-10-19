@@ -54,6 +54,7 @@ version = "0.10.0"
 name = "fux-vt-fuzz"
 version = "0.0.0"
 dependencies = [
+ "arbitrary",
  "fux-vt",
  "libfuzzer-sys",
  "unicode-segmentation",

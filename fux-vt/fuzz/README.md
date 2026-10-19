@@ -119,8 +119,10 @@ can't hold or takes too long on, one of host calls no target makes) is on
 kept as `tests/seeds/*.bin`. They are kept apart from `corpus/`, which is cut to
 the targets' lengths: give `seeds/TARGET` to a run as a second corpus
 directory, as `fux-vt/compare/harness.sh` does. `seeds/graphemes` holds
-the inputs that target found (FA-SB-2), replayed by
-`properties::a_cell_full_of_its_cluster_drops_no_cluster_after_a_control`.
+the inputs that target found (FA-SB-2), which
+`fux-vt/fuzz/tests/graphemes_seeds.rs` reads as the target does and
+checks as it checks (`tests/corpus/graphemes_target.rs`, shared with the
+target), on every test run.
 
 What the `terminal` and `deep` targets reach, each `Feature` on and each
 host call made (`process_until_stop`, `FrameScan`, `set_history_bytes`,

@@ -21,6 +21,9 @@ reach = []
 
 [dependencies]
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+# The graphemes target's input, shared with fux-vt's tests
+# (tests/corpus/graphemes_target.rs): the version libfuzzer-sys uses.
+arbitrary = { version = "=1.4.2", features = ["derive"] }
 fux-vt = { path = ".." }
 # The references the model oracles are built on, as fux-vt's tests use.
 unicode-segmentation = "=1.13.3"

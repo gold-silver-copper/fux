@@ -57,31 +57,6 @@ fn character(r: &mut Rng) -> char {
     }
 }
 
-/// The lines the `graphemes` fuzz target found the engine and the model
-/// to disagree on (FA-SB-2; `fuzz/seeds/graphemes`): a full cell, then a
-/// character of no width it cannot take, a control, then a modifier, which
-/// begins a cluster of its own after the control (UAX #29, GB5), not one
-/// more character of the full cell's.
-#[test]
-fn a_cell_full_of_its_cluster_drops_no_cluster_after_a_control() -> Result {
-    for text in [
-        "\u{330}🏻🏽🏻🏻🏻🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻🏻🏻🏻ᅡᅡ\u{330}🏻🏽🏻🏻🏻🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻\u{e0011}🏻\u{94d}ᆨ\u{e0062}ᆨ👧ᆨ\u{e0062}\u{e0062}❤",
-        "\u{330}🏻🏽🏻🏻🏻🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻🏻🏻🏻ᅡᅡ\u{330}🏻🏽🏻🏻🏻🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻\u{e0011}🏻\u{94d}\u{e0062}\u{e0062}\u{94d}ᄀa",
-        "\u{330}🏻🏽🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻🏻🏻🏻ᅡᅡ\u{330}🏻🏽🏻🏻🏻🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻\u{e0011}🏻\u{94d}\u{e0062}\u{e0062}\u{94d}ᄀa",
-        "\u{330}🏻🏽🏻🏻🏻🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻🏻🏻🏻ᅡᅡ\u{330}🏻🏽🏻🏻🏻🏻🏻🏻🏻🏻ᅡ🏻🏻\u{e0062}🏻\u{e0011}🏻\u{94d}\u{e0062}\u{e0062}\u{94d}ᄀ\u{e0062}ᅡa",
-    ] {
-        let mut parser = Parser::new(Size::new(2, 120)?, 0)?;
-        parser.process(text.as_bytes())?;
-        let row = parser.screen().rows().nth_back(1).ok_or("row")?;
-        let cells: Vec<(String, bool)> = (row.cells())
-            .filter(|c| c.has_contents())
-            .map(|c| (c.contents().to_string(), c.is_wide()))
-            .collect();
-        assert_eq!(cells, cells_of(text), "{text:?}");
-    }
-    Ok(())
-}
-
 /// Random text printed on one line, in random pieces (splitting UTF-8) with
 /// SGR between characters, gives one cell to each cluster fux-vt makes,
 /// holding all of it that fits, as wide as unicode-width lays it out, and

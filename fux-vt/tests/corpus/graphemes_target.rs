@@ -1,0 +1,178 @@
+//! The `graphemes` fuzz target's input and what it checks, shared with
+//! `tests/properties.rs`, which replays the target's frozen seeds
+//! (`fuzz/seeds/graphemes`) on every test run.
+//!
+//! The input is structured (`arbitrary`): lines of characters, each picked
+//! from `tests/corpus/graphemes.rs` or any scalar value; where SGR goes
+//! between them; the sizes of the pieces the output arrives in; and a
+//! width to reflow to and back. Every printed row must hold exactly the
+//! cells the model makes of its line -- one a cluster as UAX #29 has it,
+//! as wide as unicode-width lays it out -- with the cursor after the last,
+//! however the output is cut up; and again after reflowing narrower and
+//! back.
+use arbitrary::Arbitrary;
+use fux_vt::{Feature, Options, Parser, Row, Size};
+
+#[derive(Arbitrary, Debug)]
+pub enum Pick {
+    Table(u8),
+    Scalar(u32),
+}
+
+#[derive(Arbitrary, Debug)]
+pub struct Input {
+    lines: Vec<Vec<(Pick, bool)>>,
+    pieces: Vec<u8>,
+    reflow_to: Option<u8>,
+}
+
+impl Pick {
+    fn char(&self) -> Option<char> {
+        match self {
+            Pick::Table(i) => {
+                let table = super::graphemes::CHARACTERS;
+                table
+                    .get(usize::from(*i).checked_rem(table.len())?)
+                    .copied()
+            }
+            Pick::Scalar(p) => char::from_u32(*p % 0x11_0000),
+        }
+    }
+}
+
+/// Asserts row `row` holds `expected`, and nothing after it.
+fn row_is(row: Row<'_>, expected: &[(String, bool)], line: &str) {
+    let mut col = 0usize;
+    for (text, wide) in expected {
+        let cell = row.cell(col);
+        assert_eq!(
+            cell.map(|c| (c.contents(), c.is_wide())),
+            Some((text.as_str(), *wide)),
+            "{line:?} at column {col}"
+        );
+        if *wide {
+            assert!(
+                row.cell(col.saturating_add(1))
+                    .is_some_and(|c| c.is_wide_continuation())
+            );
+        }
+        col = col.saturating_add(if *wide { 2 } else { 1 });
+    }
+    assert!(row.cells().skip(col).all(|c| !c.has_contents()), "{line:?}");
+}
+
+/// Prints `input`'s lines and checks them against the model.
+pub fn run(input: &Input) {
+    // Lines of printable characters (any but controls), what the model
+    // describes, characters of no width among them, first too. At most 8
+    // lines of 48 characters.
+    let lines: Vec<String> = input
+        .lines
+        .iter()
+        .take(8)
+        .map(|picks| {
+            let mut line = String::new();
+            for (pick, _) in picks.iter().take(48) {
+                if let Some(c) = pick.char().filter(|c| super::models::printable(*c)) {
+                    line.push(c);
+                }
+            }
+            line
+        })
+        .collect();
+    let expected: Vec<Vec<(String, bool)>> =
+        lines.iter().map(|l| super::models::cells_of(l)).collect();
+    let widest = expected
+        .iter()
+        .zip(&lines)
+        .map(|(cells, line)| {
+            let columns: usize = cells
+                .iter()
+                .map(|(_, wide)| if *wide { 2 } else { 1 })
+                .sum();
+            columns.max(line.len())
+        })
+        .max()
+        .unwrap_or(0);
+    let cols = u16::try_from(widest.saturating_add(4)).unwrap_or(u16::MAX);
+    let rows = u16::try_from(lines.len().saturating_add(1)).unwrap_or(1);
+
+    // The output: lines apart by CR LF, SGR where the input says.
+    let mut output = Vec::new();
+    let mut bold = input.lines.iter().flatten().map(|(_, b)| *b);
+    for (n, line) in lines.iter().enumerate() {
+        if n > 0 {
+            output.extend_from_slice(b"\r\n");
+        }
+        for c in line.chars() {
+            if bold.next().unwrap_or(false) {
+                output.extend_from_slice(b"\x1b[1m");
+            }
+            let mut buffer = [0; 4];
+            output.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+        }
+    }
+
+    let options = Options::new().with(Feature::Reflow);
+    let Ok(size) = Size::new(rows, cols) else {
+        return;
+    };
+    let Ok(mut parser) = Parser::with_options(size, 1 << 20, options) else {
+        return;
+    };
+    let mut rest = output.as_slice();
+    let mut sizes = input.pieces.iter().cycle();
+    while !rest.is_empty() {
+        let size = sizes
+            .next()
+            .map_or(rest.len(), |s| usize::from(*s % 16).saturating_add(1));
+        let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
+        assert!(parser.process(piece).is_ok());
+        rest = tail;
+    }
+    let check = |parser: &Parser| {
+        let screen = parser.screen();
+        for (y, (cells, line)) in expected.iter().zip(&lines).enumerate() {
+            let row = screen.rows().nth_back(lines.len().saturating_sub(y));
+            assert!(row.is_some(), "row {y}");
+            if let Some(row) = row {
+                row_is(row, cells, line);
+            }
+        }
+    };
+    check(&parser);
+    let last = expected.last().map_or(0, |cells| {
+        cells
+            .iter()
+            .map(|(_, wide)| if *wide { 2 } else { 1 })
+            .sum()
+    });
+    if !lines.is_empty() {
+        // A line that fills the row leaves the cursor in the last column,
+        // waiting to wrap: one past it.
+        let screen = parser.screen();
+        let at = usize::from(screen.cursor_position().1)
+            .saturating_add(usize::from(screen.pending_wrap()));
+        assert_eq!(at, last);
+    }
+
+    // Narrower and back: every line as it was, the cursor on it.
+    if let Some(width) = input.reflow_to {
+        let cursor = (
+            parser.screen().cursor_position(),
+            parser.screen().pending_wrap(),
+        );
+        let narrow = u16::from(width).clamp(2, cols);
+        let Ok(narrow) = Size::new(rows, narrow) else {
+            return;
+        };
+        assert!(parser.resize(narrow).is_ok());
+        assert!(parser.resize(size).is_ok());
+        check(&parser);
+        let after = (
+            parser.screen().cursor_position(),
+            parser.screen().pending_wrap(),
+        );
+        assert_eq!(after, cursor);
+    }
+}
