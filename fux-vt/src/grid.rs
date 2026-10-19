@@ -2147,10 +2147,15 @@ impl Grid {
             } else {
                 version
             };
-            // As much of the old row's links as fits, as of its cells.
+            // As much of the old row's links as fits, as of its cells: on a
+            // row half as long, to its end at the new width.
+            let fits = match old.is_some_and(|r| r.rendition().is_double()) {
+                true => (width / 2).max(1),
+                false => width,
+            };
             let links = old
                 .and_then(|r| r.links)
-                .map(|links| links.clipped(usize::from(width)));
+                .map(|links| links.clipped(usize::from(fits)));
             let mut text = None;
             if let Some(old) = old {
                 // As much of the old row as fits, over the new one's start:
@@ -2162,7 +2167,7 @@ impl Grid {
                 // A row half as long keeps its rendition, and loses what
                 // is past its end at the new width, as DECDWL loses it.
                 if old.rendition().is_double()
-                    && let Some(past) = row.get_mut(usize::from((width / 2).max(1))..)
+                    && let Some(past) = row.get_mut(usize::from(fits)..)
                 {
                     past.fill(BLANK);
                 }
@@ -2800,8 +2805,9 @@ impl Grid {
     }
 
     /// 9a: on a screen row that is not single width, every cell past its
-    /// end (`row_end`) holds nothing, no half of a wide glyph either: the
-    /// rendition erased them, and no write reaches past the end.
+    /// end (`row_end`) holds nothing, no half of a wide glyph either, and
+    /// no link: the rendition erased them, and no write reaches past the
+    /// end.
     fn check_blank_past_end(&self) -> Result<(), String> {
         for row in 0..self.size.rows() {
             if !self.rendition(row).is_double() {
@@ -2818,6 +2824,13 @@ impl Grid {
                 return Err(format!(
                     "row {row}, column {col}: a cell past a double-width line's end holds something"
                 ));
+            }
+            // Its links too: within the line's end.
+            if let Some(links) = self.slot(row).and_then(|slot| self.linked.get(slot)) {
+                links
+                    .runs()
+                    .check(end)
+                    .map_err(|e| format!("row {row}, past a double-width line's end: {e}"))?;
             }
         }
         Ok(())

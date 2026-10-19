@@ -3114,6 +3114,7 @@ impl Screen {
         let g = self.grid();
         let renditions: Vec<(u16, LineRendition)> = match display && g.doubled() {
             true => (0..g.size().rows())
+                .inspect(|_| spend!(rows, 1))
                 .filter_map(|y| Some((y, g.live_row(y)?.rendition())))
                 .filter(|(_, r)| r.is_double())
                 .collect(),
@@ -3133,7 +3134,10 @@ impl Screen {
         let g = self.grid_mut();
         for (y, rendition) in renditions {
             let styles = g.styles();
-            let spared = || g.live_cells(y).iter().any(|c| styles.guarded(c.style()));
+            let spared = || {
+                spend!(cells, cols);
+                g.live_cells(y).iter().any(|c| styles.guarded(c.style()))
+            };
             if private || spared() {
                 g.set_rendition(y, rendition, version);
             }

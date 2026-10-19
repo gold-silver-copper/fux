@@ -365,3 +365,27 @@ fn a_line_made_double_width_loses_the_links_past_its_end() -> Result {
     assert!(screen.link(0, 4).is_some());
     Ok(())
 }
+
+/// A row made double width and then halved again by a resize keeps no
+/// link past its end, as it keeps no cell there (DEC STD 070, 5.6.1;
+/// FA-RE-F-17): 1x8, a link over `abcd`, DECDWL, then 1x4.
+#[test]
+fn a_resize_drops_the_links_past_a_halved_rows_end() -> Result {
+    for reflow in [false, true] {
+        let options = Options::new()
+            .with(Feature::Hyperlinks)
+            .set(Feature::Reflow, reflow);
+        let mut p = Parser::with_options(Size::new(1, 8)?, 0, options)?;
+        p.process(b"\x1b]8;;x\x1b\\abcd\x1b]8;;\x1b\\\x1b#6")?;
+        p.resize(Size::new(1, 4)?)?;
+        let row = p.screen().rows().last().ok_or("a row")?;
+        let linked: Vec<bool> = (0..4).map(|x| row.link(x).is_some()).collect();
+        assert_eq!(linked, [true, true, false, false], "reflow {reflow}");
+        #[cfg(feature = "checks")]
+        {
+            let report = p.check();
+            assert!(report.is_clean(), "reflow {reflow}: {report}");
+        }
+    }
+    Ok(())
+}
