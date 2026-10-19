@@ -72,7 +72,7 @@ cargo fetch --quiet --manifest-path "$manifest"
 [[ -n $keep ]] && exit 0
 
 echo "oracle.sh: the working tree beside $ref ($sha)" >&2
-if ! cargo build --release --quiet --locked --manifest-path "$manifest" --bin fux-vt-oracle 2>"$log"; then
+if ! cargo build --release --quiet --locked -j "${CARGO_BUILD_JOBS:-4}" --manifest-path "$manifest" --bin fux-vt-oracle 2>"$log"; then
   cat >&2 <<EOF
 oracle.sh: fux-vt-oracle does not build against $ref ($sha).
 If this tree changed fux-vt's public API, the one adapter in

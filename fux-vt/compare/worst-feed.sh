@@ -19,9 +19,14 @@
 # many were measured at 4 KiB; timed_again, how many of them were kept and
 # timed without the counters; bar_ms; head and harness (the last commit
 # that changed what measures, -dirty if the tree differs); and whether the
-# bounds suite passed and the oracle's part ran (it builds against HEAD,
+# bounds suite passed, the oracle's part ran (it builds against HEAD,
 # which a clone that got the commit by another ref may not fetch: then
-# "corpus" says failed). Exit 1 if a 4 KiB call went past the bar.
+# "corpus" says failed) and the timing again ran. A probe that made calls
+# other than feeds (a resize, a clone, the host's graphics) is not timed
+# again: a replay of its feeds would leave them out, so its counted time
+# stands. Exit 1 if a 4 KiB call went past the bar, a call past the
+# ceiling in units, nothing was measured, or a part failed; the JSON is
+# written either way.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -34,13 +39,16 @@ mkdir -p "$kept"
 export FUX_VT_WORST_FEED=$lines FUX_VT_WORST_FEED_INPUTS=$kept
 
 suite=passed
-cargo test --release --locked --features checks --manifest-path "$root/fux-vt/Cargo.toml" \
+jobs=${CARGO_BUILD_JOBS:-4}
+cargo test --release --locked -j "$jobs" --features checks --manifest-path "$root/fux-vt/Cargo.toml" \
   --test bounds -- --include-ignored --test-threads=1 >"$here/target/worst-feed-bounds.log" 2>&1 ||
   suite=failed
 corpus=passed
 "$root/diff/oracle.sh" HEAD --cases 0 --streams 0 --cells 0 >"$here/target/worst-feed-oracle.log" 2>&1 ||
   corpus=failed
-cargo run --release --locked --quiet --manifest-path "$root/bench/Cargo.toml" -- calls "$kept" >"$again"
+calls=passed
+cargo run --release --locked --quiet -j "$jobs" --manifest-path "$root/bench/Cargo.toml" -- calls "$kept" >"$again" ||
+  calls=failed
 
 dirty() { [[ -n $(git -C "$root" status --porcelain -- "$@") ]] && echo -dirty || true; }
 head=$(git -C "$root" rev-parse HEAD)$(dirty .)
@@ -49,7 +57,7 @@ harness=$(git -C "$root" log -1 --format=%H -- "${measures[@]}")$(dirty "${measu
 
 # Each 4 KiB probe's time: timed again without the counters if it was
 # kept (the first file), else its counted time.
-awk -v head="$head" -v harness="$harness" -v suite="$suite" -v corpus="$corpus" '
+awk -v head="$head" -v harness="$harness" -v suite="$suite" -v corpus="$corpus" -v calls="$calls" '
   FILENAME == ARGV[1] { again[$1] = $4 + 0; timed++; next }
   $2 == 4096 {
     n++
@@ -64,9 +72,12 @@ awk -v head="$head" -v harness="$harness" -v suite="$suite" -v corpus="$corpus" 
     printf "  \"worst_units\": %d,\n  \"worst_units_input\": \"%s\",\n", units, costly
     printf "  \"ceiling_units\": %d,\n  \"chunk_bytes\": 4096,\n  \"inputs\": %d,\n", 50000000 * 20, n
     printf "  \"timed_again\": %d,\n  \"bar_ms\": 50,\n", timed
-    printf "  \"bounds_suite\": \"%s\",\n  \"corpus\": \"%s\",\n", suite, corpus
+    printf "  \"bounds_suite\": \"%s\",\n  \"corpus\": \"%s\",\n  \"timed_again_run\": \"%s\",\n", suite, corpus, calls
     printf "  \"head\": \"%s\",\n  \"harness\": \"%s\"\n}\n", head, harness
-    exit (ns > 50e6)
+    # Past the bar, past the ceiling, nothing measured, or a part that
+    # failed: the JSON says which.
+    exit (ns > 50e6 || units > 50000000 * 20 || n == 0 || suite != "passed" ||
+      corpus != "passed" || calls != "passed")
   }' "$again" "$lines" >"$out" || past=1
 cat "$out"
 exit "${past:-0}"
