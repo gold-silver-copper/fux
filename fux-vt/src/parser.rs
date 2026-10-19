@@ -1416,15 +1416,13 @@ impl Parser {
             } else if ground && byte == 0x1b {
                 let (length, framed) = self.sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
-                // Looked at once the sequence is done, as `looks` has it.
-                let done = matches!(self.state, State::Ground);
-                framed.or_else(|| done.then(|| self.over::<UNTIL_STOP>()).flatten())
+                framed.or_else(|| self.over_after::<UNTIL_STOP>(true, false))
             } else {
                 remaining = tail;
-                let before = self.state;
+                let sequence = !ground && !matches!(self.state, State::Utf8(_));
+                let fed = matches!(byte, 0x0a..=0x0c) && !self.in_string();
                 let framed = self.byte(byte, sink);
-                let looks = self.looks(before, byte);
-                framed.or_else(|| looks.then(|| self.over::<UNTIL_STOP>()).flatten())
+                framed.or_else(|| self.over_after::<UNTIL_STOP>(sequence, fed))
             };
             // A sequence that began or ended a frame ends whatever was
             // taken, and so does one that spent the budget (`over`): stop
@@ -1494,26 +1492,30 @@ impl Parser {
     fn refuse_many(&mut self, count: u64) {
         self.refused = self.refused.saturating_add(count);
     }
-    /// Whether `run` looks at the budget after `byte`, read in state
-    /// `before`: where a sequence or a string ended, and after a line feed
-    /// (LF, VT, FF) carried out, in text or inside an escape sequence or
-    /// CSI: where the work a few bytes can multiply is done (`budget.rs`).
-    /// A rule of states, so that the fast paths, which take a sequence's
-    /// bytes in loops of their own, look where `byte` alone would.
-    fn looks(&self, before: State, byte: u8) -> bool {
-        let ended = matches!(self.state, State::Ground)
-            && !matches!(before, State::Ground | State::Utf8(_));
-        let fed = matches!(byte, 0x0a..=0x0c)
-            && matches!(
-                before,
-                State::Ground
-                    | State::Utf8(_)
-                    | State::Escape(_)
-                    | State::EscapeIgnore
-                    | State::Csi(_)
-                    | State::CsiIgnore
-            );
-        ended || fed
+    /// `over`, where `run` looks at the budget after a byte: where a
+    /// sequence or a string ended (the byte read in a `sequence`, and the
+    /// parser back in ground), and after a line feed (LF, VT, FF) carried
+    /// out (`fed`), in text or among an escape sequence's or a CSI's
+    /// bytes: where the work a few bytes can multiply is done
+    /// (`budget.rs`). A rule of states, so that the fast paths, which take
+    /// a sequence's bytes in loops of their own, look where `byte` alone
+    /// would; the budget is asked first, as it is seldom spent.
+    #[inline]
+    fn over_after<const UNTIL_STOP: bool>(&self, sequence: bool, fed: bool) -> Option<Stop> {
+        self.over::<UNTIL_STOP>()
+            .filter(|_| fed || sequence && matches!(self.state, State::Ground))
+    }
+    /// Whether the parser is in a string or a DCS, where a C0 control is
+    /// not carried out.
+    fn in_string(&self) -> bool {
+        matches!(
+            self.state,
+            State::Dcs(_)
+                | State::IgnoreString
+                | State::Sixel
+                | State::Request(_)
+                | State::Osc { .. }
+        )
     }
     /// [`Stop::Budget`] if the call under way stops at its budget
     /// (`UNTIL_STOP`) and spent it.
