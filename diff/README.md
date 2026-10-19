@@ -138,7 +138,8 @@ commit it.
 Each side is read into one model (`oracle/src/model.rs`) through fux-vt's
 public API (`oracle/src/side.rs`) after every step:
 
-- **The screen's state:** size, cursor, pending wrap, every mode, both
+- **The screen's state:** size, cursor, pending wrap, every mode both
+  sides have, by name (all but DECHCCM, which the DECRQM probe compares), both
   pairs of margins (`scroll_region`, `left_right_margins`), the pen, the
   open link, history length, `storage_cells`, marks, `resize_report`, the
   options reported, the 256 palette entries and the dynamic colours as the
