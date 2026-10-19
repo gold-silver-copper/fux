@@ -1,6 +1,9 @@
-# nextest's settings for mutants.sh: the guard tests first, so that a test
-# a mutant makes hang (on both test threads) cannot keep the test that
-# fails it from running, with `--max-fail=1:immediate` ending the run.
+# nextest's settings for mutants.sh. The guard tests run first, and each
+# fails past 60 seconds (they take well under one): a guard mutant that
+# makes one loop forever then fails it, and `--max-fail=1:immediate` ends
+# the run, instead of hung tests on both threads keeping it until the
+# mutant's timeout.
 [[profile.default.overrides]]
 filter = "binary(guards) | binary(journal)"
 priority = 100
+slow-timeout = { period = "30s", terminate-after = 2 }

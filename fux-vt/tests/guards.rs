@@ -133,24 +133,32 @@ fn prints_heap_is_the_room_of_their_text_and_runs() -> Result {
 }
 
 /// B35, the work budget (budget.rs, `CEILING`'s `50_000_000 * 20` with
-/// `+`): a call stops at the first look once it has spent half the frozen
-/// ceiling U (threats.md 4.4: U is 50 M units, a cell 1/4 of a unit).
-/// `a ESC[65535b` asks for 65,535 copies, each a cell: 16,383.75 units,
-/// all spent at the REP, so the stop is after the REP of pair
-/// ceil(25 M / 16,383.75) = 1,526, whatever the screen keeps of them.
+/// `+`): a call stops once it has spent half the ceiling, and not before.
+/// What fux-vt's counters charge a DECALN of the whole 50x200 screen
+/// (`Work::cost`) is at least what the budget spends on it, so the stop
+/// comes after ceil(`CEILING` / 2 / that) of them, or later.
+/// The frozen ceiling U (threats.md 4.4, P14), in twentieths of a unit.
+#[cfg(feature = "checks")]
+const CEILING: u64 = 50_000_000 * 20;
+
+#[cfg(feature = "checks")]
 #[test]
-fn a_call_stops_at_the_budget_after_25_million_units() -> Result {
-    let pair = "a\x1b[65535b";
-    // In quarters of a unit: the half ceiling, and one REP's copies.
-    let (half, rep) = (25_000_000u64 * 4, 65_535u64);
-    let pairs = half.div_ceil(rep);
-    assert_eq!(pairs, 1_526);
-    let mut p = Parser::new(Size::new(2, 10)?, 0)?;
-    let before = times(pair, 1_525);
-    assert_eq!(p.process_until_stop(before.as_bytes(), &mut Deaf)?, None);
-    let mut p = Parser::new(Size::new(2, 10)?, 0)?;
-    match p.process_until_stop(times(pair, 2_000).as_bytes(), &mut Deaf)? {
-        Some((taken, Stop::Budget)) => assert_eq!(taken, 1_526 * pair.len()),
+fn a_call_stops_at_half_the_ceiling_and_not_before() -> Result {
+    let align = b"\x1b#8";
+    let size = Size::new(50, 200)?;
+    let mut p = Parser::new(size, 0)?;
+    let before = fux_vt::Work::now();
+    p.process(align)?;
+    let cost = fux_vt::Work::now().since(before).cost().max(1);
+    // U, the frozen ceiling (threats.md 4.4, P14): 50 M units, in twentieths.
+    let least = (CEILING / 2).div_ceil(cost);
+    let input = times_bytes(align, usize::try_from(least.saturating_mul(4))?);
+    let mut p = Parser::new(size, 0)?;
+    match p.process_until_stop(&input, &mut Deaf)? {
+        Some((taken, Stop::Budget)) => {
+            let done = u64::try_from(taken.checked_div(align.len()).unwrap_or(0))?;
+            assert!(done >= least, "stopped after {done} of at least {least}");
+        }
         other => return Err(format!("stopped as {other:?}").into()),
     }
     Ok(())
@@ -886,5 +894,53 @@ fn a_repeat_with_no_copy_to_a_row_spends_nothing() -> Result {
     let mut p = Parser::new(Size::new(2, 1)?, 0)?;
     let input = times("\u{4e00}\x1b[65535b", 2000);
     assert_eq!(p.process_until_stop(input.as_bytes(), &mut Deaf)?, None);
+    Ok(())
+}
+
+/// B14, `Links::sweep`'s `live <= half` (link.rs, `<=` to `>`): a link past the bound takes the links of the oldest history rows, as many as leave the rest at half the bound, not only the oldest row's.
+#[test]
+fn a_sweep_takes_the_oldest_links_until_half_the_bound_is_left() -> Result {
+    // As many of the longest links as cost at most half the bound.
+    const HALF_FIT: usize = LINKS_HELD / 2 / LONGEST;
+    let mut p = Parser::with_options(
+        Size::new(1, 80)?,
+        4 << 20,
+        Options::new().with(Feature::Hyperlinks),
+    )?;
+    // `FIT` links fill the bound, a row of history each; the next one
+    // sweeps: the oldest `FIT - HALF_FIT` rows lose theirs, and it fits.
+    let line = [link_of(URI_LIMIT).as_slice(), b"\r\n"].concat();
+    p.process(&times_bytes(&line, FIT + 1))?;
+    let linked: Vec<bool> = p.screen().rows().map(|r| r.link(0).is_some()).collect();
+    let rows = FIT + 2;
+    assert_eq!(linked, runs_of(0, FIT - HALF_FIT, HALF_FIT + 1, rows));
+    Ok(())
+}
+
+/// B25, `csi`'s window `window.len() > limit` (decode.rs, `>` to `>=`): a key CSI of 32 parameter bytes is within its window, so at the timeout it is Alt-[ and the 32 bytes typed, not dropped.
+#[test]
+fn a_key_csi_of_32_parameter_bytes_is_typed_at_the_timeout() {
+    let mut read = b"\x1b[".to_vec();
+    read.resize(34, b'1');
+    let mut d = Decoder::default();
+    let mut out = Vec::new();
+    d.bytes(&read, &mut out);
+    assert!(out.is_empty(), "{out:?}");
+    d.timeout(&mut out);
+    assert_eq!(out.len(), 33, "{out:?}");
+    assert!(out.iter().all(|i| matches!(i, Input::Key(_))), "{out:?}");
+}
+
+/// B33 and B34, `Screen::repeat`'s non-ASCII copies loop (screen.rs, `>` to `>=`): REP of a non-ASCII glyph makes its copies and returns.
+#[test]
+fn repeat_makes_its_non_ascii_copies_and_returns() -> Result {
+    let shown = in_time(|| {
+        let mut p = Parser::new(Size::new(2, 10).map_err(|e| e.to_string())?, 0)
+            .map_err(|e| e.to_string())?;
+        p.process("é\x1b[3bz".as_bytes())
+            .map_err(|e| e.to_string())?;
+        Ok(lines::lines(&p))
+    })?;
+    assert_eq!(shown, ["ééééz", ""]);
     Ok(())
 }
