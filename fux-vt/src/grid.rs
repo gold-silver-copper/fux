@@ -1944,6 +1944,13 @@ impl Grid {
                 }
             }
         }
+        // Scrolled down to the screen's last row, a row goes on in none:
+        // its soft wrap ends, as xterm 411 ends it (`replay --engines xterm
+        // --size 6x1 '~!@#\e[3T'`), where a region's last row above it
+        // keeps its own (`'~!@#\e[1;5r\e[10H\e[3T'`).
+        if !up && count < region.len() && bottom == self.size.lines().last() {
+            self.wrap(bottom, false, version);
+        }
         // The rows brought in, in the slots of those that left, have none
         // of their links.
         if !self.links.none() {

@@ -3689,8 +3689,13 @@ impl Screen {
                         self.restore();
                     }
                 }
+                // The clear 1047 deferred to now was xterm's on leaving,
+                // which ended a wrap pending then: one pending since, the
+                // cursor's on the primary screen, goes on with it.
                 if let Some(pen) = self.terminal.clear_on_show.take_if(|_| on) {
+                    let pending = self.alternate.cursor.pending_wrap;
                     self.clear_alternate(pen)?;
+                    self.alternate.cursor.pending_wrap = pending;
                 }
             }
             Kind::CursorBlink => {

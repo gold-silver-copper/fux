@@ -690,3 +690,42 @@ fn a_resize_at_the_same_width_keeps_the_soft_wraps() -> Result {
     assert_eq!(wrapped(&p), [false, false]);
     Ok(())
 }
+
+/// A scroll down to the screen's last row leaves that row going on in no
+/// row: its soft wrap ends, as xterm 411 ends it (with Ghostty, libvterm,
+/// avt, vt100 and tmux: `fux-vt-compare replay --engines all --size 5x1
+/// '67' '\e[4T'`); a region's last row above it keeps its own, as xterm
+/// keeps it (`--size 6x1 '~!@#\e[1;5r\e[10H\e[3T'`).
+#[test]
+fn a_scroll_down_ends_the_soft_wrap_of_the_screens_last_row() -> Result {
+    let wrapped = |input: &[u8], rows: u16| -> Result<Vec<bool>> {
+        let mut p = Parser::new(Size::new(rows, 1)?, 0)?;
+        p.process(input)?;
+        Ok(p.screen().rows().map(|r| r.wrapped()).collect())
+    };
+    assert_eq!(wrapped(b"67\x1b[4T", 5)?, [false; 5]);
+    assert_eq!(
+        wrapped(b"~!@#\x1b[3T", 6)?,
+        [false, false, false, true, true, false]
+    );
+    assert_eq!(
+        wrapped(b"~!@#\x1b[1;5r\x1b[10H\x1b[3T", 6)?,
+        [false, false, false, true, true, false]
+    );
+    Ok(())
+}
+
+/// Showing the alternate screen again after mode 1047 left it keeps the
+/// wrap pending on the primary screen: the clear 1047 put off to then was
+/// xterm's on leaving, which ended only the wrap pending at that time (all
+/// eight engines; `replay --engines all --size 1x4 '\e[?47h' 'ld' '@#'
+/// '89' ' ' '\e[?1047l' ' ' '\e[?47h' ' '`).
+#[test]
+fn showing_the_alternate_screen_again_keeps_the_wrap_pending() -> Result {
+    let mut p = Parser::new(Size::new(1, 4)?, 0)?;
+    p.process(b"\x1b[?47hld@#89 \x1b[?1047l \x1b[?47h")?;
+    assert!(p.screen().pending_wrap());
+    p.process(b" ")?;
+    assert_eq!(p.screen().cursor_position(), (0, 1));
+    Ok(())
+}
