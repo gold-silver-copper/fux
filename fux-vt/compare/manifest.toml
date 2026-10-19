@@ -253,85 +253,85 @@ needs = []
 [[check]]
 name = "fuzz-protocol"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run protocol --fuzz-dir fuzz"
+command = "cargo +nightly fuzz run protocol --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-paint"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run paint --fuzz-dir fuzz"
+command = "cargo +nightly fuzz run paint --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-layout"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run layout --fuzz-dir fuzz"
+command = "cargo +nightly fuzz run layout --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-config"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run config --fuzz-dir fuzz -- -dict=fuzz/config.dict"
+command = "cargo +nightly fuzz run config --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-session"
 schedule = "fuzz"
-command = "ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fuzz -- -dict=fuzz/session.dict"
+command = "cargo +nightly fuzz run session --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-fuxth_tokens"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run fuxth_tokens --fuzz-dir fuzz -- -dict=fuzz/fuxth.dict"
+command = "cargo +nightly fuzz run fuxth_tokens --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-fuxth_run"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run fuxth_run --fuzz-dir fuzz -- -dict=fuzz/fuxth.dict"
+command = "cargo +nightly fuzz run fuxth_run --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-fuxth_pause"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run fuxth_pause --fuzz-dir fuzz -- -dict=fuzz/fuxth.dict"
+command = "cargo +nightly fuzz run fuxth_pause --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-terminal"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz -- -dict=fux-vt/fuzz/terminal.dict"
+command = "cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-deep"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run deep --fuzz-dir fux-vt/fuzz -- -max_len=65536 -dict=fux-vt/fuzz/terminal.dict -timeout=60"
+command = "cargo +nightly fuzz run deep --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-keys"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz"
+command = "cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-graphemes"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run graphemes --fuzz-dir fux-vt/fuzz"
+command = "cargo +nightly fuzz run graphemes --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-cells"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run cells --fuzz-dir fux-vt/fuzz"
+command = "cargo +nightly fuzz run cells --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "fuzz-oracle"
 schedule = "fuzz"
-command = "cargo +nightly fuzz run oracle --fuzz-dir diff/fuzz -- -dict=fux-vt/fuzz/terminal.dict"
+command = "cargo +nightly fuzz run oracle --fuzz-dir diff/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
 needs = ["nightly Rust", "cargo-fuzz", "the oracle's pin"]
 
 # --- compare.yml, on request ------------------------------------------------
@@ -377,7 +377,7 @@ needs = ["nightly Rust", "cargo-fuzz"]
 [[check]]
 name = "nightly-fuzz-explore"
 schedule = "nightly"
-command = "cargo +nightly fuzz run TARGET -- -max_total_time=300 (fux-vt's five targets and the oracle, each a job, a cached corpus)"
+command = "cargo +nightly fuzz run TARGET -- -max_total_time=300 (fux-vt's six targets and the oracle, each a job, a cached corpus)"
 needs = ["nightly Rust", "cargo-fuzz", "an Actions cache"]
 
 [[check]]
