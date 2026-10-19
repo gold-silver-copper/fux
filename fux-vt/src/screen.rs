@@ -1385,7 +1385,7 @@ impl Screen {
     #[inline]
     fn printed_as(&mut self, changed: bool, row: u16, cols: Range<u16>, text: &str) {
         if !changed {
-            self.printed_over_itself(row, cols, text);
+            self.printed_over_itself(row, cols, text.as_bytes());
             return;
         }
         if self.prints.as_ref().is_some_and(Prints::holds) {
@@ -1393,17 +1393,18 @@ impl Screen {
         }
         self.printed(row, cols, text);
     }
-    /// `printed_as` of a glyph that changed no cell. Out of line, beside
-    /// the text that changed cells.
+    /// `printed_as` of a glyph that changed no cell, its text as bytes:
+    /// read as text only if it is recorded, as it seldom is. Out of line,
+    /// beside the text that changed cells.
     #[inline(never)]
-    fn printed_over_itself(&mut self, row: u16, cols: Range<u16>, text: &str) {
+    fn printed_over_itself(&mut self, row: u16, cols: Range<u16>, text: &[u8]) {
         let Some(id) = self.grid().live_id(row) else {
             return;
         };
         if let Some(prints) = &mut self.prints
             && prints.unchanged(id, cols.clone())
         {
-            prints.push(id, cols, text);
+            prints.push(id, cols, str::from_utf8(text).unwrap_or_default());
         }
     }
     /// Records the glyphs held that end at `col` of live row `row`, as
@@ -2591,9 +2592,13 @@ impl Screen {
                     written @ (Written::All | Written::Same) => {
                         if self.prints.is_some() {
                             let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
-                            let text = str::from_utf8(run).unwrap_or_default();
-                            let changed = matches!(written, Written::All);
-                            self.printed_as(changed, row, col..end, text);
+                            match written {
+                                Written::Same => self.printed_over_itself(row, col..end, run),
+                                Written::All | Written::Before(_) => {
+                                    let text = str::from_utf8(run).unwrap_or_default();
+                                    self.printed_as(true, row, col..end, text);
+                                }
+                            }
                         }
                         break true;
                     }
@@ -2646,9 +2651,14 @@ impl Screen {
         match self.with_grid(|g, _, v| g.write_ascii(row, col, &[byte], style, v)) {
             written @ (Written::All | Written::Same) => {
                 if self.prints.is_some() {
-                    let text = str::from_utf8(std::slice::from_ref(&byte)).unwrap_or_default();
-                    let changed = matches!(written, Written::All);
-                    self.printed_as(changed, row, col..col.saturating_add(1), text);
+                    let cols = col..col.saturating_add(1);
+                    match written {
+                        Written::Same => self.printed_over_itself(row, cols, &[byte]),
+                        Written::All | Written::Before(_) => {
+                            let text = str::from_utf8(std::slice::from_ref(&byte));
+                            self.printed_as(true, row, cols, text.unwrap_or_default());
+                        }
+                    }
                 }
             }
             Written::Before(_) => return false,
