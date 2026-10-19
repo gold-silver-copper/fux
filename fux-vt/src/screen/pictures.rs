@@ -201,6 +201,9 @@ impl Screen {
         // was.
         let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
         let down = u16::try_from(down).unwrap_or(u16::MAX);
+        // At most 8 rows below it: a new line goes down as many rows as the
+        // aspect ratio makes six pixel rows, so a few bytes could otherwise
+        // ask for any number of line feeds (B05).
         if let Some(cursor) = display {
             self.grid_mut().cursor = cursor;
         } else {
