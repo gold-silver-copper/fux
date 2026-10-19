@@ -36,7 +36,7 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
 /// at a time without asking what `print` asks of each. It must do what
 /// `print` does, character by character, in every context that changes
 /// a glyph's printing: margins, origin mode, double-width rows, wide
-/// glyphs overwritten at either half, a pending wrap, autowrap off,
+/// glyphs overwritten at either half or whole, a pending wrap, autowrap off,
 /// protection, both screens, insert mode, an open link, a Prepend left by
 /// the call before, recorded prints, DEC Special Graphics, and glyphs
 /// already there between ones that change.
@@ -48,6 +48,8 @@ fn the_text_run_path_equals_scalar_dispatch_in_context() -> Result<(), Error> {
         "\x1b[?69h\x1b[3;8s\x1b[1;5H",
         "\x1b[?69h\x1b[3;8s\x1b[?6h",
         "\x1b#6",
+        "\x1b[2;3H界界界界\x1b[2;3H",
+        "\x1b[2;3H界a界界\x1b[2;3H",
         "\x1b[2;3H界界界界\x1b[2;4H",
         "\x1b[2;3H界界界界\x1b[2;3Hx",
         "\x1b[1;11Hx",

@@ -1894,7 +1894,17 @@ impl Screen {
                     let halves = |cell: Option<&Compact>| {
                         cell.is_none_or(|c| c.is_wide() || c.is_wide_continuation())
                     };
-                    if halves(cells.get(i)) || (wide && halves(cells.get(i + 1))) {
+                    // A glyph on no half of a wide one; or a wide glyph on
+                    // the first half of one, and so on both its halves,
+                    // which `print` leaves as the new glyph alone.
+                    let over = if wide {
+                        let first = cells.get(i);
+                        (!halves(first) && !halves(cells.get(i + 1)))
+                            || first.is_some_and(Compact::is_wide)
+                    } else {
+                        !halves(cells.get(i))
+                    };
+                    if !over {
                         stopped = Some((c, properties));
                         break;
                     }
