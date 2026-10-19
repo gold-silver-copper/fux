@@ -8,9 +8,7 @@
 use fux_vt::{Feature, Identity, Options, Parser, Size};
 use libfuzzer_sys::fuzz_target;
 mod common;
-use common::{
-    Record, marks_sound, pick, places, prints_bounded, rows, until_stops, versions_follow,
-};
+use common::{Record, Rows, marks_sound, pick, prints_bounded, until_stops, versions_follow};
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
@@ -67,6 +65,9 @@ fuzz_target!(|data: &[u8]| {
     // places neither whole nor byte-at-a-time processing puts a break.
     let mut chunked = whole.clone();
     let mut input = data.get(3..).unwrap_or_default();
+    // The rows of `whole` as the last operation left them, hashed once for
+    // the next to compare against; a resize forgets them.
+    let mut kept = None;
     while let Some((&operation, tail)) = input.split_first() {
         input = tail;
         match operation {
@@ -95,6 +96,7 @@ fuzz_target!(|data: &[u8]| {
                     assert!(!whole.screen().full_refresh_since(mark));
                 }
                 assert!(split.resize(size).is_ok());
+                kept = None;
             }
             0xfe => {
                 let Some(parameters) = input.get(..8) else {
@@ -149,18 +151,24 @@ fuzz_target!(|data: &[u8]| {
                 };
                 let mut a = Record::default();
                 let mut b = Record::default();
-                let (before, at, mark) = (rows(&whole), places(&whole), whole.screen().mark());
+                let before = kept.take().unwrap_or_else(|| Rows::of(&whole));
+                let mark = whole.screen().mark();
                 assert!(whole.process_with(bytes, &mut a).is_ok());
-                versions_follow(&before, &whole);
-                marks_sound(&at, mark, &whole);
+                let after = Rows::of(&whole);
+                versions_follow(&before, &after);
+                marks_sound(&before, mark, &whole, &after);
+                kept = Some(after);
                 // A byte at a time, each byte's changes checked too: a row
                 // changed and changed back within an operation still takes
-                // a new version (the screen is small, its rows few).
+                // a new version (the screen is small, its rows few). The
+                // rows after a byte are those before the next.
+                let mut was = Rows::of(&split);
                 for byte in bytes {
                     let one = std::slice::from_ref(byte);
-                    let before = rows(&split);
                     assert!(split.process_with(one, &mut b).is_ok());
-                    versions_follow(&before, &split);
+                    let now = Rows::of(&split);
+                    versions_follow(&was, &now);
+                    was = now;
                 }
                 assert_eq!(a, b);
                 let mut c = Record::default();
