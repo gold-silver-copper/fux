@@ -136,7 +136,9 @@ pub fn run(json: &Path) -> Result<bool, String> {
     println!("\nfux-diff --speed");
     let diff = shown(
         Command::new("cargo")
-            .args(["run", "--release", "--quiet", "--manifest-path"])
+            .args(["run", "--release", "--quiet", "-j"])
+            .arg(crate::default_jobs().to_string())
+            .arg("--manifest-path")
             .arg(root.join("diff/Cargo.toml"))
             .args(["--", "--speed"])
             .current_dir(&root),

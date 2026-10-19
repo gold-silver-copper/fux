@@ -57,6 +57,30 @@ feel       real servers on sockets of their own, each with a client on a
 The JSON goes to FILE, by default bench/target/fux-bench/against.json
 (info.json for info, feel.json for feel).";
 
+/// The threads a run counts on, and the jobs its cargo builds take,
+/// unless `--jobs` says: CARGO_BUILD_JOBS, as a shared machine's limit sets
+/// it, else 4, never every core (speed-method.md: a run beside other work
+/// takes few).
+pub fn default_jobs() -> usize {
+    jobs_from(std::env::var("CARGO_BUILD_JOBS").ok().as_deref())
+}
+
+/// `default_jobs` from CARGO_BUILD_JOBS's value, if any.
+fn jobs_from(var: Option<&str>) -> usize {
+    var.and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4)
+}
+
+#[cfg(test)]
+#[test]
+fn jobs_are_cargo_build_jobs_or_four() {
+    assert_eq!(jobs_from(Some("8")), 8);
+    assert_eq!(jobs_from(None), 4);
+    assert_eq!(jobs_from(Some("0")), 4);
+    assert_eq!(jobs_from(Some("all")), 4);
+}
+
 /// Where results go unless `--json` says.
 pub fn results(name: &str) -> PathBuf {
     against::root().join("bench/target/fux-bench").join(name)
@@ -118,7 +142,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
     let mut options = against::Options {
         reference: "master".into(),
         repeats: 15,
-        jobs: std::thread::available_parallelism().map_or(4, usize::from),
+        jobs: default_jobs(),
         floors: None,
         calibrate: false,
         only: Vec::new(),

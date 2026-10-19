@@ -142,8 +142,8 @@ fn build(
     root: &Path,
     place: &Path,
     side: &str,
-    tree: &str,
-    other: &str,
+    (tree, other): (&str, &str),
+    jobs: usize,
 ) -> Result<PathBuf, String> {
     let bin = place.join("bin");
     std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
@@ -182,7 +182,14 @@ fn build(
     }
     let bench = src.join("bench");
     let out = Command::new("cargo")
-        .args(["build", "--release", "--quiet", "--manifest-path"])
+        .args([
+            "build",
+            "--release",
+            "--quiet",
+            "-j",
+            &jobs.to_string(),
+            "--manifest-path",
+        ])
         .arg(bench.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(place.join("target"))
@@ -447,20 +454,48 @@ fn tail(n: usize, k: usize) -> f64 {
 }
 
 /// Floors from a calibration's JSON: each workload's floor, by name.
-fn read_floors(path: &Path) -> Result<std::collections::BTreeMap<String, f64>, String> {
+fn read_floors(
+    path: &Path,
+    (counter, setup): (&str, &str),
+) -> Result<std::collections::BTreeMap<String, f64>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    if json.get("kind").and_then(serde_json::Value::as_str) != Some("fux-bench calibration") {
+    floors_of(&json, (counter, setup)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The machine a count was made on, as its counter's report says: its
+/// PMU and CPU lines (`perf.sh`'s `pmu NAME CPUS` and `cpu N MODEL`).
+fn machine(setup: &str) -> Vec<&str> {
+    (setup.lines())
+        .filter(|l| l.starts_with("pmu ") || l.starts_with("cpu "))
+        .collect()
+}
+
+/// Each workload's floor in a calibration's JSON, if it was made by the
+/// counter this run counts with (`counter`, its report `setup`) on this
+/// machine: a floor is a spread of one counter on one machine.
+fn floors_of(
+    json: &serde_json::Value,
+    (counter, setup): (&str, &str),
+) -> Result<std::collections::BTreeMap<String, f64>, String> {
+    let field = |name: &str| json.get(name).and_then(serde_json::Value::as_str);
+    if field("kind") != Some("fux-bench calibration") {
+        return Err("not a calibration (--calibrate)".into());
+    }
+    if field("counter") != Some(counter) {
         return Err(format!(
-            "{}: not a calibration (--calibrate)",
-            path.display()
+            "calibrated by {}, and this run counts by {counter}",
+            field("counter").unwrap_or("an unnamed counter")
         ));
+    }
+    if machine(field("counter_setup").unwrap_or_default()) != machine(setup) {
+        return Err("calibrated on another machine: its CPUs or PMUs are not this one's".into());
     }
     let rows = json
         .get("workloads")
         .and_then(serde_json::Value::as_array)
-        .ok_or(format!("{}: no workloads", path.display()))?;
+        .ok_or("no workloads")?;
     Ok(rows
         .iter()
         .filter_map(|w| {
@@ -493,6 +528,11 @@ pub fn run(options: &Options) -> Result<bool, String> {
     let head = git(&root, &["rev-parse", "HEAD"])?;
     let dirty = !git(&root, &["status", "--porcelain"])?.is_empty();
     let (counter, counter_setup) = Counter::detect()?;
+    // Read before the counts, so a floors file that can't be used stops
+    // the run at once.
+    let floors = (options.floors.as_deref())
+        .map(|path| read_floors(path, (counter.name(), &counter_setup)))
+        .transpose()?;
     let corpus = crate::corpus::dir(&root);
     let recordings = crate::corpus::recordings(&corpus)?;
     let specs: Vec<workloads::Spec> = workloads::list(&recordings)
@@ -521,8 +561,8 @@ pub fn run(options: &Options) -> Result<bool, String> {
         place.display()
     );
     let build_started = Instant::now();
-    let old = build(&root, &place, "old", &old_tree, &new_tree)?;
-    let new = build(&root, &place, "new", &new_tree, &old_tree)?;
+    let old = build(&root, &place, "old", (&old_tree, &new_tree), options.jobs)?;
+    let new = build(&root, &place, "new", (&new_tree, &old_tree), options.jobs)?;
     let build_secs = build_started.elapsed().as_secs_f64();
     // Run from names of one length, copied, so a build meanwhile cannot
     // change them.
@@ -613,7 +653,6 @@ pub fn run(options: &Options) -> Result<bool, String> {
         }
     }
 
-    let floors = options.floors.as_deref().map(read_floors).transpose()?;
     let calibrating = options.calibrate;
     let mut table = format!(
         "instructions retired, {} (REF {short}) vs the working tree ({}{}): the median of {} \
@@ -821,7 +860,34 @@ fn hash_by(path: &Path, programs: &[(&str, &[&str])]) -> Result<String, String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{FLOOR_MIN, Verdict, floor_of, hash_by, paired, signs, tail, verdict};
+    use super::{FLOOR_MIN, Verdict, floor_of, floors_of, hash_by, paired, signs, tail, verdict};
+
+    /// A floors file is used only for the counter and the machine it was
+    /// calibrated with: a calibration by another counter, or on CPUs or
+    /// PMUs not this machine's, is refused.
+    #[test]
+    fn floors_are_of_one_counter_on_one_machine() {
+        let setup =
+            "perf version 7.2.3\ncpus all\naslr off\ncpu 0 Intel i5-9600K\ncpu 1 Intel i5-9600K";
+        let calibration = |counter: &str, setup: &str| {
+            serde_json::json!({
+                "kind": "fux-bench calibration", "counter": counter, "counter_setup": setup,
+                "workloads": [{ "name": "vt/ascii", "floor_percent": 0.3 }],
+            })
+        };
+        let perf = "bench/perf.sh (perf stat -e instructions:u, pinned, unscaled)";
+        let floors = floors_of(&calibration(perf, setup), (perf, setup));
+        assert!(floors.is_ok_and(|f| f.get("vt/ascii").is_some_and(|f| (f - 0.003).abs() < 1e-12)));
+        // perf of another version on the same CPUs: the same machine.
+        let newer = setup.replace("7.2.3", "7.3.0");
+        assert!(floors_of(&calibration(perf, &newer), (perf, setup)).is_ok());
+        let time = "/usr/bin/time -l (instructions retired)";
+        assert!(floors_of(&calibration(time, setup), (perf, setup)).is_err());
+        let other = "perf version 7.2.3\ncpus all\naslr off\ncpu 0 Apple M4\ncpu 1 Apple M4";
+        assert!(floors_of(&calibration(perf, other), (perf, setup)).is_err());
+        let against = serde_json::json!({ "kind": "fux-bench against" });
+        assert!(floors_of(&against, (perf, setup)).is_err());
+    }
 
     /// A file's SHA-256 is asked of each program in turn: one that fails,
     /// is missing, or prints no 64 hex digits (`true`) is passed over
