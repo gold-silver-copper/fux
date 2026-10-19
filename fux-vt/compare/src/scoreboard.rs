@@ -598,7 +598,12 @@ fn ranked(dir: &Path) -> Vec<Ranked> {
             .into_iter()
             .flatten()
         {
+            // A workload has a row for each retention: each is named so.
             let name = workload.get("name").and_then(Value::as_str).unwrap_or("?");
+            let name = match workload.get("retention").and_then(Value::as_str) {
+                Some(retention) => format!("{name} ({retention})"),
+                None => name.to_owned(),
+            };
             let engines = workload.get("engines").and_then(Value::as_object);
             let figures: Vec<(String, f64)> = engines
                 .into_iter()
@@ -1057,9 +1062,12 @@ mod tests {
     #[test]
     fn rows_are_ranked_past_the_floors_their_tools_measure() -> Result<(), String> {
         let dir = dir("floors")?;
-        let instructions = json!({"workloads": [{"name": "ascii", "engines": {
+        let instructions = json!({"workloads": [{"name": "ascii", "retention": "equal-budget", "engines": {
             "fux-vt": {"per_byte": 100.0, "noise_percent": 0.01},
             "ghostty": {"per_byte": 100.1, "noise_percent": 0.01},
+        }}, {"name": "ascii", "retention": "equal-retention", "engines": {
+            "fux-vt": {"per_byte": 90.0, "noise_percent": 0.01},
+            "ghostty": {"per_byte": 100.0, "noise_percent": 0.01},
         }}]});
         let info = json!({"engines_mb_per_s": {"equal-budget, in process": {
             "ascii": {"fux-vt": 210.5, "ghostty": 180.0},
@@ -1071,8 +1079,11 @@ mod tests {
         }
         let rows = super::ranked(&dir);
         let row = |measure: &str| rows.iter().find(|r| r.measure.contains(measure));
-        let per_byte = row("instructions per byte: ascii").ok_or("no instructions row")?;
+        let per_byte = row("instructions per byte: ascii (equal-budget)").ok_or("no budget row")?;
         assert_eq!(per_byte.standing, super::Standing::Tie);
+        let none =
+            row("instructions per byte: ascii (equal-retention)").ok_or("no retention row")?;
+        assert_eq!(none.standing, super::Standing::Ahead);
         let mbs = row("MB/s").ok_or("no MB/s row")?;
         assert!(mbs.measure.contains("equal-budget, in process") && mbs.measure.contains("ascii"));
         assert!(matches!(mbs.standing, super::Standing::Unranked(_)));
