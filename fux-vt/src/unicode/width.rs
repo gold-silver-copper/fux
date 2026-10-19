@@ -3,18 +3,26 @@
 //!
 //! A character's width is unicode-width 0.2.2's for Unicode 17.0.0 (its
 //! `scripts/unicode.py`), generated into fux-vt's table by `fux-vt/gen`,
-//! with two departures, each as glibc's wcwidth has it: U+17D8 KHMER SIGN
-//! BEYYAL, which it makes 3 columns, takes 1, as in xterm 411, since a cell
-//! holds 1 column or 2; and a spacing mark (General_Category Mc) it makes 0
-//! (one that is Grapheme_Extend, as U+09BE BENGALI VOWEL SIGN AA) takes 1,
-//! so a consonant and its spacing vowel sign take two columns, but for a
-//! spacing virama (Canonical_Combining_Class 9), which joins consonants.
+//! with two departures: U+17D8 KHMER SIGN BEYYAL, which it makes 3
+//! columns, takes 1, as in xterm 411 and glibc, since a cell holds 1
+//! column or 2; and a spacing mark (General_Category Mc) of
+//! Canonical_Combining_Class 0 it makes 0 (one that is Grapheme_Extend, as
+//! U+09BE BENGALI VOWEL SIGN AA) takes 1, as wcwidth 0.9.2 (ucs-detect's
+//! reference; decision 885) measures it, so a consonant and its spacing
+//! vowel sign take two columns. One of another class stays 0: a spacing
+//! virama (class 9), which joins consonants, as in wcwidth 0.9.2, where
+//! glibc gives it 1; and the Hangul tone marks, the Vietnamese reading
+//! marks (East Asian Wide, which glibc gives 2) and the musical stems and
+//! flags, which canonical ordering (Unicode 3.11) moves among the marks
+//! after them.
 //! Such a mark is the second half of a two-part vowel sign or a composed
 //! letter (U+09CB is U+09C7 U+09BE, U+0B94 U+0B92 U+0BD7), so right after
 //! another spacing mark it adds no column, and a cluster takes the columns
-//! of its form with each such pair composed (as glibc's widths summed over
-//! the NFC form): canonical equivalents take the same columns, even where
-//! a leading mark of no width was dropped (`Screen::print_as`).
+//! of its form with each such pair composed, as NFC composes them: each
+//! such mark is of class 0, which canonical ordering never moves and any
+//! character between blocks (Unicode 3.11), so canonical equivalents take
+//! the same columns, even where a leading mark of no width was dropped
+//! (`Screen::print_as`).
 //!
 //! A cluster's width is unicode-width 0.2.2's string width of that cluster
 //! alone (its `width_in_str`, read from the last character back), for the
@@ -24,7 +32,7 @@
 //! and Kirat Rai's vowel signs. Its rule that a Khmer letter subjoined by a
 //! coeng adds no column takes no part: the coeng (Mn) takes none and the
 //! letter its one, so a conjunct of two letters takes two columns, as
-//! glibc's widths summed make it. Its rules for ligatures
+//! wcwidth 0.9.2 and glibc's widths summed make it. Its rules for ligatures
 //! between characters that never share a cluster (Arabic Lam-Alef, Hebrew
 //! Alef-Lamed, Buginese, Tifinagh, Lisu and Old Turkic) take no part: a
 //! cluster is laid out alone. Text of several clusters takes the sum of

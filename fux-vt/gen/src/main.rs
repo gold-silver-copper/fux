@@ -31,7 +31,7 @@
 //! character's columns as unicode-width 0.2.2 counts them for Unicode
 //! 17.0.0 (its `scripts/unicode.py`: `load_zero_widths`, then East Asian
 //! Wide and Fullwidth as 2, the rest as 1), but U+17D8 at 1, not 3, and
-//! a spacing mark (Mc) it makes 0 at 1 unless a virama; and
+//! a spacing mark (Mc) of combining class 0 it makes 0 at 1; and
 //! the properties its string rule reads within a cluster.
 
 use std::collections::HashMap;
@@ -193,19 +193,24 @@ fn main() -> Result<()> {
     }
 
     let mut widths = widths(&breaks, &derived, &east_asian, &hangul, &props);
-    // A spacing mark (Mc) takes its column, as glibc's wcwidth has it, where
+    // A spacing mark (Mc) of Canonical_Combining_Class 0 takes its column,
+    // as wcwidth 0.9.2 (ucs-detect's reference) measures it, where
     // unicode-width makes one that is Grapheme_Extend zero: a consonant and
-    // its spacing vowel sign take two columns, as each takes one. A spacing
-    // virama (Canonical_Combining_Class 9, as U+A9C0 JAVANESE PANGKON) joins
-    // two consonants into one conjunct, and stays at none. Such a mark is
+    // its spacing vowel sign take two columns, as each takes one. One of
+    // another class stays at none: a spacing virama (9, as U+A9C0 JAVANESE
+    // PANGKON) joins two consonants into one conjunct, as wcwidth 0.9.2 has
+    // it, where glibc gives it 1; and the Hangul tone marks, the Vietnamese
+    // reading marks (East Asian Wide) and the musical stems and flags,
+    // which canonical ordering moves (Unicode 3.11), so a cluster's columns
+    // never depend on the order of its marks. Such a mark is
     // the second half of a two-part vowel sign's decomposition (U+09CB is
     // U+09C7 U+09BE): right after another spacing mark it adds none, and a
     // cluster takes the columns its pairs composed take
     // (`src/unicode/width.rs`): the cluster rule looks at the mark.
-    let (spacing, viramas) = spacing_marks(&data)?;
+    let (spacing, classless) = spacing_marks(&data)?;
     let mut widened = Vec::new();
     for code in 0..CODE_POINTS {
-        if spacing[code] && !viramas[code] && widths[code] == 0 {
+        if spacing[code] && classless[code] && widths[code] == 0 {
             widths[code] = 1;
             widened.push(code);
         }
@@ -504,20 +509,20 @@ fn compositions(data: &str, marks: &[usize]) -> Result<Vec<(usize, usize, usize)
 }
 
 /// Whether each code point is a spacing mark (General_Category Mc), and
-/// whether a virama (Canonical_Combining_Class 9), by UnicodeData.txt,
-/// where no Mc is given by a range.
+/// whether of Canonical_Combining_Class 0, by UnicodeData.txt, where no
+/// Mc is given by a range.
 fn spacing_marks(data: &str) -> Result<(Vec<bool>, Vec<bool>)> {
     let mut spacing = vec![false; CODE_POINTS];
-    let mut viramas = vec![false; CODE_POINTS];
+    let mut classless = vec![false; CODE_POINTS];
     for line in data.lines() {
         let fields: Vec<&str> = line.split(';').collect();
         if let [code, _, "Mc", ccc, ..] = fields[..] {
             let code = usize::from_str_radix(code, 16)?;
             spacing[code] = true;
-            viramas[code] = ccc == "9";
+            classless[code] = ccc == "0";
         }
     }
-    Ok((spacing, viramas))
+    Ok((spacing, classless))
 }
 
 /// The two-stage table in the block size that makes it smallest.

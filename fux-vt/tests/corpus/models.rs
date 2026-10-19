@@ -53,8 +53,8 @@ fn marks() -> &'static Marks {
 /// The columns `c` takes, by fux-vt's written width rule (its README, "A
 /// glyph", B32): unicode-width's, but a cell holds at most 2, so U+17D8,
 /// the one character unicode-width makes 3 columns wide, takes 1, as in
-/// xterm 411 and glibc; and a spacing mark it makes 0 (but a virama) takes
-/// 1, as in glibc.
+/// xterm 411 and glibc; and a spacing mark of combining class 0 it makes
+/// 0 takes 1, as in wcwidth 0.9.2.
 pub fn width(c: char) -> Option<usize> {
     if marks().0.contains(&c) {
         return Some(1);
@@ -62,16 +62,36 @@ pub fn width(c: char) -> Option<usize> {
     c.width().map(|w| if w > 2 { 1 } else { w })
 }
 
+/// The Khmer letters unicode-width 0.2.2 subjoins after a coeng (its
+/// `KHMER_COENG_ELIGIBLE_LETTER`).
+fn khmer_coeng_eligible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1780}'..='\u{1782}'
+            | '\u{1784}'..='\u{1787}'
+            | '\u{1789}'..='\u{178c}'
+            | '\u{178e}'..='\u{1793}'
+            | '\u{1795}'..='\u{1798}'
+            | '\u{179b}'..='\u{179d}'
+            | '\u{17a0}'
+            | '\u{17a2}'
+            | '\u{17a7}'
+            | '\u{17ab}'
+            | '\u{17ac}'
+            | '\u{17af}'
+    )
+}
+
 /// The columns `text` takes by the same rule: unicode-width's, each
 /// character it makes wider than 2 counted at 1, without its rule that a
-/// Khmer coeng takes a column back (the coeng takes none, its letter one),
+/// Khmer coeng takes a column back before a letter it subjoins (the coeng
+/// takes none, its letter one),
 /// each spacing mark it makes 0 and the rule 1 one more; but each
 /// character's alone in place of the columns of the text composed (each
 /// pair of a character and such a mark that composes canonically made
 /// one, from the start), where such a mark right after another spacing
 /// mark takes none.
 fn text_width(text: &str) -> usize {
-    let text: String = text.chars().filter(|&c| c != '\u{17d2}').collect();
     let over = text.chars().filter(|c| c.width().is_some_and(|w| w > 2));
     let extra = over
         .map(|c| c.width().unwrap_or(1).saturating_sub(1))
@@ -87,7 +107,15 @@ fn text_width(text: &str) -> usize {
     };
     // unicode-width's columns, the widened marks' one each, then the rule's
     // for the composed text in place of each character's alone.
+    // unicode-width takes a column back for each coeng before a letter it
+    // subjoins (its KHMER_COENG_ELIGIBLE_LETTER); the rule does not.
+    let subjoined = text
+        .chars()
+        .zip(text.chars().skip(1))
+        .filter(|&(c, next)| c == '\u{17d2}' && khmer_coeng_eligible(next))
+        .count();
     let base = (text.width().saturating_sub(extra))
+        .saturating_add(subjoined)
         .saturating_add(text.chars().filter(|c| widened.contains(c)).count());
     let summed = text.chars().map(alone).fold(0usize, usize::saturating_add);
     let mut rule = 0usize;

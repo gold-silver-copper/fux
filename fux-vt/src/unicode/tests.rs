@@ -174,8 +174,9 @@ fn departs(c: char) -> bool {
 
 /// fux-vt's widths (threats.md B32): no character takes more than 2
 /// columns, U+17D8 KHMER SIGN BEYYAL, the one unicode-width makes 3,
-/// takes 1, as in xterm 411; the 46 spacing marks (Mc, no virama) it makes
-/// 0, as Grapheme_Extend, take 1, as in glibc; every other is
+/// takes 1, as in xterm 411; the 34 spacing marks (Mc) of combining
+/// class 0 it makes 0, as Grapheme_Extend, take 1, as in wcwidth 0.9.2;
+/// every other is
 /// unicode-width 0.2.2's, of the same Unicode version as the tables.
 #[test]
 fn every_character_is_as_wide_as_the_width_rule_says() {
@@ -192,7 +193,7 @@ fn every_character_is_as_wide_as_the_width_rule_says() {
             spacing = spacing.saturating_add(1);
         }
     }
-    assert_eq!(spacing, 46);
+    assert_eq!(spacing, 34);
     for mark in [
         '\u{9be}',
         '\u{bbe}',
@@ -203,7 +204,12 @@ fn every_character_is_as_wide_as_the_width_rule_says() {
     ] {
         assert_eq!(crate::char_width(mark), Some(1), "{mark:?}");
     }
-    // Spacing viramas stay at none.
+    // Spacing marks of another class stay at none: viramas, the Hangul
+    // tone marks and Vietnamese reading marks (East Asian Wide), the
+    // musical stems.
+    for other in ['\u{302e}', '\u{16ff0}', '\u{1d165}', '\u{1d16e}'] {
+        assert_eq!(crate::char_width(other), Some(0), "{other:?}");
+    }
     for virama in ['\u{a9c0}', '\u{1134d}'] {
         assert_eq!(crate::char_width(virama), Some(0), "{virama:?}");
     }
@@ -348,7 +354,7 @@ fn a_cluster_is_as_wide_as_unicode_width_makes_it() {
 }
 
 /// fux-vt's departures in a cluster: a consonant and a spacing vowel sign
-/// take two columns, each one, as glibc's widths summed make them (ucs-detect
+/// take two columns, each one, as wcwidth 0.9.2 measures them (ucs-detect
 /// measures Bengali, Kannada, Malayalam, Sinhala, Tamil and Grantha so); a
 /// Khmer conjunct, two letters joined by a coeng (Mn, none), two; a spacing
 /// virama none, so a Javanese consonant and its pangkon one.
@@ -373,6 +379,12 @@ fn a_spacing_mark_and_a_coeng_conjunct_take_their_columns() {
         ("\u{dd9}\u{dcf}\u{dca}", 1),
         ("\u{b92}\u{bd7}", 1),
         ("\u{1d158}\u{1d165}", 1),
+        // A mark of another class between: canonical order and NFC.
+        ("\u{1d15f}\u{334}", 1),
+        ("\u{1d158}\u{334}\u{1d165}", 1),
+        ("\u{1d158}\u{1d165}\u{334}", 1),
+        ("\u{ac00}\u{302e}", 2),
+        ("a\u{302e}", 1),
     ] {
         assert!(one_cluster(text), "{text:?}");
         assert_eq!(crate::str_width(text), width, "{text:?}");
