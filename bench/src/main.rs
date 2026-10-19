@@ -5,6 +5,7 @@
 //! and what a person feels through real
 //! servers beside tmux, zellij and herdr (`feel`).
 mod against;
+mod calls;
 mod census;
 mod corpus;
 mod count;
@@ -28,6 +29,7 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--floors FILE | --flo
        fux-bench list
        fux-bench run WORKLOAD [--baseline] [--corpus DIR] [--payloads DIR]
        fux-bench time [--corpus DIR] [--payloads DIR] [WORKLOAD...]
+       fux-bench calls DIR
        fux-bench info [--json FILE]
        fux-bench feel [--muxes LIST] [--parts LIST] [--keys N] [--json FILE]
 
@@ -48,6 +50,9 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--floors FILE | --flo
 list       the workloads.
 run        one workload once (or its baseline), as `--against` counts it.
 time       each workload's thread CPU time here, best of 3, and MB/s.
+calls      the inputs fux-vt's bounds suite kept in DIR of its probes whose
+           calls took long with its counters on, timed again without
+           them: each one's longest call, best of 3 (worst-feed.sh).
 info       MB/s beside Ghostty and alacritty (fux-vt/compare's `run.sh
            bench`) and fux-diff's --speed: informational, not compared.
 feel       real servers on sockets of their own, each with a client on a
@@ -151,7 +156,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
     }
     let mut args = argv.into_iter().peekable();
     let command = match args.peek().map(String::as_str) {
-        Some(c @ ("list" | "run" | "time" | "info" | "feel")) => {
+        Some(c @ ("list" | "run" | "time" | "calls" | "info" | "feel")) => {
             let c = c.to_owned();
             args.next();
             c
@@ -236,6 +241,10 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             Ok(true)
         }
         "time" => time(&corpus, &payloads, &names),
+        "calls" => match names.as_slice() {
+            [dir] => calls::run(Path::new(dir)),
+            _ => Err(format!("calls takes one directory\n{USAGE}")),
+        },
         "info" => info::run(&options.json.unwrap_or_else(|| results("info.json"))),
         "feel" => {
             feel.json = options.json.unwrap_or_else(|| results("feel.json"));
