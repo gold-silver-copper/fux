@@ -38,10 +38,9 @@
 //! # Read
 //!
 //! - Cells and history: `CSI ? 11 i`, media copy of all pages: the saved
-//!   lines and the screen, or on the alternate screen that screen alone.
-//!   History read on the primary screen is kept, and given again while the
-//!   alternate screen is shown (the primary's history does not change
-//!   underneath it, except by a resize). Rows are decoded by
+//!   lines and the screen, or on the alternate screen that screen alone,
+//!   which has no history, as fux-vt's (`Screen::history_len` is the screen
+//!   in use's) and the panel's have none. Rows are decoded by
 //!   `pane::Reader` (see `pane::Glyphs::Xterm`). Each row ends with CR, then
 //!   LF unless it is soft-wrapped; the last row has no LF either way, and
 //!   reads as not soft-wrapped. (`CSI ? 10 i` would print only the
@@ -420,8 +419,6 @@ pub struct Xterm {
     print: PathBuf,
     rows: u16,
     cols: u16,
-    /// History as last read on the primary screen.
-    history: Vec<(String, bool)>,
     /// Whether the harness has sent xterm its own queries (a read or a
     /// resize) since the last output.
     asked: bool,
@@ -439,7 +436,6 @@ fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
         print,
         rows: setup.rows,
         cols: setup.cols,
-        history: Vec::new(),
         asked: false,
         owed: 0,
     };
@@ -625,11 +621,6 @@ impl Xterm {
             } else {
                 screen.push(line);
             }
-        }
-        if alternate {
-            history = self.history.clone();
-        } else {
-            self.history = history.clone();
         }
         let skip = history.len().saturating_sub(history_rows);
         Ok(Snapshot {
