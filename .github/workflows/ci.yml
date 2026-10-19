@@ -77,6 +77,9 @@ jobs:
           # and skips every fux-vt test.
           cargo fmt --all --check 2>&1 | tee "$CI_LOGS/fmt.log"
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/clippy.log"
+          # fux-vt's checker, bounds suite and seeds build only with its
+          # `checks` feature: linted with it too.
+          cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
           cargo test --workspace --locked 2>&1 | tee "$CI_LOGS/test.log"
 
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
@@ -108,12 +111,12 @@ jobs:
           cargo +1.95 check --workspace --all-targets --locked 2>&1 | tee "$CI_LOGS/msrv.log"
 
       - name: Excluded packages
-        # walk and the fuzz targets use fux and fux-vt by path, so an API
-        # change that breaks them breaks nothing in the workspace.
+        # walk, the fuzz targets and fux-bench use fux and fux-vt by path,
+        # so an API change that breaks them breaks nothing in the workspace.
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          for package in walk fuzz fux-vt/fuzz fux-vt/gen; do
+          for package in walk fuzz fux-vt/fuzz fux-vt/gen bench; do
             cargo fmt --manifest-path "$package/Cargo.toml" --all --check
             cargo clippy --manifest-path "$package/Cargo.toml" --all-targets --locked -- -D warnings
             cargo test --manifest-path "$package/Cargo.toml" --locked
