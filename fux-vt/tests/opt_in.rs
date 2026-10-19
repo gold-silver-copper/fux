@@ -761,8 +761,8 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
 /// (`xtermCheckRect`; ctlseqs, XTCHECKSUM): each character, plus 0x10
 /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16 bits
 /// and negated, four upper-case hex digits. An empty cell is a space; a
-/// character past Latin-1 is ESC; a DEC Special Graphics glyph, the code it
-/// was drawn with. The page is ignored, as in xterm (decisions.md 47); the
+/// character past Latin-1 is ESC; a DEC Special Graphics glyph, its DEC code
+/// (`rectangle_checksums_sum_a_designated_glyph_as_xterm_does`). The page is ignored, as in xterm (decisions.md 47); the
 /// rectangle defaults to the whole screen, and counts from the margins in
 /// origin mode. An inverted rectangle has "the sequence ... ignored" (DEC
 /// STD 070, DECRQCRA): no reply. Without the option, nothing is answered.
@@ -793,7 +793,7 @@ fn rectangle_checksums_sum_the_cells() -> Result {
     p.process_with(input.as_bytes(), &mut record)?;
     // Origin mode: row 1 is the top margin, row 3.
     p.process_with(b"\x1b[3;3r\x1b[?6hz\x1b[11;0;1;1;1;1*y", &mut record)?;
-    let whole: u16 = 0x61 + 0x62 + 0x63 + 0x80 + 0x64 + 0x30 + 0xe9 + 0x1b * 2 + 0x71 + 0x20 * 4;
+    let whole: u16 = 0x61 + 0x62 + 0x63 + 0x80 + 0x64 + 0x30 + 0xe9 + 0x1b * 2 + 0x1d + 0x20 * 4;
     let expected = [
         (1, checksum(0x61)),
         (2, checksum(0x61 + 0x62)),
@@ -801,7 +801,7 @@ fn rectangle_checksums_sum_the_cells() -> Result {
         (4, checksum(0x64 + 0x10 + 0x20)),
         (5, checksum(0xe9)),
         (6, checksum(0x1b * 2)),
-        (7, checksum(0x71)),
+        (7, checksum(0x1d)),
         (8, checksum(0x20)),
         (9, checksum(whole)),
         (11, checksum(0x7a)),
@@ -813,5 +813,45 @@ fn rectangle_checksums_sum_the_cells() -> Result {
             .replies
             .is_empty()
     );
+    Ok(())
+}
+
+/// DECRQCRA over glyphs of a designated set, with
+/// `Feature::RectangleChecksums`: each counts as the DEC code xterm 411
+/// sums for it (`xtermCheckRect` by default calls `xtermCharSetDec`, whose
+/// `unmap_DEC_Spec_Graphic` and `unmap_DEC_Supp_Graphic` give the code of
+/// the cell's byte in its set), not the byte drawn. Each value is xterm
+/// 411's own reply, read from it under Xvfb (`decTerminalID: 420`) for the
+/// same bytes: Special Graphics' ─ 0x1d, ▒ 0x78, π 0xc6, ≤ 0x85, ° 0xb0,
+/// · 0xb7, £ 0xa3, a bold ─ 0x9d; DEC Supplemental's (`ESC ( % 5`) Œ 0x97,
+/// Ÿ 0x98, œ 0x99, Á 0xc1, ¤ 0xa4, and an empty position ESC.
+#[test]
+fn rectangle_checksums_sum_a_designated_glyph_as_xterm_does() -> Result {
+    let options = Options::new().with(Feature::RectangleChecksums);
+    let mut p = Parser::with_options(Size::new(2, 8)?, 0, options)?;
+    let mut record = Record::default();
+    p.process(b"\x1b(0qa{yf~}\x1b[1mq\x1b[m\x1b(B\r\n\x1b(%5W]wA($\x1b(B")?;
+    let cells = (1..=8u16)
+        .map(|col| (1, col))
+        .chain((1..=6).map(|col| (2, col)));
+    let mut input = String::new();
+    for (row, col) in cells.clone() {
+        input.push_str(&format!("\x1b[{row}{col};0;{row};{col};{row};{col}*y"));
+    }
+    p.process_with(input.as_bytes(), &mut record)?;
+    let sums: [u16; 14] = [
+        0x1d, 0x78, 0xc6, 0x85, 0xb0, 0xb7, 0xa3, 0x9d, // Special Graphics
+        0x97, 0x98, 0x99, 0xc1, 0xa4, 0x1b, // DEC Supplemental
+    ];
+    let expected: Vec<String> = cells
+        .zip(sums)
+        .map(|((row, col), sum)| format!("\x1bP{row}{col}!~{:04X}\x1b\\", sum.wrapping_neg()))
+        .collect();
+    let replies: Vec<String> = record
+        .replies
+        .iter()
+        .map(|r| String::from_utf8_lossy(r).into_owned())
+        .collect();
+    assert_eq!(replies, expected);
     Ok(())
 }

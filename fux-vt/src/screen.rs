@@ -376,13 +376,13 @@ fn special_graphics(c: char) -> char {
 }
 
 /// What a cell adds to a DECRQCRA checksum (`Screen::rectangle_checksum`),
-/// as xterm counts it by default (`xtermCheckRect`, `xtermCharSetDec`):
-/// its character, a DEC Special Graphics glyph past Latin-1 as the code it
-/// is drawn with (0x60 to 0x7e), any other past Latin-1 or below a space as
-/// ESC; its combining marks as they are; and its VT100 attributes. The
-/// cell keeps the character, not the set it came from (README): the five
-/// Special Graphics glyphs within Latin-1, its blank, °, ±, £ and ·, count
-/// as Latin-1, DEC Supplemental's Œ, Ÿ and œ as ESC.
+/// as xterm 411 counts it by default (`xtermCheckRect`, `xtermCharSetDec`):
+/// its character within Latin-1, a DEC Special Graphics or DEC
+/// Supplemental glyph past it as its DEC code (`dec_code`), any other past
+/// Latin-1 or below a space as ESC; its combining marks as they are; and
+/// its VT100 attributes. Special Graphics' °, ±, £ and · count as their
+/// Latin-1 codes, the codes xterm gives them; its blank (0x5f) is kept as a
+/// space and counts as one.
 fn checksum_of(cell: &CellRef<'_>) -> u16 {
     const ESC: u16 = 0x1b;
     let mut chars = cell.contents().chars();
@@ -391,9 +391,7 @@ fn checksum_of(cell: &CellRef<'_>) -> u16 {
         None => 0x20,
         Some(c) => match u16::try_from(u32::from(c)) {
             Ok(code @ 0x20..=0xff) => code,
-            _ => (0x60u16..=0x7e)
-                .find(|&code| char::from_u32(u32::from(code)).map(special_graphics) == Some(c))
-                .unwrap_or(ESC),
+            _ => dec_code(c).unwrap_or(ESC),
         },
     };
     let marks = chars.fold(0u16, |sum, c| {
@@ -401,6 +399,46 @@ fn checksum_of(cell: &CellRef<'_>) -> u16 {
     });
     base.wrapping_add(marks)
         .wrapping_add(rendition_of(cell.attributes()))
+}
+
+/// The DEC code xterm 411 sums for a Special Graphics or DEC Supplemental
+/// glyph past Latin-1 (`unmap_DEC_Spec_Graphic`, `unmap_DEC_Supp_Graphic`
+/// in its charsets.h): the code of the glyph in DEC's internal set, not the
+/// byte it was drawn with.
+fn dec_code(c: char) -> Option<u16> {
+    Some(match c {
+        '◆' => 0x14,
+        '▒' => 0x78,
+        '␉' => 0x0a,
+        '␌' => 0x0d,
+        '␍' => 0x0e,
+        '␊' => 0x0b,
+        '␤' => 0x15,
+        '␋' => 0x0c,
+        '┘' => 0x16,
+        '┐' => 0x17,
+        '┌' => 0x18,
+        '└' => 0x19,
+        '┼' => 0x1a,
+        '⎺' => 0x1b,
+        '⎻' => 0x1c,
+        '─' => 0x1d,
+        '⎼' => 0x1e,
+        '⎽' => 0x1f,
+        '├' => 0x80,
+        '┤' => 0x81,
+        '┴' => 0x82,
+        '┬' => 0x83,
+        '│' => 0x84,
+        '≤' => 0x85,
+        '≥' => 0x86,
+        '≠' => 0x87,
+        'Œ' => 0x97,
+        'Ÿ' => 0x98,
+        'œ' => 0x99,
+        'π' => 0xc6,
+        _ => return None,
+    })
 }
 
 /// What a cell's VT100 attributes add to a DECRQCRA checksum
