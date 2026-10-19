@@ -1427,6 +1427,17 @@ impl Grid {
         let span = usize::from(start)..usize::from(end);
         work!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
+            // A span with no half of a wide glyph, and none protected that
+            // DECSERA would keep, as most are: erased a run at once.
+            if let Some(run) = cells.get_mut(span.clone()) {
+                let plain = match all {
+                    Some(_) => !Compact::any_halves(run),
+                    None => !Compact::any_protected_or_halves(run),
+                };
+                if plain {
+                    return Compact::space_all(run, all);
+                }
+            }
             // Whether the glyph before is protected.
             let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
             let before = before.filter(|_| all.is_none());
@@ -1514,49 +1525,124 @@ impl Grid {
     /// copied to have no link.
     pub fn copy_rectangle(&mut self, lines: Span, columns: Span, to: (u16, u16), version: u64) {
         let span = usize::from(columns.first())..usize::from(columns.end());
-        let source: Vec<(Vec<Compact>, Text)> = lines
-            .each()
-            .map(|y| {
-                let text = self.slot(y).and_then(|slot| self.texts.get(slot));
-                let cells = self.live_cells(y).get(span.clone()).unwrap_or_default();
-                let mut cells = cells.to_vec();
-                // Each cell read, then written; and the row's text cloned.
-                spend!(cells, cells.len().saturating_mul(2));
-                spend!(edits, cells.len());
-                spend!(text, text.map_or(0, Text::bytes));
-                // The half of a glyph the source's edge cuts.
-                if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
-                    *cut = cut.blanked();
-                }
-                if let Some(cut) = cells.last_mut().filter(|c| c.is_wide()) {
-                    *cut = cut.blanked();
-                }
-                (cells, text.cloned().unwrap_or_default())
-            })
-            .collect();
         let (row, col) = to;
         let end = col.saturating_add(columns.len()).min(self.size.cols());
-        for (y, (cells, text)) in (row..self.size.rows()).zip(source) {
+        // Each source row is read before any row is written over it: a
+        // copy down goes from the last row up, one up or across from the
+        // first down, and a row over itself moves its cells as one.
+        let mut rows: Vec<(u16, u16)> = lines.each().zip(row..self.size.rows()).collect();
+        if row > lines.first() {
+            rows.reverse();
+        }
+        for (from, y) in rows {
             // To a double-width line's end (DEC STD 070, 5.6.1).
             let end = end.min(self.row_end(y)).max(col);
-            self.mutate_line(y, version, end, |line| {
-                let span = usize::from(col)..usize::from(end);
-                line.clear_for(span.clone());
-                // A cell whose text is inline, or that has none, is copied
-                // as it is stored, as `copy_span` copies it; a cluster's
-                // text goes into the row's.
-                for (at, cell) in span.zip(&cells) {
-                    if cell.is_spilled() {
-                        line.set(at, *cell, text.of(cell));
-                    } else if let Some(slot) = line.cells.get_mut(at) {
-                        *slot = *cell;
-                    }
-                }
-                repair_wide(line.cells);
-                true
-            });
+            if !self.copy_plain_cells(from, y, span.clone(), col..end, version) {
+                self.copy_cells(from, y, span.clone(), col..end, version);
+            }
             self.set_link(y, usize::from(col)..usize::from(end), None, version);
         }
+    }
+
+    /// DECCRA's copy of the cells `span` of live row `from` to the columns
+    /// `to` of live row `y`, if neither keeps text in its row's (`Text`),
+    /// as most don't: moved as a run, the row's text left as it is, and the
+    /// halves of a glyph the source's edges cut blanked as `copy_cells`
+    /// blanks them. Whether it did.
+    fn copy_plain_cells(
+        &mut self,
+        from: u16,
+        y: u16,
+        span: Range<usize>,
+        to: Range<u16>,
+        version: u64,
+    ) -> bool {
+        let (Some(source), Some(target)) = (self.slot(from), self.slot(y)) else {
+            return false;
+        };
+        let (Some(rows), Some(dest)) = (self.cells_of(source), self.cells_of(target)) else {
+            return false;
+        };
+        let (start, end) = (usize::from(to.start), usize::from(to.end));
+        let len = span.len().min(end.saturating_sub(start));
+        let src = rows.start.saturating_add(span.start);
+        let src = src..src.saturating_add(len).min(rows.end);
+        let dst = dest.start.saturating_add(start);
+        let dst = dst..dst.saturating_add(len).min(dest.end);
+        let (Some(cells), Some(olds)) = (self.cells.get(src.clone()), self.cells.get(dst.clone()))
+        else {
+            return false;
+        };
+        let whole = self.live_cells(from).get(span.clone()).unwrap_or_default();
+        if cells.len() != olds.len() || Compact::any_spilled(cells) || Compact::any_spilled(olds) {
+            return false;
+        }
+        // The halves of a glyph the source's edges cut.
+        let first = len > 0 && whole.first().is_some_and(Compact::is_wide_continuation);
+        let last = whole.last().is_some_and(|c| c.is_wide()) && len == span.len();
+        // Each cell read, then written; and the row's text, as `copy_cells`
+        // clones it.
+        let text = self.texts.get(source).map_or(0, Text::bytes);
+        spend!(cells, span.len().saturating_mul(2));
+        spend!(edits, span.len());
+        spend!(text, text);
+        // A row that keeps text has it compacted, as `copy_cells`'s
+        // `clear_for` compacts it; the span, none of whose cells keeps any,
+        // is not blanked first, as it may be the source too.
+        if self.texts.get(target).is_some_and(|text| !text.is_empty())
+            && let Some(mut line) = self.line(target)
+        {
+            line.clear_for(start..start);
+        }
+        let _ = crate::bytes::copy_within(&mut self.cells, src, dst.start);
+        let row = self.slice_mut(target);
+        let edges = [
+            (first, start),
+            (last, start.saturating_add(len).saturating_sub(1)),
+        ];
+        for (cut, at) in edges {
+            if let Some(cell) = row.get_mut(at).filter(|_| cut) {
+                *cell = cell.blanked();
+            }
+        }
+        repair_wide(row);
+        self.changed(target, end, version);
+        true
+    }
+
+    /// DECCRA's copy of a row's cells a cell at a time, with the clusters'
+    /// text (`copy_plain_cells` says what is copied).
+    fn copy_cells(&mut self, from: u16, y: u16, span: Range<usize>, to: Range<u16>, version: u64) {
+        let text = self.slot(from).and_then(|slot| self.texts.get(slot));
+        let mut cells = self.live_cells(from).get(span).unwrap_or_default().to_vec();
+        // Each cell read, then written; and the row's text cloned.
+        spend!(cells, cells.len().saturating_mul(2));
+        spend!(edits, cells.len());
+        spend!(text, text.map_or(0, Text::bytes));
+        let text = text.cloned().unwrap_or_default();
+        // The half of a glyph the source's edge cuts.
+        if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
+            *cut = cut.blanked();
+        }
+        if let Some(cut) = cells.last_mut().filter(|c| c.is_wide()) {
+            *cut = cut.blanked();
+        }
+        self.mutate_line(y, version, to.end, |line| {
+            let span = usize::from(to.start)..usize::from(to.end);
+            line.clear_for(span.clone());
+            // A cell whose text is inline, or that has none, is copied
+            // as it is stored, as `copy_span` copies it; a cluster's
+            // text goes into the row's.
+            for (at, cell) in span.zip(&cells) {
+                if cell.is_spilled() {
+                    line.set(at, *cell, text.of(cell));
+                } else if let Some(slot) = line.cells.get_mut(at) {
+                    *slot = *cell;
+                }
+            }
+            repair_wide(line.cells);
+            true
+        });
     }
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
@@ -1815,6 +1901,58 @@ impl Grid {
         let (Some(source), Some(target)) = (self.slot(from), self.slot(to)) else {
             return;
         };
+        if !self.copy_plain_span(source, target, span.clone(), version) {
+            self.copy_span_cells(source, target, span.clone(), version);
+        }
+        // The links, a cell at a time: each takes its source's, or none.
+        let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
+        let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
+        if linked {
+            for at in span {
+                let link = links.as_ref().and_then(|l| l.runs().get(at));
+                self.set_link(to, at..at.saturating_add(1), link, version);
+            }
+        }
+    }
+
+    /// `copy_span`'s copy of the cells `span` of slot `source` over those
+    /// of slot `target`, if neither keeps text in its row's (`Text`), as
+    /// most spans don't: compared and moved a run at once, the row's text
+    /// left as it is, as none of it is the span's. Whether it did.
+    fn copy_plain_span(
+        &mut self,
+        source: usize,
+        target: usize,
+        span: Range<usize>,
+        version: u64,
+    ) -> bool {
+        let (Some(from), Some(to)) = (self.cells_of(source), self.cells_of(target)) else {
+            return false;
+        };
+        let at = |cells: &Range<usize>| {
+            let start = cells.start.saturating_add(span.start);
+            start..start.saturating_add(span.len()).min(cells.end)
+        };
+        let (from, to) = (at(&from), at(&to));
+        let (Some(cells), Some(olds)) = (self.cells.get(from.clone()), self.cells.get(to.clone()))
+        else {
+            return false;
+        };
+        if cells.len() != olds.len() || Compact::any_spilled(cells) || Compact::any_spilled(olds) {
+            return false;
+        }
+        // Each cell read, compared with the one it goes over, and written.
+        spend!(cells, cells.len().saturating_mul(3));
+        spend!(spans, 1);
+        if cells != olds {
+            let _ = crate::bytes::copy_within(&mut self.cells, from, to.start);
+            self.changed(target, span.end, version);
+        }
+        true
+    }
+
+    /// `copy_span`'s copy a cell at a time, with the clusters' text.
+    fn copy_span_cells(&mut self, source: usize, target: usize, span: Range<usize>, version: u64) {
         let cells: Vec<Compact> = self
             .slice(source)
             .get(span.clone())
@@ -1840,7 +1978,6 @@ impl Grid {
         };
         spend!(text, held.len());
         let text_of = |i: usize| texts.get(i).and_then(|r| held.get(r.clone())).unwrap_or("");
-        let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let mut changed = false;
         if let Some(mut line) = self.line(target) {
             let olds = line.cells.get(span.clone()).unwrap_or_default();
@@ -1875,14 +2012,6 @@ impl Grid {
         }
         if changed {
             self.changed(target, span.end, version);
-        }
-        // The links, a cell at a time: each takes its source's, or none.
-        let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
-        if linked {
-            for at in span {
-                let link = links.as_ref().and_then(|l| l.runs().get(at));
-                self.set_link(to, at..at.saturating_add(1), link, version);
-            }
         }
     }
 

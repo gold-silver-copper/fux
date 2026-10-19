@@ -114,7 +114,35 @@ impl Compact {
     /// Whether any of `cells` is either half of a wide glyph: their words
     /// or'd together, which a run of them does without a branch a cell.
     pub(crate) fn any_halves(cells: &[Self]) -> bool {
-        cells.iter().fold(0, |any, cell| any | cell.word) & HALVES != 0
+        Self::any_of(cells, HALVES)
+    }
+    /// Whether any of `cells` keeps its text in its row's (`Text`).
+    pub(crate) fn any_spilled(cells: &[Self]) -> bool {
+        Self::any_of(cells, SPILLED)
+    }
+    /// Whether any of `cells` is protected or either half of a wide glyph.
+    pub(crate) fn any_protected_or_halves(cells: &[Self]) -> bool {
+        Self::any_of(cells, PROTECTED | HALVES)
+    }
+    /// Whether any of `cells` has a flag of `flags` in its word.
+    fn any_of(cells: &[Self], flags: u32) -> bool {
+        cells.iter().fold(0, |any, cell| any | cell.word) & flags != 0
+    }
+    /// DECSERA's and DECERA's erase of `cells`, which hold no half of a
+    /// wide glyph and, for DECSERA (`all` none), no protected glyph: each
+    /// glyph a space in its own style, or `all`'s, the empty cells left
+    /// empty (`Grid::erase_to_spaces`); whether one changed. A run at once.
+    pub(crate) fn space_all(cells: &mut [Self], all: Option<u32>) -> bool {
+        let mut changed = false;
+        for cell in cells.iter_mut() {
+            let occupied = cell.has_contents();
+            let space = Self::ascii(b' ', all.unwrap_or(cell.style()));
+            if occupied {
+                *cell = space;
+            }
+            changed |= occupied;
+        }
+        changed
     }
     /// A blank cell in style 0, the halves `halves` says ([`CellRef`]'s).
     #[inline]
